@@ -96,7 +96,7 @@ class ApplyTests(unittest.TestCase):
             self.assertEqual(f.read(), CHANGED)
         self.assertTrue(os.path.exists(result["backup"]))
         events = [e["event"] for e in ledger.entries()]
-        self.assertEqual(events, ["dispatch_start", "verify_round", "complete"])
+        self.assertEqual(events, ["dispatch_start", "model_result", "verify_round", "complete"])
 
     def test_verify_fail_then_pass(self):
         p = self.make_file()

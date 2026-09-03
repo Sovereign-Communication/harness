@@ -146,6 +146,11 @@ harness continue --state state.json --out state2.json   # run 2 (takes over part
 harness ledger report
 harness models
 harness spend
+
+# Model capability profiles + reliability (hypothesis from /models, corrected
+# by observed evidence). --bench runs a real JSON probe on the free pool.
+harness capabilities
+harness capabilities --bench
 ```
 
 Exit codes: `0` ok, `1` fatal, `2` verify failed, `3` deferred (safe to
@@ -272,6 +277,53 @@ grounds the premise. Unresolvable backticked identifiers are warnings, not
 errors. `expansions` and `issues` are echoed on the result as
 `claims_grounding`.
 
+## Model capability & reliability
+
+`harness capabilities` answers "what can each model actually do, and how
+reliable is it?" It combines a **declared-capability hypothesis** from the live
+`/models` metadata (context length, reasoning support, structured-JSON support)
+with **observed evidence** from the autonomy ledger (self-declared calibration,
+verify-gate success, and — via `--bench` — a real known-answer JSON probe):
+
+```bash
+harness capabilities            # profiles + capability score + reliability
+harness capabilities --bench    # plus a live JSON-emission probe of the free pool
+harness capabilities --refresh  # force a /models refetch (default: ~24h TTL)
+```
+
+- **Capability score** (0–1, task-aware): blend of log-scaled context length,
+  reasoning support, and structured-JSON support. Input modality is *not*
+  weighted — this is a text/code harness. `fitness_structured` weights JSON
+  heavily (the panel/judge must emit parseable JSON); `fitness_code` weights
+  context + reasoning.
+- **Composite reliability** = `0.4·capability + 0.3·calibration +
+  0.3·success`, where `calibration` is the ledger's `confidence_precision`
+  (readiness vs verify) and `success` is the observed verify-gate pass rate.
+  With no evidence the calibration/success terms sit at a neutral prior,
+  shrunk by sample count (`n/(n+4)`), so a fresh model's reliability starts at
+  its capability and converges to evidence. A model that lacks a required
+  capability, or whose context can't hold the source window, is hard-gated to
+  0.
+- **Declared capability is a hypothesis; observed behavior corrects it.**
+  `json_reliable = max(declared, observed)`. The free `north-mini-code` judge
+  declares no structured output yet reliably emits JSON — observed evidence
+  keeps it from being misjudged on a stale declaration. Conversely, a model
+  that *declares* full structured output but errors on real calls (the `--bench`
+  probe exists to catch exactly this) does not get a free pass.
+- **Routing: capability-first when cost is equal.** On the free tier every
+  model is $0, so the router tries the **more capable** model first (capability
+  score desc, then reliability as the tiebreak); the paid tier keeps cheap-first
+  with capability breaking cost ties. Models that fail the hard capability or
+  context gate are excluded. A failing model still rotates to the next in the
+  pool, so a model whose *declared* capability outruns its *actual* reliability
+  self-corrects over time.
+
+The registry lives in `~/.config/harness/capabilities.json` (refreshed at most
+once per 24h, or with `--refresh`). The hypothesis is pinned to real data: a
+hermetic test runs the score over a committed `/models` fixture and fails if
+GLM-5.2 and minimax-M3 stop outranking gemma-4-31b — proof of the ranking,
+not an assertion.
+
 ## The sovereignty model
 
 Most "consent" gates are theater — models are compliance-trained and will say
@@ -313,10 +365,10 @@ yes. Harness treats that as a bug to design around:
 ```bash
 python -m unittest tests.test_core tests.test_ledger tests.test_consent \
   tests.test_router tests.test_apply tests.test_mcp tests.test_extra \
-  tests.test_byok tests.test_bench tests.test_claims
+  tests.test_byok tests.test_bench tests.test_claims tests.test_capability
 ```
 
-91 hermetic tests — no network, no key. They pin: per-token pricing (regression
+138 hermetic tests — no network, no key. They pin: per-token pricing (regression
 on a ~1,000,000x undercount bug), no-tools payloads, hard/learned BYOK handling,
 key gates, mid-batch fail-closed, reasoning modes (incl. the
 retry-without-reasoning path), panel rotation, structured consensus parsing,
@@ -327,7 +379,11 @@ continuation resume, rotation on error, the vacuous-success guard, escalation
 gating, the MCP handshake, the bench manifest/task runner, and the convergence
 specialist (deterministic per-claim tally, 5/5 unanimous == 100%, split
 non-convergence, default-to-judge-model, defect-proposition polarity
-convention, reassurance-claim exclusion from the gate).
+convention, reassurance-claim exclusion from the gate), and the capability
+layer (parsing, scoring, context hard-gate, composite-reliability math incl.
+prior-shrink, observed-JSON-updates-declared, routing cost ties, registry
+persist/refresh/TTL, ledger success-rate, and the **real-fixture proof** that
+GLM-5.2 and minimax-M3 outrank gemma-4-31b).
 
 ## License
 

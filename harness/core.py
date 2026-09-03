@@ -530,7 +530,8 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
 def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_tokens=None,
                 reasoning_effort="auto", reasoning_token_budget=0.4, task_id=None,
                 ledger=None, max_panelists=3, run_convergence=False,
-                convergence_model=None, claim_polarity=None):
+                convergence_model=None, claim_polarity=None,
+                capability_profiles=None, report=None):
     """Rotating panel of independent cheap takes + 1 structured judge verdict.
 
     panel is an ordered pool; members that fail are replaced by the next model
@@ -541,6 +542,18 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
 
     for _m in panel_pool + [judge]:
         governor.check_byok(_m)  # P0: raise on mistralai//anthropic/
+
+    # Capability-aware ordering: when profiles are supplied, order the free
+    # panel so the MORE capable model is tried first (cost is equal on the free
+    # tier), using reliability as the tiebreaker. Degrades gracefully to the
+    # given order if ordering empties the pool (e.g. all hard-gated out).
+    if capability_profiles:
+        from .capability import order_pool
+        task = "structured" if run_convergence else "default"
+        ordered = order_pool(panel_pool, capability_profiles, report,
+                             task=task, free_tier=True)
+        if ordered:
+            panel_pool = ordered
 
     # Rotate out any org-prefix previously observed routing via BYOK (paid).
     panel_pool = [m_ for m_ in panel_pool if not governor.learned_blocked(m_)]
@@ -590,6 +603,12 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             "model": model, "content": content, "finish_reason": finish_reason,
             "cost": cost, "truncated": finish_reason == "length",
         })
+        if ledger and task_id:
+            ledger.append("model_result", task_id=task_id, event_note="panel",
+                          model=model, task_type="structured" if run_convergence else "panel",
+                          json_expected=run_convergence,
+                          json_ok=bool(extract_claim_verdicts(content)) if run_convergence else None,
+                          status="ok")
 
     if not panel_results:
         raise HarnessError("all panel calls failed. Aborting.")
@@ -631,6 +650,12 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                     eprint("[judge] BYOK-routed (paid); raw panel outputs only.")
                     judge_content = None
             governor.record_actual(judge_cost, judge)
+            if ledger and task_id and judge_content is not None:
+                ledger.append("model_result", task_id=task_id, event_note="judge",
+                              model=judge, task_type="structured" if run_convergence else "judge",
+                              json_expected=True,
+                              json_ok=_extract_json(judge_content) is not None,
+                              status="ok")
 
     consensus = _parse_consensus(judge_content) if judge_content else {
         "agreement": "unknown", "confidence": None, "disagreements": [],

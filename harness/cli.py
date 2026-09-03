@@ -69,6 +69,28 @@ def _router(settings):
                   panel_pool=settings.panel_pool, apply_pool=settings.apply_pool)
 
 
+def _capability_context(settings, gov, ledger):
+    """Return (profiles, report) for capability-aware routing, or (None, None)
+    when capability data is unavailable (no network / models fetch failure).
+    The call is free: /models is already fetched & cached by the governor."""
+    try:
+        from .capability import build_profiles_from_models
+        models = gov.fetch_models()
+        profiles = build_profiles_from_models(models)
+        report = ledger.participation_report()
+        return profiles, report
+    except Exception as e:
+        eprint(f"[capability] unavailable ({e}); routing on the given order.")
+        return None, None
+
+
+def _order_pool(pool, profiles, report, task):
+    """Order a pool capability-first (free tier, cost equal). Empty-safe."""
+    from .capability import order_pool as _op
+    ordered = _op(pool, profiles, report, task=task, free_tier=True)
+    return ordered if ordered else pool
+
+
 def _cmd_verify(opts, settings):
     # P0 structured-claims mode: lint + auto-expand BEFORE any network call, so
     # an ungrounded claim is rejected without spending a cent.
@@ -108,9 +130,14 @@ def _cmd_verify(opts, settings):
         raise HarnessError("prompt is empty.")
     api_key, gov = _governor(settings)
     ledger = AutonomyLedger(settings.ledger_path)
+    profiles, report = _capability_context(settings, gov, ledger)
+    panel = (opts.panel or ",".join(settings.panel_pool)).split(",")
+    if profiles is not None:
+        panel = _order_pool(panel, profiles, report,
+                            "structured" if opts.converge else "default")
     result = panel_judge(
         transport=HttpTransport(), api_key=api_key, governor=gov, prompt=prompt,
-        panel=(opts.panel or ",".join(settings.panel_pool)).split(","),
+        panel=panel,
         judge=opts.judge or settings.judge,
         max_tokens=opts.max_tokens,
         reasoning_effort=opts.reasoning_effort or settings.reasoning_effort,
@@ -120,7 +147,8 @@ def _cmd_verify(opts, settings):
         run_convergence=opts.converge,
         convergence_model=opts.convergence_model or settings.convergence_model,
         claim_polarity={cid.strip(): "reassurance" for cid in
-                        (opts.reassurance_claims or "").split(",") if cid.strip()})
+                        (opts.reassurance_claims or "").split(",") if cid.strip()},
+        capability_profiles=profiles, report=report)
     if claims_lint is not None:
         result["claims_grounding"] = {
             "ok": claims_lint["ok"],
@@ -155,8 +183,12 @@ def _cmd_lint_claims(opts, settings=None):
 def _cmd_apply(opts, settings):
     api_key, gov = _governor(settings)
     ledger = AutonomyLedger(settings.ledger_path)
+    profiles, report = _capability_context(settings, gov, ledger)
+    router = _router(settings)
+    if profiles is not None:
+        router.apply_pool = _order_pool(router.apply_pool, profiles, report, "code")
     engine = ApplyEngine(
-        HttpTransport(), api_key, gov, ledger, _router(settings),
+        HttpTransport(), api_key, gov, ledger, router,
         default_require_consent=settings.default_require_consent,
         default_renew_consent=settings.renew_consent,
         reasoning_effort=settings.reasoning_effort,
@@ -290,6 +322,98 @@ def _cmd_spend(settings):
     _emit(gov.key_status(), None)
 
 
+def _cmd_capabilities(opts, settings):
+    from .capability import (
+        ensure_profiles, capability_score, capability_fitness, composite_reliability,
+        probe_json_reliability,
+    )
+    from .config import CAPABILITIES_PATH, CAPABILITIES_TTL
+    api_key, gov = _governor(settings)
+    ledger = AutonomyLedger(settings.ledger_path)
+    profiles, fetched_at, refreshed = ensure_profiles(
+        CAPABILITIES_PATH, gov.fetch_models, ttl=CAPABILITIES_TTL, force=opts.refresh)
+
+    if opts.all:
+        ordered_ids = sorted(profiles.keys())
+    else:
+        ordered_ids = []
+        for mid in settings.panel_pool + settings.apply_pool + [settings.judge]:
+            if mid not in ordered_ids:
+                ordered_ids.append(mid)
+
+    report = ledger.participation_report()
+    cal = report.get("calibration", {})
+
+    def row(mid):
+        p = profiles.get(mid)
+        if p is None:
+            return None
+        cap = round(capability_score(p), 3)
+        fit_structured = round(capability_fitness(p, "structured"), 3)
+        fit_code = round(capability_fitness(p, "code"), 3)
+        c = cal.get(mid, {})
+        rel = composite_reliability(
+            capability_fitness(p, "structured"),
+            c.get("confidence_precision"), c.get("success_rate"), c.get("samples", 0))
+        return {
+            "model": mid, "free": p.free,
+            "context": p.context_length, "max_source_tokens": p.max_source_tokens,
+            "reasoning": p.supports_reasoning,
+            "json": round(p.declared_json, 2),
+            "structured_json": p.supports_structured_json,
+            "capability": cap,
+            "fitness_structured": fit_structured,
+            "fitness_code": fit_code,
+            "reliability_structured": round(rel, 3),
+            "observed": {
+                "confidence_precision": c.get("confidence_precision"),
+                "success_rate": c.get("success_rate"),
+                "samples": c.get("samples", 0),
+            },
+        }
+
+    rows = []
+    for mid in ordered_ids:
+        r = row(mid)
+        if r is not None:
+            rows.append(r)
+
+    if opts.bench:
+        bench_models = [r["model"] for r in rows if r["free"]]
+        probe = probe_json_reliability(transport=HttpTransport(), api_key=api_key,
+                                       governor=gov, models=bench_models)
+        for r in rows:
+            r["probe"] = probe.get(r["model"])
+
+    out = {
+        "captured_at": fetched_at, "refreshed": refreshed,
+        "models": rows, "count": len(rows),
+    }
+    if not opts.json:
+        _print_capabilities_table(out)
+    _emit(out, opts.out)
+
+
+def _print_capabilities_table(out):
+    rows = out["models"]
+    if not rows:
+        print("(no models in pools with capability profiles)")
+        return
+    hdr = f"{'model':<42} {'ctx':>9} {'src':>9} {'rsn':>3} {'jsn':>4} {'cap':>5} {'f-str':>5} {'rel':>5}"
+    print(hdr)
+    print("-" * len(hdr))
+    for r in rows:
+        probe = r.get("probe")
+        probe_note = ""
+        if probe is not None and probe.get("calls"):
+            probe_note = (f"  probe: json={probe['json_ok_rate']} "
+                          f"correct={probe['correct_rate']} err={probe['errors']}")
+        print(f"{r['model']:<42} {r['context']:>9,} {r['max_source_tokens']:>9,} "
+              f"{'Y' if r['reasoning'] else 'n':>3} {r['structured_json'] and 'Y' or ('~' if r['json'] else 'n'):>4} "
+              f"{r['capability']:>5.2f} {r['fitness_structured']:>5.2f} {r['reliability_structured']:>5.2f}"
+              f"{probe_note}")
+
+
 def main(argv=None):
     args = argv if argv is not None else sys.argv[1:]
     ap = argparse.ArgumentParser(
@@ -404,6 +528,16 @@ def main(argv=None):
     plint.add_argument("--show-prompt", action="store_true")
     plint.add_argument("--out", default=None)
 
+    pcap = sub.add_parser("capabilities", help="Model capability profiles + reliability "
+                                                "(hypothesis from /models, corrected by observed evidence)")
+    pcap.add_argument("--refresh", action="store_true",
+                      help="force re-fetch of the live /models capability registry")
+    pcap.add_argument("--all", action="store_true", help="list all live models, not just the pools")
+    pcap.add_argument("--bench", action="store_true",
+                      help="run the empirical JSON probe on the free pool models (live, needs key)")
+    pcap.add_argument("--json", action="store_true", help="emit raw JSON only (no table)")
+    pcap.add_argument("--out", default=None)
+
     sub.add_parser("spend", help="Key identity & spend status")
 
     opts = ap.parse_args(args)
@@ -428,6 +562,8 @@ def main(argv=None):
             _cmd_models(opts, settings)
         elif opts.command == "bench":
             _cmd_bench(opts, settings)
+        elif opts.command == "capabilities":
+            _cmd_capabilities(opts, settings)
         elif opts.command == "spend":
             _cmd_spend(settings)
     except HarnessError as e:

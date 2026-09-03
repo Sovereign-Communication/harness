@@ -184,14 +184,31 @@ class AutonomyLedger:
                     else:
                         verify_hits[m_]["fail"] += 1
 
+        # ---- observed success rate (verify gate outcomes, model_result joins) ----
+        # success_rate = passes / (passes + fails) over every task a model ran,
+        # using the verify_round outcome records (the same ground truth bench uses).
+        task_outcome = defaultdict(lambda: {"pass": 0, "fail": 0})  # model -> counts
+        model_events = defaultdict(int)  # model -> model_result sample count
+        for e in events:
+            ev = e["event"]
+            m_ = e.get("model")
+            if ev == "verify_round" and m_ is not None and "passed" in e:
+                task_outcome[m_]["pass" if e.get("passed") else "fail"] += 1
+            elif ev == "model_result" and m_ is not None:
+                model_events[m_] += 1
+
         calibration = {}
         all_pass = all_fail = 0
-        for m_ in set(list(confident_readiness) + list(verify_hits) + list(defer_count)):
+        all_models = set(list(confident_readiness) + list(verify_hits) +
+                         list(defer_count) + list(task_outcome) + list(model_events))
+        for m_ in all_models:
             passes = verify_hits[m_]["pass"]
             fails = verify_hits[m_]["fail"]
             denom = passes + fails
             all_pass += passes
             all_fail += fails
+            to = task_outcome[m_]
+            t_denom = to["pass"] + to["fail"]
             calibration[m_] = {
                 "confident": len(confident_readiness[m_]),
                 "defer": defer_count[m_],
@@ -200,6 +217,8 @@ class AutonomyLedger:
                 "confident_passed": passes,
                 "confident_failed": fails,
                 "confidence_precision": round(passes / denom, 3) if denom else None,
+                "success_rate": round(to["pass"] / t_denom, 3) if t_denom else None,
+                "samples": model_events[m_],
             }
         report["calibration"] = calibration
         denom = all_pass + all_fail

@@ -115,6 +115,24 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(cal["confident_verified"], 0)
         self.assertIsNone(cal["confidence_precision"])
 
+    def test_success_rate_and_model_result_samples(self):
+        """success_rate aggregates verify outcomes; samples counts model_result events."""
+        l = self.ledger
+        l.append("verify_round", task_id="t1", round=1, passed=True, model="coder")
+        l.append("verify_round", task_id="t1", round=2, passed=True, model="coder")
+        l.append("verify_round", task_id="t2", round=1, passed=False, model="coder")
+        l.append("verify_round", task_id="t3", round=1, passed=True, model="coder")
+        l.append("model_result", task_id="t1", model="coder", task_type="code",
+                 json_expected=False, json_ok=None, status="ok")
+        l.append("model_result", task_id="t2", model="coder", task_type="code",
+                 json_expected=False, json_ok=None, status="ok")
+        l.append("model_result", task_id="t3", model="coder", task_type="code",
+                 json_expected=False, json_ok=None, status="ok")
+        r = l.participation_report()
+        cal = r["calibration"]["coder"]
+        self.assertEqual(cal["success_rate"], round(3 / 4, 3))
+        self.assertEqual(cal["samples"], 3)
+
     def test_degenerate_consent_flagged(self):
         l = self.ledger
         for i in range(10):

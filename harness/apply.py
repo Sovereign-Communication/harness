@@ -389,6 +389,9 @@ class ApplyEngine:
                 break
 
             self.governor.record_actual(cost, model_used)
+            self.ledger.append("model_result", task_id=task_id, event_note="apply",
+                               model=model_used, task_type="code", json_expected=False,
+                               json_ok=None, status="ok")
 
             # ---- capability-blocker deferral ----
             if CAPABILITY_MARKER in content:
@@ -485,6 +488,9 @@ class ApplyEngine:
                 elif not content or content.startswith(REASONING_FALLBACK_PREFIX):
                     content = None  # reasoning-only response is not usable content
                 self.governor.record_actual(cost, esc["model"])
+                self.ledger.append("model_result", task_id=task_id, event_note="escalation",
+                                   model=esc["model"], task_type="code", json_expected=False,
+                                   json_ok=None, status="ok" if content else "error")
                 new_content = _extract_file_content(content)
                 changed = new_content != current_content
                 if changed:

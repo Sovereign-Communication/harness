@@ -52,6 +52,10 @@ DEFAULT_APPLY_MAX_TOKENS = 4096
 BYOK_DENYLIST_PREFIXES = ("mistralai/", "anthropic/")
 BYOK_PREFIXES_PATH = os.path.join(CONFIG_DIR, "byok_prefixes.json")
 
+# Model capability registry (declared /models metadata + composite reliability).
+CAPABILITIES_PATH = os.path.join(CONFIG_DIR, "capabilities.json")
+CAPABILITIES_TTL = 24 * 3600  # refresh /models capability profiles at most once / TTL
+
 
 def load_byok_prefixes(path=BYOK_PREFIXES_PATH):
     try:
