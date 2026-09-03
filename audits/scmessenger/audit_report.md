@@ -10,12 +10,12 @@ Functions audited (9):
 | # | Function | File | Agreement | Conf. | Verdict |
 |---|---|---|---|---|---|
 | 1 | `negotiate_suite` | `core/src/crypto/negotiation.rs` | high | 0.85 | Transcript ambiguity + downgrade |
-| 2 | `decrypt_message_ratcheted_v2` | `core/src/crypto/encrypt.rs` | low | 0.5 | Replay / PQ-stripping concerns |
+| 2 | `decrypt_message_ratcheted_v2` | `core/src/crypto/encrypt.rs` | high | 0.91 | PQ-stripping pre-confirm + transcript scope (converged) |
 | 3 | `Ratchet::encrypt` | `core/src/crypto/ratchet.rs` | high | 0.9 | Index underflow / key handling |
-| 4 | `Ratchet::decrypt` | `core/src/crypto/ratchet.rs` | none | 0.2 | Inconclusive (panel disagreed) |
+| 4 | `Ratchet::decrypt` | `core/src/crypto/ratchet.rs` | high | 5/5 | Gap DoS + skipped-cache growth + low-order point (converged) |
 | 5 | `decode_wire_signed_envelope` | `core/src/message/codec.rs` | high | 0.85 | Unbounded bincode + format fallthrough |
-| 6 | `construct_onion` | `core/src/privacy/onion.rs` | low | 0.2 | Inconclusive (nonce/layer disagreement) |
-| 7 | `peel_layer` | `core/src/privacy/onion.rs` | unknown | — | Decryption-oracle / destination check |
+| 6 | `construct_onion` | `core/src/privacy/onion.rs` | high | 5/5 | CLEARED — construction sound (converged) |
+| 7 | `peel_layer` | `core/src/privacy/onion.rs` | medium | 0.9 | Destination-oracle + unbounded bincode (converged) |
 | 8 | `safety_number` | `core/src/identity/keys.rs` | high | 0.95 | Modulo bias + low entropy |
 | 9 | `verify_bundle` | `core/src/identity/keys.rs` | high | 0.85 | ML-DSA downgrade |
 
@@ -70,6 +70,25 @@ Panel disagreed on nonce reuse and layer-metadata ambiguity. No reliable conclus
 
 ---
 
+## Consensus iteration (iterations 2–3)
+
+The four lower-confidence audits (02, 04, 06, 07) were re-run with a **model rotation** (panel = `gemma-4-31b` + `minimax-m3`, the two free models that reliably emit JSON; judge = `north-mini-code`) and **clarified prompts** (structured per-claim verdicts; verbatim source for 06/07). All four now converge (5/5 panel agreement per function). Per-claim panel data is in `_runs/*_it2.json` / `*_it3.json`.
+
+### 02 `decrypt_message_ratcheted_v2` — CONVERGED (high, 0.91)
+**Real issues:** PQ-stripping check (`validate_pq_fields_present`) only runs while `peer_confirmed`, so a PQ-stripped envelope is not detected before confirmation; the transcript hash is verified only pre-confirmation; PQ fields are processed *before* the AEAD/auth step, so a forged message could mutate session state before authentication.
+**Not defects:** replay is delegated to `session.decrypt` (monotonic + skipped-keys); the `message_number > 0` cadence exclusion is correct (msg 0 is the already-consumed bootstrap).
+
+### 04 `Ratchet::decrypt` — CONVERGED (5/5)
+**Real issues:** no upper bound on the message-number gap (hostile/desynced peer can force huge skipped-key storage / excessive ratchet steps → DoS); `skipped_keys` cache grows unbounded; `X25519PublicKey::from(raw bytes)` does not reject all-zero/low-order DH points.
+**Not defects:** the clone-and-commit (trial-adoption) pattern is correct — it does not lose state on failure.
+
+### 06 `construct_onion` — CONVERGED (5/5) — CLEARED
+All five claims **False** once the relay-wrap loop was quoted verbatim: no nonce reuse (each layer derives its own `shared_secret`; nonce counters 0/1 are used only within one secret), the single-byte counter is sufficient (≤2 uses per secret), no KDF-separation leak, a relay cannot peel more than its own layer, and ephemerals are fresh per layer. **The onion construction is sound on these axes.** The earlier panel split was an artifact of a paraphrased prompt.
+
+### 07 `peel_layer` — CONVERGED (medium, 0.9)
+**Real issues:** destination detection relies on `encrypted_routing_info.is_empty()` (ciphertext length, not decrypted+authenticated plaintext) with no authenticated final-hop marker; the decrypted routing info is parsed with bincode without a size limit (memory DoS); the payload AEAD is not bound to the routing info.
+**Impact cap:** claim_2 — an off-path attacker **cannot** read the payload via the shortcut (it stays AEAD-authenticated under the relay's key), so severity of the oracle is ≤ medium, not a confidentiality break.
+
 ## Prioritized action list (proposed, unverified)
 
 1. **`verify_bundle`** — enforce PQ verification by version/policy, not by presence of untrusted ML-DSA fields; sign `supported_suites` in all versions. *(most severe, high agreement)*
@@ -77,8 +96,10 @@ Panel disagreed on nonce reuse and layer-metadata ambiguity. No reliable conclus
 3. **`decode_wire_signed_envelope`** — bound bincode with size limits; remove V2→V1 fallthrough.
 4. **`Ratchet::encrypt`** — guard `index - 1` underflow; zeroize message key.
 5. **`negotiate_suite`** — length-prefix the transcript delimiters; decide explicit downgrade policy.
-6. **`peel_layer`** — confirm destination-detection; prefer an authenticated "final hop" marker.
-7. **`Ratchet::decrypt` / `construct_onion`** — flagged inconclusive; manual review required before relying on them.
+6. **`Ratchet::decrypt`** — cap the message-number gap and bound/prune `skipped_keys`; reject low-order/all-zero DH points.
+7. **`decrypt_message_ratcheted_v2`** — move PQ-stripping validation outside the `peer_confirmed` gate; process PQ fields only after AEAD auth.
+8. **`peel_layer`** — replace the empty-ciphertext destination check with an authenticated final-hop marker; bound the bincode parse. *(Impact capped: not an off-path confidentiality break.)*
+9. **`construct_onion`** — **cleared** after verbatim-source review; no nonce/key-reuse or layer-boundary defect found.
 
 ## Raw data
 Full JSON verdicts per function are in `audits/scmessenger/_runs/` (gitignored): `NN_<function>_v2.json`. Prompts used are in `audits/scmessenger/prompts/` (gitignored). Re-run any audit with:
