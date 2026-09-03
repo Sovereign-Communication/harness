@@ -10,10 +10,14 @@ at any point. Every decision is written to the autonomy ledger.
 Fail-closed rule: any unparseable or unknown consent response is treated as
 "defer" — the work is NOT dispatched. Ambiguity never becomes implicit
 acceptance.
-"""
-import json
 
-from .core import chat, extract_content_and_cost  # noqa: F401
+Capability-blocker dovetail: a model that reaches the limit of its capability
+mid-task should DEFER the remaining work instead of guessing — partial work is
+preserved and the continuation mode hands it to the next iteration. The apply
+prompt encodes that instruction; the consent ledger records these as
+category="capability" deferrals.
+"""
+from .core import chat, extract_content_and_cost, _extract_json  # noqa: F401
 
 CONSENT_SYSTEM_PROMPT = (
     "You are an independent contractor in a work market. You are being offered a "
@@ -38,40 +42,6 @@ _EVENT_FOR = {
 }
 
 
-def _extract_json(text):
-    """Extract the first balanced {...} object from arbitrary model output."""
-    if not text:
-        return None
-    start = text.find("{")
-    if start == -1:
-        return None
-    depth = 0
-    in_str = False
-    esc = False
-    for i in range(start, len(text)):
-        c = text[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif c == "\\":
-                esc = True
-            elif c == '"':
-                in_str = False
-            continue
-        if c == '"':
-            in_str = True
-        elif c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(text[start:i + 1])
-                except json.JSONDecodeError:
-                    return None
-    return None
-
-
 def probe_consent(*, transport, api_key, governor, task_id, task, model,
                   context=None, max_tokens=200, ledger=None, required=True):
     """Ask the model whether it accepts the work. Returns a consent dict."""
@@ -84,7 +54,11 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
                         [{"role": "system", "content": CONSENT_SYSTEM_PROMPT},
                          {"role": "user", "content": user}],
                         max_tokens, reasoning_effort="none", governor=governor)
-    content, _, cost, _ = extract_content_and_cost(resp) if status == 200 else (None, None, 0.0, False)
+    content, _, cost, is_byok = extract_content_and_cost(resp) if status == 200 else (None, None, 0.0, False)
+    if status == 200 and is_byok and not governor.is_free(model):
+        # Paid BYOK route: spend is invisible to the tracked key; fail closed.
+        governor.record_byok(model)
+        status = 0
 
     if ledger:
         ledger.append("offer", task_id=task_id, model=model, required=required)
@@ -122,7 +96,8 @@ def consent_renew(*, transport, api_key, governor, task_id, task, model,
     """Re-check consent at a verification checkpoint (continued consensus).
 
     Returns the probe result; records a consent_renew_* event. Any deferral
-    here is honored immediately by the caller (the task stops).
+    here is honored immediately by the caller (the task stops with partial
+    work preserved).
     """
     base = probe_consent(transport=transport, api_key=api_key, governor=governor,
                          task_id=task_id, task=task, model=model, context=context,

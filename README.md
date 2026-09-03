@@ -9,37 +9,40 @@ library, a CLI, and a native [MCP](https://modelcontextprotocol.io) server
 Harness is the standalone evolution of **FusionLite**, a tool built inside the
 SCMessenger project that repeatedly did real verification work for a fraction
 of a cent. Its defining discipline — cost ceilings that are *guarantees*, not
-hopes — is carried over wholesale. On top of it, Harness adds two things
-FusionLite never had:
+hopes — is carried over wholesale, and the **free tier is now the default**:
+it runs on a free OpenRouter key using the best current free models, rotating
+and deferring instead of failing. On top of FusionLite's engine it adds:
 
-1. **Coding, not just verdicts** — a scoped apply-and-verify loop (edit a
-   single <500-line file → run your gate → feed failures back → retry), the
-   way `delegate_task.py` taught SCMessenger to do it.
+1. **Coding, not just verdicts** — a scoped apply-and-verify loop that edits a
+   single <500-line file, runs your gate, feeds failures back, and retries.
 2. **AI sovereignty** — before work is dispatched, the model is asked whether
-   it *accepts* it. It may accept, decline, defer, or redirect. It can renew
-   or revoke consent at any point. Every decision lands in an append-only,
-   hash-chained **autonomy ledger**, so autonomy and participation are
-   *measured and provable*, not asserted.
+   it *accepts* it; it may accept, decline, defer, or redirect, may renew or
+   revoke consent at any point, and **defers instead of guessing** when it
+   hits its capability limit. Every decision lands in an append-only,
+   hash-chained **autonomy ledger**.
+3. **Free-tier iteration** — `HARNESS_DEFER` capability handoff + a
+   `continue` mode so a partial task can be taken over and finished by the
+   next model; **model rotation on any error** (429s included).
 
 ## Why this exists
 
-OpenRouter's own "Fusion" feature was evaluated for cheap multi-model
-verification and rejected: all-free panels failed outright, and paid calls
-silently invoked forced web tools, costing $0.057 against a sub-cent estimate
-(~730x). FusionLite's fix — hand-rolled panel + judge over **plain chat
-completions with no `tools` key, ever** — makes worst-case cost exactly
-computable before a single network call. Harness keeps that fix and those hard
-guarantees:
+OpenRouter's own "Fusion" was rejected for cheap multi-model verification:
+all-free panels failed, and paid calls silently invoked forced web tools
+($0.057 against a sub-cent estimate). FusionLite's fix — hand-rolled panel +
+judge over **plain chat completions with no `tools` key, ever** — makes
+worst-case cost exactly computable before a single network call. Harness keeps
+that and its hard guarantees:
 
-1. **No `tools` key in any payload.** Nothing can be invoked, so nothing
-   costs more than the token math says it will.
-2. **Pre-flight cost ceiling.** Worst-case cost (every call maxing out) is
-   computed against live per-token pricing *before* any network call and
-   compared to the ceiling (default 2¢/call, hard max 10¢). If it exceeds,
-   the run refuses.
-3. **BYOK denylist.** `mistralai/` and `anthropic/` are refused outright —
-   BYOK spend is invisible to the tracked key's balance, and paid Claude
-   traffic must never reach the OpenRouter path.
+1. **No `tools` key in any payload.** Nothing can be invoked, so nothing costs
+   more than the token math says it will.
+2. **Pre-flight cost ceiling.** Worst-case cost is computed against live
+   per-token pricing *before* any network call and compared to the ceiling
+   (default 2¢/call, hard max 10¢). Exceeding it refuses the run.
+3. **BYOK handling, learned per account.** Spend on a BYOK route is invisible
+   to the tracked key's balance. `mistralai/` and `anthropic/` are hard-blocked
+   (P0). Any other org-prefix observed routing via BYOK is *learned* into
+   `~/.config/harness/byok_prefixes.json` and rotated away — **unless the model
+   is free** (costs $0, nothing to leak), in which case it's used with a note.
 4. **Key must have a finite spend limit**, or Harness refuses to run.
 5. **Mid-batch fail-closed.** Actual cumulative spend is checked after every
    call; if the pre-flight math was ever wrong, the run aborts immediately.
@@ -50,49 +53,61 @@ guarantees:
 ## Install & configure
 
 ```bash
-pip install -e .          # or: pipx install .  (installs `harness`, `harness-mcp`)
+pip install -e .          # installs `harness`, `harness-mcp`
 
-# Key: OPENROUTER_API_KEY env var, or a file at any of (first wins):
+# Key: $OPENROUTER_API_KEY, or a file at any of (first wins):
 #   ~/.config/scmorc/openrouter_fusion.env
 #   ~/.config/scmorc/openrouter.env
 #   ~/.config/harness/openrouter.env
-# containing:  OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-Optional `~/.config/harness/config.json` and `HARNESS_*` env vars:
-`panel`, `judge`, `apply_model`, `escalation_model`, `max_cost`,
-`task_max_cost`, `max_tokens`, `reasoning_effort`, `ledger_path`,
-`expect_key_label`, `default_require_consent`, `allow_escalation`.
+Free tier is on by default. Config lives in `~/.config/harness/config.json`
+with `HARNESS_*` env overrides:
 
-Defaults: panel of three cheap models (`inclusionai/ling-2.6-flash`,
-`meta-llama/llama-3.1-8b-instruct`, `ibm-granite/granite-4.1-8b`), judge =
-panel lead, apply model `deepseek/deepseek-chat`, consent **required by
-default**, escalation **off** by default (a deliberate gate).
+| Setting | Default | Meaning |
+|---|---|---|
+| `use_free` | `true` | Route through best current free models |
+| `panel` / `panel_pool` | curated free list | Ordered panel pool; failing members rotate |
+| `judge` | `cohere/north-mini-code:free` | JSON-reliable judge |
+| `apply_model` / `apply_pool` | free code-first pool | Ordered apply pool; rotates on error |
+| `reasoning_effort` | `auto` | `auto`/`off`/`none`/`low`/`medium`/`high`/`on` |
+| `reasoning_token_budget` | `0.4` | Fraction of `max_tokens` allowed for hidden reasoning |
+| `max_panelists` | `3` | Panel size |
+| `max_rotations` | `3` | Model rotations allowed before giving up |
+| `renew_consent` | `true` | Re-check consent before each apply round |
+| `default_require_consent` | `true` | Ask before dispatching work |
+| `allow_escalation` | `false` | Gate for escalating to a paid/frontier model |
+
+`harness models` lists the current live free models (refreshed from
+OpenRouter). Hardcoded slugs go stale — the curated pools are validated live
+and rotated, with `openrouter/free` as the final free-router fallback.
 
 ## CLI
 
 ```bash
-# Second-opinion verification: N independent takes + judge synthesis
+# Verification: rotating panel + structured judge verdict (agreement/confidence/defer)
 harness verify --prompt-file question.txt --out verdict.json
 
-# Scoped code edit with a verification gate and retry loop (consent on)
+# Scoped code edit with verify gate, retry, per-round consent, and deferral
 harness apply --file core/src/store/outbox.rs \
-  --instruction "Verify flush_on_connect() calls persist_msg() for all peers" \
+  --instruction "Verify flush_on_connect() persists all peers" \
   --verify "cargo check -p scmessenger-core" --max-rounds 3
 
 # Ask a model for consent on a work item (the "checkbox")
 harness offer --task "Refactor the routing engine's backpressure path"
 
-# Record a mid-task deferral / consent revocation
-harness defer --task-id ab12cd34 --reason "changed my mind mid-task"
+# Resume a deferred/incomplete task (capability or consent deferral, or failed verify)
+harness apply --out state.json ...          # run 1
+harness continue --state state.json --out state2.json   # run 2 (takes over partial work)
 
-# Autonomy ledger + key status
+# Autonomy ledger, live free models, key status
 harness ledger report
+harness models
 harness spend
 ```
 
-Flags are back-compatible with SCMessenger's `fusion_lite.py` /
-`morph_lite.py` / `delegate_task.py`, so existing dispatch habits carry over.
+Exit codes: `0` ok, `1` fatal, `2` verify failed, `3` deferred (safe to
+`continue`).
 
 ## MCP — native dispatch
 
@@ -100,63 +115,70 @@ Flags are back-compatible with SCMessenger's `fusion_lite.py` /
 harness-mcp
 ```
 
-Wire it into any MCP host (Claude Code, Cursor, your own agents), e.g.:
+Wire into any MCP host (Claude Code, Cursor, your own agents):
 
 ```json
 { "mcpServers": { "harness": { "command": "harness-mcp" } } }
 ```
 
-Tools:
+Tools: `panel_verify`, `apply_edit`, `offer_work`, `defer_work`,
+`ledger_status`, `participation_report`, `spend_status`. The hand-rolled
+server is spec-conformant (JSON-RPC 2.0 over stdio, `initialize` →
+`tools/list` → `tools/call`, `structuredContent` + `isError`).
 
-| Tool | Purpose |
-|---|---|
-| `panel_verify` | Cheap multi-model verification → judge verdict (no tools, cost-bounded) |
-| `apply_edit` | Scoped code edit + verify gate + retry loop (honors consent) |
-| `offer_work` | Ask a model whether it accepts, declines, defers, or redirects a work item |
-| `defer_work` | **The sovereignty hook**: revoke consent mid-task, at any point |
-| `ledger_status` | Tail of the hash-chained autonomy ledger + integrity check |
-| `participation_report` | Offers, accept/decline/defer/redirect rates, completions, per-model stats, degenerate-consent flag |
-| `spend_status` | Key identity, limit, remaining balance, session spend |
+## Reasoning & effort, flushed out
 
-The hand-rolled server is spec-conformant (JSON-RPC 2.0 over stdio,
-`initialize` → `tools/list` → `tools/call`, `structuredContent` +
-`isError`), so dispatch from an MCP host is genuinely native.
+`reasoning_effort` handles every provider cleanly:
+
+- `auto` (default): a *capped* `reasoning:{effort:low, max_tokens:…}` is sent
+  only to reasoning-named models; everyone else gets a plain call.
+- `off` / `none`: never send the parameter.
+- `low` / `medium` / `high` / `on`: always send it, with a token cap so
+  reasoning models leave room for a real answer instead of returning empty
+  content.
+- If a provider *rejects* the reasoning parameter, Harness retries once
+  without it automatically.
 
 ## The sovereignty model
 
 Most "consent" gates are theater — models are compliance-trained and will say
 yes. Harness treats that as a bug to design around:
 
-- **Consent is a separate, cheap probe** (~200 tokens, still sub-millicent)
-  with a system prompt that makes decline *psychologically available*: you are
-  an independent contractor; declining, deferring, and redirecting are equally
-  valid, and none are penalized.
-- **Defer and redirect are routing signals**, not dead ends: a deferral's
-  reason and a redirect's suggested model/scope flow back to the dispatcher to
-  refit the task.
-- **Continued consensus:** consent is re-checked at verification checkpoints
-  and can be revoked mid-task via `defer_work`. Partial work is preserved; the
-  task returns to the queue with the reason recorded.
-- **Fail-closed:** an unparseable consent response is treated as *defer* —
-  work is never dispatched on ambiguity.
-- **Verifiable participation:** every offer → decision → dispatch →
-  completion/deferral is appended to a hash-chained JSONL ledger
-  (`~/.config/harness/ledger.jsonl`). `harness ledger verify` proves chain
-  integrity; `participation_report` measures acceptance, decline, deferral,
-  and completion rates per model — and flags near-100% acceptance as
-  *degenerate consent* (a warning, not a success).
-- The **checkbox** exists as `require_consent` — per dispatch, and globally
-  via `default_require_consent` (on by default; flip off for batch/CI).
+- **Consent is a separate, cheap probe** with a system prompt that makes
+  decline psychologically available (independent contractor framing; decline /
+  defer / redirect all valid, none penalized).
+- **Defer and redirect are routing signals**, not dead ends.
+- **Continued consensus:** consent is re-checked before every verify round and
+  can be revoked mid-task via `defer_work`. Partial work is preserved.
+- **Capability blocker dovetail:** the apply prompt tells the model to *do its
+  best and assume nothing*, and to emit a `HARNESS_DEFER:` marker — with
+  remaining scope — instead of guessing when it hits its capability limit.
+  Partial work is written, recorded (`defer_midtask`, category `capability`),
+  and returned as a continuation the next model resumes.
+- **Fail-closed:** an unparseable consent response is treated as *defer*; paid
+  BYOK-routed providers fail closed too.
+- **Verifiable participation:** every event is appended to a hash-chained JSONL
+  ledger. `harness ledger verify` proves chain integrity;
+  `participation_report` measures accept/decline/defer/redirect and completion
+  rates per model and flags near-100% acceptance as *degenerate consent*.
+- The **checkbox** is `require_consent` — per dispatch and globally.
 
 ## Tests
 
 ```bash
 python -m unittest tests.test_core tests.test_ledger tests.test_consent \
-  tests.test_router tests.test_apply tests.test_mcp
+  tests.test_router tests.test_apply tests.test_mcp tests.test_extra \
+  tests.test_byok
 ```
 
-All 50 tests are hermetic — no network, no API key. They pin the behaviors
-that matter: the per-token pricing math (regression against a ~1,000,000x
-undercount bug), no-tools payloads, BYOK/key gates, mid-batch fail-closed,
-ledger chain integrity and tamper detection, fail-closed consent, the
-vacuous-success guard, escalation gating, and the MCP handshake.
+72 hermetic tests — no network, no key. They pin: per-token pricing (regression
+on a ~1,000,000x undercount bug), no-tools payloads, hard/learned BYOK handling,
+key gates, mid-batch fail-closed, reasoning modes (incl. the
+retry-without-reasoning path), panel rotation, structured consensus parsing,
+ledger chain integrity and tamper detection, fail-closed consent, capability
+deferral, continuation resume, rotation on error, the vacuous-success guard,
+escalation gating, and the MCP handshake.
+
+## License
+
+MIT — see `LICENSE`.

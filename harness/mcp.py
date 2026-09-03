@@ -18,13 +18,14 @@ SERVER_VERSION = "0.1.0"
 
 class McpServer:
     def __init__(self, *, transport, api_key, governor, ledger, router, engine,
-                 stdin=None, stdout=None):
+                 max_panelists=3, stdin=None, stdout=None):
         self.transport = transport
         self.api_key = api_key
         self.governor = governor
         self.ledger = ledger
         self.router = router
         self.engine = engine
+        self.max_panelists = max_panelists
         self.stdin = stdin or sys.stdin
         self.stdout = stdout or sys.stdout
 
@@ -34,16 +35,15 @@ class McpServer:
             {
                 "name": "panel_verify",
                 "title": "Multi-model verification",
-                "description": "Panel of cheap models answers a self-contained question, then a judge "
-                               "synthesizes agreement/disagreement into a verdict. Cost-bounded. No "
-                               "web/file tools by design.",
+                "description": "Panel of cheap/free models answers a self-contained question, then a judge "
+                               "synthesizes a structured verdict (agreement, confidence, disagreements, "
+                               "defer). Cost-bounded. No web/file tools by design.",
                 "inputSchema": {"type": "object", "properties": {
                     "prompt": {"type": "string", "description": "Self-contained question + context"},
-                    "panel": {"type": "string", "description": "Comma-separated model ids (2-4). Defaults to configured panel."},
+                    "panel": {"type": "string", "description": "Comma-separated model pool. Defaults to configured panel pool."},
                     "judge": {"type": "string", "description": "Judge model id. Defaults to configured judge."},
                     "max_tokens": {"type": "integer", "default": 300},
-                    "max_cost": {"type": "number", "description": "Per-run cost ceiling (USD)."},
-                    "reasoning_effort": {"type": "string", "enum": ["none", "low", "medium", "high"]},
+                    "reasoning_effort": {"type": "string", "enum": ["auto", "off", "none", "low", "medium", "high", "on"]},
                     "task_id": {"type": "string"},
                 }, "required": ["prompt"]},
             },
@@ -51,7 +51,9 @@ class McpServer:
                 "name": "apply_edit",
                 "title": "Scoped code edit with verification",
                 "description": "Make a single, scoped (<500-line file) code change, run a verification "
-                               "gate, and retry up to max_rounds. Honors consent if required.",
+                               "gate, retry up to max_rounds, renew consent each round, defer instead of "
+                               "guessing at the capability limit, and rotate models on error. Returns a "
+                               "continuation state when deferred.",
                 "inputSchema": {"type": "object", "properties": {
                     "file": {"type": "string", "description": "Path to the file to edit"},
                     "instruction": {"type": "string", "description": "What to change (<=1000 chars)"},
@@ -59,8 +61,12 @@ class McpServer:
                     "verify_cmd": {"type": "string", "description": "Shell command gate, e.g. 'cargo check'"},
                     "max_rounds": {"type": "integer", "default": 3},
                     "require_consent": {"type": "boolean", "description": "Ask the model if it accepts the work first"},
+                    "renew_consent": {"type": "boolean", "description": "Re-check consent before each round (continued consensus)"},
+                    "max_rotations": {"type": "integer", "description": "How many model rotations to allow on error"},
+                    "reasoning_effort": {"type": "string", "enum": ["auto", "off", "none", "low", "medium", "high", "on"]},
+                    "continuation": {"type": "object", "description": "State from a deferred run to resume"},
                     "task_id": {"type": "string"},
-                }, "required": ["file", "instruction"]},
+                }, "required": ["instruction"]},
             },
             {
                 "name": "offer_work",
@@ -83,6 +89,7 @@ class McpServer:
                 "inputSchema": {"type": "object", "properties": {
                     "task_id": {"type": "string"},
                     "reason": {"type": "string"},
+                    "category": {"type": "string", "description": "e.g. capability, consent, alignment"},
                 }, "required": ["task_id"]},
             },
             {
@@ -188,20 +195,27 @@ class McpServer:
             return panel_judge(
                 transport=self.transport, api_key=self.api_key, governor=self.governor,
                 prompt=args["prompt"],
-                panel=(args.get("panel") or ",".join(self.router.panel)).split(","),
+                panel=(args.get("panel") or ",".join(self.router.panel_pool)).split(","),
                 judge=args.get("judge") or self.router.judge,
                 max_tokens=args.get("max_tokens"),
-                reasoning_effort=args.get("reasoning_effort", "low"),
-                task_id=args.get("task_id"), ledger=self.ledger)
+                reasoning_effort=args.get("reasoning_effort", self.engine.reasoning_effort),
+                reasoning_token_budget=self.engine.reasoning_token_budget,
+                task_id=args.get("task_id"), ledger=self.ledger,
+                max_panelists=self.max_panelists)
         if name == "apply_edit":
             return self.engine.apply_edit(
-                task_id=args.get("task_id") or uuid.uuid4().hex[:8],
-                file_path=args["file"], instruction=args["instruction"],
+                task_id=args.get("task_id"),
+                file_path=args.get("file"),
+                instruction=args.get("instruction") or "",
                 edit_snippet=args.get("edit_snippet"), verify_cmd=args.get("verify_cmd"),
                 max_rounds=args.get("max_rounds", 3),
                 require_consent=args.get("require_consent"),
                 max_tokens=args.get("max_tokens") or 4096,
-                allow_escalation=args.get("allow_escalation"))
+                allow_escalation=args.get("allow_escalation"),
+                reasoning_effort=args.get("reasoning_effort"),
+                renew_consent=args.get("renew_consent"),
+                max_rotations=args.get("max_rotations"),
+                continuation=args.get("continuation"))
         if name == "offer_work":
             return probe_consent(
                 transport=self.transport, api_key=self.api_key, governor=self.governor,
@@ -210,7 +224,8 @@ class McpServer:
                 context=args.get("context"), ledger=self.ledger, required=True)
         if name == "defer_work":
             self.ledger.append("defer_midtask", task_id=args.get("task_id"),
-                               reason=args.get("reason"), model="(deferral)")
+                               reason=args.get("reason"), category=args.get("category"),
+                               model="(deferral)")
             return {"status": "deferred", "task_id": args.get("task_id"),
                     "reason": args.get("reason"), "note": "partial work preserved",
                     "participation": self.ledger.participation_report()}
@@ -244,9 +259,16 @@ def main(argv=None):  # pragma: no cover - thin wiring
     governor.verify_key()
     ledger = AutonomyLedger(settings.ledger_path)
     router = Router(settings.panel, settings.judge, settings.apply_model,
-                    settings.escalation_model, settings.allow_escalation)
+                    settings.escalation_model, settings.allow_escalation,
+                    panel_pool=settings.panel_pool, apply_pool=settings.apply_pool)
     engine = ApplyEngine(transport, api_key, governor, ledger, router,
-                         settings.default_require_consent)
+                         default_require_consent=settings.default_require_consent,
+                         default_renew_consent=settings.renew_consent,
+                         reasoning_effort=settings.reasoning_effort,
+                         reasoning_token_budget=settings.reasoning_token_budget,
+                         default_max_rotations=settings.max_rotations,
+                         default_task_max_cost=settings.task_max_cost)
     server = McpServer(transport=transport, api_key=api_key, governor=governor,
-                       ledger=ledger, router=router, engine=engine)
+                       ledger=ledger, router=router, engine=engine,
+                       max_panelists=settings.max_panelists)
     server.serve_forever()

@@ -11,13 +11,28 @@ ceiling. Six hard refusals are preserved:
   4. Key must have a finite spend limit.
   5. Mid-batch fail-closed on actual cumulative spend.
   6. Key-identity label check (--expect-key-label).
+
+On top of the original engine this adds:
+
+  * Reasoning/effort modes fully flushed out (auto / off / low / medium /
+    high), a cap on reasoning-token spend so reasoning models leave room for
+    a real answer, and a retry-without-reasoning fallback for providers that
+    reject the parameter.
+  * Live free-model discovery + validation, so hardcoded slugs that have
+    gone stale are caught against the real /models list.
+  * Panel rotation: a failing panel member is replaced by the next model in
+    the pool instead of just being skipped.
+  * A structured judge verdict (agreement / confidence / disagreements /
+    defer) so consensus is measured, not just asserted.
 """
+import json
 import sys
 import time
 
 from .config import (
     OPENROUTER_CHAT_URL, OPENROUTER_KEY_URL, OPENROUTER_MODELS_URL,
-    BYOK_DENYLIST_PREFIXES, DEFAULT_MAX_COST, DEFAULT_MAX_TOKENS,
+    BYOK_DENYLIST_PREFIXES, BYOK_PREFIXES_PATH, load_byok_prefixes,
+    save_byok_prefixes, DEFAULT_MAX_COST, DEFAULT_MAX_TOKENS,
 )
 from ._http import Transport  # noqa: F401  (documenting the transport seam)
 
@@ -32,6 +47,40 @@ def eprint(*a, **kw):
 
 def estimate_prompt_tokens(text):
     return int(len(text.split()) * 1.5) + 50
+
+
+def _extract_json(text):
+    """Extract the first balanced {...} object from arbitrary model output."""
+    if not text:
+        return None
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        c = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
 
 
 def extract_content_and_cost(resp):
@@ -57,11 +106,53 @@ def extract_content_and_cost(resp):
         return None, None, 0.0, False
 
 
+# ------------------------- reasoning / effort -------------------------
+
+_REASONING_HINTS = ("reason", "thinking", "inkling", "qwq", "r1", "o3", "o4",
+                    "deepseek", "kimi", "glm-4.6", "glm-5.6", "minimax-reason")
+_EFFORT_VALUES = ("auto", "off", "none", "low", "medium", "high", "on")
+_REASONING_PARAM_ERR_HINTS = ("reasoning", "unsupported parameter",
+                              "unknown parameter", "unexpected parameter")
+
+
+def looks_reasoning(model_id):
+    """Heuristic: does this model id smell like a reasoning model?"""
+    m = model_id.lower()
+    return any(h in m for h in _REASONING_HINTS)
+
+
+def _effort_to_send(reasoning_effort, model_id):
+    """Resolve the reasoning effort string to send, or None to omit.
+
+    "auto" sends a capped low effort for reasoning-named models and omits the
+    key entirely for everyone else. "off"/"none" always omit.
+    """
+    e = (reasoning_effort or "auto").lower()
+    if e in ("off", "none"):
+        return None
+    if e == "auto":
+        return "low" if looks_reasoning(model_id) else None
+    if e == "on":
+        return "high"
+    if e in ("low", "medium", "high"):
+        return e
+    return None
+
+
+def _build_reasoning_param(model_id, reasoning_effort, max_tokens, budget):
+    """Return the reasoning dict to embed in the payload, or None."""
+    effort = _effort_to_send(reasoning_effort, model_id)
+    if effort is None:
+        return None
+    cap = max(1, int(max_tokens * budget))
+    return {"effort": effort, "max_tokens": cap}
+
+
 class SpendGovernor:
     """Enforces the guarantees that make sub-cent runs a *guarantee*, not a hope."""
 
     def __init__(self, transport, api_key, expect_key_label=None,
-                 max_cost=DEFAULT_MAX_COST):
+                 max_cost=DEFAULT_MAX_COST, byok_prefixes_path=BYOK_PREFIXES_PATH):
         self.transport = transport
         self.api_key = api_key
         self.expect_key_label = expect_key_label
@@ -69,6 +160,9 @@ class SpendGovernor:
         self.spent = 0.0
         self.key_info = None
         self._pricing_cache = {}
+        self._models = None
+        self._byok_path = byok_prefixes_path
+        self._learned_byok = set(load_byok_prefixes(byok_prefixes_path))
 
     # 4 + 6
     def verify_key(self):
@@ -103,10 +197,29 @@ class SpendGovernor:
 
     # 3
     def check_byok(self, model_id):
+        """Hard block: raises for prefixes that must NEVER run (P0)."""
         for prefix in BYOK_DENYLIST_PREFIXES:
             if model_id.startswith(prefix):
                 raise HarnessError(
                     f"model '{model_id}' matches BYOK denylist prefix '{prefix}'. Refusing.")
+
+    def learned_blocked(self, model_id):
+        """True if this org-prefix was observed routing via BYOK on this account."""
+        return any(model_id.startswith(p) for p in self._learned_byok)
+
+    def record_byok(self, model_id):
+        """Persist an observed BYOK org-prefix so future runs skip it."""
+        prefix = model_id.split("/", 1)[0] + "/"
+        self._learned_byok.add(prefix)
+        try:
+            save_byok_prefixes(self._byok_path, self._learned_byok)
+        except OSError:
+            pass
+
+    def is_free(self, model_id):
+        """True if the model's per-token pricing is zero (no spend to leak)."""
+        pp, cp = self.fetch_pricing([model_id])[model_id]
+        return pp == 0.0 and cp == 0.0
 
     # 1
     def assert_no_tools(self, payload, label):
@@ -118,15 +231,12 @@ class SpendGovernor:
     def fetch_pricing(self, model_ids):
         missing = [m_ for m_ in model_ids if m_ not in self._pricing_cache]
         if missing:
-            try:
-                models = self.transport.get(OPENROUTER_MODELS_URL, self.api_key, timeout=20)
-            except Exception as e:
-                raise HarnessError(f"could not fetch model pricing: {e}")
-            by_id = {m_["id"]: m_.get("pricing", {}) for m_ in models.get("data", [])}
+            models = self.fetch_models()
+            by_id = {m_["id"]: m_ for m_ in models}
             for mid in missing:
                 if mid not in by_id:
                     raise HarnessError(f"model '{mid}' not found in live OpenRouter model list.")
-                p = by_id[mid]
+                p = by_id[mid].get("pricing", {})
                 try:
                     # OpenRouter pricing fields are already PER-TOKEN dollar prices
                     # (e.g. "0.00000001" = $0.01/M). Do NOT divide by 1e6 again —
@@ -136,6 +246,16 @@ class SpendGovernor:
                 except (TypeError, ValueError):
                     raise HarnessError(f"could not parse pricing for '{mid}': {p}")
         return {m_: self._pricing_cache[m_] for m_ in model_ids}
+
+    def fetch_models(self):
+        """Live GET /models, cached per governor instance."""
+        if self._models is None:
+            try:
+                self._models = self.transport.get(OPENROUTER_MODELS_URL, self.api_key,
+                                                  timeout=20).get("data", [])
+            except Exception as e:
+                raise HarnessError(f"could not fetch model list: {e}")
+        return self._models
 
     def preflight(self, prompt_text, calls):
         """calls = [(label, model, max_tokens, extra_input)] -> (total, breakdown).
@@ -169,28 +289,129 @@ class SpendGovernor:
                 f"${self.max_cost:.6f} (after '{label}'). Aborting.")
 
 
-def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="low",
-         governor=None):
+# ------------------------- live discovery -------------------------
+
+def _is_free_model(m):
+    mid = m.get("id", "")
+    p = m.get("pricing", {})
+    return mid.endswith(":free") or (str(p.get("prompt")) == "0" and str(p.get("completion")) == "0")
+
+
+def discover_free_models(transport, api_key, prefer=None, limit=40):
+    """Return the ordered list of free model ids, curated preference first.
+
+    prefer is an ordered list of ids to rank highest; other free models are
+    appended after. Any prefer entry that is no longer free/existing is
+    dropped. Sorted by name for a stable tail.
+    """
+    gov = SpendGovernor(transport, api_key)
+    models = gov.fetch_models()
+    free = [m_["id"] for m_ in models if _is_free_model(m_)]
+    free_set = set(free)
+    ordered = []
+    for pid in (prefer or []):
+        if pid in free_set and pid not in ordered:
+            ordered.append(pid)
+    for mid in sorted(free):
+        if mid not in ordered:
+            ordered.append(mid)
+    return ordered[:limit]
+
+
+def resolve_models(transport, api_key, model_ids):
+    """Return only the ids that exist on the live model list."""
+    gov = SpendGovernor(transport, api_key)
+    ids = {m_["id"] for m_ in gov.fetch_models()}
+    return [m_ for m_ in model_ids if m_ in ids]
+
+
+# ------------------------- chat -------------------------
+
+def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto",
+         reasoning_token_budget=0.4, governor=None):
+    """One chat completion with the spend governor's payload guards.
+
+    Reasoning is only included when the effort mode calls for it (auto => only
+    for reasoning-named models). If a provider rejects the reasoning
+    parameter, we retry once without it.
+    """
     if governor:
         governor.check_byok(model)
-    payload = {"model": model, "messages": messages, "max_tokens": max_tokens}
-    if reasoning_effort and reasoning_effort != "none":
-        payload["reasoning"] = {"effort": reasoning_effort}
-    if governor:
-        governor.assert_no_tools(payload, model)
-    return transport.post(OPENROUTER_CHAT_URL, api_key, payload)
+
+    def build(with_reasoning):
+        payload = {"model": model, "messages": messages, "max_tokens": max_tokens}
+        if with_reasoning:
+            rp = _build_reasoning_param(model, reasoning_effort, max_tokens,
+                                        reasoning_token_budget)
+            if rp:
+                payload["reasoning"] = rp
+        if governor:
+            governor.assert_no_tools(payload, model)
+        return payload
+
+    want_reasoning = _effort_to_send(reasoning_effort, model) is not None
+    status, resp = transport.post(OPENROUTER_CHAT_URL, api_key, build(want_reasoning))
+    if want_reasoning and status != 200:
+        err = str(resp.get("error", {}).get("message", resp)).lower()
+        if any(h in err for h in _REASONING_PARAM_ERR_HINTS):
+            eprint(f"[retry] {model} rejected reasoning param; retrying without it.")
+            return transport.post(OPENROUTER_CHAT_URL, api_key, build(False))
+    return status, resp
+
+
+# ------------------------- panel + judge -------------------------
+
+def _parse_consensus(judge_text):
+    """Parse the judge's JSON verdict; fail softly to unknown on bad output."""
+    parsed = _extract_json(judge_text)
+    if not parsed:
+        return {"agreement": "unknown", "confidence": None, "disagreements": [],
+                "defer": False, "verdict": judge_text or ""}
+    verdict = parsed.get("verdict")
+    agreement = str(parsed.get("agreement", "unknown")).lower()
+    if agreement not in ("high", "medium", "low", "none"):
+        agreement = "unknown"
+    conf = parsed.get("confidence")
+    try:
+        conf = None if conf is None else float(conf)
+        conf = max(0.0, min(1.0, conf))
+    except (TypeError, ValueError):
+        conf = None
+    disagreements = parsed.get("disagreements") or []
+    if not isinstance(disagreements, list):
+        disagreements = []
+    defer = bool(parsed.get("defer", False)) or agreement in ("low", "none")
+    return {
+        "verdict": verdict or judge_text or "",
+        "agreement": agreement,
+        "confidence": conf,
+        "disagreements": disagreements,
+        "defer": defer,
+    }
 
 
 def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_tokens=None,
-                reasoning_effort="low", task_id=None, ledger=None):
-    """N independent cheap takes + 1 judge synthesis. Returns a result dict."""
+                reasoning_effort="auto", reasoning_token_budget=0.4, task_id=None,
+                ledger=None, max_panelists=3):
+    """Rotating panel of independent cheap takes + 1 structured judge verdict.
+
+    panel is an ordered pool; members that fail are replaced by the next model
+    in the pool until max_panelists succeed or the pool is exhausted.
+    """
     max_tokens = max_tokens or DEFAULT_MAX_TOKENS
+    panel_pool = list(panel)
 
-    for _m in list(panel) + [judge]:
-        governor.check_byok(_m)
+    for _m in panel_pool + [judge]:
+        governor.check_byok(_m)  # P0: raise on mistralai//anthropic/
 
-    calls = [(m_, m_, max_tokens, 0) for m_ in panel]
-    calls.append((f"{judge} (judge)", judge, max_tokens + 50, len(panel) * max_tokens + 100))
+    # Rotate out any org-prefix previously observed routing via BYOK (paid).
+    panel_pool = [m_ for m_ in panel_pool if not governor.learned_blocked(m_)]
+    judge_blocked = governor.learned_blocked(judge)
+    target = max(1, min(max_panelists, len(panel_pool)))
+
+    judge_max_tokens = max(768, max_tokens + 200)
+    calls = [(m_, m_, max_tokens, 0) for m_ in panel_pool[:target]]
+    calls.append((f"{judge} (judge)", judge, judge_max_tokens, target * max_tokens + 100))
     total_estimate, breakdown = governor.preflight(prompt, calls)
     eprint("[preflight] worst-case cost breakdown:")
     for label, model, cost in breakdown:
@@ -199,21 +420,30 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
            f"(ceiling: ${governor.max_cost:.6f})")
 
     panel_results = []
-    for model in panel:
+    tried = 0
+    for model in panel_pool:
+        if len(panel_results) >= target:
+            break
+        tried += 1
         eprint(f"[panel] calling {model} ...")
         t0 = time.time()
         status, resp = chat(transport, api_key, model,
                             [{"role": "user", "content": prompt}], max_tokens,
-                            reasoning_effort, governor)
+                            reasoning_effort, reasoning_token_budget, governor)
         elapsed = time.time() - t0
         if status != 200:
             err = resp.get("error", {}).get("message", str(resp))
-            eprint(f"[panel] {model} FAILED ({status}): {err} -- skipping, continuing.")
+            eprint(f"[panel] {model} FAILED ({status}): {err} -- rotating to next model.")
             continue
         content, finish_reason, cost, is_byok = extract_content_and_cost(resp)
         if is_byok:
-            raise HarnessError(f"{model} came back is_byok=true despite denylist pass. "
-                               f"Add its org-prefix to BYOK_DENYLIST_PREFIXES.")
+            if governor.is_free(model):
+                # Free BYOK routes cost $0; nothing to leak. Use it, with a note.
+                eprint(f"[panel] {model} is BYOK-routed but free (cost 0); accepting.")
+            else:
+                governor.record_byok(model)
+                eprint(f"[panel] {model} is BYOK-routed (paid); recorded and rotating.")
+                continue
         governor.record_actual(cost, model)
         eprint(f"[panel] {model}: cost=${cost:.6f}, finish_reason={finish_reason}, {elapsed:.1f}s")
         if finish_reason == "length":
@@ -228,40 +458,64 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
 
     judge_prompt = (
         f"{len(panel_results)} independent models were asked the same question. Synthesize "
-        f"their answers into a single clear recommendation. Note where they agree, where they "
-        f"disagree, and give a final verdict. Under 150 words.\n\n")
+        f"their answers. Respond with a SINGLE JSON object and nothing else:\n"
+        f"{{\"verdict\": \"<clear final recommendation>\", "
+        f"\"agreement\": \"high\"|\"medium\"|\"low\"|\"none\", "
+        f"\"confidence\": <0.0 to 1.0>, "
+        f"\"disagreements\": [\"<each point where models disagree>\"], "
+        f"\"defer\": true|false}}\n"
+        f"Set defer=true when the panel cannot reach enough agreement to make a reliable call "
+        f"(the work should be deferred rather than guessed). Do not paper over disagreement.\n\n")
     for r in panel_results:
         note = " [NOTE: cut off by token limit, may be incomplete]" if r["truncated"] else ""
-        judge_prompt += f"--- Model: {r['model']}{note} ---\n{r['content']}\n\n"
+        body = r["content"] if len(r["content"]) <= 1500 else r["content"][:1500] + "\n...[truncated]"
+        judge_prompt += f"--- Model: {r['model']}{note} ---\n{body}\n\n"
 
-    eprint(f"[judge] calling {judge} ...")
-    status, resp = chat(transport, api_key, judge,
-                        [{"role": "user", "content": judge_prompt}], max_tokens + 50,
-                        reasoning_effort, governor)
     judge_content = None
     judge_cost = 0.0
-    if status != 200:
-        err = resp.get("error", {}).get("message", str(resp))
-        eprint(f"[judge] FAILED ({status}): {err} -- raw panel outputs only.")
+    if judge_blocked:
+        eprint(f"[judge] {judge} routes via paid BYOK on this account; raw panel outputs only.")
     else:
-        judge_content, _, judge_cost, is_byok = extract_content_and_cost(resp)
-        if is_byok:
-            raise HarnessError(f"judge model {judge} came back is_byok=true.")
-        governor.record_actual(judge_cost, judge)
+        eprint(f"[judge] calling {judge} ...")
+        status, resp = chat(transport, api_key, judge,
+                            [{"role": "user", "content": judge_prompt}], judge_max_tokens,
+                            reasoning_effort, reasoning_token_budget, governor)
+        if status != 200:
+            err = resp.get("error", {}).get("message", str(resp))
+            eprint(f"[judge] FAILED ({status}): {err} -- raw panel outputs only.")
+        else:
+            judge_content, _, judge_cost, is_byok = extract_content_and_cost(resp)
+            if is_byok:
+                if governor.is_free(judge):
+                    eprint("[judge] BYOK-routed but free (cost 0); accepting.")
+                else:
+                    governor.record_byok(judge)
+                    eprint("[judge] BYOK-routed (paid); raw panel outputs only.")
+                    judge_content = None
+            governor.record_actual(judge_cost, judge)
+
+    consensus = _parse_consensus(judge_content) if judge_content else {
+        "agreement": "unknown", "confidence": None, "disagreements": [],
+        "defer": True, "verdict": "[raw panel outputs only -- no synthesis available]",
+    }
 
     eprint(f"\n[TOTAL] actual cost this run: ${governor.spent:.6f} "
            f"(ceiling: ${governor.max_cost:.6f})")
 
     result = {
         "panel_results": panel_results,
+        "panel_tried": tried,
         "judge_model": judge,
         "judge_synthesis": judge_content,
-        "verdict": judge_content or "[raw panel outputs only -- no synthesis available]",
+        "verdict": consensus["verdict"],
+        "consensus": {k: consensus[k] for k in
+                      ("agreement", "confidence", "disagreements", "defer")},
         "estimated_worst_case_cost": total_estimate,
         "actual_cost": governor.spent,
         "max_cost_ceiling": governor.max_cost,
     }
     if ledger and task_id:
         ledger.append("complete", task_id=task_id, event_note="panel_judge",
-                      model=judge, cost=governor.spent, status="ok")
+                      model=judge, cost=governor.spent, status="ok",
+                      agreement=consensus["agreement"])
     return result
