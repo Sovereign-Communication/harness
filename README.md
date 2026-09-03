@@ -69,6 +69,7 @@ with `HARNESS_*` env overrides:
 | `use_free` | `true` | Route through best current free models |
 | `panel` / `panel_pool` | curated free list | Ordered panel pool; failing members rotate |
 | `judge` | `cohere/north-mini-code:free` | JSON-reliable judge |
+| `convergence_model` | (same as `judge`) | Convergence-specialist model for `--converge` |
 | `apply_model` / `apply_pool` | free code-first pool | Ordered apply pool; rotates on error |
 | `reasoning_effort` | `auto` | `auto`/`off`/`none`/`low`/`medium`/`high`/`on` |
 | `reasoning_token_budget` | `0.4` | Fraction of `max_tokens` allowed for hidden reasoning |
@@ -99,7 +100,6 @@ harness bench bench/tasks
 
 A task is one JSON file (or a `task.json` inside a per-task folder):
 
-```json
 ```json
 {
   "name": "add",
@@ -177,6 +177,35 @@ server is spec-conformant (JSON-RPC 2.0 over stdio, `initialize` →
 - If a provider *rejects* the reasoning parameter, Harness retries once
   without it automatically.
 
+## Convergence specialist — structured claims audits
+
+For structured audits where the panel answers specific `yes/no` claims, the
+judge's synthesis is a *single model's* read of the panel. `harness verify
+--converge` adds a dedicated **convergence-specialist** step that reads the
+panel's per-claim JSON verdicts and renders the final convergence report — and,
+critically, computes panel agreement **deterministically** from the votes, so
+consensus is measured, not self-reported:
+
+```bash
+harness verify --prompt-file audit.txt --converge \
+  --panel "google/gemma-4-31b-it:free,minimax/minimax-m3:free" \
+  --judge cohere/north-mini-code:free --out verdict.json
+```
+
+- **5/5 unanimous == 100%.** A claim *converges* only when every panelist that
+  answered agrees on `real`. If all claims converge, `consensus.agreement` is
+  lifted to `high` and `consensus.confidence` is set to the actual
+  convergence rate (1.0 = 100%), overriding the judge's self-reported number.
+- The specialist **defaults to the same model as the judge**
+  (`--convergence-model` or `HARNESS_CONVERGENCE_MODEL` to override), so
+  adding it costs one extra free call and no extra key/config.
+- Output includes `convergence.tally` (per-claim votes, unanimity, mean
+  confidence) and `convergence.specialist` (the specialist's rendered verdict).
+
+This is what made the SCMessenger audits trustworthy: a judge self-reporting
+`0.9–0.95` confidence is weaker than **5/5 panel agreement on specific
+claims** — the former is opinion, the latter is a count.
+
 ## The sovereignty model
 
 Most "consent" gates are theater — models are compliance-trained and will say
@@ -221,7 +250,7 @@ python -m unittest tests.test_core tests.test_ledger tests.test_consent \
   tests.test_byok tests.test_bench
 ```
 
-84 hermetic tests — no network, no key. They pin: per-token pricing (regression
+89 hermetic tests — no network, no key. They pin: per-token pricing (regression
 on a ~1,000,000x undercount bug), no-tools payloads, hard/learned BYOK handling,
 key gates, mid-batch fail-closed, reasoning modes (incl. the
 retry-without-reasoning path), panel rotation, structured consensus parsing,
@@ -229,7 +258,9 @@ ledger chain integrity and tamper detection, fail-closed consent, capability
 deferral, the forced self-check (defer→rotate, all-defer accept, confident→proceed),
 confidence calibration (readiness vs verify join, unmatched-verdict handling),
 continuation resume, rotation on error, the vacuous-success guard, escalation
-gating, the MCP handshake, and the bench manifest/task runner.
+gating, the MCP handshake, the bench manifest/task runner, and the convergence
+specialist (deterministic per-claim tally, 5/5 unanimous == 100%, split
+non-convergence, default-to-judge-model).
 
 ## License
 

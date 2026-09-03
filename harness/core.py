@@ -396,9 +396,115 @@ def _parse_consensus(judge_text):
     }
 
 
+# ------------------------- convergence specialist -------------------------
+#
+# The judge synthesizes the panel into a verdict. The convergence specialist is
+# a distinct step for STRUCTURED claims audits: it reads the panel's per-claim
+# JSON verdicts and renders the final convergence report. It defaults to the
+# judge model when not overridden. Panel agreement is computed deterministically
+# too -- a claim CONVERGES only when every panelist that answered it agrees on
+# `real` (5/5 unanimous == 100% on that claim).
+
+
+def extract_claim_verdicts(content):
+    """Return the parsed per-claim dict from a panelist's structured response."""
+    parsed = _extract_json(content)
+    if not isinstance(parsed, dict):
+        return {}
+    return {k: v for k, v in parsed.items()
+            if isinstance(v, dict) and "real" in v}
+
+
+def tally_convergence(panel_results):
+    """Deterministic per-claim consensus from the panel's per-claim JSON verdicts.
+
+    For each claim, gather every panelist's `real` vote. A claim CONVERGES when
+    all panelists that answered it agree. Returns the tally; the specialist may
+    add synthesis on top, but this number is the ground truth for 5/5 = 100%.
+    """
+    claims = {}
+    order = []
+    for r in panel_results:
+        verdicts = extract_claim_verdicts(r.get("content") or "")
+        for cid, v in verdicts.items():
+            if cid not in claims:
+                claims[cid] = {"votes": {"real": 0, "not_real": 0},
+                               "confidences": [], "models": []}
+                order.append(cid)
+            claims[cid]["votes"]["real" if v.get("real") else "not_real"] += 1
+            if v.get("confidence") is not None:
+                try:
+                    claims[cid]["confidences"].append(float(v["confidence"]))
+                except (TypeError, ValueError):
+                    pass
+            claims[cid]["models"].append(r.get("model"))
+
+    per_claim = {}
+    converged_claims = 0
+    for cid in order:
+        c = claims[cid]
+        votes = c["votes"]
+        total = votes["real"] + votes["not_real"]
+        unanimous = total > 0 and (votes["real"] == 0 or votes["not_real"] == 0)
+        if unanimous:
+            converged_claims += 1
+        majority = "real" if votes["real"] >= votes["not_real"] else "not_real"
+        mean_conf = round(sum(c["confidences"]) / len(c["confidences"]), 3) if c["confidences"] else None
+        per_claim[cid] = {
+            "verdict": majority, "unanimous": unanimous, "voted_by": total,
+            "confidence": mean_conf, "votes": votes,
+        }
+    total_claims = len(order)
+    return {
+        "converged": total_claims > 0 and converged_claims == total_claims,
+        "converged_claims": converged_claims,
+        "total_claims": total_claims,
+        "convergence_rate": round(converged_claims / total_claims, 3) if total_claims else None,
+        "claims": per_claim,
+    }
+
+
+def run_convergence_specialist(transport, api_key, governor, panel_results, model,
+                               max_tokens=1200, reasoning_effort="auto",
+                               reasoning_token_budget=0.4):
+    """A dedicated 'convergence specialist' renders the final verdict from the
+    panel's per-claim JSON (defaults to the judge model when not overridden).
+    Falls back to the deterministic tally if the specialist call fails."""
+    lines = [
+        "You are a convergence specialist. N independent models each reviewed the same claims "
+        "and emitted per-claim verdicts {\"claim\":{\"real\":bool,\"confidence\":..}}. "
+        "Produce the FINAL convergence consensus as ONE JSON object, no prose:",
+        "{\"converged\":true|false,\"agreement\":\"high|medium|low|none\","
+        "\"confidence\":<0-1>,\"claims\":{\"<claim>\":{\"verdict\":\"real|not_real\","
+        "\"converged\":true|false,\"confidence\":<0-1>}}}",
+        "A claim is converged only when every model that answered agrees on its verdict. "
+        "Do not invent claims or models.",
+    ]
+    for r in panel_results:
+        body = (r.get("content") or "")[:2000]
+        lines.append(f"--- Model: {r.get('model')} ---\n{body}")
+    prompt = "\n".join(lines)
+
+    governor.preflight(prompt, [("convergence", model, max_tokens, 0)])
+    status, resp = chat(transport, api_key, model, [{"role": "user", "content": prompt}],
+                        max_tokens, reasoning_effort, reasoning_token_budget, governor)
+    if status != 200:
+        return {"status": "error", "model": model,
+                "error": resp.get("error", {}).get("message", str(resp))}
+    content, _, cost, is_byok = extract_content_and_cost(resp)
+    if is_byok and not governor.is_free(model):
+        governor.record_byok(model)
+        return {"status": "error", "model": model, "error": "paid BYOK route; no specialist verdict"}
+    governor.record_actual(cost, model)
+    return {"status": "ok", "model": model,
+            "specialist": _extract_json(content) or {},
+            "raw": content, "cost": cost}
+
+
 def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_tokens=None,
                 reasoning_effort="auto", reasoning_token_budget=0.4, task_id=None,
-                ledger=None, max_panelists=3):
+                ledger=None, max_panelists=3, run_convergence=False,
+                convergence_model=None):
     """Rotating panel of independent cheap takes + 1 structured judge verdict.
 
     panel is an ordered pool; members that fail are replaced by the next model
@@ -508,6 +614,25 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     eprint(f"\n[TOTAL] actual cost this run: ${governor.spent:.6f} "
            f"(ceiling: ${governor.max_cost:.6f})")
 
+    # Optional structured-claims convergence step: a dedicated specialist
+    # renders the final verdict from the panel's per-claim JSON (defaults to the
+    # judge model), and the deterministic tally gives the ground-truth 5/5 rate.
+    convergence_spec = None
+    if run_convergence:
+        spec_model = convergence_model or judge
+        tally = tally_convergence(panel_results)
+        spec = run_convergence_specialist(
+            transport, api_key, governor, panel_results, spec_model,
+            max_tokens=judge_max_tokens, reasoning_effort=reasoning_effort,
+            reasoning_token_budget=reasoning_token_budget)
+        spec["tally"] = tally
+        # Override judge's agreement/confidence with the ground-truth convergence
+        # rate when the panel fully converged (5/5 unanimous == 100%).
+        if tally["converged"]:
+            consensus["agreement"] = "high"
+            consensus["confidence"] = tally["convergence_rate"] or 0.0
+        convergence_spec = spec
+
     result = {
         "panel_results": panel_results,
         "panel_tried": tried,
@@ -520,6 +645,8 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         "actual_cost": governor.spent,
         "max_cost_ceiling": governor.max_cost,
     }
+    if convergence_spec is not None:
+        result["convergence"] = convergence_spec
     if ledger and task_id:
         ledger.append("complete", task_id=task_id, event_note="panel_judge",
                       model=judge, cost=governor.spent, status="ok",

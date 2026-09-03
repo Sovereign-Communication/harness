@@ -89,9 +89,26 @@ All five claims **False** once the relay-wrap loop was quoted verbatim: no nonce
 **Real issues:** destination detection relies on `encrypted_routing_info.is_empty()` (ciphertext length, not decrypted+authenticated plaintext) with no authenticated final-hop marker; the decrypted routing info is parsed with bincode without a size limit (memory DoS); the payload AEAD is not bound to the routing info.
 **Impact cap:** claim_2 — an off-path attacker **cannot** read the payload via the shortcut (it stays AEAD-authenticated under the relay's key), so severity of the oracle is ≤ medium, not a confidentiality break.
 
+### Converged re-audits (01, 03, 05, 08, 09) — `--converge` run
+
+Same panel (gemma+minimax) + convergence tally. **5/5 unanimous = 100% per claim.**
+
+| # | Function | Panel | Result (defect claims unanimous) |
+|---|---|---|---|
+| 1 | `negotiate_suite` | 5/5 (1.0) | 0xFF delimiter collision; downgrade-by-weakest; unauthenticated suite lists; no suite-value validation. (Deterministic behavior confirmed — no non-determinism defect.) |
+| 3 | `Ratchet::encrypt` | 5/5 (1.0) | `index-1` underflow; `message_key` not zeroized. (Random per-message nonce confirmed acceptable.) |
+| 5 | `decode_wire_signed_envelope` | 5/5 (1.0) | Unbounded bincode; V2→V1 format confusion. (Tag guard + length checks + empty/huge guards confirmed present.) |
+| 9 | `verify_bundle` | 5/5 (1.0) | ML-DSA downgrade; v1 omits `supported_suites`; no `created_at` freshness. (Key self-consistency enforced — no key-confusion.) |
+| 8 | `safety_number` | **4/5 (0.8)** | ⚠️ **NOT converged** — see below |
+
+### 08 `safety_number` — NOT converged (4/5)
+Converged on: claim_1 **modulo bias** real (mean conf 0.99), claim_3 order-independence correct, claim_4 length check correct, claim_5 **insufficient entropy** real (0.975). **Claim_2 (cyclic byte reuse) is a genuine split** — one panelist holds cyclic reuse of the first 24 hash bytes is an independent weakness; the other holds it is subsumed by the modulo-bias entropy loss already covered by claim_1/claim_5.
+
+**Concrete remaining need → CLARIFICATION, not model rotation.** Both panelists are reliable (they emitted clean per-claim JSON and agree on the other four claims). The prompt's claim_2 conflates two distinct questions — “bytes are reused cyclically” vs “this adds a distinct attack surface beyond the modulo bias.” Reframe claim_2 to separate those, and the split resolves. Per the mission, the loop stops here rather than rotating further.
+
 ## Prioritized action list (proposed, unverified)
 
-1. **`verify_bundle`** — enforce PQ verification by version/policy, not by presence of untrusted ML-DSA fields; sign `supported_suites` in all versions. *(most severe, high agreement)*
+1. **`verify_bundle`** — enforce PQ verification by version/policy, not by presence of untrusted ML-DSA fields; sign `supported_suites` in all versions. *(5/5 converged, most severe)*
 2. **`safety_number`** — fix modulo bias + cyclic byte reuse before shipping to users.
 3. **`decode_wire_signed_envelope`** — bound bincode with size limits; remove V2→V1 fallthrough.
 4. **`Ratchet::encrypt`** — guard `index - 1` underflow; zeroize message key.

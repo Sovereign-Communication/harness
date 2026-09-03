@@ -14,7 +14,11 @@ class Transport:
     def get(self, url, api_key, timeout=15):  # pragma: no cover - interface
         raise NotImplementedError
 
-    def post(self, url, api_key, payload, timeout=45):  # pragma: no cover - interface
+    # Free-tier models can take well over 45s on long audit prompts with a
+    # high --max-tokens output budget (the 45s default caused read timeouts on
+    # the SCMessenger consensus audits). 120s gives room without hanging
+    # indefinitely on a dead connection.
+    def post(self, url, api_key, payload, timeout=120):  # pragma: no cover - interface
         raise NotImplementedError
 
 
@@ -24,7 +28,7 @@ class HttpTransport(Transport):
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
-    def post(self, url, api_key, payload, timeout=45):
+    def post(self, url, api_key, payload, timeout=120):
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url, data=data,

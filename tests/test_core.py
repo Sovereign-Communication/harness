@@ -2,7 +2,7 @@ import unittest
 
 from harness.core import (
     SpendGovernor, HarnessError, estimate_prompt_tokens, extract_content_and_cost,
-    panel_judge,
+    panel_judge, tally_convergence, extract_claim_verdicts,
 )
 from harness.config import OPENROUTER_CHAT_URL, OPENROUTER_MODELS_URL, OPENROUTER_KEY_URL
 from tests._fake import FakeTransport, m, comp
@@ -150,6 +150,78 @@ class PanelJudgeTests(unittest.TestCase):
         judge_payload = fake.payloads()[-1]
         judge_user = judge_payload["messages"][-1]["content"]
         self.assertIn("NOTE: cut off by token limit", judge_user)
+
+
+class ConvergenceTests(unittest.TestCase):
+    def panel(self, claims):
+        return [{"model": P1, "content": __import__("json").dumps(claims)},
+                {"model": P2, "content": __import__("json").dumps(claims)}]
+
+    def test_tally_unanimous_converges(self):
+        claims = {"c1": {"real": True, "confidence": 0.9},
+                  "c2": {"real": False, "confidence": 0.8},
+                  "c3": {"real": True, "confidence": 0.95}}
+        tally = tally_convergence(self.panel(claims))
+        self.assertTrue(tally["converged"])
+        self.assertEqual(tally["converged_claims"], 3)
+        self.assertEqual(tally["total_claims"], 3)
+        self.assertEqual(tally["convergence_rate"], 1.0)
+        self.assertEqual(tally["claims"]["c1"]["verdict"], "real")
+        self.assertEqual(tally["claims"]["c2"]["verdict"], "not_real")
+
+    def test_tally_split_does_not_converge(self):
+        a = {"c1": {"real": True, "confidence": 0.9}, "c2": {"real": False, "confidence": 0.8}}
+        b = {"c1": {"real": False, "confidence": 0.7}, "c2": {"real": False, "confidence": 0.8}}
+        tally = tally_convergence([{"model": P1, "content": __import__("json").dumps(a)},
+                                   {"model": P2, "content": __import__("json").dumps(b)}])
+        self.assertFalse(tally["converged"])
+        self.assertEqual(tally["converged_claims"], 1)
+        self.assertEqual(tally["convergence_rate"], 0.5)
+
+    def test_extract_claim_verdicts_ignores_non_claim_json(self):
+        self.assertEqual(extract_claim_verdicts('{"verdict":"x","note":"y"}'), {})
+        self.assertEqual(extract_claim_verdicts("no json here"), {})
+        got = extract_claim_verdicts('{"c1":{"real":true,"confidence":0.9}}')
+        self.assertEqual(got["c1"]["real"], True)
+
+    def test_convergence_step_overrides_consensus_when_converged(self):
+        claims = {"c1": {"real": True, "confidence": 0.9},
+                  "c2": {"real": False, "confidence": 0.85}}
+        spec = ("{\"converged\":true,\"agreement\":\"high\",\"confidence\":1.0,"
+                "\"claims\":{}}")
+        fake = FakeTransport(models=[m(P1), m(P2), m(JUDGE)],
+                             posts=[comp(__import__("json").dumps(claims)),
+                                    comp(__import__("json").dumps(claims)),
+                                    comp("{\"verdict\":\"x\",\"agreement\":\"medium\","
+                                         "\"confidence\":0.6,\"disagreements\":[],"
+                                         "\"defer\":false}"),
+                                    comp(spec)])
+        gov = _gov(fake)
+        result = panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",
+                             panel=[P1, P2], judge=JUDGE, run_convergence=True)
+        conv = result["convergence"]
+        self.assertTrue(conv["tally"]["converged"])
+        # converged 5/5 => consensus lifted to high / 1.0 (the ground truth rate)
+        self.assertEqual(result["consensus"]["agreement"], "high")
+        self.assertEqual(result["consensus"]["confidence"], 1.0)
+        self.assertEqual(conv["model"], JUDGE, "specialist defaults to the judge model")
+
+    def test_convergence_step_keeps_consensus_when_split(self):
+        a = {"c1": {"real": True, "confidence": 0.9}}
+        b = {"c1": {"real": False, "confidence": 0.7}}
+        judge_v = ("{\"verdict\":\"x\",\"agreement\":\"low\",\"confidence\":0.4,"
+                    "\"disagreements\":[\"d\"],\"defer\":true}")
+        fake = FakeTransport(models=[m(P1), m(P2), m(JUDGE)],
+                             posts=[comp(__import__("json").dumps(a)),
+                                    comp(__import__("json").dumps(b)),
+                                    comp(judge_v),
+                                    comp("{\"converged\":false,\"agreement\":\"low\","
+                                         "\"confidence\":0.4,\"claims\":{}}")])
+        gov = _gov(fake)
+        result = panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",
+                             panel=[P1, P2], judge=JUDGE, run_convergence=True)
+        self.assertFalse(result["convergence"]["tally"]["converged"])
+        self.assertEqual(result["consensus"]["agreement"], "low", "judge verdict kept when split")
 
 
 class ExtractionTests(unittest.TestCase):

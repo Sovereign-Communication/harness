@@ -108,6 +108,7 @@ _ENV_NAMES = {
     "panel": "HARNESS_PANEL",
     "panel_pool": "HARNESS_PANEL_POOL",
     "judge": "HARNESS_JUDGE",
+    "convergence_model": "HARNESS_CONVERGENCE_MODEL",
     "apply_model": "HARNESS_APPLY_MODEL",
     "apply_pool": "HARNESS_APPLY_POOL",
     "escalation_model": "HARNESS_ESCALATION_MODEL",
@@ -173,8 +174,8 @@ def _dedup(seq):
 
 
 class Settings:
-    def __init__(self, use_free, panel, panel_pool, judge, apply_model, apply_pool,
-                 escalation_model, max_cost, task_max_cost, max_tokens,
+    def __init__(self, use_free, panel, panel_pool, judge, convergence_model, apply_model,
+                 apply_pool, escalation_model, max_cost, task_max_cost, max_tokens,
                  apply_max_tokens, reasoning_effort, reasoning_token_budget,
                  max_panelists, max_rotations, renew_consent, ledger_path,
                  expect_key_label, default_require_consent, allow_escalation):
@@ -182,6 +183,8 @@ class Settings:
         self.panel = list(panel)
         self.panel_pool = list(panel_pool)
         self.judge = judge
+        # Convergence specialist defaults to the same model as the judge.
+        self.convergence_model = convergence_model or judge
         self.apply_model = apply_model
         self.apply_pool = list(apply_pool)
         self.escalation_model = escalation_model
@@ -201,11 +204,11 @@ class Settings:
 
     def to_dict(self):
         return {k: getattr(self, k) for k in (
-            "use_free", "panel", "panel_pool", "judge", "apply_model",
-            "apply_pool", "escalation_model", "max_cost", "task_max_cost",
-            "max_tokens", "apply_max_tokens", "reasoning_effort",
-            "reasoning_token_budget", "max_panelists", "max_rotations",
-            "renew_consent", "ledger_path", "expect_key_label",
+            "use_free", "panel", "panel_pool", "judge", "convergence_model",
+            "apply_model", "apply_pool", "escalation_model", "max_cost",
+            "task_max_cost", "max_tokens", "apply_max_tokens",
+            "reasoning_effort", "reasoning_token_budget", "max_panelists",
+            "max_rotations", "renew_consent", "ledger_path", "expect_key_label",
             "default_require_consent", "allow_escalation")}
 
 
@@ -245,6 +248,7 @@ def load_settings(overrides=None):
         panel=panel,
         panel_pool=panel_pool,
         judge=str(get("judge", default_judge)),
+        convergence_model=get("convergence_model", None),
         apply_model=apply_model,
         apply_pool=apply_pool,
         escalation_model=get("escalation_model", None),

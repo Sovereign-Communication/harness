@@ -85,7 +85,9 @@ def _cmd_verify(opts, settings):
         reasoning_effort=opts.reasoning_effort or settings.reasoning_effort,
         reasoning_token_budget=settings.reasoning_token_budget,
         task_id=opts.task_id or uuid.uuid4().hex[:8], ledger=ledger,
-        max_panelists=settings.max_panelists)
+        max_panelists=settings.max_panelists,
+        run_convergence=opts.converge,
+        convergence_model=opts.convergence_model or settings.convergence_model)
     _emit(result, opts.out)
 
 
@@ -243,6 +245,10 @@ def main(argv=None):
     pv.add_argument("--max-cost", type=float, default=None)
     pv.add_argument("--reasoning-effort", default=None,
                     choices=["auto", "off", "none", "low", "medium", "high", "on"])
+    pv.add_argument("--converge", action="store_true",
+                    help="run the convergence-specialist step on the panel's per-claim verdicts")
+    pv.add_argument("--convergence-model", default=None,
+                    help="model for the convergence specialist (default: same as --judge)")
     pv.add_argument("--task-id", default=None)
     pv.add_argument("--out", default=None)
 
