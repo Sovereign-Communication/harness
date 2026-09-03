@@ -196,11 +196,22 @@ harness verify --prompt-file audit.txt --converge \
   answered agrees on `real`. If all claims converge, `consensus.agreement` is
   lifted to `high` and `consensus.confidence` is set to the actual
   convergence rate (1.0 = 100%), overriding the judge's self-reported number.
+- **Polarity convention: claims are defect propositions.** `real: true`
+  unambiguously means the stated defect exists in the code. Phrase claims as
+  "Defect: X is vulnerable to Y", never as "X is correct" — the latter is
+  answered with opposite `real` polarity by different models (statement-truth
+  vs defect-presence readings) and can split an otherwise-unanimous tally.
+- **Reassurance claims never gate the tally.** If a claim must be phrased as a
+  reassurance, declare it with `--reassurance-claims c3,c4` (or
+  `claim_polarity` in the library): it is excluded from the convergence gate
+  and reported separately under `convergence.tally.reassurance`, so identical
+  substance can never split a defect tally.
 - The specialist **defaults to the same model as the judge**
   (`--convergence-model` or `HARNESS_CONVERGENCE_MODEL` to override), so
   adding it costs one extra free call and no extra key/config.
 - Output includes `convergence.tally` (per-claim votes, unanimity, mean
-  confidence) and `convergence.specialist` (the specialist's rendered verdict).
+  confidence, and a separate `reassurance` block) and
+  `convergence.specialist` (the specialist's rendered verdict).
 
 This is what made the SCMessenger audits trustworthy: a judge self-reporting
 `0.9–0.95` confidence is weaker than **5/5 panel agreement on specific
@@ -250,7 +261,7 @@ python -m unittest tests.test_core tests.test_ledger tests.test_consent \
   tests.test_byok tests.test_bench
 ```
 
-89 hermetic tests — no network, no key. They pin: per-token pricing (regression
+91 hermetic tests — no network, no key. They pin: per-token pricing (regression
 on a ~1,000,000x undercount bug), no-tools payloads, hard/learned BYOK handling,
 key gates, mid-batch fail-closed, reasoning modes (incl. the
 retry-without-reasoning path), panel rotation, structured consensus parsing,
@@ -260,7 +271,8 @@ confidence calibration (readiness vs verify join, unmatched-verdict handling),
 continuation resume, rotation on error, the vacuous-success guard, escalation
 gating, the MCP handshake, the bench manifest/task runner, and the convergence
 specialist (deterministic per-claim tally, 5/5 unanimous == 100%, split
-non-convergence, default-to-judge-model).
+non-convergence, default-to-judge-model, defect-proposition polarity
+convention, reassurance-claim exclusion from the gate).
 
 ## License
 

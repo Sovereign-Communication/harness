@@ -16,7 +16,7 @@ Functions audited (9):
 | 5 | `decode_wire_signed_envelope` | `core/src/message/codec.rs` | high | 0.85 | Unbounded bincode + format fallthrough |
 | 6 | `construct_onion` | `core/src/privacy/onion.rs` | high | 5/5 | CLEARED — construction sound (converged) |
 | 7 | `peel_layer` | `core/src/privacy/onion.rs` | medium | 0.9 | Destination-oracle + unbounded bincode (converged) |
-| 8 | `safety_number` | `core/src/identity/keys.rs` | high | 0.95 | Modulo bias + low entropy |
+| 8 | `safety_number` | `core/src/identity/keys.rs` | 6/6 | 1.0 | Modulo bias + dropped hash tail + low entropy (converged) |
 | 9 | `verify_bundle` | `core/src/identity/keys.rs` | high | 0.85 | ML-DSA downgrade |
 
 ---
@@ -99,17 +99,19 @@ Same panel (gemma+minimax) + convergence tally. **5/5 unanimous = 100% per claim
 | 3 | `Ratchet::encrypt` | 5/5 (1.0) | `index-1` underflow; `message_key` not zeroized. (Random per-message nonce confirmed acceptable.) |
 | 5 | `decode_wire_signed_envelope` | 5/5 (1.0) | Unbounded bincode; V2→V1 format confusion. (Tag guard + length checks + empty/huge guards confirmed present.) |
 | 9 | `verify_bundle` | 5/5 (1.0) | ML-DSA downgrade; v1 omits `supported_suites`; no `created_at` freshness. (Key self-consistency enforced — no key-confusion.) |
-| 8 | `safety_number` | **4/5 (0.8)** | ⚠️ **NOT converged** — see below |
+| 8 | `safety_number` | **6/6 (1.0)** | Modulo bias + dropped hash tail + insufficient entropy (converged) |
 
-### 08 `safety_number` — NOT converged (4/5)
-Converged on: claim_1 **modulo bias** real (mean conf 0.99), claim_3 order-independence correct, claim_4 length check correct, claim_5 **insufficient entropy** real (0.975). **Claim_2 (cyclic byte reuse) is a genuine split** — one panelist holds cyclic reuse of the first 24 hash bytes is an independent weakness; the other holds it is subsumed by the modulo-bias entropy loss already covered by claim_1/claim_5.
+### 08 `safety_number` — CONVERGED (6/6, 100%)
+Resolved by a two-part fix: (1) the original claim_2 was **factually wrong** — `(group*2) % 24` over the 12 groups reads hash bytes 0–23 exactly once each (nothing is re-read); the real defect is that **hash bytes 24–31 are never read**. (2) Claims were rephrased as unambiguous **defect propositions** so `real:true` = defect present. Final unanimous verdict:
+- **Real defects:** modulo bias (`% 100000` over u16 0–65535); dropped 8-byte hash tail (only 24 of 32 bytes used); independent entropy loss beyond the bias; overall **insufficient entropy** for visual MITM comparison.
+- **Not defects (confirmed correct):** order-independence (sorting works); 32-byte length validation (present).
 
-**Concrete remaining need → CLARIFICATION, not model rotation.** Both panelists are reliable (they emitted clean per-claim JSON and agree on the other four claims). The prompt's claim_2 conflates two distinct questions — “bytes are reused cyclically” vs “this adds a distinct attack surface beyond the modulo bias.” Reframe claim_2 to separate those, and the split resolves. Per the mission, the loop stops here rather than rotating further.
+Fix recommendation: map wider, unbiased chunks of the full 32-byte hash to digits (e.g. base-10 over more bytes, `% 10000` on wider values) and use all hash bytes.
 
 ## Prioritized action list (proposed, unverified)
 
 1. **`verify_bundle`** — enforce PQ verification by version/policy, not by presence of untrusted ML-DSA fields; sign `supported_suites` in all versions. *(5/5 converged, most severe)*
-2. **`safety_number`** — fix modulo bias + cyclic byte reuse before shipping to users.
+2. **`safety_number`** — fix modulo bias + dropped 8-byte hash tail before shipping to users (all 6 claims converged).
 3. **`decode_wire_signed_envelope`** — bound bincode with size limits; remove V2→V1 fallthrough.
 4. **`Ratchet::encrypt`** — guard `index - 1` underflow; zeroize message key.
 5. **`negotiate_suite`** — length-prefix the transcript delimiters; decide explicit downgrade policy.

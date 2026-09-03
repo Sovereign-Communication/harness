@@ -87,7 +87,9 @@ def _cmd_verify(opts, settings):
         task_id=opts.task_id or uuid.uuid4().hex[:8], ledger=ledger,
         max_panelists=settings.max_panelists,
         run_convergence=opts.converge,
-        convergence_model=opts.convergence_model or settings.convergence_model)
+        convergence_model=opts.convergence_model or settings.convergence_model,
+        claim_polarity={cid.strip(): "reassurance" for cid in
+                        (opts.reassurance_claims or "").split(",") if cid.strip()})
     _emit(result, opts.out)
 
 
@@ -249,6 +251,9 @@ def main(argv=None):
                     help="run the convergence-specialist step on the panel's per-claim verdicts")
     pv.add_argument("--convergence-model", default=None,
                     help="model for the convergence specialist (default: same as --judge)")
+    pv.add_argument("--reassurance-claims", default=None,
+                    help="comma-separated claim ids phrased as reassurance ('X is correct'); "
+                         "excluded from the defect convergence gate")
     pv.add_argument("--task-id", default=None)
     pv.add_argument("--out", default=None)
 

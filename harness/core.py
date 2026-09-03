@@ -415,52 +415,77 @@ def extract_claim_verdicts(content):
             if isinstance(v, dict) and "real" in v}
 
 
-def tally_convergence(panel_results):
+def tally_convergence(panel_results, claim_polarity=None):
     """Deterministic per-claim consensus from the panel's per-claim JSON verdicts.
 
-    For each claim, gather every panelist's `real` vote. A claim CONVERGES when
-    all panelists that answered it agree. Returns the tally; the specialist may
-    add synthesis on top, but this number is the ground truth for 5/5 = 100%.
+    POLARITY CONVENTION: a claim is a DEFECT proposition -- `real: true` means
+    the stated defect genuinely exists in the code. This makes statement-truth
+    and defect-presence readings coincide, so identical substance yields
+    identical votes across models.
+
+    claim_polarity maps a claim id to "defect" (default) or "reassurance". A
+    REASSURANCE claim asserts something is CORRECT ("X is order-independent");
+    models encode agreement with it inconsistently (some read real:true as
+    "the statement holds", others as "a defect exists"), so a reassurance
+    claim can NEVER be normalized reliably -- identical substance could split
+    the tally. Reassurance claims are therefore EXCLUDED from the convergence
+    gate and reported separately, so they cannot split an otherwise-unanimous
+    defect tally.
+
+    For each defect claim, gather every panelist's `real` vote. A claim
+    CONVERGES when all panelists that answered it agree (5/5 == 100%).
     """
-    claims = {}
-    order = []
+    claim_polarity = claim_polarity or {}
+    buckets = {}
+    order = {}
     for r in panel_results:
         verdicts = extract_claim_verdicts(r.get("content") or "")
         for cid, v in verdicts.items():
-            if cid not in claims:
-                claims[cid] = {"votes": {"real": 0, "not_real": 0},
-                               "confidences": [], "models": []}
-                order.append(cid)
-            claims[cid]["votes"]["real" if v.get("real") else "not_real"] += 1
+            kind = "reassurance" if claim_polarity.get(cid, "defect") == "reassurance" else "defect"
+            if cid not in buckets:
+                buckets[cid] = {"kind": kind, "votes": {"real": 0, "not_real": 0},
+                                "confidences": [], "models": []}
+                order[cid] = kind
+            c = buckets[cid]
+            c["votes"]["real" if v.get("real") else "not_real"] += 1
             if v.get("confidence") is not None:
                 try:
-                    claims[cid]["confidences"].append(float(v["confidence"]))
+                    c["confidences"].append(float(v["confidence"]))
                 except (TypeError, ValueError):
                     pass
-            claims[cid]["models"].append(r.get("model"))
+            c["models"].append(r.get("model"))
 
     per_claim = {}
+    reassurance = {}
     converged_claims = 0
-    for cid in order:
-        c = claims[cid]
+    defect_total = 0
+    for cid, kind in order.items():
+        c = buckets[cid]
         votes = c["votes"]
         total = votes["real"] + votes["not_real"]
         unanimous = total > 0 and (votes["real"] == 0 or votes["not_real"] == 0)
-        if unanimous:
-            converged_claims += 1
         majority = "real" if votes["real"] >= votes["not_real"] else "not_real"
         mean_conf = round(sum(c["confidences"]) / len(c["confidences"]), 3) if c["confidences"] else None
-        per_claim[cid] = {
-            "verdict": majority, "unanimous": unanimous, "voted_by": total,
-            "confidence": mean_conf, "votes": votes,
-        }
-    total_claims = len(order)
+        entry = {"verdict": majority, "unanimous": unanimous, "voted_by": total,
+                 "confidence": mean_conf, "votes": votes}
+        if kind == "defect":
+            defect_total += 1
+            if unanimous:
+                converged_claims += 1
+            per_claim[cid] = entry
+        else:
+            # Reassurance: reported but never gates convergence (polarity of
+            # `real` is convention-dependent across models).
+            entry["note"] = "reassurance claim: real:true means the stated " \
+                             "correctness holds; excluded from the convergence gate"
+            reassurance[cid] = entry
     return {
-        "converged": total_claims > 0 and converged_claims == total_claims,
+        "converged": defect_total > 0 and converged_claims == defect_total,
         "converged_claims": converged_claims,
-        "total_claims": total_claims,
-        "convergence_rate": round(converged_claims / total_claims, 3) if total_claims else None,
+        "total_claims": defect_total,
+        "convergence_rate": round(converged_claims / defect_total, 3) if defect_total else None,
         "claims": per_claim,
+        "reassurance": reassurance,
     }
 
 
@@ -478,6 +503,7 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
         "\"confidence\":<0-1>,\"claims\":{\"<claim>\":{\"verdict\":\"real|not_real\","
         "\"converged\":true|false,\"confidence\":<0-1>}}}",
         "A claim is converged only when every model that answered agrees on its verdict. "
+        "Claims are DEFECT propositions: real:true means the stated defect genuinely exists. "
         "Do not invent claims or models.",
     ]
     for r in panel_results:
@@ -504,7 +530,7 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
 def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_tokens=None,
                 reasoning_effort="auto", reasoning_token_budget=0.4, task_id=None,
                 ledger=None, max_panelists=3, run_convergence=False,
-                convergence_model=None):
+                convergence_model=None, claim_polarity=None):
     """Rotating panel of independent cheap takes + 1 structured judge verdict.
 
     panel is an ordered pool; members that fail are replaced by the next model
@@ -620,7 +646,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     convergence_spec = None
     if run_convergence:
         spec_model = convergence_model or judge
-        tally = tally_convergence(panel_results)
+        tally = tally_convergence(panel_results, claim_polarity=claim_polarity)
         spec = run_convergence_specialist(
             transport, api_key, governor, panel_results, spec_model,
             max_tokens=judge_max_tokens, reasoning_effort=reasoning_effort,

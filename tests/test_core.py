@@ -178,6 +178,37 @@ class ConvergenceTests(unittest.TestCase):
         self.assertEqual(tally["converged_claims"], 1)
         self.assertEqual(tally["convergence_rate"], 0.5)
 
+    def test_reassurance_claims_excluded_from_gate(self):
+        """Identical substance on a reassurance claim encoded with opposite real
+        polarity (statement-truth vs defect-presence) must NOT split the tally:
+        reassurance claims are excluded from the convergence gate."""
+        # c1 is a defect claim both agree on; c2 is reassurance: one model reads
+        # real:true as "the correctness statement holds", the other as "no defect"
+        # -- i.e. they AGREE substantively but encode it oppositely.
+        a = {"c1": {"real": True, "confidence": 0.9},
+             "c2": {"real": True, "confidence": 0.99}}   # statement-truth convention
+        b = {"c1": {"real": True, "confidence": 0.85},
+             "c2": {"real": False, "confidence": 0.99}}  # defect-presence convention
+        tally = tally_convergence([{"model": P1, "content": __import__("json").dumps(a)},
+                                   {"model": P2, "content": __import__("json").dumps(b)}],
+                                  claim_polarity={"c2": "reassurance"})
+        self.assertTrue(tally["converged"], "reassurance split must not block convergence")
+        self.assertEqual(tally["converged_claims"], 1)
+        self.assertEqual(tally["total_claims"], 1, "only defect claims gate the tally")
+        self.assertEqual(tally["convergence_rate"], 1.0)
+        self.assertIn("c2", tally["reassurance"])
+        self.assertIn("excluded", tally["reassurance"]["c2"]["note"])
+
+    def test_undeclared_reassurance_claim_still_gates(self):
+        """Without a claim_polarity declaration the claim is treated as a defect
+        proposition (real:true = defect present), so opposite real votes split."""
+        a = {"c1": {"real": True, "confidence": 0.9}}
+        b = {"c1": {"real": False, "confidence": 0.8}}
+        tally = tally_convergence([{"model": P1, "content": __import__("json").dumps(a)},
+                                   {"model": P2, "content": __import__("json").dumps(b)}])
+        self.assertFalse(tally["converged"])
+        self.assertEqual(tally["total_claims"], 1)
+
     def test_extract_claim_verdicts_ignores_non_claim_json(self):
         self.assertEqual(extract_claim_verdicts('{"verdict":"x","note":"y"}'), {})
         self.assertEqual(extract_claim_verdicts("no json here"), {})
