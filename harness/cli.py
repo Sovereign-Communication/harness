@@ -28,6 +28,10 @@ import uuid
 from ._http import HttpTransport
 from .apply import ApplyEngine
 from .bench import load_manifest, run_bench
+from .claims import (
+    build_claims_prompt, lint_claims, load_claims_manifest,
+    load_definitions_file, parse_claims,
+)
 from .config import load_settings, resolve_api_key
 from .core import (
     HarnessError, SpendGovernor, eprint, panel_judge, discover_free_models,
@@ -66,17 +70,44 @@ def _router(settings):
 
 
 def _cmd_verify(opts, settings):
-    api_key, gov = _governor(settings)
-    ledger = AutonomyLedger(settings.ledger_path)
-    if opts.prompt_file:
+    # P0 structured-claims mode: lint + auto-expand BEFORE any network call, so
+    # an ungrounded claim is rejected without spending a cent.
+    claims = None
+    claims_lint = None
+    prompt = None
+    if opts.claims_file:
+        if not opts.source_file:
+            raise HarnessError("verify --claims-file requires --source-file "
+                               "(the verbatim code window the panel will review).")
+        manifest_ctx, claims = load_claims_manifest(opts.claims_file)
+        with open(opts.source_file, "r", encoding="utf-8") as f:
+            quoted = f.read()
+        defs = load_definitions_file(opts.definitions_file) if opts.definitions_file else {}
+        context = opts.claim_context if opts.claim_context is not None else manifest_ctx
+        prompt, claims_lint = build_claims_prompt(claims, quoted, source_index=defs,
+                                                  context=context)
+        if not claims_lint["ok"]:
+            for issue in claims_lint["issues"]:
+                eprint(f"[claims-lint] {issue['severity'].upper()} "
+                       f"{issue['code']}: {issue['message']}")
+            _emit({"status": "rejected", "lint": claims_lint}, opts.out)
+            sys.exit(2)
+        # structured-claims mode always runs the convergence gate (deterministic
+        # tally) and derives the polarity map from the manifest kinds.
+        opts.converge = True
+        opts.reassurance_claims = ",".join(c.claim_id for c in claims
+                                           if c.kind == "reassurance")
+    elif opts.prompt_file:
         with open(opts.prompt_file, "r", encoding="utf-8") as f:
             prompt = f.read()
     elif opts.prompt:
         prompt = opts.prompt
     else:
-        raise HarnessError("verify requires --prompt-file or --prompt")
+        raise HarnessError("verify requires --prompt-file/--prompt or --claims-file.")
     if not prompt.strip():
         raise HarnessError("prompt is empty.")
+    api_key, gov = _governor(settings)
+    ledger = AutonomyLedger(settings.ledger_path)
     result = panel_judge(
         transport=HttpTransport(), api_key=api_key, governor=gov, prompt=prompt,
         panel=(opts.panel or ",".join(settings.panel_pool)).split(","),
@@ -90,7 +121,35 @@ def _cmd_verify(opts, settings):
         convergence_model=opts.convergence_model or settings.convergence_model,
         claim_polarity={cid.strip(): "reassurance" for cid in
                         (opts.reassurance_claims or "").split(",") if cid.strip()})
+    if claims_lint is not None:
+        result["claims_grounding"] = {
+            "ok": claims_lint["ok"],
+            "issues": claims_lint["issues"],
+            "expansions": claims_lint["expansions"],
+        }
     _emit(result, opts.out)
+
+
+def _cmd_lint_claims(opts, settings=None):
+    """Hermetic claim linting: no network, no key. Exits 2 on error issues."""
+    manifest_ctx, claims = load_claims_manifest(opts.claims_file)
+    with open(opts.source_file, "r", encoding="utf-8") as f:
+        quoted = f.read()
+    defs = load_definitions_file(opts.definitions_file) if opts.definitions_file else {}
+    context = opts.claim_context if opts.claim_context is not None else manifest_ctx
+    prompt, report = build_claims_prompt(claims, quoted, source_index=defs,
+                                         context=context)
+    out = {"ok": report["ok"], "issues": report["issues"],
+           "expansions": report["expansions"],
+           "window_lines": len(quoted.splitlines()) if quoted.strip() else 0}
+    if opts.show_prompt:
+        out["prompt"] = prompt
+    _emit(out, opts.out)
+    for issue in report["issues"]:
+        eprint(f"[claims-lint] {issue['severity'].upper()} "
+               f"{issue['code']}: {issue['message']}")
+    if not report["ok"]:
+        sys.exit(2)
 
 
 def _cmd_apply(opts, settings):
@@ -241,6 +300,14 @@ def main(argv=None):
     pv = sub.add_parser("verify", help="Panel + judge verification (back-compat with fusion_lite.py)")
     pv.add_argument("--prompt-file")
     pv.add_argument("--prompt")
+    pv.add_argument("--claims-file", default=None,
+                    help="JSON claims manifest (P0 self-grounding); pairs with --source-file")
+    pv.add_argument("--source-file", default=None,
+                    help="verbatim code window the panel reviews (line numbers = source_refs)")
+    pv.add_argument("--definitions-file", default=None,
+                    help="JSON map identifier -> verbatim definition for auto-expansion")
+    pv.add_argument("--claim-context", default=None,
+                    help="context prose naming identifiers; overrides the manifest 'context' key")
     pv.add_argument("--panel")
     pv.add_argument("--judge")
     pv.add_argument("--max-tokens", type=int, default=None)
@@ -327,6 +394,16 @@ def main(argv=None):
     pb.add_argument("--max-rounds", type=int, default=None)
     pb.add_argument("--out", default=None)
 
+    plint = sub.add_parser("lint-claims",
+                           help="Lint a claims manifest against its quoted source "
+                                "(hermetic: no network)")
+    plint.add_argument("--claims-file", required=True)
+    plint.add_argument("--source-file", required=True)
+    plint.add_argument("--definitions-file", default=None)
+    plint.add_argument("--claim-context", default=None)
+    plint.add_argument("--show-prompt", action="store_true")
+    plint.add_argument("--out", default=None)
+
     sub.add_parser("spend", help="Key identity & spend status")
 
     opts = ap.parse_args(args)
@@ -335,6 +412,8 @@ def main(argv=None):
     try:
         if opts.command == "verify":
             _cmd_verify(opts, settings)
+        elif opts.command == "lint-claims":
+            _cmd_lint_claims(opts, settings)
         elif opts.command == "apply":
             _cmd_apply(opts, settings)
         elif opts.command == "continue":

@@ -126,6 +126,10 @@ as its working directory.
 # Verification: rotating panel + structured judge verdict (agreement/confidence/defer)
 harness verify --prompt-file question.txt --out verdict.json
 
+# Self-grounding claim lint (hermetic, no network): reject ungrounded claims
+# and preview the auto-expanded source the panel would see
+harness lint-claims --claims-file claims.json --source-file window.txt --definitions-file defs.json --show-prompt
+
 # Scoped code edit with verify gate, retry, per-round consent, and deferral
 harness apply --file core/src/store/outbox.rs \
   --instruction "Verify flush_on_connect() persists all peers" \
@@ -217,6 +221,57 @@ This is what made the SCMessenger audits trustworthy: a judge self-reporting
 `0.9–0.95` confidence is weaker than **5/5 panel agreement on specific
 claims** — the former is opinion, the latter is a count.
 
+## Self-grounding claims (P0)
+
+The consensus machinery fixes *how* the panel votes, but not *what* it votes on.
+The SCMessenger 04b lesson: a claim that asserted "no upper bound / no size
+cap" passed **5/5** because the real cap (`MAX_SKIP_KEYS = 256`) lived in a
+callee (`get_message_key`) the panel never saw. Unanimity on a premise the
+panel cannot check is worth nothing. P0 makes every premise checkable, or
+rejects the claim before any model is called.
+
+Claims are authored as a JSON **manifest** with `source_refs` (1-based lines
+into the verbatim quoted window), a `definitions` index for out-of-window
+identifiers, and an optional `context`:
+
+```json
+{
+  "context": "`get_message_key` advances the receiving chain.",
+  "claims": [
+    {"id": "claim_1",
+     "text": "DEFECT: unbounded gap lets a peer force unbounded skipped-key growth",
+     "kind": "defect",
+     "source_refs": [6]}
+  ]
+}
+```
+
+`harness verify --claims-file claims.json --source-file window.txt
+--definitions-file defs.json` runs the **lint before any network call** — an
+ungrounded claim exits 2 with a `rejected` payload and never spends a cent.
+`harness lint-claims` runs the lint alone, hermetically, with `--show-prompt`
+to preview the exact prompt the panel would see.
+
+Three deterministic rules:
+
+- **R1 ungrounded-assertion** — a claim using a load-bearing absence/universal
+  word (`no cap`, `unbounded`, `never`, `always`, `only`) must cite at least
+  one `source_ref` into the window, or it is rejected.
+- **R2 out-of-window-ref** — every `source_ref` must be a real line in the
+  quoted window (auto-expansions are appended *after* the window so line
+  numbers stay stable).
+- **R3 contradicted-by-source** — an absence claim ("no cap", "unbounded")
+  whose auto-resolved definition shows a bound (`MAX_*`, `len() > MAX_`) is
+  rejected with the evidence quoted.
+
+**Auto-expansion:** identifiers referenced by the claims/context that exist in
+the `definitions` index but are *called, not defined*, in the window (like
+`get_message_key` or `MAX_SKIP_KEYS`) are appended verbatim, deduplicated and
+transitive over constants, so the panel always sees the definition that
+grounds the premise. Unresolvable backticked identifiers are warnings, not
+errors. `expansions` and `issues` are echoed on the result as
+`claims_grounding`.
+
 ## The sovereignty model
 
 Most "consent" gates are theater — models are compliance-trained and will say
@@ -258,7 +313,7 @@ yes. Harness treats that as a bug to design around:
 ```bash
 python -m unittest tests.test_core tests.test_ledger tests.test_consent \
   tests.test_router tests.test_apply tests.test_mcp tests.test_extra \
-  tests.test_byok tests.test_bench
+  tests.test_byok tests.test_bench tests.test_claims
 ```
 
 91 hermetic tests — no network, no key. They pin: per-token pricing (regression
