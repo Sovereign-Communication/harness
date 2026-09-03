@@ -34,6 +34,15 @@ VERIFY_TIMEOUT = 300
 VERIFY_FEEDBACK_CHARS = 6000
 MAX_APPLY_ROUNDS = 3
 CAPABILITY_MARKER = "HARNESS_DEFER:"
+READY_MARKER = "HARNESS_READY:"
+
+_READY_INSTRUCTION = (
+    "Your response MUST begin with exactly one line of the form "
+    "'HARNESS_READY: confident' or 'HARNESS_READY: defer'. Declare "
+    "'HARNESS_READY: defer' (with a short reason on that same line) if you are "
+    "not certain you can complete this change correctly -- do not guess. "
+    "Declare 'HARNESS_READY: confident' only if you are sure, then output the "
+    "COMPLETE new file content on the lines after that marker.")
 
 _DEFER_INSTRUCTION = (
     "Do your best and assume nothing. You have no file or web access; the file "
@@ -82,6 +91,27 @@ def _extract_file_content(text):
     return text
 
 
+def _parse_ready(content):
+    """Parse the inline HARNESS_READY verdict from the first line.
+
+    Returns (decision, reason, rest) where decision is 'confident', 'defer', or
+    'missing' (the model did not emit the marker; treat as confident with a
+    warning so the verify gate + DEFER backstop still protect us). rest is the
+    content with the marker line removed.
+    """
+    if not content:
+        return "missing", "", content or ""
+    first, _, rest = content.partition("\n")
+    line = first.strip()
+    if line.startswith(READY_MARKER):
+        decision_raw = line[len(READY_MARKER):].strip()
+        decision, _, reason = decision_raw.partition(" ")
+        decision = decision.strip().lower()
+        if decision in ("confident", "defer"):
+            return decision, reason.strip(), rest
+    return "missing", "", content
+
+
 def _atomic_write(path, content):
     d = os.path.dirname(os.path.abspath(path)) or "."
     fd, tmp = tempfile.mkstemp(prefix=".harness-", suffix=".tmp", dir=d)
@@ -127,6 +157,8 @@ class ApplyEngine:
             "",
             f"INSTRUCTION: {instruction}",
             f"EDIT SNIPPET (intent anchor): {edit_snippet or 'none'}",
+            "",
+            _READY_INSTRUCTION,
             "",
             _DEFER_INSTRUCTION,
             "",
@@ -221,6 +253,7 @@ class ApplyEngine:
         history = list(continuation.get("history") or [])
         current_content = original
         failed_models = set()
+        deferred_models = {}
         rotations = 0
         pp, cp = self.governor.fetch_pricing([model])[model]
 
@@ -266,6 +299,8 @@ class ApplyEngine:
             resp = None
             content = None
             cost = 0.0
+            ready = "missing"
+            last_defer_reason = None
             model_used = None
             while attempt_model is not None:
                 prompt = self._apply_prompt(file_path, instruction, edit_snippet,
@@ -295,17 +330,50 @@ class ApplyEngine:
                         rotations += 1
                         eprint(f"[apply] {attempt_model} is BYOK-routed (paid); recorded and rotating.")
                     else:
-                        model_used = attempt_model
-                        break
+                        ready, ready_reason, content = _parse_ready(content)
+                        if ready == "defer":
+                            self.ledger.append("readiness", task_id=task_id,
+                                               model=attempt_model, round=round_no,
+                                               decision="defer")
+                            # The model declines on capability grounds; rotate to the
+                            # next pool model before accepting the deferral.
+                            deferred_models[attempt_model] = ready_reason
+                            last_defer_reason = ready_reason or "model declared not ready"
+                            rotations += 1
+                            eprint(f"[apply] {attempt_model} declares HARNESS_READY: defer "
+                                   f"({(ready_reason or '')[:70]}) -- rotating.")
+                        else:
+                            if ready == "missing":
+                                eprint(f"[apply] {attempt_model} did not emit HARNESS_READY; "
+                                       f"treating as confident (verify + DEFER still guard).")
+                            else:
+                                self.ledger.append("readiness", task_id=task_id,
+                                                   model=attempt_model, round=round_no,
+                                                   decision="confident")
+                            model_used = attempt_model
+                            break
                 if rotations > max_rot:
                     break
                 attempt_model = None
                 for m_ in candidates:
-                    if m_ not in failed_models:
+                    if m_ not in failed_models and m_ not in deferred_models:
                         attempt_model = m_
                         break
 
             if model_used is None:
+                if last_defer_reason is not None:
+                    # Every reachable model declined; accept the deferral.
+                    self.ledger.append("defer_midtask", task_id=task_id, category="readiness",
+                                       reason=last_defer_reason, model=model or attempt_model)
+                    rounds.append({"round": round_no, "model": model or attempt_model,
+                                   "status": "deferred", "reason": last_defer_reason,
+                                   "cost": 0.0, "verify_output": ""})
+                    history.append({"round": round_no, "model": model or attempt_model,
+                                    "status": "deferred", "reason": last_defer_reason})
+                    return self._defer_result(
+                        task_id=task_id, file_path=file_path, category="readiness",
+                        reason=last_defer_reason, remaining_scope=instruction,
+                        rounds=rounds, history=history, cost=self.governor.spent)
                 rounds.append({"round": round_no, "model": model or attempt_model,
                                "status": "api_error",
                                "error": resp.get("error", {}).get("message", str(resp))
@@ -363,7 +431,7 @@ class ApplyEngine:
 
             rc, out = self.run_verify(verify_cmd)
             self.ledger.append("verify_round", task_id=task_id, round=round_no,
-                               passed=(rc == 0), model=model_used)
+                               passed=(rc == 0), model=model_used, readiness=ready)
             if rc == 0:
                 if not changed:
                     rounds.append({"round": round_no, "model": model_used, "status": "vacuous",

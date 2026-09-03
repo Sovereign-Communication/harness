@@ -73,6 +73,48 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(r["mean_verify_rounds"], 1.0)
         self.assertFalse(r["consent_looks_degenerate"])
 
+    def test_calibration_tracks_readiness_vs_verify(self):
+        """Join HARNESS_READY: confident verdicts with the same-round verify outcome."""
+        l = self.ledger
+        # coder_a: confident twice, both passed -> well-calibrated
+        l.append("readiness", task_id="t1", model="coder_a", round=1, decision="confident")
+        l.append("verify_round", task_id="t1", round=1, passed=True, model="coder_a",
+                 readiness="confident")
+        l.append("readiness", task_id="t2", model="coder_a", round=1, decision="confident")
+        l.append("verify_round", task_id="t2", round=1, passed=True, model="coder_a",
+                 readiness="confident")
+        # coder_b: confident twice, both failed -> overconfident
+        l.append("readiness", task_id="t3", model="coder_b", round=1, decision="confident")
+        l.append("verify_round", task_id="t3", round=1, passed=False, model="coder_b",
+                 readiness="confident")
+        l.append("readiness", task_id="t4", model="coder_b", round=1, decision="confident")
+        l.append("verify_round", task_id="t4", round=1, passed=False, model="coder_b",
+                 readiness="confident")
+        # coder_c: deferred every time -> no verify join, but defer counted
+        l.append("readiness", task_id="t5", model="coder_c", round=1, decision="defer")
+        r = l.participation_report()
+        cal = r["calibration"]
+        self.assertEqual(cal["coder_a"]["confidence_precision"], 1.0)
+        self.assertEqual(cal["coder_b"]["confidence_precision"], 0.0)
+        self.assertEqual(cal["coder_c"]["defer"], 1)
+        self.assertIsNone(cal["coder_c"]["confidence_precision"])
+        self.assertEqual(r["confidence_precision"], round(2 / 4, 3))
+        self.assertIn("coder_b", r["underconfident_or_overconfident"])
+        self.assertNotIn("coder_a", r["underconfident_or_overconfident"])
+
+    def test_calibration_ignores_unmatched_readiness(self):
+        """A confident verdict with no same-round verify outcome does not count as pass."""
+        l = self.ledger
+        l.append("readiness", task_id="t1", model="coder", round=1, decision="confident")
+        # verify_round for a different round -> no join
+        l.append("verify_round", task_id="t1", round=2, passed=False, model="coder",
+                 readiness="confident")
+        r = l.participation_report()
+        cal = r["calibration"]["coder"]
+        self.assertEqual(cal["confident"], 1)
+        self.assertEqual(cal["confident_verified"], 0)
+        self.assertIsNone(cal["confidence_precision"])
+
     def test_degenerate_consent_flagged(self):
         l = self.ledger
         for i in range(10):

@@ -246,6 +246,61 @@ class ApplyTests(unittest.TestCase):
         self.assertIn(CODER_A, used_models)
         self.assertNotIn(APPLY, used_models)
 
+    # ---- readiness verdict (forced self-check) ----
+    def test_ready_defer_rotates_to_next_model(self):
+        p = self.make_file()
+        fake, _, ledger, engine = self.make_env(
+            posts=[comp("HARNESS_READY: defer cannot verify timing safety\n"),
+                   comp("HARNESS_READY: confident\n" + CHANGED)],
+            run=scripted_run([(0, "")]),
+            router_kw={"apply_pool": [CODER_A, CODER_B]})
+        result = engine.apply_edit(task_id="t1", file_path=p, instruction="change",
+                                   verify_cmd="check", require_consent=False,
+                                   max_rotations=3)
+        self.assertEqual(result["status"], "ok")
+        # the deferring model rotated away; a pool model completed the work
+        ready_events = [e for e in ledger.entries() if e["event"] == "readiness"]
+        self.assertEqual([e["decision"] for e in ready_events], ["defer", "confident"])
+
+    def test_ready_defer_all_models_accepts_deferral(self):
+        p = self.make_file()
+        fake, _, ledger, engine = self.make_env(
+            posts=[comp("HARNESS_READY: defer not qualified\n"),
+                   comp("HARNESS_READY: defer still not qualified\n")],
+            router_kw={"apply_pool": [CODER_A]})
+        result = engine.apply_edit(task_id="t1", file_path=p, instruction="change",
+                                   verify_cmd="check", require_consent=False,
+                                   max_rotations=3)
+        self.assertEqual(result["status"], "deferred")
+        self.assertEqual(result["category"], "readiness")
+        self.assertIn("not qualified", result["reason"])
+        events = [e["event"] for e in ledger.entries()]
+        self.assertIn("defer_midtask", events)
+
+    def test_ready_confident_proceeds(self):
+        p = self.make_file()
+        fake, _, ledger, engine = self.make_env(
+            posts=[comp("HARNESS_READY: confident\n" + CHANGED)],
+            run=scripted_run([(0, "")]))
+        result = engine.apply_edit(task_id="t1", file_path=p, instruction="change",
+                                   verify_cmd="check", require_consent=False)
+        self.assertEqual(result["status"], "ok")
+        ready = [e for e in ledger.entries() if e["event"] == "readiness"]
+        self.assertEqual(ready[0]["decision"], "confident")
+
+    def test_ready_confident_that_fails_verify_counts_in_calibration(self):
+        p = self.make_file()
+        fake, _, ledger, engine = self.make_env(
+            posts=[comp("HARNESS_READY: confident\n" + CHANGED)],
+            run=scripted_run([(1, "boom")]))
+        result = engine.apply_edit(task_id="t1", file_path=p, instruction="change",
+                                   verify_cmd="check", require_consent=False,
+                                   max_rounds=1)
+        self.assertEqual(result["status"], "verify_failed")
+        # verify_round carries the readiness for calibration join
+        vr = [e for e in ledger.entries() if e["event"] == "verify_round"][0]
+        self.assertEqual(vr["readiness"], "confident")
+
     # ---- continuation ----
     def test_continuation_resumes_deferred_task(self):
         p = self.make_file()

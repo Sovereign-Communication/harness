@@ -155,6 +155,18 @@ yes. Harness treats that as a bug to design around:
   remaining scope — instead of guessing when it hits its capability limit.
   Partial work is written, recorded (`defer_midtask`, category `capability`),
   and returned as a continuation the next model resumes.
+- **Forced self-check (readiness verdict):** the apply prompt requires the
+  model to open with `HARNESS_READY: confident|defer`. A `defer` rotates to the
+  next model *before* any code is written (and is accepted as a `readiness`
+  deferral only if the whole pool declines); `confident` proceeds into the
+  verify gate. This turns capability deferral from probabilistic to
+  deterministic.
+- **Per-model confidence calibration:** the ledger joins each `HARNESS_READY:
+  confident` verdict with the same-round verify outcome and reports a
+  `confidence_precision` per model (`participation_report` → `calibration`).
+  A model that is confident but fails verification is flagged as
+  **overconfident** (`underconfident_or_overconfident`) — the same degeneracy
+  warning as consent, applied to self-assessment.
 - **Fail-closed:** an unparseable consent response is treated as *defer*; paid
   BYOK-routed providers fail closed too.
 - **Verifiable participation:** every event is appended to a hash-chained JSONL
@@ -171,13 +183,15 @@ python -m unittest tests.test_core tests.test_ledger tests.test_consent \
   tests.test_byok
 ```
 
-72 hermetic tests — no network, no key. They pin: per-token pricing (regression
+79 hermetic tests — no network, no key. They pin: per-token pricing (regression
 on a ~1,000,000x undercount bug), no-tools payloads, hard/learned BYOK handling,
 key gates, mid-batch fail-closed, reasoning modes (incl. the
 retry-without-reasoning path), panel rotation, structured consensus parsing,
 ledger chain integrity and tamper detection, fail-closed consent, capability
-deferral, continuation resume, rotation on error, the vacuous-success guard,
-escalation gating, and the MCP handshake.
+deferral, the forced self-check (defer→rotate, all-defer accept, confident→proceed),
+confidence calibration (readiness vs verify join, unmatched-verdict handling),
+continuation resume, rotation on error, the vacuous-success guard, escalation
+gating, and the MCP handshake.
 
 ## License
 
