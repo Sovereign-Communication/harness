@@ -83,12 +83,18 @@ def _extract_json(text):
     return None
 
 
+REASONING_FALLBACK_PREFIX = "[NOTE] model returned no content"
+
+
 def extract_content_and_cost(resp):
     """Pull content, finish_reason, actual cost, is_byok from a completion.
 
     Falls back to the reasoning trace when a model emitted reasoning but no
     visible content — reasoning models otherwise "succeed" with empty output
-    and a paid call is discarded with nothing to show for it.
+    and a paid call is discarded with nothing to show for it. Callers that need
+    *real* content (e.g. apply, which writes output to a file) must treat
+    anything starting with REASONING_FALLBACK_PREFIX as "no usable output"
+    rather than content.
     """
     try:
         message = resp["choices"][0]["message"]
@@ -96,7 +102,7 @@ def extract_content_and_cost(resp):
         if not (content or "").strip():
             reasoning = message.get("reasoning")
             if (reasoning or "").strip():
-                content = ("[NOTE] model returned no content; showing reasoning trace instead.\n\n"
+                content = (REASONING_FALLBACK_PREFIX + "; showing reasoning trace instead.\n\n"
                            + reasoning)
         finish_reason = resp["choices"][0].get("finish_reason", "unknown")
         cost = resp.get("usage", {}).get("cost", 0.0)

@@ -23,7 +23,8 @@ import tempfile
 import uuid
 
 from .core import (
-    chat, extract_content_and_cost, HarnessError, estimate_prompt_tokens, _extract_json, eprint,
+    chat, extract_content_and_cost, HarnessError, estimate_prompt_tokens, _extract_json,
+    REASONING_FALLBACK_PREFIX, eprint,
 )
 from .consent import probe_consent, consent_renew
 
@@ -329,6 +330,12 @@ class ApplyEngine:
                         failed_models.add(attempt_model)
                         rotations += 1
                         eprint(f"[apply] {attempt_model} is BYOK-routed (paid); recorded and rotating.")
+                    elif not content or content.startswith(REASONING_FALLBACK_PREFIX):
+                        # No usable output: a reasoning-only response must NOT be
+                        # treated as file content (it would corrupt the target).
+                        failed_models.add(attempt_model)
+                        rotations += 1
+                        eprint(f"[apply] {attempt_model} returned no content (reasoning-only); rotating.")
                     else:
                         ready, ready_reason, content = _parse_ready(content)
                         if ready == "defer":
@@ -475,6 +482,8 @@ class ApplyEngine:
                 if is_byok and not self.governor.is_free(esc["model"]):
                     self.governor.record_byok(esc["model"])
                     content = None  # unusable: spend would be invisible
+                elif not content or content.startswith(REASONING_FALLBACK_PREFIX):
+                    content = None  # reasoning-only response is not usable content
                 self.governor.record_actual(cost, esc["model"])
                 new_content = _extract_file_content(content)
                 changed = new_content != current_content

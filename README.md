@@ -82,6 +82,43 @@ with `HARNESS_*` env overrides:
 OpenRouter). Hardcoded slugs go stale — the curated pools are validated live
 and rotated, with `openrouter/free` as the final free-router fallback.
 
+## Bench — test the free tier itself
+
+`harness bench` is a manifest-driven task runner whose purpose is to stress the
+free tier. Point it at a directory (or single JSON) of small, known-answer
+code tasks, and it dispatches each through the free-tier apply pipeline,
+reporting pass rate, real cost, rounds, rotations, and per-model confidence
+calibration. Each task's verify gate is the ground truth — "passed" means
+provably correct, not self-reported.
+
+```bash
+# Bundle 3 tiny tasks that ship with the repo
+harness bench bench/tasks
+```
+
+A task is one JSON file (or a `task.json` inside a per-task folder):
+
+```json
+```json
+{
+  "name": "add",
+  "file": "adds.py",
+  "instruction": "Fix adds.add(a, b) so it returns a + b instead of a - b.",
+  "verify": "python check.py"
+}
+```
+
+`file` is relative to the task's own folder, and `verify` runs with that folder
+as its working directory.
+
+- **Idempotent & re-runnable:** each target file is snapshotted on first run
+  and restored before every run, so the manifest never degrades.
+- **Consent off by default** (batch/CI mode); `--with-consent` turns on the
+  sovereignty checkbox per task.
+- **Feeds the autonomy ledger:** results land under task ids `bench/<name>`, so
+  confidence-calibration data accumulates across every bench run — `harness
+  ledger report` shows which free models actually know their limits.
+
 ## CLI
 
 ```bash
@@ -180,10 +217,10 @@ yes. Harness treats that as a bug to design around:
 ```bash
 python -m unittest tests.test_core tests.test_ledger tests.test_consent \
   tests.test_router tests.test_apply tests.test_mcp tests.test_extra \
-  tests.test_byok
+  tests.test_byok tests.test_bench
 ```
 
-79 hermetic tests — no network, no key. They pin: per-token pricing (regression
+84 hermetic tests — no network, no key. They pin: per-token pricing (regression
 on a ~1,000,000x undercount bug), no-tools payloads, hard/learned BYOK handling,
 key gates, mid-batch fail-closed, reasoning modes (incl. the
 retry-without-reasoning path), panel rotation, structured consensus parsing,
@@ -191,7 +228,7 @@ ledger chain integrity and tamper detection, fail-closed consent, capability
 deferral, the forced self-check (defer→rotate, all-defer accept, confident→proceed),
 confidence calibration (readiness vs verify join, unmatched-verdict handling),
 continuation resume, rotation on error, the vacuous-success guard, escalation
-gating, and the MCP handshake.
+gating, the MCP handshake, and the bench manifest/task runner.
 
 ## License
 

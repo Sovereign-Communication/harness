@@ -11,6 +11,7 @@ morph_lite.py, plus delegate_task.py's --verify/--max-rounds):
   harness ledger   autonomy ledger: tail | verify | report
   harness models   list live free OpenRouter models
   harness spend    key identity & spend status
+  harness bench    run a manifest of known-answer tasks through the free tier
 
 Free tier is the default: `--free`/HARNESS_USE_FREE routes everything through
 the best current free models, rotating and deferring instead of failing.
@@ -26,6 +27,7 @@ import uuid
 
 from ._http import HttpTransport
 from .apply import ApplyEngine
+from .bench import load_manifest, run_bench
 from .config import load_settings, resolve_api_key
 from .core import (
     HarnessError, SpendGovernor, eprint, panel_judge, discover_free_models,
@@ -182,6 +184,33 @@ def _cmd_ledger(opts, settings):
         _emit(ledger.participation_report(), None)
 
 
+def _cmd_bench(opts, settings):
+    api_key, gov = _governor(settings)
+    ledger = AutonomyLedger(settings.ledger_path)
+    engine = ApplyEngine(
+        HttpTransport(), api_key, gov, ledger, _router(settings),
+        default_require_consent=settings.default_require_consent,
+        default_renew_consent=settings.renew_consent,
+        reasoning_effort=settings.reasoning_effort,
+        reasoning_token_budget=settings.reasoning_token_budget,
+        default_max_rotations=settings.max_rotations,
+        default_task_max_cost=settings.task_max_cost)
+    tasks = load_manifest(opts.manifest)
+    for t in tasks:
+        if opts.require_consent:
+            t.setdefault("require_consent", True)
+        if opts.max_rounds:
+            t.setdefault("max_rounds", opts.max_rounds)
+    report = run_bench(engine, tasks)
+    _emit(report, opts.out)
+    st = report["bench"]["statuses"]
+    if st.get("ok", 0) < len(tasks):
+        eprint("[bench] some tasks did not pass; see report.")
+        if st.get("deferred") or st.get("consent_blocked"):
+            sys.exit(3)
+        sys.exit(2)
+
+
 def _cmd_models(opts, settings):
     api_key, gov = _governor(settings)
     transport = HttpTransport()
@@ -280,6 +309,13 @@ def main(argv=None):
     pm.add_argument("--limit", type=int, default=40)
     pm.add_argument("--all", action="store_true", help="list all live models, not just free")
 
+    pb = sub.add_parser("bench", help="Run a manifest of known-answer tasks through the free tier")
+    pb.add_argument("manifest", help="task manifest: a dir of task JSONs or a single JSON file")
+    pb.add_argument("--with-consent", dest="require_consent", action="store_true",
+                    help="ask consent before each task (default: off -- batch/CI mode)")
+    pb.add_argument("--max-rounds", type=int, default=None)
+    pb.add_argument("--out", default=None)
+
     sub.add_parser("spend", help="Key identity & spend status")
 
     opts = ap.parse_args(args)
@@ -300,6 +336,8 @@ def main(argv=None):
             _cmd_ledger(opts, settings)
         elif opts.command == "models":
             _cmd_models(opts, settings)
+        elif opts.command == "bench":
+            _cmd_bench(opts, settings)
         elif opts.command == "spend":
             _cmd_spend(settings)
     except HarnessError as e:

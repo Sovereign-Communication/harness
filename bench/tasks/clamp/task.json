@@ -1,0 +1,6 @@
+{
+  "name": "clamp",
+  "file": "clamp.py",
+  "instruction": "Implement clamp(x, lo, hi) so it clamps x into the inclusive range [lo, hi]. It currently just returns x.",
+  "verify": "python check.py"
+}

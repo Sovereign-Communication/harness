@@ -301,6 +301,25 @@ class ApplyTests(unittest.TestCase):
         vr = [e for e in ledger.entries() if e["event"] == "verify_round"][0]
         self.assertEqual(vr["readiness"], "confident")
 
+    # ---- reasoning-only responses are never written to the file ----
+    def test_reasoning_only_response_rotates_not_written(self):
+        """A model returning only hidden reasoning (no content) must not have its
+        reasoning trace written to the target file."""
+        p = self.make_file()
+        reason_only = comp(None, reasoning="I think a + b would be right...")
+        fake, _, _, engine = self.make_env(
+            posts=[reason_only, comp(CHANGED)],
+            run=scripted_run([(0, "")]),
+            router_kw={"apply_pool": [CODER_A, CODER_B]})
+        result = engine.apply_edit(task_id="t1", file_path=p, instruction="change",
+                                   verify_cmd="check", require_consent=False,
+                                   max_rotations=3)
+        self.assertEqual(result["status"], "ok")
+        # the reasoning trace never landed in the file
+        with open(p, encoding="utf-8") as f:
+            self.assertEqual(f.read(), CHANGED)
+        self.assertGreaterEqual(result["rotations"], 1)
+
     # ---- continuation ----
     def test_continuation_resumes_deferred_task(self):
         p = self.make_file()

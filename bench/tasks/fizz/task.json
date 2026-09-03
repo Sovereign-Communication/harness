@@ -1,0 +1,6 @@
+{
+  "name": "fizzbuzz",
+  "file": "fizz.py",
+  "instruction": "Make fizzbuzz(n) return FizzBuzz-style output: 'Fizz' for multiples of 3, 'Buzz' for multiples of 5, 'FizzBuzz' for multiples of both, else the number as a string.",
+  "verify": "python check.py"
+}
