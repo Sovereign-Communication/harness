@@ -320,8 +320,11 @@ class ApplyEngine:
                 head, _, tail = content.partition(CAPABILITY_MARKER)
                 partial = _extract_file_content(head).strip("\n")
                 info = _extract_json(tail)
-                remaining = (info or {}).get("remaining_scope") or instruction
-                reason = (info or {}).get("reason") or "model reached its capability limit"
+                # Models often defer in prose rather than strict JSON; keep the
+                # model's own words when we can't parse structured JSON.
+                prose = " ".join(tail.strip().split())[:200] if tail.strip() else ""
+                reason = (info or {}).get("reason") or prose or "model reached its capability limit"
+                remaining = (info or {}).get("remaining_scope") or prose or instruction
                 if partial and partial != current_content:
                     if backup is None:
                         backup = self._backup(file_path, task_id, f"r{round_no}-defer")

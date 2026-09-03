@@ -197,6 +197,18 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(len(fake.chat_posts()), 2, "no apply model call after deferral")
 
     # ---- capability-blocker dovetail ----
+    def test_capability_deferral_captures_prose_reason(self):
+        p = self.make_file()
+        fake, _, ledger, engine = self.make_env(
+            posts=[comp(PARTIAL + "HARNESS_DEFER: not qualified to make this constant-time")],
+            renew=False)
+        result = engine.apply_edit(task_id="t1", file_path=p,
+                                   instruction="fix the crypto", verify_cmd="check",
+                                   require_consent=False)
+        self.assertEqual(result["status"], "deferred")
+        self.assertEqual(result["category"], "capability")
+        self.assertIn("not qualified", result["reason"])
+
     def test_capability_deferral_preserves_partial(self):
         p = self.make_file()
         fake, _, ledger, engine = self.make_env(
