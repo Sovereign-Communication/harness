@@ -1,0 +1,6 @@
+{
+  "name": "leap",
+  "file": "leap.py",
+  "instruction": "Fix is_leap(year) to implement the full leap-year rule: divisible by 400, or divisible by 4 but not by 100. It currently only checks divisibility by 4.",
+  "verify": "python check.py"
+}

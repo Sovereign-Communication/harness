@@ -1,0 +1,6 @@
+{
+  "name": "balanced",
+  "file": "balanced.py",
+  "instruction": "Fix is_balanced(s) to return True only if parentheses are properly matched. The current version only checks that the total count is zero, so ')(' would incorrectly pass. A closing ')' must always match a preceding '('. Ignore characters that are not parentheses.",
+  "verify": "python check.py"
+}

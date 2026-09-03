@@ -1,0 +1,6 @@
+{
+  "name": "dedupe",
+  "file": "dedupe.py",
+  "instruction": "Make dedupe(xs) remove duplicates while preserving the order of first occurrence. It currently uses a set, which loses order.",
+  "verify": "python check.py"
+}

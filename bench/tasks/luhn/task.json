@@ -1,0 +1,6 @@
+{
+  "name": "luhn",
+  "file": "luhn.py",
+  "instruction": "Fix luhn_valid(number) to implement the Luhn checksum correctly. Validate the number with the Luhn algorithm: starting from the rightmost digit and moving left, double every second digit; if doubling makes it greater than 9, subtract 9; sum all digits; valid if the total is divisible by 10.",
+  "verify": "python check.py"
+}

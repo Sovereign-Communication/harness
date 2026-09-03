@@ -1,0 +1,6 @@
+{
+  "name": "median",
+  "file": "median.py",
+  "instruction": "Fix median(xs) to return the median of a list. For an even-length list, return the average of the two middle values. It currently picks only the lower middle for even lengths.",
+  "verify": "python check.py"
+}

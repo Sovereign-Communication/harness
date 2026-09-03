@@ -1,0 +1,6 @@
+{
+  "name": "reverse",
+  "file": "reverse.py",
+  "instruction": "Make reverse_str(s) return the reverse of s. It currently returns s unchanged.",
+  "verify": "python check.py"
+}

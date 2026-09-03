@@ -92,7 +92,8 @@ calibration. Each task's verify gate is the ground truth — "passed" means
 provably correct, not self-reported.
 
 ```bash
-# Bundle 3 tiny tasks that ship with the repo
+# 9 tiny tasks ship with the repo (add, clamp, fizzbuzz, reverse, dedupe,
+# leap, median, luhn, balanced) -- easy to medium difficulty
 harness bench bench/tasks
 ```
 
