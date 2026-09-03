@@ -31,7 +31,14 @@ HARD_MAX_COST = 0.10        # per-call ceiling can never be raised past this
 DEFAULT_MAX_COST = 0.02     # default per-call ceiling
 HARD_TASK_MAX_COST = 0.25   # per-task (multi-round apply) hard ceiling
 DEFAULT_TASK_MAX_COST = 0.05
-DEFAULT_MAX_TOKENS = 300
+# Verify token budget. On the free tier cost is $0 regardless, so this is
+# intentionally generous -- it is NOT a cost cap. It exists so long audit/
+# analysis prompts get a full answer instead of truncating (a 300-token default
+# made reasoning-heavy free models burn the budget on hidden thinking and
+# return empty content). Individual free models still impose their own hard
+# per-request output ceilings; anything above a provider's cap is simply
+# ignored/truncated by OpenRouter, so a large value here is safe.
+DEFAULT_MAX_TOKENS = 2048
 DEFAULT_APPLY_MAX_TOKENS = 4096
 
 # BYOK spend is invisible to the tracked key's balance (confirmed on the
