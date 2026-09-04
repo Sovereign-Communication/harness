@@ -25,6 +25,10 @@ OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
+# MorphLite-compatible transformation backend. Selecting the `morph` backend
+# explicitly opts into this model; ordinary Harness routing remains unchanged.
+MORPH_MODEL = "morph/morph-v3-fast"
+
 # Cost ceilings. The philosophy (inherited from fusion_lite.py): worst-case
 # cost is a *guarantee*, computed before any network call, not an estimate.
 HARD_MAX_COST = 0.10        # per-call ceiling can never be raised past this

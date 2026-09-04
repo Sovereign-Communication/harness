@@ -84,10 +84,10 @@ def _capability_context(settings, gov, ledger):
         return None, None
 
 
-def _order_pool(pool, profiles, report, task):
-    """Order a pool capability-first (free tier, cost equal). Empty-safe."""
+def _order_pool(pool, profiles, report, ledger, task, free_tier):
+    """Order a pool by observed-corrected reliability. Empty-safe."""
     from .capability import order_pool as _op
-    ordered = _op(pool, profiles, report, task=task, free_tier=True)
+    ordered = _op(pool, profiles, report, ledger=ledger, task=task, free_tier=free_tier)
     return ordered if ordered else pool
 
 
@@ -133,8 +133,9 @@ def _cmd_verify(opts, settings):
     profiles, report = _capability_context(settings, gov, ledger)
     panel = (opts.panel or ",".join(settings.panel_pool)).split(",")
     if profiles is not None:
-        panel = _order_pool(panel, profiles, report,
-                            "structured" if opts.converge else "default")
+        panel = _order_pool(panel, profiles, report, ledger,
+                            "structured" if opts.converge else "default",
+                            settings.use_free)
     result = panel_judge(
         transport=HttpTransport(), api_key=api_key, governor=gov, prompt=prompt,
         panel=panel,
@@ -148,7 +149,7 @@ def _cmd_verify(opts, settings):
         convergence_model=opts.convergence_model or settings.convergence_model,
         claim_polarity={cid.strip(): "reassurance" for cid in
                         (opts.reassurance_claims or "").split(",") if cid.strip()},
-        capability_profiles=profiles, report=report)
+        capability_profiles=profiles, report=report, free_tier=settings.use_free)
     if claims_lint is not None:
         result["claims_grounding"] = {
             "ok": claims_lint["ok"],
@@ -186,7 +187,10 @@ def _cmd_apply(opts, settings):
     profiles, report = _capability_context(settings, gov, ledger)
     router = _router(settings)
     if profiles is not None:
-        router.apply_pool = _order_pool(router.apply_pool, profiles, report, "code")
+        router.apply_pool = _order_pool(router.apply_pool, profiles, report, ledger,
+                                        "code", settings.use_free)
+        if opts.backend == "harness" and not opts.model and router.apply_pool:
+            router.apply_model = router.apply_pool[0]
     engine = ApplyEngine(
         HttpTransport(), api_key, gov, ledger, router,
         default_require_consent=settings.default_require_consent,
@@ -211,7 +215,8 @@ def _cmd_apply(opts, settings):
         reasoning_effort=opts.reasoning_effort,
         renew_consent=opts.renew_consent,
         max_rotations=opts.max_rotations,
-        continuation=continuation)
+        continuation=continuation, backend=opts.backend,
+        verify_only=opts.verify_only, max_lines=opts.max_lines)
     _emit(result, opts.out)
     if result["status"] == "verify_failed":
         sys.exit(2)
@@ -225,8 +230,15 @@ def _cmd_continue(opts, settings):
         continuation = json.load(f)
     api_key, gov = _governor(settings)
     ledger = AutonomyLedger(settings.ledger_path)
+    router = _router(settings)
+    profiles, report = _capability_context(settings, gov, ledger)
+    if profiles is not None and continuation.get("backend", opts.backend) == "harness":
+        router.apply_pool = _order_pool(router.apply_pool, profiles, report, ledger,
+                                        "code", settings.use_free)
+        if not opts.model and router.apply_pool:
+            router.apply_model = router.apply_pool[0]
     engine = ApplyEngine(
-        HttpTransport(), api_key, gov, ledger, _router(settings),
+        HttpTransport(), api_key, gov, ledger, router,
         default_require_consent=settings.default_require_consent,
         default_renew_consent=settings.renew_consent,
         reasoning_effort=settings.reasoning_effort,
@@ -240,7 +252,8 @@ def _cmd_continue(opts, settings):
         model=opts.model, max_tokens=opts.max_tokens,
         task_max_cost=opts.task_max_cost, allow_escalation=opts.allow_escalation,
         reasoning_effort=opts.reasoning_effort, renew_consent=opts.renew_consent,
-        max_rotations=opts.max_rotations, continuation=continuation)
+        max_rotations=opts.max_rotations, continuation=continuation,
+        backend=opts.backend, verify_only=opts.verify_only, max_lines=opts.max_lines)
     _emit(result, opts.out)
     if result["status"] == "verify_failed":
         sys.exit(2)
@@ -323,10 +336,8 @@ def _cmd_spend(settings):
 
 
 def _cmd_capabilities(opts, settings):
-    from .capability import (
-        ensure_profiles, capability_score, capability_fitness, composite_reliability,
-        probe_json_reliability,
-    )
+    from .capability import (ensure_profiles, model_reliability, capability_fitness,
+                             probe_json_reliability, capability_score)
     from .config import CAPABILITIES_PATH, CAPABILITIES_TTL
     api_key, gov = _governor(settings)
     ledger = AutonomyLedger(settings.ledger_path)
@@ -342,33 +353,28 @@ def _cmd_capabilities(opts, settings):
                 ordered_ids.append(mid)
 
     report = ledger.participation_report()
-    cal = report.get("calibration", {})
 
     def row(mid):
         p = profiles.get(mid)
         if p is None:
             return None
-        cap = round(capability_score(p), 3)
-        fit_structured = round(capability_fitness(p, "structured"), 3)
-        fit_code = round(capability_fitness(p, "code"), 3)
-        c = cal.get(mid, {})
-        rel = composite_reliability(
-            capability_fitness(p, "structured"),
-            c.get("confidence_precision"), c.get("success_rate"), c.get("samples", 0))
+        # Single owner: model_reliability computes everything from one place.
+        info = model_reliability(mid, p, report, ledger=ledger, task="structured")
         return {
             "model": mid, "free": p.free,
             "context": p.context_length, "max_source_tokens": p.max_source_tokens,
             "reasoning": p.supports_reasoning,
-            "json": round(p.declared_json, 2),
+            "json_declared": round(p.declared_json, 2),
+            "json_reliable": round(info["json_reliable"] or 0.0, 2),
             "structured_json": p.supports_structured_json,
-            "capability": cap,
-            "fitness_structured": fit_structured,
-            "fitness_code": fit_code,
-            "reliability_structured": round(rel, 3),
+            "capability": round(capability_score(p), 3),
+            "fitness_structured": round(info["capability"], 3),
+            "fitness_code": round(capability_fitness(p, "code"), 3),
+            "reliability_structured": round(info["reliability"], 3),
             "observed": {
-                "confidence_precision": c.get("confidence_precision"),
-                "success_rate": c.get("success_rate"),
-                "samples": c.get("samples", 0),
+                "confidence_precision": info["calibration"],
+                "success_rate": info["success"],
+                "samples": info["samples"],
             },
         }
 
@@ -380,10 +386,22 @@ def _cmd_capabilities(opts, settings):
 
     if opts.bench:
         bench_models = [r["model"] for r in rows if r["free"]]
+        # Persist probe results as model_result events so they feed observed
+        # json reliability and routing (the evidence loop), and probe reasoning
+        # models with reasoning on so the probe is fair to them.
         probe = probe_json_reliability(transport=HttpTransport(), api_key=api_key,
-                                       governor=gov, models=bench_models)
-        for r in rows:
-            r["probe"] = probe.get(r["model"])
+                                       governor=gov, models=bench_models,
+                                       ledger=ledger, profiles=profiles)
+        # Rebuild after persistence: the displayed reliability must include the
+        # evidence just collected, not the pre-probe snapshot.
+        report = ledger.participation_report()
+        refreshed_rows = []
+        for mid in ordered_ids:
+            r = row(mid)
+            if r is not None:
+                r["probe"] = probe.get(r["model"])
+                refreshed_rows.append(r)
+        rows = refreshed_rows
 
     out = {
         "captured_at": fetched_at, "refreshed": refreshed,
@@ -399,7 +417,7 @@ def _print_capabilities_table(out):
     if not rows:
         print("(no models in pools with capability profiles)")
         return
-    hdr = f"{'model':<42} {'ctx':>9} {'src':>9} {'rsn':>3} {'jsn':>4} {'cap':>5} {'f-str':>5} {'rel':>5}"
+    hdr = f"{'model':<42} {'ctx':>9} {'rsn':>3} {'jd':>4} {'jr':>4} {'cap':>5} {'f-str':>5} {'rel':>5}"
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
@@ -408,10 +426,12 @@ def _print_capabilities_table(out):
         if probe is not None and probe.get("calls"):
             probe_note = (f"  probe: json={probe['json_ok_rate']} "
                           f"correct={probe['correct_rate']} err={probe['errors']}")
-        print(f"{r['model']:<42} {r['context']:>9,} {r['max_source_tokens']:>9,} "
-              f"{'Y' if r['reasoning'] else 'n':>3} {r['structured_json'] and 'Y' or ('~' if r['json'] else 'n'):>4} "
-              f"{r['capability']:>5.2f} {r['fitness_structured']:>5.2f} {r['reliability_structured']:>5.2f}"
-              f"{probe_note}")
+        jd = r["json_declared"]
+        jr = r["json_reliable"]
+        print(f"{r['model']:<42} {r['context']:>9,} {'Y' if r['reasoning'] else 'n':>3} "
+              f"{jd:>4.2f} {jr:>4.2f} "
+              f"{r['capability']:>5.2f} {r['fitness_structured']:>5.2f} "
+              f"{r['reliability_structured']:>5.2f}{probe_note}")
 
 
 def main(argv=None):
@@ -466,6 +486,12 @@ def main(argv=None):
     pa.add_argument("--reasoning-effort", default=None,
                     choices=["auto", "off", "none", "low", "medium", "high", "on"])
     pa.add_argument("--max-rotations", type=int, default=None)
+    pa.add_argument("--backend", choices=["harness", "morph"], default="harness",
+                    help="transformation backend; 'morph' uses Morph V3 Fast's structured edit prompt")
+    pa.add_argument("--verify-only", action="store_true",
+                    help="return the proposed content without writing or running the verification gate")
+    pa.add_argument("--max-lines", type=int, default=500,
+                    help="per-file line ceiling (1-500)")
     pa.add_argument("--continue-from", default=None, help="resume a deferred task from state.json")
     pa.add_argument("--out", default=None)
 
@@ -473,6 +499,7 @@ def main(argv=None):
     pc.add_argument("--state", required=True, help="JSON state file from a deferred/verify_failed apply")
     pc.add_argument("--file", default=None)
     pc.add_argument("--instruction", default=None)
+    pc.add_argument("--edit-snippet", default=None)
     pc.add_argument("--verify", default=None)
     pc.add_argument("--max-rounds", type=int, default=3)
     pc.add_argument("--require-consent", dest="require_consent", action="store_true", default=None)
@@ -487,6 +514,12 @@ def main(argv=None):
     pc.add_argument("--reasoning-effort", default=None,
                     choices=["auto", "off", "none", "low", "medium", "high", "on"])
     pc.add_argument("--max-rotations", type=int, default=None)
+    pc.add_argument("--backend", choices=["harness", "morph"], default="harness",
+                    help="backend for a new continuation; saved continuation metadata takes precedence")
+    pc.add_argument("--verify-only", action="store_true",
+                    help="return the proposed content without writing or running the verification gate")
+    pc.add_argument("--max-lines", type=int, default=500,
+                    help="per-file line ceiling (1-500)")
     pc.add_argument("--out", default=None)
 
     po = sub.add_parser("offer", help="Ask a model for consent on a work item")

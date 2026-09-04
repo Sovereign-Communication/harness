@@ -187,8 +187,10 @@ class AutonomyLedger:
         # ---- observed success rate (verify gate outcomes, model_result joins) ----
         # success_rate = passes / (passes + fails) over every task a model ran,
         # using the verify_round outcome records (the same ground truth bench uses).
-        task_outcome = defaultdict(lambda: {"pass": 0, "fail": 0})  # model -> counts
-        model_events = defaultdict(int)  # model -> model_result sample count
+        task_outcome = defaultdict(lambda: {"pass": 0, "fail": 0})  # model -> code verify counts
+        structured_outcome = defaultdict(lambda: {"pass": 0, "fail": 0})
+        json_events = defaultdict(int)  # model -> JSON-expected model_result count
+        model_events = defaultdict(int)  # model -> all model_result sample count
         for e in events:
             ev = e["event"]
             m_ = e.get("model")
@@ -196,6 +198,13 @@ class AutonomyLedger:
                 task_outcome[m_]["pass" if e.get("passed") else "fail"] += 1
             elif ev == "model_result" and m_ is not None:
                 model_events[m_] += 1
+                if e.get("json_expected"):
+                    json_events[m_] += 1
+                # The live known-answer capability probe records `correct`; use
+                # it as structured-task ground truth rather than pretending a
+                # JSON-shaped but incorrect answer was a success.
+                if e.get("task_type") == "structured" and "correct" in e:
+                    structured_outcome[m_]["pass" if e.get("correct") else "fail"] += 1
 
         calibration = {}
         all_pass = all_fail = 0
@@ -218,6 +227,13 @@ class AutonomyLedger:
                 "confident_failed": fails,
                 "confidence_precision": round(passes / denom, 3) if denom else None,
                 "success_rate": round(to["pass"] / t_denom, 3) if t_denom else None,
+                "structured_success_rate": (
+                    round(structured_outcome[m_]["pass"] /
+                          (structured_outcome[m_]["pass"] + structured_outcome[m_]["fail"]), 3)
+                    if structured_outcome[m_]["pass"] + structured_outcome[m_]["fail"] else None),
+                "structured_samples": (structured_outcome[m_]["pass"] +
+                                        structured_outcome[m_]["fail"]),
+                "json_samples": json_events[m_],
                 "samples": model_events[m_],
             }
         report["calibration"] = calibration

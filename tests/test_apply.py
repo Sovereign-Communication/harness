@@ -13,6 +13,7 @@ APPLY = "deepseek/deepseek-chat"
 ESC = "qwen/qwen3-max"
 CODER_A = "cohere/north-mini-code:free"
 CODER_B = "z-ai/glm-5.2:free"
+MORPH = "morph/morph-v3-fast"
 
 ORIGINAL = "def add(a, b):\n    return a + b\n"
 CHANGED = "def add(a, b):\n    return a + b + 0\n"
@@ -351,6 +352,57 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(r2["task_id"], r1["task_id"])
         with open(p, encoding="utf-8") as f:
             self.assertEqual(f.read().strip(), CHANGED.strip())
+
+    # ---- MorphLite-compatible backend ----
+    def test_morph_verify_only_is_read_only(self):
+        p = self.make_file()
+        fake, _, ledger, engine = self.make_env(
+            posts=[comp(CHANGED)],
+            models=[m(APPLY), m(JUDGE), m(ESC), m(CODER_A), m(CODER_B), m(MORPH)])
+        verify_calls = []
+        engine.run_verify = lambda command: verify_calls.append(command)
+
+        result = engine.apply_edit(
+            task_id="morph-preview", file_path=p, instruction="add zero safely",
+            edit_snippet="return a + b + 0", verify_cmd="must-not-run",
+            require_consent=False, renew_consent=False, backend="morph",
+            verify_only=True, max_tokens=64)
+
+        self.assertEqual(result["status"], "preview")
+        self.assertEqual(result["backend"], "morph")
+        self.assertTrue(result["verify_only"])
+        self.assertEqual(result["proposed_content"], CHANGED)
+        self.assertIsNone(result["backup"])
+        self.assertEqual(verify_calls, [])
+        with open(p, encoding="utf-8") as f:
+            self.assertEqual(f.read(), ORIGINAL)
+        payload = fake.payloads()[0]
+        self.assertEqual(payload["model"], MORPH)
+        prompt = payload["messages"][0]["content"]
+        self.assertIn("<instruction>add zero safely</instruction>", prompt)
+        self.assertIn("<code>" + ORIGINAL + "</code>", prompt)
+        self.assertIn("<update>return a + b + 0</update>", prompt)
+        self.assertEqual([e["event"] for e in ledger.entries()],
+                         ["dispatch_start", "model_result", "complete"])
+
+    def test_morph_verify_only_capability_deferral_does_not_write_partial(self):
+        p = self.make_file()
+        _, _, _, engine = self.make_env(
+            posts=[comp(PARTIAL + "HARNESS_DEFER: finish the timing proof")],
+            models=[m(APPLY), m(JUDGE), m(ESC), m(CODER_A), m(CODER_B), m(MORPH)])
+
+        result = engine.apply_edit(
+            task_id="morph-defer-preview", file_path=p, instruction="fix timing safety",
+            require_consent=False, renew_consent=False, backend="morph",
+            verify_only=True, max_tokens=64)
+
+        self.assertEqual(result["status"], "deferred")
+        self.assertTrue(result["verify_only"])
+        self.assertEqual(result["continuation"]["backend"], "morph")
+        self.assertTrue(result["continuation"]["verify_only"])
+        self.assertIsNone(result.get("backup"))
+        with open(p, encoding="utf-8") as f:
+            self.assertEqual(f.read(), ORIGINAL)
 
     # ---- file safety ----
     def test_atomic_write_no_leftover_tmp(self):

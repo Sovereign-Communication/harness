@@ -531,7 +531,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                 reasoning_effort="auto", reasoning_token_budget=0.4, task_id=None,
                 ledger=None, max_panelists=3, run_convergence=False,
                 convergence_model=None, claim_polarity=None,
-                capability_profiles=None, report=None):
+                capability_profiles=None, report=None, free_tier=None):
     """Rotating panel of independent cheap takes + 1 structured judge verdict.
 
     panel is an ordered pool; members that fail are replaced by the next model
@@ -548,10 +548,12 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     # tier), using reliability as the tiebreaker. Degrades gracefully to the
     # given order if ordering empties the pool (e.g. all hard-gated out).
     if capability_profiles:
+        if free_tier is None:
+            raise ValueError("panel_judge requires the caller's explicit use_free flag")
         from .capability import order_pool
         task = "structured" if run_convergence else "default"
-        ordered = order_pool(panel_pool, capability_profiles, report,
-                             task=task, free_tier=True)
+        ordered = order_pool(panel_pool, capability_profiles, report, ledger=ledger,
+                             task=task, free_tier=free_tier)
         if ordered:
             panel_pool = ordered
 

@@ -4,16 +4,14 @@ feeds routing and the reliability score.
 Philosophy: capability is a *hypothesis* drawn from the live /models metadata
 (declared context length, reasoning support, structured-JSON support), and the
 ledger's observed behavior is the *evidence* that corrects it. A declared
-capability is a strong prior; `json_reliable = max(declared, observed)` is the
-bridge that keeps a model which reliably emits JSON in practice (like the free
-`north-mini-code` judge, which declares no structured output) from being
-misjudged on a stale declaration.
+capability is a prior; observed JSON and known-answer success update that prior
+in both directions, so a model that declares structured output but fails real
+calls is demoted while an undeclared model that reliably emits JSON can rise.
 
 Routing rule (per product direction): when cost is equal -- i.e. the whole free
-tier, where every model is $0 -- prefer the MORE capable model. So the free
-pool is ordered by capability score descending, then reliability descending as
-the tiebreaker. The paid tier keeps cheap-first (cost ascending, capability
-breaks cost ties).
+tier, where every model is $0 -- order by the corrected reliability view. The
+paid tier keeps cheap-first (cost ascending), with corrected reliability
+breaking cost ties.
 
 The capability score itself is task-aware: this is a text/code harness, so
 input modality confers no task capability, structured-JSON output does (that's
@@ -50,8 +48,10 @@ W_SUCC = 0.3
 # No-data prior: a model with no observed samples sits at this value for
 # calibration/success, and its effective weight is shrunk by n/(n+_SHRINK) so a
 # fresh model's reliability starts at its capability and converges to evidence.
+# _SHRINK=2: evidence converges quickly, so observed behavior (probe + ledger)
+# corrects an over-declared capability without needing many samples.
 NO_DATA_PRIOR = 0.5
-_SHRINK = 4
+_SHRINK = 2
 
 # ---- registry persistence ----------------------------------------------------
 DEFAULT_TTL = 24 * 3600  # refresh /models capabilities at most once / TTL
@@ -167,11 +167,15 @@ def context_score(context_length):
                     (math.log2(_CTX_CEIL) - math.log2(_CTX_FLOOR)))
 
 
-def capability_score(profile, json_weight=_W_JSON):
-    """Declared-capability hypothesis, 0..1 (task-agnostic default)."""
+def capability_score(profile, json_weight=_W_JSON, json_value=None):
+    """Declared-capability hypothesis, 0..1 (task-agnostic default).
+
+    `json_value` overrides the JSON term with an observed-corrected value (e.g.
+    `json_reliable`), so the score reflects what a model actually does, not just
+    what it declares."""
     c = context_score(profile.context_length)
     r = 1.0 if profile.supports_reasoning else 0.0
-    j = profile.declared_json
+    j = profile.declared_json if json_value is None else json_value
     # Re-normalize the remaining weight onto the provided json_weight so callers
     # can shift emphasis without changing the total.
     rest = 1.0 - json_weight
@@ -188,14 +192,10 @@ TASK_WEIGHTS = {
 }
 
 
-def capability_fitness(profile, task="default"):
+def capability_fitness(profile, task="default", json_value=None):
     """Task-aware capability. 'structured' = claims panel / judge (JSON-critical)."""
-    return capability_score(profile, json_weight=TASK_WEIGHTS.get(task, TASK_WEIGHTS["default"]))
-
-
-def fits_context(profile, source_tokens):
-    """Hard gate: can this model hold the quoted source window?."""
-    return source_tokens <= profile.max_source_tokens
+    return capability_score(profile, json_weight=TASK_WEIGHTS.get(task, TASK_WEIGHTS["default"]),
+                            json_value=json_value)
 
 
 # ------------------------- observed layer -------------------------------------
@@ -213,14 +213,18 @@ def observed_json_reliability(ledger, model_id):
 
 
 def json_reliable(profile, ledger, model_id):
-    """max(declared, observed) -- declared capability is the prior; observed
-    behavior updates it, so a model that emits JSON reliably in practice but
-    declares no structured output is not misjudged on a stale declaration."""
+    """Observed-corrected structured-JSON capability, 0..1.
+
+    Declared capability is the PRIOR; observed behavior (probe + model_result
+    events) UPDATES it -- upward for a model that emits JSON reliably in
+    practice but declares no structured output (the north-mini judge), downward
+    for a model that declares it but fails on real calls (probe-falsified GLM).
+    This is the capability<->reliability bridge that makes declared capability
+    a hypothesis corrected by evidence, in both directions."""
     declared = profile.declared_json if profile else 0.0
     observed = observed_json_reliability(ledger, model_id)
     if observed is None:
         return declared
-    # Observed evidence moves us: blend toward it by its sample weight.
     n = observed_samples(ledger, model_id)
     w = n / (n + _SHRINK)
     return _clamp01((1 - w) * declared + w * observed)
@@ -234,6 +238,38 @@ def observed_samples(ledger, model_id):
 
 def _shrink_weight(n):
     return n / (n + _SHRINK)
+
+
+def model_reliability(model_id, profile, report, ledger=None, task="default"):
+    """SINGLE OWNER of the per-model reliability computation.
+
+    Returns every component so routing, the CLI, and reports consume one
+    calculation. Structured tasks use observed-corrected JSON capability and
+    known-answer success from probe `model_result` events; code tasks use the
+    verify-gate success rate.
+    """
+    json_value = None
+    if task == "structured" and ledger is not None and profile is not None:
+        json_value = json_reliable(profile, ledger, model_id)
+    capability = capability_fitness(profile, task, json_value=json_value) if profile else 1.0
+    cal = (report or {}).get("calibration", {}).get(model_id, {})
+    calibration = cal.get("confidence_precision")
+    if task == "structured":
+        success = cal.get("structured_success_rate")
+        samples = cal.get("structured_samples", 0)
+    else:
+        success = cal.get("success_rate")
+        samples = cal.get("samples", 0)
+    return {
+        "model_id": model_id,
+        "capability": capability,
+        "json_reliable": (json_value if json_value is not None
+                           else (profile.declared_json if profile else None)),
+        "calibration": calibration,
+        "success": success,
+        "samples": samples,
+        "reliability": composite_reliability(capability, calibration, success, samples),
+    }
 
 
 def composite_reliability(capability, calibration, success, n_samples):
@@ -318,16 +354,27 @@ _PROBE_QUESTIONS = [
 
 
 def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
-                           reasoning_effort="off"):
+                           reasoning_effort=None, ledger=None, profiles=None,
+                           task_id=None):
     """Run a small known-answer JSON-emission probe over each model.
 
     Returns {model: {"calls", "json_ok_rate", "correct_rate", "errors"}}. Uses
     the harness's own `chat` (spend-governed, BYOK-guarded) so it is safe to run
-    on the free tier. `reasoning_effort="off"` keeps probe calls fast/cheap.
+    on the free tier. When a `ledger` is supplied, every call is persisted as a
+    `model_result` event (json_expected=True, json_ok/correct), so probe results
+    feed observed json reliability and routing -- the "prove it" evidence loop.
+    Reasoning models are probed WITH a reasoning effort (`low`) so the probe is
+    fair to them; non-reasoning models run with reasoning off.
     """
     from .core import chat, extract_content_and_cost, _extract_json
     results = {}
+    tid = task_id or "bench/probe"
     for m in models:
+        eff = reasoning_effort
+        if eff is None:
+            declares_reasoning = bool(profiles and profiles.get(m) and
+                                      profiles[m].supports_reasoning)
+            eff = "low" if declares_reasoning else "off"
         governor.check_byok(m)
         json_ok = 0
         correct = 0
@@ -335,18 +382,54 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
         calls = 0
         for q, want in _PROBE_QUESTIONS:
             calls += 1
-            status, resp = chat(transport, api_key, m,
-                                [{"role": "user", "content": q}], max_tokens,
-                                reasoning_effort, 0.4, governor)
-            if status != 200:
+            status = None
+            resp = {}
+            error_message = None
+            call_cost = 0.0
+            try:
+                status, resp = chat(transport, api_key, m,
+                                    [{"role": "user", "content": q}], max_tokens,
+                                    eff, 0.4, governor)
+            except Exception as exc:
+                error_message = str(exc)
+            if status == 200:
+                # Probe calls are ordinary governed calls: account for their
+                # reported cost before evaluating the response. The small
+                # fallback keeps the hermetic test seam compatible with minimal
+                # fake governors that only implement check_byok().
+                try:
+                    call_cost = float((resp.get("usage") or {}).get("cost") or 0.0)
+                except (AttributeError, TypeError, ValueError):
+                    call_cost = 0.0
+                record_actual = getattr(governor, "record_actual", None)
+                if record_actual is not None:
+                    record_actual(call_cost, m)
+            ok = False
+            corr = False
+            if status == 200:
+                try:
+                    content, *_ = extract_content_and_cost(resp)
+                    parsed = _extract_json(content) if content else None
+                    if isinstance(parsed, dict):
+                        ok = True
+                        corr = parsed.get("answer") == want
+                except Exception as exc:
+                    error_message = str(exc)
+            # A successful HTTP response with empty/non-JSON content is still a
+            # failed probe call. Record it as an error and continue to the next
+            # bounded question; never retry in a loop for malformed model output.
+            if status != 200 or not ok:
                 errors += 1
-                continue
-            content, *_ = extract_content_and_cost(resp)
-            parsed = _extract_json(content) if content else None
-            if parsed is not None:
+            if ok:
                 json_ok += 1
-                if parsed.get("answer") == want:
-                    correct += 1
+            if corr:
+                correct += 1
+            if ledger is not None:
+                ledger.append("model_result", task_id=tid, event_note="probe",
+                              model=m, task_type="structured", json_expected=True,
+                              json_ok=ok, correct=corr,
+                              status="ok" if status == 200 and ok else "error",
+                              error=error_message)
         results[m] = {
             "calls": calls, "errors": errors,
             "json_ok_rate": round(json_ok / calls, 3) if calls else None,
@@ -355,37 +438,28 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
     return results
 
 
-def order_pool(pool, profiles, report, task="default", free_tier=True):
-    """Order a model pool for routing.
+def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=None):
+    """Order a model pool for routing, driven by the observed-CORRECTED view.
 
-    Free tier (all $0, so cost is equal): MORE capable first -- sort by
-    capability fitness descending, then reliability descending as the tiebreak.
-    Paid tier: cost ascending first (cheap lane), capability breaks cost ties.
-    Models that fail the hard capability gate (fitness 0) are dropped.
+    Free tier (all $0, so cost is equal): sort by reliability descending, where
+    reliability embeds the observed-corrected capability (declared capability as
+    a prior, corrected by probe/ledger evidence) -- so a probe-falsified model
+    that merely *declares* capability no longer ranks first. Paid tier: cost
+    ascending first (cheap lane), reliability breaks cost ties. Models that fail
+    the hard capability gate (capability <= 0) are dropped.
     """
+    if free_tier is None:
+        raise ValueError("order_pool requires the caller's explicit use_free/free_tier flag")
     scored = []
     for m in pool:
         profile = (profiles or {}).get(m)
-        fitness = capability_fitness(profile, task) if profile else 1.0
-        if profile is not None and fitness <= 0:
+        info = model_reliability(m, profile, report, ledger, task)
+        if profile is not None and info["capability"] <= 0:
             continue  # hard gate
-        rel = _reliability_for(m, profile, report, task)
         price = (profile.prompt_price + profile.completion_price) if profile else 0.0
-        scored.append((m, fitness, rel, price))
+        scored.append((m, info["reliability"], info["capability"], price))
     if free_tier:
         scored.sort(key=lambda x: (-x[1], -x[2]))
     else:
         scored.sort(key=lambda x: (x[3], -x[1], -x[2]))
     return [m for m, _, _, _ in scored]
-
-
-def _reliability_for(model, profile, report, task):
-    """Per-model composite reliability for routing, from a participation report
-    plus the capability profile. Falls back to capability-only when no report."""
-    capability = capability_fitness(profile, task) if profile else 1.0
-    cal = (report or {}).get("calibration", {}).get(model, {})
-    return composite_reliability(
-        capability,
-        cal.get("confidence_precision"),
-        cal.get("success_rate"),
-        cal.get("samples", 0))

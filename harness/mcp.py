@@ -18,7 +18,7 @@ SERVER_VERSION = "0.1.0"
 
 class McpServer:
     def __init__(self, *, transport, api_key, governor, ledger, router, engine,
-                 max_panelists=3, stdin=None, stdout=None):
+                 max_panelists=3, use_free=True, stdin=None, stdout=None):
         self.transport = transport
         self.api_key = api_key
         self.governor = governor
@@ -26,8 +26,10 @@ class McpServer:
         self.router = router
         self.engine = engine
         self.max_panelists = max_panelists
+        self.use_free = use_free
         self.stdin = stdin or sys.stdin
         self.stdout = stdout or sys.stdout
+        self._capability = None  # lazily-built profiles; report is always fresh
 
     # ---------------- tool definitions ----------------
     def _tools(self):
@@ -64,6 +66,11 @@ class McpServer:
                     "renew_consent": {"type": "boolean", "description": "Re-check consent before each round (continued consensus)"},
                     "max_rotations": {"type": "integer", "description": "How many model rotations to allow on error"},
                     "reasoning_effort": {"type": "string", "enum": ["auto", "off", "none", "low", "medium", "high", "on"]},
+                    "model": {"type": "string", "description": "Explicit model override; otherwise the corrected apply route is used"},
+                    "backend": {"type": "string", "enum": ["harness", "morph"], "default": "harness", "description": "Use MorphLite-compatible structured editing when set to morph"},
+                    "verify_only": {"type": "boolean", "description": "Return the proposal without writing or running the verification gate"},
+                    "max_lines": {"type": "integer", "default": 500, "description": "Per-file line ceiling (1-500)"},
+                    "task_max_cost": {"type": "number", "description": "Per-task cost ceiling"},
                     "continuation": {"type": "object", "description": "State from a deferred run to resume"},
                     "task_id": {"type": "string"},
                 }, "required": ["instruction"]},
@@ -190,19 +197,49 @@ class McpServer:
                 },
             }
 
+    def _capability_context(self):
+        """Lazily build profiles for capability-aware routing and refresh the
+        ledger report on every invocation so new probe evidence is immediately
+        visible to MCP routing."""
+        if self._capability is None:
+            try:
+                from .capability import build_profiles_from_models
+                self._capability = build_profiles_from_models(self.governor.fetch_models())
+            except Exception:
+                self._capability = {}
+        return (self._capability or None, self.ledger.participation_report())
+
     def _invoke(self, name, args):
         if name == "panel_verify":
+            profiles, report = self._capability_context()
+            panel = (args.get("panel") or ",".join(self.router.panel_pool)).split(",")
+            if profiles is not None:
+                from .capability import order_pool as _op
+                ordered = _op(panel, profiles, report, ledger=self.ledger,
+                              task="default", free_tier=self.use_free)
+                if ordered:
+                    panel = ordered
             return panel_judge(
                 transport=self.transport, api_key=self.api_key, governor=self.governor,
                 prompt=args["prompt"],
-                panel=(args.get("panel") or ",".join(self.router.panel_pool)).split(","),
+                panel=panel,
                 judge=args.get("judge") or self.router.judge,
                 max_tokens=args.get("max_tokens"),
                 reasoning_effort=args.get("reasoning_effort", self.engine.reasoning_effort),
                 reasoning_token_budget=self.engine.reasoning_token_budget,
                 task_id=args.get("task_id"), ledger=self.ledger,
-                max_panelists=self.max_panelists)
+                max_panelists=self.max_panelists,
+                capability_profiles=profiles, report=report, free_tier=self.use_free)
         if name == "apply_edit":
+            profiles, report = self._capability_context()
+            if profiles is not None and args.get("backend", "harness") == "harness":
+                from .capability import order_pool as _op
+                ordered = _op(self.router.apply_pool, profiles, report,
+                              ledger=self.ledger, task="code", free_tier=self.use_free)
+                if ordered:
+                    self.router.apply_pool = ordered
+                    if not args.get("model"):
+                        self.router.apply_model = ordered[0]
             return self.engine.apply_edit(
                 task_id=args.get("task_id"),
                 file_path=args.get("file"),
@@ -211,11 +248,16 @@ class McpServer:
                 max_rounds=args.get("max_rounds", 3),
                 require_consent=args.get("require_consent"),
                 max_tokens=args.get("max_tokens") or 4096,
+                model=args.get("model"),
+                task_max_cost=args.get("task_max_cost"),
                 allow_escalation=args.get("allow_escalation"),
                 reasoning_effort=args.get("reasoning_effort"),
                 renew_consent=args.get("renew_consent"),
                 max_rotations=args.get("max_rotations"),
-                continuation=args.get("continuation"))
+                continuation=args.get("continuation"),
+                backend=args.get("backend", "harness"),
+                verify_only=bool(args.get("verify_only", False)),
+                max_lines=args.get("max_lines", 500))
         if name == "offer_work":
             return probe_consent(
                 transport=self.transport, api_key=self.api_key, governor=self.governor,
@@ -270,5 +312,5 @@ def main(argv=None):  # pragma: no cover - thin wiring
                          default_task_max_cost=settings.task_max_cost)
     server = McpServer(transport=transport, api_key=api_key, governor=governor,
                        ledger=ledger, router=router, engine=engine,
-                       max_panelists=settings.max_panelists)
+                       max_panelists=settings.max_panelists, use_free=settings.use_free)
     server.serve_forever()

@@ -26,6 +26,7 @@ from .core import (
     chat, extract_content_and_cost, HarnessError, estimate_prompt_tokens, _extract_json,
     REASONING_FALLBACK_PREFIX, eprint,
 )
+from .config import MORPH_MODEL
 from .consent import probe_consent, consent_renew
 
 MAX_FILE_LINES = 500
@@ -148,8 +149,29 @@ class ApplyEngine:
         self.default_task_max_cost = default_task_max_cost
 
     def _apply_prompt(self, file_path, instruction, edit_snippet, original, round_ctx=None,
-                      continuation=None):
+                      continuation=None, backend="harness"):
         lang = os.path.splitext(file_path)[1].lstrip(".")
+        if backend == "morph":
+            # Preserve MorphLite's contract while keeping the request inside the
+            # governed chat path: the model sees instruction/code/update tags and
+            # still gets Harness sovereignty, retry feedback, and cost guards.
+            parts = []
+            if continuation:
+                parts.append(_CONTINUATION_PREAMBLE.format(
+                    reason=continuation.get("reason") or "unknown",
+                    scope=continuation.get("remaining_scope") or "complete the change"))
+            parts.extend((
+                f"<instruction>{instruction}</instruction>",
+                f"<code>{original}</code>",
+                f"<update>{edit_snippet or instruction}</update>",
+            ))
+            if round_ctx:
+                parts.append(round_ctx)
+            parts.append(
+                "Return ONLY the complete transformed file content. Do not add markdown "
+                "or explanation. If you cannot complete the change correctly, return "
+                "HARNESS_READY: defer <reason> instead of guessing.")
+            return "\n\n".join(parts)
         lines = [
             "You are making a single, scoped code change.",
             f"File: {file_path} (language: {lang or 'text'})",
@@ -178,11 +200,14 @@ class ApplyEngine:
         return prompt
 
     def _defer_result(self, *, task_id, file_path, category, reason, remaining_scope,
-                      rounds, history, cost):
+                      rounds, history, cost, backend="harness", verify_only=False,
+                      max_lines=MAX_FILE_LINES, edit_snippet=None):
         return {
             "status": "deferred",
             "task_id": task_id,
             "category": category,
+            "backend": backend,
+            "verify_only": verify_only,
             "reason": reason,
             "file": file_path,
             "remaining_scope": remaining_scope,
@@ -191,6 +216,10 @@ class ApplyEngine:
             "continuation": {
                 "file_path": file_path,
                 "task_id": task_id,
+                "backend": backend,
+                "verify_only": verify_only,
+                "max_lines": max_lines,
+                "edit_snippet": edit_snippet,
                 "remaining_scope": remaining_scope,
                 "reason": reason,
                 "history": history,
@@ -202,16 +231,29 @@ class ApplyEngine:
                    require_consent=None, model=None, max_tokens=None,
                    task_max_cost=None, allow_escalation=None,
                    reasoning_effort=None, renew_consent=None,
-                   max_rotations=None, continuation=None):
+                   max_rotations=None, continuation=None, backend="harness",
+                   verify_only=False, max_lines=MAX_FILE_LINES):
         """Apply a scoped edit with a verification loop, sovereignty gate,
         capability deferral, rotation, and continuation support."""
         continuation = continuation or {}
+        backend = continuation.get("backend", backend)
+        verify_only = bool(continuation.get("verify_only", verify_only))
+        max_lines = continuation.get("max_lines", max_lines)
+        if backend not in ("harness", "morph"):
+            raise HarnessError("backend must be 'harness' or 'morph'")
+        try:
+            max_lines = int(max_lines)
+        except (TypeError, ValueError):
+            raise HarnessError("max_lines must be an integer")
+        if max_lines < 1 or max_lines > MAX_FILE_LINES:
+            raise HarnessError(f"max_lines must be between 1 and {MAX_FILE_LINES}")
         if file_path is None:
             file_path = continuation.get("file_path")
         if file_path is None:
             raise HarnessError("apply requires file (or a continuation with file_path)")
         file_path = os.path.abspath(file_path)
         instruction = instruction or continuation.get("remaining_scope") or ""
+        edit_snippet = edit_snippet or continuation.get("edit_snippet")
         if not instruction:
             raise HarnessError("apply requires an instruction")
         if task_id is None:
@@ -224,16 +266,16 @@ class ApplyEngine:
 
         if not os.path.exists(file_path):
             raise HarnessError(f"file not found: {file_path}")
-        if _line_count(file_path) > MAX_FILE_LINES:
+        if _line_count(file_path) > max_lines:
             raise HarnessError(
-                f"file is >{MAX_FILE_LINES} lines; out of scope. Escalate to a "
+                f"file is >{max_lines} lines; out of scope. Escalate to a "
                 f"multi-file/architecture path instead.")
         if len(instruction) > MAX_INSTRUCTION_CHARS:
             raise HarnessError(f"instruction exceeds {MAX_INSTRUCTION_CHARS} chars.")
         if edit_snippet and len(edit_snippet) > MAX_SNIPPET_CHARS:
             raise HarnessError(f"edit snippet exceeds {MAX_SNIPPET_CHARS} chars.")
 
-        model = model or self.router.apply_model
+        model = model or (MORPH_MODEL if backend == "morph" else self.router.apply_model)
         want_consent = self.default_require_consent if require_consent is None else require_consent
 
         with open(file_path, "r", encoding="utf-8") as f:
@@ -256,8 +298,6 @@ class ApplyEngine:
         failed_models = set()
         deferred_models = {}
         rotations = 0
-        pp, cp = self.governor.fetch_pricing([model])[model]
-
         for round_no in range(1, max_rounds + 1):
             # Continued consensus: re-check consent before each round.
             if renew:
@@ -271,7 +311,9 @@ class ApplyEngine:
                     return self._defer_result(
                         task_id=task_id, file_path=file_path, category="consent",
                         reason=cr["reason"], remaining_scope=instruction,
-                        rounds=rounds, history=history, cost=self.governor.spent)
+                        rounds=rounds, history=history, cost=self.governor.spent,
+                        backend=backend, verify_only=verify_only, max_lines=max_lines,
+                        edit_snippet=edit_snippet)
 
             round_ctx = None
             if rounds:
@@ -305,7 +347,8 @@ class ApplyEngine:
             model_used = None
             while attempt_model is not None:
                 prompt = self._apply_prompt(file_path, instruction, edit_snippet,
-                                            current_content, round_ctx, continuation)
+                                            current_content, round_ctx, continuation,
+                                            backend=backend)
                 a_pp, a_cp = self.governor.fetch_pricing([attempt_model])[attempt_model]
                 est = estimate_prompt_tokens(prompt)
                 per_round = est * a_pp + max_tokens * a_cp
@@ -380,7 +423,9 @@ class ApplyEngine:
                     return self._defer_result(
                         task_id=task_id, file_path=file_path, category="readiness",
                         reason=last_defer_reason, remaining_scope=instruction,
-                        rounds=rounds, history=history, cost=self.governor.spent)
+                        rounds=rounds, history=history, cost=self.governor.spent,
+                        backend=backend, verify_only=verify_only, max_lines=max_lines,
+                        edit_snippet=edit_snippet)
                 rounds.append({"round": round_no, "model": model or attempt_model,
                                "status": "api_error",
                                "error": resp.get("error", {}).get("message", str(resp))
@@ -391,7 +436,7 @@ class ApplyEngine:
             self.governor.record_actual(cost, model_used)
             self.ledger.append("model_result", task_id=task_id, event_note="apply",
                                model=model_used, task_type="code", json_expected=False,
-                               json_ok=None, status="ok")
+                               json_ok=None, status="ok", backend=backend)
 
             # ---- capability-blocker deferral ----
             if CAPABILITY_MARKER in content:
@@ -403,7 +448,7 @@ class ApplyEngine:
                 prose = " ".join(tail.strip().split())[:200] if tail.strip() else ""
                 reason = (info or {}).get("reason") or prose or "model reached its capability limit"
                 remaining = (info or {}).get("remaining_scope") or prose or instruction
-                if partial and partial != current_content:
+                if partial and partial != current_content and not verify_only:
                     if backup is None:
                         backup = self._backup(file_path, task_id, f"r{round_no}-defer")
                     _atomic_write(file_path, partial + "\n")
@@ -416,10 +461,27 @@ class ApplyEngine:
                 return self._defer_result(
                     task_id=task_id, file_path=file_path, category="capability",
                     reason=reason, remaining_scope=remaining, rounds=rounds,
-                    history=history, cost=self.governor.spent)
+                    history=history, cost=self.governor.spent,
+                    backend=backend, verify_only=verify_only, max_lines=max_lines,
+                    edit_snippet=edit_snippet)
 
             new_content = _extract_file_content(content)
             changed = new_content != current_content
+
+            if verify_only:
+                # MorphLite's --verify-only contract: return the proposed content
+                # without mutating the target or running a gate against old code.
+                rounds.append({"round": round_no, "model": model_used, "status": "preview",
+                               "changed": changed, "verify_passed": None, "cost": cost})
+                history.append({"round": round_no, "model": model_used, "status": "preview"})
+                self.ledger.append("complete", task_id=task_id, model=model_used,
+                                   rounds=round_no, status="preview", backend=backend,
+                                   note="verify-only; proposal not written")
+                return {"status": "preview", "task_id": task_id, "changed": changed,
+                        "proposed_content": new_content, "backup": None,
+                        "rounds": rounds, "cost": self.governor.spent,
+                        "rotations": rotations, "verify_only": True,
+                        "backend": backend}
 
             if backup is None and changed:
                 backup = self._backup(file_path, task_id, round_no)
@@ -465,7 +527,7 @@ class ApplyEngine:
 
         # Cheap model exhausted its retry budget -> optional gated escalation.
         esc = self.router.escalation(override=allow_escalation)
-        if esc and rounds and (rounds[-1].get("status") in ("verify_failed", "api_error")):
+        if not verify_only and esc and rounds and (rounds[-1].get("status") in ("verify_failed", "api_error")):
             self.ledger.append("escalate", task_id=task_id, from_model=model, to_model=esc["model"])
             last = rounds[-1]
             tail = (last.get("verify_output") or "")[-VERIFY_FEEDBACK_CHARS:]
@@ -475,7 +537,8 @@ class ApplyEngine:
                 f"Last {VERIFY_FEEDBACK_CHARS} chars:\n```\n{tail}\n```\n\n"
                 "Return the corrected COMPLETE file content.")
             prompt = self._apply_prompt(file_path, instruction, edit_snippet,
-                                        current_content, round_ctx, continuation)
+                                        current_content, round_ctx, continuation,
+                                        backend=backend)
             self.governor.preflight(prompt, [("escalation", esc["model"], max_tokens, 0)])
             status, resp = chat(self.transport, self.api_key, esc["model"],
                                 [{"role": "user", "content": prompt}], max_tokens,
@@ -490,15 +553,17 @@ class ApplyEngine:
                 self.governor.record_actual(cost, esc["model"])
                 self.ledger.append("model_result", task_id=task_id, event_note="escalation",
                                    model=esc["model"], task_type="code", json_expected=False,
-                                   json_ok=None, status="ok" if content else "error")
-                new_content = _extract_file_content(content)
-                changed = new_content != current_content
+                                   json_ok=None, status="ok" if content else "error",
+                                   backend=backend)
+                new_content = _extract_file_content(content) if content else current_content
+                changed = bool(content) and new_content != current_content
                 if changed:
                     if backup is None:
                         backup = self._backup(file_path, task_id, "esc")
                     _atomic_write(file_path, new_content)
                     current_content = new_content
-                rc, out = self.run_verify(verify_cmd)
+                rc, out = (self.run_verify(verify_cmd) if content
+                            else (1, "escalation returned no usable content"))
                 if rc == 0 and changed:
                     self.ledger.append("complete", task_id=task_id, model=esc["model"],
                                        rounds="escalation", status="ok")
@@ -526,9 +591,12 @@ class ApplyEngine:
                 break
         return {"status": "verify_failed", "task_id": task_id, "backup": backup,
                 "rounds": rounds, "cost": self.governor.spent, "rotations": rotations,
+                "backend": backend, "verify_only": verify_only,
                 "verify": {"command": verify_cmd, "passed": False, "output_tail": last_out},
                 "continuation": {
                     "file_path": file_path, "task_id": task_id,
+                    "backend": backend, "verify_only": verify_only, "max_lines": max_lines,
+                    "edit_snippet": edit_snippet,
                     "remaining_scope": f"Fix the verification failures for: {instruction}",
                     "reason": "verification did not pass on the free tier; continue and fix",
                     "history": history,

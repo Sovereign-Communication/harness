@@ -23,6 +23,10 @@ and deferring instead of failing. On top of FusionLite's engine it adds:
 3. **Free-tier iteration** — `HARNESS_DEFER` capability handoff + a
    `continue` mode so a partial task can be taken over and finished by the
    next model; **model rotation on any error** (429s included).
+4. **Unified MorphLite path** — `apply --backend morph` uses Morph V3 Fast's
+   `<instruction>/<code>/<update>` contract inside the same spend governor,
+   consent, rotation, continuation, and verification engine. `--verify-only`
+   returns a proposal without writing the target or running a gate.
 
 ## Why this exists
 
@@ -135,6 +139,10 @@ harness apply --file core/src/store/outbox.rs \
   --instruction "Verify flush_on_connect() persists all peers" \
   --verify "cargo check -p scmessenger-core" --max-rounds 3
 
+# MorphLite-compatible edit through the same governed engine; preview is read-only
+harness apply --backend morph --verify-only --file src/parser.py \
+  --instruction "Harden parse_header()" --edit-snippet "return parse_header(data)"
+
 # Ask a model for consent on a work item (the "checkbox")
 harness offer --task "Refactor the routing engine's backpressure path"
 
@@ -169,8 +177,9 @@ Wire into any MCP host (Claude Code, Cursor, your own agents):
 ```
 
 Tools: `panel_verify`, `apply_edit`, `offer_work`, `defer_work`,
-`ledger_status`, `participation_report`, `spend_status`. The hand-rolled
-server is spec-conformant (JSON-RPC 2.0 over stdio, `initialize` →
+`ledger_status`, `participation_report`, `spend_status`. `apply_edit` accepts
+`backend: "harness"|"morph"`, `verify_only`, `max_lines`, `model`, and the
+same continuation controls as the CLI. The hand-rolled server is spec-conformant (JSON-RPC 2.0 over stdio, `initialize` →
 `tools/list` → `tools/call`, `structuredContent` + `isError`).
 
 ## Reasoning & effort, flushed out
@@ -300,23 +309,33 @@ harness capabilities --refresh  # force a /models refetch (default: ~24h TTL)
   0.3·success`, where `calibration` is the ledger's `confidence_precision`
   (readiness vs verify) and `success` is the observed verify-gate pass rate.
   With no evidence the calibration/success terms sit at a neutral prior,
-  shrunk by sample count (`n/(n+4)`), so a fresh model's reliability starts at
+  shrunk by sample count (`n/(n+2)`), so a fresh model's reliability starts at
   its capability and converges to evidence. A model that lacks a required
   capability, or whose context can't hold the source window, is hard-gated to
   0.
 - **Declared capability is a hypothesis; observed behavior corrects it.**
-  `json_reliable = max(declared, observed)`. The free `north-mini-code` judge
-  declares no structured output yet reliably emits JSON — observed evidence
-  keeps it from being misjudged on a stale declaration. Conversely, a model
-  that *declares* full structured output but errors on real calls (the `--bench`
-  probe exists to catch exactly this) does not get a free pass.
-- **Routing: capability-first when cost is equal.** On the free tier every
-  model is $0, so the router tries the **more capable** model first (capability
-  score desc, then reliability as the tiebreak); the paid tier keeps cheap-first
-  with capability breaking cost ties. Models that fail the hard capability or
-  context gate are excluded. A failing model still rotates to the next in the
-  pool, so a model whose *declared* capability outruns its *actual* reliability
-  self-corrects over time.
+  `json_reliable` is a sample-weighted blend of declared support and observed
+  JSON emission; it is not a permanently optimistic `max()`. The free
+  `north-mini-code` judge declares no structured output yet reliably emits JSON,
+  so observed evidence raises its structured fitness. Conversely, a model that
+  declares full structured output but fails the live probe is demoted. Probe
+  correctness is also persisted as structured success evidence, not merely
+  printed.
+- **Routing: corrected reliability drives equal-cost lanes.** On the free tier
+  every model is $0, so the router sorts by the single composite reliability
+  owner (corrected structured JSON/correctness for structured tasks, verify
+  outcomes for code), then capability as a deterministic tiebreak. The paid
+  tier keeps cost-first, with corrected reliability breaking cost ties. Models
+  that fail the hard capability gate are excluded; a failing model still rotates
+  to the next pool member.
+- **One reliability owner and MCP parity.** `model_reliability()` in
+  `harness/capability.py` is the only computation used by CLI, core routing,
+  continuation routing, and MCP. MCP refreshes its ledger report per call, so
+  probe evidence collected during the session affects its next route.
+- **Fair probe reasoning.** `harness capabilities --bench` sends capped
+  `reasoning: {effort: "low"}` to models declared as reasoning-capable and
+  omits reasoning for other models; malformed or empty responses count as
+  bounded errors and are persisted before the next probe question.
 
 The registry lives in `~/.config/harness/capabilities.json` (refreshed at most
 once per 24h, or with `--refresh`). The hypothesis is pinned to real data: a
@@ -368,7 +387,7 @@ python -m unittest tests.test_core tests.test_ledger tests.test_consent \
   tests.test_byok tests.test_bench tests.test_claims tests.test_capability
 ```
 
-138 hermetic tests — no network, no key. They pin: per-token pricing (regression
+142 hermetic tests — no network, no key. They pin: per-token pricing (regression
 on a ~1,000,000x undercount bug), no-tools payloads, hard/learned BYOK handling,
 key gates, mid-batch fail-closed, reasoning modes (incl. the
 retry-without-reasoning path), panel rotation, structured consensus parsing,
@@ -381,9 +400,10 @@ specialist (deterministic per-claim tally, 5/5 unanimous == 100%, split
 non-convergence, default-to-judge-model, defect-proposition polarity
 convention, reassurance-claim exclusion from the gate), and the capability
 layer (parsing, scoring, context hard-gate, composite-reliability math incl.
-prior-shrink, observed-JSON-updates-declared, routing cost ties, registry
-persist/refresh/TTL, ledger success-rate, and the **real-fixture proof** that
-GLM-5.2 and minimax-M3 outrank gemma-4-31b).
+prior-shrink, observed-JSON-updates-declared, structured correctness evidence,
+probe persistence/error accounting, routing cost ties, registry persist/refresh/TTL,
+ledger success-rate, the **real-fixture proof** that GLM-5.2 and minimax-M3 outrank
+gemma-4-31b, and the unified MorphLite backend's read-only preview guarantees).
 
 ## License
 

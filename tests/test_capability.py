@@ -14,9 +14,9 @@ import unittest
 
 from harness.capability import (
     CapabilityProfile, build_profiles_from_models, capability_score,
-    capability_fitness, context_score, fits_context, composite_reliability,
-    observed_json_reliability, json_reliable, load_profiles, save_profiles,
-    ensure_profiles, order_pool, probe_json_reliability, TASK_WEIGHTS,
+    capability_fitness, context_score, composite_reliability,
+    observed_json_reliability, json_reliable, model_reliability, load_profiles,
+    save_profiles, ensure_profiles, order_pool, probe_json_reliability, TASK_WEIGHTS,
 )
 from harness.ledger import AutonomyLedger
 
@@ -143,14 +143,6 @@ class FixtureRankingProofTest(unittest.TestCase):
         gemma_i = ordered.index("google/gemma-4-31b-it:free")
         self.assertLess(glm_i, gemma_i)
         self.assertLess(ordered.index("minimax/minimax-m3:free"), gemma_i)
-
-
-class ContextGateTest(unittest.TestCase):
-    def test_fits_context_hard_gate(self):
-        p = CapabilityProfile.from_model(sample_model({"context_length": 10000}))
-        # max_source_tokens = 0.6 * 10000 = 6000
-        self.assertTrue(fits_context(p, 5000))
-        self.assertFalse(fits_context(p, 7000))
 
 
 class CompositeReliabilityTest(unittest.TestCase):
@@ -296,6 +288,60 @@ class RoutingOrderTest(unittest.TestCase):
     def test_order_pool_empty_safe(self):
         self.assertEqual(order_pool([], {}, None, free_tier=True), [])
 
+    def test_observed_evidence_demotes_overdeclared_and_raises_proven(self):
+        """THE fix for commit 58ddd1f's inert loop: for the structured task,
+        probe/ledger evidence must demote a declared-capable-but-failing model
+        (GLM) below proven emitters (north-mini, gemma)."""
+        prof = {
+            "z-ai/glm-5.2:free": CapabilityProfile.from_model(sample_model(
+                {"id": "z-ai/glm-5.2:free", "context_length": 256000,
+                 "supported_parameters": ["max_tokens", "reasoning", "structured_outputs"]})),
+            "cohere/north-mini-code:free": CapabilityProfile.from_model(sample_model(
+                {"id": "cohere/north-mini-code:free", "context_length": 256000,
+                 "supported_parameters": ["max_tokens", "reasoning"]})),
+            "google/gemma-4-31b-it:free": CapabilityProfile.from_model(sample_model(
+                {"id": "google/gemma-4-31b-it:free", "context_length": 262144,
+                 "supported_parameters": ["max_tokens", "reasoning", "response_format"]})),
+        }
+        glm = "z-ai/glm-5.2:free"
+        north = "cohere/north-mini-code:free"
+        gemma = "google/gemma-4-31b-it:free"
+        with tempfile.TemporaryDirectory() as d:
+            ledger = AutonomyLedger(os.path.join(d, "l.jsonl"))
+            # Probe evidence: GLM fails 4/5, north-mini & gemma 5/5.
+            for mid, ok_seq in ((glm, [True, False, False, False, False]),
+                                (north, [True] * 5), (gemma, [True] * 5)):
+                for ok in ok_seq:
+                    ledger.append("model_result", model=mid, json_expected=True,
+                                  json_ok=ok, task_type="structured", status="ok")
+            report = ledger.participation_report()
+            ordered = order_pool([glm, north, gemma], prof, report, ledger=ledger,
+                                 task="structured", free_tier=True)
+            # Proven emitters must rank above the declared-capable-but-flaky GLM.
+            self.assertLess(ordered.index(north), ordered.index(glm))
+            self.assertLess(ordered.index(gemma), ordered.index(glm))
+            self.assertEqual(ordered[-1], glm)
+
+    def test_model_reliability_single_owner_uses_observed_json_for_structured(self):
+        prof = CapabilityProfile.from_model(sample_model(
+            {"id": "m:free", "supported_parameters": ["max_tokens", "reasoning",
+                                                         "structured_outputs"]}))
+        with tempfile.TemporaryDirectory() as d:
+            ledger = AutonomyLedger(os.path.join(d, "l.jsonl"))
+            for ok in [True, True, False, False, False]:
+                ledger.append("model_result", model="m:free", json_expected=True,
+                              json_ok=ok, task_type="structured", status="ok")
+            report = ledger.participation_report()
+            info = model_reliability("m:free", prof, report, ledger=ledger,
+                                     task="structured")
+            # Declared json is 1.0 but observed is 0.4 -> json_reliable < declared.
+            self.assertLess(info["json_reliable"], 1.0)
+            self.assertGreater(info["json_reliable"], 0.0)
+            # Without a ledger the same profile would not be demoted.
+            declared_info = model_reliability("m:free", prof, report, ledger=None,
+                                              task="structured")
+            self.assertGreater(declared_info["json_reliable"], info["json_reliable"])
+
 
 class ProbeTest(unittest.TestCase):
     def test_probe_counts_json_and_correctness(self):
@@ -317,6 +363,28 @@ class ProbeTest(unittest.TestCase):
             self.assertEqual(res["m1"]["errors"], 0)
             self.assertEqual(res["m1"]["json_ok_rate"], 1.0)
             self.assertEqual(res["m1"]["correct_rate"], 1.0)
+
+    def test_probe_persists_model_result_events(self):
+        from unittest import mock
+        import harness.core as core
+        with mock.patch.object(core, "chat") as mock_chat, \
+             mock.patch.object(core, "extract_content_and_cost") as mock_extract, \
+             mock.patch.object(core, "_extract_json") as mock_parse:
+            mock_chat.return_value = (200, {"ok": True})
+            mock_extract.return_value = ("raw", "stop", 0.0, False)
+            mock_parse.side_effect = [{"answer": v} for v in [4, 56, True, 1024, 11]]
+            class Gov:
+                def check_byok(self, m): pass
+            with tempfile.TemporaryDirectory() as d:
+                ledger = AutonomyLedger(os.path.join(d, "l.jsonl"))
+                res = probe_json_reliability("t", "k", Gov(), ["m1"], max_tokens=64,
+                                             ledger=ledger)
+                # Every call persisted as a model_result event (all json_ok here).
+                mr = [e for e in ledger.entries() if e["event"] == "model_result"]
+                self.assertEqual(len(mr), 5)
+                self.assertTrue(all(e["json_ok"] for e in mr))
+                # And the persisted evidence feeds observed json reliability.
+                self.assertAlmostEqual(observed_json_reliability(ledger, "m1"), 1.0)
 
 
 if __name__ == "__main__":
