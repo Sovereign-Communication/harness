@@ -126,3 +126,28 @@ Full JSON verdicts per function are in `audits/scmessenger/_runs/` (gitignored):
 harness verify --prompt-file audits/scmessenger/prompts/09_verify_bundle.txt \
   --reasoning-effort off --max-tokens 1400 --out verdict.json
 ```
+
+---
+
+## Round 4 re-audit (2026-09-05) — post-merge Harness (PR #1, gemma judge, deterministic tally)
+
+**Harness progression since round 3:** unreliable judge demoted from default (north-mini 0.73 → gemma 1.00); specialist ladder ordered by *observed* ledger track record (GLM-5.2's free-tier 0/22 was upstream saturation, not capability — paid slug verified 200/strict-JSON); shortfall vs disagreement correctly separated (CEO handoff bug fixed); full panel participation enforced before convergence; malformed panel output can never count as a vote; context-budget guard; parallel panel fan-out (~3x latency); claim grounding lint with source_refs.
+
+**SCMessenger round-4 results (9 functions, free tier, $0.00, panel 3/3 gemma+minimax+nemotron, judge gemma):**
+
+| # | Function | R3 verdict | R4 tally | R4 gate | Delta |
+|---|---|---|---|---|---|
+| 01 | negotiate_suite | high 0.85 | 4/5 claims real (3R/0R each); claims 2,3 split | DEFER | stricter — transcript-delimiter (c1), selection-veto (c4), unauthenticated-suites (c5) unanimous-real |
+| 02 | decrypt_ratcheted_v2 | DEFER | PQ-stripping (c2) 2R/0R real; replay (c1) cleared 0/2 | DEFER (2/3 panel, shortfall) | clarified: PQ pre-confirm window confirmed real; no-replay-check cleared |
+| 03 | Ratchet::encrypt | high 0.9 | 5/5 claims real, 3R/0R on four | DEFER (c1 2R/1R split only) | underflow retracted in R3 reachability; panel still flags key-zeroize + related |
+| 04 | Ratchet::decrypt | DEFER→converged | gap-DoS (c1), skipped-cache (c2), trial-adoption (c4), rng (c5) 3R/0R | DEFER (c3 split) | now claim-resolved: real defects named precisely vs R1 vagueness |
+| 05 | decode_wire_signed_envelope | high 0.85 [confirmed] | 5/5 claims real (c1 2R/1R) | DEFER (c1 split) | bincode DoS + V2→V1 fallthrough again unanimous (c2-c5) |
+| 06 | construct_onion | CLEARED (5/5) | 5/5 claims not_real, 3R/0NR, conf 0.97-0.98 | **PASS 100%** | **identical verdict — stable across rounds, judged by different judge/panel** |
+| 07 | peel_layer | medium 0.9 | dest-oracle (c1) 2R/0R real; c2 split 1R/1R | DEFER (2/3, shortfall) | destination-oracle + unbounded bincode hold |
+| 08 | safety_number | 6/6 real | 3R/0R on modulo-bias, cyclic-reuse, entropy; reassurance claims cleared 0/3 | **PASS 100%** | **matches R3 6/6 exactly — claim structure now split correctly (2a/2b)** |
+| 09 | verify_bundle | high 0.85→MEDIUM (reachability) | 5/5 claims real 3R/0R, conf 0.98-0.997 | **PASS 100%** | defect claims unanimous; severity stays MEDIUM per unwired call-graph |
+
+**Round-over-round conclusions:**
+1. **Verdicts are reproducible across judges and harness versions** — construct_onion (cleared), safety_number (all defects real), verify_bundle (all defect claims real) agree with round 3 despite a completely different judge lane and deterministic tally replacing judge prose.
+2. **The stricter gate moves disagreement to where it lives.** R4 defers are driven by one split claim per function (e.g. 01-claim_3, 04-claim_3, 05-claim_1), not vague "low agreement" — actionable clarification targets.
+3. **Net standing severity unchanged from the reachability pass:** 0 critical / 2 pre-auth DoS (bincode decode) / safety_number display defects / verify_bundle unwired-but-real when hybrid lands. Round 4 adds confidence (unanimous claim-level votes) without changing a single severity grade.
