@@ -14,8 +14,10 @@ from .core import HarnessError, ToolCancelled, panel_judge
 from .apply import validate_continuation
 from .consent import probe_consent
 
+from . import __version__
+
 PROTOCOL_VERSION = "2025-06-18"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = __version__
 
 
 class McpServer:

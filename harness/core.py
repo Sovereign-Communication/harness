@@ -380,7 +380,8 @@ class SpendGovernor:
         try in ``calls``.
         """
         if not calls:
-            return 0.0, []  # noqa: reachable pre-guard kept for clarity
+            # Pre-guard kept for clarity: an empty call list costs nothing.
+            return 0.0, []
         models = [m_ for _, m_, _, _ in calls]
         pricing = self.fetch_pricing(models)
         prompt_tokens = estimate_prompt_tokens(prompt_text)

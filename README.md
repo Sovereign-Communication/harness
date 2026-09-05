@@ -57,6 +57,8 @@ that and its hard guarantees:
 ## Install & configure
 
 ```bash
+pip install sovereign-harness   # from PyPI, once published
+#   ...or from a checkout:
 pip install -e .          # installs `harness`, `harness-mcp`
 
 # Key: $OPENROUTER_API_KEY, or a file at any of (first wins):
@@ -412,7 +414,7 @@ yes. Harness treats that as a bug to design around:
 python -m unittest discover -s tests -v
 ```
 
-209 hermetic tests — no network, no key. They pin: per-token pricing (regression
+hermetic tests — no network, no key. They pin: per-token pricing (regression
 on a ~1,000,000x undercount bug), no-tools payloads, hard/learned BYOK handling,
 key gates, mid-batch fail-closed, reasoning modes (incl. the
 retry-without-reasoning path), panel rotation, structured consensus parsing,
