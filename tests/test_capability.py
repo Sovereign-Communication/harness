@@ -358,6 +358,8 @@ class ProbeTest(unittest.TestCase):
             mock_parse.side_effect = [{"answer": v} for v in want]
             class Gov:
                 def check_byok(self, m): pass
+
+                def preflight(self, prompt_text, calls): return 0.0, []
             res = probe_json_reliability("t", "k", Gov(), ["m1"], max_tokens=64)
             self.assertEqual(res["m1"]["calls"], 5)
             self.assertEqual(res["m1"]["errors"], 0)
@@ -375,6 +377,8 @@ class ProbeTest(unittest.TestCase):
             mock_parse.side_effect = [{"answer": v} for v in [4, 56, True, 1024, 11]]
             class Gov:
                 def check_byok(self, m): pass
+
+                def preflight(self, prompt_text, calls): return 0.0, []
             with tempfile.TemporaryDirectory() as d:
                 ledger = AutonomyLedger(os.path.join(d, "l.jsonl"))
                 res = probe_json_reliability("t", "k", Gov(), ["m1"], max_tokens=64,

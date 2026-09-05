@@ -387,6 +387,10 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
             error_message = None
             call_cost = 0.0
             try:
+                # Every probe question is preflighted against the ceiling so
+                # the loop can never spend through it (same contract as every
+                # other governed lane).
+                governor.preflight(q, [(f"probe {m}", m, max_tokens, 0)])
                 status, resp = chat(transport, api_key, m,
                                     [{"role": "user", "content": q}], max_tokens,
                                     eff, 0.4, governor)

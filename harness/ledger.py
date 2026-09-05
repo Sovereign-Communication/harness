@@ -10,6 +10,7 @@ acceptance is a warning, not a success).
 import hashlib
 import json
 import os
+import sys
 import threading
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -36,7 +37,18 @@ class AutonomyLedger:
                 line = line.strip()
                 if not line:
                     continue
-                entry = json.loads(line)
+                try:
+                    entry = json.loads(line)
+                    if not isinstance(entry, dict) or "seq" not in entry or "hash" not in entry:
+                        raise ValueError("entry missing seq/hash")
+                except (ValueError, TypeError):
+                    # The evidence chain must stay readable even if a crash
+                    # left a torn trailing line: quarantine the damage, keep
+                    # the intact prefix, and never crash on load.
+                    self.quarantined = getattr(self, "quarantined", 0) + 1
+                    print(f"[ledger] corrupt line quarantined in {self.path}; "
+                          "run `harness ledger verify` for status.", file=sys.stderr)
+                    continue
                 self._tail.append(entry)
                 self._seq = entry["seq"]
                 self._prev_hash = entry["hash"]

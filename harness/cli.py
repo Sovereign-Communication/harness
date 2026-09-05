@@ -326,7 +326,7 @@ def _cmd_ledger(opts, settings):
 
 
 def _cmd_bench(opts, settings):
-    api_key, gov = _governor(settings)
+    api_key, gov = _governor(settings, opts.max_cost)
     ledger = AutonomyLedger(settings.ledger_path)
     engine = ApplyEngine(
         HttpTransport(), api_key, gov, ledger, _router(settings),
@@ -372,7 +372,7 @@ def _cmd_capabilities(opts, settings):
     from .capability import (ensure_profiles, model_reliability, capability_fitness,
                              probe_json_reliability, capability_score)
     from .config import CAPABILITIES_PATH, CAPABILITIES_TTL
-    api_key, gov = _governor(settings)
+    api_key, gov = _governor(settings, opts.max_cost)
     ledger = AutonomyLedger(settings.ledger_path)
     profiles, fetched_at, refreshed = ensure_profiles(
         CAPABILITIES_PATH, gov.fetch_models, ttl=CAPABILITIES_TTL, force=opts.refresh)
@@ -585,6 +585,8 @@ def main(argv=None):
     pb.add_argument("--with-consent", dest="require_consent", action="store_true",
                     help="ask consent before each task (default: off -- batch/CI mode)")
     pb.add_argument("--max-rounds", type=int, default=None)
+    pb.add_argument("--max-cost", type=float, default=None,
+                    help="session cost ceiling in dollars (default: configured max_cost)")
     pb.add_argument("--out", default=None)
 
     plint = sub.add_parser("lint-claims",
@@ -605,6 +607,8 @@ def main(argv=None):
     pcap.add_argument("--bench", action="store_true",
                       help="run the empirical JSON probe on the free pool models (live, needs key)")
     pcap.add_argument("--json", action="store_true", help="emit raw JSON only (no table)")
+    pcap.add_argument("--max-cost", type=float, default=None,
+                      help="session cost ceiling in dollars (default: configured max_cost)")
     pcap.add_argument("--out", default=None)
 
     sub.add_parser("spend", help="Key identity & spend status")

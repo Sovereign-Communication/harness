@@ -48,7 +48,16 @@ def eprint(*a, **kw):
 
 
 def estimate_prompt_tokens(text):
-    return int(len(text.split()) * 1.5) + 50
+    """Approximate the prompt's token count without a tokenizer.
+
+    max(words * 1.5, chars / 4): the words heuristic alone badly undercounts
+    symbol-dense source code (JSON, Rust generics), where ~4 chars/token
+    dominates. Taking the larger of the two keeps preflight ceilings honest
+    in the direction of over- rather than under-estimating cost.
+    """
+    if not text:
+        return 50
+    return max(int(len(text.split()) * 1.5) + 50, int(len(text) / 4) + 1)
 
 
 def _extract_json(text):
@@ -665,8 +674,10 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
         "visible content, starting with {.",
     ]
     for r in panel_results:
-        body = (r.get("content") or "")[:2000]
-        lines.append(f"--- Model: {r.get('model')} ---\n{body}")
+        # Full per-claim JSON: these are short, structured verdicts, and the
+        # preflight reserve (target * panel_tokens) already covers them. A
+        # truncated vote can silently drop claims and corrupt the tally.
+        lines.append(f"--- Model: {r.get('model')} ---\n{r.get('content') or ''}")
     prompt = "\n".join(lines)
 
     # Build the rotation ladder: primary first, then fallbacks (deduped,
@@ -967,9 +978,10 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         f"Set defer=true when the panel cannot reach enough agreement to make a reliable call "
         f"(the work should be deferred rather than guessed). Do not paper over disagreement.\n\n")
     for r in panel_results:
+        # Never truncate: panel verdicts are structured claims the judge must
+        # weigh in full, and the preflight reserve covers their worst case.
         note = " [NOTE: cut off by token limit, may be incomplete]" if r["truncated"] else ""
-        body = r["content"] if len(r["content"]) <= 1500 else r["content"][:1500] + "\n...[truncated]"
-        judge_prompt += f"--- Model: {r['model']}{note} ---\n{body}\n\n"
+        judge_prompt += f"--- Model: {r['model']}{note} ---\n{r['content']}\n\n"
 
     judge_content = None
     judge_cost = 0.0

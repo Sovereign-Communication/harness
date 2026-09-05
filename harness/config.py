@@ -17,6 +17,7 @@ free router and serves as a final fallback lane.
 """
 import json
 import os
+import sys
 
 CONFIG_DIR = os.path.expanduser("~/.config/harness")
 
@@ -77,28 +78,34 @@ def save_byok_prefixes(path, prefixes):
         json.dump(sorted(prefixes), f, indent=2)
 
 # ---- Free-tier lanes (default) ----
-# Curated from the live OpenRouter free list (Sept 2026). Order matters:
-# cheaper/more reliable first; the router rotates down the list and falls
-# back to openrouter/free. Run `harness spend --models` (or discover_models)
-# to refresh against the live list.
+# Curated from the live OpenRouter free list (Sept 2026), ordered by observed
+# track record in real audits and bench probes: JSON-emission reliability,
+# willingness to defer, and truncation behavior. north-mini-code is DEMOTED
+# from the judge seat (and the panel head): as a reasoning model it burned
+# its budget on hidden thinking and returned reasoning-only output in most
+# live runs. The router rotates down the list and falls back to
+# openrouter/free. Run `harness spend --models` (or discover_models) to
+# refresh against the live list.
 FREE_PANEL_POOL = [
-    "inclusionai/ling-3.0-flash-fin:free",
-    "cohere/north-mini-code:free",
     "google/gemma-4-31b-it:free",
+    "minimax/minimax-m3:free",
+    "inclusionai/ling-3.0-flash-fin:free",
     "z-ai/glm-5.2:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
-    "minimax/minimax-m3:free",
+    "cohere/north-mini-code:free",
     "openrouter/free",
 ]
-# Judge must emit strict JSON; prefer a fast, non-reasoning, JSON-reliable free
-# model over a reasoning-heavy one that burns its budget on hidden thinking.
-FREE_JUDGE = "cohere/north-mini-code:free"
+# Judge must emit strict JSON. gemma is the most JSON-reliable free emitter in
+# live runs (structured claims, consent, and specialist lanes all included);
+# a reasoning-heavy judge burns its budget on hidden thinking instead.
+FREE_JUDGE = "google/gemma-4-31b-it:free"
 FREE_APPLY_POOL = [
-    "cohere/north-mini-code:free",
     "google/gemma-4-31b-it:free",
-    "z-ai/glm-5.2:free",
-    "nvidia/nemotron-3-super-120b-a12b:free",
     "minimax/minimax-m3:free",
+    "z-ai/glm-5.2:free",
+    "inclusionai/ling-3.0-flash-fin:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "cohere/north-mini-code:free",
     "openrouter/free",
 ]
 
@@ -170,6 +177,24 @@ def _read_key_file(path):
     return None
 
 
+def _warn_insecure_keyfile(path):
+    """Loudly warn when a key file is group/world readable (POSIX only).
+
+    A leaked OpenRouter key spends real money, so a permissive key file is a
+    silent credential hazard. We warn rather than refuse: the user's working
+    setup must not break, but the failure mode must not be silent.
+    """
+    if os.name == "nt":
+        return
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except OSError:
+        return
+    if mode & 0o077:
+        print(f"[warn] key file {path} is group/world readable (mode "
+              f"{oct(mode)}); restrict it with chmod 600.", file=sys.stderr)
+
+
 def resolve_api_key():
     for p in (
         os.path.join(os.path.expanduser("~/.config/scmorc"), "openrouter_fusion.env"),
@@ -178,6 +203,7 @@ def resolve_api_key():
     ):
         k = _read_key_file(p)
         if k:
+            _warn_insecure_keyfile(p)
             return k
     return os.environ.get("OPENROUTER_API_KEY")
 
