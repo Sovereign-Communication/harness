@@ -1,0 +1,244 @@
+{
+  "panel_results": [
+    {
+      "model": "minimax/minimax-m3:free",
+      "content": "{\"claim_1\": {\"real\": false, \"severity\": \"info\", \"confidence\": 0.9, \"why\": \"Replay protection is delegated to session.decrypt's skipped-key cache and monotonic per-chain index, as stated in the context.\"}, \"claim_2\": {\"real\": true, \"severity\": \"high\", \"confidence\": 0.75, \"why\": \"If a peer sends a PQ-stripped envelope on message_number%100==0 before peer_confirmed, validate_pq_fields_present is skipped, allowing silent PQ downgrade during the initial ratchet exchange.\"}, \"claim_3\": {\"real\": false, \"severity\": \"info\", \"confidence\": 0.95, \"why\": \"Excluding message_number==0 is correct because the bootstrap PQ step is already consumed at session setup, per the context.\"}, \"claim_4\": {\"real\": true, \"severity\": \"medium\", \"confidence\": 0.8, \"why\": \"Transcript hash is only verified before peer_confirmed; after confirmation, transcript integrity binding is never re-validated, weakening forward transcript commitment.\"}, \"claim_5\": {\"real\": true, \"severity\": \"critical\", \"confidence\": 0.85, \"why\": \"handle_incoming_pq_fields mutates session state (e.g., updates PQ shared secret/chain) before the authenticated decrypt runs, so an unauthenticated attacker can corrupt session state by injecting a forged message with PQ fields.\"}}",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    },
+    {
+      "model": "z-ai/glm-5.2:free",
+      "content": "```json\n{\n  \"claim_1\": {\"real\": false, \"severity\": \"info\", \"confidence\": 0.9, \"why\": \"Replay/monotonicity is delegated to session.decrypt per context; no defect in this function.\"},\n  \"claim_2\": {\"real\": true, \"severity\": \"medium\", \"confidence\": 0.6, \"why\": \"validate_pq_fields_present is gated on peer_confirmed, so pre-confirmation PQ-stripping is only caught if the transcript hash check (itself bypassable when either hash is None) covers it.\"},\n  \"claim_3\": {\"real\": false, \"severity\": \"info\", \"confidence\": 0.9, \"why\": \"Bootstrap PQ is consumed at session setup; excluding message 0 from cadence is intended.\"},\n  \"claim_4\": {\"real\": false, \"severity\": \"info\", \"confidence\": 0.7, \"why\": \"Transcript binding is a handshake-time check; post-confirmation authentication comes from the ratchet chain keys.\"},\n  \"claim_5\": {\"real\": true, \"severity\": \"medium\", \"confidence\": 0.55, \"why\": \"handle_incoming_pq_fields executes before AEAD authentication, so an unauthenticated envelope can trigger PQ decap/state work and potential key-state mutation.\"}\n}\n```",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    }
+  ],
+  "panel_failures": [
+    {
+      "model": "google/gemma-4-31b-it:free",
+      "reason": "empty panel output",
+      "status": "invalid_output",
+      "cost": 0.0,
+      "retries": 0
+    },
+    {
+      "model": "openrouter/free",
+      "reason": "malformed, missing, or truncated per-claim JSON",
+      "status": "invalid_output",
+      "cost": 0,
+      "retries": 0
+    },
+    {
+      "model": "cohere/north-mini-code:free",
+      "reason": "malformed, missing, or truncated per-claim JSON",
+      "status": "invalid_output",
+      "cost": 0,
+      "retries": 0
+    },
+    {
+      "model": "inclusionai/ling-3.0-flash-fin:free",
+      "reason": "malformed, missing, or truncated per-claim JSON",
+      "status": "invalid_output",
+      "cost": 0,
+      "retries": 0
+    },
+    {
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "reason": "malformed, missing, or truncated per-claim JSON",
+      "status": "invalid_output",
+      "cost": 0,
+      "retries": 0
+    }
+  ],
+  "required_panelists": 3,
+  "panel_tried": 7,
+  "judge_model": "google/gemma-4-31b-it:free",
+  "judge_synthesis": null,
+  "judge_synthesis_status": "unparseable",
+  "verdict": "Deterministic panel tally: claim_1=not_real (2/3); claim_2=real (2/3); claim_3=not_real (2/3); claim_4=real (2/3); claim_5=real (2/3); panel shortfall 2/3; merge gate deferred",
+  "consensus": {
+    "agreement": "low",
+    "confidence": 0.8,
+    "disagreements": [
+      "claim_4"
+    ],
+    "defer": true,
+    "panel_shortfall": true,
+    "missing_votes": 1,
+    "voted_by": 2,
+    "of_panel": 3,
+    "responder_converged": false,
+    "gate_converged": false,
+    "defer_reason": "panel_shortfall",
+    "judge_verdict": "[raw panel outputs only -- no synthesis available]"
+  },
+  "estimated_worst_case_cost": 0.0,
+  "actual_cost": 0.0,
+  "max_cost_ceiling": 0.02,
+  "convergence": {
+    "status": "ok",
+    "model": "google/gemma-4-31b-it:free",
+    "specialist": {
+      "converged": true,
+      "agreement": "medium",
+      "confidence": 0.78,
+      "claims": {
+        "claim_1": {
+          "verdict": "not_real",
+          "converged": true,
+          "confidence": 0.9
+        },
+        "claim_2": {
+          "verdict": "real",
+          "converged": true,
+          "confidence": 0.67
+        },
+        "claim_3": {
+          "verdict": "not_real",
+          "converged": true,
+          "confidence": 0.92
+        },
+        "claim_4": {
+          "verdict": "not_real",
+          "converged": false,
+          "confidence": 0.75
+        },
+        "claim_5": {
+          "verdict": "real",
+          "converged": true,
+          "confidence": 0.7
+        }
+      }
+    },
+    "raw": "```json\n{\n  \"converged\": true,\n  \"agreement\": \"medium\",\n  \"confidence\": 0.78,\n  \"claims\": {\n    \"claim_1\": {\n      \"verdict\": \"not_real\",\n      \"converged\": true,\n      \"confidence\": 0.9\n    },\n    \"claim_2\": {\n      \"verdict\": \"real\",\n      \"converged\": true,\n      \"confidence\": 0.67\n    },\n    \"claim_3\": {\n      \"verdict\": \"not_real\",\n      \"converged\": true,\n      \"confidence\": 0.92\n    },\n    \"claim_4\": {\n      \"verdict\": \"not_real\",\n      \"converged\": false,\n      \"confidence\": 0.75\n    },\n    \"claim_5\": {\n      \"verdict\": \"real\",\n      \"converged\": true,\n      \"confidence\": 0.7\n    }\n  }\n}\n```",
+    "cost": 0.0,
+    "error": null,
+    "attempts": [
+      {
+        "model": "google/gemma-4-31b-it:free",
+        "status": "ok",
+        "cost": 0
+      }
+    ],
+    "tally": {
+      "converged": false,
+      "responder_converged": false,
+      "converged_claims": 0,
+      "responder_converged_claims": 4,
+      "total_claims": 5,
+      "convergence_rate": 0.8,
+      "gate_convergence_rate": 0.0,
+      "disagreement": true,
+      "disagreement_claims": [
+        "claim_4"
+      ],
+      "panel_shortfall": true,
+      "missing_votes": 1,
+      "shortfall": {
+        "voted_by": 2,
+        "of_panel": 3,
+        "missing_votes": 1
+      },
+      "voted_by": 2,
+      "of_panel": 3,
+      "responding_models": [
+        "minimax/minimax-m3:free",
+        "z-ai/glm-5.2:free"
+      ],
+      "claims": {
+        "claim_1": {
+          "verdict": "not_real",
+          "unanimous": true,
+          "responder_unanimous": true,
+          "converged": false,
+          "gate_unanimous": false,
+          "voted_by": 2,
+          "of_panel": 3,
+          "confidence": 0.9,
+          "votes": {
+            "real": 0,
+            "not_real": 2
+          },
+          "missing_votes": 1,
+          "panel_shortfall": true
+        },
+        "claim_2": {
+          "verdict": "real",
+          "unanimous": true,
+          "responder_unanimous": true,
+          "converged": false,
+          "gate_unanimous": false,
+          "voted_by": 2,
+          "of_panel": 3,
+          "confidence": 0.675,
+          "votes": {
+            "real": 2,
+            "not_real": 0
+          },
+          "missing_votes": 1,
+          "panel_shortfall": true
+        },
+        "claim_3": {
+          "verdict": "not_real",
+          "unanimous": true,
+          "responder_unanimous": true,
+          "converged": false,
+          "gate_unanimous": false,
+          "voted_by": 2,
+          "of_panel": 3,
+          "confidence": 0.925,
+          "votes": {
+            "real": 0,
+            "not_real": 2
+          },
+          "missing_votes": 1,
+          "panel_shortfall": true
+        },
+        "claim_4": {
+          "verdict": "real",
+          "unanimous": false,
+          "responder_unanimous": false,
+          "converged": false,
+          "gate_unanimous": false,
+          "voted_by": 2,
+          "of_panel": 3,
+          "confidence": 0.75,
+          "votes": {
+            "real": 1,
+            "not_real": 1
+          },
+          "missing_votes": 1,
+          "panel_shortfall": true
+        },
+        "claim_5": {
+          "verdict": "real",
+          "unanimous": true,
+          "responder_unanimous": true,
+          "converged": false,
+          "gate_unanimous": false,
+          "voted_by": 2,
+          "of_panel": 3,
+          "confidence": 0.7,
+          "votes": {
+            "real": 2,
+            "not_real": 0
+          },
+          "missing_votes": 1,
+          "panel_shortfall": true
+        }
+      },
+      "reassurance": {}
+    }
+  },
+  "cost_by_model": {
+    "google/gemma-4-31b-it:free": 0.0,
+    "minimax/minimax-m3:free": 0.0,
+    "openrouter/free": 0.0,
+    "cohere/north-mini-code:free": 0.0,
+    "inclusionai/ling-3.0-flash-fin:free": 0.0,
+    "z-ai/glm-5.2:free": 0.0,
+    "nvidia/nemotron-3-super-120b-a12b:free": 0.0
+  }
+}

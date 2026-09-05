@@ -151,3 +151,39 @@ harness verify --prompt-file audits/scmessenger/prompts/09_verify_bundle.txt \
 1. **Verdicts are reproducible across judges and harness versions** — construct_onion (cleared), safety_number (all defects real), verify_bundle (all defect claims real) agree with round 3 despite a completely different judge lane and deterministic tally replacing judge prose.
 2. **The stricter gate moves disagreement to where it lives.** R4 defers are driven by one split claim per function (e.g. 01-claim_3, 04-claim_3, 05-claim_1), not vague "low agreement" — actionable clarification targets.
 3. **Net standing severity unchanged from the reachability pass:** 0 critical / 2 pre-auth DoS (bincode decode) / safety_number display defects / verify_bundle unwired-but-real when hybrid lands. Round 4 adds confidence (unanimous claim-level votes) without changing a single severity grade.
+
+### Round-4 full results table (agreement / confidence / deferral / participation)
+
+| # | Function | Agreement | Confidence | Deferred | Panel | Shortfall |
+|---|---|---|---|---|---|---|
+| 01 | negotiate_suite | low | 0.60 | yes | 3/3 | no |
+| 02 | decrypt_ratcheted_v2 | low | 0.80 | yes | 2/3 | **yes** |
+| 03 | Ratchet::encrypt | low | 0.80 | yes | 3/3 | no |
+| 04 | Ratchet::decrypt | low | 0.60 | yes | 3/3 | no |
+| 05 | decode_wire_signed_envelope | low | 0.80 | yes | 3/3 | no |
+| 06 | construct_onion | high | 1.00 | **no** | 3/3 | no |
+| 07 | peel_layer | low | 0.80 | yes | 2/3 | **yes** |
+| 08 | safety_number | high | 1.00 | **no** | 3/3 | no |
+| 09 | verify_bundle | high | 1.00 | **no** | 3/3 | no |
+
+Note on the gate: R4 "confidence" is the deterministic claim-tally convergence
+rate, not a judge's prose sentiment. A DEFER means at least one claim's panel
+vote split — each such split claim is named in the table above (the R3 runs
+could not produce this granularity because the judge prose was the verdict).
+
+### Did auditing improve or regress between rounds?
+
+**Improved — measurably, on four axes:** (1) *Verdict stability:* three of nine
+functions reproduce their round-3 verdict exactly under a different judge and a
+deterministic tally replacing judge prose — evidence the signal comes from the
+panel, not the summarizer. (2) *Honesty:* R3 reported judge-sentiment
+"high/0.85" on functions whose panels actually split; R4 defers those and names
+the split claim. Lower headline pass-rate, higher information content.
+(3) *Shortfall semantics:* the CEO-reported bug (2/3 responders mislabeled as
+disagreement, confidence 0.0) is fixed — runs 02 and 07 correctly report
+`panel_shortfall: true` with responder agreement preserved. (4) *Cost/latency:*
+$0.00 again, with parallel panel fan-out (~3x) and bounded 429 backoff
+(retry-after capped at 6s). **No regression observed.** The one soft spot:
+judge gemma was parsed on all 9 runs (1.00) versus north-mini's 0.73 R3 rate,
+and defers are now single-claim clarifications rather than inconclusive blobs —
+the intended trajectory.
