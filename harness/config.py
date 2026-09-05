@@ -19,6 +19,8 @@ import json
 import os
 import sys
 
+from .errors import HarnessError
+
 CONFIG_DIR = os.path.expanduser("~/.config/harness")
 
 # OpenRouter endpoints
@@ -195,7 +197,14 @@ def _warn_insecure_keyfile(path):
               f"{oct(mode)}); restrict it with chmod 600.", file=sys.stderr)
 
 
-def resolve_api_key():
+def resolve_api_key(*, expected_label=None):
+    """Resolve the OpenRouter key: env file first, then the environment.
+
+    ``expected_label`` is an exact-match guard (audit #9b): when set, a key
+    whose label does not match exactly is refused rather than silently used,
+    and the label is never echoed into error text (no credential leakage).
+    """
+    key = None
     for p in (
         os.path.join(os.path.expanduser("~/.config/scmorc"), "openrouter_fusion.env"),
         os.path.join(os.path.expanduser("~/.config/scmorc"), "openrouter.env"),
@@ -204,8 +213,18 @@ def resolve_api_key():
         k = _read_key_file(p)
         if k:
             _warn_insecure_keyfile(p)
-            return k
-    return os.environ.get("OPENROUTER_API_KEY")
+            key = k
+            break
+    if key is None:
+        key = os.environ.get("OPENROUTER_API_KEY")
+        if key:
+            print("[warn] using OPENROUTER_API_KEY from the process environment; "
+                  "prefer a 0600 key file for interactive use.", file=sys.stderr)
+    if key and expected_label:
+        label = key.split("-")[2] if key.count("-") >= 2 else ""
+        if label != expected_label:
+            raise ValueError("resolved key does not match the expected key label")
+    return key
 
 
 def _as_bool(value):
@@ -269,12 +288,46 @@ class Settings:
             "default_require_consent", "allow_escalation")}
 
 
+def _validate_settings_values(use_free, max_cost, task_max_cost, max_tokens,
+                              apply_max_tokens, reasoning_effort,
+                              reasoning_token_budget, max_panelists, max_rotations):
+    """Range-check every numeric/enum setting (audit #15): a typo like
+    max_cost=0.02 dollars configured as `2` must not silently authorize a
+    100x larger spend."""
+    problems = []
+    if max_cost <= 0:
+        problems.append("max_cost must be > 0 (dollars)")
+    if task_max_cost <= 0:
+        problems.append("task_max_cost must be > 0 (dollars)")
+    if task_max_cost > max_cost:
+        problems.append("task_max_cost exceeds max_cost; a single task could "
+                        "spend the whole session ceiling")
+    if max_tokens < 64 or max_tokens > 200000:
+        problems.append("max_tokens out of range [64, 200000]")
+    if apply_max_tokens < 64 or apply_max_tokens > 200000:
+        problems.append("apply_max_tokens out of range [64, 200000]")
+    if reasoning_effort not in ("auto", "off", "none", "low", "medium", "high", "on"):
+        problems.append(f"reasoning_effort {reasoning_effort!r} is not a valid effort mode")
+    if not 0 < reasoning_token_budget <= 1:
+        problems.append("reasoning_token_budget must be in (0, 1]")
+    if max_panelists < 1 or max_panelists > 10:
+        problems.append("max_panelists out of range [1, 10]")
+    if max_rotations < 0 or max_rotations > 20:
+        problems.append("max_rotations out of range [0, 20]")
+    if problems:
+        raise HarnessError("invalid configuration: " + "; ".join(problems))
+
+
 def load_settings(overrides=None):
     cfg = {}
     cfg_path = os.path.join(CONFIG_DIR, "config.json")
     if os.path.exists(cfg_path):
         with open(cfg_path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
+    unknown = set(cfg) - set(_ENV_NAMES)
+    if unknown:
+        print("[warn] unknown config keys ignored: " + ", ".join(sorted(unknown))
+              + f" (valid keys are in {cfg_path})", file=sys.stderr)
 
     def get(key, default):
         if overrides and key in overrides:
@@ -302,6 +355,23 @@ def load_settings(overrides=None):
     apply_pool = _split_list(str(get("apply_pool", ",".join(
         _dedup([apply_model] + default_apply_pool))))) or [apply_model]
 
+    # -- numeric range validation (fail closed on nonsense) ------------------
+    def _num(key, cast, lo, hi, default):
+        v = cast(get(key, default))
+        if not (lo <= v <= hi):
+            raise HarnessError(
+                key + "=" + str(v) + " is out of range [" + str(lo) + ", " + str(hi) + "]")
+        return v
+
+    max_cost = _num("max_cost", float, 0, 1000, DEFAULT_MAX_COST)
+    task_max_cost = _num("task_max_cost", float, 0, 1000, DEFAULT_TASK_MAX_COST)
+    max_tokens = _num("max_tokens", int, 64, 1_000_000, DEFAULT_MAX_TOKENS)
+    apply_max_tokens = _num("apply_max_tokens", int, 64, 1_000_000, DEFAULT_APPLY_MAX_TOKENS)
+    reasoning_token_budget = _num("reasoning_token_budget", float, 0.05, 0.95, 0.4)
+    max_panelists = _num("max_panelists", int, 1, 16, 3)
+    max_rotations = _num("max_rotations", int, 0, 20, 3)
+
+
     return Settings(
         use_free=use_free,
         panel=panel,
@@ -312,14 +382,14 @@ def load_settings(overrides=None):
         apply_model=apply_model,
         apply_pool=apply_pool,
         escalation_model=get("escalation_model", None),
-        max_cost=float(get("max_cost", DEFAULT_MAX_COST)),
-        task_max_cost=float(get("task_max_cost", DEFAULT_TASK_MAX_COST)),
-        max_tokens=int(get("max_tokens", DEFAULT_MAX_TOKENS)),
-        apply_max_tokens=int(get("apply_max_tokens", DEFAULT_APPLY_MAX_TOKENS)),
+        max_cost=max_cost,
+        task_max_cost=task_max_cost,
+        max_tokens=max_tokens,
+        apply_max_tokens=apply_max_tokens,
         reasoning_effort=str(get("reasoning_effort", "auto")),
-        reasoning_token_budget=float(get("reasoning_token_budget", 0.4)),
-        max_panelists=int(get("max_panelists", 3)),
-        max_rotations=int(get("max_rotations", 3)),
+        reasoning_token_budget=reasoning_token_budget,
+        max_panelists=max_panelists,
+        max_rotations=max_rotations,
         renew_consent=_as_bool(get("renew_consent", True)),
         ledger_path=str(get("ledger_path", os.path.join(CONFIG_DIR, "ledger.jsonl"))),
         expect_key_label=get("expect_key_label", os.environ.get("FUSIONLITE_EXPECT_KEY_LABEL")),

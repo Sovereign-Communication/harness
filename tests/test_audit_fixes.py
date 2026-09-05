@@ -6,8 +6,7 @@ import unittest
 
 from harness.capability import probe_json_reliability
 from harness.core import (
-    SpendGovernor, estimate_prompt_tokens, panel_judge, tally_convergence,
-    extract_claim_verdicts,
+    SpendGovernor, estimate_prompt_tokens, panel_judge,
 )
 from harness.config import DEFAULT_JUDGE_PAID, FREE_JUDGE
 from harness.ledger import AutonomyLedger
@@ -72,7 +71,7 @@ class VoteFidelityTests(unittest.TestCase):
                                     "confidence": 1.0, "disagreements": [],
                                     "defer": False}))])
         gov = _gov(fake, max_cost=1.0)
-        result = panel_judge(transport=fake, api_key="k", governor=gov,
+        panel_judge(transport=fake, api_key="k", governor=gov,
                              prompt="Q?", panel=[P1, P2], judge=JUDGE)
         judge_payload = fake.payloads()[-1]["messages"][-1]["content"]
         self.assertIn("c3", judge_payload, "later claims must not be cut off")
@@ -139,7 +138,7 @@ class ProbeCeilingTests(unittest.TestCase):
                     from harness.core import HarnessError
                     raise HarnessError("worst-case estimate exceeds ceiling. Refusing.")
 
-        fake = FakeTransport(models=[m("m1")])
+        _fake = FakeTransport(models=[m("m1")])
         res = probe_json_reliability("t", "k", Gov(), ["m1"], max_tokens=16)
         self.assertEqual(len(captured), 5, "each question is preflighted")
         self.assertEqual(res["m1"]["errors"], 5, "blocked questions count as errors")

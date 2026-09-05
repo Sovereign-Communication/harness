@@ -5,9 +5,8 @@ import unittest
 from harness.core import (
     SpendGovernor, HarnessError, estimate_prompt_tokens, extract_content_and_cost,
     panel_judge, tally_convergence, extract_claim_verdicts,
-    run_convergence_specialist, _chat_reservation_slots,
+    _chat_reservation_slots,
 )
-from harness.config import OPENROUTER_CHAT_URL, OPENROUTER_MODELS_URL, OPENROUTER_KEY_URL
 from tests._fake import FakeTransport, m, comp
 
 P1 = "inclusionai/ling-2.6-flash"
@@ -62,11 +61,20 @@ class CostMathTests(unittest.TestCase):
             gov.verify_key()
 
     def test_expect_key_label_match(self):
+        """Audit #9b: label expectation is an EXACT match now (substring let a
+        similarly-named key through), and the error never echoes labels."""
         fake = FakeTransport(key={"label": "sk-or-v1-aaaa", "limit": 1.0,
                                   "limit_remaining": 0.5})
-        gov = _gov(fake, expect_key_label="aaaa")
+        gov = _gov(fake, expect_key_label="sk-or-v1-aaaa")
         info = gov.verify_key()
         self.assertEqual(info["label"], "sk-or-v1-aaaa")
+        wrong = _gov(FakeTransport(key={"label": "sk-or-v1-bbbb", "limit": 1.0,
+                                        "limit_remaining": 0.5}),
+                     expect_key_label="sk-or-v1-aaaa")
+        with self.assertRaises(HarnessError) as ctx:
+            wrong.verify_key()
+        self.assertNotIn("bbbb", str(ctx.exception))
+        self.assertNotIn("aaaa", str(ctx.exception))
 
 
 class GuardTests(unittest.TestCase):
@@ -369,7 +377,6 @@ class SpecialistRotationTests(unittest.TestCase):
 
     def _panel(self, fake, spec_model):
         """Run a 2-panelist + judge convergence run; return (result, fake)."""
-        claims = {"c1": {"real": False, "confidence": 0.9}}
         gov = _gov(fake)
         result = panel_judge(
             transport=fake, api_key="k", governor=gov, prompt="Q?",
@@ -453,7 +460,7 @@ class SpecialistRotationTests(unittest.TestCase):
             # The failed attempt's cost plus the successful one's must land in
             # the governor total and the ledger.
             self.assertAlmostEqual(result["actual_cost"], 0.000007, places=9)
-            events = [json.loads(l) for l in open(led_path, encoding="utf-8")]
+            events = [json.loads(led) for led in open(led_path, encoding="utf-8")]
             conv_events = [e for e in events if e.get("event_note") == "convergence"]
             self.assertEqual(len(conv_events), 2)
             self.assertAlmostEqual(sum(e.get("cost", 0) for e in conv_events),
@@ -471,7 +478,7 @@ class SpecialistRotationTests(unittest.TestCase):
                    comp(json.dumps(claims)),
                    comp("judge"),
                    comp(self.SPEC)])
-        result = self._panel(fake, JUDGE)
+        self._panel(fake, JUDGE)
         specialist_post = fake.chat_posts()[-1]
         prompt = specialist_post[2]["messages"][0]["content"]
         self.assertIn("RESOURCE CAP", prompt)

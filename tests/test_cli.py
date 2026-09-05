@@ -1,4 +1,3 @@
-import json
 import unittest
 from unittest import mock
 
@@ -22,6 +21,7 @@ class MaxCostWiringTests(unittest.TestCase):
             gov.check_byok.return_value = None
             gov.learned_blocked.return_value = False
             gov.record_actual.return_value = None
+            gov.cost_by_model.return_value = {}
             gov.is_free.return_value = True
             return "key", gov
 
@@ -42,6 +42,7 @@ class MaxCostWiringTests(unittest.TestCase):
             gov.preflight.return_value = (0.0, [])
             gov.learned_blocked.return_value = False
             gov.is_free.return_value = True
+            gov.cost_by_model.return_value = {}
             return "key", gov
 
         with mock.patch.object(cli, "_governor", side_effect=fake_governor), \

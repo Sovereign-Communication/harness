@@ -26,12 +26,9 @@ confidence-calibration data accumulates across bench runs.
 """
 import json
 import os
-import subprocess
 
-from .apply import ApplyEngine
+from .apply import default_run_verify, _atomic_write
 from .core import HarnessError, eprint
-from .ledger import AutonomyLedger
-from .router import Router
 
 VERIFY_TIMEOUT = 300
 
@@ -81,31 +78,44 @@ def load_manifest(path):
 
 
 class TaskSandbox:
-    """Snapshot + restore so the whole manifest is idempotent and re-runnable."""
+    """Snapshot + restore so the whole manifest is idempotent and re-runnable.
+
+    Security (audit #6): a task file must be a real file *inside* the task
+    directory -- a symlink target or a ``../`` escape would let a manifest
+    snapshot/overwrite arbitrary files.
+    """
 
     def __init__(self, task):
         self.dir = os.path.abspath(task["dir"])
         self.file = os.path.abspath(os.path.join(self.dir, task["file"]))
+        if not (self.file == self.dir
+                or self.file.startswith(self.dir.rstrip(os.sep) + os.sep)):
+            raise HarnessError(
+                f"bench task file {task['file']!r} escapes its task directory")
+        if os.path.islink(self.file):
+            raise HarnessError(
+                f"bench task file {self.file} is a symlink; refusing to snapshot it")
         self.snapshot = self.file + ".orig"
 
     def restore(self):
+        if os.path.islink(self.file):
+            raise HarnessError(f"bench task file {self.file} became a symlink")
         if not os.path.exists(self.file):
             raise HarnessError(f"bench task file not found: {self.file}")
         if os.path.exists(self.snapshot):
-            with open(self.snapshot, "r", encoding="utf-8") as src, \
-                    open(self.file, "w", encoding="utf-8") as out:
-                out.write(src.read())
+            with open(self.snapshot, "r", encoding="utf-8") as src:
+                _atomic_write(self.file, src.read())
         else:
-            with open(self.file, "r", encoding="utf-8") as src, \
-                    open(self.snapshot, "w", encoding="utf-8") as out:
-                out.write(src.read())
+            with open(self.file, "r", encoding="utf-8") as src:
+                content = src.read()
+            with open(self.snapshot, "w", encoding="utf-8") as out:
+                out.write(content)
 
 
-def _cwd_runner(cwd):
+def _cwd_runner(cwd, timeout=None):
+    bound_timeout = timeout or VERIFY_TIMEOUT
     def runner(command, timeout=VERIFY_TIMEOUT):
-        result = subprocess.run(command, shell=True, capture_output=True, text=True,
-                                timeout=timeout, cwd=cwd)
-        return result.returncode, (result.stdout or "") + (result.stderr or "")
+        return default_run_verify(command, timeout=max(timeout, bound_timeout) if timeout != VERIFY_TIMEOUT else bound_timeout, cwd=cwd)
     return runner
 
 
@@ -114,16 +124,16 @@ def run_bench(engine, manifest_tasks, runner=None):
 
     `runner` overrides the verify runner (used by tests to avoid real
     subprocesses); defaults to running the verify command in each task's root.
-    Returns the report dict.
+    The runner is passed per-task via ``task_runner`` -- the engine's own
+    ``run_verify`` is never mutated (audit #17), so concurrent or interleaved
+    use of the engine stays safe. Each task gets its own verify-timeout
+    (``task['verify_timeout']``, default 300s).
     """
     results = []
     for task in manifest_tasks:
         sandbox = TaskSandbox(task)
         sandbox.restore()
-        if runner is None:
-            engine.run_verify = _cwd_runner(sandbox.dir)
-        else:
-            engine.run_verify = runner
+        task_runner = runner or _cwd_runner(sandbox.dir, task.get("verify_timeout"))
         name = task["name"]
         eprint(f"[bench] running '{name}' ...")
         try:
@@ -138,6 +148,7 @@ def run_bench(engine, manifest_tasks, runner=None):
                 task_max_cost=task.get("task_max_cost", 0.05),
                 renew_consent=task.get("renew_consent", False),
                 max_rotations=task.get("max_rotations", 3),
+                task_runner=task_runner,
             )
         except HarnessError as e:
             r = {"status": "error", "error": str(e)}

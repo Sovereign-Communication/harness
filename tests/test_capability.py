@@ -381,7 +381,7 @@ class ProbeTest(unittest.TestCase):
                 def preflight(self, prompt_text, calls): return 0.0, []
             with tempfile.TemporaryDirectory() as d:
                 ledger = AutonomyLedger(os.path.join(d, "l.jsonl"))
-                res = probe_json_reliability("t", "k", Gov(), ["m1"], max_tokens=64,
+                probe_json_reliability("t", "k", Gov(), ["m1"], max_tokens=64,
                                              ledger=ledger)
                 # Every call persisted as a model_result event (all json_ok here).
                 mr = [e for e in ledger.entries() if e["event"] == "model_result"]

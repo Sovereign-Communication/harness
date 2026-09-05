@@ -291,10 +291,15 @@ def composite_reliability(capability, calibration, success, n_samples):
 
 # ------------------------- registry persistence -------------------------------
 
+CAPABILITIES_SCHEMA_VERSION = 1
+
+
 def load_profiles(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
+            if data.get("schema_version") != CAPABILITIES_SCHEMA_VERSION:
+                return {}, None  # foreign or older schema: treat as stale, refetch
         out = {}
         for mid, d in (data.get("models") or {}).items():
             p = CapabilityProfile.from_dict(d)
@@ -310,6 +315,7 @@ def save_profiles(path, profiles, fetched_at=None):
     if directory:
         os.makedirs(directory, exist_ok=True)
     data = {
+        "schema_version": CAPABILITIES_SCHEMA_VERSION,
         "fetched_at": fetched_at or time.time(),
         "models": {mid: p.to_dict() for mid, p in profiles.items()},
     }

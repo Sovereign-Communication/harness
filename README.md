@@ -409,12 +409,10 @@ yes. Harness treats that as a bug to design around:
 ## Tests
 
 ```bash
-python -m unittest tests.test_core tests.test_ledger tests.test_consent \
-  tests.test_router tests.test_apply tests.test_mcp tests.test_extra \
-  tests.test_byok tests.test_bench tests.test_claims tests.test_capability
+python -m unittest discover -s tests -v
 ```
 
-188 hermetic tests — no network, no key. They pin: per-token pricing (regression
+199 hermetic tests — no network, no key. They pin: per-token pricing (regression
 on a ~1,000,000x undercount bug), no-tools payloads, hard/learned BYOK handling,
 key gates, mid-batch fail-closed, reasoning modes (incl. the
 retry-without-reasoning path), panel rotation, structured consensus parsing,
@@ -431,7 +429,11 @@ layer (parsing, scoring, context hard-gate, composite-reliability math incl.
 prior-shrink, observed-JSON-updates-declared, structured correctness evidence,
 probe persistence/error accounting, routing cost ties, registry persist/refresh/TTL,
 ledger success-rate, the **real-fixture proof** that GLM-5.2 and minimax-M3 outrank
-gemma-4-31b, and the unified MorphLite backend's read-only preview guarantees).
+gemma-4-31b, and the unified MorphLite backend's read-only preview guarantees). The hardening
+suite adds: config range validation and unknown-key warnings (#15), the
+capabilities registry schema-version stamp (#15), per-model cost reporting
+and --quiet (#16), token-estimator property tests (#7/#20), and the unified
+diff + multi-file apply paths (#11/#12).
 
 ## License
 

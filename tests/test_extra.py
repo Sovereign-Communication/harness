@@ -3,9 +3,8 @@ import unittest
 from harness.core import (
     SpendGovernor, panel_judge, chat, looks_reasoning, _effort_to_send,
     _build_reasoning_param, _parse_consensus, discover_free_models,
-    resolve_models, HarnessError,
+    resolve_models,
 )
-from harness.config import OPENROUTER_CHAT_URL
 from tests._fake import FakeTransport, m, comp
 
 JUDGE = "inclusionai/ling-2.6-flash"
