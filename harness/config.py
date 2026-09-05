@@ -17,6 +17,9 @@ free router and serves as a final fallback lane.
 """
 import json
 import os
+import sys
+
+from .errors import HarnessError
 
 CONFIG_DIR = os.path.expanduser("~/.config/harness")
 
@@ -77,41 +80,50 @@ def save_byok_prefixes(path, prefixes):
         json.dump(sorted(prefixes), f, indent=2)
 
 # ---- Free-tier lanes (default) ----
-# Curated from the live OpenRouter free list (Sept 2026). Order matters:
-# cheaper/more reliable first; the router rotates down the list and falls
-# back to openrouter/free. Run `harness spend --models` (or discover_models)
-# to refresh against the live list.
+# Curated from the live OpenRouter free list (Sept 2026), ordered by observed
+# track record in real audits and bench probes: JSON-emission reliability,
+# willingness to defer, and truncation behavior. north-mini-code is DEMOTED
+# from the judge seat (and the panel head): as a reasoning model it burned
+# its budget on hidden thinking and returned reasoning-only output in most
+# live runs. The router rotates down the list and falls back to
+# openrouter/free. Run `harness spend --models` (or discover_models) to
+# refresh against the live list.
 FREE_PANEL_POOL = [
-    "inclusionai/ling-3.0-flash-fin:free",
-    "cohere/north-mini-code:free",
     "google/gemma-4-31b-it:free",
+    "minimax/minimax-m3:free",
+    "inclusionai/ling-3.0-flash-fin:free",
     "z-ai/glm-5.2:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
-    "minimax/minimax-m3:free",
+    "cohere/north-mini-code:free",
     "openrouter/free",
 ]
-# Judge must emit strict JSON; prefer a fast, non-reasoning, JSON-reliable free
-# model over a reasoning-heavy one that burns its budget on hidden thinking.
-FREE_JUDGE = "cohere/north-mini-code:free"
+# Judge must emit strict JSON. gemma is the most JSON-reliable free emitter in
+# live runs (structured claims, consent, and specialist lanes all included);
+# a reasoning-heavy judge burns its budget on hidden thinking instead.
+FREE_JUDGE = "google/gemma-4-31b-it:free"
 FREE_APPLY_POOL = [
-    "cohere/north-mini-code:free",
     "google/gemma-4-31b-it:free",
-    "z-ai/glm-5.2:free",
-    "nvidia/nemotron-3-super-120b-a12b:free",
     "minimax/minimax-m3:free",
+    "z-ai/glm-5.2:free",
+    "inclusionai/ling-3.0-flash-fin:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "cohere/north-mini-code:free",
     "openrouter/free",
 ]
 
 # Convergence-specialist fallback ladder, tried in order after the primary
-# (which defaults to the judge). GLM-5.2 is frontier-class and the strongest
-# free reasoner on the router, so it leads; gemma and minimax are the most
-# JSON-reliable free emitters behind it. The specialist rotates down this
-# ladder when the primary returns an HTTP error, a paid-BYOK route,
-# reasoning-only output, truncation, or unparseable JSON.
+# (which defaults to the judge). Ordered by OBSERVED track record, not
+# declared capability: minimax (32/32) and gemma (38/38) are perfect emitters
+# and lead; GLM-5.2 is 0/22 in the ledger -- declared frontier-class but
+# falsified by every probe and live call -- so it goes last, tried only when
+# everything proven has failed. Rotation must happen BEFORE the next start,
+# never after a first failure the ledger already predicted. The specialist
+# rotates down this ladder on HTTP error, paid-BYOK route, reasoning-only
+# output, truncation, or unparseable JSON.
 SPECIALIST_POOL_FREE = [
-    "z-ai/glm-5.2:free",
-    "google/gemma-4-31b-it:free",
     "minimax/minimax-m3:free",
+    "google/gemma-4-31b-it:free",
+    "z-ai/glm-5.2:free",
 ]
 
 # ---- Paid lanes (use_free=False) ----
@@ -170,7 +182,32 @@ def _read_key_file(path):
     return None
 
 
-def resolve_api_key():
+def _warn_insecure_keyfile(path):
+    """Loudly warn when a key file is group/world readable (POSIX only).
+
+    A leaked OpenRouter key spends real money, so a permissive key file is a
+    silent credential hazard. We warn rather than refuse: the user's working
+    setup must not break, but the failure mode must not be silent.
+    """
+    if os.name == "nt":
+        return
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except OSError:
+        return
+    if mode & 0o077:
+        print(f"[warn] key file {path} is group/world readable (mode "
+              f"{oct(mode)}); restrict it with chmod 600.", file=sys.stderr)
+
+
+def resolve_api_key(*, expected_label=None):
+    """Resolve the OpenRouter key: env file first, then the environment.
+
+    ``expected_label`` is an exact-match guard (audit #9b): when set, a key
+    whose label does not match exactly is refused rather than silently used,
+    and the label is never echoed into error text (no credential leakage).
+    """
+    key = None
     for p in (
         os.path.join(os.path.expanduser("~/.config/scmorc"), "openrouter_fusion.env"),
         os.path.join(os.path.expanduser("~/.config/scmorc"), "openrouter.env"),
@@ -178,8 +215,19 @@ def resolve_api_key():
     ):
         k = _read_key_file(p)
         if k:
-            return k
-    return os.environ.get("OPENROUTER_API_KEY")
+            _warn_insecure_keyfile(p)
+            key = k
+            break
+    if key is None:
+        key = os.environ.get("OPENROUTER_API_KEY")
+        if key:
+            print("[warn] using OPENROUTER_API_KEY from the process environment; "
+                  "prefer a 0600 key file for interactive use.", file=sys.stderr)
+    if key and expected_label:
+        label = key.split("-")[2] if key.count("-") >= 2 else ""
+        if label != expected_label:
+            raise ValueError("resolved key does not match the expected key label")
+    return key
 
 
 def _as_bool(value):
@@ -243,12 +291,46 @@ class Settings:
             "default_require_consent", "allow_escalation")}
 
 
+def _validate_settings_values(use_free, max_cost, task_max_cost, max_tokens,
+                              apply_max_tokens, reasoning_effort,
+                              reasoning_token_budget, max_panelists, max_rotations):
+    """Range-check every numeric/enum setting (audit #15): a typo like
+    max_cost=0.02 dollars configured as `2` must not silently authorize a
+    100x larger spend."""
+    problems = []
+    if max_cost <= 0:
+        problems.append("max_cost must be > 0 (dollars)")
+    if task_max_cost <= 0:
+        problems.append("task_max_cost must be > 0 (dollars)")
+    if task_max_cost > max_cost:
+        problems.append("task_max_cost exceeds max_cost; a single task could "
+                        "spend the whole session ceiling")
+    if max_tokens < 64 or max_tokens > 200000:
+        problems.append("max_tokens out of range [64, 200000]")
+    if apply_max_tokens < 64 or apply_max_tokens > 200000:
+        problems.append("apply_max_tokens out of range [64, 200000]")
+    if reasoning_effort not in ("auto", "off", "none", "low", "medium", "high", "on"):
+        problems.append(f"reasoning_effort {reasoning_effort!r} is not a valid effort mode")
+    if not 0 < reasoning_token_budget <= 1:
+        problems.append("reasoning_token_budget must be in (0, 1]")
+    if max_panelists < 1 or max_panelists > 10:
+        problems.append("max_panelists out of range [1, 10]")
+    if max_rotations < 0 or max_rotations > 20:
+        problems.append("max_rotations out of range [0, 20]")
+    if problems:
+        raise HarnessError("invalid configuration: " + "; ".join(problems))
+
+
 def load_settings(overrides=None):
     cfg = {}
     cfg_path = os.path.join(CONFIG_DIR, "config.json")
     if os.path.exists(cfg_path):
         with open(cfg_path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
+    unknown = set(cfg) - set(_ENV_NAMES)
+    if unknown:
+        print("[warn] unknown config keys ignored: " + ", ".join(sorted(unknown))
+              + f" (valid keys are in {cfg_path})", file=sys.stderr)
 
     def get(key, default):
         if overrides and key in overrides:
@@ -276,6 +358,23 @@ def load_settings(overrides=None):
     apply_pool = _split_list(str(get("apply_pool", ",".join(
         _dedup([apply_model] + default_apply_pool))))) or [apply_model]
 
+    # -- numeric range validation (fail closed on nonsense) ------------------
+    def _num(key, cast, lo, hi, default):
+        v = cast(get(key, default))
+        if not (lo <= v <= hi):
+            raise HarnessError(
+                key + "=" + str(v) + " is out of range [" + str(lo) + ", " + str(hi) + "]")
+        return v
+
+    max_cost = _num("max_cost", float, 0, 1000, DEFAULT_MAX_COST)
+    task_max_cost = _num("task_max_cost", float, 0, 1000, DEFAULT_TASK_MAX_COST)
+    max_tokens = _num("max_tokens", int, 64, 1_000_000, DEFAULT_MAX_TOKENS)
+    apply_max_tokens = _num("apply_max_tokens", int, 64, 1_000_000, DEFAULT_APPLY_MAX_TOKENS)
+    reasoning_token_budget = _num("reasoning_token_budget", float, 0.05, 0.95, 0.4)
+    max_panelists = _num("max_panelists", int, 1, 16, 3)
+    max_rotations = _num("max_rotations", int, 0, 20, 3)
+
+
     return Settings(
         use_free=use_free,
         panel=panel,
@@ -286,14 +385,14 @@ def load_settings(overrides=None):
         apply_model=apply_model,
         apply_pool=apply_pool,
         escalation_model=get("escalation_model", None),
-        max_cost=float(get("max_cost", DEFAULT_MAX_COST)),
-        task_max_cost=float(get("task_max_cost", DEFAULT_TASK_MAX_COST)),
-        max_tokens=int(get("max_tokens", DEFAULT_MAX_TOKENS)),
-        apply_max_tokens=int(get("apply_max_tokens", DEFAULT_APPLY_MAX_TOKENS)),
+        max_cost=max_cost,
+        task_max_cost=task_max_cost,
+        max_tokens=max_tokens,
+        apply_max_tokens=apply_max_tokens,
         reasoning_effort=str(get("reasoning_effort", "auto")),
-        reasoning_token_budget=float(get("reasoning_token_budget", 0.4)),
-        max_panelists=int(get("max_panelists", 3)),
-        max_rotations=int(get("max_rotations", 3)),
+        reasoning_token_budget=reasoning_token_budget,
+        max_panelists=max_panelists,
+        max_rotations=max_rotations,
         renew_consent=_as_bool(get("renew_consent", True)),
         ledger_path=str(get("ledger_path", os.path.join(CONFIG_DIR, "ledger.jsonl"))),
         expect_key_label=get("expect_key_label", os.environ.get("FUSIONLITE_EXPECT_KEY_LABEL")),

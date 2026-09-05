@@ -38,7 +38,7 @@ def run(feed, posts=None):
     server.stdout = out
     server.stdin = io.StringIO(feed)
     server.serve_forever()
-    lines = [json.loads(l) for l in out.getvalue().splitlines() if l.strip()]
+    lines = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
     return transport, lines
 
 

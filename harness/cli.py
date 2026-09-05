@@ -22,6 +22,12 @@ Exit codes: 0 success, 1 fatal refusal/error, 2 verification failed,
 """
 import argparse
 import json
+from .consent import probe_consent
+from .core import (
+    HarnessError, SpendGovernor, eprint, panel_judge, discover_free_models,
+)
+from .ledger import AutonomyLedger
+from .router import Router
 import sys
 import uuid
 
@@ -29,8 +35,8 @@ from ._http import HttpTransport
 from .apply import ApplyEngine, validate_continuation
 from .bench import load_manifest, run_bench
 from .claims import (
-    build_claims_prompt, lint_claims, load_claims_manifest,
-    load_definitions_file, parse_claims,
+    build_claims_prompt, load_claims_manifest,
+    load_definitions_file,
 )
 from .config import load_settings, resolve_api_key
 
@@ -56,12 +62,6 @@ def _read_json(path, what):
         return json.loads(text)
     except ValueError as e:
         raise HarnessError(f"{what} is not valid JSON: {path} ({e})")
-from .core import (
-    HarnessError, SpendGovernor, eprint, panel_judge, discover_free_models,
-)
-from .consent import probe_consent
-from .ledger import AutonomyLedger
-from .router import Router
 
 
 def _emit(result, out):
@@ -177,6 +177,7 @@ def _cmd_verify(opts, settings):
         claim_polarity={cid.strip(): "reassurance" for cid in
                         (opts.reassurance_claims or "").split(",") if cid.strip()},
         capability_profiles=profiles, report=report, free_tier=settings.use_free)
+    result["cost_by_model"] = gov.cost_by_model()
     if claims_lint is not None:
         result["claims_grounding"] = {
             "ok": claims_lint["ok"],
@@ -235,18 +236,47 @@ def _cmd_apply(opts, settings):
         reasoning_token_budget=settings.reasoning_token_budget,
         default_max_rotations=settings.max_rotations,
         default_task_max_cost=settings.task_max_cost)
-    result = engine.apply_edit(
-        task_id=opts.task_id, file_path=opts.file, instruction=opts.instruction,
-        edit_snippet=opts.edit_snippet, verify_cmd=opts.verify,
-        max_rounds=opts.max_rounds, require_consent=opts.require_consent,
-        model=opts.model, max_tokens=opts.max_tokens,
-        task_max_cost=opts.task_max_cost,
-        allow_escalation=opts.allow_escalation,
-        reasoning_effort=opts.reasoning_effort,
-        renew_consent=opts.renew_consent,
-        max_rotations=opts.max_rotations,
-        continuation=continuation, backend=opts.backend,
-        verify_only=opts.verify_only, max_lines=opts.max_lines)
+    # Multi-file batch (#12): repeated --file flags run one governed session
+    # per file through the same engine/router/gate, sharing the task budget.
+    files = opts.file if isinstance(opts.file, list) else ([opts.file] if opts.file else [])
+    if continuation:
+        files = [continuation.get("file_path")]
+    if not files:
+        raise HarnessError("apply requires --file (repeatable for multi-file batches)")
+    batch = []
+    shared_gate = None
+    for i, fp in enumerate(files):
+        task_id_i = opts.task_id if (opts.task_id and len(files) == 1) else (
+            (opts.task_id or "apply") + ("" if len(files) == 1 else f"-{i + 1}"))
+        r = engine.apply_edit(
+            task_id=task_id_i, file_path=fp, instruction=opts.instruction,
+            edit_snippet=opts.edit_snippet, verify_cmd=opts.verify,
+            max_rounds=opts.max_rounds, require_consent=opts.require_consent,
+            model=opts.model, max_tokens=opts.max_tokens,
+            task_max_cost=opts.task_max_cost,
+            allow_escalation=opts.allow_escalation,
+            reasoning_effort=opts.reasoning_effort,
+            renew_consent=opts.renew_consent,
+            max_rotations=opts.max_rotations,
+            continuation=continuation, backend=opts.backend,
+            verify_only=opts.verify_only, max_lines=opts.max_lines)
+        batch.append(r)
+        if r.get("status") not in ("ok", "preview"):
+            break  # fail fast: stop the batch at the first non-success
+        shared_gate = r.get("verify", {}).get("command") if isinstance(r.get("verify"), dict) else shared_gate
+    if len(batch) == 1:
+        result = batch[0]
+    else:
+        statuses = {}
+        total = 0.0
+        for r in batch:
+            statuses[r.get("status")] = statuses.get(r.get("status"), 0) + 1
+            total += float(r.get("cost") or 0.0)
+        result = {"status": "ok" if all(r.get("status") in ("ok", "preview") for r in batch)
+                  else batch[-1].get("status"),
+                  "batch": True, "files": files, "results": batch,
+                  "statuses": statuses, "cost": total,
+                  "verify": {"command": shared_gate, "passed": True} if shared_gate else None}
     _emit(result, opts.out)
     if result["status"] == "verify_failed":
         sys.exit(2)
@@ -326,7 +356,7 @@ def _cmd_ledger(opts, settings):
 
 
 def _cmd_bench(opts, settings):
-    api_key, gov = _governor(settings)
+    api_key, gov = _governor(settings, opts.max_cost)
     ledger = AutonomyLedger(settings.ledger_path)
     engine = ApplyEngine(
         HttpTransport(), api_key, gov, ledger, _router(settings),
@@ -372,7 +402,7 @@ def _cmd_capabilities(opts, settings):
     from .capability import (ensure_profiles, model_reliability, capability_fitness,
                              probe_json_reliability, capability_score)
     from .config import CAPABILITIES_PATH, CAPABILITIES_TTL
-    api_key, gov = _governor(settings)
+    api_key, gov = _governor(settings, opts.max_cost)
     ledger = AutonomyLedger(settings.ledger_path)
     profiles, fetched_at, refreshed = ensure_profiles(
         CAPABILITIES_PATH, gov.fetch_models, ttl=CAPABILITIES_TTL, force=opts.refresh)
@@ -500,12 +530,15 @@ def main(argv=None):
                          "first (default: configured specialist_pool; free lane leads with GLM-5.2)")
     pv.add_argument("--reassurance-claims", default=None,
                     help="comma-separated claim ids phrased as reassurance ('X is correct'); "
-                         "excluded from the defect convergence gate")
+                         "excluded from the defect convergence gate")
+    pv.add_argument("--quiet", action="store_true",
+                      help="suppress stderr progress notes; report only")
     pv.add_argument("--task-id", default=None)
     pv.add_argument("--out", default=None)
 
     pa = sub.add_parser("apply", help="Scoped code edit with a verification loop + consent continuation")
-    pa.add_argument("--file", default=None)
+    pa.add_argument("--file", action="append", default=None,
+                    help="target file; repeat the flag for a multi-file batch (one session, shared gate)")
     pa.add_argument("--instruction", default=None)
     pa.add_argument("--edit-snippet", default=None)
     pa.add_argument("--verify", default=None, help="verification gate command (e.g. 'cargo check')")
@@ -522,7 +555,7 @@ def main(argv=None):
     pa.add_argument("--reasoning-effort", default=None,
                     choices=["auto", "off", "none", "low", "medium", "high", "on"])
     pa.add_argument("--max-rotations", type=int, default=None)
-    pa.add_argument("--backend", choices=["harness", "morph"], default="harness",
+    pa.add_argument("--backend", choices=["harness", "morph", "diff"], default="harness",
                     help="transformation backend; 'morph' uses Morph V3 Fast's structured edit prompt")
     pa.add_argument("--verify-only", action="store_true",
                     help="return the proposed content without writing or running the verification gate")
@@ -530,6 +563,8 @@ def main(argv=None):
                     help="per-file line ceiling (1-500)")
     pa.add_argument("--continue-from", default=None, help="resume a deferred task from state.json")
     pa.add_argument("--out", default=None)
+    pa.add_argument("--quiet", action="store_true",
+                  help="suppress stderr progress notes; report only")
 
     pc = sub.add_parser("continue", help="Continue a deferred/incomplete apply task")
     pc.add_argument("--state", required=True, help="JSON state file from a deferred/verify_failed apply")
@@ -550,7 +585,7 @@ def main(argv=None):
     pc.add_argument("--reasoning-effort", default=None,
                     choices=["auto", "off", "none", "low", "medium", "high", "on"])
     pc.add_argument("--max-rotations", type=int, default=None)
-    pc.add_argument("--backend", choices=["harness", "morph"], default="harness",
+    pc.add_argument("--backend", choices=["harness", "morph", "diff"], default="harness",
                     help="backend for a new continuation; saved continuation metadata takes precedence")
     pc.add_argument("--verify-only", action="store_true",
                     help="return the proposed content without writing or running the verification gate")
@@ -585,6 +620,8 @@ def main(argv=None):
     pb.add_argument("--with-consent", dest="require_consent", action="store_true",
                     help="ask consent before each task (default: off -- batch/CI mode)")
     pb.add_argument("--max-rounds", type=int, default=None)
+    pb.add_argument("--max-cost", type=float, default=None,
+                    help="session cost ceiling in dollars (default: configured max_cost)")
     pb.add_argument("--out", default=None)
 
     plint = sub.add_parser("lint-claims",
@@ -605,11 +642,15 @@ def main(argv=None):
     pcap.add_argument("--bench", action="store_true",
                       help="run the empirical JSON probe on the free pool models (live, needs key)")
     pcap.add_argument("--json", action="store_true", help="emit raw JSON only (no table)")
+    pcap.add_argument("--max-cost", type=float, default=None,
+                      help="session cost ceiling in dollars (default: configured max_cost)")
     pcap.add_argument("--out", default=None)
 
     sub.add_parser("spend", help="Key identity & spend status")
 
     opts = ap.parse_args(args)
+    import harness.core as _core
+    _core.QUIET = bool(getattr(opts, "quiet", False))
     settings = load_settings()
 
     try:
@@ -638,6 +679,9 @@ def main(argv=None):
     except HarnessError as e:
         print(f"[FATAL] {e}", file=sys.stderr)
         sys.exit(1)
+    except KeyboardInterrupt:
+        print("[interrupted] aborted by user (Ctrl-C); no further spend", file=sys.stderr)
+        sys.exit(130)
 
 
 if __name__ == "__main__":

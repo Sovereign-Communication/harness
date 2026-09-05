@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 
-from harness.consent import probe_consent, consent_renew, DECISIONS
+from harness.consent import probe_consent, consent_renew
 from harness.core import SpendGovernor
 from harness.ledger import AutonomyLedger
 from tests._fake import FakeTransport, m, comp, consent

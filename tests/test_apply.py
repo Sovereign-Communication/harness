@@ -369,7 +369,7 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(state["remaining_scope"], "finish +0")
 
         # run 2: resume from the deferred state with a fresh model
-        p2 = self.make_file()  # same original file path semantics; reuse state path
+        self.make_file()  # same original file path semantics; reuse state path
         # reuse the same engine but with a completing model response
         fake2 = FakeTransport(models=[m(APPLY), m(JUDGE), m(ESC), m(CODER_A), m(CODER_B)],
                               posts=[comp(CHANGED)])

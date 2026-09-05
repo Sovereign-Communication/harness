@@ -6,10 +6,11 @@ call the harness tools directly. Zero dependencies. The server writes ONLY
 valid MCP messages to stdout; all human logging goes to stderr via core.eprint.
 """
 import json
+import os
 import sys
 import uuid
 
-from .core import HarnessError, panel_judge
+from .core import HarnessError, ToolCancelled, panel_judge
 from .apply import validate_continuation
 from .consent import probe_consent
 
@@ -19,7 +20,8 @@ SERVER_VERSION = "0.1.0"
 
 class McpServer:
     def __init__(self, *, transport, api_key, governor, ledger, router, engine,
-                 max_panelists=3, use_free=True, stdin=None, stdout=None):
+                 max_panelists=3, use_free=True, stdin=None, stdout=None,
+                 allow_verify=False, allowed_roots=None):
         self.transport = transport
         self.api_key = api_key
         self.governor = governor
@@ -31,6 +33,13 @@ class McpServer:
         self.stdin = stdin or sys.stdin
         self.stdout = stdout or sys.stdout
         self._capability = None  # lazily-built profiles; report is always fresh
+        self._cancelled = set()  # request ids aborted via notifications/cancelled
+        # Remote-safety gates: verify gates run real commands, and apply_edit
+        # writes real files. Over MCP (a remote-dispatch surface) both require
+        # explicit opt-in per request (allow_verify) or server configuration
+        # (allowed_roots) rather than trusting the caller blindly (#5/#6).
+        self.allow_verify = bool(allow_verify)
+        self.allowed_roots = [os.path.abspath(r) for r in (allowed_roots or [])]
 
     # ---------------- tool definitions ----------------
     def _tools(self):
@@ -64,14 +73,15 @@ class McpServer:
                     "file": {"type": "string", "description": "Path to the file to edit"},
                     "instruction": {"type": "string", "description": "What to change (<=1000 chars)"},
                     "edit_snippet": {"type": "string", "description": "Intent anchor snippet (<=2000 chars)"},
-                    "verify_cmd": {"type": "string", "description": "Shell command gate, e.g. 'cargo check'"},
+                    "verify_cmd": {"type": "string", "description": "Shell command gate, e.g. 'cargo check' (requires server allow_verify)"},
+                    "allow_verify": {"type": "boolean", "description": "Explicit confirmation to run a verify gate in this request (required when allow_verify is not enabled server-side)"},
                     "max_rounds": {"type": "integer", "default": 3},
                     "require_consent": {"type": "boolean", "description": "Ask the model if it accepts the work first"},
                     "renew_consent": {"type": "boolean", "description": "Re-check consent before each round (continued consensus)"},
                     "max_rotations": {"type": "integer", "description": "How many model rotations to allow on error"},
                     "reasoning_effort": {"type": "string", "enum": ["auto", "off", "none", "low", "medium", "high", "on"]},
                     "model": {"type": "string", "description": "Explicit model override; otherwise the corrected apply route is used"},
-                    "backend": {"type": "string", "enum": ["harness", "morph"], "default": "harness", "description": "Use MorphLite-compatible structured editing when set to morph"},
+                    "backend": {"type": "string", "enum": ["harness", "morph", "diff"], "default": "harness", "description": "morph: MorphLite-compatible structured editing; diff: strict unified-diff editing (no file-size ceiling)"},
                     "verify_only": {"type": "boolean", "description": "Return the proposal without writing or running the verification gate"},
                     "max_lines": {"type": "integer", "default": 500, "description": "Per-file line ceiling (1-500)"},
                     "task_max_cost": {"type": "number", "description": "Per-task cost ceiling"},
@@ -167,6 +177,13 @@ class McpServer:
                 },
             }
         if method in ("notifications/initialized", "notifications/cancelled"):
+            if method == "notifications/cancelled":
+                # Audit #13: cancel must actually abort. Mark the in-flight
+                # request id cancelled; the tool loop checks this between
+                # rounds and raises ToolCancelled so the engine unwinds.
+                cancelled_id = (msg.get("params") or {}).get("requestId")
+                if cancelled_id is not None:
+                    self._cancelled.add(cancelled_id)
             return None
         if method == "ping":
             return {"jsonrpc": "2.0", "id": msg.get("id"), "result": {}}
@@ -187,6 +204,10 @@ class McpServer:
         if not tool:
             return {"jsonrpc": "2.0", "id": rid,
                     "error": {"code": -32602, "message": f"Unknown tool: {name}"}}
+        if rid in self._cancelled:
+            self._cancelled.discard(rid)
+            return {"jsonrpc": "2.0", "id": rid,
+                    "error": {"code": -32800, "message": "Request cancelled before execution"}}
         try:
             result = self._invoke(name, args)
             return {
@@ -196,11 +217,26 @@ class McpServer:
                     "isError": False,
                 },
             }
-        except (HarnessError, ValueError) as e:
+        except ToolCancelled:
+            self._cancelled.discard(rid)
+            return {"jsonrpc": "2.0", "id": rid,
+                    "error": {"code": -32800, "message": "Request cancelled"}}
+        except HarnessError as e:
+            # Structured error codes (#13): stable machine-readable kinds
+            # instead of prose-only failures.
             return {
                 "jsonrpc": "2.0", "id": rid, "result": {
-                    "content": [{"type": "text", "text": f"{type(e).__name__}: {e}"}],
+                    "content": [{"type": "text", "text": f"HarnessError: {e}"}],
                     "isError": True,
+                    "errorKind": getattr(e, "kind", "harness_error"),
+                },
+            }
+        except ValueError as e:
+            return {
+                "jsonrpc": "2.0", "id": rid, "result": {
+                    "content": [{"type": "text", "text": f"ValueError: {e}"}],
+                    "isError": True,
+                    "errorKind": "invalid_input",
                 },
             }
 
@@ -249,6 +285,27 @@ class McpServer:
             # backend and preview mode on resume.
             continuation = validate_continuation(args.get("continuation"))
             backend = continuation.get("backend", args.get("backend", "harness"))
+            # Remote verify gates (#5): running real commands over MCP requires
+            # either the explicit per-request confirmation flag or a server
+            # that was configured with allow_verify=True.
+            effective_verify_cmd = args.get("verify_cmd")
+            if not effective_verify_cmd and continuation.get("verify_cmd"):
+                effective_verify_cmd = continuation["verify_cmd"]
+            if effective_verify_cmd and not (self.allow_verify or args.get("allow_verify")):
+                raise HarnessError(
+                    "verify_cmd was supplied but verify gates are not enabled for this "
+                    "MCP session; re-send with allow_verify=true to confirm, or configure "
+                    "the server with allow_verify=True")
+            # Remote write containment (#6): when the server declares allowed
+            # roots, every target file (and continuation target) must live in
+            # one of them.
+            target_file = args.get("file") or continuation.get("file_path")
+            if self.allowed_roots and target_file:
+                t = os.path.abspath(target_file)
+                if not any(t == r or t.startswith(r + os.sep) for r in self.allowed_roots):
+                    raise HarnessError(
+                        f"file {target_file!r} is outside every allowed root for this "
+                        "MCP session")
             profiles, report = self._capability_context()
             if profiles is not None and backend == "harness":
                 from .capability import order_pool as _op

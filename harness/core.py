@@ -27,8 +27,10 @@ On top of the original engine this adds:
     separates responder agreement from fail-closed gate eligibility, so a
     transport shortfall is reported as a shortfall rather than disagreement.
 """
+import concurrent.futures
 import json
 import sys
+import threading
 import time
 
 from .config import (
@@ -36,19 +38,42 @@ from .config import (
     BYOK_DENYLIST_PREFIXES, BYOK_PREFIXES_PATH, load_byok_prefixes,
     save_byok_prefixes, DEFAULT_MAX_COST, DEFAULT_MAX_TOKENS,
 )
+from .errors import HarnessError as _BaseHarnessError
 from ._http import Transport  # noqa: F401  (documenting the transport seam)
 
 
-class HarnessError(Exception):
+class HarnessError(_BaseHarnessError):  # canonical home: harness.errors
     """A fatal refusal or failure. Message is user-presentable."""
+    kind = "harness_error"
 
+
+class ToolCancelled(Exception):
+    """Raised inside a long-running tool when its request id is cancelled
+    via notifications/cancelled (#13). Not an error of the work itself."""
+
+
+# --quiet: suppress progress chatter but never warnings/fatals.
+QUIET = False
+_AUDIBLE_PREFIXES = ("[warn]", "[FATAL]", "[claims-lint]", "[BYOK]")
 
 def eprint(*a, **kw):
+
+    if QUIET and a and not str(a[0]).startswith(_AUDIBLE_PREFIXES):
+        return
     print(*a, file=sys.stderr, **kw)
 
 
 def estimate_prompt_tokens(text):
-    return int(len(text.split()) * 1.5) + 50
+    """Approximate the prompt's token count without a tokenizer.
+
+    max(words * 1.5, chars / 4): the words heuristic alone badly undercounts
+    symbol-dense source code (JSON, Rust generics), where ~4 chars/token
+    dominates. Taking the larger of the two keeps preflight ceilings honest
+    in the direction of over- rather than under-estimating cost.
+    """
+    if not text:
+        return 50
+    return max(int(len(text.split()) * 1.5) + 50, int(len(text) / 4) + 1)
 
 
 def _extract_json(text):
@@ -86,8 +111,9 @@ def _extract_json(text):
 
 
 REASONING_FALLBACK_PREFIX = "[NOTE] model returned no content"
-MAX_429_RETRIES = 1
-RETRY_429_BACKOFF_SECONDS = 0.05
+MAX_429_RETRIES = 2
+# Backoff base for bounded 429 retries; Retry-After headers take precedence.
+RETRY_429_BACKOFF_SECONDS = 0.5
 DEFAULT_CONVERGENCE_PANEL_TOKENS = 4096
 
 
@@ -221,8 +247,14 @@ class SpendGovernor:
         self.expect_key_label = expect_key_label
         self.max_cost = max_cost
         self.spent = 0.0
+        self._cost_by_model = {}
+        # Fan-out safety (#10): spend mutations happen from panel threads.
+        self._spend_lock = threading.RLock()
         self.key_info = None
         self._pricing_cache = {}
+        self._pricing_fetched_at = 0.0
+        self._models_fetched_at = 0.0
+        self._CATALOG_TTL = 900.0  # refresh the live catalog mid-run every 15 min
         self._models = None
         self._byok_path = byok_prefixes_path
         self._learned_byok = set(load_byok_prefixes(byok_prefixes_path))
@@ -242,11 +274,14 @@ class SpendGovernor:
         remaining = data.get("limit_remaining", 0)
         eprint(f"[OK] using key '{label}', limit=${limit}, remaining=${remaining:.6f} "
                f"(resets: {data.get('limit_reset')})")
-        if self.expect_key_label is not None and self.expect_key_label not in label:
+        if self.expect_key_label is not None and label != self.expect_key_label:
+            # Exact match (audit #9b): a substring match let a wrong-but-
+            # similarly-named key through, and echoing labels into errors is
+            # needless exposure. Only a binary match/mismatch is reported.
             raise HarnessError(
-                f"expected key label containing '{self.expect_key_label}' but this key's "
-                f"actual label is '{label}'. Refusing to run -- fix the key source, or drop "
-                f"--expect-key-label if this key is actually correct.")
+                "resolved key label does not exactly match --expect-key-label. "
+                "Refusing to run -- fix the key source, or drop --expect-key-label "
+                "if this key is actually correct.")
         self.key_info = {
             "label": label, "limit": limit, "remaining": remaining,
             "limit_reset": data.get("limit_reset"),
@@ -257,6 +292,10 @@ class SpendGovernor:
         if not self.key_info:
             self.verify_key()
         return dict(self.key_info, session_spent=self.spent)
+
+    def cost_by_model(self):
+        """Actual session spend per model label, for per-run cost reports."""
+        return dict(sorted(self._cost_by_model.items(), key=lambda kv: -kv[1]))
 
     # 3
     def check_byok(self, model_id):
@@ -292,9 +331,10 @@ class SpendGovernor:
 
     # 2
     def fetch_pricing(self, model_ids):
-        missing = [m_ for m_ in model_ids if m_ not in self._pricing_cache]
+        missing = [m_ for m_ in model_ids if m_ not in self._pricing_cache
+                   or time.time() - self._pricing_fetched_at > self._CATALOG_TTL]
         if missing:
-            models = self.fetch_models()
+            models = self.fetch_models(refresh=True)
             by_id = {m_["id"]: m_ for m_ in models}
             for mid in missing:
                 if mid not in by_id:
@@ -308,16 +348,25 @@ class SpendGovernor:
                         float(p.get("prompt", "0")), float(p.get("completion", "0")))
                 except (TypeError, ValueError):
                     raise HarnessError(f"could not parse pricing for '{mid}': {p}")
+            self._pricing_fetched_at = time.time()
         return {m_: self._pricing_cache[m_] for m_ in model_ids}
 
-    def fetch_models(self):
-        """Live GET /models, cached per governor instance."""
-        if self._models is None:
+    def fetch_models(self, refresh=False):
+        """Live GET /models, cached per governor instance. The cache expires
+        after _CATALOG_TTL so a long run picks up pricing/pool changes
+        mid-run instead of trusting a stale snapshot forever (#18)."""
+        stale = (self._models is None
+                 or time.time() - self._models_fetched_at > self._CATALOG_TTL)
+        if refresh or stale:
             try:
                 self._models = self.transport.get(OPENROUTER_MODELS_URL, self.api_key,
                                                   timeout=20).get("data", [])
+                self._models_fetched_at = time.time()
             except Exception as e:
-                raise HarnessError(f"could not fetch model list: {e}")
+                if self._models is not None:
+                    eprint(f"[warn] model list refresh failed, using cached catalog: {e}")
+                else:
+                    raise HarnessError(f"could not fetch model list: {e}")
         return self._models
 
     def preflight(self, prompt_text, calls):
@@ -331,7 +380,7 @@ class SpendGovernor:
         try in ``calls``.
         """
         if not calls:
-            return 0.0, []
+            return 0.0, []  # noqa: reachable pre-guard kept for clarity
         models = [m_ for _, m_, _, _ in calls]
         pricing = self.fetch_pricing(models)
         prompt_tokens = estimate_prompt_tokens(prompt_text)
@@ -362,7 +411,7 @@ class SpendGovernor:
                 f"actual running cost ${self.spent + actual:.6f} would exceed ceiling "
                 f"${self.max_cost:.6f} (after '{label}'). Aborting.")
         self.spent += actual
-
+        self._cost_by_model[label] = (self._cost_by_model.get(label, 0.0) + actual)
 
 # ------------------------- live discovery -------------------------
 
@@ -665,8 +714,10 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
         "visible content, starting with {.",
     ]
     for r in panel_results:
-        body = (r.get("content") or "")[:2000]
-        lines.append(f"--- Model: {r.get('model')} ---\n{body}")
+        # Full per-claim JSON: these are short, structured verdicts, and the
+        # preflight reserve (target * panel_tokens) already covers them. A
+        # truncated vote can silently drop claims and corrupt the tally.
+        lines.append(f"--- Model: {r.get('model')} ---\n{r.get('content') or ''}")
     prompt = "\n".join(lines)
 
     # Build the rotation ladder: primary first, then fallbacks (deduped,
@@ -846,115 +897,181 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     eprint(f"[preflight] TOTAL worst-case: ${total_estimate:.6f} "
            f"(ceiling: ${governor.max_cost:.6f})")
 
+    def _run_panel_slot(model):
+        # One panel seat: call, gate, bill, ledger. Thread-safe: the only
+        # shared mutable state (governor spend, ledger appends) locks.
+            eprint(f"[panel] calling {model} ...")
+            t0 = time.time()
+            retry_count = 0
+            response_cost = 0.0
+            response_cost_recorded = False
+            while True:
+                status, resp = chat(transport, api_key, model,
+                                    [{"role": "user", "content": prompt}], panel_tokens,
+                                    reasoning_effort, reasoning_token_budget, governor)
+                response_cost = _reported_cost(resp)
+                response_cost_recorded = False
+                if status != 429 or retry_count >= MAX_429_RETRIES:
+                    break
+                if response_cost:
+                    governor.record_actual(response_cost, f"{model} (429 retry)")
+                response_cost_recorded = True
+                if ledger and task_id:
+                    ledger.append("model_result", task_id=task_id, event_note="panel",
+                                  model=model, task_type="structured" if run_convergence else "panel",
+                                  json_expected=run_convergence,
+                                  json_ok=False if run_convergence else None,
+                                  status="error", cost=response_cost, retry=True)
+                retry_count += 1
+                eprint(f"[panel] {model} rate-limited; bounded retry {retry_count}/{MAX_429_RETRIES}.")
+                time.sleep(RETRY_429_BACKOFF_SECONDS * retry_count)
+            elapsed = time.time() - t0
+            if status != 200:
+                err = resp.get("error", {}).get("message", str(resp)) if isinstance(resp, dict) else str(resp)
+                cost = response_cost
+                if cost and not response_cost_recorded:
+                    governor.record_actual(cost, model)
+                panel_failures.append({"model": model, "reason": err,
+                                       "status": status, "cost": cost,
+                                        "retries": retry_count})
+                if ledger and task_id:
+                    ledger.append("model_result", task_id=task_id, event_note="panel",
+                                  model=model,
+                                  task_type="structured" if run_convergence else "panel",
+                                  json_expected=run_convergence,
+                                  json_ok=False if run_convergence else None,
+                                  status="error", cost=cost, retries=retry_count)
+                eprint(f"[panel] {model} FAILED ({status}): {err} -- rotating to next model.")
+                return None
+            content, finish_reason, cost, is_byok = extract_content_and_cost(resp)
+            paid_byok = bool(is_byok and not governor.is_free(model))
+            if paid_byok:
+                governor.record_byok(model)
+                panel_failures.append({"model": model, "reason": "paid BYOK route", "status": "byok",
+                                       "cost": 0.0, "reported_cost": cost})
+                if ledger and task_id:
+                    ledger.append("model_result", task_id=task_id, event_note="panel",
+                                  model=model, task_type="structured" if run_convergence else "panel",
+                                  json_expected=run_convergence, json_ok=False if run_convergence else None,
+                                  status="error", cost=0.0, reported_cost=cost)
+                eprint(f"[panel] {model} is BYOK-routed (paid); recorded and rotating.")
+                return None
+            if not content or not str(content).strip():
+                # A successful HTTP status is not a panel vote. Treat blank or
+                # schema-less output as a bounded failure so the judge never sees
+                # an unusable body and convergence cannot count it as participation.
+                governor.record_actual(cost, model)
+                panel_failures.append({"model": model, "reason": "empty panel output",
+                                        "status": "invalid_output", "cost": cost,
+                                        "retries": retry_count})
+                if ledger and task_id:
+                    ledger.append("model_result", task_id=task_id, event_note="panel",
+                                  model=model,
+                                  task_type="structured" if run_convergence else "panel",
+                                  json_expected=run_convergence,
+                                  json_ok=False if run_convergence else None,
+                                  status="error", cost=cost, retries=retry_count)
+                eprint(f"[panel] {model} returned empty output -- rotating to next model.")
+                return None
+            governor.record_actual(cost, model)
+            eprint(f"[panel] {model}: cost=${cost:.6f}, finish_reason={finish_reason}, {elapsed:.1f}s")
+            valid_claims = (bool(extract_claim_verdicts(content)) and
+                            finish_reason != "length") if run_convergence else True
+            if run_convergence and not valid_claims:
+                panel_failures.append({"model": model, "reason": "malformed, missing, or truncated per-claim JSON",
+                                        "status": "invalid_output", "cost": cost,
+                                        "retries": retry_count})
+                if ledger and task_id:
+                    ledger.append("model_result", task_id=task_id, event_note="panel",
+                                  model=model, task_type="structured", json_expected=True,
+                                  json_ok=False, status="error", cost=cost)
+                eprint(f"[panel] {model} returned malformed/missing claim JSON -- rotating.")
+                return None
+            if finish_reason == "length":
+                eprint(f"[panel] WARNING: {model} truncated by --max-tokens.")
+            return {"ok": True, "result": {
+                "model": model, "content": content, "finish_reason": finish_reason,
+                "cost": cost, "truncated": finish_reason == "length",
+            }, "valid_claims": valid_claims, "cost": cost, "retries": retry_count}
+
+    # Fan out up to `target` seats at once when the transport is safe for
+    # concurrent POSTs (audit #10 latency fix); hermetic fakes opt out via
+    # the same attribute so their canned ordering stays deterministic.
+    _parallel = bool(getattr(transport, 'parallel_safe', False))
     panel_results = []
     panel_failures = []
+    candidates = iter(panel_pool)
     tried = 0
-    for model in panel_pool:
-        if len(panel_results) >= target:
-            break
-        tried += 1
-        eprint(f"[panel] calling {model} ...")
-        t0 = time.time()
-        retry_count = 0
-        response_cost = 0.0
-        response_cost_recorded = False
-        while True:
-            status, resp = chat(transport, api_key, model,
-                                [{"role": "user", "content": prompt}], panel_tokens,
-                                reasoning_effort, reasoning_token_budget, governor)
-            response_cost = _reported_cost(resp)
-            response_cost_recorded = False
-            if status != 429 or retry_count >= MAX_429_RETRIES:
+    _futures = set()
+    with concurrent.futures.ThreadPoolExecutor(
+            max_workers=target if _parallel else 1) as _pool:
+        for _ in range(target):
+            _first = next(candidates, None)
+            if _first is None:
                 break
-            if response_cost:
-                governor.record_actual(response_cost, f"{model} (429 retry)")
-            response_cost_recorded = True
-            if ledger and task_id:
-                ledger.append("model_result", task_id=task_id, event_note="panel",
-                              model=model, task_type="structured" if run_convergence else "panel",
-                              json_expected=run_convergence,
-                              json_ok=False if run_convergence else None,
-                              status="error", cost=response_cost, retry=True)
-            retry_count += 1
-            eprint(f"[panel] {model} rate-limited; bounded retry {retry_count}/{MAX_429_RETRIES}.")
-            time.sleep(RETRY_429_BACKOFF_SECONDS * retry_count)
-        elapsed = time.time() - t0
-        if status != 200:
-            err = resp.get("error", {}).get("message", str(resp)) if isinstance(resp, dict) else str(resp)
-            cost = response_cost
-            if cost and not response_cost_recorded:
-                governor.record_actual(cost, model)
-            panel_failures.append({"model": model, "reason": err,
-                                   "status": status, "cost": cost,
-                                   "retries": retry_count})
-            if ledger and task_id:
-                ledger.append("model_result", task_id=task_id, event_note="panel",
-                              model=model,
-                              task_type="structured" if run_convergence else "panel",
-                              json_expected=run_convergence,
-                              json_ok=False if run_convergence else None,
-                              status="error", cost=cost, retries=retry_count)
-            eprint(f"[panel] {model} FAILED ({status}): {err} -- rotating to next model.")
-            continue
-        content, finish_reason, cost, is_byok = extract_content_and_cost(resp)
-        paid_byok = bool(is_byok and not governor.is_free(model))
-        if paid_byok:
-            governor.record_byok(model)
-            panel_failures.append({"model": model, "reason": "paid BYOK route", "status": "byok",
-                                   "cost": 0.0, "reported_cost": cost})
-            if ledger and task_id:
-                ledger.append("model_result", task_id=task_id, event_note="panel",
-                              model=model, task_type="structured" if run_convergence else "panel",
-                              json_expected=run_convergence, json_ok=False if run_convergence else None,
-                              status="error", cost=0.0, reported_cost=cost)
-            eprint(f"[panel] {model} is BYOK-routed (paid); recorded and rotating.")
-            continue
-        if not content or not str(content).strip():
-            # A successful HTTP status is not a panel vote. Treat blank or
-            # schema-less output as a bounded failure so the judge never sees
-            # an unusable body and convergence cannot count it as participation.
-            governor.record_actual(cost, model)
-            panel_failures.append({"model": model, "reason": "empty panel output",
-                                   "status": "invalid_output", "cost": cost,
-                                   "retries": retry_count})
-            if ledger and task_id:
-                ledger.append("model_result", task_id=task_id, event_note="panel",
-                              model=model,
-                              task_type="structured" if run_convergence else "panel",
-                              json_expected=run_convergence,
-                              json_ok=False if run_convergence else None,
-                              status="error", cost=cost, retries=retry_count)
-            eprint(f"[panel] {model} returned empty output -- rotating to next model.")
-            continue
-        governor.record_actual(cost, model)
-        eprint(f"[panel] {model}: cost=${cost:.6f}, finish_reason={finish_reason}, {elapsed:.1f}s")
-        valid_claims = (bool(extract_claim_verdicts(content)) and
-                        finish_reason != "length") if run_convergence else True
-        if run_convergence and not valid_claims:
-            panel_failures.append({"model": model, "reason": "malformed, missing, or truncated per-claim JSON",
-                                   "status": "invalid_output", "cost": cost,
-                                   "retries": retry_count})
-            if ledger and task_id:
-                ledger.append("model_result", task_id=task_id, event_note="panel",
-                              model=model, task_type="structured", json_expected=True,
-                              json_ok=False, status="error", cost=cost)
-            eprint(f"[panel] {model} returned malformed/missing claim JSON -- rotating.")
-            continue
-        if finish_reason == "length":
-            eprint(f"[panel] WARNING: {model} truncated by --max-tokens.")
-        panel_results.append({
-            "model": model, "content": content, "finish_reason": finish_reason,
-            "cost": cost, "truncated": finish_reason == "length",
-        })
-        if ledger and task_id:
-            ledger.append("model_result", task_id=task_id, event_note="panel",
-                          model=model, task_type="structured" if run_convergence else "panel",
-                          json_expected=run_convergence,
-                          json_ok=valid_claims if run_convergence else None,
-                          status="ok", cost=cost, retries=retry_count)
-
+            tried += 1
+            _futures.add(_pool.submit(_run_panel_slot, _first))
+        while _futures and len(panel_results) < target:
+            _done, _futures = concurrent.futures.wait(
+                _futures, return_when=concurrent.futures.FIRST_COMPLETED)
+            for _fut in _done:
+                _slot = _fut.result()
+                if _slot is None:
+                    if len(panel_results) < target:
+                        _next_model = next(candidates, None)
+                        if _next_model is not None:
+                            tried += 1
+                            _futures.add(_pool.submit(_run_panel_slot, _next_model))
+                    continue
+                if _slot["ok"]:
+                    panel_results.append(_slot["result"])
+                    if ledger and task_id:
+                        ledger.append(
+                            "model_result", task_id=task_id, event_note="panel",
+                            model=_slot["result"]["model"],
+                            task_type="structured" if run_convergence else "panel",
+                            json_expected=run_convergence,
+                            json_ok=_slot["valid_claims"] if run_convergence else None,
+                            status="ok", cost=_slot["cost"], retries=_slot["retries"])
+                else:
+                    panel_failures.append(_slot["failure"])
+                    if len(panel_results) < target:
+                        _next_model = next(candidates, None)
+                        if _next_model is not None:
+                            tried += 1
+                            _futures.add(_pool.submit(_run_panel_slot, _next_model))
     if not panel_results:
         raise HarnessError("all panel calls failed. Aborting.")
+
+    # Context-budget guard (#14b): untruncated votes are a fidelity win but a
+    # context hazard. Cap the assembled prompt at the judge model's usable
+    # window when known, trimming the OLDEST panel contributions first (the
+    # newest votes carry the most reliable verdicts) and never silently -- the
+    # guard always reports what it dropped.
+    judge_ctx = None
+    try:
+        if capability_profiles and judge in capability_profiles:
+            judge_ctx = capability_profiles[judge].max_source_tokens
+    except AttributeError:
+        judge_ctx = None
+    if judge_ctx:
+        available = max(0, judge_ctx - estimate_prompt_tokens(prompt) - judge_max_tokens)
+        budget = int(available * 0.9)
+        keep = list(reversed(panel_results))
+        dropped = []
+        used = 0
+        trimmed = []
+        for r in keep:
+            t = estimate_prompt_tokens(r["content"])
+            if used + t > budget and trimmed:
+                dropped.append(r["model"])
+                continue
+            used += t
+            trimmed.append(r)
+        if dropped:
+            eprint(f"[judge] context budget {budget} tokens: dropped oldest votes "
+                   f"from {dropped} to stay within {judge}'s window.")
+        panel_results = list(reversed(trimmed))
 
     judge_prompt = (
         f"{len(panel_results)} independent models were asked the same question. Synthesize "
@@ -967,9 +1084,10 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         f"Set defer=true when the panel cannot reach enough agreement to make a reliable call "
         f"(the work should be deferred rather than guessed). Do not paper over disagreement.\n\n")
     for r in panel_results:
+        # Never truncate: panel verdicts are structured claims the judge must
+        # weigh in full, and the preflight reserve covers their worst case.
         note = " [NOTE: cut off by token limit, may be incomplete]" if r["truncated"] else ""
-        body = r["content"] if len(r["content"]) <= 1500 else r["content"][:1500] + "\n...[truncated]"
-        judge_prompt += f"--- Model: {r['model']}{note} ---\n{body}\n\n"
+        judge_prompt += f"--- Model: {r['model']}{note} ---\n{r['content']}\n\n"
 
     judge_content = None
     judge_cost = 0.0

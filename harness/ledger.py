@@ -10,13 +10,19 @@ acceptance is a warning, not a success).
 import hashlib
 import json
 import os
+import sys
 import threading
 from collections import defaultdict
 from datetime import datetime, timezone
+from .errors import HarnessError
 
 
 def _canon(entry):
     return json.dumps(entry, sort_keys=True, separators=(",", ":"))
+
+
+LEDGER_MAX_BYTES = 10 * 1024 * 1024  # rotate the JSONL at 10 MB
+LEDGER_KEEP_ROTATIONS = 3
 
 
 class AutonomyLedger:
@@ -26,7 +32,111 @@ class AutonomyLedger:
         self._tail = []
         self._seq = 0
         self._prev_hash = None
+        # Count of corrupt/torn lines skipped at load (audit #8b: must exist
+        # as a real attribute on every instance, clean load included).
+        self.quarantined = 0
         self._load()
+
+    def _acquire_process_lock(self):
+        """Cross-process advisory lock so two harness processes cannot append
+        interleaved entries (which would corrupt the hash chain). Best-effort:
+        degrade to thread-lock-only behavior where locking is unsupported or
+        the lock file is unwritable."""
+        try:
+            directory = os.path.dirname(self._lockfile)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            fh = open(self._lockfile, "a+b")
+        except OSError:
+            return
+        try:
+            try:
+                import msvcrt
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            except ImportError:
+                try:
+                    import fcntl
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except ImportError:
+                    fh.close()
+                    return
+        except OSError:
+            fh.close()
+            raise HarnessError(
+                f"ledger {self.path} is locked by another harness process")
+        self._lockfh = fh
+
+    def _rotate_if_needed(self):
+        """Rotate the JSONL when it outgrows LEDGER_MAX_BYTES; keep a bounded
+        number of rotations so evidence survives but disk does not fill."""
+        try:
+            size = os.path.getsize(self.path)
+        except OSError:
+            return
+        if size < LEDGER_MAX_BYTES:
+            return
+        rotated = "{}.{}".format(
+            self.path, datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S"))
+        directory = os.path.dirname(self.path) or "."
+        try:
+            os.replace(self.path, rotated)
+        except OSError:
+            return
+        prefix = os.path.basename(self.path) + "."
+        rotations = sorted(fn for fn in os.listdir(directory) if fn.startswith(prefix))
+        for fn in rotations[:-LEDGER_KEEP_ROTATIONS]:
+            try:
+                os.unlink(os.path.join(directory, fn))
+            except OSError:
+                pass
+
+    def _persist(self, line):
+        """Append one canonical line under a short-lived cross-process lock.
+
+        The lock handle is opened, locked, used, and closed within this
+        call -- nothing is held across the ledger lifetime, so the lock
+        never blocks temp-dir cleanup on Windows, and two harness
+        processes can never interleave appends and corrupt the chain."""
+        directory = os.path.dirname(self.path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        self._rotate_if_needed()
+        lf = None
+        try:
+            lf = open(self.path + '.lock', 'a+b')
+        except OSError:
+            lf = None  # lock file unwritable: degrade to thread-lock-only
+        if lf is not None:
+            try:
+                try:
+                    import msvcrt
+                    lf.seek(0)
+                    msvcrt.locking(lf.fileno(), msvcrt.LK_NBLCK, 1)
+                except ImportError:
+                    import fcntl
+                    fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+            except OSError:
+                lf.close()
+                raise HarnessError(
+                    f'ledger {self.path} is busy: another harness process holds the lock')
+        try:
+            with open(self.path, 'a', encoding='utf-8') as f:
+                f.write(line + chr(10))
+                f.flush()
+                os.fsync(f.fileno())  # torn-line resistance: never lose the tail
+        finally:
+            if lf is not None:
+                try:
+                    try:
+                        import msvcrt
+                        lf.seek(0)
+                        msvcrt.locking(lf.fileno(), msvcrt.LK_UNLCK, 1)
+                    except ImportError:
+                        import fcntl
+                        fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+                lf.close()
 
     def _load(self):
         if not os.path.exists(self.path):
@@ -36,7 +146,18 @@ class AutonomyLedger:
                 line = line.strip()
                 if not line:
                     continue
-                entry = json.loads(line)
+                try:
+                    entry = json.loads(line)
+                    if not isinstance(entry, dict) or "seq" not in entry or "hash" not in entry:
+                        raise ValueError("entry missing seq/hash")
+                except (ValueError, TypeError):
+                    # The evidence chain must stay readable even if a crash
+                    # left a torn trailing line: quarantine the damage, keep
+                    # the intact prefix, and never crash on load.
+                    self.quarantined = getattr(self, "quarantined", 0) + 1
+                    print(f"[ledger] corrupt line quarantined in {self.path}; "
+                          "run `harness ledger verify` for status.", file=sys.stderr)
+                    continue
                 self._tail.append(entry)
                 self._seq = entry["seq"]
                 self._prev_hash = entry["hash"]
@@ -59,8 +180,7 @@ class AutonomyLedger:
             directory = os.path.dirname(self.path)
             if directory:
                 os.makedirs(directory, exist_ok=True)
-            with open(self.path, "a", encoding="utf-8") as f:
-                f.write(_canon(body) + "\n")
+            self._persist(_canon(body))
         return body
 
     def entries(self):
@@ -127,15 +247,20 @@ class AutonomyLedger:
                 m_ = ms(e.get("model"))
                 m_["offers"] = m_.get("offers", 0) + 1
             elif ev == "consent_accept":
-                m_ = ms(e.get("model")); m_["accepts"] = m_.get("accepts", 0) + 1
+                m_ = ms(e.get("model"))
+                m_["accepts"] = m_.get("accepts", 0) + 1
             elif ev == "consent_decline":
-                m_ = ms(e.get("model")); m_["declines"] = m_.get("declines", 0) + 1
+                m_ = ms(e.get("model"))
+                m_["declines"] = m_.get("declines", 0) + 1
             elif ev == "consent_defer":
-                m_ = ms(e.get("model")); m_["defers"] = m_.get("defers", 0) + 1
+                m_ = ms(e.get("model"))
+                m_["defers"] = m_.get("defers", 0) + 1
             elif ev == "consent_redirect":
-                m_ = ms(e.get("model")); m_["redirects"] = m_.get("redirects", 0) + 1
+                m_ = ms(e.get("model"))
+                m_["redirects"] = m_.get("redirects", 0) + 1
             elif ev == "complete":
-                m_ = ms(e.get("model")); m_["completions"] = m_.get("completions", 0) + 1
+                m_ = ms(e.get("model"))
+                m_["completions"] = m_.get("completions", 0) + 1
             elif ev == "verify_round":
                 rounds_per_task.setdefault(e.get("task_id"), []).append(e.get("round"))
 
@@ -191,7 +316,8 @@ class AutonomyLedger:
         for e in events:
             ev = e["event"]
             if ev == "readiness":
-                m_ = e.get("model"); dec = e.get("decision")
+                m_ = e.get("model")
+                dec = e.get("decision")
                 if dec == "defer":
                     defer_count[m_] += 1
                 elif dec == "missing":

@@ -72,7 +72,7 @@ with `HARNESS_*` env overrides:
 |---|---|---|
 | `use_free` | `true` | Route through best current free models |
 | `panel` / `panel_pool` | curated free list | Ordered panel pool; failing members rotate |
-| `judge` | `cohere/north-mini-code:free` | JSON-reliable judge |
+| `judge` | `google/gemma-4-31b-it:free` | JSON-reliable judge (best live track record) |
 | `convergence_model` | (same as `judge`) | Primary convergence-specialist model for `--converge` |
 | `specialist_pool` | free: GLM-5.2, gemma, minimax | Ordered specialist fallback ladder, strongest first |
 | `apply_model` / `apply_pool` | free code-first pool | Ordered apply pool; rotates on error |
@@ -208,7 +208,7 @@ consensus is measured, not self-reported:
 ```bash
 harness verify --prompt-file audit.txt --converge \
   --panel "google/gemma-4-31b-it:free,minimax/minimax-m3:free" \
-  --judge cohere/north-mini-code:free --out verdict.json
+  --judge google/gemma-4-31b-it:free --out verdict.json
 ```
 
 - **5/5 unanimous == 100% at the merge gate.** Harness reports two separate
@@ -374,7 +374,10 @@ yes. Harness treats that as a bug to design around:
 
 - **Consent is a separate, cheap probe** with a system prompt that makes
   decline psychologically available (independent contractor framing; decline /
-  defer / redirect all valid, none penalized).
+  defer / redirect all valid, none penalized). Like every lane it is governed:
+  each probe question is preflighted against the ceiling, and unusable output
+  (reasoning-only, unparseable) rotates through the fallback pool while a
+  parsed sovereign defer/decline is honored without re-asking.
 - **Defer and redirect are routing signals**, not dead ends.
 - **Continued consensus:** consent is re-checked before every verify round and
   can be revoked mid-task via `defer_work`. Partial work is preserved.
@@ -406,12 +409,10 @@ yes. Harness treats that as a bug to design around:
 ## Tests
 
 ```bash
-python -m unittest tests.test_core tests.test_ledger tests.test_consent \
-  tests.test_router tests.test_apply tests.test_mcp tests.test_extra \
-  tests.test_byok tests.test_bench tests.test_claims tests.test_capability
+python -m unittest discover -s tests -v
 ```
 
-176 hermetic tests — no network, no key. They pin: per-token pricing (regression
+209 hermetic tests — no network, no key. They pin: per-token pricing (regression
 on a ~1,000,000x undercount bug), no-tools payloads, hard/learned BYOK handling,
 key gates, mid-batch fail-closed, reasoning modes (incl. the
 retry-without-reasoning path), panel rotation, structured consensus parsing,
@@ -428,7 +429,14 @@ layer (parsing, scoring, context hard-gate, composite-reliability math incl.
 prior-shrink, observed-JSON-updates-declared, structured correctness evidence,
 probe persistence/error accounting, routing cost ties, registry persist/refresh/TTL,
 ledger success-rate, the **real-fixture proof** that GLM-5.2 and minimax-M3 outrank
-gemma-4-31b, and the unified MorphLite backend's read-only preview guarantees).
+gemma-4-31b, and the unified MorphLite backend's read-only preview guarantees). The hardening
+suite adds: config range validation and unknown-key warnings (#15), the
+capabilities registry schema-version stamp (#15), per-model cost reporting
+and --quiet (#16), token-estimator property tests (#7/#20), and the unified
+diff + multi-file apply paths (#11/#12). A live playtest round then pinned:
+defer markers honored anywhere in a model response (sovereignty), the strict
+unified-diff matcher's no-fuzz contract, apply without an initial consent
+probe, and the MCP allow_verify/cancel gates.
 
 ## License
 

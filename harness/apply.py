@@ -17,7 +17,10 @@ vacuous success). Adds the sovereignty layer and free-tier iteration:
   * Continuation mode: a deferred/incomplete task can be resumed by a later
     call (or a different model) from the preserved partial state.
 """
+import hashlib
 import os
+import re
+import shlex
 import subprocess
 import tempfile
 import uuid
@@ -94,6 +97,15 @@ _READY_INSTRUCTION = (
     "Declare 'HARNESS_READY: confident' only if you are sure, then output the "
     "COMPLETE new file content on the lines after that marker.")
 
+_DIFF_READY_INSTRUCTION = (
+    "Your response MUST contain exactly one readiness line of the form "
+    "'HARNESS_READY: confident' or 'HARNESS_READY: defer', placed on the "
+    "FIRST line, before the diff. Declare 'HARNESS_READY: defer' (with a "
+    "short reason on that same line) if you cannot produce a diff that "
+    "matches the current content exactly -- do not guess at hunk contents. "
+    "Otherwise declare 'HARNESS_READY: confident' on the first line and put "
+    "the unified diff on the lines after that marker.")
+
 _DEFER_INSTRUCTION = (
     "Do your best and assume nothing. You have no file or web access; the file "
     "content below is all you can see. If you reach the limit of your capability "
@@ -108,9 +120,33 @@ _CONTINUATION_PREAMBLE = (
     "Remaining scope to complete: {scope}. Continue from the current file content.")
 
 
-def default_run_verify(command, timeout=VERIFY_TIMEOUT):
-    result = subprocess.run(command, shell=True, capture_output=True, text=True,
-                            timeout=timeout)
+def _verify_argv(command):
+    """Tokenize a verify command with POSIX-ish shlex. Raises HarnessError when
+    quoting is unbalanced -- fail closed rather than guessing."""
+    try:
+        argv = shlex.split(command)
+    except ValueError as e:
+        raise HarnessError(f"verify_cmd is not shell-tokenizable ({e}); quote it properly.")
+    if not argv:
+        raise HarnessError("verify_cmd is empty.")
+    return argv
+
+
+def default_run_verify(command, timeout=VERIFY_TIMEOUT, cwd=None):
+    """Run a verify command WITHOUT a shell. The command is tokenized with
+    shlex and executed directly, so shell metacharacters (&&, |, ;, backticks,
+    $()) are inert. `timeout` kills a hung gate instead of hanging the run.
+    """
+    argv = _verify_argv(command)
+    try:
+        result = subprocess.run(argv, shell=False, capture_output=True, text=True,
+                                timeout=timeout, cwd=cwd)
+    except subprocess.TimeoutExpired:
+        return 124, f"verify gate timed out after {timeout}s (killed): {command}"
+    except FileNotFoundError:
+        return 127, f"verify gate executable not found: {argv[0]}"
+    except PermissionError:
+        return 126, f"verify gate is not executable: {argv[0]}"
     return result.returncode, (result.stdout or "") + (result.stderr or "")
 
 
@@ -160,21 +196,125 @@ def _parse_ready(content):
     if not content:
         return "missing", "", content or ""
     lines = content.splitlines(keepends=True)
-    for i, ln in enumerate(lines[:5]):
+    # Scan the WHOLE response: models legitimately place the readiness marker
+    # after the payload (e.g. following a unified diff). A trailing
+    # 'HARNESS_READY: defer' that went unseen would apply the edit anyway,
+    # so missing-marker detection must never be window-bound. When several
+    # markers appear (a model hedging both ways), the CONSERVATIVE one wins:
+    # defer beats confident regardless of position.
+    first = None
+    for i, ln in enumerate(lines):
         line = ln.strip()
         if line.startswith(READY_MARKER):
             decision_raw = line[len(READY_MARKER):].strip()
             decision, _, reason = decision_raw.partition(" ")
             decision = decision.strip().lower()
-            if decision in ("confident", "defer"):
+            if decision not in ("confident", "defer"):
+                continue
+            if decision == "defer":
+                # Sovereignty: an explicit defer anywhere in the response
+                # immediately wins, wherever it appears.
                 rest = "".join(lines[:i]) + "".join(lines[i + 1:])
-                return decision, reason.strip(), rest
+                return "defer", reason.strip(), rest
+            if first is None:
+                first = (i, reason.strip())
+    if first is not None:
+        i, reason = first
+        rest = "".join(lines[:i]) + "".join(lines[i + 1:])
+        return "confident", reason, rest
     return "missing", "", content
 
 
-def _atomic_write(path, content):
+class _AtomicWriteError(OSError):
+    """The target of an atomic write refused the operation (symlink, escape,
+    or vanished directory) -- never follow through by writing anyway."""
+
+
+_DIFF_HUNK_RE = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def _apply_unified_diff(current, diff_text):
+    """Apply a strict unified diff to `current`; return the new content (#11).
+
+    Every hunk must match the source EXACTLY - no fuzz. A mismatch raises
+    HarnessError so the round can be retried with the error as feedback
+    instead of writing a silently corrupt merge. Standard git-style
+    headers are tolerated; prose around the diff is skipped.
+    """
+    text = diff_text.replace("\\r\\n", "\n")
+    lines = text.split("\n")
+    hunks = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        m = _DIFF_HUNK_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        old_start = int(m.group(1))
+        old_len = int(m.group(2)) if m.group(2) is not None else 1
+        new_len = int(m.group(4)) if m.group(4) is not None else 1
+        i += 1
+        old_body, new_body = [], []
+        while i < n and (len(old_body) < old_len or len(new_body) < new_len):
+            ln = lines[i]
+            if ln.startswith("@@"):
+                break
+            tag, rest = (ln[0], ln[1:]) if ln else (' ', '')
+            if tag == ' ':
+                old_body.append(rest)
+                new_body.append(rest)
+            elif tag == '-':
+                old_body.append(rest)
+            elif tag == '+':
+                new_body.append(rest)
+            elif tag == chr(92):
+                pass  # no-newline marker
+            else:
+                raise HarnessError(f"malformed diff line: {ln[:60]!r}")
+            i += 1
+        if len(old_body) != old_len or len(new_body) != new_len:
+            raise HarnessError(
+                f"hunk at line {old_start} is truncated: expected -{old_len}/+{new_len}, "
+                f"got -{len(old_body)}/{len(new_body)}")
+        hunks.append((old_start, old_len, old_body, new_body))
+    if not hunks:
+        raise HarnessError("no unified-diff hunks found in model output")
+
+    src = current.split("\n")
+    out = []
+    pos = 0
+    for old_start, old_len, old_body, new_body in hunks:
+        idx = old_start - 1 if old_len else old_start
+        if idx < pos or idx > len(src):
+            raise HarnessError(
+                f"hunk at line {old_start} overlaps or exceeds the source (pos={pos})")
+        if old_len and src[idx:idx + old_len] != old_body:
+            raise HarnessError(
+                f"hunk at line {old_start} does not match the source exactly; "
+                "regenerate the diff against the current content")
+        out.extend(src[pos:idx])
+        out.extend(new_body)
+        pos = idx + old_len
+    out.extend(src[pos:])
+    return "\n".join(out)
+
+def _atomic_write(path, content, *, follow=False):
+    """Atomically replace `path` with `content`, refusing unsafe targets.
+
+    Without ``follow=True`` a pre-existing symlink is never followed (the
+    classic dotfile-points-into-the-repo trick). The temp file is staged
+    inside the target's directory so the final replace is atomic.
+    """
     d = os.path.dirname(os.path.abspath(path)) or "."
-    fd, tmp = tempfile.mkstemp(prefix=".harness-", suffix=".tmp", dir=d)
+    if os.path.islink(path) and not follow:
+        raise _AtomicWriteError(
+            f"refusing to write through symlink: {path} "
+            "(delete the link or pass follow_symlinks=True)")
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=".harness-", suffix=".tmp", dir=d)
+    except OSError as e:
+        raise _AtomicWriteError(f"cannot stage temp file in {d}: {e}")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
@@ -185,6 +325,11 @@ def _atomic_write(path, content):
         except OSError:
             pass
         raise
+
+
+def _gate_id(verify_cmd):
+    """Stable identity of a verification gate (sha256 of the exact command)."""
+    return hashlib.sha256(verify_cmd.encode("utf-8")).hexdigest()[:16]
 
 
 class ApplyEngine:
@@ -200,6 +345,9 @@ class ApplyEngine:
         self.router = router
         self.default_require_consent = default_require_consent
         self.run_verify = run_verify or default_run_verify
+        # Gate identity: a continuation may only reuse the verification gate
+        # it was saved with (see _gate_id) -- #5 hardening.
+        self._continuation_gate = None
         self.default_renew_consent = default_renew_consent
         self.reasoning_effort = reasoning_effort
         self.reasoning_token_budget = reasoning_token_budget
@@ -230,6 +378,44 @@ class ApplyEngine:
                 "or explanation. If you cannot complete the change correctly, return "
                 "HARNESS_READY: defer <reason> instead of guessing.")
             return "\n\n".join(parts)
+        if backend == "diff":
+            # Unified-diff mode (#11): the model returns a strict diff instead
+            # of the whole file, so files beyond the 500-line rewrite ceiling
+            # become editable and unchanged lines cost zero output tokens.
+            lines = [
+                "You are making a single, scoped code change AS A UNIFIED DIFF.",
+                "The complete current file content is provided below; work from "
+                "that content only and reply with text.",
+                f"File: {file_path} (language: {lang or 'text'})",
+                "",
+                "OUTPUT CONTRACT (strict):",
+                "- Reply with ONE unified diff (git-style), nothing else.",
+                "- Context lines and removed lines must match the current file "
+                "EXACTLY, character for character. No fuzz matching exists; any "
+                "mismatch aborts the change.",
+                "- Include the @@ -start,count +start,count @@ headers with "
+                "accurate line numbers.",
+                "- Keep hunks minimal: touch only the lines the instruction "
+                "requires.",
+                "",
+                f"INSTRUCTION: {instruction}",
+                f"EDIT SNIPPET (intent anchor): {edit_snippet or 'none'}",
+                "",
+                _DIFF_READY_INSTRUCTION,
+                "",
+                _DEFER_INSTRUCTION,
+                "",
+                "CURRENT FILE CONTENT:",
+                f"```\n{original}\n```",
+            ]
+            if continuation:
+                lines.insert(0, _CONTINUATION_PREAMBLE.format(
+                    reason=continuation.get("reason") or "unknown",
+                    scope=continuation.get("remaining_scope") or "complete the change"))
+            prompt = "\n".join(lines)
+            if round_ctx:
+                prompt += "\n\n" + round_ctx
+            return prompt
         lines = [
             "You are making a single, scoped code change.",
             "The complete current file content is provided below in this prompt; "
@@ -274,6 +460,7 @@ class ApplyEngine:
             "remaining_scope": remaining_scope,
             "verify_cmd": verify_cmd,
             "verification_required": bool(verify_cmd) and not verify_only,
+            "verify_gate_id": _gate_id(verify_cmd) if verify_cmd else None,
             "rounds": rounds,
             "cost": cost,
             "continuation": {
@@ -284,6 +471,7 @@ class ApplyEngine:
                 "max_lines": max_lines,
                 "edit_snippet": edit_snippet,
                 "verify_cmd": verify_cmd,
+                "verify_gate_id": _gate_id(verify_cmd) if verify_cmd else None,
                 "verification_required": bool(verify_cmd) and not verify_only,
                 "remaining_scope": remaining_scope,
                 "reason": reason,
@@ -297,7 +485,8 @@ class ApplyEngine:
                    task_max_cost=None, allow_escalation=None,
                    reasoning_effort=None, renew_consent=None,
                    max_rotations=None, continuation=None, backend="harness",
-                   verify_only=False, max_lines=MAX_FILE_LINES):
+                   verify_only=False, max_lines=MAX_FILE_LINES,
+                   task_runner=None):
         """Apply a scoped edit with a verification loop, sovereignty gate,
         capability deferral, rotation, and continuation support."""
         continuation = validate_continuation(continuation)
@@ -326,9 +515,18 @@ class ApplyEngine:
             if verify_cmd and verify_cmd != saved_verify_cmd:
                 raise HarnessError(
                     "continuation verify_cmd does not match its authoritative verification gate")
+            # Gate identity check: a state claiming a gate must carry its hash,
+            # and a mismatched hash means the gate was tampered with or the
+            # state is from a different gate entirely (#5).
+            saved_gate_id = continuation.get("verify_gate_id")
+            if saved_verify_cmd and saved_gate_id != _gate_id(saved_verify_cmd):
+                raise HarnessError(
+                    "continuation verify_gate_id does not match its verify_cmd; "
+                    "state may be corrupted or tampered")
             verify_cmd = saved_verify_cmd
-        if backend not in ("harness", "morph"):
-            raise HarnessError("backend must be 'harness' or 'morph'")
+            self._continuation_gate = saved_verify_cmd if saved_gate_id else None
+        if backend not in ("harness", "morph", "diff"):
+            raise HarnessError("backend must be 'harness', 'morph', or 'diff'")
         try:
             max_lines = int(max_lines)
         except (TypeError, ValueError):
@@ -389,10 +587,13 @@ class ApplyEngine:
 
         if not os.path.exists(file_path):
             raise HarnessError(f"file not found: {file_path}")
-        if _line_count(file_path) > max_lines:
+        # The 500-line rewrite ceiling exists because whole-file rewrites scale
+        # with file size. Diff mode (#11) only emits touched hunks, so it is
+        # exempt -- this is what makes large files editable on the free tier.
+        if backend != "diff" and _line_count(file_path) > max_lines:
             raise HarnessError(
-                f"file is >{max_lines} lines; out of scope. Escalate to a "
-                f"multi-file/architecture path instead.")
+                f"file is >{max_lines} lines; out of scope for whole-file rewrite. "
+                f"Use backend='diff' (unified diff) for large files.")
         if len(instruction) > MAX_INSTRUCTION_CHARS:
             raise HarnessError(f"instruction exceeds {MAX_INSTRUCTION_CHARS} chars.")
         if edit_snippet and len(edit_snippet) > MAX_SNIPPET_CHARS:
@@ -400,6 +601,7 @@ class ApplyEngine:
 
         model = model or (MORPH_MODEL if backend == "morph" else self.router.apply_model)
         want_consent = self.default_require_consent if require_consent is None else require_consent
+        consent = None  # only set when the initial probe ran (require_consent)
 
         with open(file_path, "r", encoding="utf-8") as f:
             original = f.read()
@@ -438,6 +640,9 @@ class ApplyEngine:
         failed_models = set()
         deferred_models = {}
         rotations = 0
+        # Renewal skips models that already failed the (optional) initial
+        # probe; with require_consent=False there was no probe.
+        consent_attempts = consent.get("attempts", []) if isinstance(consent, dict) else []
         for round_no in range(1, max_rounds + 1):
             # Continued consensus: re-check consent before each round.
             if renew:
@@ -445,7 +650,7 @@ class ApplyEngine:
                 # consent probe this run (e.g. reasoning-only emitters): the
                 # primary just fails again and the rotation ladder absorbs it.
                 consent_unusable = {
-                    a["model"] for a in (consent.get("attempts") or [])
+                    a["model"] for a in (consent_attempts or [])
                     if a.get("status") == "error"}
                 renew_pool = [m_ for m_ in self.router.panel_pool
                               if m_ not in consent_unusable]
@@ -678,7 +883,13 @@ class ApplyEngine:
                     edit_snippet=edit_snippet, verify_cmd=verify_cmd)
 
 
-            new_content = _extract_file_content(content)
+            if backend == "diff":
+                # Strict-match merge (#11): a non-matching or malformed diff
+                # raises HarnessError, which the round loop records as a failed
+                # attempt (with feedback) instead of writing a corrupt merge.
+                new_content = _apply_unified_diff(current_content, content)
+            else:
+                new_content = _extract_file_content(content)
             changed = new_content != current_content
 
             if verify_only:
@@ -714,7 +925,8 @@ class ApplyEngine:
                         "rotations": rotations,
                         "note": "no verification gate supplied"}
 
-            rc, out = self.run_verify(verify_cmd)
+            gate_runner = self._gate_runner(verify_cmd, task_runner)
+            rc, out = gate_runner(verify_cmd)
             self.ledger.append("verify_round", task_id=task_id, round=round_no,
                                passed=(rc == 0), model=model_used, readiness=ready)
             if rc == 0:
@@ -797,7 +1009,7 @@ class ApplyEngine:
                         backup = self._backup(file_path, task_id, "esc")
                     _atomic_write(file_path, new_content)
                     current_content = new_content
-                rc, out = (self.run_verify(verify_cmd) if content
+                rc, out = (gate_runner(verify_cmd) if content
                            else (1, "escalation returned no usable content"))
                 if rc == 0 and changed:
                     self.ledger.append("complete", task_id=task_id, model=esc["model"],
@@ -832,20 +1044,53 @@ class ApplyEngine:
                     "file_path": file_path, "task_id": task_id,
                     "backend": backend, "verify_only": verify_only, "max_lines": max_lines,
                     "edit_snippet": edit_snippet, "verify_cmd": verify_cmd,
+                    "verify_gate_id": _gate_id(verify_cmd) if verify_cmd else None,
                     "verification_required": True,
                     "remaining_scope": f"Fix the verification failures for: {instruction}",
                     "reason": "verification did not pass on the free tier; continue and fix",
                     "history": history,
                 }}
 
+    def _gate_runner(self, verify_cmd, task_runner=None):
+        """Runner bound to this exact gate. Custom runners stay keyed: when a
+        continuation supplies a different gate than the one the runner was
+        built for, the gate refuses rather than silently running under the
+        wrong verification (#5). ``task_runner`` (bench) scopes the default
+        runner per task without mutating engine state (#17)."""
+        base = task_runner or self.run_verify
+        if not self._continuation_gate:
+            return base
+        if _gate_id(verify_cmd) == _gate_id(self._continuation_gate):
+            return base
+        raise HarnessError(
+            "verify gate changed between the saved continuation and this run; "
+            "refusing to run an unverified gate")
+
+    MAX_BACKUPS_PER_FILE = 20
+
     def _backup(self, file_path, task_id, round_no):
-        d = os.path.join(os.path.dirname(file_path), ".harness-backups")
+        """Preserve the pre-edit file (content + permission mode) outside the
+        working tree so a restore never has to trust the tree itself (#6).
+        Failure is non-fatal but never silent."""
+        d = os.path.join(tempfile.gettempdir(), "harness-backups")
         try:
             os.makedirs(d, exist_ok=True)
+            st = os.stat(file_path)
             dest = os.path.join(d, f"{task_id}-r{round_no}-{os.path.basename(file_path)}")
             with open(file_path, "r", encoding="utf-8") as src, \
                     open(dest, "w", encoding="utf-8") as out:
                 out.write(src.read())
+            os.chmod(dest, st.st_mode & 0o777)  # preserve mode for faithful restore
+            # Prune oldest backups of this file beyond the cap.
+            prefix = f"{task_id}-"
+            siblings = sorted(fn for fn in os.listdir(d)
+                              if fn.startswith(prefix) and fn.endswith("-" + os.path.basename(file_path)))
+            for fn in siblings[:-self.MAX_BACKUPS_PER_FILE]:
+                try:
+                    os.unlink(os.path.join(d, fn))
+                except OSError:
+                    pass
             return dest
-        except OSError:
-            return None  # backup failure is non-fatal but not reported silently
+        except OSError as e:
+            eprint(f"[warn] backup failed for {file_path}: {e}")
+            return None

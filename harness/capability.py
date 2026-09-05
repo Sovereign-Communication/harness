@@ -291,10 +291,15 @@ def composite_reliability(capability, calibration, success, n_samples):
 
 # ------------------------- registry persistence -------------------------------
 
+CAPABILITIES_SCHEMA_VERSION = 1
+
+
 def load_profiles(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
+            if data.get("schema_version") != CAPABILITIES_SCHEMA_VERSION:
+                return {}, None  # foreign or older schema: treat as stale, refetch
         out = {}
         for mid, d in (data.get("models") or {}).items():
             p = CapabilityProfile.from_dict(d)
@@ -310,6 +315,7 @@ def save_profiles(path, profiles, fetched_at=None):
     if directory:
         os.makedirs(directory, exist_ok=True)
     data = {
+        "schema_version": CAPABILITIES_SCHEMA_VERSION,
         "fetched_at": fetched_at or time.time(),
         "models": {mid: p.to_dict() for mid, p in profiles.items()},
     }
@@ -387,6 +393,10 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
             error_message = None
             call_cost = 0.0
             try:
+                # Every probe question is preflighted against the ceiling so
+                # the loop can never spend through it (same contract as every
+                # other governed lane).
+                governor.preflight(q, [(f"probe {m}", m, max_tokens, 0)])
                 status, resp = chat(transport, api_key, m,
                                     [{"role": "user", "content": q}], max_tokens,
                                     eff, 0.4, governor)
