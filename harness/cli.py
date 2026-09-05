@@ -26,7 +26,7 @@ import sys
 import uuid
 
 from ._http import HttpTransport
-from .apply import ApplyEngine
+from .apply import ApplyEngine, validate_continuation
 from .bench import load_manifest, run_bench
 from .claims import (
     build_claims_prompt, lint_claims, load_claims_manifest,
@@ -182,14 +182,24 @@ def _cmd_lint_claims(opts, settings=None):
 
 
 def _cmd_apply(opts, settings):
+    # Validate persisted state before key/model setup. A malformed or ungated
+    # continuation must fail without even fetching /key or /models.
+    continuation = None
+    if opts.continue_from:
+        with open(opts.continue_from, "r", encoding="utf-8") as f:
+            continuation = validate_continuation(json.load(f))
+    if not opts.file and not continuation:
+        raise HarnessError("apply requires --file (or --continue-from <state.json>)")
+
     api_key, gov = _governor(settings)
     ledger = AutonomyLedger(settings.ledger_path)
     profiles, report = _capability_context(settings, gov, ledger)
     router = _router(settings)
-    if profiles is not None:
+    backend = continuation.get("backend", opts.backend) if continuation else opts.backend
+    if profiles is not None and backend == "harness":
         router.apply_pool = _order_pool(router.apply_pool, profiles, report, ledger,
                                         "code", settings.use_free)
-        if opts.backend == "harness" and not opts.model and router.apply_pool:
+        if not opts.model and router.apply_pool:
             router.apply_model = router.apply_pool[0]
     engine = ApplyEngine(
         HttpTransport(), api_key, gov, ledger, router,
@@ -199,12 +209,6 @@ def _cmd_apply(opts, settings):
         reasoning_token_budget=settings.reasoning_token_budget,
         default_max_rotations=settings.max_rotations,
         default_task_max_cost=settings.task_max_cost)
-    continuation = None
-    if opts.continue_from:
-        with open(opts.continue_from, "r", encoding="utf-8") as f:
-            continuation = json.load(f)
-    if not opts.file and not continuation:
-        raise HarnessError("apply requires --file (or --continue-from <state.json>)")
     result = engine.apply_edit(
         task_id=opts.task_id, file_path=opts.file, instruction=opts.instruction,
         edit_snippet=opts.edit_snippet, verify_cmd=opts.verify,
@@ -226,8 +230,11 @@ def _cmd_apply(opts, settings):
 
 
 def _cmd_continue(opts, settings):
+    # As with --continue-from, reject missing verification authority before any
+    # OpenRouter key/model lookup. `validate_continuation` also unwraps a full
+    # persisted result object for CLI callers.
     with open(opts.state, "r", encoding="utf-8") as f:
-        continuation = json.load(f)
+        continuation = validate_continuation(json.load(f))
     api_key, gov = _governor(settings)
     ledger = AutonomyLedger(settings.ledger_path)
     router = _router(settings)

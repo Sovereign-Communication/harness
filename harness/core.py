@@ -23,7 +23,9 @@ On top of the original engine this adds:
   * Panel rotation: a failing panel member is replaced by the next model in
     the pool instead of just being skipped.
   * A structured judge verdict (agreement / confidence / disagreements /
-    defer) so consensus is measured, not just asserted.
+    defer) so consensus is measured, not just asserted. Structured convergence
+    separates responder agreement from fail-closed gate eligibility, so a
+    transport shortfall is reported as a shortfall rather than disagreement.
 """
 import json
 import sys
@@ -84,6 +86,37 @@ def _extract_json(text):
 
 
 REASONING_FALLBACK_PREFIX = "[NOTE] model returned no content"
+MAX_429_RETRIES = 1
+RETRY_429_BACKOFF_SECONDS = 0.05
+DEFAULT_CONVERGENCE_PANEL_TOKENS = 4096
+
+
+def _reported_cost(resp):
+    """Read a provider-reported cost even when the HTTP response is an error."""
+    try:
+        return float((resp.get("usage") or {}).get("cost") or 0.0)
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
+
+
+def _merge_retry_cost(resp, prior_cost):
+    """Carry a billable failed reasoning attempt into the retry response.
+
+    ``chat`` keeps its small ``(status, response)`` API, so callers observe one
+    response. Adding the prior attempt to ``usage.cost`` makes the governor and
+    the ledger charge the complete provider-reported total without silently
+    dropping a billable rejected request.
+    """
+    if not prior_cost or not isinstance(resp, dict):
+        return resp
+    usage = resp.setdefault("usage", {})
+    try:
+        current = float(usage.get("cost") or 0.0)
+    except (TypeError, ValueError):
+        current = 0.0
+    usage["cost"] = current + prior_cost
+    usage["retry_cost"] = prior_cost
+    return resp
 
 
 def extract_content_and_cost(resp):
@@ -95,21 +128,33 @@ def extract_content_and_cost(resp):
     *real* content (e.g. apply, which writes output to a file) must treat
     anything starting with REASONING_FALLBACK_PREFIX as "no usable output"
     rather than content.
+
+    Usage is extracted independently of the choice body. Providers can return
+    a billable, malformed/empty completion; losing that usage value would make
+    the governor and the ledger disagree about spend.
     """
+    usage = resp.get("usage") if isinstance(resp, dict) else {}
+    usage = usage if isinstance(usage, dict) else {}
+    cost = usage.get("cost", 0.0)
+    is_byok = usage.get("is_byok", False)
     try:
-        message = resp["choices"][0]["message"]
+        choice = resp["choices"][0]
+        message = choice["message"]
         content = message.get("content")
+        if content is not None and not isinstance(content, str):
+            # This text-only harness must never turn a malformed multimodal/list
+            # body into file content or feed it to JSON parsing. Treat it as an
+            # unusable response so the caller can rotate/fail closed.
+            content = None
         if not (content or "").strip():
             reasoning = message.get("reasoning")
-            if (reasoning or "").strip():
+            if isinstance(reasoning, str) and reasoning.strip():
                 content = (REASONING_FALLBACK_PREFIX + "; showing reasoning trace instead.\n\n"
                            + reasoning)
-        finish_reason = resp["choices"][0].get("finish_reason", "unknown")
-        cost = resp.get("usage", {}).get("cost", 0.0)
-        is_byok = resp.get("usage", {}).get("is_byok", False)
+        finish_reason = choice.get("finish_reason", "unknown")
         return content, finish_reason, cost, is_byok
-    except (KeyError, IndexError, TypeError):
-        return None, None, 0.0, False
+    except (AttributeError, KeyError, IndexError, TypeError):
+        return None, None, cost, is_byok
 
 
 # ------------------------- reasoning / effort -------------------------
@@ -152,6 +197,18 @@ def _build_reasoning_param(model_id, reasoning_effort, max_tokens, budget):
         return None
     cap = max(1, int(max_tokens * budget))
     return {"effort": effort, "max_tokens": cap}
+
+
+def _chat_reservation_slots(model_id, reasoning_effort="auto", max_429_retries=0):
+    """Upper-bound provider calls for one governed logical request.
+
+    A provider may reject a reasoning parameter, causing ``chat`` to make one
+    fallback request. Panel calls may also make one bounded 429 retry. The
+    preflight reservation must cover both possibilities or the ceiling is only
+    approximate for reasoning models.
+    """
+    reasoning_slots = 2 if _effort_to_send(reasoning_effort, model_id) is not None else 1
+    return reasoning_slots * (max(0, int(max_429_retries)) + 1)
 
 
 class SpendGovernor:
@@ -268,9 +325,13 @@ class SpendGovernor:
 
         Worst-case: every call maxes its max_tokens. extra_input accounts for
         tokens a later call consumes beyond the base prompt (e.g. the judge
-        reading panel outputs). Returns the true ceiling, checked against
-        self.max_cost before any network call.
+        reading panel outputs). The estimate is checked against the *remaining*
+        session ceiling, so a later rotation cannot spend through an earlier
+        call's budget. Callers should include every bounded replacement they may
+        try in ``calls``.
         """
+        if not calls:
+            return 0.0, []
         models = [m_ for _, m_, _, _ in calls]
         pricing = self.fetch_pricing(models)
         prompt_tokens = estimate_prompt_tokens(prompt_text)
@@ -281,18 +342,26 @@ class SpendGovernor:
             cost = (prompt_tokens + extra) * pp + max_tokens * cp
             breakdown.append((label, model, cost))
             total += cost
-        if total > self.max_cost:
+        if self.spent + total > self.max_cost:
             raise HarnessError(
-                f"worst-case estimate ${total:.6f} exceeds ceiling ${self.max_cost:.6f}. Refusing.")
+                f"worst-case estimate ${self.spent + total:.6f} exceeds remaining ceiling "
+                f"${self.max_cost:.6f}. Refusing.")
         return total, breakdown
 
     # 5
     def record_actual(self, cost, label):
-        self.spent += cost
-        if self.spent > self.max_cost:
+        """Record a billable response without ever moving ``spent`` over the ceiling."""
+        try:
+            actual = float(cost or 0.0)
+        except (TypeError, ValueError):
+            raise HarnessError(f"invalid reported cost {cost!r} (after '{label}').")
+        if actual < 0:
+            raise HarnessError(f"negative reported cost {actual:.6f} (after '{label}').")
+        if self.spent + actual > self.max_cost:
             raise HarnessError(
-                f"actual running cost ${self.spent:.6f} exceeded ceiling "
+                f"actual running cost ${self.spent + actual:.6f} would exceed ceiling "
                 f"${self.max_cost:.6f} (after '{label}'). Aborting.")
+        self.spent += actual
 
 
 # ------------------------- live discovery -------------------------
@@ -358,10 +427,14 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
     want_reasoning = _effort_to_send(reasoning_effort, model) is not None
     status, resp = transport.post(OPENROUTER_CHAT_URL, api_key, build(want_reasoning))
     if want_reasoning and status != 200:
-        err = str(resp.get("error", {}).get("message", resp)).lower()
+        err = str(resp.get("error", {}).get("message", resp)
+                  if isinstance(resp, dict) else resp).lower()
         if any(h in err for h in _REASONING_PARAM_ERR_HINTS):
             eprint(f"[retry] {model} rejected reasoning param; retrying without it.")
-            return transport.post(OPENROUTER_CHAT_URL, api_key, build(False))
+            prior_cost = _reported_cost(resp)
+            retry_status, retry_resp = transport.post(
+                OPENROUTER_CHAT_URL, api_key, build(False))
+            return retry_status, _merge_retry_cost(retry_resp, prior_cost)
     return status, resp
 
 
@@ -371,8 +444,12 @@ def _parse_consensus(judge_text):
     """Parse the judge's JSON verdict; fail softly to unknown on bad output."""
     parsed = _extract_json(judge_text)
     if not parsed:
+        # A judge response that cannot be parsed is not an approval. Keep the
+        # raw text for diagnosis, but fail closed so callers never interpret
+        # malformed prose as a successful synthesis.
         return {"agreement": "unknown", "confidence": None, "disagreements": [],
-                "defer": False, "verdict": judge_text or ""}
+                "defer": True, "verdict": judge_text or "",
+                "defer_reason": "unparseable_judge_output"}
     verdict = parsed.get("verdict")
     agreement = str(parsed.get("agreement", "unknown")).lower()
     if agreement not in ("high", "medium", "low", "none"):
@@ -402,40 +479,39 @@ def _parse_consensus(judge_text):
 # a distinct step for STRUCTURED claims audits: it reads the panel's per-claim
 # JSON verdicts and renders the final convergence report. It defaults to the
 # judge model when not overridden. Panel agreement is computed deterministically
-# too -- a claim CONVERGES only when every panelist that answered it agrees on
-# `real` (5/5 unanimous == 100% on that claim).
+# too -- responder unanimity is reported when every valid responder agrees on
+# `real`; the returned `converged` field additionally requires full panel
+# coverage (5/5 unanimous == 100% at the merge gate).
 
 
 def extract_claim_verdicts(content):
-    """Return the parsed per-claim dict from a panelist's structured response."""
+    """Return only well-formed per-claim votes from a panelist response.
+
+    A structured convergence vote must contain a nested claim object whose
+    ``real`` field is an actual JSON boolean. Strings such as ``"true"`` or
+    malformed top-level prose are not votes and cannot satisfy participation.
+    """
+    if not isinstance(content, str):
+        return {}
     parsed = _extract_json(content)
     if not isinstance(parsed, dict):
         return {}
     return {k: v for k, v in parsed.items()
-            if isinstance(v, dict) and "real" in v}
+            if isinstance(v, dict) and isinstance(v.get("real"), bool)}
 
 
-def tally_convergence(panel_results, claim_polarity=None):
-    """Deterministic per-claim consensus from the panel's per-claim JSON verdicts.
+def tally_convergence(panel_results, claim_polarity=None, of_panel=None):
+    """Compute responder agreement and gate eligibility separately.
 
-    POLARITY CONVENTION: a claim is a DEFECT proposition -- `real: true` means
-    the stated defect genuinely exists in the code. This makes statement-truth
-    and defect-presence readings coincide, so identical substance yields
-    identical votes across models.
-
-    claim_polarity maps a claim id to "defect" (default) or "reassurance". A
-    REASSURANCE claim asserts something is CORRECT ("X is order-independent");
-    models encode agreement with it inconsistently (some read real:true as
-    "the statement holds", others as "a defect exists"), so a reassurance
-    claim can NEVER be normalized reliably -- identical substance could split
-    the tally. Reassurance claims are therefore EXCLUDED from the convergence
-    gate and reported separately, so they cannot split an otherwise-unanimous
-    defect tally.
-
-    For each defect claim, gather every panelist's `real` vote. A claim
-    CONVERGES when all panelists that answered it agree (5/5 == 100%).
+    ``real: true`` always means that the stated defect is present. A claim is
+    *unanimous* when every valid responder agrees. ``converged`` is stricter:
+    every required panel slot must have supplied a valid vote as well. This
+    distinction makes a 2/3 shortfall report as high responder agreement with
+    an explicit fail-closed coverage shortfall, rather than mislabeling it as
+    model disagreement.
     """
     claim_polarity = claim_polarity or {}
+    required = len(panel_results) if of_panel is None else max(0, int(of_panel))
     buckets = {}
     order = {}
     for r in panel_results:
@@ -447,7 +523,7 @@ def tally_convergence(panel_results, claim_polarity=None):
                                 "confidences": [], "models": []}
                 order[cid] = kind
             c = buckets[cid]
-            c["votes"]["real" if v.get("real") else "not_real"] += 1
+            c["votes"]["real" if v["real"] else "not_real"] += 1
             if v.get("confidence") is not None:
                 try:
                     c["confidences"].append(float(v["confidence"]))
@@ -457,33 +533,97 @@ def tally_convergence(panel_results, claim_polarity=None):
 
     per_claim = {}
     reassurance = {}
-    converged_claims = 0
+    responder_claims = 0
+    gate_claims = 0
     defect_total = 0
+    claim_shortfall = False
+    claim_disagreement = False
+    disagreement_claims = []
     for cid, kind in order.items():
         c = buckets[cid]
         votes = c["votes"]
         total = votes["real"] + votes["not_real"]
-        unanimous = total > 0 and (votes["real"] == 0 or votes["not_real"] == 0)
+        responder_unanimous = total > 0 and (votes["real"] == 0 or votes["not_real"] == 0)
+        gate_unanimous = (required > 0 and total == required and responder_unanimous)
+        # Reassurance claims are informational and intentionally excluded from
+        # the defect gate, including its coverage-shortfall calculation.
+        if kind == "defect":
+            claim_shortfall = claim_shortfall or total < required
+        if kind == "defect" and votes["real"] > 0 and votes["not_real"] > 0:
+            # Reassurance/informational claims are intentionally outside the
+            # defect tally; their polarity must not pollute disagreement output
+            # or the defer reason for an otherwise converged audit.
+            claim_disagreement = True
+            disagreement_claims.append(cid)
         majority = "real" if votes["real"] >= votes["not_real"] else "not_real"
         mean_conf = round(sum(c["confidences"]) / len(c["confidences"]), 3) if c["confidences"] else None
-        entry = {"verdict": majority, "unanimous": unanimous, "voted_by": total,
-                 "confidence": mean_conf, "votes": votes}
+        entry = {
+            "verdict": majority,
+            # This is responder unanimity. ``converged``/``gate_unanimous`` is
+            # the fail-closed merge-gate value when the panel was short.
+            "unanimous": responder_unanimous,
+            "responder_unanimous": responder_unanimous,
+            "converged": gate_unanimous,
+            "gate_unanimous": gate_unanimous,
+            "voted_by": total,
+            "of_panel": required,
+            "confidence": mean_conf,
+            "votes": votes,
+            "missing_votes": max(0, required - total),
+            "panel_shortfall": total < required,
+        }
         if kind == "defect":
             defect_total += 1
-            if unanimous:
-                converged_claims += 1
+            if responder_unanimous:
+                responder_claims += 1
+            if gate_unanimous:
+                gate_claims += 1
             per_claim[cid] = entry
         else:
-            # Reassurance: reported but never gates convergence (polarity of
-            # `real` is convention-dependent across models).
-            entry["note"] = "reassurance claim: real:true means the stated " \
-                             "correctness holds; excluded from the convergence gate"
+            entry["note"] = "reassurance claim: reported separately and excluded from the defect convergence gate"
             reassurance[cid] = entry
+
+    valid_responders = []
+    for index, r in enumerate(panel_results):
+        verdicts = extract_claim_verdicts(r.get("content") or "")
+        if any(claim_polarity.get(cid, "defect") != "reassurance"
+               for cid in verdicts):
+            valid_responders.append(r.get("model") or f"panel_{index + 1}")
+    # Count responding panel slots, not unique model ids. A caller may
+    # deliberately include the same model more than once; each slot still
+    # needs its own vote for an accurate voted_by/of_panel report.
+    voted_by = len(valid_responders)
+    responding_models = list(dict.fromkeys(valid_responders))
+    panel_shortfall = bool(claim_shortfall or (required > 0 and voted_by < required))
+    missing_votes = max(
+        [entry["missing_votes"] for entry in per_claim.values()] or
+        [max(0, required - voted_by)])
+    responder_converged = defect_total > 0 and responder_claims == defect_total
+    gate_converged = defect_total > 0 and gate_claims == defect_total
+    responder_rate = round(responder_claims / defect_total, 3) if defect_total else None
+    gate_rate = round(gate_claims / defect_total, 3) if defect_total else None
     return {
-        "converged": defect_total > 0 and converged_claims == defect_total,
-        "converged_claims": converged_claims,
+        # ``converged`` is deliberately gate-safe: it cannot be true while a
+        # required panel slot or claim vote is missing.
+        "converged": gate_converged,
+        "responder_converged": responder_converged,
+        "converged_claims": gate_claims,
+        "responder_converged_claims": responder_claims,
         "total_claims": defect_total,
-        "convergence_rate": round(converged_claims / defect_total, 3) if defect_total else None,
+        # Keep the historical field useful to callers: it measures agreement
+        # among responders. ``gate_convergence_rate`` measures coverage-aware
+        # eligibility.
+        "convergence_rate": responder_rate,
+        "gate_convergence_rate": gate_rate,
+        "disagreement": claim_disagreement,
+        "disagreement_claims": disagreement_claims,
+        "panel_shortfall": panel_shortfall,
+        "missing_votes": missing_votes,
+        "shortfall": {"voted_by": voted_by, "of_panel": required,
+                       "missing_votes": missing_votes} if panel_shortfall else None,
+        "voted_by": voted_by,
+        "of_panel": required,
+        "responding_models": responding_models,
         "claims": per_claim,
         "reassurance": reassurance,
     }
@@ -491,7 +631,7 @@ def tally_convergence(panel_results, claim_polarity=None):
 
 def run_convergence_specialist(transport, api_key, governor, panel_results, model,
                                max_tokens=1200, reasoning_effort="auto",
-                               reasoning_token_budget=0.4):
+                               reasoning_token_budget=0.4, ledger=None, task_id=None):
     """A dedicated 'convergence specialist' renders the final verdict from the
     panel's per-claim JSON (defaults to the judge model when not overridden).
     Falls back to the deterministic tally if the specialist call fails."""
@@ -502,7 +642,8 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
         "{\"converged\":true|false,\"agreement\":\"high|medium|low|none\","
         "\"confidence\":<0-1>,\"claims\":{\"<claim>\":{\"verdict\":\"real|not_real\","
         "\"converged\":true|false,\"confidence\":<0-1>}}}",
-        "A claim is converged only when every model that answered agrees on its verdict. "
+        "Responder unanimity is present when every model that answered agrees on its verdict. "
+        "The merge-gate converged field additionally requires every required panel slot to answer. "
         "Claims are DEFECT propositions: real:true means the stated defect genuinely exists. "
         "Do not invent claims or models.",
     ]
@@ -511,20 +652,45 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
         lines.append(f"--- Model: {r.get('model')} ---\n{body}")
     prompt = "\n".join(lines)
 
-    governor.preflight(prompt, [("convergence", model, max_tokens, 0)])
+    slots = _chat_reservation_slots(model, reasoning_effort)
+    governor.preflight(
+        prompt,
+        [(f"convergence attempt {i + 1}/{slots}", model, max_tokens, 0)
+         for i in range(slots)],
+    )
     status, resp = chat(transport, api_key, model, [{"role": "user", "content": prompt}],
                         max_tokens, reasoning_effort, reasoning_token_budget, governor)
     if status != 200:
+        error_cost = _reported_cost(resp)
+        if error_cost:
+            governor.record_actual(error_cost, model)
+        if ledger and task_id:
+            ledger.append("model_result", task_id=task_id, event_note="convergence",
+                          model=model, task_type="structured", json_expected=True,
+                          json_ok=False, status="error", cost=error_cost)
+        error = (resp.get("error", {}).get("message", str(resp))
+                 if isinstance(resp, dict) else str(resp))
         return {"status": "error", "model": model,
-                "error": resp.get("error", {}).get("message", str(resp))}
+                "error": error, "cost": error_cost}
     content, _, cost, is_byok = extract_content_and_cost(resp)
     if is_byok and not governor.is_free(model):
         governor.record_byok(model)
+        if ledger and task_id:
+            ledger.append("model_result", task_id=task_id, event_note="convergence",
+                          model=model, task_type="structured", json_expected=True,
+                          json_ok=False, status="error", cost=0.0)
         return {"status": "error", "model": model, "error": "paid BYOK route; no specialist verdict"}
     governor.record_actual(cost, model)
-    return {"status": "ok", "model": model,
-            "specialist": _extract_json(content) or {},
-            "raw": content, "cost": cost}
+    parsed = _extract_json(content) or {}
+    json_ok = isinstance(parsed, dict) and bool(parsed)
+    if ledger and task_id:
+        ledger.append("model_result", task_id=task_id, event_note="convergence",
+                      model=model, task_type="structured", json_expected=True,
+                      json_ok=json_ok, status="ok" if json_ok else "error", cost=cost)
+    return {"status": "ok" if json_ok else "error", "model": model,
+            "specialist": parsed if json_ok else {},
+            "raw": content if json_ok else None, "cost": cost,
+            "error": None if json_ok else "specialist returned no parseable JSON"}
 
 
 def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_tokens=None,
@@ -538,9 +704,15 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     in the pool until max_panelists succeed or the pool is exhausted.
     """
     max_tokens = max_tokens or DEFAULT_MAX_TOKENS
+    panel_tokens = max_tokens
+    if run_convergence:
+        # Structured claim JSON is frequently longer than ordinary prose. Keep
+        # the caller's lower bound but avoid wasting panel slots on truncation.
+        panel_tokens = max(panel_tokens, DEFAULT_CONVERGENCE_PANEL_TOKENS)
     panel_pool = list(panel)
 
-    for _m in panel_pool + [judge]:
+    spec_model = convergence_model or judge
+    for _m in panel_pool + [judge, spec_model]:
         governor.check_byok(_m)  # P0: raise on mistralai//anthropic/
 
     # Capability-aware ordering: when profiles are supplied, order the free
@@ -560,11 +732,29 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     # Rotate out any org-prefix previously observed routing via BYOK (paid).
     panel_pool = [m_ for m_ in panel_pool if not governor.learned_blocked(m_)]
     judge_blocked = governor.learned_blocked(judge)
+    if not panel_pool:
+        raise HarnessError("no available panel models after BYOK filtering")
     target = max(1, min(max_panelists, len(panel_pool)))
 
     judge_max_tokens = max(768, max_tokens + 200)
-    calls = [(m_, m_, max_tokens, 0) for m_ in panel_pool[:target]]
-    calls.append((f"{judge} (judge)", judge, judge_max_tokens, target * max_tokens + 100))
+    # Reserve for every candidate, bounded 429 retries, and provider reasoning
+    # fallbacks. A malformed/rate-limited member may consume a call before a
+    # replacement fills its slot; a reasoning rejection may consume a fallback
+    # request before the same logical call succeeds.
+    calls = []
+    for m_ in panel_pool:
+        slots = _chat_reservation_slots(m_, reasoning_effort, MAX_429_RETRIES)
+        for i in range(slots):
+            calls.append((f"{m_} (panel attempt {i + 1}/{slots})", m_, panel_tokens, 0))
+    judge_slots = _chat_reservation_slots(judge, reasoning_effort)
+    for i in range(judge_slots):
+        calls.append((f"{judge} (judge attempt {i + 1}/{judge_slots})", judge,
+                      judge_max_tokens, target * panel_tokens + 100))
+    if run_convergence:
+        spec_slots = _chat_reservation_slots(spec_model, reasoning_effort)
+        for i in range(spec_slots):
+            calls.append((f"{spec_model} (convergence attempt {i + 1}/{spec_slots})",
+                          spec_model, judge_max_tokens, target * panel_tokens + 100))
     total_estimate, breakdown = governor.preflight(prompt, calls)
     eprint("[preflight] worst-case cost breakdown:")
     for label, model, cost in breakdown:
@@ -573,6 +763,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
            f"(ceiling: ${governor.max_cost:.6f})")
 
     panel_results = []
+    panel_failures = []
     tried = 0
     for model in panel_pool:
         if len(panel_results) >= target:
@@ -580,25 +771,91 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         tried += 1
         eprint(f"[panel] calling {model} ...")
         t0 = time.time()
-        status, resp = chat(transport, api_key, model,
-                            [{"role": "user", "content": prompt}], max_tokens,
-                            reasoning_effort, reasoning_token_budget, governor)
+        retry_count = 0
+        response_cost = 0.0
+        response_cost_recorded = False
+        while True:
+            status, resp = chat(transport, api_key, model,
+                                [{"role": "user", "content": prompt}], panel_tokens,
+                                reasoning_effort, reasoning_token_budget, governor)
+            response_cost = _reported_cost(resp)
+            response_cost_recorded = False
+            if status != 429 or retry_count >= MAX_429_RETRIES:
+                break
+            if response_cost:
+                governor.record_actual(response_cost, f"{model} (429 retry)")
+            response_cost_recorded = True
+            if ledger and task_id:
+                ledger.append("model_result", task_id=task_id, event_note="panel",
+                              model=model, task_type="structured" if run_convergence else "panel",
+                              json_expected=run_convergence,
+                              json_ok=False if run_convergence else None,
+                              status="error", cost=response_cost, retry=True)
+            retry_count += 1
+            eprint(f"[panel] {model} rate-limited; bounded retry {retry_count}/{MAX_429_RETRIES}.")
+            time.sleep(RETRY_429_BACKOFF_SECONDS * retry_count)
         elapsed = time.time() - t0
         if status != 200:
-            err = resp.get("error", {}).get("message", str(resp))
+            err = resp.get("error", {}).get("message", str(resp)) if isinstance(resp, dict) else str(resp)
+            cost = response_cost
+            if cost and not response_cost_recorded:
+                governor.record_actual(cost, model)
+            panel_failures.append({"model": model, "reason": err,
+                                   "status": status, "cost": cost,
+                                   "retries": retry_count})
+            if ledger and task_id:
+                ledger.append("model_result", task_id=task_id, event_note="panel",
+                              model=model,
+                              task_type="structured" if run_convergence else "panel",
+                              json_expected=run_convergence,
+                              json_ok=False if run_convergence else None,
+                              status="error", cost=cost, retries=retry_count)
             eprint(f"[panel] {model} FAILED ({status}): {err} -- rotating to next model.")
             continue
         content, finish_reason, cost, is_byok = extract_content_and_cost(resp)
-        if is_byok:
-            if governor.is_free(model):
-                # Free BYOK routes cost $0; nothing to leak. Use it, with a note.
-                eprint(f"[panel] {model} is BYOK-routed but free (cost 0); accepting.")
-            else:
-                governor.record_byok(model)
-                eprint(f"[panel] {model} is BYOK-routed (paid); recorded and rotating.")
-                continue
+        paid_byok = bool(is_byok and not governor.is_free(model))
+        if paid_byok:
+            governor.record_byok(model)
+            panel_failures.append({"model": model, "reason": "paid BYOK route", "status": "byok",
+                                   "cost": 0.0, "reported_cost": cost})
+            if ledger and task_id:
+                ledger.append("model_result", task_id=task_id, event_note="panel",
+                              model=model, task_type="structured" if run_convergence else "panel",
+                              json_expected=run_convergence, json_ok=False if run_convergence else None,
+                              status="error", cost=0.0, reported_cost=cost)
+            eprint(f"[panel] {model} is BYOK-routed (paid); recorded and rotating.")
+            continue
+        if not content or not str(content).strip():
+            # A successful HTTP status is not a panel vote. Treat blank or
+            # schema-less output as a bounded failure so the judge never sees
+            # an unusable body and convergence cannot count it as participation.
+            governor.record_actual(cost, model)
+            panel_failures.append({"model": model, "reason": "empty panel output",
+                                   "status": "invalid_output", "cost": cost,
+                                   "retries": retry_count})
+            if ledger and task_id:
+                ledger.append("model_result", task_id=task_id, event_note="panel",
+                              model=model,
+                              task_type="structured" if run_convergence else "panel",
+                              json_expected=run_convergence,
+                              json_ok=False if run_convergence else None,
+                              status="error", cost=cost, retries=retry_count)
+            eprint(f"[panel] {model} returned empty output -- rotating to next model.")
+            continue
         governor.record_actual(cost, model)
         eprint(f"[panel] {model}: cost=${cost:.6f}, finish_reason={finish_reason}, {elapsed:.1f}s")
+        valid_claims = (bool(extract_claim_verdicts(content)) and
+                        finish_reason != "length") if run_convergence else True
+        if run_convergence and not valid_claims:
+            panel_failures.append({"model": model, "reason": "malformed, missing, or truncated per-claim JSON",
+                                   "status": "invalid_output", "cost": cost,
+                                   "retries": retry_count})
+            if ledger and task_id:
+                ledger.append("model_result", task_id=task_id, event_note="panel",
+                              model=model, task_type="structured", json_expected=True,
+                              json_ok=False, status="error", cost=cost)
+            eprint(f"[panel] {model} returned malformed/missing claim JSON -- rotating.")
+            continue
         if finish_reason == "length":
             eprint(f"[panel] WARNING: {model} truncated by --max-tokens.")
         panel_results.append({
@@ -609,8 +866,8 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             ledger.append("model_result", task_id=task_id, event_note="panel",
                           model=model, task_type="structured" if run_convergence else "panel",
                           json_expected=run_convergence,
-                          json_ok=bool(extract_claim_verdicts(content)) if run_convergence else None,
-                          status="ok")
+                          json_ok=valid_claims if run_convergence else None,
+                          status="ok", cost=cost, retries=retry_count)
 
     if not panel_results:
         raise HarnessError("all panel calls failed. Aborting.")
@@ -632,7 +889,9 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
 
     judge_content = None
     judge_cost = 0.0
+    judge_synthesis_status = "not_run"
     if judge_blocked:
+        judge_synthesis_status = "byok_blocked"
         eprint(f"[judge] {judge} routes via paid BYOK on this account; raw panel outputs only.")
     else:
         eprint(f"[judge] calling {judge} ...")
@@ -640,60 +899,129 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                             [{"role": "user", "content": judge_prompt}], judge_max_tokens,
                             reasoning_effort, reasoning_token_budget, governor)
         if status != 200:
-            err = resp.get("error", {}).get("message", str(resp))
+            judge_synthesis_status = f"http_{status}"
+            err = resp.get("error", {}).get("message", str(resp)) if isinstance(resp, dict) else str(resp)
+            judge_cost = _reported_cost(resp)
+            if judge_cost:
+                governor.record_actual(judge_cost, judge)
+            if ledger and task_id:
+                ledger.append("model_result", task_id=task_id, event_note="judge",
+                              model=judge,
+                              task_type="structured" if run_convergence else "judge",
+                              json_expected=True, json_ok=False, status="error",
+                              cost=judge_cost, synthesis_status=judge_synthesis_status)
             eprint(f"[judge] FAILED ({status}): {err} -- raw panel outputs only.")
         else:
-            judge_content, _, judge_cost, is_byok = extract_content_and_cost(resp)
-            if is_byok:
-                if governor.is_free(judge):
-                    eprint("[judge] BYOK-routed but free (cost 0); accepting.")
-                else:
-                    governor.record_byok(judge)
-                    eprint("[judge] BYOK-routed (paid); raw panel outputs only.")
+            raw_judge, _, judge_cost, is_byok = extract_content_and_cost(resp)
+            paid_byok = bool(is_byok and not governor.is_free(judge))
+            if paid_byok:
+                governor.record_byok(judge)
+                judge_synthesis_status = "byok_blocked"
+                eprint("[judge] BYOK-routed (paid); raw panel outputs only.")
+            else:
+                governor.record_actual(judge_cost, judge)
+                if raw_judge and raw_judge.startswith(REASONING_FALLBACK_PREFIX):
+                    judge_synthesis_status = "reasoning_only"
                     judge_content = None
-            governor.record_actual(judge_cost, judge)
-            if ledger and task_id and judge_content is not None:
+                else:
+                    judge_content = raw_judge
+                    judge_synthesis_status = "parseable" if _extract_json(raw_judge) is not None else "unparseable"
+            eprint(f"[judge] synthesis status: {judge_synthesis_status}")
+            if ledger and task_id:
                 ledger.append("model_result", task_id=task_id, event_note="judge",
                               model=judge, task_type="structured" if run_convergence else "judge",
                               json_expected=True,
-                              json_ok=_extract_json(judge_content) is not None,
-                              status="ok")
+                              json_ok=judge_synthesis_status == "parseable",
+                              status="ok" if judge_synthesis_status == "parseable" else "error",
+                              cost=0.0 if paid_byok else judge_cost,
+                              synthesis_status=judge_synthesis_status)
 
     consensus = _parse_consensus(judge_content) if judge_content else {
         "agreement": "unknown", "confidence": None, "disagreements": [],
         "defer": True, "verdict": "[raw panel outputs only -- no synthesis available]",
     }
 
-    eprint(f"\n[TOTAL] actual cost this run: ${governor.spent:.6f} "
-           f"(ceiling: ${governor.max_cost:.6f})")
-
     # Optional structured-claims convergence step: a dedicated specialist
     # renders the final verdict from the panel's per-claim JSON (defaults to the
     # judge model), and the deterministic tally gives the ground-truth 5/5 rate.
     convergence_spec = None
+    convergence_tally = None
     if run_convergence:
-        spec_model = convergence_model or judge
-        tally = tally_convergence(panel_results, claim_polarity=claim_polarity)
+        convergence_tally = tally_convergence(panel_results, claim_polarity=claim_polarity,
+                                              of_panel=target)
         spec = run_convergence_specialist(
             transport, api_key, governor, panel_results, spec_model,
             max_tokens=judge_max_tokens, reasoning_effort=reasoning_effort,
-            reasoning_token_budget=reasoning_token_budget)
-        spec["tally"] = tally
-        # Override judge's agreement/confidence with the ground-truth convergence
-        # rate when the panel fully converged (5/5 unanimous == 100%).
-        if tally["converged"]:
+            reasoning_token_budget=reasoning_token_budget, ledger=ledger,
+            task_id=task_id)
+        spec["tally"] = convergence_tally
+        # The deterministic tally owns structured convergence. Responder
+        # agreement and merge-gate eligibility are separate signals: a short
+        # panel may be unanimously aligned while still being ineligible to
+        # approve the task. This avoids reporting a transport shortfall as
+        # model disagreement.
+        if convergence_tally["responder_converged"]:
             consensus["agreement"] = "high"
-            consensus["confidence"] = tally["convergence_rate"] or 0.0
+            consensus["confidence"] = convergence_tally["convergence_rate"] or 0.0
+        else:
+            consensus["agreement"] = "low" if convergence_tally["disagreement"] else "unknown"
+            consensus["confidence"] = convergence_tally["convergence_rate"] or 0.0
+        consensus["defer"] = not convergence_tally["converged"]
+        consensus["panel_shortfall"] = convergence_tally["panel_shortfall"]
+        consensus["missing_votes"] = convergence_tally["missing_votes"]
+        consensus["voted_by"] = convergence_tally["voted_by"]
+        consensus["of_panel"] = convergence_tally["of_panel"]
+        consensus["responder_converged"] = convergence_tally["responder_converged"]
+        consensus["gate_converged"] = convergence_tally["converged"]
+        consensus["defer_reason"] = ("panel_shortfall" if convergence_tally["panel_shortfall"]
+                                      else "responder_disagreement" if convergence_tally["disagreement"]
+                                      else None)
+        # In structured mode, disagreements are claim-level facts, not the
+        # judge's free-form severity/prose list. A shortfall is reported
+        # separately and must not be mislabeled as disagreement.
+        consensus["disagreements"] = list(convergence_tally["disagreement_claims"])
+        # Do not let a judge's prose become the authoritative verdict for a
+        # structured audit; it can be absent or semantically inverted. Keep it
+        # in judge_synthesis, but expose a deterministic claim summary instead.
+        consensus["judge_verdict"] = consensus.get("verdict", "")
+        summary = []
+        for cid, entry in convergence_tally["claims"].items():
+            summary.append(f"{cid}={entry['verdict']} ({entry['voted_by']}/{entry['of_panel']})")
+        if convergence_tally["panel_shortfall"]:
+            s = convergence_tally["shortfall"]
+            summary.append(f"panel shortfall {s['voted_by']}/{s['of_panel']}; merge gate deferred")
+        consensus["verdict"] = "Deterministic panel tally: " + ("; ".join(summary) or "no defect claims")
         convergence_spec = spec
 
+    # Print only after every planned call, including the optional specialist,
+    # has settled so the human-facing total agrees with the returned result and
+    # ledger evidence.
+    eprint(f"\n[TOTAL] actual cost this run: ${governor.spent:.6f} "
+           f"(ceiling: ${governor.max_cost:.6f})")
+
+    consensus_payload = {k: consensus[k] for k in
+                         ("agreement", "confidence", "disagreements", "defer")}
+    if convergence_tally is not None:
+        consensus_payload.update({
+            "panel_shortfall": convergence_tally["panel_shortfall"],
+            "missing_votes": convergence_tally["missing_votes"],
+            "voted_by": convergence_tally["voted_by"],
+            "of_panel": convergence_tally["of_panel"],
+            "responder_converged": convergence_tally["responder_converged"],
+            "gate_converged": convergence_tally["converged"],
+            "defer_reason": consensus.get("defer_reason"),
+            "judge_verdict": consensus.get("judge_verdict"),
+        })
     result = {
         "panel_results": panel_results,
+        "panel_failures": panel_failures,
+        "required_panelists": target,
         "panel_tried": tried,
         "judge_model": judge,
         "judge_synthesis": judge_content,
+        "judge_synthesis_status": judge_synthesis_status,
         "verdict": consensus["verdict"],
-        "consensus": {k: consensus[k] for k in
-                      ("agreement", "confidence", "disagreements", "defer")},
+        "consensus": consensus_payload,
         "estimated_worst_case_cost": total_estimate,
         "actual_cost": governor.spent,
         "max_cost_ceiling": governor.max_cost,
@@ -702,6 +1030,8 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         result["convergence"] = convergence_spec
     if ledger and task_id:
         ledger.append("complete", task_id=task_id, event_note="panel_judge",
-                      model=judge, cost=governor.spent, status="ok",
-                      agreement=consensus["agreement"])
+                      model=judge, session_spent=governor.spent, status="ok",
+                      agreement=consensus["agreement"],
+                      voted_by=convergence_tally.get("voted_by") if convergence_tally else None,
+                      of_panel=convergence_tally.get("of_panel") if convergence_tally else None)
     return result

@@ -93,11 +93,31 @@ class AutonomyLedger:
         offers_required = 0
         model_stats = {}
         rounds_per_task = {}
+        billable_events = {
+            "model_result", "consent_accept", "consent_decline", "consent_defer",
+            "consent_redirect", "consent_renew_accept", "consent_renew_defer",
+        }
+        tracked_cost = 0.0
+        cost_event_count = 0
+
+        def add_cost(event):
+            nonlocal tracked_cost, cost_event_count
+            if event.get("event") not in billable_events:
+                return
+            raw = event.get("billable_cost", event.get("cost", 0.0))
+            try:
+                amount = float(raw or 0.0)
+            except (TypeError, ValueError):
+                return
+            if amount >= 0:
+                tracked_cost += amount
+                cost_event_count += 1
 
         def ms(model):
             return model_stats.setdefault(model or "?", {})
 
         for e in events:
+            add_cost(e)
             ev = e["event"]
             if ev in counts:
                 counts[ev] += 1
@@ -145,6 +165,8 @@ class AutonomyLedger:
             "completion_rate": rate(counts["complete"], counts["dispatch_start"]),
             "consent_required_offers": offers_required,
             "per_model": model_stats,
+            "tracked_cost": round(tracked_cost, 9),
+            "billable_event_count": cost_event_count,
             "consent_looks_degenerate": False,
         }
         if rounds_per_task:

@@ -66,6 +66,34 @@ class ConsentProbeTests(unittest.TestCase):
         events = [e["event"] for e in self.ledger.entries()]
         self.assertEqual(events, ["consent_renew_accept"])
 
+    def test_consent_cost_is_in_governor_and_ledger(self):
+        fake = FakeTransport(models=self.models, posts=[consent("accept")])
+        # Use a non-default amount so an accidental zero-cost path is visible.
+        fake.posts[0]["usage"]["cost"] = 0.000321
+        gov = SpendGovernor(fake, "sk-test")
+        result = probe_consent(transport=fake, api_key="k", governor=gov,
+                               task_id="cost-task", task="Do the work",
+                               model=JUDGE, ledger=self.ledger)
+        report = self.ledger.participation_report()
+        self.assertAlmostEqual(result["cost"], 0.000321, places=9)
+        self.assertAlmostEqual(gov.spent, 0.000321, places=9)
+        self.assertAlmostEqual(report["tracked_cost"], gov.spent, places=9)
+        self.assertEqual(report["billable_event_count"], 1)
+
+    def test_billable_error_cost_is_counted_and_fails_closed(self):
+        fake = FakeTransport(
+            models=self.models,
+            posts=[(500, {"error": {"message": "provider rejected"},
+                          "usage": {"cost": 0.000123}})])
+        gov = SpendGovernor(fake, "sk-test")
+        result = probe_consent(transport=fake, api_key="k", governor=gov,
+                               task_id="error-cost", task="Do the work",
+                               model=JUDGE, ledger=self.ledger)
+        report = self.ledger.participation_report()
+        self.assertEqual(result["decision"], "defer")
+        self.assertAlmostEqual(gov.spent, 0.000123, places=9)
+        self.assertAlmostEqual(report["tracked_cost"], gov.spent, places=9)
+
 
 if __name__ == "__main__":
     unittest.main()
