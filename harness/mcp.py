@@ -281,7 +281,8 @@ class McpServer:
                 transport=self.transport, api_key=self.api_key, governor=self.governor,
                 task_id=args.get("task_id") or uuid.uuid4().hex[:8],
                 task=args["task"], model=args.get("model") or self.router.judge,
-                context=args.get("context"), ledger=self.ledger, required=True)
+                context=args.get("context"), ledger=self.ledger, required=True,
+                fallback_pool=self.router.panel_pool)
         if name == "defer_work":
             self.ledger.append("defer_midtask", task_id=args.get("task_id"),
                                reason=args.get("reason"), category=args.get("category"),

@@ -10,6 +10,77 @@ from tests._fake import FakeTransport, m, comp, consent
 
 JUDGE = "inclusionai/ling-2.6-flash"
 APPLY = "deepseek/deepseek-chat"
+FALLBACK = "meta-llama/llama-3.1-8b-instruct"
+
+
+class ConsentRotationTests(unittest.TestCase):
+    """An unusable consent answer rotates down the pool; a parsed decision
+    (including defer/decline) is sovereign and never re-asked."""
+
+    def setUp(self):
+        self.models = [m(JUDGE), m(FALLBACK)]
+
+    def probe(self, posts, model=JUDGE):
+        fake = FakeTransport(models=self.models, posts=list(posts))
+        gov = SpendGovernor(fake, "sk-test")
+        result = probe_consent(transport=fake, api_key="k", governor=gov,
+                               task_id="rot", task="Do the work", model=model,
+                               ledger=None, fallback_pool=[FALLBACK])
+        return fake, gov, result
+
+    def test_reasoning_only_rotates_to_fallback(self):
+        """Regression: north-mini-style reasoning-only output must not dead-end
+        consent; the probe rotates and the fallback's accept is honored."""
+        fake, gov, r = self.probe([comp(None, reasoning="let me think"),
+                                   consent("accept", "fits")])
+        self.assertEqual(r["decision"], "accept")
+        self.assertEqual(r["model"], FALLBACK)
+        self.assertEqual([a["status"] for a in r["attempts"]], ["error"])
+        self.assertIn("reasoning-only", r["attempts"][0]["error"])
+
+    def test_http_error_rotates_then_fails_closed(self):
+        fake, gov, r = self.probe([(500, {"error": {"message": "down"}}),
+                                   (500, {"error": {"message": "down"}})])
+        self.assertEqual(r["decision"], "defer")
+        self.assertEqual(len(r["attempts"]), 2)
+        self.assertIn("fail-closed", r["reason"])
+
+    def test_unparseable_rotates_and_parsed_defer_is_sovereign(self):
+        """Prose from the first candidate rotates; an explicit defer from the
+        second is reported as the model's own decision (no further rotation)."""
+        fake, gov, r = self.probe([comp("Sounds great, I am in!"),
+                                   consent("defer", "out of my depth")])
+        self.assertEqual(r["decision"], "defer")
+        self.assertEqual(r["model"], FALLBACK)
+        self.assertEqual(r["reason"], "out of my depth")
+        self.assertEqual(len(r["attempts"]), 1, "parsed decisions must not rotate further")
+
+    def test_rotation_preflights_whole_pool(self):
+        """Every candidate must be priced before the first call so the ceiling
+        stays exact when rotation happens."""
+        fake = FakeTransport(models=self.models,
+                             posts=[comp(None, reasoning="hmm"), consent("accept")])
+        gov = SpendGovernor(fake, "sk-test", max_cost=0.01)
+        preflight_calls = []
+        original = gov.preflight
+        def spy(prompt, calls):
+            preflight_calls.extend(calls)
+            return original(prompt, calls)
+        gov.preflight = spy
+        probe_consent(transport=fake, api_key="k", governor=gov, task_id="pf",
+                      task="Do the work", model=JUDGE, ledger=None,
+                      fallback_pool=[FALLBACK])
+        self.assertEqual([c[1] for c in preflight_calls], [JUDGE, FALLBACK])
+
+    def test_renew_passes_fallback_pool(self):
+        fake = FakeTransport(models=self.models,
+                             posts=[comp(None, reasoning="hmm"), consent("accept")])
+        gov = SpendGovernor(fake, "sk-test")
+        r = consent_renew(transport=fake, api_key="k", governor=gov, task_id="rn",
+                          task="continue", model=JUDGE, ledger=None,
+                          fallback_pool=[FALLBACK])
+        self.assertEqual(r["decision"], "accept")
+        self.assertEqual(r["model"], FALLBACK)
 
 
 class ConsentProbeTests(unittest.TestCase):

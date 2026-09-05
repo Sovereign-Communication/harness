@@ -123,7 +123,8 @@ def _extract_file_content(text):
     """Pull the new file body from a model response.
 
     If the response is a single fenced code block, take its contents;
-    otherwise treat the whole response as the file body.
+    otherwise treat the whole response as the file body, stripping any stray
+    HARNESS_READY marker line -- protocol text must never land in the file.
     """
     if not text:
         return ""
@@ -138,27 +139,36 @@ def _extract_file_content(text):
                 break
     if start is not None and end is not None:
         return "".join(lines[start + 1:end])
-    return text
+    # Protocol marker lines must never land in the file, wherever the model
+    # put them (with or without a reason after the colon, mid-body, etc.).
+    return "".join(
+        ln for ln in lines if not ln.lstrip().startswith(READY_MARKER)
+    )
 
 
 def _parse_ready(content):
-    """Parse the inline HARNESS_READY verdict from the first line.
+    """Parse the inline HARNESS_READY verdict.
 
-    Returns (decision, reason, rest) where decision is 'confident', 'defer', or
-    'missing' (the model did not emit the marker; treat as confident with a
+    The marker is usually the first line, but models regularly emit leading
+    blank lines (or place it just before the file body) -- search the first
+    few lines so a stray preamble never leaks the protocol marker into the
+    written file. Returns (decision, reason, rest) where decision is
+    'confident', 'defer', or 'missing' (no marker; treat as confident with a
     warning so the verify gate + DEFER backstop still protect us). rest is the
     content with the marker line removed.
     """
     if not content:
         return "missing", "", content or ""
-    first, _, rest = content.partition("\n")
-    line = first.strip()
-    if line.startswith(READY_MARKER):
-        decision_raw = line[len(READY_MARKER):].strip()
-        decision, _, reason = decision_raw.partition(" ")
-        decision = decision.strip().lower()
-        if decision in ("confident", "defer"):
-            return decision, reason.strip(), rest
+    lines = content.splitlines(keepends=True)
+    for i, ln in enumerate(lines[:5]):
+        line = ln.strip()
+        if line.startswith(READY_MARKER):
+            decision_raw = line[len(READY_MARKER):].strip()
+            decision, _, reason = decision_raw.partition(" ")
+            decision = decision.strip().lower()
+            if decision in ("confident", "defer"):
+                rest = "".join(lines[:i]) + "".join(lines[i + 1:])
+                return decision, reason.strip(), rest
     return "missing", "", content
 
 
@@ -222,6 +232,9 @@ class ApplyEngine:
             return "\n\n".join(parts)
         lines = [
             "You are making a single, scoped code change.",
+            "The complete current file content is provided below in this prompt; "
+            "you do NOT need (and do not have) filesystem or tool access — work "
+            "entirely from the content shown here and reply with text only.",
             f"File: {file_path} (language: {lang or 'text'})",
             f"The file is {original.count(chr(10)) + 1} lines. Output the COMPLETE new file "
             f"content -- preserve all unchanged parts exactly.",
@@ -392,10 +405,24 @@ class ApplyEngine:
             original = f.read()
 
         if want_consent and not resumed:
+            # The model can only make an honest accept/defer call if it sees the
+            # work as the dispatcher will run it: the file it is being asked to
+            # change, not a bare instruction stripped of context. State the
+            # mechanics explicitly — several models otherwise read 'edit file'
+            # as requiring direct filesystem access and decline.
+            consent_task = (
+                "WORK MECHANICS: you do NOT need any tool or filesystem access. "
+                "The file content is shown here in this prompt; you will reply "
+                "with the complete new file content as plain text, and the "
+                "dispatcher writes it and runs an automated verification gate.\n"
+                f"FILE {file_path} (first 60 lines shown):\n"
+                f"{original[:2400]}\n"
+                f"REQUESTED CHANGE: {instruction[:1200]}")
             consent = probe_consent(
                 transport=self.transport, api_key=self.api_key, governor=self.governor,
-                task_id=task_id, task=instruction[:1500], model=self.router.judge,
-                ledger=self.ledger, required=True)
+                task_id=task_id, task=consent_task, model=self.router.judge,
+                ledger=self.ledger, required=True,
+                fallback_pool=self.router.panel_pool)
             if self.governor.spent - task_start_spent > task_max_cost:
                 raise HarnessError(
                     f"consent cost exceeded task ceiling ${task_max_cost:.6f}; refusing to dispatch")
@@ -414,10 +441,28 @@ class ApplyEngine:
         for round_no in range(1, max_rounds + 1):
             # Continued consensus: re-check consent before each round.
             if renew:
+                # Skip re-asking models already shown unable to answer the
+                # consent probe this run (e.g. reasoning-only emitters): the
+                # primary just fails again and the rotation ladder absorbs it.
+                consent_unusable = {
+                    a["model"] for a in (consent.get("attempts") or [])
+                    if a.get("status") == "error"}
+                renew_pool = [m_ for m_ in self.router.panel_pool
+                              if m_ not in consent_unusable]
+                renew_task = (
+                    "WORK MECHANICS: you do NOT need any tool or filesystem "
+                    "access. The current file content is shown here in this "
+                    "prompt; you will reply with the complete new file content "
+                    "as plain text, and the dispatcher writes it and runs the "
+                    "verification gate.\n"
+                    f"FILE {file_path} (first 60 lines shown):\n"
+                    f"{current_content[:2400]}\n"
+                    f"REQUESTED CHANGE: {instruction[:1200]}")
                 cr = consent_renew(
                     transport=self.transport, api_key=self.api_key, governor=self.governor,
-                    task_id=task_id, task=instruction[:1500], model=self.router.judge,
-                    ledger=self.ledger, required=True)
+                    task_id=task_id, task=renew_task, model=self.router.judge,
+                    ledger=self.ledger, required=True,
+                    fallback_pool=renew_pool)
                 if self.governor.spent - task_start_spent > task_max_cost:
                     raise HarnessError(
                         f"consent renewal exceeded task ceiling ${task_max_cost:.6f}; refusing to continue")
@@ -432,14 +477,32 @@ class ApplyEngine:
                         edit_snippet=edit_snippet, verify_cmd=verify_cmd)
 
             round_ctx = None
+            gate_broken = False
             if rounds:
                 last = rounds[-1]
                 tail = (last.get("verify_output") or "")[-VERIFY_FEEDBACK_CHARS:]
-                round_ctx = (
-                    "Your previous attempt was applied but did not pass verification.\n"
-                    f"Verification command: {verify_cmd}\n"
-                    f"Last {VERIFY_FEEDBACK_CHARS} chars of output:\n```\n{tail}\n```\n\n"
-                    "Return the corrected COMPLETE file content.")
+                # A gate that fails with the SAME output on consecutive rounds
+                # is broken (bad path, missing dependency, wrong interpreter),
+                # not something the model can fix by rewording code. Stop
+                # instead of burning the remaining rounds on it.
+                prev_outputs = [r.get("verify_output") or "" for r in rounds]
+                if len(prev_outputs) >= 2 and prev_outputs[-1] == prev_outputs[-2]:
+                    rounds.append({"round": round_no, "model": model or "(none)",
+                                   "status": "gate_broken",
+                                   "reason": "verification gate failed identically "
+                                             "on consecutive rounds; the gate itself "
+                                             "appears broken, not the edit",
+                                   "verify_output": tail, "cost": 0.0})
+                    history.append({"round": round_no, "status": "gate_broken"})
+                    gate_broken = True
+                else:
+                    round_ctx = (
+                        "Your previous attempt was applied but did not pass verification.\n"
+                        f"Verification command: {verify_cmd}\n"
+                        f"Last {VERIFY_FEEDBACK_CHARS} chars of output:\n```\n{tail}\n```\n\n"
+                        "Return the corrected COMPLETE file content.")
+            if gate_broken:
+                break
 
             # ---- model rotation on error ----
             candidates = []
@@ -676,8 +739,9 @@ class ApplyEngine:
             history.append({"round": round_no, "model": model_used, "status": "verify_failed"})
 
         # Cheap model exhausted its retry budget -> optional gated escalation.
+        # A proven-broken gate would fail the escalation identically, so skip it.
         esc = self.router.escalation(override=allow_escalation)
-        if (not verify_only and verify_cmd and esc and rounds and
+        if (not verify_only and verify_cmd and not gate_broken and esc and rounds and
                 rounds[-1].get("status") in ("verify_failed", "api_error")):
             self.ledger.append("escalate", task_id=task_id, from_model=model, to_model=esc["model"])
             last = rounds[-1]

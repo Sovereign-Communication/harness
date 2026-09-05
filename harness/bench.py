@@ -36,6 +36,17 @@ from .router import Router
 VERIFY_TIMEOUT = 300
 
 
+def _load_json_file(path, what):
+    """Load a JSON file, presenting missing files and parse errors cleanly."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except OSError as e:
+        raise HarnessError(f"{what} not readable: {path} ({e.strerror or e})")
+    except ValueError as e:
+        raise HarnessError(f"{what} is not valid JSON: {path} ({e})")
+
+
 def load_manifest(path):
     """Load a manifest dir (one JSON per task) or a single JSON file."""
     tasks = []
@@ -48,8 +59,7 @@ def load_manifest(path):
             # cases the task operates in its own directory: file paths and the
             # verify gate's cwd are relative to `dir`.
             if os.path.isfile(full) and n.endswith(".json"):
-                with open(full, "r", encoding="utf-8") as f:
-                    t = json.load(f)
+                t = _load_json_file(full, f"bench task '{n}'")
                 t.setdefault("name", n[:-5])
                 t["dir"] = root
                 tasks.append(t)
@@ -61,8 +71,7 @@ def load_manifest(path):
                 tasks.append(t)
     else:
         root = os.path.dirname(os.path.abspath(path))
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = _load_json_file(path, "bench manifest")
         items = data if isinstance(data, list) else data.get("tasks", [])
         for t in items:
             t.setdefault("name", "task")

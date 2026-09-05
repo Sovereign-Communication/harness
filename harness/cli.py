@@ -38,6 +38,24 @@ from .config import load_settings, resolve_api_key
 def _split_opt_list(value):
     """Parse a comma-separated CLI list into a clean list of model ids."""
     return [x.strip() for x in (value or "").split(",") if x.strip()]
+
+
+def _read_text(path, what):
+    """Read a text file, turning a missing path into a presentable error."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError as e:
+        raise HarnessError(f"{what} not readable: {path} ({e.strerror or e})")
+
+
+def _read_json(path, what):
+    """Read a JSON file, presenting missing files and parse errors cleanly."""
+    text = _read_text(path, what)
+    try:
+        return json.loads(text)
+    except ValueError as e:
+        raise HarnessError(f"{what} is not valid JSON: {path} ({e})")
 from .core import (
     HarnessError, SpendGovernor, eprint, panel_judge, discover_free_models,
 )
@@ -56,14 +74,15 @@ def _emit(result, out):
         print(text)
 
 
-def _governor(settings):
+def _governor(settings, max_cost_override=None):
     api_key = resolve_api_key()
     if not api_key:
         raise HarnessError(
             "no OpenRouter API key found (OPENROUTER_API_KEY env, "
             "~/.config/scmorc/openrouter*.env, or ~/.config/harness/openrouter.env).")
+    max_cost = settings.max_cost if max_cost_override is None else max_cost_override
     gov = SpendGovernor(HttpTransport(), api_key, settings.expect_key_label,
-                        settings.max_cost)
+                        max_cost)
     gov.verify_key()
     return api_key, gov
 
@@ -109,8 +128,7 @@ def _cmd_verify(opts, settings):
             raise HarnessError("verify --claims-file requires --source-file "
                                "(the verbatim code window the panel will review).")
         manifest_ctx, claims = load_claims_manifest(opts.claims_file)
-        with open(opts.source_file, "r", encoding="utf-8") as f:
-            quoted = f.read()
+        quoted = _read_text(opts.source_file, "--source-file")
         defs = load_definitions_file(opts.definitions_file) if opts.definitions_file else {}
         context = opts.claim_context if opts.claim_context is not None else manifest_ctx
         prompt, claims_lint = build_claims_prompt(claims, quoted, source_index=defs,
@@ -127,15 +145,14 @@ def _cmd_verify(opts, settings):
         opts.reassurance_claims = ",".join(c.claim_id for c in claims
                                            if c.kind == "reassurance")
     elif opts.prompt_file:
-        with open(opts.prompt_file, "r", encoding="utf-8") as f:
-            prompt = f.read()
+        prompt = _read_text(opts.prompt_file, "--prompt-file")
     elif opts.prompt:
         prompt = opts.prompt
     else:
         raise HarnessError("verify requires --prompt-file/--prompt or --claims-file.")
     if not prompt.strip():
         raise HarnessError("prompt is empty.")
-    api_key, gov = _governor(settings)
+    api_key, gov = _governor(settings, opts.max_cost)
     ledger = AutonomyLedger(settings.ledger_path)
     profiles, report = _capability_context(settings, gov, ledger)
     panel = (opts.panel or ",".join(settings.panel_pool)).split(",")
@@ -172,8 +189,7 @@ def _cmd_verify(opts, settings):
 def _cmd_lint_claims(opts, settings=None):
     """Hermetic claim linting: no network, no key. Exits 2 on error issues."""
     manifest_ctx, claims = load_claims_manifest(opts.claims_file)
-    with open(opts.source_file, "r", encoding="utf-8") as f:
-        quoted = f.read()
+    quoted = _read_text(opts.source_file, "--source-file")
     defs = load_definitions_file(opts.definitions_file) if opts.definitions_file else {}
     context = opts.claim_context if opts.claim_context is not None else manifest_ctx
     prompt, report = build_claims_prompt(claims, quoted, source_index=defs,
@@ -196,8 +212,8 @@ def _cmd_apply(opts, settings):
     # continuation must fail without even fetching /key or /models.
     continuation = None
     if opts.continue_from:
-        with open(opts.continue_from, "r", encoding="utf-8") as f:
-            continuation = validate_continuation(json.load(f))
+        continuation = validate_continuation(_read_json(opts.continue_from,
+                                                        "--continue-from state"))
     if not opts.file and not continuation:
         raise HarnessError("apply requires --file (or --continue-from <state.json>)")
 
@@ -243,8 +259,8 @@ def _cmd_continue(opts, settings):
     # As with --continue-from, reject missing verification authority before any
     # OpenRouter key/model lookup. `validate_continuation` also unwraps a full
     # persisted result object for CLI callers.
-    with open(opts.state, "r", encoding="utf-8") as f:
-        continuation = validate_continuation(json.load(f))
+    continuation = validate_continuation(
+        _read_json(opts.state, "--state continuation"))
     api_key, gov = _governor(settings)
     ledger = AutonomyLedger(settings.ledger_path)
     router = _router(settings)
@@ -286,7 +302,7 @@ def _cmd_offer(opts, settings):
         transport=HttpTransport(), api_key=api_key, governor=gov,
         task_id=opts.task_id or uuid.uuid4().hex[:8], task=opts.task,
         model=opts.model or settings.judge, context=opts.context,
-        ledger=ledger, required=True)
+        ledger=ledger, required=True, fallback_pool=settings.panel_pool)
     _emit(result, opts.out)
 
 

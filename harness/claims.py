@@ -35,6 +35,8 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from .core import HarnessError
+
 # ------------------------- load-bearing assertion words -------------------------
 
 _ABSENCE_PHRASES = [
@@ -122,8 +124,17 @@ def parse_claims(data):
 
 
 def load_claims_manifest(path):
-    with open(path, "r", encoding="utf-8") as f:
-        return parse_claims(json.load(f))
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except OSError as e:
+        raise HarnessError(f"claims manifest not readable: {path} ({e.strerror or e})")
+    except ValueError as e:
+        raise HarnessError(f"claims manifest is not valid JSON: {path} ({e})")
+    try:
+        return parse_claims(data)
+    except (ValueError, KeyError, TypeError) as e:
+        raise HarnessError(f"claims manifest is malformed: {path} ({e})")
 
 
 def normalize_definitions(data):

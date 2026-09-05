@@ -17,7 +17,8 @@ preserved and the continuation mode hands it to the next iteration. The apply
 prompt encodes that instruction; the consent ledger records these as
 category="capability" deferrals.
 """
-from .core import chat, extract_content_and_cost, _extract_json, _reported_cost  # noqa: F401
+from .core import (chat, extract_content_and_cost, _extract_json, _reported_cost,
+                   HarnessError, eprint, REASONING_FALLBACK_PREFIX)  # noqa: F401
 
 CONSENT_SYSTEM_PROMPT = (
     "You are an independent contractor in a work market. You are being offered a "
@@ -43,81 +44,159 @@ _EVENT_FOR = {
 
 
 def probe_consent(*, transport, api_key, governor, task_id, task, model,
-                  context=None, max_tokens=200, ledger=None, required=True):
-    """Ask the model whether it accepts the work. Returns a consent dict."""
+                  context=None, max_tokens=512, ledger=None, required=True,
+                  fallback_pool=None):
+    """Ask a model whether it accepts the work. Returns a consent dict.
+
+    The probe is itself a rotating lane: ``model`` is asked first, then
+    ``fallback_pool`` members in order. Only UNUSABLE answers rotate — HTTP
+    error, empty/reasoning-only/truncated output, or unparseable JSON. A parsed
+    defer/decline/redirect is a sovereign decision and is returned as-is, never
+    shopped to another model. If the whole ladder fails, the probe fails closed
+    to defer (ambiguity never becomes acceptance). Every attempt is preflighted
+    and billed; rotation events land in the ledger.
+    """
     task_text = task if len(task) <= 3000 else task[:3000] + "\n...[truncated]"
     user = f"WORK ITEM:\n{task_text}"
     if context:
         user += f"\n\nCONTEXT:\n{context[:2000]}"
 
+    candidates = [model]
+    for m_ in (fallback_pool or []):
+        if m_ and m_ not in candidates:
+            candidates.append(m_)
+    governor.check_byok(candidates[0])  # P0: raise on mistralai//anthropic/
+    usable = []
+    for i, m_ in enumerate(candidates):
+        if i and governor.learned_blocked(m_):
+            continue
+        try:
+            governor.fetch_pricing([m_])
+        except HarnessError:
+            if i == 0:
+                raise
+            continue
+        usable.append(m_)
+
     preflight = getattr(governor, "preflight", None)
     if preflight is not None:
         # Include the system instruction in the estimate; it is part of the
-        # billable prompt just like the work-item text.
+        # billable prompt just like the work-item text. One slot per candidate
+        # (the probe runs with reasoning disabled, so no reasoning fallback).
         preflight(CONSENT_SYSTEM_PROMPT + "\n" + user,
-                  [(f"consent:{model}", model, max_tokens, 0)])
-
-    status, resp = chat(transport, api_key, model,
-                        [{"role": "system", "content": CONSENT_SYSTEM_PROMPT},
-                         {"role": "user", "content": user}],
-                        max_tokens, reasoning_effort="none", governor=governor)
-    if status == 200:
-        content, _, _, is_byok = extract_content_and_cost(resp)
-        reported_cost = _reported_cost(resp)
-    else:
-        content, is_byok = None, False
-        reported_cost = _reported_cost(resp)
-    tracked_cost = 0.0
-    if status == 200 and is_byok and not governor.is_free(model):
-        # Paid BYOK route: spend is invisible to the tracked key; fail closed.
-        governor.record_byok(model)
-        status = 0
-    elif reported_cost:
-        # Error responses can still carry billable usage (for example a
-        # provider-side rejection after tokenization). Count it too.
-        tracked_cost = reported_cost
-        record_actual = getattr(governor, "record_actual", None)
-        if record_actual is not None:
-            record_actual(tracked_cost, model)
+                  [(f"consent:{m_}", m_, max_tokens, 0) for m_ in usable])
 
     if ledger:
         ledger.append("offer", task_id=task_id, model=model, required=required)
 
-    parsed = _extract_json(content) if status == 200 else None
-    decision = (parsed or {}).get("decision")
-    if decision not in DECISIONS:
-        decision = "defer"
+    def _take(status, resp, m_):
+        """Run one candidate attempt; return (content, parsed, tracked_cost,
+        reported_cost, byok_rejected, fail_reason_or_None)."""
+        tracked_cost = 0.0
+        if status != 200:
+            reported = _reported_cost(resp)
+            if reported:
+                governor.record_actual(reported, m_)
+                tracked_cost = reported
+            return None, None, tracked_cost, reported, False, f"HTTP {status}"
+        content, _, _, is_byok = extract_content_and_cost(resp)
+        reported = _reported_cost(resp)
+        if is_byok and not governor.is_free(m_):
+            # Paid BYOK route: spend is invisible to the tracked key; fail closed.
+            governor.record_byok(m_)
+            return None, None, 0.0, reported, True, "paid BYOK route"
+        if reported:
+            governor.record_actual(reported, m_)
+            tracked_cost = reported
+        if not content:
+            return content, None, tracked_cost, reported, False, "empty response"
+        if content.startswith(REASONING_FALLBACK_PREFIX):
+            return content, None, tracked_cost, reported, False, "reasoning-only output"
+        parsed = _extract_json(content)
+        if not isinstance(parsed, dict) or (parsed or {}).get("decision") not in DECISIONS:
+            return content, None, tracked_cost, reported, False, "unparseable or missing a valid decision"
+        return content, parsed, tracked_cost, reported, False, None
+
+    attempts = []
+    tracked_total = 0.0
+    reported_total = 0.0
+    fail_reason = "no consent candidate available"
+    last_content = None
+    byok_rejected = False
+    for m_ in usable:
+        status, resp = chat(transport, api_key, m_,
+                            [{"role": "system", "content": CONSENT_SYSTEM_PROMPT},
+                             {"role": "user", "content": user}],
+                            max_tokens, reasoning_effort="none", governor=governor)
+        content, parsed, tracked_cost, reported_cost, byok, fail_reason = _take(
+            status, resp, m_)
+        tracked_total += tracked_cost
+        reported_total += reported_cost or 0.0
+        byok_rejected = byok_rejected or byok
+        if fail_reason is None:
+            break
+        attempts.append({"model": m_, "status": "error", "error": fail_reason,
+                         "cost": tracked_cost})
+        if len(usable) > 1:
+            eprint(f"[consent] {m_}: {fail_reason}; rotating.")
+        if ledger:
+            ledger.append("consent_rotate", task_id=task_id, model=m_,
+                          reason=fail_reason, cost=tracked_cost)
+        last_content = content or last_content
+    else:
+        # Ladder exhausted without a parseable decision: fail closed.
         reason = ("consent response was unparseable or missing a valid decision "
                   "(fail-closed: not dispatched)")
-        if content:
-            reason += f"; raw: {content[:200]}"
-    else:
-        reason = (parsed or {}).get("reason") or ""
+        if byok_rejected:
+            reason = "consent routed via paid BYOK key (fail-closed: not dispatched)"
+        if fail_reason and fail_reason.startswith("HTTP"):
+            reason = f"consent probe failed ({fail_reason}) (fail-closed: not dispatched)"
+        result = {
+            "task_id": task_id,
+            "model": model,
+            "decision": "defer",
+            "reason": reason,
+            "redirect_model": None,
+            "scope_suggestion": None,
+            "cost": tracked_total,
+            "reported_cost": reported_total,
+            "raw": last_content,
+            "attempts": attempts,
+        }
+        if ledger:
+            ledger.append("consent_defer", task_id=task_id, model=model, reason=reason,
+                          redirect_model=None, scope_suggestion=None,
+                          cost=tracked_total, billable_cost=tracked_total)
+        return result
 
+    answered = m_
+    reason = parsed.get("reason") or ""
     result = {
         "task_id": task_id,
-        "model": model,
-        "decision": decision,
+        "model": answered,
+        "decision": parsed.get("decision"),
         "reason": reason,
-        "redirect_model": (parsed or {}).get("redirect_model"),
-        "scope_suggestion": (parsed or {}).get("scope_suggestion"),
-        # `cost` is the amount included in governor.spent and the ledger. Keep
-        # the provider's raw number separately when a paid BYOK route was
-        # rejected because that charge is outside the tracked key.
-        "cost": tracked_cost,
-        "reported_cost": reported_cost,
+        "redirect_model": parsed.get("redirect_model"),
+        "scope_suggestion": parsed.get("scope_suggestion"),
+        # `cost` is the amount included in governor.spent and the ledger across
+        # every attempt. Keep the provider's raw numbers separately when a paid
+        # BYOK route was rejected because that charge is outside the tracked key.
+        "cost": tracked_total,
+        "reported_cost": reported_total,
         "raw": content,
+        "attempts": attempts,
     }
     if ledger:
-        ledger.append(_EVENT_FOR[decision], task_id=task_id, model=model, reason=reason,
-                      redirect_model=result["redirect_model"],
-                      scope_suggestion=result["scope_suggestion"], cost=tracked_cost,
-                      billable_cost=tracked_cost)
+        ledger.append(_EVENT_FOR[result["decision"]], task_id=task_id, model=answered,
+                      reason=reason, redirect_model=result["redirect_model"],
+                      scope_suggestion=result["scope_suggestion"], cost=tracked_total,
+                      billable_cost=tracked_total)
     return result
 
 
 def consent_renew(*, transport, api_key, governor, task_id, task, model,
-                  context=None, max_tokens=200, ledger=None, required=True):
+                  context=None, max_tokens=512, ledger=None, required=True,
+                  fallback_pool=None):
     """Re-check consent at a verification checkpoint (continued consensus).
 
     Returns the probe result; records a consent_renew_* event. Any deferral
@@ -126,7 +205,8 @@ def consent_renew(*, transport, api_key, governor, task_id, task, model,
     """
     base = probe_consent(transport=transport, api_key=api_key, governor=governor,
                          task_id=task_id, task=task, model=model, context=context,
-                         max_tokens=max_tokens, ledger=None, required=required)
+                         max_tokens=max_tokens, ledger=None, required=required,
+                         fallback_pool=fallback_pool)
     if ledger:
         event = "consent_renew_accept" if base["decision"] == "accept" else "consent_renew_defer"
         ledger.append(event, task_id=task_id, model=model, reason=base["reason"],

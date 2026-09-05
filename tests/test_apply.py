@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from harness.apply import ApplyEngine
+from harness.apply import ApplyEngine, _parse_ready, _extract_file_content
 from harness.cli import main as cli_main
 from harness.core import SpendGovernor, HarnessError
 from harness.ledger import AutonomyLedger
@@ -524,6 +524,63 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         with open(p, encoding="utf-8") as f:
             self.assertEqual(f.read(), CHANGED)
+
+
+class MarkerLeakTests(unittest.TestCase):
+    """Regression (live playtest, openrouter/free): the readiness marker was
+    emitted after blank lines and leaked verbatim into the written file."""
+
+    def test_ready_marker_after_blank_lines_is_parsed_and_stripped(self):
+        body = '\n\nHARNESS_READY: confident\n"""doc"""\ndef f():\n    pass\n'
+        decision, reason, rest = _parse_ready(body)
+        self.assertEqual(decision, "confident")
+        self.assertNotIn("HARNESS_READY", rest)
+        self.assertNotIn("HARNESS_READY", _extract_file_content(rest))
+
+    def test_ready_marker_anywhere_never_lands_in_file(self):
+        for placement in (
+            'HARNESS_READY: confident\ncode\n',
+            '\n\n\nHARNESS_READY: confident\ncode\n',
+            'code before marker\nHARNESS_READY: confident\nmore code\n',
+        ):
+            content = _extract_file_content(placement)
+            self.assertNotIn("HARNESS_READY", content,
+                             f"marker leaked for {placement!r}")
+
+    def test_no_marker_unchanged_behavior(self):
+        decision, _, rest = _parse_ready("plain code\n")
+        self.assertEqual(decision, "missing")
+        self.assertEqual(rest, "plain code\n")
+        self.assertEqual(_extract_file_content("```python\ncode\n```\n"), "code\n")
+
+    def test_gate_broken_stops_retries_with_diagnostic(self):
+        """A gate failing identically twice is broken; the engine must stop
+        burning rounds and say so instead of re-prompting the model."""
+        orig = tempfile.mkdtemp()
+        target = os.path.join(orig, "t.py")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write("x = 0\n")
+        calls = {"n": 0}
+        def runner(cmd):
+            calls["n"] += 1
+            return 1, "FileNotFoundError: nope"
+        fake = FakeTransport(models=[m(CODER_A)],
+                             posts=[comp("HARNESS_READY: confident\nx = 1\n"),
+                                    comp("HARNESS_READY: confident\nx = 2\n"),
+                                    comp("HARNESS_READY: confident\nx = 3\n")])
+        gov = SpendGovernor(fake, "sk-test")
+        ledger = AutonomyLedger(os.path.join(orig, "led.jsonl"))
+        engine = ApplyEngine(fake, "k", gov, ledger,
+                             Router([CODER_A], CODER_A, CODER_A),
+                             default_require_consent=False,
+                             run_verify=runner, default_renew_consent=False)
+        result = engine.apply_edit(task_id="gb", file_path=target,
+                                   instruction="change x", verify_cmd="false",
+                                   max_rounds=3)
+        self.assertLess(calls["n"], 3,
+                        "broken gate must not consume the full retry budget")
+        self.assertEqual(result["rounds"][-1]["status"], "gate_broken")
+        self.assertIn("broken", result["rounds"][-1]["reason"])
 
 
 if __name__ == "__main__":
