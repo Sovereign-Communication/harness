@@ -192,7 +192,7 @@ the intended trajectory.
 
 ## SCMessenger progression across audit rounds (2026-09-02 → 2026-09-05)
 
-Built entirely from stored evidence: `_runs/` JSONs (38 historical runs +
+Built entirely from stored evidence: `_runs/` JSONs (47 historical runs +
 9 v4 runs), the round-1/2/3 report sections above, and `CTO_REVIEW.md`'s
 call-site-verified severity table. No live audit was re-run for this section.
 **SCMessenger source fact:** the audited files (`core/src/{crypto,identity,
