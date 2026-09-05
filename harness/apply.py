@@ -97,6 +97,15 @@ _READY_INSTRUCTION = (
     "Declare 'HARNESS_READY: confident' only if you are sure, then output the "
     "COMPLETE new file content on the lines after that marker.")
 
+_DIFF_READY_INSTRUCTION = (
+    "Your response MUST contain exactly one readiness line of the form "
+    "'HARNESS_READY: confident' or 'HARNESS_READY: defer', placed on the "
+    "FIRST line, before the diff. Declare 'HARNESS_READY: defer' (with a "
+    "short reason on that same line) if you cannot produce a diff that "
+    "matches the current content exactly -- do not guess at hunk contents. "
+    "Otherwise declare 'HARNESS_READY: confident' on the first line and put "
+    "the unified diff on the lines after that marker.")
+
 _DEFER_INSTRUCTION = (
     "Do your best and assume nothing. You have no file or web access; the file "
     "content below is all you can see. If you reach the limit of your capability "
@@ -187,15 +196,32 @@ def _parse_ready(content):
     if not content:
         return "missing", "", content or ""
     lines = content.splitlines(keepends=True)
-    for i, ln in enumerate(lines[:5]):
+    # Scan the WHOLE response: models legitimately place the readiness marker
+    # after the payload (e.g. following a unified diff). A trailing
+    # 'HARNESS_READY: defer' that went unseen would apply the edit anyway,
+    # so missing-marker detection must never be window-bound. When several
+    # markers appear (a model hedging both ways), the CONSERVATIVE one wins:
+    # defer beats confident regardless of position.
+    first = None
+    for i, ln in enumerate(lines):
         line = ln.strip()
         if line.startswith(READY_MARKER):
             decision_raw = line[len(READY_MARKER):].strip()
             decision, _, reason = decision_raw.partition(" ")
             decision = decision.strip().lower()
-            if decision in ("confident", "defer"):
+            if decision not in ("confident", "defer"):
+                continue
+            if decision == "defer":
+                # Sovereignty: an explicit defer anywhere in the response
+                # immediately wins, wherever it appears.
                 rest = "".join(lines[:i]) + "".join(lines[i + 1:])
-                return decision, reason.strip(), rest
+                return "defer", reason.strip(), rest
+            if first is None:
+                first = (i, reason.strip())
+    if first is not None:
+        i, reason = first
+        rest = "".join(lines[:i]) + "".join(lines[i + 1:])
+        return "confident", reason, rest
     return "missing", "", content
 
 
@@ -375,7 +401,7 @@ class ApplyEngine:
                 f"INSTRUCTION: {instruction}",
                 f"EDIT SNIPPET (intent anchor): {edit_snippet or 'none'}",
                 "",
-                _READY_INSTRUCTION,
+                _DIFF_READY_INSTRUCTION,
                 "",
                 _DEFER_INSTRUCTION,
                 "",
@@ -575,6 +601,7 @@ class ApplyEngine:
 
         model = model or (MORPH_MODEL if backend == "morph" else self.router.apply_model)
         want_consent = self.default_require_consent if require_consent is None else require_consent
+        consent = None  # only set when the initial probe ran (require_consent)
 
         with open(file_path, "r", encoding="utf-8") as f:
             original = f.read()
@@ -613,6 +640,9 @@ class ApplyEngine:
         failed_models = set()
         deferred_models = {}
         rotations = 0
+        # Renewal skips models that already failed the (optional) initial
+        # probe; with require_consent=False there was no probe.
+        consent_attempts = consent.get("attempts", []) if isinstance(consent, dict) else []
         for round_no in range(1, max_rounds + 1):
             # Continued consensus: re-check consent before each round.
             if renew:
@@ -620,7 +650,7 @@ class ApplyEngine:
                 # consent probe this run (e.g. reasoning-only emitters): the
                 # primary just fails again and the rotation ladder absorbs it.
                 consent_unusable = {
-                    a["model"] for a in (consent.get("attempts") or [])
+                    a["model"] for a in (consent_attempts or [])
                     if a.get("status") == "error"}
                 renew_pool = [m_ for m_ in self.router.panel_pool
                               if m_ not in consent_unusable]

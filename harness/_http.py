@@ -41,10 +41,10 @@ class HttpTransport(Transport):
     def _retry_delay(self, attempt, retry_after):
         if retry_after:
             try:
-                return min(float(retry_after), 30.0)
+                return min(float(retry_after), 6.0)
             except (TypeError, ValueError):
                 pass
-        return min(1.0 * (2 ** attempt), 8.0)
+        return min(0.75 * (2 ** attempt), 6.0)
 
     @staticmethod
     def _transient(status):

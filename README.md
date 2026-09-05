@@ -412,7 +412,7 @@ yes. Harness treats that as a bug to design around:
 python -m unittest discover -s tests -v
 ```
 
-199 hermetic tests — no network, no key. They pin: per-token pricing (regression
+209 hermetic tests — no network, no key. They pin: per-token pricing (regression
 on a ~1,000,000x undercount bug), no-tools payloads, hard/learned BYOK handling,
 key gates, mid-batch fail-closed, reasoning modes (incl. the
 retry-without-reasoning path), panel rotation, structured consensus parsing,
@@ -433,7 +433,10 @@ gemma-4-31b, and the unified MorphLite backend's read-only preview guarantees). 
 suite adds: config range validation and unknown-key warnings (#15), the
 capabilities registry schema-version stamp (#15), per-model cost reporting
 and --quiet (#16), token-estimator property tests (#7/#20), and the unified
-diff + multi-file apply paths (#11/#12).
+diff + multi-file apply paths (#11/#12). A live playtest round then pinned:
+defer markers honored anywhere in a model response (sovereignty), the strict
+unified-diff matcher's no-fuzz contract, apply without an initial consent
+probe, and the MCP allow_verify/cancel gates.
 
 ## License
 

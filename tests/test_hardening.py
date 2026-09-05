@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from harness.apply import READY_MARKER, _apply_unified_diff, _parse_ready
 from harness.config import load_settings, DEFAULT_MAX_TOKENS
 from harness.capability import (
     CAPABILITIES_SCHEMA_VERSION, load_profiles, save_profiles,
@@ -135,6 +136,96 @@ class TokenEstimatePropertyTests(unittest.TestCase):
         short = estimate_prompt_tokens("x" * 100)
         long = estimate_prompt_tokens("x" * 10000)
         self.assertGreater(long, short)
+
+
+class ReadyParserSovereigntyTests(unittest.TestCase):
+    """Playtest pass: a defer declared anywhere in the response must be
+    honored -- the 5-line window silently applied edits the model tried to
+    defer (diff bodies push the marker past the old window)."""
+
+    def test_trailing_defer_after_diff_body_is_honored(self):
+        body = "@@ -1,2 +1,2 @@\n-alpha\n+beta\n" + READY_MARKER + " defer cannot match\n"
+        decision, reason, rest = _parse_ready(body)
+        self.assertEqual(decision, "defer")
+        self.assertIn("beta", rest)
+        self.assertNotIn("READY", rest)
+
+    def test_hedged_response_defers_conservatively(self):
+        body = READY_MARKER + " confident\nbody\n" + READY_MARKER + " defer unsure\n"
+        decision, _, _ = _parse_ready(body)
+        self.assertEqual(decision, "defer")
+
+    def test_first_line_confident_still_works(self):
+        decision, _, rest = _parse_ready(READY_MARKER + " confident\nfile body\n")
+        self.assertEqual(decision, "confident")
+        self.assertEqual(rest, "file body\n")
+
+    def test_missing_marker_stays_missing(self):
+        decision, _, rest = _parse_ready("plain text\n")
+        self.assertEqual(decision, "missing")
+        self.assertEqual(rest, "plain text\n")
+
+
+class UnifiedDiffEngineTests(unittest.TestCase):
+    """Playtest pass: the #11 strict diff engine, driven exactly as models
+    feed it (prose-wrapped diffs, truncations, zero-context hunks)."""
+
+    SRC = "line1\nline2\nline3\nline4\nline5\n"
+
+    def test_happy_path(self):
+        diff = ("--- a/f\n+++ b/f\n@@ -2,3 +2,4 @@\n line2\n-line3\n"
+                "+line3 patched\n line4\n+line4b\n")
+        self.assertEqual(_apply_unified_diff(self.SRC, diff),
+                         "line1\nline2\nline3 patched\nline4\nline4b\nline5\n")
+
+    def test_context_mismatch_refused(self):
+        diff = "@@ -1,2 +1,2 @@\n-LINE1\n+x\n line2\n"
+        with self.assertRaises(Exception):
+            _apply_unified_diff(self.SRC, diff)
+
+    def test_truncated_hunk_refused(self):
+        with self.assertRaises(Exception):
+            _apply_unified_diff(self.SRC, "@@ -1,3 +1,1 @@\n line1\n")
+
+    def test_prose_only_refused(self):
+        with self.assertRaises(Exception):
+            _apply_unified_diff(self.SRC, "I made some changes, looks great!")
+
+    def test_zero_context_insertion(self):
+        out = _apply_unified_diff(self.SRC, "@@ -0,0 +1,2 @@\n+new top\n+new top2\n")
+        self.assertTrue(out.startswith("new top\nnew top2\n"))
+
+
+class ApplyConsentOptionalTests(unittest.TestCase):
+    """Playtest pass: apply with require_consent=False crashed with
+    UnboundLocalError when the renewal ladder read the never-created consent
+    result; renewal must tolerate an absent initial probe."""
+
+    def test_apply_without_consent_does_not_crash_on_renewal(self):
+        from tests._fake import FakeTransport, m, comp
+        from harness.core import SpendGovernor
+        from harness.ledger import AutonomyLedger
+        from harness.router import Router
+        from harness.apply import ApplyEngine
+        with tempfile.TemporaryDirectory() as d:
+            fp = os.path.join(d, "f.txt")
+            with open(fp, "w", encoding="utf-8") as f:
+                f.write("def a():\n    return 1\n")
+            body = ("@@ -1,2 +1,2 @@\n def a():\n-    return 1\n+    return 10\n"
+                    "\n" + READY_MARKER + " confident\n")
+            fake = FakeTransport(
+                models=[m("m/apply"), m("m/judge")],
+                posts=[comp('{"decision": "accept", "reason": "ok", '
+                            '"redirect_model": null, "scope_suggestion": null}'),
+                       comp(body)])
+            gov = SpendGovernor(fake, "sk-test")
+            ledger = AutonomyLedger(os.path.join(d, "l.jsonl"))
+            engine = ApplyEngine(fake, "k", gov, ledger, Router(["a"], "m/judge", "m/apply"),
+                                 default_require_consent=False, default_renew_consent=True)
+            r = engine.apply_edit(task_id="t", file_path=fp, instruction="bump",
+                                  backend="diff", require_consent=False)
+            self.assertEqual(r["status"], "ok")
+            self.assertIn("return 10", open(fp, encoding="utf-8").read())
 
 
 if __name__ == "__main__":

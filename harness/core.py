@@ -111,8 +111,9 @@ def _extract_json(text):
 
 
 REASONING_FALLBACK_PREFIX = "[NOTE] model returned no content"
-MAX_429_RETRIES = 1
-RETRY_429_BACKOFF_SECONDS = 0.05
+MAX_429_RETRIES = 2
+# Backoff base for bounded 429 retries; Retry-After headers take precedence.
+RETRY_429_BACKOFF_SECONDS = 0.5
 DEFAULT_CONVERGENCE_PANEL_TOKENS = 4096
 
 
