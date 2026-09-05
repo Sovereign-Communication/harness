@@ -210,10 +210,16 @@ harness verify --prompt-file audit.txt --converge \
   --judge cohere/north-mini-code:free --out verdict.json
 ```
 
-- **5/5 unanimous == 100%.** A claim *converges* only when every panelist that
-  answered agrees on `real`. If all claims converge, `consensus.agreement` is
-  lifted to `high` and `consensus.confidence` is set to the actual
-  convergence rate (1.0 = 100%), overriding the judge's self-reported number.
+- **5/5 unanimous == 100% at the merge gate.** Harness reports two separate
+  signals: `responder_converged` / `convergence_rate` describe agreement among
+  valid responders, while `gate_converged` / `gate_convergence_rate` are the
+  fail-closed merge-gate signal. A claim is responder-unanimous when every
+  responder agrees on `real`; the gate additionally requires every required
+  panel slot to have supplied a valid vote. Thus 2/3 aligned responders are
+  reported as high agreement with an explicit `panel_shortfall` and
+  `defer:true`, never as disagreement. Full 5/5 coverage produces a 1.0 gate
+  rate, lifts `consensus.agreement` to `high`, and overrides the judge's
+  self-reported number.
 - **Polarity convention: claims are defect propositions.** `real: true`
   unambiguously means the stated defect exists in the code. Phrase claims as
   "Defect: X is vulnerable to Y", never as "X is correct" — the latter is
@@ -387,7 +393,7 @@ python -m unittest tests.test_core tests.test_ledger tests.test_consent \
   tests.test_byok tests.test_bench tests.test_claims tests.test_capability
 ```
 
-142 hermetic tests — no network, no key. They pin: per-token pricing (regression
+155 hermetic tests — no network, no key. They pin: per-token pricing (regression
 on a ~1,000,000x undercount bug), no-tools payloads, hard/learned BYOK handling,
 key gates, mid-batch fail-closed, reasoning modes (incl. the
 retry-without-reasoning path), panel rotation, structured consensus parsing,

@@ -17,7 +17,7 @@ preserved and the continuation mode hands it to the next iteration. The apply
 prompt encodes that instruction; the consent ledger records these as
 category="capability" deferrals.
 """
-from .core import chat, extract_content_and_cost, _extract_json  # noqa: F401
+from .core import chat, extract_content_and_cost, _extract_json, _reported_cost  # noqa: F401
 
 CONSENT_SYSTEM_PROMPT = (
     "You are an independent contractor in a work market. You are being offered a "
@@ -50,15 +50,35 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
     if context:
         user += f"\n\nCONTEXT:\n{context[:2000]}"
 
+    preflight = getattr(governor, "preflight", None)
+    if preflight is not None:
+        # Include the system instruction in the estimate; it is part of the
+        # billable prompt just like the work-item text.
+        preflight(CONSENT_SYSTEM_PROMPT + "\n" + user,
+                  [(f"consent:{model}", model, max_tokens, 0)])
+
     status, resp = chat(transport, api_key, model,
                         [{"role": "system", "content": CONSENT_SYSTEM_PROMPT},
                          {"role": "user", "content": user}],
                         max_tokens, reasoning_effort="none", governor=governor)
-    content, _, cost, is_byok = extract_content_and_cost(resp) if status == 200 else (None, None, 0.0, False)
+    if status == 200:
+        content, _, _, is_byok = extract_content_and_cost(resp)
+        reported_cost = _reported_cost(resp)
+    else:
+        content, is_byok = None, False
+        reported_cost = _reported_cost(resp)
+    tracked_cost = 0.0
     if status == 200 and is_byok and not governor.is_free(model):
         # Paid BYOK route: spend is invisible to the tracked key; fail closed.
         governor.record_byok(model)
         status = 0
+    elif reported_cost:
+        # Error responses can still carry billable usage (for example a
+        # provider-side rejection after tokenization). Count it too.
+        tracked_cost = reported_cost
+        record_actual = getattr(governor, "record_actual", None)
+        if record_actual is not None:
+            record_actual(tracked_cost, model)
 
     if ledger:
         ledger.append("offer", task_id=task_id, model=model, required=required)
@@ -81,13 +101,18 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
         "reason": reason,
         "redirect_model": (parsed or {}).get("redirect_model"),
         "scope_suggestion": (parsed or {}).get("scope_suggestion"),
-        "cost": cost,
+        # `cost` is the amount included in governor.spent and the ledger. Keep
+        # the provider's raw number separately when a paid BYOK route was
+        # rejected because that charge is outside the tracked key.
+        "cost": tracked_cost,
+        "reported_cost": reported_cost,
         "raw": content,
     }
     if ledger:
         ledger.append(_EVENT_FOR[decision], task_id=task_id, model=model, reason=reason,
                       redirect_model=result["redirect_model"],
-                      scope_suggestion=result["scope_suggestion"], cost=cost)
+                      scope_suggestion=result["scope_suggestion"], cost=tracked_cost,
+                      billable_cost=tracked_cost)
     return result
 
 

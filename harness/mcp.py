@@ -10,6 +10,7 @@ import sys
 import uuid
 
 from .core import HarnessError, panel_judge
+from .apply import validate_continuation
 from .consent import probe_consent
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -73,7 +74,10 @@ class McpServer:
                     "task_max_cost": {"type": "number", "description": "Per-task cost ceiling"},
                     "continuation": {"type": "object", "description": "State from a deferred run to resume"},
                     "task_id": {"type": "string"},
-                }, "required": ["instruction"]},
+                }, "anyOf": [
+                    {"required": ["instruction"]},
+                    {"required": ["continuation"]},
+                ]},
             },
             {
                 "name": "offer_work",
@@ -231,8 +235,13 @@ class McpServer:
                 max_panelists=self.max_panelists,
                 capability_profiles=profiles, report=report, free_tier=self.use_free)
         if name == "apply_edit":
+            # Reject ungated persisted state before capability/model setup, just
+            # like the CLI and direct library paths. Saved metadata also owns
+            # backend and preview mode on resume.
+            continuation = validate_continuation(args.get("continuation"))
+            backend = continuation.get("backend", args.get("backend", "harness"))
             profiles, report = self._capability_context()
-            if profiles is not None and args.get("backend", "harness") == "harness":
+            if profiles is not None and backend == "harness":
                 from .capability import order_pool as _op
                 ordered = _op(self.router.apply_pool, profiles, report,
                               ledger=self.ledger, task="code", free_tier=self.use_free)
@@ -254,8 +263,8 @@ class McpServer:
                 reasoning_effort=args.get("reasoning_effort"),
                 renew_consent=args.get("renew_consent"),
                 max_rotations=args.get("max_rotations"),
-                continuation=args.get("continuation"),
-                backend=args.get("backend", "harness"),
+                continuation=continuation,
+                backend=backend,
                 verify_only=bool(args.get("verify_only", False)),
                 max_lines=args.get("max_lines", 500))
         if name == "offer_work":

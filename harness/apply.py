@@ -24,7 +24,7 @@ import uuid
 
 from .core import (
     chat, extract_content_and_cost, HarnessError, estimate_prompt_tokens, _extract_json,
-    REASONING_FALLBACK_PREFIX, eprint,
+    REASONING_FALLBACK_PREFIX, eprint, _reported_cost, _chat_reservation_slots,
 )
 from .config import MORPH_MODEL
 from .consent import probe_consent, consent_renew
@@ -37,6 +37,54 @@ VERIFY_FEEDBACK_CHARS = 6000
 MAX_APPLY_ROUNDS = 3
 CAPABILITY_MARKER = "HARNESS_DEFER:"
 READY_MARKER = "HARNESS_READY:"
+
+
+def normalize_continuation(state):
+    """Return the nested continuation payload, rejecting malformed state."""
+    if state is None:
+        return {}
+    if not isinstance(state, dict):
+        raise HarnessError("continuation must be a JSON object")
+    if isinstance(state.get("continuation"), dict) and "file_path" not in state:
+        return state["continuation"]
+    return state
+
+
+def validate_continuation(state):
+    """Validate the authority boundary before any key or model setup.
+
+    A failed gated apply persists ``verification_required`` so a caller cannot
+    turn it into a gate-free preview by changing an option while resuming. A
+    deferral that happened before a gate was needed (for example consent or a
+    capability handoff with no ``verify_cmd``) remains resumable. Older state
+    without this field is treated conservatively and requires its saved gate.
+    This helper is shared by the library and CLI public paths.
+    """
+    state = normalize_continuation(state)
+    if not state:
+        return state
+    verify_only = state.get("verify_only", False)
+    if not isinstance(verify_only, bool):
+        raise HarnessError("continuation verify_only must be a boolean")
+    required = state.get("verification_required")
+    if required is None:
+        required = not verify_only
+    elif not isinstance(required, bool):
+        raise HarnessError("continuation verification_required must be a boolean")
+    verify_cmd = state.get("verify_cmd")
+    if verify_cmd is not None and not isinstance(verify_cmd, str):
+        raise HarnessError("continuation verify_cmd must be a string")
+    if required:
+        if not verify_cmd or not verify_cmd.strip():
+            raise HarnessError(
+                "continuation is missing its authoritative verify_cmd; "
+                "a failed apply cannot be resumed without the original verification gate")
+        if verify_only:
+            raise HarnessError(
+                "a gated continuation cannot be resumed as verify-only; "
+                "the authoritative verification gate must run")
+    return state
+
 
 _READY_INSTRUCTION = (
     "Your response MUST begin with exactly one line of the form "
@@ -201,7 +249,7 @@ class ApplyEngine:
 
     def _defer_result(self, *, task_id, file_path, category, reason, remaining_scope,
                       rounds, history, cost, backend="harness", verify_only=False,
-                      max_lines=MAX_FILE_LINES, edit_snippet=None):
+                      max_lines=MAX_FILE_LINES, edit_snippet=None, verify_cmd=None):
         return {
             "status": "deferred",
             "task_id": task_id,
@@ -211,6 +259,8 @@ class ApplyEngine:
             "reason": reason,
             "file": file_path,
             "remaining_scope": remaining_scope,
+            "verify_cmd": verify_cmd,
+            "verification_required": bool(verify_cmd) and not verify_only,
             "rounds": rounds,
             "cost": cost,
             "continuation": {
@@ -220,6 +270,8 @@ class ApplyEngine:
                 "verify_only": verify_only,
                 "max_lines": max_lines,
                 "edit_snippet": edit_snippet,
+                "verify_cmd": verify_cmd,
+                "verification_required": bool(verify_cmd) and not verify_only,
                 "remaining_scope": remaining_scope,
                 "reason": reason,
                 "history": history,
@@ -235,10 +287,33 @@ class ApplyEngine:
                    verify_only=False, max_lines=MAX_FILE_LINES):
         """Apply a scoped edit with a verification loop, sovereignty gate,
         capability deferral, rotation, and continuation support."""
-        continuation = continuation or {}
+        continuation = validate_continuation(continuation)
+        resumed = bool(continuation)
         backend = continuation.get("backend", backend)
-        verify_only = bool(continuation.get("verify_only", verify_only))
+        # A saved continuation owns its execution mode. A caller cannot turn a
+        # failed, gated apply into a read-only preview and thereby bypass the
+        # authoritative verification contract. Reject an explicit preview
+        # request against a gated state rather than silently changing semantics.
+        if resumed:
+            saved_verify_only = bool(continuation.get("verify_only", False))
+            if verify_only and not saved_verify_only:
+                raise HarnessError(
+                    "a gated continuation cannot be resumed as verify-only; "
+                    "the authoritative verification gate must run")
+            verify_only = saved_verify_only
+        else:
+            verify_only = bool(verify_only)
         max_lines = continuation.get("max_lines", max_lines)
+        if resumed and verify_only:
+            # verify-only is intentionally gate-free; never execute a command
+            # merely because an older state happened to carry one.
+            verify_cmd = None
+        elif resumed:
+            saved_verify_cmd = continuation.get("verify_cmd")
+            if verify_cmd and verify_cmd != saved_verify_cmd:
+                raise HarnessError(
+                    "continuation verify_cmd does not match its authoritative verification gate")
+            verify_cmd = saved_verify_cmd
         if backend not in ("harness", "morph"):
             raise HarnessError("backend must be 'harness' or 'morph'")
         try:
@@ -259,10 +334,45 @@ class ApplyEngine:
         if task_id is None:
             task_id = continuation.get("task_id") or uuid.uuid4().hex[:8]
         max_tokens = max_tokens or 4096
-        task_max_cost = task_max_cost or self.default_task_max_cost
+        task_max_cost = (self.default_task_max_cost if task_max_cost is None
+                         else task_max_cost)
         max_rot = max_rotations if max_rotations is not None else self.default_max_rotations
         reasoning = reasoning_effort or self.reasoning_effort
         renew = self.default_renew_consent if renew_consent is None else renew_consent
+        task_start_spent = self.governor.spent
+
+        def record_apply_result(model_id, amount, status, **fields):
+            """Record every billable apply attempt, including rotated failures."""
+            try:
+                amount = float(amount or 0.0)
+            except (TypeError, ValueError):
+                amount = 0.0
+            event_fields = {
+                "model": model_id, "task_type": "code", "json_expected": False,
+                "json_ok": None, "status": status, "cost": amount,
+                "tracked_cost": amount, "backend": backend,
+            }
+            event_fields.update(fields)
+            try:
+                self.governor.record_actual(amount, model_id)
+            except HarnessError:
+                # Preserve an auditable attempted charge without claiming it was
+                # tracked. The governor remains authoritative for the hard key
+                # ceiling, so the ledger's tracked total still equals spent.
+                rejected = dict(event_fields)
+                rejected["status"] = "rejected"
+                rejected["cost"] = 0.0
+                rejected["tracked_cost"] = 0.0
+                rejected["reported_cost"] = amount
+                self.ledger.append("model_result", task_id=task_id,
+                                   event_note="apply", **rejected)
+                raise
+            self.ledger.append("model_result", task_id=task_id,
+                               event_note="apply", **event_fields)
+            if self.governor.spent - task_start_spent > task_max_cost:
+                raise HarnessError(
+                    f"actual task cost would exceed --task-max-cost ${task_max_cost:.6f}; refusing")
+
 
         if not os.path.exists(file_path):
             raise HarnessError(f"file not found: {file_path}")
@@ -281,11 +391,14 @@ class ApplyEngine:
         with open(file_path, "r", encoding="utf-8") as f:
             original = f.read()
 
-        if want_consent and not continuation:
+        if want_consent and not resumed:
             consent = probe_consent(
                 transport=self.transport, api_key=self.api_key, governor=self.governor,
                 task_id=task_id, task=instruction[:1500], model=self.router.judge,
                 ledger=self.ledger, required=True)
+            if self.governor.spent - task_start_spent > task_max_cost:
+                raise HarnessError(
+                    f"consent cost exceeded task ceiling ${task_max_cost:.6f}; refusing to dispatch")
             if consent["decision"] != "accept":
                 return {"status": "consent_blocked", "task_id": task_id, **consent}
 
@@ -305,6 +418,9 @@ class ApplyEngine:
                     transport=self.transport, api_key=self.api_key, governor=self.governor,
                     task_id=task_id, task=instruction[:1500], model=self.router.judge,
                     ledger=self.ledger, required=True)
+                if self.governor.spent - task_start_spent > task_max_cost:
+                    raise HarnessError(
+                        f"consent renewal exceeded task ceiling ${task_max_cost:.6f}; refusing to continue")
                 if cr["decision"] != "accept":
                     self.ledger.append("defer_midtask", task_id=task_id, category="consent",
                                        reason=cr["reason"], model=self.router.judge)
@@ -313,7 +429,7 @@ class ApplyEngine:
                         reason=cr["reason"], remaining_scope=instruction,
                         rounds=rounds, history=history, cost=self.governor.spent,
                         backend=backend, verify_only=verify_only, max_lines=max_lines,
-                        edit_snippet=edit_snippet)
+                        edit_snippet=edit_snippet, verify_cmd=verify_cmd)
 
             round_ctx = None
             if rounds:
@@ -330,6 +446,15 @@ class ApplyEngine:
             for m_ in ([model] + self.router.apply_pool):
                 if m_ not in candidates:
                     candidates.append(m_)
+            # Pools are live-validated at the public routing boundary, but a
+            # library caller can still supply stale ids. Exclude those ids from
+            # the reservation and rotation sequence rather than discovering the
+            # problem only after a failed model has already consumed a call.
+            try:
+                known_models = {entry.get("id") for entry in self.governor.fetch_models()}
+                candidates = [m_ for m_ in candidates if m_ in known_models]
+            except HarnessError:
+                pass
             attempt_model = None
             for m_ in candidates:
                 if m_ not in failed_models:
@@ -351,17 +476,31 @@ class ApplyEngine:
                                             backend=backend)
                 a_pp, a_cp = self.governor.fetch_pricing([attempt_model])[attempt_model]
                 est = estimate_prompt_tokens(prompt)
-                per_round = est * a_pp + max_tokens * a_cp
-                if per_round * (max_rounds - round_no + 1) > task_max_cost:
+                slots = _chat_reservation_slots(attempt_model, reasoning, 0)
+                per_call_estimate = slots * (est * a_pp + max_tokens * a_cp)
+                if self.governor.spent - task_start_spent + per_call_estimate > task_max_cost:
                     raise HarnessError(
-                        f"task worst-case ${per_round * (max_rounds - round_no + 1):.6f} exceeds "
-                        f"--task-max-cost ${task_max_cost:.6f}. Refusing.")
-                self.governor.preflight(prompt, [("apply", attempt_model, max_tokens, 0)])
+                        f"task worst-case ${self.governor.spent - task_start_spent + per_call_estimate:.6f} "
+                        f"exceeds --task-max-cost ${task_max_cost:.6f}. Refusing.")
+                # This reservation is made immediately before every candidate,
+                # including dynamically rotated models and reasoning fallbacks.
+                # The actual-cost guard below remains authoritative if provider
+                # billing exceeds the live pricing estimate.
+                self.governor.preflight(
+                    prompt,
+                    [(f"apply attempt {i + 1}/{slots}", attempt_model, max_tokens, 0)
+                     for i in range(slots)],
+                )
                 status, resp = chat(self.transport, self.api_key, attempt_model,
                                     [{"role": "user", "content": prompt}], max_tokens,
                                     reasoning, self.reasoning_token_budget, self.governor)
                 if status != 200:
-                    err = resp.get("error", {}).get("message", str(resp))
+                    err = (resp.get("error", {}).get("message", str(resp))
+                           if isinstance(resp, dict) else str(resp))
+                    attempt_cost = _reported_cost(resp)
+                    record_apply_result(attempt_model, attempt_cost, "error",
+                                        error=err, http_status=status,
+                                        retryable=status == 429)
                     failed_models.add(attempt_model)
                     rotations += 1
                     eprint(f"[apply] {attempt_model} FAILED ({status}): {err} -- rotating.")
@@ -370,18 +509,28 @@ class ApplyEngine:
                     if is_byok and not self.governor.is_free(attempt_model):
                         # Paid BYOK route: spend is invisible to the tracked key.
                         self.governor.record_byok(attempt_model)
+                        self.ledger.append(
+                            "model_result", task_id=task_id, event_note="apply",
+                            model=attempt_model, task_type="code", json_expected=False,
+                            json_ok=None, status="error", cost=0.0, tracked_cost=0.0,
+                            reported_cost=cost, backend=backend, reason="paid BYOK route")
                         failed_models.add(attempt_model)
                         rotations += 1
                         eprint(f"[apply] {attempt_model} is BYOK-routed (paid); recorded and rotating.")
                     elif not content or content.startswith(REASONING_FALLBACK_PREFIX):
                         # No usable output: a reasoning-only response must NOT be
                         # treated as file content (it would corrupt the target).
+                        record_apply_result(attempt_model, cost, "error",
+                                            reason="no usable content")
                         failed_models.add(attempt_model)
                         rotations += 1
                         eprint(f"[apply] {attempt_model} returned no content (reasoning-only); rotating.")
                     else:
                         ready, ready_reason, content = _parse_ready(content)
                         if ready == "defer":
+                            record_apply_result(attempt_model, cost, "deferred",
+                                                readiness="defer",
+                                                reason=ready_reason or "model declared not ready")
                             self.ledger.append("readiness", task_id=task_id,
                                                model=attempt_model, round=round_no,
                                                decision="defer")
@@ -393,6 +542,7 @@ class ApplyEngine:
                             eprint(f"[apply] {attempt_model} declares HARNESS_READY: defer "
                                    f"({(ready_reason or '')[:70]}) -- rotating.")
                         else:
+                            record_apply_result(attempt_model, cost, "ok", readiness=ready)
                             if ready == "missing":
                                 eprint(f"[apply] {attempt_model} did not emit HARNESS_READY; "
                                        f"treating as confident (verify + DEFER still guard).")
@@ -425,18 +575,17 @@ class ApplyEngine:
                         reason=last_defer_reason, remaining_scope=instruction,
                         rounds=rounds, history=history, cost=self.governor.spent,
                         backend=backend, verify_only=verify_only, max_lines=max_lines,
-                        edit_snippet=edit_snippet)
+                        edit_snippet=edit_snippet, verify_cmd=verify_cmd)
                 rounds.append({"round": round_no, "model": model or attempt_model,
                                "status": "api_error",
                                "error": resp.get("error", {}).get("message", str(resp))
                                if resp else "no model reachable",
-                               "verify_output": "", "cost": 0.0})
+                               "verify_output": "",
+                               "cost": _reported_cost(resp)})
                 break
 
-            self.governor.record_actual(cost, model_used)
-            self.ledger.append("model_result", task_id=task_id, event_note="apply",
-                               model=model_used, task_type="code", json_expected=False,
-                               json_ok=None, status="ok", backend=backend)
+            # The chosen response was already recorded by record_apply_result;
+            # do not charge or ledger it a second time here.
 
             # ---- capability-blocker deferral ----
             if CAPABILITY_MARKER in content:
@@ -463,7 +612,8 @@ class ApplyEngine:
                     reason=reason, remaining_scope=remaining, rounds=rounds,
                     history=history, cost=self.governor.spent,
                     backend=backend, verify_only=verify_only, max_lines=max_lines,
-                    edit_snippet=edit_snippet)
+                    edit_snippet=edit_snippet, verify_cmd=verify_cmd)
+
 
             new_content = _extract_file_content(content)
             changed = new_content != current_content
@@ -527,7 +677,8 @@ class ApplyEngine:
 
         # Cheap model exhausted its retry budget -> optional gated escalation.
         esc = self.router.escalation(override=allow_escalation)
-        if not verify_only and esc and rounds and (rounds[-1].get("status") in ("verify_failed", "api_error")):
+        if (not verify_only and verify_cmd and esc and rounds and
+                rounds[-1].get("status") in ("verify_failed", "api_error")):
             self.ledger.append("escalate", task_id=task_id, from_model=model, to_model=esc["model"])
             last = rounds[-1]
             tail = (last.get("verify_output") or "")[-VERIFY_FEEDBACK_CHARS:]
@@ -539,22 +690,42 @@ class ApplyEngine:
             prompt = self._apply_prompt(file_path, instruction, edit_snippet,
                                         current_content, round_ctx, continuation,
                                         backend=backend)
-            self.governor.preflight(prompt, [("escalation", esc["model"], max_tokens, 0)])
+            esc_slots = _chat_reservation_slots(esc["model"], "high", 0)
+            self.governor.preflight(
+                prompt,
+                [(f"escalation attempt {i + 1}/{esc_slots}", esc["model"], max_tokens, 0)
+                 for i in range(esc_slots)],
+            )
             status, resp = chat(self.transport, self.api_key, esc["model"],
                                 [{"role": "user", "content": prompt}], max_tokens,
                                 "high", self.reasoning_token_budget, self.governor)
-            if status == 200:
+            if status != 200:
+                err = (resp.get("error", {}).get("message", str(resp))
+                       if isinstance(resp, dict) else str(resp))
+                record_apply_result(esc["model"], _reported_cost(resp), "error",
+                                    escalation=True, error=err, http_status=status)
+                rounds.append({"round": "escalation", "model": esc["model"],
+                               "status": "api_error", "error": err,
+                               "verify_output": "", "cost": _reported_cost(resp)})
+            else:
                 content, _, cost, is_byok = extract_content_and_cost(resp)
                 if is_byok and not self.governor.is_free(esc["model"]):
                     self.governor.record_byok(esc["model"])
-                    content = None  # unusable: spend would be invisible
-                elif not content or content.startswith(REASONING_FALLBACK_PREFIX):
-                    content = None  # reasoning-only response is not usable content
-                self.governor.record_actual(cost, esc["model"])
-                self.ledger.append("model_result", task_id=task_id, event_note="escalation",
-                                   model=esc["model"], task_type="code", json_expected=False,
-                                   json_ok=None, status="ok" if content else "error",
-                                   backend=backend)
+                    self.ledger.append(
+                        "model_result", task_id=task_id, event_note="escalation",
+                        model=esc["model"], task_type="code", json_expected=False,
+                        json_ok=None, status="error", cost=0.0, tracked_cost=0.0,
+                        reported_cost=cost, backend=backend,
+                        reason="paid BYOK route")
+                    content = None
+                    cost = 0.0
+                else:
+                    usable = bool(content and not content.startswith(REASONING_FALLBACK_PREFIX))
+                    record_apply_result(esc["model"], cost,
+                                        "ok" if usable else "error",
+                                        escalation=True)
+                    if not usable:
+                        content = None
                 new_content = _extract_file_content(content) if content else current_content
                 changed = bool(content) and new_content != current_content
                 if changed:
@@ -563,27 +734,27 @@ class ApplyEngine:
                     _atomic_write(file_path, new_content)
                     current_content = new_content
                 rc, out = (self.run_verify(verify_cmd) if content
-                            else (1, "escalation returned no usable content"))
+                           else (1, "escalation returned no usable content"))
                 if rc == 0 and changed:
                     self.ledger.append("complete", task_id=task_id, model=esc["model"],
                                        rounds="escalation", status="ok")
-                    rounds.append({"round": "escalation", "model": esc["model"], "status": "ok",
-                                   "changed": True, "verify_passed": True, "cost": cost,
+                    rounds.append({"round": "escalation", "model": esc["model"],
+                                   "status": "ok", "changed": True,
+                                   "verify_passed": True, "cost": cost,
                                    "verify_output": ""})
                     return {"status": "ok", "task_id": task_id, "changed": True,
-                            "backup": backup, "rounds": rounds, "cost": self.governor.spent,
-                            "rotations": rotations,
-                            "verify": {"command": verify_cmd, "passed": True}, "escalated": True}
+                            "backup": backup, "rounds": rounds,
+                            "cost": self.governor.spent, "rotations": rotations,
+                            "verify": {"command": verify_cmd, "passed": True},
+                            "escalated": True}
                 rounds.append({"round": "escalation", "model": esc["model"],
                                "status": "verify_failed", "changed": changed,
-                               "verify_passed": False, "cost": cost, "verify_output": out})
-            else:
-                rounds.append({"round": "escalation", "model": esc["model"], "status": "api_error",
-                               "error": resp.get("error", {}).get("message", str(resp)),
-                               "verify_output": "", "cost": 0.0})
+                               "verify_passed": False, "cost": cost,
+                               "verify_output": out})
 
-        self.ledger.append("abort", task_id=task_id, model=model, reason="verify rounds exhausted",
-                           rotations=rotations)
+        self.ledger.append("abort", task_id=task_id, model=model,
+                           reason="verify rounds exhausted", rotations=rotations)
+
         last_out = ""
         for r in reversed(rounds):
             if r.get("verify_output"):
@@ -591,12 +762,13 @@ class ApplyEngine:
                 break
         return {"status": "verify_failed", "task_id": task_id, "backup": backup,
                 "rounds": rounds, "cost": self.governor.spent, "rotations": rotations,
-                "backend": backend, "verify_only": verify_only,
+                "backend": backend, "verify_only": verify_only, "verify_cmd": verify_cmd,
                 "verify": {"command": verify_cmd, "passed": False, "output_tail": last_out},
                 "continuation": {
                     "file_path": file_path, "task_id": task_id,
                     "backend": backend, "verify_only": verify_only, "max_lines": max_lines,
-                    "edit_snippet": edit_snippet,
+                    "edit_snippet": edit_snippet, "verify_cmd": verify_cmd,
+                    "verification_required": True,
                     "remaining_scope": f"Fix the verification failures for: {instruction}",
                     "reason": "verification did not pass on the free tier; continue and fix",
                     "history": history,

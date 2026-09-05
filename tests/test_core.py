@@ -1,5 +1,7 @@
+import json
+import os
+import tempfile
 import unittest
-
 from harness.core import (
     SpendGovernor, HarnessError, estimate_prompt_tokens, extract_content_and_cost,
     panel_judge, tally_convergence, extract_claim_verdicts,
@@ -117,6 +119,79 @@ class PanelJudgeTests(unittest.TestCase):
                              panel=[P1, P2], judge=JUDGE)
         self.assertEqual(len(result["panel_results"]), 1)
 
+    def test_ordinary_ledger_run_reports_without_convergence_state(self):
+        """The convergence tally is optional; an ordinary ledger-backed run must
+        still complete and report null panel counts rather than referencing an
+        uninitialized convergence variable."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "ledger.jsonl")
+            fake = FakeTransport(models=[m(P1), m(P2), m(JUDGE)],
+                                 posts=[comp("one"), comp("two"), comp("judge")])
+            gov = _gov(fake)
+            ledger = __import__("harness.ledger", fromlist=["AutonomyLedger"]).AutonomyLedger(path)
+            result = panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",
+                                 panel=[P1, P2], judge=JUDGE, ledger=ledger,
+                                 task_id="ordinary-ledger")
+            self.assertEqual(result["judge_synthesis"], "judge")
+            complete = ledger.entries()[-1]
+            self.assertEqual(complete["event"], "complete")
+            self.assertIsNone(complete["voted_by"])
+            self.assertIsNone(complete["of_panel"])
+
+    def test_panel_429_retry_is_bounded_and_billed(self):
+        """A transient panel 429 gets one bounded retry, and both provider
+        charges are reflected in governor and the ledger."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "ledger.jsonl")
+            fake = FakeTransport(
+                models=[m(P1), m(P2), m(JUDGE)],
+                posts=[
+                    (429, {"error": {"message": "rate limited"},
+                           "usage": {"cost": 0.0002}}),
+                    comp("retried panel", cost=0.0003),
+                    comp("judge", cost=0.0001),
+                ])
+            gov = _gov(fake, max_cost=0.001)
+            ledger = __import__("harness.ledger", fromlist=["AutonomyLedger"]).AutonomyLedger(path)
+            result = panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",
+                                 panel=[P1, P2], judge=JUDGE, max_panelists=1,
+                                 ledger=ledger, task_id="429-cost")
+            self.assertEqual([r["model"] for r in result["panel_results"]], [P1])
+            self.assertEqual(len(fake.chat_posts()), 3)
+            self.assertAlmostEqual(gov.spent, 0.0006, places=9)
+            self.assertAlmostEqual(ledger.participation_report()["tracked_cost"],
+                                   gov.spent, places=9)
+            self.assertLessEqual(gov.spent, gov.max_cost)
+            retry_events = [e for e in ledger.entries()
+                            if e["event"] == "model_result" and e.get("retry")]
+            self.assertEqual(len(retry_events), 1)
+            self.assertAlmostEqual(retry_events[0]["cost"], 0.0002, places=9)
+
+    def test_rotation_cost_is_recorded_and_stays_within_ceiling(self):
+        """A failed panel slot and its replacement are both billable ledger
+        events, and the reported total matches governor.spent."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "ledger.jsonl")
+            fake = FakeTransport(
+                models=[m(P1), m(P2), m(JUDGE)],
+                posts=[
+                    (500, {"error": {"message": "down"},
+                           "usage": {"cost": 0.0002}}),
+                    comp("replacement", cost=0.0003),
+                    comp("judge", cost=0.0001),
+                ])
+            gov = _gov(fake, max_cost=0.001)
+            ledger = __import__("harness.ledger", fromlist=["AutonomyLedger"]).AutonomyLedger(path)
+            result = panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",
+                                 panel=[P1, P2], judge=JUDGE, max_panelists=1,
+                                 ledger=ledger, task_id="rotation-cost")
+            report = ledger.participation_report()
+            self.assertAlmostEqual(gov.spent, 0.0006, places=9)
+            self.assertAlmostEqual(result["actual_cost"], gov.spent, places=9)
+            self.assertAlmostEqual(report["tracked_cost"], gov.spent, places=9)
+            self.assertLessEqual(gov.spent, gov.max_cost)
+            self.assertEqual(len(result["panel_failures"]), 1)
+
     def test_all_panel_failures_abort(self):
         fake = FakeTransport(models=[m(P1), m(P2), m(JUDGE)],
                              posts=[(500, {"error": {"message": "x"}}),
@@ -177,6 +252,37 @@ class ConvergenceTests(unittest.TestCase):
         self.assertFalse(tally["converged"])
         self.assertEqual(tally["converged_claims"], 1)
         self.assertEqual(tally["convergence_rate"], 0.5)
+
+    def test_malformed_panelist_is_shortfall_not_disagreement(self):
+        """A valid responder's unanimous vote is agreement, not disagreement,
+        but the missing required slot keeps the merge gate closed."""
+        claims = {"c1": {"real": False, "confidence": 0.9}}
+        fake = FakeTransport(
+            models=[m(P1), m(P2), m(JUDGE)],
+            posts=[
+                comp("not valid claim JSON"),
+                comp(json.dumps(claims)),
+                comp('{"verdict":"ok","agreement":"high","confidence":0.9,'
+                     '"disagreements":[],"defer":false}'),
+                comp('{"converged":false,"agreement":"low","confidence":0.5,"claims":{}}'),
+            ])
+        gov = _gov(fake)
+        result = panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",
+                             panel=[P1, P2], judge=JUDGE, max_panelists=2,
+                             run_convergence=True)
+        tally = result["convergence"]["tally"]
+        self.assertFalse(tally["converged"])
+        self.assertTrue(tally["responder_converged"])
+        self.assertFalse(tally["disagreement"])
+        self.assertTrue(tally["panel_shortfall"])
+        self.assertEqual(tally["voted_by"], 1)
+        self.assertEqual(tally["of_panel"], 2)
+        self.assertEqual(tally["missing_votes"], 1)
+        self.assertEqual(result["consensus"]["agreement"], "high")
+        self.assertEqual(result["consensus"]["confidence"], 1.0)
+        self.assertTrue(result["consensus"]["defer"])
+        self.assertEqual(len(result["panel_failures"]), 1)
+        self.assertEqual(result["panel_failures"][0]["status"], "invalid_output")
 
     def test_reassurance_claims_excluded_from_gate(self):
         """Identical substance on a reassurance claim encoded with opposite real

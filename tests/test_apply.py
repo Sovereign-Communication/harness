@@ -1,8 +1,13 @@
+import contextlib
+import io
+import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from harness.apply import ApplyEngine
+from harness.cli import main as cli_main
 from harness.core import SpendGovernor, HarnessError
 from harness.ledger import AutonomyLedger
 from harness.router import Router
@@ -182,6 +187,34 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(len(fake.chat_posts()), 2)
 
+    def test_consent_and_rotation_costs_are_reported_together(self):
+        """Consent, a failed primary call, and its replacement all appear in
+        the same tracked total and remain below the configured ceiling."""
+        p = self.make_file()
+        accepted = consent("accept", "fits")
+        accepted["usage"]["cost"] = 0.0001
+        fake, gov, ledger, engine = self.make_env(
+            posts=[
+                accepted,
+                (429, {"error": {"message": "rate limited"},
+                       "usage": {"cost": 0.0002}}),
+                comp(CHANGED, cost=0.0003),
+            ],
+            run=scripted_run([(0, "")]), default_consent=True,
+            router_kw={"apply_pool": [CODER_A]})
+        result = engine.apply_edit(task_id="costs", file_path=p,
+                                   instruction="change", verify_cmd="check",
+                                   max_rounds=1, task_max_cost=0.001)
+        report = ledger.participation_report()
+        self.assertEqual(result["status"], "ok")
+        self.assertAlmostEqual(gov.spent, 0.0006, places=9)
+        self.assertAlmostEqual(result["cost"], gov.spent, places=9)
+        self.assertAlmostEqual(report["tracked_cost"], gov.spent, places=9)
+        self.assertLessEqual(gov.spent, gov.max_cost)
+        model_events = [e for e in ledger.entries() if e["event"] == "model_result"]
+        self.assertEqual(len(model_events), 2)
+        self.assertAlmostEqual(sum(e["cost"] for e in model_events), 0.0005, places=9)
+
     # ---- continued consensus (renewal) ----
     def test_consent_renew_defer_stops_mid_task(self):
         p = self.make_file()
@@ -345,13 +378,56 @@ class ApplyTests(unittest.TestCase):
         router2 = Router(["a", "b"], JUDGE, APPLY)
         engine2 = ApplyEngine(fake2, "k", gov2, ledger2, router2,
                               default_require_consent=True, default_renew_consent=False)
-        engine2.run_verify = scripted_run([(0, "")])
-        r2 = engine2.apply_edit(continuation=state, verify_cmd="check",
-                                require_consent=False)
+        verify_calls = []
+        engine2.run_verify = lambda command: (verify_calls.append(command) or (0, ""))
+        r2 = engine2.apply_edit(continuation=state, require_consent=False)
         self.assertEqual(r2["status"], "ok")
         self.assertEqual(r2["task_id"], r1["task_id"])
+        self.assertEqual(verify_calls, ["check"], "the saved gate must be reused")
         with open(p, encoding="utf-8") as f:
             self.assertEqual(f.read().strip(), CHANGED.strip())
+
+    def test_failed_continuation_requires_authoritative_verify_cmd(self):
+        p = self.make_file()
+        _, _, _, engine = self.make_env(
+            posts=[comp(CHANGED)], run=scripted_run([(1, "verification failed")]))
+        failed = engine.apply_edit(task_id="gated", file_path=p, instruction="change",
+                                   verify_cmd="authoritative-check", require_consent=False,
+                                   max_rounds=1)
+        self.assertEqual(failed["status"], "verify_failed")
+        state = dict(failed["continuation"])
+        state.pop("verify_cmd")
+
+        fake2, _, _, engine2 = self.make_env(posts=[comp(CHANGED)])
+        with self.assertRaisesRegex(HarnessError, "missing its authoritative verify_cmd"):
+            engine2.apply_edit(continuation=state, require_consent=False)
+        self.assertEqual(fake2.chat_posts(), [], "invalid state must fail before dispatch")
+
+    def test_cli_rejects_ungated_continuation_before_key_setup(self):
+        """The CLI boundary must reject a failed state before touching credentials."""
+        with tempfile.TemporaryDirectory() as td:
+            state_path = os.path.join(td, "state.json")
+            with open(state_path, "w", encoding="utf-8") as f:
+                json.dump({"file_path": os.path.join(td, "math.py"),
+                           "verify_only": False,
+                           "verification_required": True}, f)
+            with mock.patch("harness.cli._governor",
+                            side_effect=AssertionError("key setup must not run")):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as ctx:
+                        cli_main(["apply", "--continue-from", state_path])
+            self.assertEqual(ctx.exception.code, 1)
+
+    def test_gated_continuation_rejects_verify_only_override(self):
+        p = self.make_file()
+        _, _, _, engine = self.make_env(posts=[comp(CHANGED)],
+                                        run=scripted_run([(1, "verification failed")]))
+        failed = engine.apply_edit(task_id="gated-preview", file_path=p,
+                                   instruction="change", verify_cmd="check",
+                                   require_consent=False, max_rounds=1)
+        with self.assertRaisesRegex(HarnessError, "cannot be resumed as verify-only"):
+            engine.apply_edit(continuation=failed["continuation"], verify_only=True,
+                              require_consent=False)
 
     # ---- MorphLite-compatible backend ----
     def test_morph_verify_only_is_read_only(self):
@@ -403,6 +479,31 @@ class ApplyTests(unittest.TestCase):
         self.assertIsNone(result.get("backup"))
         with open(p, encoding="utf-8") as f:
             self.assertEqual(f.read(), ORIGINAL)
+
+    def test_morph_verify_only_continuation_stays_gate_free(self):
+        """A preview continuation may carry a historical gate, but resuming it
+        must remain read-only and must not execute that gate."""
+        p = self.make_file()
+        models = [m(APPLY), m(JUDGE), m(ESC), m(CODER_A), m(CODER_B), m(MORPH)]
+        _, _, _, engine = self.make_env(
+            posts=[comp(PARTIAL + "HARNESS_DEFER: finish the timing proof")],
+            models=models)
+        first = engine.apply_edit(
+            task_id="morph-preview-resume", file_path=p, instruction="fix timing safety",
+            verify_cmd="must-not-run", require_consent=False, renew_consent=False,
+            backend="morph", verify_only=True, max_tokens=64)
+        state = first["continuation"]
+        self.assertEqual(state["verify_cmd"], "must-not-run")
+
+        fake2, _, _, engine2 = self.make_env(posts=[comp(CHANGED)], models=models)
+        verify_calls = []
+        engine2.run_verify = lambda command: verify_calls.append(command)
+        resumed = engine2.apply_edit(continuation=state, require_consent=False)
+        self.assertEqual(resumed["status"], "preview")
+        self.assertEqual(verify_calls, [])
+        with open(p, encoding="utf-8") as f:
+            self.assertEqual(f.read(), ORIGINAL)
+        self.assertEqual(len(fake2.chat_posts()), 1)
 
     # ---- file safety ----
     def test_atomic_write_no_leftover_tmp(self):

@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from harness.apply import ApplyEngine
 from harness.core import SpendGovernor
@@ -113,6 +114,25 @@ class McpProtocolTests(unittest.TestCase):
         _, lines = run(feed)
         self.assertNotIn("error", lines[0])
         self.assertTrue(lines[0]["result"]["isError"])
+
+    def test_apply_rejects_ungated_continuation_before_capability_lookup(self):
+        """MCP must share the CLI/library authority boundary."""
+        transport, server = make_server()
+        state = {"file_path": "missing.py", "verify_only": False,
+                 "verification_required": True}
+        with mock.patch.object(server, "_capability_context",
+                               side_effect=AssertionError("capability lookup must not run")):
+            with self.assertRaisesRegex(Exception, "missing its authoritative verify_cmd"):
+                server._invoke("apply_edit", {"instruction": "x", "continuation": state})
+        self.assertEqual(transport.chat_posts(), [])
+
+    def test_apply_tool_schema_allows_continuation_without_file(self):
+        transport, server = make_server()
+        tool = next(t for t in server._tools() if t["name"] == "apply_edit")
+        self.assertEqual(tool["inputSchema"]["anyOf"], [
+            {"required": ["instruction"]},
+            {"required": ["continuation"]},
+        ])
 
     def test_unknown_method_and_parse_error(self):
         feed = (
