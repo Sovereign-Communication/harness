@@ -112,15 +112,18 @@ FREE_APPLY_POOL = [
 ]
 
 # Convergence-specialist fallback ladder, tried in order after the primary
-# (which defaults to the judge). GLM-5.2 is frontier-class and the strongest
-# free reasoner on the router, so it leads; gemma and minimax are the most
-# JSON-reliable free emitters behind it. The specialist rotates down this
-# ladder when the primary returns an HTTP error, a paid-BYOK route,
-# reasoning-only output, truncation, or unparseable JSON.
+# (which defaults to the judge). Ordered by OBSERVED track record, not
+# declared capability: minimax (32/32) and gemma (38/38) are perfect emitters
+# and lead; GLM-5.2 is 0/22 in the ledger -- declared frontier-class but
+# falsified by every probe and live call -- so it goes last, tried only when
+# everything proven has failed. Rotation must happen BEFORE the next start,
+# never after a first failure the ledger already predicted. The specialist
+# rotates down this ladder on HTTP error, paid-BYOK route, reasoning-only
+# output, truncation, or unparseable JSON.
 SPECIALIST_POOL_FREE = [
-    "z-ai/glm-5.2:free",
-    "google/gemma-4-31b-it:free",
     "minimax/minimax-m3:free",
+    "google/gemma-4-31b-it:free",
+    "z-ai/glm-5.2:free",
 ]
 
 # ---- Paid lanes (use_free=False) ----
