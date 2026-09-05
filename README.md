@@ -73,7 +73,8 @@ with `HARNESS_*` env overrides:
 | `use_free` | `true` | Route through best current free models |
 | `panel` / `panel_pool` | curated free list | Ordered panel pool; failing members rotate |
 | `judge` | `cohere/north-mini-code:free` | JSON-reliable judge |
-| `convergence_model` | (same as `judge`) | Convergence-specialist model for `--converge` |
+| `convergence_model` | (same as `judge`) | Primary convergence-specialist model for `--converge` |
+| `specialist_pool` | free: GLM-5.2, gemma, minimax | Ordered specialist fallback ladder, strongest first |
 | `apply_model` / `apply_pool` | free code-first pool | Ordered apply pool; rotates on error |
 | `reasoning_effort` | `auto` | `auto`/`off`/`none`/`low`/`medium`/`high`/`on` |
 | `reasoning_token_budget` | `0.4` | Fraction of `max_tokens` allowed for hidden reasoning |
@@ -233,6 +234,23 @@ harness verify --prompt-file audit.txt --converge \
 - The specialist **defaults to the same model as the judge**
   (`--convergence-model` or `HARNESS_CONVERGENCE_MODEL` to override), so
   adding it costs one extra free call and no extra key/config.
+- **The specialist rotates, it never single-shots.** When the primary returns
+  an HTTP error, a paid-BYOK route, empty or reasoning-only output, truncation
+  against its token cap, or unparseable JSON, it rotates down a fallback ladder
+  (`--specialist-pool` / `HARNESS_SPECIALIST_POOL`, or `specialist_pool` in
+  config). The free ladder leads with **GLM-5.2** (frontier-class, the
+  strongest free reasoner on the router) followed by gemma and minimax. Every
+  attempt is preflight-reserved before the first call and billed per attempt,
+  so the ceiling stays exact, the full attempt trail lands in
+  `convergence.attempts` and the ledger, and the deterministic tally stays
+  authoritative even if the whole lane fails.
+- **Models are told their budget.** The specialist prompt discloses the
+  resource cap explicitly — visible output tokens, the hidden-reasoning cap
+  (`reasoning_token_budget` fraction of `max_tokens`), and the consequence:
+  a truncated or reasoning-only response is discarded and the task rotates.
+  Do-your-best-within-the-cap is instructed; assuming more budget than given
+  is not. GLM-5.2 is registered as a reasoning model, so `reasoning_effort:
+  auto` allocates it a capped reasoning budget automatically.
 - Output includes `convergence.tally` (per-claim votes, unanimity, mean
   confidence, and a separate `reassurance` block) and
   `convergence.specialist` (the specialist's rendered verdict).
@@ -393,7 +411,7 @@ python -m unittest tests.test_core tests.test_ledger tests.test_consent \
   tests.test_byok tests.test_bench tests.test_claims tests.test_capability
 ```
 
-155 hermetic tests — no network, no key. They pin: per-token pricing (regression
+162 hermetic tests — no network, no key. They pin: per-token pricing (regression
 on a ~1,000,000x undercount bug), no-tools payloads, hard/learned BYOK handling,
 key gates, mid-batch fail-closed, reasoning modes (incl. the
 retry-without-reasoning path), panel rotation, structured consensus parsing,
@@ -403,7 +421,8 @@ confidence calibration (readiness vs verify join, unmatched-verdict handling),
 continuation resume, rotation on error, the vacuous-success guard, escalation
 gating, the MCP handshake, the bench manifest/task runner, and the convergence
 specialist (deterministic per-claim tally, 5/5 unanimous == 100%, split
-non-convergence, default-to-judge-model, defect-proposition polarity
+non-convergence, default-to-judge-model, rotation on imperfect specialist
+output, defect-proposition polarity
 convention, reassurance-claim exclusion from the gate), and the capability
 layer (parsing, scoring, context hard-gate, composite-reliability math incl.
 prior-shrink, observed-JSON-updates-declared, structured correctness evidence,

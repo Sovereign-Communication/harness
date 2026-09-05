@@ -18,7 +18,8 @@ def dedup(seq):
 
 class Router:
     def __init__(self, panel, judge, apply_model, escalation_model=None,
-                 allow_escalation=False, panel_pool=None, apply_pool=None):
+                 allow_escalation=False, panel_pool=None, apply_pool=None,
+                 specialist_pool=None, convergence_model=None):
         self.panel = list(panel)
         self.judge = judge
         self.apply_model = apply_model
@@ -26,6 +27,10 @@ class Router:
         self.allow_escalation = allow_escalation
         self.panel_pool = panel_pool or list(panel)
         self.apply_pool = apply_pool or dedup([apply_model] + list(self.panel))
+        # Convergence-specialist lane: primary defaults to the judge, fallback
+        # ladder strongest-first (free lane leads with GLM-5.2).
+        self.convergence_model = convergence_model or judge
+        self.specialist_pool = list(specialist_pool or [])
 
     def route(self, task_type):
         """Return the spec for a task type: cheap lane first."""

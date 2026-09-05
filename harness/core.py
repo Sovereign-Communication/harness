@@ -160,7 +160,7 @@ def extract_content_and_cost(resp):
 # ------------------------- reasoning / effort -------------------------
 
 _REASONING_HINTS = ("reason", "thinking", "inkling", "qwq", "r1", "o3", "o4",
-                    "deepseek", "kimi", "glm-4.6", "glm-5.6", "minimax-reason")
+                    "deepseek", "kimi", "glm-4.6", "glm-5.2", "glm-5.6", "minimax-reason")
 _EFFORT_VALUES = ("auto", "off", "none", "low", "medium", "high", "on")
 _REASONING_PARAM_ERR_HINTS = ("reasoning", "unsupported parameter",
                               "unknown parameter", "unexpected parameter")
@@ -631,10 +631,19 @@ def tally_convergence(panel_results, claim_polarity=None, of_panel=None):
 
 def run_convergence_specialist(transport, api_key, governor, panel_results, model,
                                max_tokens=1200, reasoning_effort="auto",
-                               reasoning_token_budget=0.4, ledger=None, task_id=None):
+                               reasoning_token_budget=0.4, ledger=None, task_id=None,
+                               fallback_pool=None):
     """A dedicated 'convergence specialist' renders the final verdict from the
     panel's per-claim JSON (defaults to the judge model when not overridden).
-    Falls back to the deterministic tally if the specialist call fails."""
+
+    The specialist is itself a rotating lane: ``model`` is the primary, then
+    ``fallback_pool`` (strongest first -- GLM-5.2 leads the free ladder) is
+    tried in order. A candidate is rotated out on any imperfect outcome: HTTP
+    error, paid-BYOK route, empty or reasoning-only output, truncation against
+    the token cap, or unparseable JSON. Every attempt is preflight-reserved
+    before the first call and billed per attempt, so the ceiling stays exact.
+    The deterministic tally remains authoritative even if the whole lane fails.
+    """
     lines = [
         "You are a convergence specialist. N independent models each reviewed the same claims "
         "and emitted per-claim verdicts {\"claim\":{\"real\":bool,\"confidence\":..}}. "
@@ -646,57 +655,132 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
         "The merge-gate converged field additionally requires every required panel slot to answer. "
         "Claims are DEFECT propositions: real:true means the stated defect genuinely exists. "
         "Do not invent claims or models.",
+        # Resource-cap disclosure: the model must know its budget up front so it
+        # can plan to finish inside it instead of truncating mid-JSON.
+        f"RESOURCE CAP: your entire response is limited to {max_tokens} output tokens, and "
+        f"hidden reasoning counts against it (reasoning itself capped at "
+        f"{int(max_tokens * reasoning_token_budget)} tokens). A truncated or reasoning-only "
+        "response will be discarded and the task rotated to another model. Do your best "
+        "within the cap, assume nothing beyond it, and emit ONLY the JSON object as your "
+        "visible content, starting with {.",
     ]
     for r in panel_results:
         body = (r.get("content") or "")[:2000]
         lines.append(f"--- Model: {r.get('model')} ---\n{body}")
     prompt = "\n".join(lines)
 
-    slots = _chat_reservation_slots(model, reasoning_effort)
-    governor.preflight(
-        prompt,
-        [(f"convergence attempt {i + 1}/{slots}", model, max_tokens, 0)
-         for i in range(slots)],
-    )
-    status, resp = chat(transport, api_key, model, [{"role": "user", "content": prompt}],
-                        max_tokens, reasoning_effort, reasoning_token_budget, governor)
-    if status != 200:
-        error_cost = _reported_cost(resp)
-        if error_cost:
-            governor.record_actual(error_cost, model)
+    # Build the rotation ladder: primary first, then fallbacks (deduped,
+    # learned-BYOK-blocked models dropped). Unknown fallback models are skipped
+    # rather than fatal; the caller-chosen primary must be real.
+    candidates = [model]
+    for m_ in (fallback_pool or []):
+        if m_ and m_ not in candidates:
+            candidates.append(m_)
+    governor.check_byok(candidates[0])  # P0: raise on mistralai//anthropic/
+    usable = []
+    for i, m_ in enumerate(candidates):
+        if i and governor.learned_blocked(m_):
+            eprint(f"[convergence] skipping {m_}: previously routed via BYOK (paid).")
+            continue
+        try:
+            governor.fetch_pricing([m_])
+        except HarnessError as e:
+            if i == 0:
+                raise
+            eprint(f"[convergence] skipping fallback {m_}: {e}")
+            continue
+        usable.append(m_)
+    candidates = usable
+
+    # Reserve the whole ladder up front (including each reasoning model's
+    # possible no-reasoning retry) so the ceiling is exact before any call.
+    calls = []
+    for m_ in candidates:
+        slots = _chat_reservation_slots(m_, reasoning_effort)
+        for s in range(slots):
+            calls.append((f"convergence {m_} attempt {s + 1}/{slots}", m_, max_tokens, 0))
+    governor.preflight(prompt, calls)
+
+    def _bill_event(m_, ok, ev_status, cost):
         if ledger and task_id:
             ledger.append("model_result", task_id=task_id, event_note="convergence",
-                          model=model, task_type="structured", json_expected=True,
-                          json_ok=False, status="error", cost=error_cost)
-        error = (resp.get("error", {}).get("message", str(resp))
-                 if isinstance(resp, dict) else str(resp))
-        return {"status": "error", "model": model,
-                "error": error, "cost": error_cost}
-    content, _, cost, is_byok = extract_content_and_cost(resp)
-    if is_byok and not governor.is_free(model):
-        governor.record_byok(model)
-        if ledger and task_id:
-            ledger.append("model_result", task_id=task_id, event_note="convergence",
-                          model=model, task_type="structured", json_expected=True,
-                          json_ok=False, status="error", cost=0.0)
-        return {"status": "error", "model": model, "error": "paid BYOK route; no specialist verdict"}
-    governor.record_actual(cost, model)
-    parsed = _extract_json(content) or {}
-    json_ok = isinstance(parsed, dict) and bool(parsed)
-    if ledger and task_id:
-        ledger.append("model_result", task_id=task_id, event_note="convergence",
-                      model=model, task_type="structured", json_expected=True,
-                      json_ok=json_ok, status="ok" if json_ok else "error", cost=cost)
-    return {"status": "ok" if json_ok else "error", "model": model,
-            "specialist": parsed if json_ok else {},
-            "raw": content if json_ok else None, "cost": cost,
-            "error": None if json_ok else "specialist returned no parseable JSON"}
+                          model=m_, task_type="structured", json_expected=True,
+                          json_ok=ok, status=ev_status, cost=cost)
+
+    attempts = []
+    total_cost = 0.0
+    result = {"status": "error", "model": model,
+              "error": "no specialist candidate available", "cost": 0.0}
+    for m_ in candidates:
+        status, resp = chat(transport, api_key, m_, [{"role": "user", "content": prompt}],
+                            max_tokens, reasoning_effort, reasoning_token_budget, governor)
+        if status != 200:
+            error_cost = _reported_cost(resp)
+            if error_cost:
+                governor.record_actual(error_cost, m_)
+                total_cost += error_cost
+            error = (resp.get("error", {}).get("message", str(resp))
+                     if isinstance(resp, dict) else str(resp))
+            attempts.append({"model": m_, "status": "error", "error": error,
+                             "cost": error_cost})
+            _bill_event(m_, False, "error", error_cost)
+            eprint(f"[convergence] {m_}: HTTP {status}; rotating.")
+            result = {"status": "error", "model": m_, "error": error,
+                      "cost": total_cost}
+            continue
+        content, finish, cost, is_byok = extract_content_and_cost(resp)
+        if is_byok and not governor.is_free(m_):
+            governor.record_byok(m_)
+            attempts.append({"model": m_, "status": "error",
+                             "error": "paid BYOK route; no specialist verdict", "cost": 0.0})
+            _bill_event(m_, False, "error", 0.0)
+            eprint(f"[convergence] {m_}: BYOK-routed (paid); rotating.")
+            result = {"status": "error", "model": m_,
+                      "error": "paid BYOK route; no specialist verdict",
+                      "cost": total_cost}
+            continue
+        governor.record_actual(cost, m_)
+        total_cost += cost
+        # Imperfect-output triage: a reasoning-only, empty, or truncated body
+        # must never be JSON-mined (a reasoning trace can embed JSON-looking
+        # text that is not the verdict). Rotate instead.
+        unusable = None
+        if not content:
+            unusable = "empty response"
+        elif content.startswith(REASONING_FALLBACK_PREFIX):
+            unusable = "reasoning-only output (no visible content)"
+        elif finish == "length":
+            unusable = "truncated (hit the token cap)"
+        if unusable:
+            attempts.append({"model": m_, "status": "error", "error": unusable,
+                             "cost": cost})
+            _bill_event(m_, False, "error", cost)
+            eprint(f"[convergence] {m_}: {unusable}; rotating.")
+            result = {"status": "error", "model": m_, "error": unusable,
+                      "cost": total_cost}
+            continue
+        parsed = _extract_json(content)
+        json_ok = isinstance(parsed, dict) and bool(parsed)
+        _bill_event(m_, json_ok, "ok" if json_ok else "error", cost)
+        if json_ok:
+            attempts.append({"model": m_, "status": "ok", "cost": cost})
+            return {"status": "ok", "model": m_, "specialist": parsed,
+                    "raw": content, "cost": total_cost, "error": None,
+                    "attempts": attempts}
+        attempts.append({"model": m_, "status": "error",
+                         "error": "no parseable JSON", "cost": cost})
+        eprint(f"[convergence] {m_}: no parseable JSON; rotating.")
+        result = {"status": "error", "model": m_,
+                  "error": "specialist returned no parseable JSON",
+                  "cost": total_cost}
+    result["attempts"] = attempts
+    return result
 
 
 def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_tokens=None,
                 reasoning_effort="auto", reasoning_token_budget=0.4, task_id=None,
                 ledger=None, max_panelists=3, run_convergence=False,
-                convergence_model=None, claim_polarity=None,
+                convergence_model=None, specialist_pool=None, claim_polarity=None,
                 capability_profiles=None, report=None, free_tier=None):
     """Rotating panel of independent cheap takes + 1 structured judge verdict.
 
@@ -953,7 +1037,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             transport, api_key, governor, panel_results, spec_model,
             max_tokens=judge_max_tokens, reasoning_effort=reasoning_effort,
             reasoning_token_budget=reasoning_token_budget, ledger=ledger,
-            task_id=task_id)
+            task_id=task_id, fallback_pool=specialist_pool)
         spec["tally"] = convergence_tally
         # The deterministic tally owns structured convergence. Responder
         # agreement and merge-gate eligibility are separate signals: a short

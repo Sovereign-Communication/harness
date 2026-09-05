@@ -33,6 +33,11 @@ from .claims import (
     load_definitions_file, parse_claims,
 )
 from .config import load_settings, resolve_api_key
+
+
+def _split_opt_list(value):
+    """Parse a comma-separated CLI list into a clean list of model ids."""
+    return [x.strip() for x in (value or "").split(",") if x.strip()]
 from .core import (
     HarnessError, SpendGovernor, eprint, panel_judge, discover_free_models,
 )
@@ -66,7 +71,9 @@ def _governor(settings):
 def _router(settings):
     return Router(settings.panel, settings.judge, settings.apply_model,
                   settings.escalation_model, settings.allow_escalation,
-                  panel_pool=settings.panel_pool, apply_pool=settings.apply_pool)
+                  panel_pool=settings.panel_pool, apply_pool=settings.apply_pool,
+                  specialist_pool=settings.specialist_pool,
+                  convergence_model=settings.convergence_model)
 
 
 def _capability_context(settings, gov, ledger):
@@ -136,6 +143,7 @@ def _cmd_verify(opts, settings):
         panel = _order_pool(panel, profiles, report, ledger,
                             "structured" if opts.converge else "default",
                             settings.use_free)
+    router = _router(settings)
     result = panel_judge(
         transport=HttpTransport(), api_key=api_key, governor=gov, prompt=prompt,
         panel=panel,
@@ -147,6 +155,8 @@ def _cmd_verify(opts, settings):
         max_panelists=settings.max_panelists,
         run_convergence=opts.converge,
         convergence_model=opts.convergence_model or settings.convergence_model,
+        specialist_pool=(_split_opt_list(opts.specialist_pool) if opts.specialist_pool
+                         else router.specialist_pool),
         claim_polarity={cid.strip(): "reassurance" for cid in
                         (opts.reassurance_claims or "").split(",") if cid.strip()},
         capability_profiles=profiles, report=report, free_tier=settings.use_free)
@@ -468,7 +478,10 @@ def main(argv=None):
     pv.add_argument("--converge", action="store_true",
                     help="run the convergence-specialist step on the panel's per-claim verdicts")
     pv.add_argument("--convergence-model", default=None,
-                    help="model for the convergence specialist (default: same as --judge)")
+                    help="primary model for the convergence specialist (default: same as --judge)")
+    pv.add_argument("--specialist-pool", default=None,
+                    help="ordered fallback models for the convergence specialist, strongest "
+                         "first (default: configured specialist_pool; free lane leads with GLM-5.2)")
     pv.add_argument("--reassurance-claims", default=None,
                     help="comma-separated claim ids phrased as reassurance ('X is correct'); "
                          "excluded from the defect convergence gate")

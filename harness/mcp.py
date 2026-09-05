@@ -47,6 +47,9 @@ class McpServer:
                     "judge": {"type": "string", "description": "Judge model id. Defaults to configured judge."},
                     "max_tokens": {"type": "integer", "default": 300},
                     "reasoning_effort": {"type": "string", "enum": ["auto", "off", "none", "low", "medium", "high", "on"]},
+                    "converge": {"type": "boolean", "description": "Run the convergence specialist on per-claim votes (requires per-claim JSON panel output)"},
+                    "convergence_model": {"type": "string", "description": "Primary specialist model (default: judge)"},
+                    "specialist_pool": {"type": "string", "description": "Comma-separated specialist fallback ladder, strongest first (default: configured pool; free lane leads with GLM-5.2)"},
                     "task_id": {"type": "string"},
                 }, "required": ["prompt"]},
             },
@@ -233,6 +236,12 @@ class McpServer:
                 reasoning_token_budget=self.engine.reasoning_token_budget,
                 task_id=args.get("task_id"), ledger=self.ledger,
                 max_panelists=self.max_panelists,
+                run_convergence=bool(args.get("converge", False)),
+                convergence_model=(args.get("convergence_model")
+                                   or self.router.convergence_model),
+                specialist_pool=(args.get("specialist_pool").split(",")
+                                 if args.get("specialist_pool")
+                                 else self.router.specialist_pool),
                 capability_profiles=profiles, report=report, free_tier=self.use_free)
         if name == "apply_edit":
             # Reject ungated persisted state before capability/model setup, just
@@ -311,7 +320,9 @@ def main(argv=None):  # pragma: no cover - thin wiring
     ledger = AutonomyLedger(settings.ledger_path)
     router = Router(settings.panel, settings.judge, settings.apply_model,
                     settings.escalation_model, settings.allow_escalation,
-                    panel_pool=settings.panel_pool, apply_pool=settings.apply_pool)
+                    panel_pool=settings.panel_pool, apply_pool=settings.apply_pool,
+                    specialist_pool=settings.specialist_pool,
+                    convergence_model=settings.convergence_model)
     engine = ApplyEngine(transport, api_key, governor, ledger, router,
                          default_require_consent=settings.default_require_consent,
                          default_renew_consent=settings.renew_consent,

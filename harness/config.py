@@ -102,6 +102,18 @@ FREE_APPLY_POOL = [
     "openrouter/free",
 ]
 
+# Convergence-specialist fallback ladder, tried in order after the primary
+# (which defaults to the judge). GLM-5.2 is frontier-class and the strongest
+# free reasoner on the router, so it leads; gemma and minimax are the most
+# JSON-reliable free emitters behind it. The specialist rotates down this
+# ladder when the primary returns an HTTP error, a paid-BYOK route,
+# reasoning-only output, truncation, or unparseable JSON.
+SPECIALIST_POOL_FREE = [
+    "z-ai/glm-5.2:free",
+    "google/gemma-4-31b-it:free",
+    "minimax/minimax-m3:free",
+]
+
 # ---- Paid lanes (use_free=False) ----
 DEFAULT_PANEL_PAID = [
     "inclusionai/ling-2.6-flash",
@@ -111,12 +123,19 @@ DEFAULT_PANEL_PAID = [
 DEFAULT_JUDGE_PAID = "inclusionai/ling-2.6-flash"
 DEFAULT_APPLY_MODEL_PAID = "deepseek/deepseek-chat"
 
+# Paid-lane specialist fallbacks (after the primary): strong JSON emitters
+# first.
+SPECIALIST_POOL_PAID = [
+    "deepseek/deepseek-chat",
+]
+
 _ENV_NAMES = {
     "use_free": "HARNESS_USE_FREE",
     "panel": "HARNESS_PANEL",
     "panel_pool": "HARNESS_PANEL_POOL",
     "judge": "HARNESS_JUDGE",
     "convergence_model": "HARNESS_CONVERGENCE_MODEL",
+    "specialist_pool": "HARNESS_SPECIALIST_POOL",
     "apply_model": "HARNESS_APPLY_MODEL",
     "apply_pool": "HARNESS_APPLY_POOL",
     "escalation_model": "HARNESS_ESCALATION_MODEL",
@@ -182,8 +201,8 @@ def _dedup(seq):
 
 
 class Settings:
-    def __init__(self, use_free, panel, panel_pool, judge, convergence_model, apply_model,
-                 apply_pool, escalation_model, max_cost, task_max_cost, max_tokens,
+    def __init__(self, use_free, panel, panel_pool, judge, convergence_model, specialist_pool,
+                 apply_model, apply_pool, escalation_model, max_cost, task_max_cost, max_tokens,
                  apply_max_tokens, reasoning_effort, reasoning_token_budget,
                  max_panelists, max_rotations, renew_consent, ledger_path,
                  expect_key_label, default_require_consent, allow_escalation):
@@ -193,6 +212,9 @@ class Settings:
         self.judge = judge
         # Convergence specialist defaults to the same model as the judge.
         self.convergence_model = convergence_model or judge
+        # Ordered fallback ladder for the specialist: the primary is tried
+        # first, then these, strongest first.
+        self.specialist_pool = list(specialist_pool or [])
         self.apply_model = apply_model
         self.apply_pool = list(apply_pool)
         self.escalation_model = escalation_model
@@ -213,6 +235,7 @@ class Settings:
     def to_dict(self):
         return {k: getattr(self, k) for k in (
             "use_free", "panel", "panel_pool", "judge", "convergence_model",
+            "specialist_pool",
             "apply_model", "apply_pool", "escalation_model", "max_cost",
             "task_max_cost", "max_tokens", "apply_max_tokens",
             "reasoning_effort", "reasoning_token_budget", "max_panelists",
@@ -240,10 +263,12 @@ def load_settings(overrides=None):
         default_panel = FREE_PANEL_POOL
         default_judge = FREE_JUDGE
         default_apply_pool = FREE_APPLY_POOL
+        default_specialist_pool = SPECIALIST_POOL_FREE
     else:
         default_panel = DEFAULT_PANEL_PAID
         default_judge = DEFAULT_JUDGE_PAID
         default_apply_pool = [DEFAULT_APPLY_MODEL_PAID]
+        default_specialist_pool = SPECIALIST_POOL_PAID
 
     panel = _split_list(str(get("panel", ",".join(default_panel)))) or default_panel
     panel_pool = _split_list(str(get("panel_pool", ",".join(panel)))) or panel
@@ -257,6 +282,7 @@ def load_settings(overrides=None):
         panel_pool=panel_pool,
         judge=str(get("judge", default_judge)),
         convergence_model=get("convergence_model", None),
+        specialist_pool=_split_list(str(get("specialist_pool", ",".join(default_specialist_pool)))) or default_specialist_pool,
         apply_model=apply_model,
         apply_pool=apply_pool,
         escalation_model=get("escalation_model", None),
