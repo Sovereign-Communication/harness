@@ -6,7 +6,7 @@
 git clone <repo> && cd Harness
 pip install -e .
 pip install ruff        # lint (CI enforces it)
-python -m unittest discover -s tests   # 199 hermetic tests, no network needed
+python -m unittest discover -s tests   # hermetic tests, no network needed
 ```
 
 Python 3.9+; pure stdlib — the package has zero runtime dependencies.
