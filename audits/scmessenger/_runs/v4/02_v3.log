@@ -1,0 +1,53 @@
+[OK] using key 'sk-or-v1-361...a57', limit=$0.75, remaining=$0.749859 (resets: daily)
+[preflight] worst-case cost breakdown:
+  google/gemma-4-31b-it:free (panel attempt 1/3): $0.000000
+  google/gemma-4-31b-it:free (panel attempt 2/3): $0.000000
+  google/gemma-4-31b-it:free (panel attempt 3/3): $0.000000
+  openrouter/free (panel attempt 1/3): $0.000000
+  openrouter/free (panel attempt 2/3): $0.000000
+  openrouter/free (panel attempt 3/3): $0.000000
+  cohere/north-mini-code:free (panel attempt 1/3): $0.000000
+  cohere/north-mini-code:free (panel attempt 2/3): $0.000000
+  cohere/north-mini-code:free (panel attempt 3/3): $0.000000
+  minimax/minimax-m3:free (panel attempt 1/3): $0.000000
+  minimax/minimax-m3:free (panel attempt 2/3): $0.000000
+  minimax/minimax-m3:free (panel attempt 3/3): $0.000000
+  nvidia/nemotron-3-super-120b-a12b:free (panel attempt 1/3): $0.000000
+  nvidia/nemotron-3-super-120b-a12b:free (panel attempt 2/3): $0.000000
+  nvidia/nemotron-3-super-120b-a12b:free (panel attempt 3/3): $0.000000
+  inclusionai/ling-3.0-flash-fin:free (panel attempt 1/3): $0.000000
+  inclusionai/ling-3.0-flash-fin:free (panel attempt 2/3): $0.000000
+  inclusionai/ling-3.0-flash-fin:free (panel attempt 3/3): $0.000000
+  z-ai/glm-5.2:free (panel attempt 1/6): $0.000000
+  z-ai/glm-5.2:free (panel attempt 2/6): $0.000000
+  z-ai/glm-5.2:free (panel attempt 3/6): $0.000000
+  z-ai/glm-5.2:free (panel attempt 4/6): $0.000000
+  z-ai/glm-5.2:free (panel attempt 5/6): $0.000000
+  z-ai/glm-5.2:free (panel attempt 6/6): $0.000000
+  google/gemma-4-31b-it:free (judge attempt 1/1): $0.000000
+  google/gemma-4-31b-it:free (convergence attempt 1/1): $0.000000
+[preflight] TOTAL worst-case: $0.000000 (ceiling: $0.020000)
+[panel] calling google/gemma-4-31b-it:free ...
+[panel] calling openrouter/free ...
+[panel] calling cohere/north-mini-code:free ...
+[panel] google/gemma-4-31b-it:free returned empty output -- rotating to next model.
+[panel] calling minimax/minimax-m3:free ...
+[panel] minimax/minimax-m3:free: cost=$0.000000, finish_reason=stop, 17.9s
+[panel] openrouter/free: cost=$0.000000, finish_reason=length, 68.7s
+[panel] openrouter/free returned malformed/missing claim JSON -- rotating.
+[panel] calling nvidia/nemotron-3-super-120b-a12b:free ...
+[panel] cohere/north-mini-code:free: cost=$0.000000, finish_reason=length, 82.4s
+[panel] cohere/north-mini-code:free returned malformed/missing claim JSON -- rotating.
+[panel] calling inclusionai/ling-3.0-flash-fin:free ...
+[panel] inclusionai/ling-3.0-flash-fin:free: cost=$0.000000, finish_reason=length, 10.7s
+[panel] inclusionai/ling-3.0-flash-fin:free returned malformed/missing claim JSON -- rotating.
+[panel] calling z-ai/glm-5.2:free ...
+[retry] z-ai/glm-5.2:free rejected reasoning param; retrying without it.
+[panel] z-ai/glm-5.2:free: cost=$0.000000, finish_reason=stop, 10.0s
+[panel] nvidia/nemotron-3-super-120b-a12b:free: cost=$0.000000, finish_reason=length, 149.8s
+[panel] nvidia/nemotron-3-super-120b-a12b:free returned malformed/missing claim JSON -- rotating.
+[judge] calling google/gemma-4-31b-it:free ...
+[judge] synthesis status: unparseable
+
+[TOTAL] actual cost this run: $0.000000 (ceiling: $0.020000)
+[OK] result written to audits/scmessenger/_runs/v4/02_v3.json
