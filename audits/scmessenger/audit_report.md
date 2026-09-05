@@ -187,3 +187,71 @@ $0.00 again, with parallel panel fan-out (~3x) and bounded 429 backoff
 judge gemma was parsed on all 9 runs (1.00) versus north-mini's 0.73 R3 rate,
 and defers are now single-claim clarifications rather than inconclusive blobs —
 the intended trajectory.
+
+---
+
+## SCMessenger progression across audit rounds (2026-09-02 → 2026-09-05)
+
+Built entirely from stored evidence: `_runs/` JSONs (38 historical runs +
+9 v4 runs), the round-1/2/3 report sections above, and `CTO_REVIEW.md`'s
+call-site-verified severity table. No live audit was re-run for this section.
+**SCMessenger source fact:** the audited files (`core/src/{crypto,identity,
+message,privacy}`) have had **zero commits since 2026-08-25** (last touch
+`13d30fd2`) — every verdict change between rounds is a change in *audit
+measurement*, not in the code under audit.
+
+### Verdict trajectory per finding (R1 sentiment → analyst-verified → R4 deterministic)
+
+| # | Finding | R1 severity | Post-reachability (analyst) | R4 panel verdict |
+|---|---|---|---|---|
+| 1 | `verify_bundle` ML-DSA downgrade | CRITICAL | MEDIUM (reframed — verification unwired, 0 prod callers) | **defect real 3/3 unanimous (0.997)** — code-level claim confirmed; severity stays MEDIUM per unwired call graph |
+| 2 | `safety_number` biased fingerprint | HIGH | MEDIUM (live in apps) | **defect real 3/3 unanimous (0.99)** — modulo bias + dropped hash tail reproduce exactly |
+| 3 | `Ratchet::decrypt` gap/cache DoS | HIGH | LOW (retracted — caps exist, sender-only) | **⚠ discrepancy:** R4 panel votes c1/c2 "real" 3/3, directly contradicting the analyst retraction. Needs one clarification pass (claim text vs `MAX_SKIP_KEYS` constant) before either verdict is trusted |
+| 4 | `decode_wire` unbounded bincode | HIGH | **HIGH (stands, pre-auth reachable)** | **real 3/3 unanimous (0.917)** — the single highest-priority open item, confirmed across every round |
+| 5 | `decrypt_v2` PQ-stripping window | HIGH | LOW (one-message window, signature-bound, unwired) | real 2/2 (0.675) — code claim holds, severity consensus LOW |
+| 6 | `Ratchet::encrypt` underflow | MED-HIGH | LOW (retracted — index always ≥ 1) | panel splits c1 2R/1NR — consistent with retraction; no new evidence |
+| 7 | `negotiate_suite` downgrade/0xFF | MEDIUM | LOW (latent, hybrid unwired) | c1/c4/c5 real 3/3 — code claims confirmed, latency-mitigated |
+| 8 | `peel_layer` destination oracle | MEDIUM | **MEDIUM (stands, pre-auth relay ingress)** | c1 real 2/2 (0.98) — open, confirmed |
+| 9 | `construct_onion` | CLEAR | CLEAR | **5/5 not_real, identical across rounds** — the audit reproduces a clean bill under three different judge configurations |
+
+### Convergence / deferral / shortfall trends
+
+- **R1:** judge-sentiment only; 4 of 9 functions `agree=unknown` (judge returned
+  nothing parseable) and 3 defers. The "unknown" outcomes were *shortfalls
+  mislabeled as absence of opinion* — the CEO handoff bug in its raw form.
+- **R2–R3 (rotation + consensus rounds):** participation improved
+  (`unknown` → 0 across all converged runs), but judge prose remained the
+  verdict; confidence values (0.85–0.97) did not distinguish panel unanimity
+  from judge verbosity.
+- **R4:** deterministic claim tally. Shortfall is now an explicit, separate
+  field (runs 02, 07: `panel_shortfall=true`, 2/3) and every defer names the
+  exact split claim. First round where a 3/3 vote means 3/3.
+
+### Fixed vs still open (as of 2026-09-05)
+
+**Fixed/resolved in the audit record (not in SCMessenger code — none of the
+audited files have changed since 2026-08-25):** #6 underflow retracted;
+#3 gap-DoS downgraded LOW (but see the R4 discrepancy above); #5 PQ-window
+downgraded LOW; #1 reframed to MEDIUM/unwired; #7 latent.
+**Still open, confirmed live by R4:** #4 bincode DoS (HIGH, pre-auth — the
+priority fix), #8 peel_layer destination oracle (MEDIUM), #2 safety_number
+entropy defects (MEDIUM, user-facing). **Decision needed:** #1/#5/#7 bundle-
+and-hybrid policy before any wiring work ships the downgrade/freshness gaps.
+
+### Explicit verdict: did SCMessenger's verified posture improve?
+
+**Mixed, trending improved — with one honest caveat.**
+- *Improved:* every severity call now rests on unanimous, claim-level,
+  reproducible panel evidence instead of single-judge prose; the top open
+  item (#4) is confirmed by 3/3 across rounds; one function (#9) demonstrates
+  the audit clears clean code consistently. Confidence is now earned, not
+  asserted.
+- *Regressed (measurement, not code):* R4 surfaced a genuine **contradiction
+  with the analyst retraction on #3** — the panel votes the gap/cache claims
+  real while the reachability pass retracted them. Until that single claim is
+  reconciled (constant-level check against `MAX_SKIP_KEYS` in the live file),
+  #3's standing severity is *disputed*, not LOW.
+- *Unchanged (the code itself):* SCMessenger's audited surface is byte-stable
+  since 2026-08-25; its true security posture moves only when engineering acts
+  on #4, #8, and #2. The audit's job — making those impossible to ignore — is
+  measurably better at it each round.
