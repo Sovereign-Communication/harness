@@ -12,7 +12,9 @@ import json
 import os
 import sys
 import threading
+import time
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from .errors import HarnessError
 
@@ -23,6 +25,10 @@ def _canon(entry):
 
 LEDGER_MAX_BYTES = 10 * 1024 * 1024  # rotate the JSONL at 10 MB
 LEDGER_KEEP_ROTATIONS = 3
+# Contended-append retry budget: an append holds the lock for well under a
+# millisecond, so 100 x 20ms only ever trips if a peer process is wedged.
+_LOCK_ATTEMPTS = 100
+_LOCK_RETRY_SECONDS = 0.02
 
 
 class AutonomyLedger:
@@ -32,98 +38,99 @@ class AutonomyLedger:
         self._tail = []
         self._seq = 0
         self._prev_hash = None
+        self._segmented = False
         # Count of corrupt/torn lines skipped at load (audit #8b: must exist
         # as a real attribute on every instance, clean load included).
         self.quarantined = 0
         self._load()
 
-    def _acquire_process_lock(self):
-        """Cross-process advisory lock so two harness processes cannot append
-        interleaved entries (which would corrupt the hash chain). Best-effort:
-        degrade to thread-lock-only behavior where locking is unsupported or
-        the lock file is unwritable."""
+    def _rotated_paths(self):
+        """Return retained ledger segments oldest-first, excluding the active
+        file. Segment names are deliberately opaque to callers; the active
+        file is always the final segment."""
+        directory = os.path.dirname(self.path) or "."
+        prefix = os.path.basename(self.path) + "."
         try:
-            directory = os.path.dirname(self._lockfile)
-            if directory:
-                os.makedirs(directory, exist_ok=True)
-            fh = open(self._lockfile, "a+b")
+            names = sorted(fn for fn in os.listdir(directory) if fn.startswith(prefix)
+                           and not fn.endswith(".lock") and not fn.endswith(".repair.tmp"))
         except OSError:
-            return
-        try:
-            try:
-                import msvcrt
-                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
-            except ImportError:
-                try:
-                    import fcntl
-                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except ImportError:
-                    fh.close()
-                    return
-        except OSError:
-            fh.close()
-            raise HarnessError(
-                f"ledger {self.path} is locked by another harness process")
-        self._lockfh = fh
+            names = []
+        return [os.path.join(directory, fn) for fn in names]
+
+    def _ledger_paths(self):
+        return self._rotated_paths() + ([self.path] if os.path.exists(self.path) else [])
 
     def _rotate_if_needed(self):
-        """Rotate the JSONL when it outgrows LEDGER_MAX_BYTES; keep a bounded
-        number of rotations so evidence survives but disk does not fill."""
+        """Rotate the JSONL when it outgrows LEDGER_MAX_BYTES.
+
+        Rotation is a segment operation, not a chain reset: verification and
+        rebasing read retained segments oldest-first. A unique suffix avoids a
+        same-second rotation overwriting evidence. Retention is explicit and
+        bounded; operators needing a complete archive must copy segments out.
+        """
         try:
             size = os.path.getsize(self.path)
         except OSError:
             return
         if size < LEDGER_MAX_BYTES:
             return
-        rotated = "{}.{}".format(
-            self.path, datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S"))
         directory = os.path.dirname(self.path) or "."
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%f")
+        rotated = f"{self.path}.{stamp}"
         try:
             os.replace(self.path, rotated)
         except OSError:
             return
-        prefix = os.path.basename(self.path) + "."
-        rotations = sorted(fn for fn in os.listdir(directory) if fn.startswith(prefix))
-        for fn in rotations[:-LEDGER_KEEP_ROTATIONS]:
+        rotations = self._rotated_paths()
+        for old in rotations[:-LEDGER_KEEP_ROTATIONS]:
             try:
-                os.unlink(os.path.join(directory, fn))
+                os.unlink(old)
             except OSError:
                 pass
+        self._segmented = bool(self._rotated_paths())
 
-    def _persist(self, line):
-        """Append one canonical line under a short-lived cross-process lock.
+    @contextmanager
+    def _file_lock(self):
+        """Cross-process append lock with bounded retry.
 
-        The lock handle is opened, locked, used, and closed within this
-        call -- nothing is held across the ledger lifetime, so the lock
-        never blocks temp-dir cleanup on Windows, and two harness
-        processes can never interleave appends and corrupt the chain."""
+        Playtest finding: two harness processes running in parallel crashed
+        each other with 'ledger is busy' on the first contended append -- the
+        acquisition was try-once. Appends are sub-millisecond, so a short
+        retry budget absorbs real contention without ever silently skipping
+        an append (fail closed after the budget, never before)."""
         directory = os.path.dirname(self.path)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        self._rotate_if_needed()
         lf = None
         try:
             lf = open(self.path + '.lock', 'a+b')
         except OSError:
             lf = None  # lock file unwritable: degrade to thread-lock-only
         if lf is not None:
+            locked = False
             try:
-                try:
-                    import msvcrt
-                    lf.seek(0)
-                    msvcrt.locking(lf.fileno(), msvcrt.LK_NBLCK, 1)
-                except ImportError:
-                    import fcntl
-                    fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-            except OSError:
-                lf.close()
+                for _ in range(_LOCK_ATTEMPTS):
+                    try:
+                        try:
+                            import msvcrt
+                            lf.seek(0)
+                            msvcrt.locking(lf.fileno(), msvcrt.LK_NBLCK, 1)
+                        except ImportError:
+                            import fcntl
+                            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+                        locked = True
+                        break
+                    except OSError:
+                        time.sleep(_LOCK_RETRY_SECONDS)
+            finally:
+                if not locked:
+                    lf.close()
+            if not locked:
                 raise HarnessError(
-                    f'ledger {self.path} is busy: another harness process holds the lock')
+                    f'ledger {self.path} is busy: another harness process '
+                    f'held the lock for over {_LOCK_ATTEMPTS * _LOCK_RETRY_SECONDS:.0f}s')
         try:
-            with open(self.path, 'a', encoding='utf-8') as f:
-                f.write(line + chr(10))
-                f.flush()
-                os.fsync(f.fileno())  # torn-line resistance: never lose the tail
+            yield
         finally:
             if lf is not None:
                 try:
@@ -138,29 +145,76 @@ class AutonomyLedger:
                     pass
                 lf.close()
 
+    def _persist(self, line):
+        """Append one canonical line (caller holds the file lock)."""
+        with open(self.path, 'a', encoding='utf-8') as f:
+            f.write(line + chr(10))
+            f.flush()
+            os.fsync(f.fileno())  # torn-line resistance: never lose the tail
+
     def _load(self):
-        if not os.path.exists(self.path):
-            return
-        with open(self.path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    if not isinstance(entry, dict) or "seq" not in entry or "hash" not in entry:
-                        raise ValueError("entry missing seq/hash")
-                except (ValueError, TypeError):
-                    # The evidence chain must stay readable even if a crash
-                    # left a torn trailing line: quarantine the damage, keep
-                    # the intact prefix, and never crash on load.
-                    self.quarantined = getattr(self, "quarantined", 0) + 1
-                    print(f"[ledger] corrupt line quarantined in {self.path}; "
-                          "run `harness ledger verify` for status.", file=sys.stderr)
-                    continue
-                self._tail.append(entry)
-                self._seq = entry["seq"]
-                self._prev_hash = entry["hash"]
+        paths = self._ledger_paths()
+        self._segmented = len(paths) > 1 or bool(self._rotated_paths())
+        for source_path in paths:
+            with open(source_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        if (not isinstance(entry, dict) or "seq" not in entry
+                                or "hash" not in entry):
+                            raise ValueError("entry missing seq/hash")
+                    except (ValueError, TypeError):
+                        # The evidence chain must stay readable even if a crash
+                        # left a torn trailing line: quarantine the damage, keep
+                        # the intact prefix, and never crash on load.
+                        self.quarantined = getattr(self, "quarantined", 0) + 1
+                        print(f"[ledger] corrupt line quarantined in {source_path}; "
+                              "run `harness ledger verify` for status.", file=sys.stderr)
+                        continue
+                    self._tail.append(entry)
+                    self._seq = entry["seq"]
+                    self._prev_hash = entry["hash"]
+
+    def _rebase_under_lock(self):
+        """Re-read the file under the append lock and advance this instance
+        past any events other processes wrote since our load.
+
+        The append lock serializes *writes*, not *chain state*: without this
+        rebase, two harness processes that loaded the ledger together both
+        append from the same prev_hash and fork the chain at the second
+        line (observed live as duplicate seq 812-814 from a parallel bench
+        run). Cost: one small file read per append; appends are already
+        fsync-bound.
+        """
+        last_seq = self._tail[-1]["seq"] if self._tail else 0
+        last_hash = self._tail[-1]["hash"] if self._tail else None
+        # Read every retained segment under the append lock. This is required
+        # after rotation: the active file alone is only the newest segment.
+        for source_path in self._ledger_paths():
+            try:
+                with open(source_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                            if (not isinstance(entry, dict) or "seq" not in entry
+                                    or "hash" not in entry):
+                                raise ValueError("entry missing seq/hash")
+                        except (ValueError, TypeError):
+                            continue  # torn line: quarantine policy applies at next load
+                        if entry["seq"] > last_seq:
+                            self._tail.append(entry)
+                            last_seq = entry["seq"]
+                            last_hash = entry["hash"]
+            except OSError:
+                continue
+        self._seq = last_seq
+        self._prev_hash = last_hash
 
     def append(self, event, task_id=None, **fields):
         entry = {
@@ -174,13 +228,24 @@ class AutonomyLedger:
         body = dict(entry)
         body["hash"] = hashlib.sha256(_canon(body).encode("utf-8")).hexdigest()
         with self._lock:
-            self._tail.append(body)
-            self._seq = body["seq"]
-            self._prev_hash = body["hash"]
-            directory = os.path.dirname(self.path)
-            if directory:
-                os.makedirs(directory, exist_ok=True)
-            self._persist(_canon(body))
+            with self._file_lock():
+                # Rebase AFTER the file lock is held: rebasing before it
+                # raced another process's append between the read and the
+                # lock, which is exactly the fork the rebase exists to
+                # prevent.
+                self._rebase_under_lock()
+                body.pop("hash", None)  # recompute over the rebased seq/prev_hash only
+                body["seq"] = self._seq + 1
+                body["prev_hash"] = self._prev_hash
+                body["hash"] = hashlib.sha256(_canon(body).encode("utf-8")).hexdigest()
+                self._tail.append(body)
+                self._seq = body["seq"]
+                self._prev_hash = body["hash"]
+                # Persist first. Rotating before this write would move the
+                # old file away and leave the new active segment containing a
+                # line whose predecessor is not loaded by a fresh instance.
+                self._persist(_canon(body))
+                self._rotate_if_needed()
         return body
 
     def entries(self):
@@ -189,18 +254,64 @@ class AutonomyLedger:
     def tail(self, n=20):
         return self._tail[-n:]
 
-    def verify(self):
-        """Recompute the hash chain. Returns (ok, first_bad_seq_or_None)."""
+    def _valid_prefix_len(self):
+        """Length of the longest valid hash-chain prefix. ONE walk, consumed
+        by both verify() and repair() so the two can never disagree about
+        what 'valid' means."""
         prev = None
-        for e in self._tail:
+        for i, e in enumerate(self._tail):
             body = {k: v for k, v in e.items() if k != "hash"}
-            if body.get("prev_hash") != prev:
-                return False, e["seq"]
+            # If old segments were pruned, the first retained entry has an
+            # unverifiable predecessor. Accept that one external anchor, but
+            # validate every link and hash after it. An unsegmented ledger still
+            # requires the normal genesis prev_hash=None check.
+            if i == 0 and self._segmented and body.get("prev_hash") is not None:
+                prev = body.get("prev_hash")
+            elif body.get("prev_hash") != prev:
+                return i
             calc = hashlib.sha256(_canon(body).encode("utf-8")).hexdigest()
             if calc != e["hash"]:
-                return False, e["seq"]
+                return i
             prev = e["hash"]
-        return True, None
+        return len(self._tail)
+
+    def verify(self):
+        """Recompute the hash chain. Returns (ok, first_bad_seq_or_None)."""
+        n = self._valid_prefix_len()
+        if n == len(self._tail):
+            return True, None
+        return False, self._tail[n]["seq"]
+
+    def repair(self):
+        """Rewrite retained evidence to one active segment at its valid prefix.
+
+        Repair is intentionally destructive to the invalid tail and to segment
+        boundaries, so callers should archive the ledger directory first. A
+        single rebuilt file avoids leaving a repaired active segment chained to
+        a deleted/corrupt archive segment.
+        """
+        with self._lock:
+            with self._file_lock():
+                kept = self._tail[:self._valid_prefix_len()]
+                dropped = len(self._tail) - len(kept)
+                if dropped or self._rotated_paths():
+                    tmp = self.path + ".repair.tmp"
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        for e in kept:
+                            f.write(_canon(e) + chr(10))
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp, self.path)
+                    for segment in self._rotated_paths():
+                        try:
+                            os.unlink(segment)
+                        except OSError:
+                            pass
+                    self._tail = kept
+                    self._seq = kept[-1]["seq"] if kept else 0
+                    self._prev_hash = kept[-1]["hash"] if kept else None
+                    self._segmented = False
+        return len(kept), dropped
 
     def participation_report(self):
         events = self._tail
@@ -258,6 +369,15 @@ class AutonomyLedger:
             elif ev == "consent_redirect":
                 m_ = ms(e.get("model"))
                 m_["redirects"] = m_.get("redirects", 0) + 1
+            elif ev == "consent_rotate":
+                # Consent-unusable evidence: this model emitted an HTTP 200
+                # answer the consent parser could not use (empty, reasoning-
+                # only, unparseable). Tier faults (HTTP 429/401) are recoverable
+                # rotation, not a model fault -- excluded, same rationale as the
+                # apply lane's unusable_outputs.
+                if not str(e.get("reason") or "").startswith("HTTP"):
+                    stats = model_stats.setdefault(e.get("model"), {})
+                    stats["consent_unusable"] = stats.get("consent_unusable", 0) + 1
             elif ev == "complete":
                 m_ = ms(e.get("model"))
                 m_["completions"] = m_.get("completions", 0) + 1
@@ -348,6 +468,14 @@ class AutonomyLedger:
                 model_events[m_] += 1
                 if e.get("json_expected"):
                     json_events[m_] += 1
+                # Unusable-output evidence (reasoning-only demotion): the
+                # apply engine's protocol-condition failure -- HTTP 200 but
+                # no usable content (the reasoning-only fallback). Per-model,
+                # unlike a 429, which is recoverable rotation.
+                if e.get("status") == "error" and \
+                        "no usable content" in str(e.get("reason") or ""):
+                    stats = model_stats.setdefault(m_, {})
+                    stats["unusable_outputs"] = stats.get("unusable_outputs", 0) + 1
                 # The live known-answer capability probe records `correct`; use
                 # it as structured-task ground truth rather than pretending a
                 # JSON-shaped but incorrect answer was a success.
@@ -357,7 +485,8 @@ class AutonomyLedger:
         calibration = {}
         all_pass = all_fail = 0
         all_models = set(list(confident_readiness) + list(verify_hits) +
-                         list(defer_count) + list(task_outcome) + list(model_events))
+                         list(defer_count) + list(task_outcome) + list(model_events) +
+                         list(model_stats))
         for m_ in all_models:
             passes = verify_hits[m_]["pass"]
             fails = verify_hits[m_]["fail"]
@@ -383,6 +512,8 @@ class AutonomyLedger:
                                         structured_outcome[m_]["fail"]),
                 "json_samples": json_events[m_],
                 "samples": model_events[m_],
+                "unusable_outputs": model_stats.get(m_, {}).get("unusable_outputs", 0),
+                "consent_unusable": model_stats.get(m_, {}).get("consent_unusable", 0),
             }
         report["calibration"] = calibration
         denom = all_pass + all_fail

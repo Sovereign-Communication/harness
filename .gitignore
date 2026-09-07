@@ -6,7 +6,8 @@ dist/
 .harness-backups/
 *.orig
 .freebuff/
+audits/*/prompts/
+audits/*/_runs/
+audits/self/_runs/
 audits/scmessenger/_runs/
-audits/scmessenger/prompts/
-
 .env

@@ -18,8 +18,9 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from harness.claims import (  # noqa: E402
-    Claim, build_claims_prompt, is_absence_styled, is_load_bearing,
-    lint_claims, load_claims_manifest, normalize_definitions, parse_claims,
+    Claim, build_claims_prompt, curate_claims_from_ledger, is_absence_styled,
+    is_load_bearing, lint_claims, load_claims_manifest, normalize_definitions,
+    parse_claims,
 )
 from harness.cli import main as cli_main  # noqa: E402
 
@@ -292,6 +293,138 @@ class CliTests(unittest.TestCase):
             data = json.loads(out)
             self.assertEqual(data["status"], "rejected")
             self.assertFalse(data["lint"]["ok"])
+
+
+class CurateFromLedgerTests(unittest.TestCase):
+    """dogfood --from-ledger: the ledger's own evidence seeds the self-audit."""
+
+    def _e(self, event, **kw):
+        return dict(event=event, **kw)
+
+    def _entries(self):
+        # 1: rule 1 fires (model 'm/model-a:free' fail-closed twice).
+        # 2: rule 2 fires (model 'm/model-b:free' unusable three times).
+        # 3: rule 3 fires (5 rate-limited attempts).
+        # The noise entries (consent_accept, ok results, verify rounds) must
+        # be ignored by every rule.
+        return [
+            self._e("dispatch_start", task_id="t1", model="m/model-a:free"),
+            self._e("dispatch_start", task_id="t2", model="m/model-a:free"),
+            self._e("abort", task_id="t1", model="m/model-a:free",
+                    reason="verify rounds exhausted"),
+            self._e("abort", task_id="t2", model="m/model-a:free",
+                    reason="verify rounds exhausted"),
+            self._e("abort", task_id="t3", model="m/other:free",
+                    reason="verify rounds exhausted"),  # once: below threshold
+            self._e("model_result", status="error", model="m/model-b:free",
+                    reason="no usable content"),
+            self._e("model_result", status="error", model="m/model-b:free",
+                    reason="no usable content"),
+            self._e("model_result", status="error", model="m/model-b:free",
+                    reason="no usable content"),
+            self._e("model_result", status="error", model="m/model-c:free",
+                    reason="no usable content"),  # once: below threshold
+            self._e("model_result", status="error", model="m/model-d:free",
+                    error="HTTP 429: Rate limit exceeded: free-models-per-day"),
+            self._e("model_result", status="error", model="m/model-e:free",
+                    http_status=429),
+            self._e("model_result", status="error", model="m/model-f:free",
+                    http_status=429),
+            self._e("model_result", status="error", model="m/model-g:free",
+                    http_status=429),
+            self._e("model_result", status="error", model="m/model-h:free",
+                    http_status=429),
+            self._e("consent_accept", task_id="t1", model="m/judge:free"),
+            self._e("model_result", status="ok", model="m/model-a:free",
+                    cost=0.0001),
+        ]
+
+    def test_rules_fire_ranked_and_deterministic(self):
+        manifest, ev = curate_claims_from_ledger(self._entries())
+        texts = [c["text"] for c in manifest["claims"]]
+        self.assertEqual(len(texts), 3, "one claim per fired rule")
+        self.assertIn("m/model-a:free", texts[0])
+        self.assertIn("verification rounds exhausted", texts[0])
+        self.assertIn("m/model-b:free", texts[1])
+        self.assertIn("no usable content", texts[1])
+        self.assertIn("HTTP 429", texts[2])
+        # Determinism: same entries -> identical manifest (self-hosting runs
+        # must audit a fixed target).
+        again, _ = curate_claims_from_ledger(self._entries())
+        self.assertEqual(again, manifest)
+        self.assertEqual(ev["curated_claims"], 3)
+        self.assertEqual(ev["rate_limited_attempts"], 5)
+
+    def test_below_thresholds_and_noise_yield_nothing(self):
+        manifest, ev = curate_claims_from_ledger([
+            self._e("abort", task_id="t1", model="m/a:free",
+                    reason="verify rounds exhausted"),
+            self._e("model_result", status="ok", model="m/a:free"),
+            self._e("consent_accept", task_id="t1", model="m/judge:free"),
+        ])
+        self.assertEqual(manifest["claims"], [])
+        self.assertEqual(ev["curated_claims"], 0)
+
+    def test_window_limits_scan(self):
+        entries = self._entries()  # 429 evidence sits at indices 9..13
+        # A window over the head keeps rules 1-2 but never sees the 429s.
+        head, ev = curate_claims_from_ledger(entries[:9])
+        head_texts = " ".join(c["text"] for c in head["claims"])
+        self.assertNotIn("HTTP 429", head_texts)
+        self.assertIn("verification rounds exhausted", head_texts)
+        # A tight window over the tail sees only the rate-limit evidence.
+        tail, ev = curate_claims_from_ledger(entries, window=6)
+        tail_texts = " ".join(c["text"] for c in tail["claims"])
+        self.assertIn("HTTP 429", tail_texts)
+        self.assertNotIn("verification rounds exhausted", tail_texts)
+        self.assertEqual(ev["entries_scanned"], 6)
+
+    def test_max_claims_caps_ranked_output(self):
+        manifest, ev = curate_claims_from_ledger(self._entries(), max_claims=2)
+        self.assertEqual(len(manifest["claims"]), 2)
+        self.assertEqual(ev["curated_claims"], 2)
+
+    def test_curated_manifest_passes_the_ground_gate(self):
+        """The true hermetic contract: the curated manifest + the evidence
+        window (exactly what --from-ledger feeds the ground phase) lints OK,
+        so a curated self-audit can never die before the paid verify phase
+        on a phrasing technicality."""
+        entries = self._entries()
+        manifest, evidence = curate_claims_from_ledger(entries)
+        quoted = json.dumps(evidence, indent=2)
+        ctx, claims = parse_claims(manifest)
+        prompt, report = build_claims_prompt(claims, quoted, context=ctx)
+        self.assertTrue(report["ok"],
+                        "curated fixture must pass the ground lint: "
+                        + json.dumps(report["issues"])[:300])
+
+
+class CurateWiringTests(unittest.TestCase):
+    """dogfood --from-ledger writes a manifest --claims-out accepts, without
+    touching the live key (curation is ledger-only)."""
+
+    def test_curated_manifest_round_trips_through_the_lint(self):
+        from harness.claims import curate_claims_from_ledger
+        entries = [
+            {"event": "abort", "task_id": "t1", "model": "m/a:free",
+             "reason": "verify rounds exhausted"},
+            {"event": "abort", "task_id": "t2", "model": "m/a:free",
+             "reason": "verify rounds exhausted"},
+            {"event": "model_result", "status": "error", "model": "m/b:free",
+             "reason": "no usable content"},
+            {"event": "model_result", "status": "error", "model": "m/b:free",
+             "reason": "no usable content"},
+            {"event": "model_result", "status": "error", "model": "m/b:free",
+             "reason": "no usable content"},
+        ]
+        manifest, _ = curate_claims_from_ledger(entries)
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "curated.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(manifest, f)
+            ctx, claims = load_claims_manifest(path)
+            self.assertEqual(len(claims), 2)
+            self.assertTrue(ctx and "ledger" in ctx)
 
 
 if __name__ == "__main__":

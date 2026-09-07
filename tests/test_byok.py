@@ -2,7 +2,8 @@ import os
 import tempfile
 import unittest
 
-from harness.core import SpendGovernor, panel_judge
+from harness.spend import SpendGovernor
+from harness.panel import panel_judge
 from tests._fake import FakeTransport, m, comp
 
 JUDGE = "inclusionai/ling-2.6-flash"

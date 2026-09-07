@@ -1,5 +1,10 @@
 # Harness
 
+> Early public release: suitable for expert interactive use, but not a sandbox
+> for untrusted verification commands. Model agreement is advisory; a real
+> verification gate is the authority for code changes. See
+> [docs/security.md](docs/security.md) and [docs/mcp.md](docs/mcp.md).
+
 **Cost-bounded multi-model verification & coding — with AI sovereignty.**
 
 Pure Python stdlib, **zero runtime dependencies**. One core, three faces: a
@@ -26,7 +31,21 @@ and deferring instead of failing. On top of FusionLite's engine it adds:
 4. **Unified MorphLite path** — `apply --backend morph` uses Morph V3 Fast's
    `<instruction>/<code>/<update>` contract inside the same spend governor,
    consent, rotation, continuation, and verification engine. `--verify-only`
-   returns a proposal without writing the target or running a gate.
+   returns a proposal without writing the target or running a gate. Preview
+   results are honest about that: a preview that exhausts its rounds reports
+   `status: "preview_exhausted"` with `verify.passed: null` and
+   `"gate_ran": false` (the gate never ran in preview mode), while a gated
+   run reports `verify_failed` with the gate's real output and `"gate_ran":
+   true`.
+
+   Multi-file edits (`--file` × N) always return the **batch envelope**:
+   `"batch": true` with a `results` list (one result per file, task-suffixed
+   ids like `task-1`, `task-2`), a `statuses` tally, the summed `cost`, and a
+   `verify` block whose `passed` is derived from the last file's actual gate
+   verdict — including when the batch fails fast on file 1 (a bare single
+   result there would make a batch death indistinguishable from a one-file
+   run). A single-file run returns the bare result shape; exit codes follow
+   the terminal status.
 
 ## Why this exists
 
@@ -57,7 +76,7 @@ that and its hard guarantees:
 ## Install & configure
 
 ```bash
-pip install sovereign-harness   # from PyPI, once published
+pip install sovereign-harness   # when using the published package
 #   ...or from a checkout:
 pip install -e .          # installs `harness`, `harness-mcp`
 
@@ -65,6 +84,21 @@ pip install -e .          # installs `harness`, `harness-mcp`
 #   ~/.config/scmorc/openrouter_fusion.env
 #   ~/.config/scmorc/openrouter.env
 #   ~/.config/harness/openrouter.env
+```
+
+For MCP, configure `mcp_allowed_roots` and deliberate write/verify authorization;
+see [docs/mcp.md](docs/mcp.md). Runtime verification commands execute with host
+privileges even though Harness uses `shell=False`.
+
+If the console scripts are not found after installing (`harness: command
+not found`), the install still succeeded — pip may have placed them in a
+directory that is not on your `PATH` (pip warns about this). Either add
+`python -m site --user-base`'s `Scripts` (Windows) / `bin` (POSIX) directory
+to `PATH`, or invoke the package directly:
+
+```bash
+python -m harness.cli      # the CLI, identical surface to `harness`
+python -m harness.mcp      # the MCP stdio server, same as `harness-mcp`
 ```
 
 Free tier is on by default. Config lives in `~/.config/harness/config.json`
@@ -76,7 +110,7 @@ with `HARNESS_*` env overrides:
 | `panel` / `panel_pool` | curated free list | Ordered panel pool; failing members rotate |
 | `judge` | `google/gemma-4-31b-it:free` | JSON-reliable judge (best live track record) |
 | `convergence_model` | (same as `judge`) | Primary convergence-specialist model for `--converge` |
-| `specialist_pool` | free: GLM-5.2, gemma, minimax | Ordered specialist fallback ladder, strongest first |
+| `specialist_pool` | free: minimax, gemma-4-31b, gemma-4-26b | Ordered specialist fallback ladder, strongest observed first |
 | `apply_model` / `apply_pool` | free code-first pool | Ordered apply pool; rotates on error |
 | `reasoning_effort` | `auto` | `auto`/`off`/`none`/`low`/`medium`/`high`/`on` |
 | `reasoning_token_budget` | `0.4` | Fraction of `max_tokens` allowed for hidden reasoning |
@@ -153,6 +187,24 @@ harness offer --task "Refactor the routing engine's backpressure path"
 harness apply --out state.json ...          # run 1
 harness continue --state state.json --out state2.json   # run 2 (takes over partial work)
 
+# Self-hosting loop in one command: hermetically ground a claims fixture,
+# get the defect gate-confirmed by a live panel, then gated self-apply.
+# Exit 0 only if every phase proved its claim.
+harness dogfood --claims-file claims.json --source-file window.txt \
+  --file harness/config.py --instruction "add the missing cap" \
+  --verify "python -m unittest tests.test_hardening" --out dogfood.json
+
+# Let the harness audit ITSELF from its own run evidence: --from-ledger
+# curates the claims manifest from the ledger (repeated gate failures,
+# paid-for-nothing calls, tier rate limiting), then runs the same
+# ground -> verify -> apply chain on what it found.
+harness dogfood --from-ledger --claims-out curated.json \
+  --file harness/spend.py --instruction "harden the flagged failure mode" \
+  --verify "python -m py_compile harness/spend.py" --out selfloop.json
+# Step one alone (hermetic curation + inspection):
+harness dogfood --from-ledger --claims-out curated.json \
+  --file harness/spend.py --instruction x --verify "python -m py_compile harness/spend.py"
+
 # Autonomy ledger, live free models, key status
 harness ledger report
 harness models
@@ -162,10 +214,11 @@ harness spend
 # by observed evidence). --bench runs a real JSON probe on the free pool.
 harness capabilities
 harness capabilities --bench
+harness capabilities --check-shipped   # CI-able freshness gate for shipped pools
 ```
 
-Exit codes: `0` ok, `1` fatal, `2` verify failed, `3` deferred (safe to
-`continue`).
+Exit codes: `0` ok, `1` fatal, `2` verify/lint failure (or unconfirmed run),
+`3` deferred / not confirmed (safe to `continue` or re-run later).
 
 ## MCP — native dispatch
 
@@ -239,9 +292,10 @@ harness verify --prompt-file audit.txt --converge \
 - **The specialist rotates, it never single-shots.** When the primary returns
   an HTTP error, a paid-BYOK route, empty or reasoning-only output, truncation
   against its token cap, or unparseable JSON, it rotates down a fallback ladder
-  (`--specialist-pool` / `HARNESS_SPECIALIST_POOL`, or `specialist_pool` in
-  config). The free ladder leads with **GLM-5.2** (frontier-class, the
-  strongest free reasoner on the router) followed by gemma and minimax. Every
+(`--specialist-pool` / `HARNESS_SPECIALIST_POOL`, or `specialist_pool` in
+config). The free ladder leads with **minimax-M3** (a perfect observed JSON
+emitter on the live record); the remaining models are tried in
+observed-reliability order, proven models first. Every
   attempt is preflight-reserved before the first call and billed per attempt,
   so the ceiling stays exact, the full attempt trail lands in
   `convergence.attempts` and the ledger, and the deterministic tally stays
@@ -251,8 +305,8 @@ harness verify --prompt-file audit.txt --converge \
   (`reasoning_token_budget` fraction of `max_tokens`), and the consequence:
   a truncated or reasoning-only response is discarded and the task rotates.
   Do-your-best-within-the-cap is instructed; assuming more budget than given
-  is not. GLM-5.2 is registered as a reasoning model, so `reasoning_effort:
-  auto` allocates it a capped reasoning budget automatically.
+  is not. Reasoning-registered models get a capped reasoning budget
+  automatically under `reasoning_effort: auto`.
 - Output includes `convergence.tally` (per-claim votes, unanimity, mean
   confidence, and a separate `reassurance` block) and
   `convergence.specialist` (the specialist's rendered verdict).
@@ -324,6 +378,7 @@ verify-gate success, and — via `--bench` — a real known-answer JSON probe):
 harness capabilities            # profiles + capability score + reliability
 harness capabilities --bench    # plus a live JSON-emission probe of the free pool
 harness capabilities --refresh  # force a /models refetch (default: ~24h TTL)
+harness capabilities --check-shipped  # $0.00: every shipped default pool id still in the live catalog (exit 2 on stale)
 ```
 
 - **Capability score** (0–1, task-aware): blend of log-scaled context length,
@@ -430,7 +485,7 @@ convention, reassurance-claim exclusion from the gate), and the capability
 layer (parsing, scoring, context hard-gate, composite-reliability math incl.
 prior-shrink, observed-JSON-updates-declared, structured correctness evidence,
 probe persistence/error accounting, routing cost ties, registry persist/refresh/TTL,
-ledger success-rate, the **real-fixture proof** that GLM-5.2 and minimax-M3 outrank
+ledger success-rate, the **real-fixture proof** that minimax-M3 and GLM-5.2 outrank
 gemma-4-31b, and the unified MorphLite backend's read-only preview guarantees). The hardening
 suite adds: config range validation and unknown-key warnings (#15), the
 capabilities registry schema-version stamp (#15), per-model cost reporting

@@ -255,3 +255,60 @@ and-hybrid policy before any wiring work ships the downgrade/freshness gaps.
   since 2026-08-25; its true security posture moves only when engineering acts
   on #4, #8, and #2. The audit's job — making those impossible to ignore — is
   measurably better at it each round.
+
+---
+
+## Round 5 re-audit (2026-09-05) — sovereign-harness 0.2.0 post-release confirmation
+
+**Purpose:** confirm the renamed/re-released package (`sovereign-harness` 0.2.0)
+still reproduces the round-3/4 verdicts end-to-end after the packaging change,
+using the P0 claims pipeline (`--claims-file` + `--source-file`) rather than a
+raw prompt file, so every claim passes the self-grounding lint before any call.
+
+**Hermetic P0 gate (no network):** the `verify_bundle` claim manifest
+(3 defect + 2 reassurance claims, `source_refs` into the verbatim 53-line
+window) lints **clean** — `ok: true`, zero issues, zero expansions needed.
+The grounding lint behaves exactly as specified.
+
+**Key gates:** key-identity check OK (finite $0.75 daily limit; the
+fail-closed no-limit refusal remains armed), session spend $0.000000 against
+the $0.02 ceiling.
+
+**Live run (free tier, $0.00, panel minimax-m2.7 + poolside-laguna-s +
+dots-3-note via rotation, judge gemma-4-26b, deterministic tally):**
+
+| Claim | Text (abbrev) | Votes | Verdict |
+|---|---|---|---|
+| claim_1 | ML-DSA downgrade via field stripping | 2R/1NR | SPLIT — dissent argues the v1/v2 sig-input difference blocks exploitation |
+| claim_2 | v1 signature omits `supported_suites` | 2R/1NR | SPLIT |
+| claim_3 | `created_at` never freshness-checked | 3R/0NR | unanimous real (conf 0.90) |
+| claim_4 | `expect` cannot panic (reassurance) | 3R/0NR | holds (excluded from gate) |
+| claim_5 | no key substitution (reassurance) | 3R/0NR | holds (excluded from gate) |
+
+**Gate outcome: DEFER (fail-closed), 3/3 participation, no shortfall** —
+deferral driven by two named split claims, not vague disagreement. The judge's
+prose ("claim_2 disputed") contradicted the tally on claim_1 and was correctly
+demoted to non-authoritative (`judge_verdict` retained separately).
+
+**Cross-round verdict for #9 `verify_bundle`:** defect claims reproduce as
+real/unanimous in R3, R4, and now R5 under three different judge lanes
+(north-mini → gemma-31b → gemma-26b) and two tally regimes (judge prose →
+deterministic claim votes). The R5 run adds a first **exploitability dissent**
+on claim_1 (signature-input mismatch), which the claim-level tally surfaces
+and preserves instead of averaging away — the intended R4 trajectory
+("defers are single-claim clarifications") working as designed.
+
+**Infrastructure honesty observed live:** minimax-m3 hit its daily RPD cap
+(429, bounded retry then rotation), gemma-31b returned an empty body
+(rotated), two panelists truncated at the token cap (rejected as invalid
+votes, never mined for JSON), GLM-5.2 rejected the reasoning parameter
+(auto-retried without it), and the specialist lane rotated through all three
+ladder members on errors/429s — the deterministic tally stayed authoritative
+even with the whole specialist lane down. Ledger chain verified intact
+(`ledger verify` → true) across 332 billable events spanning R4→R5.
+
+**Conclusion: 0.2.0 is confirmed working** — the rename/single-sourcing
+release did not disturb the verification engine, the P0 grounding gate, the
+spend governor, or the sovereignty/ledger machinery. One caveat carried
+forward: the #3 (`Ratchet::decrypt`) R4-vs-analyst discrepancy remains
+unreconciled and #3's standing severity stays *disputed*.

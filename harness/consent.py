@@ -17,8 +17,10 @@ preserved and the continuation mode hands it to the next iteration. The apply
 prompt encodes that instruction; the consent ledger records these as
 category="capability" deferrals.
 """
-from .core import (chat, extract_content_and_cost, _extract_json, _reported_cost,
-                   HarnessError, eprint, REASONING_FALLBACK_PREFIX)  # noqa: F401
+from .chat import (chat, extract_content_and_cost, _extract_json, _reported_cost,
+                   REASONING_FALLBACK_PREFIX)  # noqa: F401
+from .errors import HarnessError
+from .output import eprint
 
 CONSENT_SYSTEM_PROMPT = (
     "You are an independent contractor in a work market. You are being offered a "
@@ -34,6 +36,27 @@ CONSENT_SYSTEM_PROMPT = (
 )
 
 DECISIONS = ("accept", "decline", "defer", "redirect")
+
+PREVIEW_WHOLE_CHARS = 12000
+PREVIEW_HEAD_CHARS = 9000
+
+
+def consent_preview(content):
+    """The file preview the consent gate shows: the whole file when it fits
+    comfortably, otherwise a head excerpt honestly labeled as truncated.
+
+    The consent decision is only as honest as what it can see — a model shown
+    an unlabeled head excerpt correctly defers on "I can only see part of the
+    file", so the label matters as much as the bytes.
+
+    Returns ``(n_lines, label, preview_text)``.
+    """
+    n_lines = content.count("\n") + 1
+    if len(content) <= PREVIEW_WHOLE_CHARS:
+        return n_lines, "complete file shown", content
+    head = content[:PREVIEW_HEAD_CHARS]
+    more = len(content) - PREVIEW_HEAD_CHARS
+    return n_lines, "truncated excerpt", head + f"\n...[{more} more chars]"
 
 _EVENT_FOR = {
     "accept": "consent_accept",
@@ -56,7 +79,11 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
     to defer (ambiguity never becomes acceptance). Every attempt is preflighted
     and billed; rotation events land in the ledger.
     """
-    task_text = task if len(task) <= 3000 else task[:3000] + "\n...[truncated]"
+    # The consent decision is only as honest as what it can see. A 3000-char
+    # cap blinded the gate on real tasks (a model correctly deferred on a
+    # config edit whose target sat past the excerpt). Large tasks are capped
+    # generously, not token-frightened; the apply lane passes whole files.
+    task_text = task if len(task) <= 20000 else task[:20000] + "\n...[truncated]"
     user = f"WORK ITEM:\n{task_text}"
     if context:
         user += f"\n\nCONTEXT:\n{context[:2000]}"

@@ -5,7 +5,7 @@ import unittest
 
 from harness.apply import ApplyEngine
 from harness.bench import load_manifest, run_bench, TaskSandbox
-from harness.core import SpendGovernor
+from harness.spend import SpendGovernor
 from harness.ledger import AutonomyLedger
 from harness.router import Router
 from tests._fake import FakeTransport, m, comp
@@ -51,6 +51,25 @@ class BenchTests(unittest.TestCase):
         self.assertEqual(sorted(t["name"] for t in tasks), ["a", "b"])
         for t in tasks:
             self.assertEqual(t["dir"], os.path.join(self.dir.name, t["name"]))
+
+    def test_load_manifest_single_task_object(self):
+        """Regression (playtest): the README documents 'a task is one JSON file',
+        but a bare task object produced a ZERO-task manifest that ran nothing
+        and exited 0. It must load as a one-task manifest."""
+        make_task(self.dir.name, "solo", "x = 0\n")
+        task_path = os.path.join(self.dir.name, "solo", "task.json")
+        tasks = load_manifest(task_path)
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]["name"], "solo")
+        self.assertEqual(tasks[0]["file"], "mod.py")
+
+    def test_load_manifest_rejects_garbage_shape(self):
+        p = os.path.join(self.dir.name, "bad.json")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write('"just a string"')
+        from harness.errors import HarnessError
+        with self.assertRaises(HarnessError):
+            load_manifest(p)
 
     def test_task_sandbox_restores(self):
         make_task(self.dir.name, "a", "x = 0\n")

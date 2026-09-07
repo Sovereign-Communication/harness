@@ -1,8 +1,16 @@
 import unittest
 
-from harness.core import (
-    SpendGovernor, panel_judge, chat, looks_reasoning, _effort_to_send,
-    _build_reasoning_param, _parse_consensus, discover_free_models,
+from harness.chat import (
+    chat,
+    looks_reasoning,
+    _build_reasoning_param,
+    _effort_to_send,
+)
+from harness.convergence import _parse_consensus
+from harness.panel import panel_judge
+from harness.spend import (
+    SpendGovernor,
+    discover_free_models,
     resolve_models,
 )
 from tests._fake import FakeTransport, m, comp

@@ -27,7 +27,8 @@ class LedgerTests(unittest.TestCase):
         self.ledger.append("offer", task_id="t1", model="m1")
         self.ledger.append("consent_accept", task_id="t1", model="m1", reason="sure")
         # Tamper with the on-disk record: rewrite entry 2's reason.
-        lines = open(self.path, encoding="utf-8").read().splitlines()
+        with open(self.path, encoding="utf-8") as stream:
+            lines = stream.read().splitlines()
         entry = json.loads(lines[1])
         entry["reason"] = "FORGED"
         with open(self.path, "w", encoding="utf-8") as f:
@@ -37,6 +38,67 @@ class LedgerTests(unittest.TestCase):
         ok, bad = reloaded.verify()
         self.assertFalse(ok)
         self.assertEqual(bad, 2)
+
+    def _other_writer_append(self, event, task_id="other"):
+        """Simulate a second harness process appending to the same file from
+        its own (identical) chain state -- the append lock serializes the
+        write but not the chain state of the two writers."""
+        import hashlib
+        from harness.ledger import _canon
+        tail = self.ledger.entries()
+        entry = {
+            "seq": (tail[-1]["seq"] if tail else 0) + 1,
+            "ts": "2026-09-06T19:14:06+00:00",
+            "event": event,
+            "task_id": task_id,
+            "prev_hash": tail[-1]["hash"] if tail else None,
+        }
+        entry["hash"] = hashlib.sha256(_canon(entry).encode("utf-8")).hexdigest()
+        with open(self.path, "a", encoding="utf-8") as f:
+            f.write(_canon(entry) + "\n")
+
+    def test_append_rebases_after_concurrent_write(self):
+        """Regression (live): two processes that loaded the ledger together
+        both appended from the same prev_hash and forked the chain with
+        duplicate seqs. append() must re-read the file under the lock and
+        continue the OTHER writer's chain."""
+        self.ledger.append("dispatch_start", task_id="t1", model="m1")
+        self.ledger.append("model_result", task_id="t1", model="m1")
+        self._other_writer_append("dispatch_start")
+        self.ledger.append("complete", task_id="t1", model="m1")
+        seqs = [e["seq"] for e in self.ledger.entries()]
+        self.assertEqual(seqs, [1, 2, 3, 4])
+        reloaded = AutonomyLedger(self.path)
+        ok, bad = reloaded.verify()
+        self.assertTrue(ok)
+        self.assertIsNone(bad)
+
+    def test_repair_truncates_forked_tail(self):
+        """A forked/duplicate tail (crash or append race) is duplicate
+        evidence: repair must truncate to the longest valid prefix and leave
+        a chain that verifies."""
+        for i in range(3):
+            self.ledger.append("offer", task_id=f"t{i}", model="m1")
+        # Fork: a stale second writer appends from seq 2's state.
+        tail = self.ledger.entries()
+        import hashlib
+        from harness.ledger import _canon
+        entry = {"seq": 4, "ts": "2026-09-06T19:14:06+00:00",
+                 "event": "abort", "task_id": "fork",
+                 "prev_hash": tail[1]["hash"]}
+        entry["hash"] = hashlib.sha256(_canon(entry).encode("utf-8")).hexdigest()
+        with open(self.path, "a", encoding="utf-8") as f:
+            f.write(_canon(entry) + "\n")
+        reloaded = AutonomyLedger(self.path)
+        ok, bad = reloaded.verify()
+        self.assertFalse(ok)
+        kept, dropped = reloaded.repair()
+        self.assertEqual(kept, 3)
+        self.assertGreaterEqual(dropped, 1)
+        healed = AutonomyLedger(self.path)
+        ok, bad = healed.verify()
+        self.assertTrue(ok)
+        self.assertIsNone(bad)
 
     def test_reload_resumes_chain(self):
         self.ledger.append("offer", task_id="t1", model="m1")
@@ -142,6 +204,34 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(r["accept_rate"], 1.0)
         self.assertTrue(r["consent_looks_degenerate"])
         self.assertIn("theater", r["degenerate_note"])
+
+
+class LedgerCorruptionTests(unittest.TestCase):
+    def test_torn_trailing_line_quarantined_not_crash(self):
+        """The chain must stay readable and appendable after a torn write."""
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "led.jsonl")
+            led = AutonomyLedger(path)
+            led.append("offer", task_id="t1", model="m")
+            with open(path, "a", encoding="utf-8") as f:
+                f.write('{"seq": 2, "hash": "abc", "trunc')  # torn line
+            led2 = AutonomyLedger(path)  # must not raise
+            self.assertEqual(len(led2.entries()), 1)
+            self.assertEqual(led2.quarantined, 1)
+            # The repaired chain stays appendable and internally consistent.
+            led2.append("complete", task_id="t1", model="m")
+            ok, bad = led2.verify()
+            self.assertTrue(ok, "intact prefix + new entry must hash-chain")
+            self.assertIsNone(bad)
+
+    def test_shape_broken_line_quarantined(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "led.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write('"just a string"\n[1, 2]\n')
+            led = AutonomyLedger(path)
+            self.assertEqual(len(led.entries()), 0)
+            self.assertEqual(led.quarantined, 2)
 
 
 if __name__ == "__main__":

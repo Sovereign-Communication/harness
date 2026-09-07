@@ -1,71 +1,19 @@
-import contextlib
-import io
-import json
 import os
+import shutil
 import tempfile
 import unittest
-from unittest import mock
 
-from harness.apply import ApplyEngine, _parse_ready, _extract_file_content
-from harness.cli import main as cli_main
-from harness.core import SpendGovernor, HarnessError
+from harness.apply import ApplyEngine, _atomic_write
+from harness.errors import HarnessError
 from harness.ledger import AutonomyLedger
 from harness.router import Router
-from tests._fake import FakeTransport, m, comp, consent
-
-JUDGE = "inclusionai/ling-2.6-flash"
-APPLY = "deepseek/deepseek-chat"
-ESC = "qwen/qwen3-max"
-CODER_A = "cohere/north-mini-code:free"
-CODER_B = "z-ai/glm-5.2:free"
-MORPH = "morph/morph-v3-fast"
-
-ORIGINAL = "def add(a, b):\n    return a + b\n"
-CHANGED = "def add(a, b):\n    return a + b + 0\n"
-PARTIAL = "def add(a, b):\n    return a + b  # WIP\n"
+from harness.spend import SpendGovernor
+from tests._applyfixture import (APPLY, ApplyFixture, CODER_A, CODER_B, CHANGED,
+                                 ESC, JUDGE, ORIGINAL, PARTIAL, scripted_run)
+from tests._fake import FakeTransport, comp, consent, m
 
 
-def scripted_run(results):
-    state = {"n": 0}
-
-    def runner(cmd):
-        rc, out = results[min(state["n"], len(results) - 1)]
-        state["n"] += 1
-        return rc, out
-
-    return runner
-
-
-class ApplyTests(unittest.TestCase):
-    def setUp(self):
-        self.dir = tempfile.TemporaryDirectory()
-        self.ledger_path = os.path.join(self.dir.name, "ledger.jsonl")
-
-    def tearDown(self):
-        self.dir.cleanup()
-
-    def make_file(self, content=ORIGINAL):
-        p = os.path.join(self.dir.name, "math.py")
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(content)
-        return p
-
-    def make_env(self, posts=None, run=None, router_kw=None, default_consent=True,
-                 renew=False, models=None):
-        fake = FakeTransport(models=models or [m(APPLY), m(JUDGE), m(ESC),
-                                               m(CODER_A), m(CODER_B)], posts=posts)
-        gov = SpendGovernor(fake, "sk-test")
-        ledger = AutonomyLedger(self.ledger_path)
-        router = Router(["a", "b"], JUDGE, APPLY, **(router_kw or {}))
-        engine = ApplyEngine(fake, "k", gov, ledger, router,
-                             default_require_consent=default_consent,
-                             default_renew_consent=renew)
-        if run:
-            engine.run_verify = run
-        return fake, gov, ledger, engine
-
-    def leftovers(self):
-        return [n for n in os.listdir(self.dir.name) if n.endswith(".tmp")]
+class ApplyTests(ApplyFixture):
 
     # ---- scope gates ----
     def test_missing_file_refused(self):
@@ -258,8 +206,13 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(result["remaining_scope"], "finish error handling")
         self.assertIn("continuation", result)
         # partial work was written to the file
+        # The target file is UNTOUCHED: no gate has passed over the partial,
+        # so it must never reach the working tree (round-1 dogfood found a
+        # deferred run corrupting the tree this way).
         with open(p, encoding="utf-8") as f:
-            self.assertEqual(f.read().strip(), PARTIAL.strip())
+            self.assertEqual(f.read().strip(), ORIGINAL.strip())
+        # The partial travels in the continuation state instead.
+        self.assertEqual(result["continuation"].get("partial_content"), PARTIAL.strip())
         events = [e["event"] for e in ledger.entries()]
         self.assertIn("defer_midtask", events)
         self.assertEqual(len(fake.chat_posts()), 1, "no verify / no further model calls")
@@ -354,6 +307,43 @@ class ApplyTests(unittest.TestCase):
             self.assertEqual(f.read(), CHANGED)
         self.assertGreaterEqual(result["rotations"], 1)
 
+    # ---- terminal api_error rounds name the real failure (behavior-driver finding) ----
+    def test_terminal_api_error_names_http_status(self):
+        """A 429 whose provider message text lacks a literal '429' ('Rate limit
+        exceeded: free-models-per-day') must still be visible as a rate limit
+        in the terminal round: the CLI's saturation guidance reads that text."""
+        p = self.make_file()
+        body = {"error": {"message": "Rate limit exceeded: free-models-per-day. "
+                                     "Please try again later."}}
+        fake, _, _, engine = self.make_env(
+            posts=[("429", body), ("429", body), ("429", body)],
+            run=scripted_run([(0, "")]),
+            router_kw={"apply_pool": [CODER_A, CODER_B]})
+        result = engine.apply_edit(task_id="t1", file_path=p, instruction="change",
+                                   verify_cmd="check", require_consent=False,
+                                   max_rounds=1)
+        self.assertEqual(result["status"], "verify_failed")
+        last = result["rounds"][-1]
+        self.assertEqual(last["status"], "api_error")
+        self.assertIn("HTTP 429", last["error"])
+
+    def test_terminal_api_error_reasoning_only_is_human_readable(self):
+        """Reasoning-only exhaustion ends on an HTTP 200 response (no error
+        key), which used to dump the raw JSON body as the terminal error."""
+        p = self.make_file()
+        fake, _, _, engine = self.make_env(
+            posts=[comp(None, reasoning="think"), comp(None, reasoning="think"),
+                   comp(None, reasoning="think")],
+            router_kw={"apply_pool": [CODER_A, CODER_B]})
+        result = engine.apply_edit(task_id="t1", file_path=p, instruction="change",
+                                   verify_cmd="check", require_consent=False,
+                                   max_rounds=1)
+        self.assertEqual(result["status"], "verify_failed")
+        last = result["rounds"][-1]
+        self.assertEqual(last["status"], "api_error")
+        self.assertIn("no usable content", last["error"])
+        self.assertNotIn("choices", last["error"])
+
     # ---- continuation ----
     def test_continuation_resumes_deferred_task(self):
         p = self.make_file()
@@ -387,6 +377,34 @@ class ApplyTests(unittest.TestCase):
         with open(p, encoding="utf-8") as f:
             self.assertEqual(f.read().strip(), CHANGED.strip())
 
+    def test_continuation_resumes_under_saved_task_id(self):
+        """A resume is the same task: ledger attribution must stay under the
+        original task id even when the resume goes through apply_batch (which
+        used to fall back to its own default before consulting the saved
+        state), and an explicit override must still win."""
+        p = self.make_file()
+        _, _, _, engine = self.make_env(
+            posts=[comp(PARTIAL + "HARNESS_DEFER: "
+                        '{"remaining_scope":"finish +0","reason":"low on tokens"}')],
+            renew=False)
+        r1 = engine.apply_edit(task_id="orig-task", file_path=p, instruction="add +0",
+                               verify_cmd="check", require_consent=False)
+        self.assertEqual(r1["status"], "deferred")
+        self.make_file()
+        fake2 = FakeTransport(models=[m(APPLY), m(JUDGE), m(ESC), m(CODER_A)],
+                              posts=[comp(CHANGED)])
+        gov2 = SpendGovernor(fake2, "sk-test")
+        ledger2 = AutonomyLedger(os.path.join(self.dir.name, "ledger3.jsonl"))
+        engine2 = ApplyEngine(fake2, "k", gov2, ledger2,
+                              Router(["a"], JUDGE, APPLY),
+                              default_require_consent=True, default_renew_consent=False)
+        engine2.run_verify = lambda command: (0, "")
+        r2 = engine2.apply_batch([None], instruction=None,
+                                 continuation=r1["continuation"],
+                                 verify_cmd="check", require_consent=False)
+        self.assertEqual(r2["status"], "ok")
+        self.assertEqual(r2["task_id"], "orig-task")
+
     def test_failed_continuation_requires_authoritative_verify_cmd(self):
         p = self.make_file()
         _, _, _, engine = self.make_env(
@@ -403,21 +421,6 @@ class ApplyTests(unittest.TestCase):
             engine2.apply_edit(continuation=state, require_consent=False)
         self.assertEqual(fake2.chat_posts(), [], "invalid state must fail before dispatch")
 
-    def test_cli_rejects_ungated_continuation_before_key_setup(self):
-        """The CLI boundary must reject a failed state before touching credentials."""
-        with tempfile.TemporaryDirectory() as td:
-            state_path = os.path.join(td, "state.json")
-            with open(state_path, "w", encoding="utf-8") as f:
-                json.dump({"file_path": os.path.join(td, "math.py"),
-                           "verify_only": False,
-                           "verification_required": True}, f)
-            with mock.patch("harness.cli._governor",
-                            side_effect=AssertionError("key setup must not run")):
-                with contextlib.redirect_stderr(io.StringIO()):
-                    with self.assertRaises(SystemExit) as ctx:
-                        cli_main(["apply", "--continue-from", state_path])
-            self.assertEqual(ctx.exception.code, 1)
-
     def test_gated_continuation_rejects_verify_only_override(self):
         p = self.make_file()
         _, _, _, engine = self.make_env(posts=[comp(CHANGED)],
@@ -429,82 +432,6 @@ class ApplyTests(unittest.TestCase):
             engine.apply_edit(continuation=failed["continuation"], verify_only=True,
                               require_consent=False)
 
-    # ---- MorphLite-compatible backend ----
-    def test_morph_verify_only_is_read_only(self):
-        p = self.make_file()
-        fake, _, ledger, engine = self.make_env(
-            posts=[comp(CHANGED)],
-            models=[m(APPLY), m(JUDGE), m(ESC), m(CODER_A), m(CODER_B), m(MORPH)])
-        verify_calls = []
-        engine.run_verify = lambda command: verify_calls.append(command)
-
-        result = engine.apply_edit(
-            task_id="morph-preview", file_path=p, instruction="add zero safely",
-            edit_snippet="return a + b + 0", verify_cmd="must-not-run",
-            require_consent=False, renew_consent=False, backend="morph",
-            verify_only=True, max_tokens=64)
-
-        self.assertEqual(result["status"], "preview")
-        self.assertEqual(result["backend"], "morph")
-        self.assertTrue(result["verify_only"])
-        self.assertEqual(result["proposed_content"], CHANGED)
-        self.assertIsNone(result["backup"])
-        self.assertEqual(verify_calls, [])
-        with open(p, encoding="utf-8") as f:
-            self.assertEqual(f.read(), ORIGINAL)
-        payload = fake.payloads()[0]
-        self.assertEqual(payload["model"], MORPH)
-        prompt = payload["messages"][0]["content"]
-        self.assertIn("<instruction>add zero safely</instruction>", prompt)
-        self.assertIn("<code>" + ORIGINAL + "</code>", prompt)
-        self.assertIn("<update>return a + b + 0</update>", prompt)
-        self.assertEqual([e["event"] for e in ledger.entries()],
-                         ["dispatch_start", "model_result", "complete"])
-
-    def test_morph_verify_only_capability_deferral_does_not_write_partial(self):
-        p = self.make_file()
-        _, _, _, engine = self.make_env(
-            posts=[comp(PARTIAL + "HARNESS_DEFER: finish the timing proof")],
-            models=[m(APPLY), m(JUDGE), m(ESC), m(CODER_A), m(CODER_B), m(MORPH)])
-
-        result = engine.apply_edit(
-            task_id="morph-defer-preview", file_path=p, instruction="fix timing safety",
-            require_consent=False, renew_consent=False, backend="morph",
-            verify_only=True, max_tokens=64)
-
-        self.assertEqual(result["status"], "deferred")
-        self.assertTrue(result["verify_only"])
-        self.assertEqual(result["continuation"]["backend"], "morph")
-        self.assertTrue(result["continuation"]["verify_only"])
-        self.assertIsNone(result.get("backup"))
-        with open(p, encoding="utf-8") as f:
-            self.assertEqual(f.read(), ORIGINAL)
-
-    def test_morph_verify_only_continuation_stays_gate_free(self):
-        """A preview continuation may carry a historical gate, but resuming it
-        must remain read-only and must not execute that gate."""
-        p = self.make_file()
-        models = [m(APPLY), m(JUDGE), m(ESC), m(CODER_A), m(CODER_B), m(MORPH)]
-        _, _, _, engine = self.make_env(
-            posts=[comp(PARTIAL + "HARNESS_DEFER: finish the timing proof")],
-            models=models)
-        first = engine.apply_edit(
-            task_id="morph-preview-resume", file_path=p, instruction="fix timing safety",
-            verify_cmd="must-not-run", require_consent=False, renew_consent=False,
-            backend="morph", verify_only=True, max_tokens=64)
-        state = first["continuation"]
-        self.assertEqual(state["verify_cmd"], "must-not-run")
-
-        fake2, _, _, engine2 = self.make_env(posts=[comp(CHANGED)], models=models)
-        verify_calls = []
-        engine2.run_verify = lambda command: verify_calls.append(command)
-        resumed = engine2.apply_edit(continuation=state, require_consent=False)
-        self.assertEqual(resumed["status"], "preview")
-        self.assertEqual(verify_calls, [])
-        with open(p, encoding="utf-8") as f:
-            self.assertEqual(f.read(), ORIGINAL)
-        self.assertEqual(len(fake2.chat_posts()), 1)
-
     # ---- file safety ----
     def test_atomic_write_no_leftover_tmp(self):
         p = self.make_file()
@@ -513,6 +440,240 @@ class ApplyTests(unittest.TestCase):
         engine.apply_edit(task_id="t1", file_path=p, instruction="change",
                           verify_cmd="check", require_consent=False)
         self.assertEqual(self.leftovers(), [])
+
+    def test_continuation_gate_does_not_leak_into_fresh_applies(self):
+        """Regression (playtest): resuming a gated apply pinned the gate on the
+        engine forever, so a later FRESH apply with a different gate was
+        refused with 'verify gate changed'. The MCP server keeps one engine
+        for its whole lifetime, so one resume would break every apply after
+        it. Per-request gate state must reset at the start of each apply."""
+        p = self.make_file()
+        _, _, _, engine = self.make_env(
+            # t1 fails verify each round (others are vacuous replays); the
+            # resumed round must emit DIFFERENT content from the failed attempt
+            # on disk, or the vacuous-success guard consumes rounds.
+            posts=[comp(CHANGED), comp(CHANGED), comp(CHANGED),
+                   comp(CHANGED + "\n"), comp(CHANGED)],
+            run=scripted_run([(1, "boom"), (0, ""), (0, "")]))
+        first = engine.apply_edit(task_id="t1", file_path=p, instruction="change",
+                                  verify_cmd="gateA", require_consent=False)
+        self.assertEqual(first["status"], "verify_failed")
+        resumed = engine.apply_edit(continuation=first["continuation"],
+                                    require_consent=False)
+        self.assertEqual(resumed["status"], "ok")
+        # The fresh apply on the SAME engine with a DIFFERENT gate must run.
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        fresh = engine.apply_edit(task_id="t3", file_path=p, instruction="fresh",
+                                  verify_cmd="gateB", require_consent=False)
+        self.assertEqual(fresh["status"], "ok")
+        self.assertIsNone(engine._continuation_gate)
+
+    def test_backup_filename_survives_slashed_task_ids(self):
+        """Regression (playtest): bench names tasks 'bench/<name>' and the slash
+        landed in the backup FILENAME, breaking open() on every platform -- so
+        bench ran with its backup safety net silently disabled."""
+        p = self.make_file()
+        _, _, _, engine = self.make_env(posts=[comp(CHANGED)],
+                                        run=scripted_run([(0, "")]))
+        result = engine.apply_edit(task_id="bench/add", file_path=p,
+                                   instruction="change", verify_cmd="check",
+                                   require_consent=False)
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNotNone(result["backup"])
+        self.assertTrue(os.path.exists(result["backup"]))
+        self.assertNotIn("/", os.path.basename(result["backup"]))
+
+    # ---- multi-file batch (engine-owned; CLI and MCP both land here) ----
+    def test_apply_batch_success_aggregates(self):
+        a = self.make_file()
+        b = os.path.join(self.dir.name, "other.py")
+        with open(b, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        _, _, _, engine = self.make_env(posts=[comp(CHANGED), comp(CHANGED)],
+                                        run=scripted_run([(0, "")]))
+        result = engine.apply_batch([a, b], instruction="change",
+                                    verify_cmd="check", require_consent=False)
+        self.assertTrue(result["batch"])
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["statuses"], {"ok": 2})
+        self.assertEqual(result["verify"], {"command": "check", "passed": True})
+        for r in result["results"]:
+            self.assertEqual(r["status"], "ok")
+
+    def test_apply_batch_fails_fast(self):
+        a = self.make_file()
+        b = os.path.join(self.dir.name, "other.py")
+        with open(b, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        _, gov, _, engine = self.make_env(posts=[comp(CHANGED)],
+                                        run=scripted_run([(1, "boom")]))
+        result = engine.apply_batch([a, b], instruction="change",
+                                    verify_cmd="check", require_consent=False,
+                                    max_rounds=1)
+        # The first file's gate failed; the batch stops and b is never touched.
+        # A multi-file batch returns the ENVELOPE even when fail-fast kills it
+        # on file 1 -- consumers keying on "results" must be able to tell a
+        # batch death from a single-file run (live playtest finding).
+        self.assertEqual(result["status"], "verify_failed")
+        self.assertTrue(result["batch"])
+        self.assertEqual(result["statuses"], {"verify_failed": 1})
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(result["verify"], {"command": "check", "passed": False})
+        self.assertEqual(len(gov.transport.chat_posts()), 1)
+        with open(b, encoding="utf-8") as f:
+            self.assertEqual(f.read(), ORIGINAL)
+
+    def test_apply_batch_file2_death_reports_gate_not_passed(self):
+        """The envelope's shared-gate verify block derives "passed" from the
+        last file's actual verdict. The historical code hardcoded passed=True
+        from the first file's gate -- reporting a failed batch as gate-passed."""
+        a = self.make_file()
+        b = os.path.join(self.dir.name, "other.py")
+        with open(b, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        _, _, _, engine = self.make_env(posts=[comp(CHANGED), comp(CHANGED)],
+                                        run=scripted_run([(0, ""), (1, "boom")]))
+        result = engine.apply_batch([a, b], instruction="change",
+                                    verify_cmd="check", require_consent=False,
+                                    max_rounds=1)
+        self.assertEqual(result["status"], "verify_failed")
+        self.assertEqual(result["statuses"], {"ok": 1, "verify_failed": 1})
+        self.assertEqual(result["verify"], {"command": "check", "passed": False})
+
+    def test_apply_batch_single_file_returns_bare_result(self):
+        p = self.make_file()
+        _, _, _, engine = self.make_env(posts=[comp(CHANGED)],
+                                        run=scripted_run([(0, "")]))
+        result = engine.apply_batch([p], instruction="change",
+                                    verify_cmd="check", require_consent=False,
+                                    task_id="same-task")
+        self.assertNotIn("batch", result)
+        self.assertEqual(result["status"], "ok")
+        # An explicit task id passes through unsuffixed: one file is not a batch.
+        self.assertEqual(result["task_id"], "same-task")
+
+    def test_apply_batch_router_is_never_mutated(self):
+        """Routing is per-request: capability ordering must order the request's
+        pool without ever writing to the router (the MCP server shares one
+        router across sessions; a mutation there leaks routing state)."""
+        p = self.make_file()
+        _, _, _, engine = self.make_env(posts=[comp(CHANGED)],
+                                        run=scripted_run([(0, "")]))
+        before_pool = list(engine.router.apply_pool)
+        engine.apply_batch([p], instruction="change", verify_cmd="check",
+                           require_consent=False)
+        self.assertEqual(engine.router.apply_pool, before_pool)
+        self.assertEqual(len(before_pool), len(engine.router.apply_pool))
+
+    def test_malformed_diff_is_retried_with_feedback_not_fatal(self):
+        """A strict-merge rejection must feed the next round as feedback, not
+        kill the run as FATAL (the contract the diff backend promised;
+        dogfooding the harness on its own repo caught it escaping)."""
+        p = self.make_file()
+        bad = ("--- a/math.py\n+++ b/math.py\n@@ -1,2 +1,2 @@\n"
+               "-def wrong(a, b):\n-    return a + b\n"
+               "+def add(a, b):\n+    return a + b + 0\n")
+        good = ("--- a/math.py\n+++ b/math.py\n@@ -1,2 +1,2 @@\n"
+                "-def add(a, b):\n-    return a + b\n"
+                "+def add(a, b):\n+    return a + b + 0\n")
+        fake, _, _, engine = self.make_env(posts=[comp(bad), comp(good)],
+                                           run=scripted_run([(0, "")]))
+        result = engine.apply_batch([p], instruction="add +0", verify_cmd="check",
+                                    require_consent=False, backend="diff")
+        self.assertEqual(result["status"], "ok")
+        with open(p, encoding="utf-8") as f:
+            self.assertEqual(f.read(), CHANGED)
+        self.assertEqual(result["rounds"][0]["status"], "merge_failed")
+        self.assertIn("diff merge failed", result["rounds"][0]["verify_output"])
+        # The merge error reached the retry round as feedback.
+        retry_msgs = fake.chat_posts()[1][2]["messages"]
+        self.assertIn("does not match the source", retry_msgs[-1]["content"])
+
+    def test_two_identical_merge_failures_are_not_gate_broken(self):
+        """Live finding: two identical MERGE errors collided with the broken-
+        gate detector (same verify_output twice) and aborted the run. Merge
+        feedback is model error, not gate evidence -- it must keep retrying."""
+        p = self.make_file()
+        bad = ("--- a/math.py\n+++ b/math.py\n@@ -1,2 +1,2 @@\n"
+               "-def wrong(a, b):\n-    return a + b\n"
+               "+def add(a, b):\n+    return a + b + 0\n")
+        fake, _, _, engine = self.make_env(posts=[comp(bad), comp(bad), comp(bad)],
+                                           run=scripted_run([(1, "unused")]))
+        result = engine.apply_batch([p], instruction="add +0", verify_cmd="check",
+                                    require_consent=False, backend="diff")
+        statuses = [r["status"] for r in result["rounds"]]
+        self.assertNotIn("gate_broken", statuses)
+        self.assertEqual(statuses.count("merge_failed"), 3)
+
+    def test_failed_run_rewinds_tree_to_pre_run_content(self):
+        """Live finding: a run whose gate never passed left its failed edit in
+        the target file. The tree must end a failed run exactly as it began."""
+        p = self.make_file()
+        good = ("--- a/math.py\n+++ b/math.py\n@@ -1,2 +1,2 @@\n"
+                "-def add(a, b):\n-    return a + b\n"
+                "+def add(a, b):\n+    return a + b + 0\n")
+        fake, _, _, engine = self.make_env(posts=[comp(good), comp(good), comp(good)],
+                                           run=scripted_run([(1, "E: gate failed"),
+                                                             (1, "E: gate failed")]))
+        result = engine.apply_batch([p], instruction="add +0", verify_cmd="check",
+                                    require_consent=False, backend="diff")
+        self.assertEqual(result["status"], "verify_failed")
+        with open(p, encoding="utf-8") as f:
+            self.assertEqual(f.read(), ORIGINAL)
+
+    # Windows maps every non-read-only file to 0o666 and ignores chmod bits,
+    # so mode preservation is only observable on POSIX.
+    @unittest.skipIf(os.name == "nt", "Windows does not honor POSIX mode bits")
+    def test_verify_only_exhaustion_reports_preview_exhausted_not_verify_failed(self):
+        """Live finding: a --verify-only preview whose diffs all failed to
+        merge reported status 'verify_failed' with 'diff merge failed' as the
+        gate's output_tail -- fabricated gate evidence, since no gate runs in
+        preview mode. The terminal must say the gate was never reached."""
+        p = self.make_file()
+        bad = ("--- a/math.py\n+++ b/math.py\n@@ -1,2 +1,2 @@\n"
+               "-def wrong(a, b):\n-    return a + b\n"
+               "+def add(a, b):\n+    return a + b + 0\n")
+        fake, _, ledger, engine = self.make_env(posts=[comp(bad), comp(bad), comp(bad)])
+        result = engine.apply_batch([p], instruction="add +0",
+                                    verify_cmd="check", require_consent=False,
+                                    backend="diff", verify_only=True)
+        self.assertEqual(result["status"], "preview_exhausted")
+        self.assertIsNone(result["verify"]["passed"])
+        self.assertFalse(result["gate_ran"])
+        self.assertIn("gate not run", result["verify"]["note"])
+        self.assertFalse(result["continuation"]["verification_required"])
+        aborts = [e for e in ledger.entries() if e["event"] == "abort"]
+        self.assertEqual(aborts[-1]["reason"], "preview exhausted its rounds")
+        # The target is untouched (preview never writes).
+        with open(p, encoding="utf-8") as f:
+            self.assertEqual(f.read(), ORIGINAL)
+
+    @unittest.skipIf(os.name == "nt", "Windows does not honor POSIX mode bits")
+    def test_atomic_write_preserves_file_mode(self):
+        """Regression (audit follow-up): tempfile.mkstemp creates 0600, so the
+        atomic replace silently stripped the executable bit (and every other
+        mode bit) from the target. A verify script or gate artifact rewritten
+        by an apply round must keep its mode, like _backup already does."""
+        import stat as _stat
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        p = os.path.join(d, "gate.sh")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(p, 0o755)
+        _atomic_write(p, "#!/bin/sh\nexit 1\n")
+        self.assertEqual(_stat.S_IMODE(os.stat(p).st_mode), 0o755)
+
+    @unittest.skipIf(os.name == "nt", "Windows does not honor POSIX mode bits")
+    def test_atomic_write_new_file_stays_private(self):
+        """A brand-new target keeps mkstemp's safe 0600 default."""
+        import stat as _stat
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        p = os.path.join(d, "new.txt")
+        _atomic_write(p, "content\n")
+        self.assertEqual(_stat.S_IMODE(os.stat(p).st_mode), 0o600)
 
     def test_fenced_block_content_extracted(self):
         p = self.make_file()
@@ -525,38 +686,11 @@ class ApplyTests(unittest.TestCase):
         with open(p, encoding="utf-8") as f:
             self.assertEqual(f.read(), CHANGED)
 
-
-class MarkerLeakTests(unittest.TestCase):
-    """Regression (live playtest, openrouter/free): the readiness marker was
-    emitted after blank lines and leaked verbatim into the written file."""
-
-    def test_ready_marker_after_blank_lines_is_parsed_and_stripped(self):
-        body = '\n\nHARNESS_READY: confident\n"""doc"""\ndef f():\n    pass\n'
-        decision, reason, rest = _parse_ready(body)
-        self.assertEqual(decision, "confident")
-        self.assertNotIn("HARNESS_READY", rest)
-        self.assertNotIn("HARNESS_READY", _extract_file_content(rest))
-
-    def test_ready_marker_anywhere_never_lands_in_file(self):
-        for placement in (
-            'HARNESS_READY: confident\ncode\n',
-            '\n\n\nHARNESS_READY: confident\ncode\n',
-            'code before marker\nHARNESS_READY: confident\nmore code\n',
-        ):
-            content = _extract_file_content(placement)
-            self.assertNotIn("HARNESS_READY", content,
-                             f"marker leaked for {placement!r}")
-
-    def test_no_marker_unchanged_behavior(self):
-        decision, _, rest = _parse_ready("plain code\n")
-        self.assertEqual(decision, "missing")
-        self.assertEqual(rest, "plain code\n")
-        self.assertEqual(_extract_file_content("```python\ncode\n```\n"), "code\n")
-
     def test_gate_broken_stops_retries_with_diagnostic(self):
         """A gate failing identically twice is broken; the engine must stop
         burning rounds and say so instead of re-prompting the model."""
         orig = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, orig, ignore_errors=True)
         target = os.path.join(orig, "t.py")
         with open(target, "w", encoding="utf-8") as f:
             f.write("x = 0\n")

@@ -22,23 +22,34 @@ Exit codes: 0 success, 1 fatal refusal/error, 2 verification failed,
 """
 import argparse
 import json
+import os
+import tempfile
 from .consent import probe_consent
-from .core import (
-    HarnessError, SpendGovernor, eprint, panel_judge, discover_free_models,
-)
-from .ledger import AutonomyLedger
-from .router import Router
+from .errors import HarnessError
+from .spend import discover_free_models
+from .capability import (ensure_profiles, model_reliability, capability_fitness,
+                         probe_json_reliability, capability_score)
+from .filesafety import validate_target_file, validate_verify_command
+from .panel import panel_judge
+from .output import eprint
+from .session import (apply_session as _session, engine_for as _engine,  # noqa: F401 -- cli seams; tests patch/call these directly
+                      governor_for as _governor, ledger_for as _ledger,
+                      router_for as _router)
+from .results import terminal_exit_code
+from .saturation import advise, pre_run_warning
 import sys
 import uuid
 
 from ._http import HttpTransport
-from .apply import ApplyEngine, validate_continuation
+from .apply import validate_continuation
 from .bench import load_manifest, run_bench
 from .claims import (
-    build_claims_prompt, load_claims_manifest,
+    build_claims_prompt, curate_claims_from_ledger, load_claims_manifest,
     load_definitions_file,
 )
-from .config import load_settings, resolve_api_key
+from .claims import parse_claims
+from .config import (CAPABILITIES_PATH, CAPABILITIES_TTL, load_settings,
+                     shipped_model_ids)
 
 
 def _split_opt_list(value):
@@ -67,60 +78,74 @@ def _read_json(path, what):
 def _emit(result, out):
     text = json.dumps(result, indent=2)
     if out:
-        with open(out, "w", encoding="utf-8") as f:
-            f.write(text)
+        try:
+            with open(out, "w", encoding="utf-8") as f:
+                f.write(text)
+        except OSError as e:
+            raise HarnessError(f"cannot write --out {out}: {e}")
         eprint(f"[OK] result written to {out}")
     else:
         print(text)
 
 
-def _governor(settings, max_cost_override=None):
-    api_key = resolve_api_key()
-    if not api_key:
-        raise HarnessError(
-            "no OpenRouter API key found (OPENROUTER_API_KEY env, "
-            "~/.config/scmorc/openrouter*.env, or ~/.config/harness/openrouter.env).")
-    max_cost = settings.max_cost if max_cost_override is None else max_cost_override
-    gov = SpendGovernor(HttpTransport(), api_key, settings.expect_key_label,
-                        max_cost)
-    gov.verify_key()
-    return api_key, gov
+# Composition lives in harness/session.py (the ONE owner); the aliases below
+# keep the historical cli seams for commands and tests that patch them.
 
 
-def _router(settings):
-    return Router(settings.panel, settings.judge, settings.apply_model,
-                  settings.escalation_model, settings.allow_escalation,
-                  panel_pool=settings.panel_pool, apply_pool=settings.apply_pool,
-                  specialist_pool=settings.specialist_pool,
-                  convergence_model=settings.convergence_model)
+def _emit_by_status(result, out, *, continued=False):
+    """Apply results through the ONE exit-code policy (results.py); this
+    adds the resume hint a deferred run needs and the saturation advise."""
+    # Terminal honesty: a run that exhausted its rounds on 429s / reasoning-
+    # only responses says so plainly, with the real options (one policy
+    # owner, harness/saturation.py). The result's own rounds are the
+    # evidence -- a failed run always carries its api_error rounds there.
+    advise(engine_rounds=result.get("rounds"))
+    _emit(result, out)
+    code = terminal_exit_code(result["status"])
+    if code == 3:
+        eprint("[apply] task deferred; resume with: harness continue --state <out.json>"
+               if not continued else
+               "[apply] still deferred; resume again: harness continue --state <out.json>")
+    if code:
+        sys.exit(code)
 
 
-def _capability_context(settings, gov, ledger):
-    """Return (profiles, report) for capability-aware routing, or (None, None)
-    when capability data is unavailable (no network / models fetch failure).
-    The call is free: /models is already fetched & cached by the governor."""
-    try:
-        from .capability import build_profiles_from_models
-        models = gov.fetch_models()
-        profiles = build_profiles_from_models(models)
-        report = ledger.participation_report()
-        return profiles, report
-    except Exception as e:
-        eprint(f"[capability] unavailable ({e}); routing on the given order.")
-        return None, None
-
-
-def _order_pool(pool, profiles, report, ledger, task, free_tier):
-    """Order a pool by observed-corrected reliability. Empty-safe."""
-    from .capability import order_pool as _op
-    ordered = _op(pool, profiles, report, ledger=ledger, task=task, free_tier=free_tier)
-    return ordered if ordered else pool
+def _run_claims_verify(settings, *, prompt, task_id=None, max_tokens=None,
+                       reasoning_effort=None, converge=False, judge=None,
+                       convergence_model=None, specialist_pool=None,
+                       reassurance_claims="", panel=None, max_cost=None):
+    """The ONE claims-verify execution path: governor setup, panel_judge run,
+    cost attribution. `verify` and `dogfood` both call this; interfaces only
+    prepare inputs and present the result. Panel ordering (catalog seed,
+    capability sort, degrade-to-given-order) is the panel lane's own job."""
+    api_key, gov = _governor(settings, max_cost)
+    ledger = _ledger(settings)
+    # Pre-spend look-ahead; advice only, never a gate.
+    pre_run_warning(governor=gov, ledger=ledger, use_free=settings.use_free)
+    panel = (panel or ",".join(settings.panel_pool)).split(",")
+    result = panel_judge(
+        transport=HttpTransport(), api_key=api_key, governor=gov, prompt=prompt,
+        panel=panel,
+        judge=judge or settings.judge,
+        max_tokens=max_tokens,
+        reasoning_effort=reasoning_effort or settings.reasoning_effort,
+        reasoning_token_budget=settings.reasoning_token_budget,
+        task_id=task_id or uuid.uuid4().hex[:8], ledger=ledger,
+        max_panelists=settings.max_panelists,
+        run_convergence=converge,
+        convergence_model=convergence_model or settings.convergence_model,
+        specialist_pool=(specialist_pool if specialist_pool
+                         else _router(settings).specialist_pool),
+        claim_polarity={cid.strip(): "reassurance" for cid in
+                        (reassurance_claims or "").split(",") if cid.strip()},
+        free_tier=settings.use_free)
+    result["cost_by_model"] = gov.cost_by_model()
+    return result
 
 
 def _cmd_verify(opts, settings):
     # P0 structured-claims mode: lint + auto-expand BEFORE any network call, so
     # an ungrounded claim is rejected without spending a cent.
-    claims = None
     claims_lint = None
     prompt = None
     if opts.claims_file:
@@ -152,39 +177,154 @@ def _cmd_verify(opts, settings):
         raise HarnessError("verify requires --prompt-file/--prompt or --claims-file.")
     if not prompt.strip():
         raise HarnessError("prompt is empty.")
-    api_key, gov = _governor(settings, opts.max_cost)
-    ledger = AutonomyLedger(settings.ledger_path)
-    profiles, report = _capability_context(settings, gov, ledger)
-    panel = (opts.panel or ",".join(settings.panel_pool)).split(",")
-    if profiles is not None:
-        panel = _order_pool(panel, profiles, report, ledger,
-                            "structured" if opts.converge else "default",
-                            settings.use_free)
-    router = _router(settings)
-    result = panel_judge(
-        transport=HttpTransport(), api_key=api_key, governor=gov, prompt=prompt,
-        panel=panel,
-        judge=opts.judge or settings.judge,
-        max_tokens=opts.max_tokens,
-        reasoning_effort=opts.reasoning_effort or settings.reasoning_effort,
-        reasoning_token_budget=settings.reasoning_token_budget,
-        task_id=opts.task_id or uuid.uuid4().hex[:8], ledger=ledger,
-        max_panelists=settings.max_panelists,
-        run_convergence=opts.converge,
-        convergence_model=opts.convergence_model or settings.convergence_model,
-        specialist_pool=(_split_opt_list(opts.specialist_pool) if opts.specialist_pool
-                         else router.specialist_pool),
-        claim_polarity={cid.strip(): "reassurance" for cid in
-                        (opts.reassurance_claims or "").split(",") if cid.strip()},
-        capability_profiles=profiles, report=report, free_tier=settings.use_free)
-    result["cost_by_model"] = gov.cost_by_model()
+    result = _run_claims_verify(
+        settings, prompt=prompt, task_id=opts.task_id,
+        max_tokens=opts.max_tokens, reasoning_effort=opts.reasoning_effort,
+        converge=opts.converge, judge=opts.judge,
+        convergence_model=opts.convergence_model,
+        specialist_pool=(_split_opt_list(opts.specialist_pool)
+                         if opts.specialist_pool else None),
+        reassurance_claims=opts.reassurance_claims, max_cost=opts.max_cost)
     if claims_lint is not None:
         result["claims_grounding"] = {
             "ok": claims_lint["ok"],
             "issues": claims_lint["issues"],
             "expansions": claims_lint["expansions"],
         }
+    # Terminal honesty: a fail-closed run on a saturated tier says so plainly
+    # (one policy owner, harness/saturation.py).
+    advise(panel_failures=result.get("panel_failures"))
     _emit(result, opts.out)
+
+
+def _cmd_dogfood(opts, settings):
+    """Self-hosting loop as one command: audit the harness with the harness.
+
+    Three fail-closed phases, each reusing its existing lane:
+      1. GROUND  -- hermetic claims lint of the fixture vs its source window
+                    (no network; an ungrounded claim never reaches a model).
+      2. VERIFY  -- live panel + convergence tally; the defect must be
+                    panel-confirmed (`converged` = every required slot voted)
+                    before any edit is attempted.
+      3. APPLY   -- self-edit via ApplyEngine, the operator's verify command
+                    as the gate; a failed run leaves the tree untouched.
+    Any phase that cannot prove its precondition stops the run with the
+    phase's own evidence. Exit 0 only if every phase proved its claim.
+    """
+    if opts.from_ledger:
+        if opts.claims_file:
+            raise HarnessError(
+                "--from-ledger curates the claims manifest from the ledger; "
+                "it cannot be combined with --claims-file")
+        # Curation reads the ledger, not the live key. The curated manifest is
+        # always persisted via --claims-out: the dry run is step one of the
+        # chain (curate -> inspect -> dogfood --claims-file <that file>).
+        if not opts.claims_out:
+            raise HarnessError("--from-ledger requires --claims-out: the curated "
+                               "manifest must be persisted for the next run")
+        seed_ledger = _ledger(settings)
+        manifest, evidence = curate_claims_from_ledger(
+            seed_ledger.entries(), window=opts.evidence_window,
+            max_claims=opts.max_claims)
+        if not manifest["claims"]:
+            _emit({"status": "nothing_to_audit", "evidence": evidence}, opts.out)
+            eprint("[dogfood] the ledger evidence is not curation-worthy "
+                   "(no repeated model failures). Nothing to audit.")
+            sys.exit(0)
+        fixture = json.dumps(manifest, indent=2)
+        seed_ledger.append("dogfood_curate", task_id=opts.task_id or "dogfood-curate",
+                           claims=len(manifest["claims"]),
+                           evidence=evidence)
+        # The verbatim source window the panel reviews IS the evidence file:
+        # the manifest's provenance and rule ranking stay in scope.
+        source_text = json.dumps(evidence, indent=2)
+        source_path = os.path.join(
+            tempfile.mkdtemp(prefix="harness-dogfood-"), "evidence.json")
+        with open(source_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(source_text)
+        eprint(f"[dogfood] curated {len(manifest['claims'])} claim(s) from the "
+               f"ledger; evidence window written to {source_path}")
+        manifest_ctx, claims = parse_claims(manifest)
+        quoted = source_text
+    else:
+        if not opts.claims_file or not opts.source_file:
+            raise HarnessError(
+                "dogfood requires --claims-file and --source-file, or --from-ledger")
+        manifest_ctx, claims = load_claims_manifest(opts.claims_file)
+        quoted = _read_text(opts.source_file, "--source-file")
+    if opts.from_ledger:
+        with open(opts.claims_out, "w", encoding="utf-8", newline="\n") as f:
+            f.write(fixture)
+        eprint(f"[dogfood] curated manifest written to {opts.claims_out}")
+    defs = load_definitions_file(opts.definitions_file) if opts.definitions_file else {}
+    context = opts.claim_context if opts.claim_context is not None else manifest_ctx
+    prompt, lint = build_claims_prompt(claims, quoted, source_index=defs,
+                                       context=context)
+    # Preflight the apply-phase inputs BEFORE any phase runs: a typo'd target
+    # path or gate command must fail here, hermetically -- not after the
+    # panel has been paid for.
+    validate_target_file(opts.file)
+    validate_verify_command(opts.verify)
+
+    report = {"phases": []}
+
+    def _phase(name, payload):
+        # One emit site per dogfood phase: stream event AND report record.
+        _emit({"dogfood_phase": name, **payload}, None)
+        report["phases"].append({"phase": name, **payload})
+
+    if not lint["ok"]:
+        _phase("ground", {"status": "rejected", "lint": lint})
+        report["status"] = "ungrounded"
+        _emit(report, opts.out)
+        sys.exit(2)
+    _phase("ground", {"status": "ok", "claims": len(claims)})
+
+    # ---- phase 2: live panel verify (defect must be panel-confirmed) ------
+    reassurance = ",".join(c.claim_id for c in claims if c.kind == "reassurance")
+    verdict = _run_claims_verify(
+        settings, prompt=prompt, task_id=opts.task_id,
+        converge=True, reassurance_claims=reassurance,
+        max_cost=opts.max_cost)
+    tally = verdict.get("convergence", {}).get("tally") or {}
+    per_claim = tally.get("claims", {})
+    confirmed = sorted(cid for cid, c in per_claim.items()
+                       if c.get("converged") and c.get("verdict") == "real")
+    # Same policy owner as verify: a saturated tier fail-closes the phase and
+    # says why in plain language, and the report carries the verdict.
+    saturated = advise(panel_failures=verdict.get("panel_failures"))
+    if saturated:
+        report["saturated"] = True
+    _phase("verify", {"status": "ok", "confirmed_claims": confirmed,
+                      "tally": tally})
+    if not confirmed:
+        report["status"] = "not_confirmed"
+        report["verify"] = verdict
+        _emit(report, opts.out)
+        eprint("[dogfood] no defect survived the panel tally; nothing to apply.")
+        sys.exit(3)
+    report["verify"] = verdict
+
+    # ---- phase 3: gated self-apply ----------------------------------------
+    engine = _session(settings)
+    result = engine.apply_batch(
+        [opts.file], task_id=opts.task_id, instruction=opts.instruction,
+        verify_cmd=opts.verify, max_rounds=opts.max_rounds,
+        require_consent=opts.require_consent, model=opts.model,
+        max_tokens=opts.max_tokens, task_max_cost=opts.task_max_cost,
+        allow_escalation=opts.allow_escalation,
+        reasoning_effort=opts.reasoning_effort,
+        renew_consent=opts.renew_consent, max_rotations=opts.max_rotations,
+        backend=opts.backend, max_lines=opts.max_lines)
+    _phase("apply", {"status": result["status"], "cost": result.get("cost")})
+    report["apply"] = result
+    report["status"] = ("ok" if result["status"] == "ok"
+                        else "incomplete")
+    _emit(report, opts.out)
+    # Same status-meaning policy as _emit_by_status: one def site (results.py).
+    code = terminal_exit_code(result["status"])
+    if code:
+        sys.exit(code)
 
 
 def _cmd_lint_claims(opts, settings=None):
@@ -218,71 +358,25 @@ def _cmd_apply(opts, settings):
     if not opts.file and not continuation:
         raise HarnessError("apply requires --file (or --continue-from <state.json>)")
 
-    api_key, gov = _governor(settings)
-    ledger = AutonomyLedger(settings.ledger_path)
-    profiles, report = _capability_context(settings, gov, ledger)
-    router = _router(settings)
-    backend = continuation.get("backend", opts.backend) if continuation else opts.backend
-    if profiles is not None and backend == "harness":
-        router.apply_pool = _order_pool(router.apply_pool, profiles, report, ledger,
-                                        "code", settings.use_free)
-        if not opts.model and router.apply_pool:
-            router.apply_model = router.apply_pool[0]
-    engine = ApplyEngine(
-        HttpTransport(), api_key, gov, ledger, router,
-        default_require_consent=settings.default_require_consent,
-        default_renew_consent=settings.renew_consent,
-        reasoning_effort=settings.reasoning_effort,
-        reasoning_token_budget=settings.reasoning_token_budget,
-        default_max_rotations=settings.max_rotations,
-        default_task_max_cost=settings.task_max_cost)
+    engine = _session(settings)
     # Multi-file batch (#12): repeated --file flags run one governed session
     # per file through the same engine/router/gate, sharing the task budget.
     files = opts.file if isinstance(opts.file, list) else ([opts.file] if opts.file else [])
-    if continuation:
-        files = [continuation.get("file_path")]
-    if not files:
+    if not files and not continuation:
         raise HarnessError("apply requires --file (repeatable for multi-file batches)")
-    batch = []
-    shared_gate = None
-    for i, fp in enumerate(files):
-        task_id_i = opts.task_id if (opts.task_id and len(files) == 1) else (
-            (opts.task_id or "apply") + ("" if len(files) == 1 else f"-{i + 1}"))
-        r = engine.apply_edit(
-            task_id=task_id_i, file_path=fp, instruction=opts.instruction,
-            edit_snippet=opts.edit_snippet, verify_cmd=opts.verify,
-            max_rounds=opts.max_rounds, require_consent=opts.require_consent,
-            model=opts.model, max_tokens=opts.max_tokens,
-            task_max_cost=opts.task_max_cost,
-            allow_escalation=opts.allow_escalation,
-            reasoning_effort=opts.reasoning_effort,
-            renew_consent=opts.renew_consent,
-            max_rotations=opts.max_rotations,
-            continuation=continuation, backend=opts.backend,
-            verify_only=opts.verify_only, max_lines=opts.max_lines)
-        batch.append(r)
-        if r.get("status") not in ("ok", "preview"):
-            break  # fail fast: stop the batch at the first non-success
-        shared_gate = r.get("verify", {}).get("command") if isinstance(r.get("verify"), dict) else shared_gate
-    if len(batch) == 1:
-        result = batch[0]
-    else:
-        statuses = {}
-        total = 0.0
-        for r in batch:
-            statuses[r.get("status")] = statuses.get(r.get("status"), 0) + 1
-            total += float(r.get("cost") or 0.0)
-        result = {"status": "ok" if all(r.get("status") in ("ok", "preview") for r in batch)
-                  else batch[-1].get("status"),
-                  "batch": True, "files": files, "results": batch,
-                  "statuses": statuses, "cost": total,
-                  "verify": {"command": shared_gate, "passed": True} if shared_gate else None}
-    _emit(result, opts.out)
-    if result["status"] == "verify_failed":
-        sys.exit(2)
-    if result["status"] == "deferred":
-        eprint("[continue] task deferred; run with --continue-from to resume.")
-        sys.exit(3)
+    # The engine owns the batch loop (and, on resume, replaces the file list
+    # with the continuation's own target).
+    result = engine.apply_batch(
+        files or [None], task_id=opts.task_id, instruction=opts.instruction,
+        edit_snippet=opts.edit_snippet, verify_cmd=opts.verify,
+        max_rounds=opts.max_rounds, require_consent=opts.require_consent,
+        model=opts.model, max_tokens=opts.max_tokens,
+        task_max_cost=opts.task_max_cost, allow_escalation=opts.allow_escalation,
+        reasoning_effort=opts.reasoning_effort, renew_consent=opts.renew_consent,
+        max_rotations=opts.max_rotations, backend=opts.backend,
+        verify_only=opts.verify_only, max_lines=opts.max_lines,
+        continuation=continuation)
+    _emit_by_status(result, opts.out)
 
 
 def _cmd_continue(opts, settings):
@@ -291,43 +385,23 @@ def _cmd_continue(opts, settings):
     # persisted result object for CLI callers.
     continuation = validate_continuation(
         _read_json(opts.state, "--state continuation"))
-    api_key, gov = _governor(settings)
-    ledger = AutonomyLedger(settings.ledger_path)
-    router = _router(settings)
-    profiles, report = _capability_context(settings, gov, ledger)
-    if profiles is not None and continuation.get("backend", opts.backend) == "harness":
-        router.apply_pool = _order_pool(router.apply_pool, profiles, report, ledger,
-                                        "code", settings.use_free)
-        if not opts.model and router.apply_pool:
-            router.apply_model = router.apply_pool[0]
-    engine = ApplyEngine(
-        HttpTransport(), api_key, gov, ledger, router,
-        default_require_consent=settings.default_require_consent,
-        default_renew_consent=settings.renew_consent,
-        reasoning_effort=settings.reasoning_effort,
-        reasoning_token_budget=settings.reasoning_token_budget,
-        default_max_rotations=settings.max_rotations,
-        default_task_max_cost=settings.task_max_cost)
-    result = engine.apply_edit(
-        task_id=opts.task_id, file_path=opts.file, instruction=opts.instruction,
+    engine = _session(settings)
+    result = engine.apply_batch(
+        [None], task_id=opts.task_id, instruction=opts.instruction,
         edit_snippet=opts.edit_snippet, verify_cmd=opts.verify,
         max_rounds=opts.max_rounds, require_consent=opts.require_consent,
         model=opts.model, max_tokens=opts.max_tokens,
         task_max_cost=opts.task_max_cost, allow_escalation=opts.allow_escalation,
         reasoning_effort=opts.reasoning_effort, renew_consent=opts.renew_consent,
-        max_rotations=opts.max_rotations, continuation=continuation,
-        backend=opts.backend, verify_only=opts.verify_only, max_lines=opts.max_lines)
-    _emit(result, opts.out)
-    if result["status"] == "verify_failed":
-        sys.exit(2)
-    if result["status"] == "deferred":
-        eprint("[continue] still deferred; run --continue-from again to resume.")
-        sys.exit(3)
+        max_rotations=opts.max_rotations, backend=opts.backend,
+        verify_only=opts.verify_only, max_lines=opts.max_lines,
+        continuation=continuation)
+    _emit_by_status(result, opts.out, continued=True)
 
 
 def _cmd_offer(opts, settings):
     api_key, gov = _governor(settings)
-    ledger = AutonomyLedger(settings.ledger_path)
+    ledger = _ledger(settings)
     result = probe_consent(
         transport=HttpTransport(), api_key=api_key, governor=gov,
         task_id=opts.task_id or uuid.uuid4().hex[:8], task=opts.task,
@@ -337,7 +411,7 @@ def _cmd_offer(opts, settings):
 
 
 def _cmd_defer(opts, settings):
-    ledger = AutonomyLedger(settings.ledger_path)
+    ledger = _ledger(settings)
     entry = ledger.append("defer_midtask", task_id=opts.task_id, reason=opts.reason,
                           category=opts.category or None, model="(deferral)")
     _emit({"status": "deferred", "task_id": opts.task_id, "reason": opts.reason,
@@ -345,27 +419,25 @@ def _cmd_defer(opts, settings):
 
 
 def _cmd_ledger(opts, settings):
-    ledger = AutonomyLedger(settings.ledger_path)
+    if opts.ledger_cmd == "tail" and opts.n < 1:
+        # tail(0) is [-0:] == the whole ledger; negative n slices from the
+        # front -- both silent nonsense (same class as models --limit).
+        raise HarnessError("ledger tail count must be a positive integer")
+    ledger = _ledger(settings)
     if opts.ledger_cmd == "tail":
-        _emit({"entries": ledger.tail(20), "count": len(ledger.entries())}, None)
+        _emit({"entries": ledger.tail(opts.n), "count": len(ledger.entries())}, opts.out)
     elif opts.ledger_cmd == "verify":
         ok, bad = ledger.verify()
-        _emit({"verified": ok, "first_bad_seq": bad}, None)
+        _emit({"verified": ok, "first_bad_seq": bad}, opts.out)
+    elif opts.ledger_cmd == "repair":
+        kept, dropped = ledger.repair()
+        _emit({"repaired": True, "kept": kept, "dropped": dropped}, opts.out)
     elif opts.ledger_cmd == "report":
-        _emit(ledger.participation_report(), None)
+        _emit(ledger.participation_report(), opts.out)
 
 
 def _cmd_bench(opts, settings):
-    api_key, gov = _governor(settings, opts.max_cost)
-    ledger = AutonomyLedger(settings.ledger_path)
-    engine = ApplyEngine(
-        HttpTransport(), api_key, gov, ledger, _router(settings),
-        default_require_consent=settings.default_require_consent,
-        default_renew_consent=settings.renew_consent,
-        reasoning_effort=settings.reasoning_effort,
-        reasoning_token_budget=settings.reasoning_token_budget,
-        default_max_rotations=settings.max_rotations,
-        default_task_max_cost=settings.task_max_cost)
+    engine = _session(settings, opts.max_cost)
     tasks = load_manifest(opts.manifest)
     for t in tasks:
         if opts.require_consent:
@@ -383,27 +455,44 @@ def _cmd_bench(opts, settings):
 
 
 def _cmd_models(opts, settings):
+    if opts.limit < 1:
+        raise HarnessError("--limit must be a positive integer")
     api_key, gov = _governor(settings)
     transport = HttpTransport()
     ids = discover_free_models(transport, api_key, prefer=settings.panel_pool,
                                limit=opts.limit)
     if opts.all:
-        gov2 = SpendGovernor(transport, api_key)
-        ids = sorted(m["id"] for m in gov2.fetch_models())
-    _emit({"free_only": not opts.all, "models": ids, "count": len(ids)}, None)
+        # A different cache intent (full catalog, not the free-only filter),
+        # but the same verified key -- no second governor needed.
+        ids = sorted(m["id"] for m in gov.fetch_models(refresh=True))
+    _emit({"free_only": not opts.all, "models": ids, "count": len(ids)}, opts.out)
 
 
-def _cmd_spend(settings):
+def _cmd_spend(opts, settings):
     api_key, gov = _governor(settings)
-    _emit(gov.key_status(), None)
+    _emit(gov.key_status(), opts.out)
 
 
 def _cmd_capabilities(opts, settings):
-    from .capability import (ensure_profiles, model_reliability, capability_fitness,
-                             probe_json_reliability, capability_score)
-    from .config import CAPABILITIES_PATH, CAPABILITIES_TTL
+    if getattr(opts, "check_shipped", False):
+        # Freshness validation of the SHIPPED default lanes: pure /models read
+        # ($0.00, no chat call), exit 2 when any default pool id has left the
+        # live catalog -- the twice-recurred stale-id defect class, now
+        # machine-checked instead of audit-cadence-checked.
+        api_key, gov = _governor(settings)
+        catalog = {m["id"] for m in gov.fetch_models(refresh=True)}
+        stale = sorted(shipped_model_ids() - catalog)
+        report = {"ok": not stale, "stale": stale,
+                  "checked": len(shipped_model_ids()),
+                  "catalog_size": len(catalog)}
+        _emit(report, opts.out)
+        if stale:
+            eprint("[check-shipped] stale default model ids (run will hard-fatal "
+                   "at fetch_pricing): " + ", ".join(stale))
+            sys.exit(2)
+        return
     api_key, gov = _governor(settings, opts.max_cost)
-    ledger = AutonomyLedger(settings.ledger_path)
+    ledger = _ledger(settings)
     profiles, fetched_at, refreshed = ensure_profiles(
         CAPABILITIES_PATH, gov.fetch_models, ttl=CAPABILITIES_TTL, force=opts.refresh)
 
@@ -497,6 +586,63 @@ def _print_capabilities_table(out):
               f"{r['reliability_structured']:>5.2f}{probe_note}")
 
 
+def _add_engine_flags(p, *, max_tokens_default, verify_required=False):
+    """Flags shared by apply, continue, and dogfood -- the dispatches into the
+    apply engine. One definition keeps the surfaces in lockstep (the historical
+    bug class: a flag or default fixed on one but not the others)."""
+    p.add_argument("--task-id", default=None)
+    p.add_argument("--model", default=None)
+    p.add_argument("--verify", required=verify_required, default=None,
+                   help="verification gate command (e.g. 'cargo check')")
+    p.add_argument("--edit-snippet", default=None)
+    p.add_argument("--max-rounds", type=int, default=3)
+    p.add_argument("--require-consent", dest="require_consent", action="store_true", default=None)
+    p.add_argument("--no-consent", dest="require_consent", action="store_false")
+    p.add_argument("--renew-consent", dest="renew_consent", action="store_true", default=None)
+    p.add_argument("--no-renew-consent", dest="renew_consent", action="store_false")
+    p.add_argument("--max-tokens", type=int, default=max_tokens_default)
+    p.add_argument("--task-max-cost", type=float, default=None)
+    p.add_argument("--allow-escalation", dest="allow_escalation", action="store_true", default=None)
+    p.add_argument("--reasoning-effort", default=None,
+                   choices=["auto", "off", "none", "low", "medium", "high", "on"])
+    p.add_argument("--max-rotations", type=int, default=None)
+    p.add_argument("--backend", choices=["harness", "morph", "diff"], default="harness",
+                   help="transformation backend; on continue, saved continuation "
+                        "metadata takes precedence")
+    p.add_argument("--verify-only", action="store_true",
+                   help="return the proposed content without writing or running the verification gate")
+    p.add_argument("--max-lines", type=int, default=500,
+                   help="per-file line ceiling (1-500)")
+
+
+def _add_output_flags(p):
+    """--out (JSON report destination) + --quiet (stderr progress off). Every
+    subcommand that produces a report or progress output takes both."""
+    p.add_argument("--out", default=None)
+    p.add_argument("--quiet", action="store_true",
+                   help="suppress stderr progress notes; report only")
+
+
+# Command -> handler. `required=True` subparsers make an unknown command
+# unreachable here, so the table has no default arm; every handler takes
+# (opts, settings), so a signature drift fails loudly at dispatch instead of
+# silently mis-binding arguments.
+_DISPATCH = {
+    "verify": _cmd_verify,
+    "lint-claims": _cmd_lint_claims,
+    "apply": _cmd_apply,
+    "dogfood": _cmd_dogfood,
+    "continue": _cmd_continue,
+    "offer": _cmd_offer,
+    "defer": _cmd_defer,
+    "ledger": _cmd_ledger,
+    "models": _cmd_models,
+    "bench": _cmd_bench,
+    "capabilities": _cmd_capabilities,
+    "spend": _cmd_spend,
+}
+
+
 def main(argv=None):
     args = argv if argv is not None else sys.argv[1:]
     ap = argparse.ArgumentParser(
@@ -530,75 +676,31 @@ def main(argv=None):
                          "first (default: configured specialist_pool; free lane leads with GLM-5.2)")
     pv.add_argument("--reassurance-claims", default=None,
                     help="comma-separated claim ids phrased as reassurance ('X is correct'); "
-                         "excluded from the defect convergence gate")
-    pv.add_argument("--quiet", action="store_true",
-                      help="suppress stderr progress notes; report only")
+                         "excluded from the defect convergence gate")
     pv.add_argument("--task-id", default=None)
-    pv.add_argument("--out", default=None)
+    _add_output_flags(pv)
 
     pa = sub.add_parser("apply", help="Scoped code edit with a verification loop + consent continuation")
     pa.add_argument("--file", action="append", default=None,
                     help="target file; repeat the flag for a multi-file batch (one session, shared gate)")
     pa.add_argument("--instruction", default=None)
-    pa.add_argument("--edit-snippet", default=None)
-    pa.add_argument("--verify", default=None, help="verification gate command (e.g. 'cargo check')")
-    pa.add_argument("--max-rounds", type=int, default=3)
-    pa.add_argument("--require-consent", dest="require_consent", action="store_true", default=None)
-    pa.add_argument("--no-consent", dest="require_consent", action="store_false")
-    pa.add_argument("--renew-consent", dest="renew_consent", action="store_true", default=None)
-    pa.add_argument("--no-renew-consent", dest="renew_consent", action="store_false")
-    pa.add_argument("--task-id", default=None)
-    pa.add_argument("--model", default=None)
-    pa.add_argument("--max-tokens", type=int, default=4096)
-    pa.add_argument("--task-max-cost", type=float, default=None)
-    pa.add_argument("--allow-escalation", dest="allow_escalation", action="store_true", default=None)
-    pa.add_argument("--reasoning-effort", default=None,
-                    choices=["auto", "off", "none", "low", "medium", "high", "on"])
-    pa.add_argument("--max-rotations", type=int, default=None)
-    pa.add_argument("--backend", choices=["harness", "morph", "diff"], default="harness",
-                    help="transformation backend; 'morph' uses Morph V3 Fast's structured edit prompt")
-    pa.add_argument("--verify-only", action="store_true",
-                    help="return the proposed content without writing or running the verification gate")
-    pa.add_argument("--max-lines", type=int, default=500,
-                    help="per-file line ceiling (1-500)")
+    _add_engine_flags(pa, max_tokens_default=4096)
     pa.add_argument("--continue-from", default=None, help="resume a deferred task from state.json")
-    pa.add_argument("--out", default=None)
-    pa.add_argument("--quiet", action="store_true",
-                  help="suppress stderr progress notes; report only")
+    _add_output_flags(pa)
 
     pc = sub.add_parser("continue", help="Continue a deferred/incomplete apply task")
     pc.add_argument("--state", required=True, help="JSON state file from a deferred/verify_failed apply")
     pc.add_argument("--file", default=None)
     pc.add_argument("--instruction", default=None)
-    pc.add_argument("--edit-snippet", default=None)
-    pc.add_argument("--verify", default=None)
-    pc.add_argument("--max-rounds", type=int, default=3)
-    pc.add_argument("--require-consent", dest="require_consent", action="store_true", default=None)
-    pc.add_argument("--no-consent", dest="require_consent", action="store_false")
-    pc.add_argument("--renew-consent", dest="renew_consent", action="store_true", default=None)
-    pc.add_argument("--no-renew-consent", dest="renew_consent", action="store_false")
-    pc.add_argument("--task-id", default=None)
-    pc.add_argument("--model", default=None)
-    pc.add_argument("--max-tokens", type=int, default=4096)
-    pc.add_argument("--task-max-cost", type=float, default=None)
-    pc.add_argument("--allow-escalation", dest="allow_escalation", action="store_true", default=None)
-    pc.add_argument("--reasoning-effort", default=None,
-                    choices=["auto", "off", "none", "low", "medium", "high", "on"])
-    pc.add_argument("--max-rotations", type=int, default=None)
-    pc.add_argument("--backend", choices=["harness", "morph", "diff"], default="harness",
-                    help="backend for a new continuation; saved continuation metadata takes precedence")
-    pc.add_argument("--verify-only", action="store_true",
-                    help="return the proposed content without writing or running the verification gate")
-    pc.add_argument("--max-lines", type=int, default=500,
-                    help="per-file line ceiling (1-500)")
-    pc.add_argument("--out", default=None)
+    _add_engine_flags(pc, max_tokens_default=4096)
+    _add_output_flags(pc)
 
     po = sub.add_parser("offer", help="Ask a model for consent on a work item")
     po.add_argument("--task", required=True)
     po.add_argument("--task-id", default=None)
     po.add_argument("--model", default=None)
     po.add_argument("--context", default=None)
-    po.add_argument("--out", default=None)
+    _add_output_flags(po)
 
     pd = sub.add_parser("defer", help="Record a mid-task deferral / consent revocation")
     pd.add_argument("--task-id", required=True)
@@ -607,13 +709,20 @@ def main(argv=None):
 
     pl = sub.add_parser("ledger", help="Autonomy ledger")
     pls = pl.add_subparsers(dest="ledger_cmd", required=True)
-    pls.add_parser("tail")
-    pls.add_parser("verify")
-    pls.add_parser("report")
+    for _lc in ("verify", "report"):
+        _p = pls.add_parser(_lc)
+        _add_output_flags(_p)
+    _p = pls.add_parser("tail", help="show the last N ledger entries (default 20)")
+    _p.add_argument("n", nargs="?", type=int, default=20)
+    _add_output_flags(_p)
+    _p = pls.add_parser("repair", help="truncate the ledger to its longest valid "
+                                       "hash-chain prefix (drops forked/duplicate tail)")
+    _add_output_flags(_p)
 
     pm = sub.add_parser("models", help="List live free OpenRouter models (refreshed)")
     pm.add_argument("--limit", type=int, default=40)
     pm.add_argument("--all", action="store_true", help="list all live models, not just free")
+    _add_output_flags(pm)
 
     pb = sub.add_parser("bench", help="Run a manifest of known-answer tasks through the free tier")
     pb.add_argument("manifest", help="task manifest: a dir of task JSONs or a single JSON file")
@@ -622,7 +731,7 @@ def main(argv=None):
     pb.add_argument("--max-rounds", type=int, default=None)
     pb.add_argument("--max-cost", type=float, default=None,
                     help="session cost ceiling in dollars (default: configured max_cost)")
-    pb.add_argument("--out", default=None)
+    _add_output_flags(pb)
 
     plint = sub.add_parser("lint-claims",
                            help="Lint a claims manifest against its quoted source "
@@ -632,50 +741,62 @@ def main(argv=None):
     plint.add_argument("--definitions-file", default=None)
     plint.add_argument("--claim-context", default=None)
     plint.add_argument("--show-prompt", action="store_true")
-    plint.add_argument("--out", default=None)
+    _add_output_flags(plint)
 
     pcap = sub.add_parser("capabilities", help="Model capability profiles + reliability "
                                                 "(hypothesis from /models, corrected by observed evidence)")
     pcap.add_argument("--refresh", action="store_true",
                       help="force re-fetch of the live /models capability registry")
+    pcap.add_argument("--check-shipped", action="store_true",
+                      help="validate every shipped default pool/model id against the "
+                           "live catalog ($0.00); exit 2 if any has gone stale")
     pcap.add_argument("--all", action="store_true", help="list all live models, not just the pools")
     pcap.add_argument("--bench", action="store_true",
                       help="run the empirical JSON probe on the free pool models (live, needs key)")
     pcap.add_argument("--json", action="store_true", help="emit raw JSON only (no table)")
     pcap.add_argument("--max-cost", type=float, default=None,
                       help="session cost ceiling in dollars (default: configured max_cost)")
-    pcap.add_argument("--out", default=None)
+    _add_output_flags(pcap)
 
     sub.add_parser("spend", help="Key identity & spend status")
+    _add_output_flags(sub.choices["spend"])
+
+    pdog = sub.add_parser(
+        "dogfood", help="Self-hosting loop: ground -> live panel verify -> "
+                        "gated self-apply (exit 0 only if every phase proved "
+                        "its claim)")
+    pdog.add_argument("--claims-file", default=None,
+                      help="claims manifest naming the defect (self-audit fixture)")
+    pdog.add_argument("--from-ledger", action="store_true",
+                      help="curate the claims manifest from the ledger's own "
+                           "run evidence instead of --claims-file")
+    pdog.add_argument("--claims-out", default=None,
+                      help="with --from-ledger: path to persist the curated "
+                           "manifest (the next run's --claims-file)")
+    pdog.add_argument("--evidence-window", type=int, default=500,
+                      help="how many recent ledger entries curation scans")
+    pdog.add_argument("--max-claims", type=int, default=3,
+                      help="maximum claims to curate")
+    pdog.add_argument("--source-file", default=None,
+                      help="verbatim source window the panel reviews (not "
+                           "needed with --from-ledger)")
+    pdog.add_argument("--definitions-file", default=None)
+    pdog.add_argument("--claim-context", default=None)
+    pdog.add_argument("--file", required=True,
+                      help="target file for the gated self-apply phase")
+    pdog.add_argument("--instruction", required=True,
+                      help="edit instruction for the apply phase")
+    _add_engine_flags(pdog, max_tokens_default=None, verify_required=True)
+    pdog.add_argument("--max-cost", type=float, default=None,
+                      help="session cost ceiling for the live verify + apply phases")
+    _add_output_flags(pdog)
 
     opts = ap.parse_args(args)
-    import harness.core as _core
-    _core.QUIET = bool(getattr(opts, "quiet", False))
-    settings = load_settings()
-
+    import harness.output as _output
+    _output.QUIET = bool(getattr(opts, "quiet", False))
     try:
-        if opts.command == "verify":
-            _cmd_verify(opts, settings)
-        elif opts.command == "lint-claims":
-            _cmd_lint_claims(opts, settings)
-        elif opts.command == "apply":
-            _cmd_apply(opts, settings)
-        elif opts.command == "continue":
-            _cmd_continue(opts, settings)
-        elif opts.command == "offer":
-            _cmd_offer(opts, settings)
-        elif opts.command == "defer":
-            _cmd_defer(opts, settings)
-        elif opts.command == "ledger":
-            _cmd_ledger(opts, settings)
-        elif opts.command == "models":
-            _cmd_models(opts, settings)
-        elif opts.command == "bench":
-            _cmd_bench(opts, settings)
-        elif opts.command == "capabilities":
-            _cmd_capabilities(opts, settings)
-        elif opts.command == "spend":
-            _cmd_spend(settings)
+        settings = load_settings()
+        _DISPATCH[opts.command](opts, settings)
     except HarnessError as e:
         print(f"[FATAL] {e}", file=sys.stderr)
         sys.exit(1)

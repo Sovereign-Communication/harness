@@ -26,13 +26,20 @@ authority, so MCP write/exec surfaces are gated one step stricter than CLI.
 | Path escape via edit targets | Targets must resolve inside the sandbox root; absolute escapes, `..` traversal, and symlink swaps are refused; original file mode is preserved | `harness/apply.py` (`_AtomicWrite`, bench sandbox) |
 | Arbitrary overwrite via MCP apply | Root containment check + backup written outside the tree; write refused (never best-effort) when containment fails | `harness/apply.py`, `harness/mcp.py` |
 | Prompt marker smuggling | `HARNESS_READY`/`HARNESS_DEFER` protocol markers are stripped from file content anywhere in the body, so a model cannot smuggle protocol text into user files | `harness/apply.py` |
-| Spend runaway (model or bug) | Worst-case preflight against the ceiling before every network call; per-actual enforcement; consent, rotation, and probe calls all preflighted; per-invocation `--max-cost` on verify/bench/capabilities | `harness/core.py` (SpendGovernor) |
-| BYOK key leakage | Org-prefix denylist refuses disallowed models outright; learned prefixes persisted and re-checked | `harness/core.py` |
+| Spend runaway (model or bug) | Worst-case preflight against the ceiling before every network call; per-actual enforcement; consent, rotation, and probe calls all preflighted; per-invocation `--max-cost` on verify/bench/capabilities | `harness/spend.py` (SpendGovernor) |
+| BYOK key leakage | Org-prefix denylist refuses disallowed models outright; learned prefixes persisted and re-checked | `harness/spend.py`, `harness/chat.py` |
 | Credential hygiene | Key files warn loudly when group/world readable (POSIX); `expect_key_label` supports exact match; labels never echoed in errors | `harness/config.py` |
 | Ledger tampering | Hash-chained JSONL entries; `verify` recomputes the chain; corrupt/torn lines are quarantined with a stderr note instead of crashing; cross-process advisory lock; 10 MB rotation | `harness/ledger.py` |
 | MCP tool abuse | `allow_verify` confirmation gate on verification commands; structured error codes; `notifications/cancelled` aborts in-flight work via cancellation events | `harness/mcp.py` |
 
 ## Accepted residual risks
+
+**Important:** `shell=False` is not a sandbox. It prevents shell metacharacter
+interpretation, but the approved executable still runs on the host with the
+harness process's privileges. Harness does not currently impose memory limits,
+network isolation, or a complete child-process sandbox around verification.
+Use disposable checkouts and review every `verify_cmd` when the caller is not
+fully trusted.
 
 - **Verification commands still run on your host.** The gate executes with
   `shell=False` under a timeout, but whatever command string is approved

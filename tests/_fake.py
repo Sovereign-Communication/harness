@@ -1,6 +1,18 @@
 """Shared fakes for hermetic (no-network) tests."""
 import json
 
+from harness.spend import SpendGovernor
+
+# Shared lane model ids (free-tier panel/judge conventions).
+P1 = "inclusionai/ling-2.6-flash"
+P2 = "meta-llama/llama-3.1-8b-instruct"
+JUDGE = "inclusionai/ling-2.6-flash"
+
+
+def _gov(fake, **kw):
+    """A SpendGovernor over ``fake`` with the standard test key."""
+    return SpendGovernor(fake, "sk-test", **kw)
+
 
 class FakeTransport:
     def __init__(self, models=None, key=None, posts=None):

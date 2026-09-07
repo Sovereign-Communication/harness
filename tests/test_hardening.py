@@ -8,13 +8,15 @@ import tempfile
 import unittest
 from unittest import mock
 
-from harness.apply import READY_MARKER, _apply_unified_diff, _parse_ready
+from harness.apply import _apply_unified_diff, _parse_ready
+from harness.prompts import READY_MARKER
 from harness.config import load_settings, DEFAULT_MAX_TOKENS
 from harness.capability import (
     CAPABILITIES_SCHEMA_VERSION, load_profiles, save_profiles,
     build_profiles_from_models,
 )
-from harness.core import SpendGovernor, estimate_prompt_tokens
+from harness.spend import SpendGovernor
+from harness.tokens import estimate_prompt_tokens
 from harness.errors import HarnessError
 
 
@@ -41,6 +43,24 @@ class ConfigRangeValidationTests(unittest.TestCase):
             s = load_settings()
         self.assertEqual(s.max_tokens, DEFAULT_MAX_TOKENS)
 
+    def test_max_cost_capped_at_hard_ceiling(self):
+        """HARD_MAX_COST is a documented hard ceiling: a misconfigured or
+        hostile `max_cost` above it must be refused, not silently applied."""
+        with mock.patch.dict(os.environ, {"HARNESS_MAX_COST": "500"}):
+            with self.assertRaises(HarnessError):
+                load_settings()
+        with mock.patch.dict(os.environ, {"HARNESS_TASK_MAX_COST": "999"}):
+            with self.assertRaises(HarnessError):
+                load_settings()
+
+    def test_hard_ceiling_boundary_values_accepted(self):
+        """The hard ceilings themselves remain configurable (e.g. CI wants 10¢)."""
+        with mock.patch.dict(os.environ, {"HARNESS_MAX_COST": "0.10",
+                                          "HARNESS_TASK_MAX_COST": "0.25"}):
+            s = load_settings()
+        self.assertEqual(s.max_cost, 0.10)
+        self.assertEqual(s.task_max_cost, 0.25)
+
     def test_unknown_config_key_warns(self):
         """#15: an unknown key in config.json must warn on stderr, not vanish."""
         import io
@@ -48,12 +68,12 @@ class ConfigRangeValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cfg_path = os.path.join(d, "config.json")
             with open(cfg_path, "w", encoding="utf-8") as f:
-                json.dump({"max_cost": 0.5, "not_a_real_key": 1}, f)
+                json.dump({"max_cost": 0.05, "not_a_real_key": 1}, f)
             with mock.patch.object(cfg, "CONFIG_DIR", d), \
                  mock.patch.object(cfg.sys, "stderr", new=io.StringIO()) as err:
                 s = cfg.load_settings()
             self.assertIn("not_a_real_key", err.getvalue())
-            self.assertEqual(s.max_cost, 0.5)
+            self.assertEqual(s.max_cost, 0.05)
 
 
 class CapabilitiesSchemaVersionTests(unittest.TestCase):
@@ -203,7 +223,7 @@ class ApplyConsentOptionalTests(unittest.TestCase):
 
     def test_apply_without_consent_does_not_crash_on_renewal(self):
         from tests._fake import FakeTransport, m, comp
-        from harness.core import SpendGovernor
+        from harness.spend import SpendGovernor
         from harness.ledger import AutonomyLedger
         from harness.router import Router
         from harness.apply import ApplyEngine

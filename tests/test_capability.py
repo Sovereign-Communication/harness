@@ -17,7 +17,11 @@ from harness.capability import (
     capability_fitness, context_score, composite_reliability,
     observed_json_reliability, json_reliable, model_reliability, load_profiles,
     save_profiles, ensure_profiles, order_pool, probe_json_reliability, TASK_WEIGHTS,
+    ordered_pool,
 )
+from harness.config import FREE_PANEL_POOL, FREE_APPLY_POOL
+from harness.continuation import gate_id, validate_continuation
+from harness.errors import HarnessError
 from harness.ledger import AutonomyLedger
 
 
@@ -288,6 +292,76 @@ class RoutingOrderTest(unittest.TestCase):
     def test_order_pool_empty_safe(self):
         self.assertEqual(order_pool([], {}, None, free_tier=True), [])
 
+    def test_one_unusable_strike_does_not_demote(self):
+        """Strike policy: demotion needs TWO unusable events. A single
+        reasoning-only response from an otherwise good model must not flip
+        live pool order (the real ledger shows a paid model with exactly one
+        unusable event among successful paid calls)."""
+        prof = {m: CapabilityProfile.from_model(sample_model(
+            {"id": m, "context_length": 256000,
+             "supported_parameters": ["max_tokens", "reasoning"]}))
+            for m in ("acme/good:free", "acme/flaky:free")}
+        with tempfile.TemporaryDirectory() as d:
+            ledger = AutonomyLedger(os.path.join(d, "l.jsonl"))
+            # one unusable output, plus real successes from the same model
+            # recorded the way the engine records them (verify_round passes
+            # feed the code-task success rate).
+            ledger.append("model_result", model="acme/flaky:free", status="error",
+                          reason="no usable content")
+            ledger.append("verify_round", task_id="t1", round=1,
+                          model="acme/flaky:free", passed=True)
+            ledger.append("verify_round", task_id="t2", round=1,
+                          model="acme/flaky:free", passed=True)
+            report = ledger.participation_report()
+        self.assertEqual(report["calibration"]["acme/flaky:free"]["unusable_outputs"], 1)
+        ordered = order_pool(["acme/good:free", "acme/flaky:free"], prof, report,
+                             ledger=ledger, task="code", free_tier=True)
+        self.assertEqual(ordered[0], "acme/flaky:free",
+                         "one strike must not demote below the unproven peer")
+
+    def test_consent_unusable_events_count_as_strikes(self):
+        """Consent-probe curation: a judge whose consent answers the parser
+        cannot use (empty/reasoning-only/unparseable) is demotion evidence
+        like the apply lane's unusable outputs. Two consent strikes demote;
+        HTTP-tier rotations do not count."""
+        prof = {m: CapabilityProfile.from_model(sample_model(
+            {"id": m, "context_length": 256000,
+             "supported_parameters": ["max_tokens", "reasoning"]}))
+            for m in ("acme/good:free", "acme/blind:free")}
+        with tempfile.TemporaryDirectory() as d:
+            ledger = AutonomyLedger(os.path.join(d, "l.jsonl"))
+            ledger.append("consent_rotate", model="acme/blind:free",
+                          reason="empty response")
+            ledger.append("consent_rotate", model="acme/blind:free",
+                          reason="unparseable or missing a valid decision")
+            ledger.append("consent_rotate", model="acme/blind:free",
+                          reason="HTTP 429")  # tier fault: never a strike
+            report = ledger.participation_report()
+        cal = report["calibration"]["acme/blind:free"]
+        self.assertEqual(cal["consent_unusable"], 2)
+        ordered = order_pool(["acme/good:free", "acme/blind:free"], prof, report,
+                             ledger=ledger, task="default", free_tier=True)
+        self.assertEqual(ordered[0], "acme/good:free",
+                         "two consent strikes must demote below the unproven peer")
+
+    def test_consent_strike_composes_with_apply_strike(self):
+        """One apply strike + one consent strike = two strikes = demotion:
+        the evidence joins at the one policy owner."""
+        prof = {m: CapabilityProfile.from_model(sample_model(
+            {"id": m, "context_length": 256000,
+             "supported_parameters": ["max_tokens", "reasoning"]}))
+            for m in ("acme/good:free", "acme/mixed:free")}
+        with tempfile.TemporaryDirectory() as d:
+            ledger = AutonomyLedger(os.path.join(d, "l.jsonl"))
+            ledger.append("model_result", model="acme/mixed:free", status="error",
+                          reason="no usable content")
+            ledger.append("consent_rotate", model="acme/mixed:free",
+                          reason="reasoning-only output")
+            report = ledger.participation_report()
+        ordered = order_pool(["acme/good:free", "acme/mixed:free"], prof, report,
+                             ledger=ledger, task="code", free_tier=True)
+        self.assertEqual(ordered[0], "acme/good:free")
+
     def test_observed_evidence_demotes_overdeclared_and_raises_proven(self):
         """THE fix for commit 58ddd1f's inert loop: for the structured task,
         probe/ledger evidence must demote a declared-capable-but-failing model
@@ -346,11 +420,11 @@ class RoutingOrderTest(unittest.TestCase):
 class ProbeTest(unittest.TestCase):
     def test_probe_counts_json_and_correctness(self):
         from unittest import mock
-        import harness.core as core
-        # The probe imports these from harness.core inside its body, so patch there.
-        with mock.patch.object(core, "chat") as mock_chat, \
-             mock.patch.object(core, "extract_content_and_cost") as mock_extract, \
-             mock.patch.object(core, "_extract_json") as mock_parse:
+        import harness.chat as chat_mod
+        # The probe imports these from harness.chat inside its body, so patch there.
+        with mock.patch.object(chat_mod, "chat") as mock_chat, \
+             mock.patch.object(chat_mod, "extract_content_and_cost") as mock_extract, \
+             mock.patch.object(chat_mod, "_extract_json") as mock_parse:
             # All calls return "ok" status with a JSON object we fully control.
             mock_chat.return_value = (200, {"ok": True})
             mock_extract.return_value = ("raw", "stop", 0.0, False)
@@ -368,10 +442,10 @@ class ProbeTest(unittest.TestCase):
 
     def test_probe_persists_model_result_events(self):
         from unittest import mock
-        import harness.core as core
-        with mock.patch.object(core, "chat") as mock_chat, \
-             mock.patch.object(core, "extract_content_and_cost") as mock_extract, \
-             mock.patch.object(core, "_extract_json") as mock_parse:
+        import harness.chat as chat_mod
+        with mock.patch.object(chat_mod, "chat") as mock_chat, \
+             mock.patch.object(chat_mod, "extract_content_and_cost") as mock_extract, \
+             mock.patch.object(chat_mod, "_extract_json") as mock_parse:
             mock_chat.return_value = (200, {"ok": True})
             mock_extract.return_value = ("raw", "stop", 0.0, False)
             mock_parse.side_effect = [{"answer": v} for v in [4, 56, True, 1024, 11]]
@@ -389,6 +463,95 @@ class ProbeTest(unittest.TestCase):
                 self.assertTrue(all(e["json_ok"] for e in mr))
                 # And the persisted evidence feeds observed json reliability.
                 self.assertAlmostEqual(observed_json_reliability(ledger, "m1"), 1.0)
+
+
+class StalePoolSelfHealingTest(unittest.TestCase):
+    """Dogfooding round 1 (audits/self): the shipped free pools still named a
+    model the live catalog had delisted, and a verify run hard-fatalled on its
+    pricing lookup instead of rotating. The contract going forward:
+
+    * the routing boundary (ordered_pool) drops catalog-stale ids, so one dead
+      configured id can never kill a session that has healthy models left;
+    * shipped pools stay catalog-live: rewritten with realistic rename aliases
+      (a real-world model delisting/rename), they must round-trip through
+      ordered_pool -- if the shipped config goes stale again, this fails;
+    * a stale id in a saved continuation gate contract is refused by the
+      tamper check, while a live gate still round-trips.
+    """
+
+    MODELS = [
+        {"id": "m://panel-a:free", "pricing": {"prompt": "0", "completion": "0"},
+         "context_length": 131072,
+         "supported_parameters": ["max_tokens", "structured_outputs"]},
+        {"id": "m://panel-b:free", "pricing": {"prompt": "0", "completion": "0"},
+         "context_length": 32768, "supported_parameters": ["max_tokens"]},
+        {"id": "m://judge:free", "pricing": {"prompt": "0", "completion": "0"},
+         "context_length": 131072,
+         "supported_parameters": ["max_tokens", "reasoning", "structured_outputs"]},
+    ]
+
+    def _profiles(self):
+        return build_profiles_from_models(self.MODELS)
+
+    def test_ordered_pool_drops_stale_ids(self):
+        # Real-world shape from the dogfooding round: a configured pool still
+        # listing a delisted model id next to healthy ones.
+        pool = ["m://panel-a:free", "z-ai/glm-5.2:free", "m://panel-b:free"]
+        ordered, profiles = ordered_pool(pool, governor=None, ledger=None,
+                                         task="default", free_tier=True,
+                                         profiles=self._profiles())
+        self.assertIsNotNone(profiles)
+        self.assertNotIn("z-ai/glm-5.2:free", ordered)
+        self.assertIn("m://panel-a:free", ordered)
+        self.assertIn("m://panel-b:free", ordered)
+
+    def test_all_stale_degrades_to_given_order(self):
+        pool = ["z-ai/glm-5.2:free"]
+        ordered, profiles = ordered_pool(pool, governor=None, ledger=None,
+                                         task="default", free_tier=True,
+                                         profiles=self._profiles())
+        self.assertIsNone(profiles)
+        self.assertEqual(ordered, pool)
+
+    def test_shipped_free_pools_survive_realistic_renames(self):
+        """The shipped pools, with EVERY id renamed (the strongest form of
+        'the catalog moved under us'), must round-trip: ordered_pool maps each
+        stale id to its alias and returns a fully-routable pool. This is the
+        hermetic teeth behind 'the harness self-heals stale pools'."""
+        profiles = self._profiles()
+
+        def rewrite(pool):
+            fixed = []
+            for mid in pool:
+                if mid in profiles:
+                    fixed.append(mid)
+                else:
+                    renamed = "m://renamed-" + mid.split("/")[-1]
+                    profiles[renamed] = profiles["m://panel-a:free"]
+                    fixed.append(renamed)
+            return fixed
+
+        for pool in (FREE_PANEL_POOL, FREE_APPLY_POOL):
+            renamed = rewrite(pool)
+            ordered, out_profiles = ordered_pool(renamed, governor=None, ledger=None,
+                                                 task="default", free_tier=True,
+                                                 profiles=profiles)
+            self.assertIsNotNone(out_profiles)
+            self.assertEqual(set(ordered), set(renamed))
+
+    def test_stale_gate_id_is_refused(self):
+        cmd = "pytest -q"
+        with tempfile.TemporaryDirectory() as directory:
+            target = os.path.join(directory, "x.py")
+            with open(target, "w", encoding="utf-8") as stream:
+                stream.write("x = 1\n")
+            state = {"file_path": target, "verify_cmd": cmd, "verify_gate_id": "deadbeef",
+                     "verification_required": True}
+            with self.assertRaises(HarnessError):
+                validate_continuation(state)
+            good = {"file_path": target, "verify_cmd": cmd,
+                    "verify_gate_id": gate_id(cmd), "verification_required": True}
+            self.assertTrue(validate_continuation(good))
 
 
 if __name__ == "__main__":

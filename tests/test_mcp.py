@@ -3,10 +3,9 @@ import json
 import os
 import tempfile
 import unittest
-from unittest import mock
 
 from harness.apply import ApplyEngine
-from harness.core import SpendGovernor
+from harness.spend import SpendGovernor
 from harness.ledger import AutonomyLedger
 from harness.mcp import McpServer
 from harness.router import Router
@@ -16,6 +15,8 @@ JUDGE = "inclusionai/ling-2.6-flash"
 P1 = "meta-llama/llama-3.1-8b-instruct"
 P2 = "ibm-granite/granite-4.1-8b"
 APPLY = "deepseek/deepseek-chat"
+ORIGINAL = "def add(a, b):\n    return a + b\n"
+CHANGED = "def add(a, b):\n    return a + b + 0\n"
 
 
 _TMP = tempfile.TemporaryDirectory()
@@ -29,7 +30,13 @@ def make_server(posts=None):
     engine = ApplyEngine(transport, "sk-test", governor, ledger, router,
                          default_require_consent=True)
     return transport, McpServer(transport=transport, api_key="sk-test", governor=governor,
-                                ledger=ledger, router=router, engine=engine)
+                                ledger=ledger, router=router, engine=engine,
+                                allow_write=True, allowed_roots=[_TMP.name])
+
+
+def consent_json(decision, reason="ok"):
+    return json.dumps({"decision": decision, "reason": reason,
+                       "redirect_model": None, "scope_suggestion": None})
 
 
 def run(feed, posts=None):
@@ -116,14 +123,14 @@ class McpProtocolTests(unittest.TestCase):
         self.assertTrue(lines[0]["result"]["isError"])
 
     def test_apply_rejects_ungated_continuation_before_capability_lookup(self):
-        """MCP must share the CLI/library authority boundary."""
+        """MCP must share the CLI/library authority boundary. Validation now
+        runs structurally before any governor/capability access, so the guard
+        is the empty chat log itself."""
         transport, server = make_server()
         state = {"file_path": "missing.py", "verify_only": False,
                  "verification_required": True}
-        with mock.patch.object(server, "_capability_context",
-                               side_effect=AssertionError("capability lookup must not run")):
-            with self.assertRaisesRegex(Exception, "missing its authoritative verify_cmd"):
-                server._invoke("apply_edit", {"instruction": "x", "continuation": state})
+        with self.assertRaisesRegex(Exception, "missing its authoritative verify_cmd"):
+            server._invoke("apply_edit", {"instruction": "x", "continuation": state})
         self.assertEqual(transport.chat_posts(), [])
 
     def test_apply_tool_schema_allows_continuation_without_file(self):
@@ -133,6 +140,30 @@ class McpProtocolTests(unittest.TestCase):
             {"required": ["instruction"]},
             {"required": ["continuation"]},
         ])
+
+    def test_apply_tool_accepts_file_list_for_batch(self):
+        """Batch parity with the CLI (#12): the tool's 'file' argument accepts
+        an array and reaches the engine's apply_batch."""
+        tool = next(t for t in McpServer(transport=None, api_key="k", governor=None,
+                                         ledger=None, router=None, engine=None)._tools()
+                    if t["name"] == "apply_edit")
+        self.assertEqual(tool["inputSchema"]["properties"]["file"]["type"], "array")
+
+    def test_apply_edit_never_mutates_the_router(self):
+        """The server keeps one router for its whole lifetime; per-request
+        capability ordering must never write routing state into it."""
+        transport, server = make_server(posts=[comp(consent_json("accept")),
+                                               comp("HARNESS_READY: confident\n" + CHANGED)])
+        target = os.path.join(_TMP.name, "mcp_target.py")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        before_pool = list(server.router.apply_pool)
+        before_model = server.router.apply_model
+        resp = server._invoke("apply_edit", {"file": [target], "instruction": "change",
+                                             "require_consent": False})
+        self.assertEqual(resp["status"], "ok")
+        self.assertEqual(server.router.apply_pool, before_pool)
+        self.assertEqual(server.router.apply_model, before_model)
 
     def test_unknown_method_and_parse_error(self):
         feed = (

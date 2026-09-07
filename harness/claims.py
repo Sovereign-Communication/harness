@@ -35,7 +35,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from .core import HarnessError
+from .errors import HarnessError
 
 # ------------------------- load-bearing assertion words -------------------------
 
@@ -137,6 +137,80 @@ def load_claims_manifest(path):
         raise HarnessError(f"claims manifest is malformed: {path} ({e})")
 
 
+def curate_claims_from_ledger(entries, *, window=500, max_claims=3):
+    """Turn the ledger's own task evidence into a dogfood claims manifest.
+
+    The self-hosting loop's seed: the harness's next self-audit is derived
+    from what its runs actually recorded, instead of a hand-authored fixture.
+    Deterministic -- same entries produce the same manifest (no timestamps,
+    stable rule ranking), so a re-run audits a fixed target. Rules, ranked by
+    how much a confirmed defect would cost:
+      1. a model that repeatedly fail-closed its runs at the verification gate;
+      2. a model repeatedly paid for HTTP 200s with no usable content;
+      3. free-tier rate limiting dominating recent dispatches (recoverable).
+    Claim texts are factual, numbered propositions grounded in the evidence
+    the caller shows the panel (the ledger tail), deliberately phrased to
+    avoid absence/universal wording so the hermetic lint judges them on
+    substance. Returns ``(manifest, evidence_summary)``; a manifest with zero
+    claims means the evidence is not curation-worthy and the caller decides
+    whether that is fatal.
+    """
+    recent = list(entries)[-int(window):] if window else list(entries)
+    fail_closed = {}   # model -> runs that exhausted verify rounds
+    unusable = {}      # model -> paid calls with no usable content
+    rate_attempts = 0
+    dispatches = 0
+    for e in recent:
+        ev = e.get("event")
+        if ev == "model_result" and e.get("status") == "error":
+            model = str(e.get("model") or "(unknown)")
+            if "no usable content" in str(e.get("reason") or ""):
+                unusable[model] = unusable.get(model, 0) + 1
+            elif e.get("http_status") == 429 or "HTTP 429" in str(e.get("error") or ""):
+                rate_attempts += 1
+        elif (ev == "abort" and e.get("reason") == "verify rounds exhausted"
+              and e.get("model")):
+            fail_closed[str(e["model"])] = fail_closed.get(str(e["model"]), 0) + 1
+        elif ev == "dispatch_start":
+            dispatches += 1
+
+    candidates = []  # (rank, sort key, text)
+    for model in sorted(fail_closed):
+        n = fail_closed[model]
+        if n >= 2:
+            candidates.append((0, model,
+                f"Apply runs led by model '{model}' ended with verification "
+                f"rounds exhausted {n} times in recent ledger evidence; a "
+                f"model that cannot pass the gate wastes every round it leads."))
+    for model in sorted(unusable):
+        n = unusable[model]
+        if n >= 3:
+            candidates.append((1, model,
+                f"Model '{model}' was paid for {n} recent calls that returned "
+                f"HTTP 200 with no usable content; the harness receives "
+                f"nothing for the spend."))
+    if rate_attempts >= 3:
+        candidates.append((2, "tier",
+            f"Recent runs hit free-tier rate limiting (HTTP 429) {rate_attempts} "
+            f"times across {max(dispatches, 1)} dispatches."))
+    candidates.sort(key=lambda c: (c[0], c[1]))
+
+    claims = [{"id": f"c{i + 1}", "text": text, "source_refs": []}
+              for i, (_, _, text) in enumerate(candidates[:max_claims])]
+    manifest = {
+        "context": ("Curated by 'harness dogfood --from-ledger' from the local "
+                    "autonomy ledger: the harness auditing its own recorded "
+                    "run evidence."),
+        "claims": claims,
+    }
+    evidence = {"entries_scanned": len(recent), "dispatches": dispatches,
+                "fail_closed_by_model": fail_closed,
+                "unusable_by_model": unusable,
+                "rate_limited_attempts": rate_attempts,
+                "curated_claims": len(claims)}
+    return manifest, evidence
+
+
 def normalize_definitions(data):
     """Accept either {identifier: snippet} or {identifier: {snippet|definition|source: ..}}
     or a list of such objects. Empty snippets are dropped."""
@@ -161,8 +235,17 @@ def normalize_definitions(data):
 
 
 def load_definitions_file(path):
-    with open(path, "r", encoding="utf-8") as f:
-        return normalize_definitions(json.load(f))
+    """Same contract as the claims manifest loader: a missing or malformed
+    definitions file is a clean HarnessError, never a raw traceback -- the
+    interface layer turns it into a pre-network [FATAL]."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except OSError as e:
+        raise HarnessError(f"definitions file not readable: {path} ({e.strerror or e})")
+    except ValueError as e:
+        raise HarnessError(f"definitions file is not valid JSON: {path} ({e})")
+    return normalize_definitions(data)
 
 # ------------------------- identifier scanning -------------------------
 

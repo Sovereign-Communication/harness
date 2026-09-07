@@ -11,7 +11,7 @@ variables taking precedence.
 
 Free-tier routing: by default (`use_free=True`) every lane uses the best
 current free OpenRouter models. Model slugs go stale, so the pools below are
-live-validated and rotated at runtime (see harness.core.discover_models and
+live-validated and rotated at runtime (see harness.spend.discover_free_models and
 the rotation logic in apply/panel). `openrouter/free` is OpenRouter's own
 free router and serves as a final fallback lane.
 """
@@ -20,6 +20,7 @@ import os
 import sys
 
 from .errors import HarnessError
+from .validation import finite_number
 
 CONFIG_DIR = os.path.expanduser("~/.config/harness")
 
@@ -86,13 +87,13 @@ def save_byok_prefixes(path, prefixes):
 # from the judge seat (and the panel head): as a reasoning model it burned
 # its budget on hidden thinking and returned reasoning-only output in most
 # live runs. The router rotates down the list and falls back to
-# openrouter/free. Run `harness spend --models` (or discover_models) to
+# openrouter/free. Run `harness models` or `harness capabilities --refresh` to
 # refresh against the live list.
 FREE_PANEL_POOL = [
     "google/gemma-4-31b-it:free",
     "minimax/minimax-m3:free",
     "inclusionai/ling-3.0-flash-fin:free",
-    "z-ai/glm-5.2:free",
+    "google/gemma-4-26b-a4b-it:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "cohere/north-mini-code:free",
     "openrouter/free",
@@ -104,7 +105,7 @@ FREE_JUDGE = "google/gemma-4-31b-it:free"
 FREE_APPLY_POOL = [
     "google/gemma-4-31b-it:free",
     "minimax/minimax-m3:free",
-    "z-ai/glm-5.2:free",
+    "google/gemma-4-26b-a4b-it:free",
     "inclusionai/ling-3.0-flash-fin:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "cohere/north-mini-code:free",
@@ -123,16 +124,19 @@ FREE_APPLY_POOL = [
 SPECIALIST_POOL_FREE = [
     "minimax/minimax-m3:free",
     "google/gemma-4-31b-it:free",
-    "z-ai/glm-5.2:free",
+    "google/gemma-4-26b-a4b-it:free",
 ]
 
 # ---- Paid lanes (use_free=False) ----
+# Curated from the live OpenRouter catalog (Sept 2026); same policy as the
+# free pools -- stale ids hard-fatal at fetch_pricing, so re-validate before
+# shipping a change here (the round-1 free-pool fix is the precedent).
 DEFAULT_PANEL_PAID = [
-    "inclusionai/ling-2.6-flash",
+    "inclusionai/ling-3.0-flash",
     "meta-llama/llama-3.1-8b-instruct",
-    "ibm-granite/granite-4.1-8b",
+    "ibm-granite/granite-4.0-h-micro",
 ]
-DEFAULT_JUDGE_PAID = "inclusionai/ling-2.6-flash"
+DEFAULT_JUDGE_PAID = "inclusionai/ling-3.0-flash"
 DEFAULT_APPLY_MODEL_PAID = "deepseek/deepseek-chat"
 
 # Paid-lane specialist fallbacks (after the primary): strong JSON emitters
@@ -140,6 +144,19 @@ DEFAULT_APPLY_MODEL_PAID = "deepseek/deepseek-chat"
 SPECIALIST_POOL_PAID = [
     "deepseek/deepseek-chat",
 ]
+
+
+def shipped_model_ids():
+    """Every default lane model id this install ships with, across both tier
+    policies -- the complete set `capabilities --check-shipped` validates
+    against the live catalog (a stale shipped id hard-fatals at
+    fetch_pricing; the round-1 free-pool fix and the stale paid default are
+    the precedent). One enumeration: add a pool constant here, not to every
+    freshness test."""
+    return (set(FREE_PANEL_POOL) | {FREE_JUDGE} | set(FREE_APPLY_POOL)
+            | set(SPECIALIST_POOL_FREE)
+            | set(DEFAULT_PANEL_PAID) | {DEFAULT_JUDGE_PAID}
+            | {DEFAULT_APPLY_MODEL_PAID} | set(SPECIALIST_POOL_PAID))
 
 _ENV_NAMES = {
     "use_free": "HARNESS_USE_FREE",
@@ -164,6 +181,9 @@ _ENV_NAMES = {
     "expect_key_label": "HARNESS_EXPECT_KEY_LABEL",
     "default_require_consent": "HARNESS_DEFAULT_REQUIRE_CONSENT",
     "allow_escalation": "HARNESS_ALLOW_ESCALATION",
+    "mcp_allow_write": "HARNESS_MCP_ALLOW_WRITE",
+    "mcp_allow_verify": "HARNESS_MCP_ALLOW_VERIFY",
+    "mcp_allowed_roots": "HARNESS_MCP_ALLOWED_ROOTS",
 }
 
 
@@ -253,7 +273,8 @@ class Settings:
                  apply_model, apply_pool, escalation_model, max_cost, task_max_cost, max_tokens,
                  apply_max_tokens, reasoning_effort, reasoning_token_budget,
                  max_panelists, max_rotations, renew_consent, ledger_path,
-                 expect_key_label, default_require_consent, allow_escalation):
+                 expect_key_label, default_require_consent, allow_escalation,
+                 mcp_allow_write=False, mcp_allow_verify=False, mcp_allowed_roots=None):
         self.use_free = use_free
         self.panel = list(panel)
         self.panel_pool = list(panel_pool)
@@ -279,6 +300,9 @@ class Settings:
         self.expect_key_label = expect_key_label
         self.default_require_consent = default_require_consent
         self.allow_escalation = allow_escalation
+        self.mcp_allow_write = mcp_allow_write
+        self.mcp_allow_verify = mcp_allow_verify
+        self.mcp_allowed_roots = list(mcp_allowed_roots or [])
 
     def to_dict(self):
         return {k: getattr(self, k) for k in (
@@ -288,37 +312,8 @@ class Settings:
             "task_max_cost", "max_tokens", "apply_max_tokens",
             "reasoning_effort", "reasoning_token_budget", "max_panelists",
             "max_rotations", "renew_consent", "ledger_path", "expect_key_label",
-            "default_require_consent", "allow_escalation")}
-
-
-def _validate_settings_values(use_free, max_cost, task_max_cost, max_tokens,
-                              apply_max_tokens, reasoning_effort,
-                              reasoning_token_budget, max_panelists, max_rotations):
-    """Range-check every numeric/enum setting (audit #15): a typo like
-    max_cost=0.02 dollars configured as `2` must not silently authorize a
-    100x larger spend."""
-    problems = []
-    if max_cost <= 0:
-        problems.append("max_cost must be > 0 (dollars)")
-    if task_max_cost <= 0:
-        problems.append("task_max_cost must be > 0 (dollars)")
-    if task_max_cost > max_cost:
-        problems.append("task_max_cost exceeds max_cost; a single task could "
-                        "spend the whole session ceiling")
-    if max_tokens < 64 or max_tokens > 200000:
-        problems.append("max_tokens out of range [64, 200000]")
-    if apply_max_tokens < 64 or apply_max_tokens > 200000:
-        problems.append("apply_max_tokens out of range [64, 200000]")
-    if reasoning_effort not in ("auto", "off", "none", "low", "medium", "high", "on"):
-        problems.append(f"reasoning_effort {reasoning_effort!r} is not a valid effort mode")
-    if not 0 < reasoning_token_budget <= 1:
-        problems.append("reasoning_token_budget must be in (0, 1]")
-    if max_panelists < 1 or max_panelists > 10:
-        problems.append("max_panelists out of range [1, 10]")
-    if max_rotations < 0 or max_rotations > 20:
-        problems.append("max_rotations out of range [0, 20]")
-    if problems:
-        raise HarnessError("invalid configuration: " + "; ".join(problems))
+            "default_require_consent", "allow_escalation", "mcp_allow_write",
+            "mcp_allow_verify", "mcp_allowed_roots")}
 
 
 def load_settings(overrides=None):
@@ -359,21 +354,25 @@ def load_settings(overrides=None):
         _dedup([apply_model] + default_apply_pool))))) or [apply_model]
 
     # -- numeric range validation (fail closed on nonsense) ------------------
+    # Cost ceilings are HARD: HARD_MAX_COST / HARD_TASK_MAX_COST are absolute
+    # per-call / per-task ceilings that no configuration (config.json, env, or
+    # CLI override) can raise past. A hostile or misconfigured value must be
+    # refused before any network call, not silently applied.
     def _num(key, cast, lo, hi, default):
-        v = cast(get(key, default))
-        if not (lo <= v <= hi):
-            raise HarnessError(
-                key + "=" + str(v) + " is out of range [" + str(lo) + ", " + str(hi) + "]")
-        return v
+        raw = get(key, default)
+        try:
+            value = cast(raw)
+        except (TypeError, ValueError, OverflowError):
+            raise HarnessError(key + " must be a valid number")
+        return finite_number(value, key, lo, hi)
 
-    max_cost = _num("max_cost", float, 0, 1000, DEFAULT_MAX_COST)
-    task_max_cost = _num("task_max_cost", float, 0, 1000, DEFAULT_TASK_MAX_COST)
-    max_tokens = _num("max_tokens", int, 64, 1_000_000, DEFAULT_MAX_TOKENS)
-    apply_max_tokens = _num("apply_max_tokens", int, 64, 1_000_000, DEFAULT_APPLY_MAX_TOKENS)
-    reasoning_token_budget = _num("reasoning_token_budget", float, 0.05, 0.95, 0.4)
-    max_panelists = _num("max_panelists", int, 1, 16, 3)
+    max_cost = _num("max_cost", float, 0, HARD_MAX_COST, DEFAULT_MAX_COST)
+    task_max_cost = _num("task_max_cost", float, 0, HARD_TASK_MAX_COST, DEFAULT_TASK_MAX_COST)
+    max_tokens = _num("max_tokens", int, 64, 200000, DEFAULT_MAX_TOKENS)
+    apply_max_tokens = _num("apply_max_tokens", int, 64, 200000, DEFAULT_APPLY_MAX_TOKENS)
+    reasoning_token_budget = _num("reasoning_token_budget", float, 0.05, 1, 0.4)
+    max_panelists = _num("max_panelists", int, 1, 10, 3)
     max_rotations = _num("max_rotations", int, 0, 20, 3)
-
 
     return Settings(
         use_free=use_free,
@@ -398,4 +397,7 @@ def load_settings(overrides=None):
         expect_key_label=get("expect_key_label", os.environ.get("FUSIONLITE_EXPECT_KEY_LABEL")),
         default_require_consent=_as_bool(get("default_require_consent", True)),
         allow_escalation=_as_bool(get("allow_escalation", False)),
+        mcp_allow_write=_as_bool(get("mcp_allow_write", False)),
+        mcp_allow_verify=_as_bool(get("mcp_allow_verify", False)),
+        mcp_allowed_roots=_split_list(str(get("mcp_allowed_roots", ""))),
     )

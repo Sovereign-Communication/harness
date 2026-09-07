@@ -4,12 +4,86 @@
 
 ```bash
 git clone <repo> && cd Harness
-pip install -e .
-pip install ruff        # lint (CI enforces it)
-python -m unittest discover -s tests   # hermetic tests, no network needed
+python -m pip install -e '.[dev]'
+python -m ruff check harness tests
+python -W error::ResourceWarning -m unittest discover -s tests   # hermetic, no network
 ```
 
 Python 3.9+; pure stdlib — the package has zero runtime dependencies.
+
+## Module map (who owns what)
+
+The package is layered; dependencies point one way, downward:
+
+```
+cli.py / mcp.py          interfaces (arg parsing, JSON-RPC; no policy)
+  apply.py               apply engine: apply_edit validates + freezes its
+                         arguments into one _ApplyRequest (_prepare), then the
+                         phase helpers run the loop -- consent, renewal,
+                         rotation, merge, gate, escalation, terminal assembly
+                         -- mutating one _RunState; apply_batch orchestrates
+                         batches. Result SHAPES live in results.py below.
+  results.py             the apply result vocabulary: _round_entry,
+                         _terminal_result, _defer_result, _http_error -- one
+                         def site per shape the CLI/MCP consume (a new
+                         outcome field lands here, not in the engine)
+  panel.py               verification engine: rotating panel + judge; owns
+                         the whole verify recipe (catalog seed, capability
+                         ordering, degrade-to-given-order) -- interfaces only
+                         map inputs and present results
+    prompts.py           apply prompt contracts + response parsing (READY
+                         marker, strict unified diff); pure text, no engine
+                         state -- incl. the consent mechanics text
+    filesafety.py        atomic write, out-of-tree backups, shell-free gate
+                         runner -- every disk/gate mutation policy
+    convergence.py       deterministic claim tally + specialist lane
+    consent.py           consent probe / continued consensus
+    capability.py        declared-vs-observed model capability + routing
+                         (ordered_pool is the ONE pool-ordering entry point)
+    chat.py              THE model I/O path + assess_output usability policy
+    spend.py             SpendGovernor (ceilings, BYOK) + model discovery
+    claims.py            self-grounding claim lint
+    continuation.py      continuation-state contract + gate identity
+    bench.py  ledger.py  task runner; hash-chained evidence store
+    (cli `dogfood` composes the lanes: hermetic ground gate -> live panel
+    tally gate -> gated self-apply; deliberately not exposed over MCP)
+    config.py  tokens.py  output.py  errors.py
+```
+
+- **One owner per concern.** Cost policy lives only in `spend.py`; model
+  transport and the usable-output verdict only in `chat.py`; gate identity
+  and continuation validation only in `continuation.py`; prompt text only in
+  `prompts.py`; disk/gate mutation only in `filesafety.py`; the `--quiet`
+  gate only in `output.py`. Don't re-implement a policy locally — import it.
+- **Routing is per-request.** Pool ordering goes through
+  `capability.ordered_pool` — never pre-order a pool in an interface and
+  never mutate `Router` state per request; the engine orders the request's
+  pool and drops catalog-stale ids at that boundary.
+- **Batch is engine capability.** Multi-file batches (CLI repeated `--file`,
+  MCP `file` array) run through `ApplyEngine.apply_batch`; interfaces only
+  translate arguments.
+- **No facades.** There is no `harness/core.py` shim and none may regrow:
+  import from the owning module at the use site. Re-export indirection doubles
+  every dependency edge and hides the real owner. `tests/test_architecture.py`
+  enforces both the import direction and the no-re-export rule (a module-level
+  import the module never references is a re-export, mechanically detected).
+- **Apply results have one shape.** Every round entry is built by
+  `apply._round_entry` and every terminal result (ok / preview / deferred /
+  verify_failed) by `apply._terminal_result` — interfaces consume that shape,
+  they never reassemble it. New result fields go there, not at a call site.
+- **Engine flags have one definition.** The apply/continue flag cluster is
+  declared once (`cli._add_engine_flags`) and output flags once
+  (`cli._add_output_flags`); every subcommand that emits a report honors
+  `--out` and `--quiet`. A flag that parses but is ignored is a bug.
+- **Data flow:** interfaces parse input → engines orchestrate lanes → lanes
+  go through `chat()` under `SpendGovernor` preflight/record → every decision
+  and cost lands in the `AutonomyLedger` → results flow back as plain dicts
+  the interface serializes. Nothing writes to stdout except the final JSON
+  (`cli._emit`) or valid MCP frames (`mcp._write`).
+- **State:** per-request state belongs to the request (`apply_edit` locals,
+  gate pin reset at entry); session state to the engine objects the
+  interface constructs; evidence to the ledger; configuration to
+  `Settings` (built once in `load_settings`).
 
 ## Ground rules
 
@@ -27,6 +101,11 @@ Python 3.9+; pure stdlib — the package has zero runtime dependencies.
    failure to retry away.
 5. **Both surfaces stay in parity.** A feature added to the CLI must be
    reachable from the MCP server with the same defaults (and vice versa).
+   One deliberate exception: `harness dogfood` (the self-hosting loop:
+   ground -> live panel verify -> gated self-apply) is CLI-only by design —
+   it chains verify into a *self-edit*, and that authority stays with the
+   operator at the shell, not with protocol clients. Its phases remain
+   individually reachable over MCP (`panel_verify`, `apply_edit`).
 
 ## Lint & test before pushing
 
@@ -43,10 +122,14 @@ merge.
 | Path | Owns |
 |---|---|
 | `harness/config.py` | settings, key resolution, lane curation |
-| `harness/core.py` | panel/judge/specialist engine, SpendGovernor |
+| `harness/spend.py` | SpendGovernor: spend ceilings, BYOK, model discovery |
 | `harness/capability.py` | model capability profiles + observed evidence |
-| `harness/apply.py` | edit application, verification gate, continuations |
+| `harness/apply.py` | edit application: argument policy in one `_prepare`, the round loop in named phase helpers over one `_RunState` |
+| `harness/results.py` | the apply result vocabulary (round entries, terminal/deferred results, HTTP error rendering) -- one def site per result shape, plus the status-meaning policy: `SUCCESS_STATUSES` and `terminal_exit_code` (interfaces never re-derive what a status means) |
+| `harness/session.py` | composition owner: governor_for/ledger_for/router_for/engine_for + `apply_session` (pre-spend saturation look-ahead included) -- how ANY interface gets its dependencies; engine kwargs and tier policy change here exactly once |
+| `harness/cli.py` | interface + claims-specific verify mapping (claims prompt, lint, polarity); session aliases (`_governor`/`_engine`/...) kept as test seams |
 | `harness/consent.py` | the consent probe (sovereignty) |
 | `harness/ledger.py` | hash-chained JSONL autonomy ledger |
-| `harness/mcp.py` | MCP stdio server (dispatch surface) |
+| `harness/mcp.py` | MCP stdio server (dispatch surface); composes its dependencies from session.py -- zero own construction policy |
 | `harness/bench.py` | hermetic known-answer benchmarks |
+| `tests/` | one test module per product owner (test_spend, test_panel, test_convergence, test_specialist, test_chat, test_ledger, test_prompts, ...); shared fakes and the `_gov` helper live in `tests/_fake.py` |

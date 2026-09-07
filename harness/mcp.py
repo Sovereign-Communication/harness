@@ -3,15 +3,16 @@
 Spec: https://modelcontextprotocol.io/specification/2025-06-18
 Dispatch is native: any MCP host (Claude Code, Cursor, your other agents) can
 call the harness tools directly. Zero dependencies. The server writes ONLY
-valid MCP messages to stdout; all human logging goes to stderr via core.eprint.
+valid MCP messages to stdout; all human logging goes to stderr via harness.output.
 """
 import json
 import os
 import sys
 import uuid
 
-from .core import HarnessError, ToolCancelled, panel_judge
-from .apply import validate_continuation
+from .errors import HarnessError, ToolCancelled
+from .panel import panel_judge
+from .continuation import validate_continuation
 from .consent import probe_consent
 
 from . import __version__
@@ -23,7 +24,7 @@ SERVER_VERSION = __version__
 class McpServer:
     def __init__(self, *, transport, api_key, governor, ledger, router, engine,
                  max_panelists=3, use_free=True, stdin=None, stdout=None,
-                 allow_verify=False, allowed_roots=None):
+                 allow_verify=False, allow_write=False, allowed_roots=None):
         self.transport = transport
         self.api_key = api_key
         self.governor = governor
@@ -34,14 +35,15 @@ class McpServer:
         self.use_free = use_free
         self.stdin = stdin or sys.stdin
         self.stdout = stdout or sys.stdout
-        self._capability = None  # lazily-built profiles; report is always fresh
         self._cancelled = set()  # request ids aborted via notifications/cancelled
         # Remote-safety gates: verify gates run real commands, and apply_edit
         # writes real files. Over MCP (a remote-dispatch surface) both require
         # explicit opt-in per request (allow_verify) or server configuration
         # (allowed_roots) rather than trusting the caller blindly (#5/#6).
         self.allow_verify = bool(allow_verify)
-        self.allowed_roots = [os.path.abspath(r) for r in (allowed_roots or [])]
+        self.allow_write = bool(allow_write)
+        self.allowed_roots = [os.path.realpath(os.path.abspath(r))
+                              for r in (allowed_roots or [])]
 
     # ---------------- tool definitions ----------------
     def _tools(self):
@@ -60,7 +62,7 @@ class McpServer:
                     "reasoning_effort": {"type": "string", "enum": ["auto", "off", "none", "low", "medium", "high", "on"]},
                     "converge": {"type": "boolean", "description": "Run the convergence specialist on per-claim votes (requires per-claim JSON panel output)"},
                     "convergence_model": {"type": "string", "description": "Primary specialist model (default: judge)"},
-                    "specialist_pool": {"type": "string", "description": "Comma-separated specialist fallback ladder, strongest first (default: configured pool; free lane leads with GLM-5.2)"},
+                    "specialist_pool": {"type": "string", "description": "Comma-separated specialist fallback ladder, strongest first (default: configured pool)"},
                     "task_id": {"type": "string"},
                 }, "required": ["prompt"]},
             },
@@ -72,7 +74,10 @@ class McpServer:
                                "guessing at the capability limit, and rotate models on error. Returns a "
                                "continuation state when deferred.",
                 "inputSchema": {"type": "object", "properties": {
-                    "file": {"type": "string", "description": "Path to the file to edit"},
+                    "file": {"type": "array", "items": {"type": "string"},
+                             "description": "Path(s) to the file(s) to edit; repeat for a "
+                                            "multi-file batch (one governed session per file, "
+                                            "shared task budget, fail-fast)"},
                     "instruction": {"type": "string", "description": "What to change (<=1000 chars)"},
                     "edit_snippet": {"type": "string", "description": "Intent anchor snippet (<=2000 chars)"},
                     "verify_cmd": {"type": "string", "description": "Shell command gate, e.g. 'cargo check' (requires server allow_verify)"},
@@ -87,6 +92,7 @@ class McpServer:
                     "verify_only": {"type": "boolean", "description": "Return the proposal without writing or running the verification gate"},
                     "max_lines": {"type": "integer", "default": 500, "description": "Per-file line ceiling (1-500)"},
                     "task_max_cost": {"type": "number", "description": "Per-task cost ceiling"},
+                    "allow_write": {"type": "boolean", "description": "Explicit confirmation that this MCP request may write files"},
                     "continuation": {"type": "object", "description": "State from a deferred run to resume"},
                     "task_id": {"type": "string"},
                 }, "anyOf": [
@@ -124,7 +130,7 @@ class McpServer:
                 "description": "Tail of the append-only, hash-chained autonomy/participation ledger, plus "
                                "chain-integrity status.",
                 "inputSchema": {"type": "object", "properties": {
-                    "limit": {"type": "integer", "default": 20},
+                    "limit": {"type": "integer", "default": 20, "minimum": 1},
                 }},
             },
             {
@@ -166,15 +172,30 @@ class McpServer:
             if resp is not None:
                 self._write(resp)
 
+    def _negotiate_version(self, requested):
+        supported = {PROTOCOL_VERSION}
+        if requested is None:
+            return PROTOCOL_VERSION
+        if requested not in supported:
+            raise HarnessError(
+                f"unsupported MCP protocol version {requested!r}; "
+                f"supported: {PROTOCOL_VERSION}")
+        return requested
+
     def _handle(self, msg):
         method = msg.get("method")
         if method == "initialize":
+            try:
+                version = self._negotiate_version(
+                    msg.get("params", {}).get("protocolVersion"))
+            except HarnessError as exc:
+                return {"jsonrpc": "2.0", "id": msg.get("id"),
+                        "error": {"code": -32602, "message": str(exc)}}
             return {
                 "jsonrpc": "2.0", "id": msg.get("id"),
                 "result": {
-                    "protocolVersion": (msg.get("params", {}).get("protocolVersion")
-                                        or PROTOCOL_VERSION),
-                    "capabilities": {"tools": {"listChanged": False}},
+                    "protocolVersion": version,
+                    "capabilities": {"tools": {"listChanged": False}, "logging": {}},
                     "serverInfo": {"name": "harness", "version": SERVER_VERSION},
                 },
             }
@@ -211,7 +232,8 @@ class McpServer:
             return {"jsonrpc": "2.0", "id": rid,
                     "error": {"code": -32800, "message": "Request cancelled before execution"}}
         try:
-            result = self._invoke(name, args)
+            result = self._invoke(name, args,
+                                   cancel_check=lambda: rid in self._cancelled)
             return {
                 "jsonrpc": "2.0", "id": rid, "result": {
                     "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
@@ -242,28 +264,12 @@ class McpServer:
                 },
             }
 
-    def _capability_context(self):
-        """Lazily build profiles for capability-aware routing and refresh the
-        ledger report on every invocation so new probe evidence is immediately
-        visible to MCP routing."""
-        if self._capability is None:
-            try:
-                from .capability import build_profiles_from_models
-                self._capability = build_profiles_from_models(self.governor.fetch_models())
-            except Exception:
-                self._capability = {}
-        return (self._capability or None, self.ledger.participation_report())
-
-    def _invoke(self, name, args):
+    def _invoke(self, name, args, cancel_check=None):
         if name == "panel_verify":
-            profiles, report = self._capability_context()
+            # Panel ordering (catalog seed, capability sort, degrade to the
+            # given order) is the panel lane's own job -- same recipe as the
+            # CLI's verify lane, one owner in panel.py.
             panel = (args.get("panel") or ",".join(self.router.panel_pool)).split(",")
-            if profiles is not None:
-                from .capability import order_pool as _op
-                ordered = _op(panel, profiles, report, ledger=self.ledger,
-                              task="default", free_tier=self.use_free)
-                if ordered:
-                    panel = ordered
             return panel_judge(
                 transport=self.transport, api_key=self.api_key, governor=self.governor,
                 prompt=args["prompt"],
@@ -280,7 +286,7 @@ class McpServer:
                 specialist_pool=(args.get("specialist_pool").split(",")
                                  if args.get("specialist_pool")
                                  else self.router.specialist_pool),
-                capability_profiles=profiles, report=report, free_tier=self.use_free)
+                free_tier=self.use_free, cancel_check=cancel_check)
         if name == "apply_edit":
             # Reject ungated persisted state before capability/model setup, just
             # like the CLI and direct library paths. Saved metadata also owns
@@ -298,28 +304,40 @@ class McpServer:
                     "verify_cmd was supplied but verify gates are not enabled for this "
                     "MCP session; re-send with allow_verify=true to confirm, or configure "
                     "the server with allow_verify=True")
-            # Remote write containment (#6): when the server declares allowed
-            # roots, every target file (and continuation target) must live in
-            # one of them.
-            target_file = args.get("file") or continuation.get("file_path")
-            if self.allowed_roots and target_file:
-                t = os.path.abspath(target_file)
-                if not any(t == r or t.startswith(r + os.sep) for r in self.allowed_roots):
+            # Remote write containment (#6): writes are opt-in and every
+            # target file (including every member of a batch) must resolve
+            # inside a configured allowed root.
+            if not (self.allow_write or args.get("allow_write")):
+                raise HarnessError(
+                    "MCP file writes are disabled for this session; re-send with "
+                    "allow_write=true or configure allow_write=True explicitly")
+            raw_target = args.get("file")
+            target_files = ([raw_target] if isinstance(raw_target, str)
+                            else list(raw_target) if isinstance(raw_target, list) else [])
+            if continuation.get("file_path"):
+                target_files.append(continuation["file_path"])
+            if not self.allowed_roots:
+                raise HarnessError(
+                    "MCP apply requires at least one configured allowed root")
+            for target_file in target_files:
+                t = os.path.realpath(os.path.abspath(target_file))
+                if not any(t == root or t.startswith(root + os.sep)
+                           for root in self.allowed_roots):
                     raise HarnessError(
-                        f"file {target_file!r} is outside every allowed root for this "
-                        "MCP session")
-            profiles, report = self._capability_context()
-            if profiles is not None and backend == "harness":
-                from .capability import order_pool as _op
-                ordered = _op(self.router.apply_pool, profiles, report,
-                              ledger=self.ledger, task="code", free_tier=self.use_free)
-                if ordered:
-                    self.router.apply_pool = ordered
-                    if not args.get("model"):
-                        self.router.apply_model = ordered[0]
-            return self.engine.apply_edit(
+                        "file is outside every allowed root for this MCP session")
+            # Batch parity with the CLI (#12): 'file' may be a string or a
+            # list; the engine owns the batch loop and routing. NOTE: the
+            # router is NEVER mutated here -- ordering happens per request
+            # inside the engine, so one session's routing cannot leak into
+            # the next.
+            raw_files = args.get("file")
+            files = ([raw_files] if isinstance(raw_files, str)
+                     else list(raw_files) if isinstance(raw_files, list) else [])
+            if not files and not continuation:
+                raise HarnessError("apply_edit requires 'file' (or a continuation)")
+            return self.engine.apply_batch(
+                files or [None],
                 task_id=args.get("task_id"),
-                file_path=args.get("file"),
                 instruction=args.get("instruction") or "",
                 edit_snippet=args.get("edit_snippet"), verify_cmd=args.get("verify_cmd"),
                 max_rounds=args.get("max_rounds", 3),
@@ -331,10 +349,11 @@ class McpServer:
                 reasoning_effort=args.get("reasoning_effort"),
                 renew_consent=args.get("renew_consent"),
                 max_rotations=args.get("max_rotations"),
-                continuation=continuation,
                 backend=backend,
                 verify_only=bool(args.get("verify_only", False)),
-                max_lines=args.get("max_lines", 500))
+                max_lines=args.get("max_lines", 500),
+                continuation=continuation,
+                cancel_check=cancel_check)
         if name == "offer_work":
             return probe_consent(
                 transport=self.transport, api_key=self.api_key, governor=self.governor,
@@ -350,8 +369,9 @@ class McpServer:
                     "reason": args.get("reason"), "note": "partial work preserved",
                     "participation": self.ledger.participation_report()}
         if name == "ledger_status":
+            ok, bad_seq = self.ledger.verify()
             return {"entries": self.ledger.tail(args.get("limit", 20)),
-                    "verified": self.ledger.verify()}
+                    "verified": {"ok": ok, "first_bad_seq": bad_seq}}
         if name == "participation_report":
             return self.ledger.participation_report()
         if name == "spend_status":
@@ -364,33 +384,29 @@ class McpServer:
 
 
 def main(argv=None):  # pragma: no cover - thin wiring
-    from .config import load_settings, resolve_api_key
-    from .core import SpendGovernor
-    from .ledger import AutonomyLedger
-    from .router import Router
-    from .apply import ApplyEngine
-    from ._http import HttpTransport
+    from .config import load_settings
+    from . import session as composition
 
     settings = load_settings()
-    api_key = resolve_api_key()
-    transport = HttpTransport()
-    governor = SpendGovernor(transport, api_key, settings.expect_key_label,
-                             settings.max_cost)
-    governor.verify_key()
-    ledger = AutonomyLedger(settings.ledger_path)
-    router = Router(settings.panel, settings.judge, settings.apply_model,
-                    settings.escalation_model, settings.allow_escalation,
-                    panel_pool=settings.panel_pool, apply_pool=settings.apply_pool,
-                    specialist_pool=settings.specialist_pool,
-                    convergence_model=settings.convergence_model)
-    engine = ApplyEngine(transport, api_key, governor, ledger, router,
-                         default_require_consent=settings.default_require_consent,
-                         default_renew_consent=settings.renew_consent,
-                         reasoning_effort=settings.reasoning_effort,
-                         reasoning_token_budget=settings.reasoning_token_budget,
-                         default_max_rotations=settings.max_rotations,
-                         default_task_max_cost=settings.task_max_cost)
+    transport = composition.HttpTransport()
+    # Interface parity by construction: every dependency is built by the ONE
+    # composition owner (harness/session.py), so an engine-kwarg or tier-policy
+    # change can no longer land in the CLI and miss MCP.
+    api_key, governor = composition.governor_for(settings)
+    ledger = composition.ledger_for(settings)
+    # Pre-spend look-ahead; stderr advice only, never the protocol channel.
+    composition.pre_run_warning(governor=governor, ledger=ledger,
+                                use_free=settings.use_free)
+    router = composition.router_for(settings)
+    engine = composition.engine_for(settings, api_key, governor, ledger, router)
     server = McpServer(transport=transport, api_key=api_key, governor=governor,
                        ledger=ledger, router=router, engine=engine,
-                       max_panelists=settings.max_panelists, use_free=settings.use_free)
+                       max_panelists=settings.max_panelists, use_free=settings.use_free,
+                       allow_write=settings.mcp_allow_write,
+                       allow_verify=settings.mcp_allow_verify,
+                       allowed_roots=settings.mcp_allowed_roots)
     server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

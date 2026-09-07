@@ -27,10 +27,9 @@ confidence-calibration data accumulates across bench runs.
 import json
 import os
 
-from .apply import default_run_verify, _atomic_write
-from .core import HarnessError, eprint
-
-VERIFY_TIMEOUT = 300
+from .filesafety import _atomic_write, default_run_verify, VERIFY_TIMEOUT
+from .errors import HarnessError
+from .output import eprint
 
 
 def _load_json_file(path, what):
@@ -69,11 +68,25 @@ def load_manifest(path):
     else:
         root = os.path.dirname(os.path.abspath(path))
         data = _load_json_file(path, "bench manifest")
-        items = data if isinstance(data, list) else data.get("tasks", [])
+        if isinstance(data, list):
+            items = data
+        elif isinstance(data, dict) and isinstance(data.get("tasks"), list):
+            items = data["tasks"]
+        elif isinstance(data, dict):
+            # A single bare task object: the documented one-JSON-file shape
+            # (bench/tasks/<name>/task.json). Silently running zero tasks and
+            # exiting 0 was the failure mode; treat it as a one-task manifest.
+            items = [data]
+        else:
+            raise HarnessError(
+                f"bench manifest must be a task list, a {{'tasks': [...]}} object, "
+                f"or a single task object: {path}")
         for t in items:
             t.setdefault("name", "task")
             t["dir"] = root
             tasks.append(t)
+    if not tasks:
+        raise HarnessError(f"bench manifest contains no tasks: {path}")
     return tasks
 
 
@@ -87,6 +100,11 @@ class TaskSandbox:
 
     def __init__(self, task):
         self.dir = os.path.abspath(task["dir"])
+        if not task.get("file"):
+            # Same clean contract as the other manifest errors -- a schema
+            # error must not surface as a raw KeyError traceback.
+            raise HarnessError(
+                f"bench task '{task.get('name', 'task')}' is missing required key 'file'")
         self.file = os.path.abspath(os.path.join(self.dir, task["file"]))
         if not (self.file == self.dir
                 or self.file.startswith(self.dir.rstrip(os.sep) + os.sep)):
@@ -103,12 +121,12 @@ class TaskSandbox:
         if not os.path.exists(self.file):
             raise HarnessError(f"bench task file not found: {self.file}")
         if os.path.exists(self.snapshot):
-            with open(self.snapshot, "r", encoding="utf-8") as src:
+            with open(self.snapshot, "r", encoding="utf-8", newline="") as src:
                 _atomic_write(self.file, src.read())
         else:
-            with open(self.file, "r", encoding="utf-8") as src:
+            with open(self.file, "r", encoding="utf-8", newline="") as src:
                 content = src.read()
-            with open(self.snapshot, "w", encoding="utf-8") as out:
+            with open(self.snapshot, "w", encoding="utf-8", newline="") as out:
                 out.write(content)
 
 
@@ -130,30 +148,42 @@ def run_bench(engine, manifest_tasks, runner=None):
     (``task['verify_timeout']``, default 300s).
     """
     results = []
-    for task in manifest_tasks:
-        sandbox = TaskSandbox(task)
-        sandbox.restore()
-        task_runner = runner or _cwd_runner(sandbox.dir, task.get("verify_timeout"))
-        name = task["name"]
-        eprint(f"[bench] running '{name}' ...")
-        try:
-            r = engine.apply_edit(
-                task_id=f"bench/{name}",
-                file_path=sandbox.file,
-                instruction=task["instruction"],
-                verify_cmd=task.get("verify"),
-                max_rounds=task.get("max_rounds", 3),
-                require_consent=task.get("require_consent", False),
-                max_tokens=task.get("max_tokens", 4096),
-                task_max_cost=task.get("task_max_cost", 0.05),
-                renew_consent=task.get("renew_consent", False),
-                max_rotations=task.get("max_rotations", 3),
-                task_runner=task_runner,
-            )
-        except HarnessError as e:
-            r = {"status": "error", "error": str(e)}
-        results.append({"name": name, **r})
-        eprint(f"[bench] '{name}' -> {r.get('status')}")
+    sandboxes = []
+    try:
+        for task in manifest_tasks:
+            sandbox = TaskSandbox(task)
+            sandbox.restore()
+            sandboxes.append(sandbox)
+            task_runner = runner or _cwd_runner(sandbox.dir, task.get("verify_timeout"))
+            name = task["name"]
+            eprint(f"[bench] running '{name}' ...")
+            try:
+                r = engine.apply_edit(
+                    task_id=f"bench/{name}",
+                    file_path=sandbox.file,
+                    instruction=task["instruction"],
+                    verify_cmd=task.get("verify"),
+                    max_rounds=task.get("max_rounds", 3),
+                    require_consent=task.get("require_consent", False),
+                    max_tokens=task.get("max_tokens", 4096),
+                    task_max_cost=task.get("task_max_cost", 0.05),
+                    renew_consent=task.get("renew_consent", False),
+                    max_rotations=task.get("max_rotations", 3),
+                    task_runner=task_runner,
+                )
+            except HarnessError as e:
+                r = {"status": "error", "error": str(e)}
+            results.append({"name": name, **r})
+            eprint(f"[bench] '{name}' -> {r.get('status')}")
+    finally:
+        # Idempotency includes the tree we leave behind: restore every
+        # fixture even on crash, or a successful run leaves solved tasks
+        # in the tracked sources (committing that would defeat the bench).
+        for sandbox in sandboxes:
+            try:
+                sandbox.restore()
+            except HarnessError as e:
+                eprint(f"[bench] fixture restore failed: {e}")
     return summarize(results, engine.ledger)
 
 

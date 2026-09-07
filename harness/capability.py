@@ -23,6 +23,8 @@ import math
 import os
 import time
 
+from .output import eprint
+
 # ---- score weights (task-aware) ----------------------------------------------
 # Capability is blended from three declared signals. Structured JSON is the
 # most valuable for THIS harness (the panel and judge must emit parseable JSON);
@@ -372,7 +374,7 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
     Reasoning models are probed WITH a reasoning effort (`low`) so the probe is
     fair to them; non-reasoning models run with reasoning off.
     """
-    from .core import chat, extract_content_and_cost, _extract_json
+    from .chat import chat, extract_content_and_cost, _extract_json
     results = {}
     tid = task_id or "bench/probe"
     for m in models:
@@ -460,6 +462,26 @@ def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=No
     """
     if free_tier is None:
         raise ValueError("order_pool requires the caller's explicit use_free/free_tier flag")
+    # Observed demotion (single policy place): a model the ledger shows
+    # producing unusable apply output -- HTTP 200 but no usable content, the
+    # reasoning-only fallback the engine refuses to write (participation_report
+    #    surfaces it as unusable_outputs) -- sorts below every unproven model.
+    # Demoted, not banned: when the pool exhausts the usable ones, it still
+    # rotates (and the verification gate still guards what it produces).
+    # Strike policy: demotion requires TWO unusable events. A single event can
+    # be one flaky response from an otherwise good model; one strike must not
+    # flip live pool order. (429/401 tier faults and fail-closed verify runs
+    # are deliberately NOT demotion evidence -- see ledger.participation_report.)
+    # Consent-unusable events (empty/reasoning-only/unparseable consent answers,
+    # surfaced by the same report) join the same strike count: a judge the
+    # sovereignty gate cannot parse is demoted like one whose apply output the
+    # engine cannot write.
+    UNUSABLE_DEMOTE_STRIKES = 2
+
+    def demotion(model):
+        cal = (report or {}).get("calibration", {}).get(model, {})
+        strikes = (cal.get("unusable_outputs") or 0) + (cal.get("consent_unusable") or 0)
+        return 1 if strikes >= UNUSABLE_DEMOTE_STRIKES else 0
     scored = []
     for m in pool:
         profile = (profiles or {}).get(m)
@@ -469,7 +491,54 @@ def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=No
         price = (profile.prompt_price + profile.completion_price) if profile else 0.0
         scored.append((m, info["reliability"], info["capability"], price))
     if free_tier:
-        scored.sort(key=lambda x: (-x[1], -x[2]))
+        scored.sort(key=lambda x: (demotion(x[0]), -x[1], -x[2]))
     else:
-        scored.sort(key=lambda x: (x[3], -x[1], -x[2]))
+        scored.sort(key=lambda x: (demotion(x[0]), x[3], -x[1], -x[2]))
     return [m for m, _, _, _ in scored]
+
+
+def ordered_pool(pool, *, governor, ledger, task, free_tier, profiles=None,
+                 call_lane="apply"):
+    """The ONE call site for capability-aware pool ordering.
+
+    Builds capability profiles from the governor's cached /models catalog (a
+    run fetches it once via ``fetch_models()``), orders via :func:`order_pool`,
+    and degrades gracefully to the caller's order when capability data is
+    unavailable or ordering empties the pool. ``profiles`` may be supplied by
+    callers that already hold them. ``call_lane="panel"`` marks a lane's
+    internal self-serving request (vs an engine's apply-lane request) for
+    troubleshooting output only.
+
+    Returns ``(ordered_pool, profiles_or_None)``: the pool to route with, and
+    the profiles to hand downstream (None when unavailable). Never raises.
+    """
+    try:
+        if profiles is None:
+            profiles_ = build_profiles_from_models(governor.fetch_models())
+        else:
+            profiles_ = profiles
+        if not profiles_:
+            # An empty catalog yields an empty profile map: that is NOT an
+            # informed ordering. Signal unavailable so callers keep their own
+            # configured order/model rather than trusting a prior-less echo.
+            return list(pool or []), None
+        pool_ = list(pool or [])
+        if profiles_:
+            # An id absent from the live catalog can never be routed (its
+            # pricing lookup hard-fails the whole run) -- drop it at this
+            # routing boundary so one stale configured id cannot kill a
+            # session that has other models available.
+            known = set(profiles_)
+            pool_ = [m_ for m_ in pool_ if m_ in known]
+        report = ledger.participation_report() if ledger is not None else None
+        ordered = order_pool(pool_, profiles_, report, ledger=ledger,
+                             task=task, free_tier=free_tier)
+        if not ordered:
+            # Ordering produced nothing (e.g. every model hard-gated to a
+            # zero capability prior) -- signal 'no informed ordering' rather
+            # than an echo that would displace a caller's configured model.
+            return list(pool), None
+        return ordered, profiles_
+    except Exception as e:
+        eprint(f"[capability] unavailable ({e}); routing on the given order.")
+        return list(pool or []), None
