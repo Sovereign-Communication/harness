@@ -74,7 +74,6 @@ class AutonomyLedger:
             return
         if size < LEDGER_MAX_BYTES:
             return
-        directory = os.path.dirname(self.path) or "."
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%f")
         rotated = f"{self.path}.{stamp}"
         try:

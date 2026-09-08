@@ -39,6 +39,10 @@ ledger status, participation reporting, and spend status. Results include
 machine-readable structured content and an `isError` flag for tool failures.
 
 The supported protocol version is advertised during `initialize`; unsupported
-versions are rejected. Cancellation notifications are intended to stop work
-between governed operations, but verification process cancellation should be
-validated on the target platform before relying on it for hard interruption.
+versions are rejected. Notifications, including `initialize` and `tools/call`,
+never receive response frames. Identified request IDs are rejected while
+already in flight and remain reserved until their response has been serialized;
+accepted requests drain after stdin reaches EOF. Cancellation notifications
+only affect currently in-flight work and stop it cooperatively between governed
+operations. Verification process cancellation should be validated on the
+target platform before relying on it for hard interruption.

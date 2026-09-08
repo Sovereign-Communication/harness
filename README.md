@@ -110,7 +110,7 @@ with `HARNESS_*` env overrides:
 | `panel` / `panel_pool` | curated free list | Ordered panel pool; failing members rotate |
 | `judge` | `google/gemma-4-31b-it:free` | JSON-reliable judge (best live track record) |
 | `convergence_model` | (same as `judge`) | Primary convergence-specialist model for `--converge` |
-| `specialist_pool` | free: minimax, gemma-4-31b, gemma-4-26b | Ordered specialist fallback ladder, strongest observed first |
+| `specialist_pool` | free: gemma-4-31b, gemma-4-26b | Ordered specialist fallback ladder, strongest observed first |
 | `apply_model` / `apply_pool` | free code-first pool | Ordered apply pool; rotates on error |
 | `reasoning_effort` | `auto` | `auto`/`off`/`none`/`low`/`medium`/`high`/`on` |
 | `reasoning_token_budget` | `0.4` | Fraction of `max_tokens` allowed for hidden reasoning |
@@ -262,7 +262,7 @@ consensus is measured, not self-reported:
 
 ```bash
 harness verify --prompt-file audit.txt --converge \
-  --panel "google/gemma-4-31b-it:free,minimax/minimax-m3:free" \
+  --panel "google/gemma-4-31b-it:free,openrouter/free" \
   --judge google/gemma-4-31b-it:free --out verdict.json
 ```
 
@@ -293,9 +293,8 @@ harness verify --prompt-file audit.txt --converge \
   an HTTP error, a paid-BYOK route, empty or reasoning-only output, truncation
   against its token cap, or unparseable JSON, it rotates down a fallback ladder
 (`--specialist-pool` / `HARNESS_SPECIALIST_POOL`, or `specialist_pool` in
-config). The free ladder leads with **minimax-M3** (a perfect observed JSON
-emitter on the live record); the remaining models are tried in
-observed-reliability order, proven models first. Every
+config). The free ladder leads with catalog-validated emitters; the remaining
+models are tried in observed-reliability order, proven models first. Every
   attempt is preflight-reserved before the first call and billed per attempt,
   so the ceiling stays exact, the full attempt trail lands in
   `convergence.attempts` and the ledger, and the deterministic tally stays
@@ -419,10 +418,9 @@ harness capabilities --check-shipped  # $0.00: every shipped default pool id sti
   bounded errors and are persisted before the next probe question.
 
 The registry lives in `~/.config/harness/capabilities.json` (refreshed at most
-once per 24h, or with `--refresh`). The hypothesis is pinned to real data: a
-hermetic test runs the score over a committed `/models` fixture and fails if
-GLM-5.2 and minimax-M3 stop outranking gemma-4-31b — proof of the ranking,
-not an assertion.
+once per 24h, or with `--refresh`). The hypothesis is pinned to committed
+`/models` data: hermetic tests verify capability scoring, ordering, and stale
+model filtering without requiring a network call.
 
 ## The sovereignty model
 
@@ -485,8 +483,8 @@ convention, reassurance-claim exclusion from the gate), and the capability
 layer (parsing, scoring, context hard-gate, composite-reliability math incl.
 prior-shrink, observed-JSON-updates-declared, structured correctness evidence,
 probe persistence/error accounting, routing cost ties, registry persist/refresh/TTL,
-ledger success-rate, the **real-fixture proof** that minimax-M3 and GLM-5.2 outrank
-gemma-4-31b, and the unified MorphLite backend's read-only preview guarantees). The hardening
+ledger success-rate, the **real-fixture capability-ranking and stale-model
+filtering proofs**, and the unified MorphLite backend's read-only preview guarantees). The hardening
 suite adds: config range validation and unknown-key warnings (#15), the
 capabilities registry schema-version stamp (#15), per-model cost reporting
 and --quiet (#16), token-estimator property tests (#7/#20), and the unified

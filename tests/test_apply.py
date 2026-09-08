@@ -3,8 +3,9 @@ import shutil
 import tempfile
 import unittest
 
-from harness.apply import ApplyEngine, _atomic_write
+from harness.apply import ApplyEngine
 from harness.errors import HarnessError
+from harness.filesafety import _atomic_write
 from harness.ledger import AutonomyLedger
 from harness.router import Router
 from harness.spend import SpendGovernor
@@ -467,7 +468,7 @@ class ApplyTests(ApplyFixture):
         fresh = engine.apply_edit(task_id="t3", file_path=p, instruction="fresh",
                                   verify_cmd="gateB", require_consent=False)
         self.assertEqual(fresh["status"], "ok")
-        self.assertIsNone(engine._continuation_gate)
+        # Gate binding is request-local; no engine-level continuation state remains.
 
     def test_backup_filename_survives_slashed_task_ids(self):
         """Regression (playtest): bench names tasks 'bench/<name>' and the slash
@@ -564,7 +565,6 @@ class ApplyTests(ApplyFixture):
         engine.apply_batch([p], instruction="change", verify_cmd="check",
                            require_consent=False)
         self.assertEqual(engine.router.apply_pool, before_pool)
-        self.assertEqual(len(before_pool), len(engine.router.apply_pool))
 
     def test_malformed_diff_is_retried_with_feedback_not_fatal(self):
         """A strict-merge rejection must feed the next round as feedback, not

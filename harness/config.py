@@ -91,7 +91,6 @@ def save_byok_prefixes(path, prefixes):
 # refresh against the live list.
 FREE_PANEL_POOL = [
     "google/gemma-4-31b-it:free",
-    "minimax/minimax-m3:free",
     "inclusionai/ling-3.0-flash-fin:free",
     "google/gemma-4-26b-a4b-it:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
@@ -104,7 +103,6 @@ FREE_PANEL_POOL = [
 FREE_JUDGE = "google/gemma-4-31b-it:free"
 FREE_APPLY_POOL = [
     "google/gemma-4-31b-it:free",
-    "minimax/minimax-m3:free",
     "google/gemma-4-26b-a4b-it:free",
     "inclusionai/ling-3.0-flash-fin:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
@@ -113,16 +111,12 @@ FREE_APPLY_POOL = [
 ]
 
 # Convergence-specialist fallback ladder, tried in order after the primary
-# (which defaults to the judge). Ordered by OBSERVED track record, not
-# declared capability: minimax (32/32) and gemma (38/38) are perfect emitters
-# and lead; GLM-5.2 is 0/22 in the ledger -- declared frontier-class but
-# falsified by every probe and live call -- so it goes last, tried only when
-# everything proven has failed. Rotation must happen BEFORE the next start,
-# never after a first failure the ledger already predicted. The specialist
-# rotates down this ladder on HTTP error, paid-BYOK route, reasoning-only
-# output, truncation, or unparseable JSON.
+# (which defaults to the judge). Ordered by observed track record rather than
+# declared capability; only catalog-validated ids belong in shipped defaults.
+# Rotation happens before the next start, never after a first failure the
+# ledger already predicted. The specialist rotates down this ladder on HTTP
+# error, paid-BYOK route, reasoning-only output, truncation, or unparseable JSON.
 SPECIALIST_POOL_FREE = [
-    "minimax/minimax-m3:free",
     "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
 ]

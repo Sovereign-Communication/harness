@@ -208,7 +208,7 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
 
     The specialist is itself a rotating lane: ``model`` is the primary, then
     ``fallback_pool`` (strongest first -- the curated free ladder leads with
-    minimax and gemma on observed track record; GLM-5.2 sits last on its 0/22
+    proven free emitters on observed track record; stale ids are skipped
     observed JSON record) is tried in order. A candidate is rotated out on any
     imperfect outcome: HTTP error, paid-BYOK route, empty or reasoning-only
     output, truncation against the token cap, or unparseable JSON. Every

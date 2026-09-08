@@ -28,7 +28,7 @@ class Router:
         self.panel_pool = panel_pool or list(panel)
         self.apply_pool = apply_pool or dedup([apply_model] + list(self.panel))
         # Convergence-specialist lane: primary defaults to the judge, fallback
-        # ladder strongest-first (free lane leads with GLM-5.2).
+        # ladder strongest-first (free lane is live-validated).
         self.convergence_model = convergence_model or judge
         self.specialist_pool = list(specialist_pool or [])
 

@@ -673,7 +673,7 @@ def main(argv=None):
                     help="primary model for the convergence specialist (default: same as --judge)")
     pv.add_argument("--specialist-pool", default=None,
                     help="ordered fallback models for the convergence specialist, strongest "
-                         "first (default: configured specialist_pool; free lane leads with GLM-5.2)")
+                         "first (default: configured specialist_pool; live-validated free lane)")
     pv.add_argument("--reassurance-claims", default=None,
                     help="comma-separated claim ids phrased as reassurance ('X is correct'); "
                          "excluded from the defect convergence gate")

@@ -138,6 +138,9 @@ def validate_target_file(file_path):
     engine boundary."""
     if not os.path.exists(file_path):
         raise HarnessError(f"file not found: {file_path}")
+    if os.path.islink(file_path):
+        raise HarnessError(
+            f"symlink targets are not editable: {file_path} (use the real file path)")
     if not os.path.isfile(file_path):
         raise HarnessError(
             f"not a regular file: {file_path} (directories are not editable)")
