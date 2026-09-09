@@ -80,8 +80,35 @@ class HttpTransport(Transport):
                 raise
         raise last_err
 
+    @staticmethod
+    def _retry_cost_of(parsed):
+        """Billable cost buried in a transient error body, else 0."""
+        try:
+            return float((parsed.get("usage") or {}).get("cost") or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _carry_retry_cost(cls, parsed, amount):
+        """Fold dropped transient-attempt spend into the final response so
+        the governor bills every attempt the provider metered (same
+        contract as the reasoning-param retry in chat)."""
+        if not amount or not isinstance(parsed, dict):
+            return parsed
+        usage = parsed.setdefault("usage", {})
+        if not isinstance(usage, dict):
+            return parsed
+        try:
+            current = float(usage.get("cost") or 0.0)
+        except (TypeError, ValueError):
+            current = 0.0
+        usage["cost"] = current + amount
+        usage["retry_cost"] = usage.get("retry_cost", 0.0) + amount
+        return parsed
+
     def post(self, url, api_key, payload, timeout=120):
         data = json.dumps(payload).encode("utf-8")
+        dropped = 0.0
         for attempt in range(self.MAX_RETRIES + 1):
             req = urllib.request.Request(
                 url, data=data,
@@ -90,7 +117,10 @@ class HttpTransport(Transport):
             )
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    return resp.getcode(), json.loads(resp.read().decode("utf-8"))
+                    return (resp.getcode(),
+                            self._carry_retry_cost(
+                                json.loads(resp.read().decode("utf-8")),
+                                dropped))
             except urllib.error.HTTPError as e:
                 body = e.read().decode("utf-8", errors="replace")
                 try:
@@ -98,8 +128,9 @@ class HttpTransport(Transport):
                 except json.JSONDecodeError:
                     parsed = {"error": {"message": body}}
                 if self._transient(e.code) and attempt < self.MAX_RETRIES:
+                    dropped += self._retry_cost_of(parsed)
                     time.sleep(self._retry_delay(attempt, e.headers.get("Retry-After")
                                                  if e.headers else None))
                     continue
-                return e.code, parsed
+                return e.code, self._carry_retry_cost(parsed, dropped)
         raise OSError("unreachable: retries exhausted without a response")

@@ -189,13 +189,42 @@ def _chat_reservation_slots(model_id, reasoning_effort="auto", max_429_retries=0
     return reasoning_slots * (max(0, int(max_429_retries)) + 1)
 
 
+def _ensure_accounted(governor, model, resp, usage):
+    """Fill a missing usage.cost before any lane can bill the response.
+
+    A reported zero stays zero (the free tier). A *missing* cost on a free
+    model is 0. On a paid model it is estimated from the reported token
+    counts against live pricing and flagged cost_estimated; with neither
+    cost nor counts the call fails closed -- billing blind is how a paid
+    lane silently free-rides past its ceiling.
+    """
+    if governor.is_free(model):
+        usage["cost"] = 0.0
+        return
+    try:
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+    except (TypeError, ValueError):
+        prompt_tokens = completion_tokens = 0
+    if not prompt_tokens and not completion_tokens:
+        from .errors import HarnessError
+        raise HarnessError(
+            f"provider omitted usage accounting (no cost, no token counts) "
+            f"for paid model '{model}'; refusing to bill blind")
+    prompt_price, completion_price = governor.fetch_pricing([model])[model]
+    usage["cost"] = prompt_tokens * prompt_price + \
+        completion_tokens * completion_price
+    usage["cost_estimated"] = True
+
+
 def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto",
          reasoning_token_budget=0.4, governor=None):
     """One chat completion with the spend governor's payload guards.
 
     Reasoning is only included when the effort mode calls for it (auto => only
-    for reasoning-named models). If a provider rejects the reasoning
-    parameter, we retry once without it.
+    for reasoning-named models) and a provider rejection triggers one retry
+    without it. Every 200 response also passes cost accounting: a missing
+    usage.cost is resolved here, once, so no lane can bill a paid call as $0.
     """
     if governor:
         governor.check_byok(model)
@@ -211,6 +240,13 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
             governor.assert_no_tools(payload, model)
         return payload
 
+    def _account(status, resp):
+        if governor is not None and status == 200 and isinstance(resp, dict):
+            usage = resp.get("usage")
+            if isinstance(usage, dict) and "cost" not in usage:
+                _ensure_accounted(governor, model, resp, usage)
+        return status, resp
+
     want_reasoning = _effort_to_send(reasoning_effort, model) is not None
     status, resp = transport.post(OPENROUTER_CHAT_URL, api_key, build(want_reasoning))
     if want_reasoning and status != 200:
@@ -221,5 +257,6 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
             prior_cost = _reported_cost(resp)
             retry_status, retry_resp = transport.post(
                 OPENROUTER_CHAT_URL, api_key, build(False))
-            return retry_status, _merge_retry_cost(retry_resp, prior_cost)
-    return status, resp
+            return _account(retry_status,
+                            _merge_retry_cost(retry_resp, prior_cost))
+    return _account(status, resp)

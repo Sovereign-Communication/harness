@@ -94,17 +94,17 @@ class FriendlyInputErrorTests(unittest.TestCase):
 
 
 class EngineKeyWiringTests(unittest.TestCase):
-    """Dogfooding round 1 (audits/self): cli._engine() (the deduped ApplyEngine
-    construction site) dropped api_key, so EVERY engine-routed chat call went
-    out with no Authorization header and 401'd -- while panel-lane calls, which
-    receive the key directly, worked. Hermetic tests build engines directly, so
-    the suite never noticed. Pin the wiring: the engine must carry the same key
-    the governor verified."""
+    """Dogfooding round 1 (audits/self): an ApplyEngine construction site
+    dropped api_key, so EVERY engine-routed chat call went out with no
+    Authorization header and 401'd -- while panel-lane calls, which receive
+    the key directly, worked. Hermetic tests build engines directly, so the
+    suite never noticed. Pin the wiring at the one owner (session.engine_for):
+    the engine must carry the same key the governor verified."""
 
     def test_engine_receives_the_verified_api_key(self):
         settings = load_settings()
-        engine = cli._engine(settings, "sk-the-real-key", object(), object(),
-                             Router(["a"], "j", "m"))
+        engine = session.engine_for(settings, "sk-the-real-key", object(),
+                                    object(), Router(["a"], "j", "m"))
         self.assertEqual(engine.api_key, "sk-the-real-key")
 
     def test_bench_engine_key_reaches_apply_loop(self):
@@ -161,11 +161,16 @@ class EngineKeyWiringTests(unittest.TestCase):
                     posts.append(api_key)
                     return 401, {"error": {"message": "nope"}}
 
+            from harness.ledger import AutonomyLedger
             # Bench composes through session.apply_session; patch the
             # governor seam at its owner (session), so this proves the
             # session-composed engine carries the verified key end to end.
+            # The ledger is temp-isolated too: trust scores read history,
+            # so the machine's real ledger must never decide a hermetic run.
+            led = AutonomyLedger(os.path.join(d, "ledger.jsonl"))
             with mock.patch.object(session, "governor_for", side_effect=fake_governor), \
-                 mock.patch.object(session, "HttpTransport", TransportStub):
+                 mock.patch.object(session, "HttpTransport", TransportStub), \
+                 mock.patch.object(session, "ledger_for", return_value=led):
                 with contextlib.redirect_stderr(io.StringIO()):
                     with self.assertRaises(SystemExit) as ctx:
                         cli.main(["bench", os.path.join(d, "task.json"),

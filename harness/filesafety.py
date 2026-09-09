@@ -153,6 +153,12 @@ def backup_file(file_path, task_id, round_no):
     """
     d = os.path.join(tempfile.gettempdir(), "harness-backups")
     try:
+        if os.path.islink(d):
+            # Hijacked backup dir (a pre-planted symlink): every backup
+            # write below would land wherever the link points, and the
+            # predictable dest names below would let a link inside a
+            # hostile dir redirect to an arbitrary file. Fail closed.
+            raise OSError(f"backup dir is a symlink, refusing: {d}")
         os.makedirs(d, exist_ok=True)
         st = os.stat(file_path)
         # Task ids may contain separators (bench names its tasks
@@ -160,6 +166,9 @@ def backup_file(file_path, task_id, round_no):
         # break open() on every platform. Flatten them.
         safe_task = str(task_id).replace("/", "_").replace("\\", "_")
         dest = os.path.join(d, f"{safe_task}-r{round_no}-{os.path.basename(file_path)}")
+        if os.path.islink(dest):
+            # Planted link at a predictable name: never follow it.
+            raise OSError(f"backup destination is a symlink, refusing: {dest}")
         with open(file_path, "rb") as src, open(dest, "wb") as out:
             shutil.copyfileobj(src, out)
         os.chmod(dest, st.st_mode & 0o777)  # preserve mode for faithful restore

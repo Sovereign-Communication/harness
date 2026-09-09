@@ -45,15 +45,17 @@ from .prompts import (
     CAPABILITY_MARKER,
     _extract_file_content, _parse_ready, _apply_unified_diff,
 )
-from .filesafety import (_line_count, default_run_verify, validate_target_file)
+from .filesafety import (_line_count, default_run_verify, validate_target_file,
+                          _verify_argv)
 from .results import (_defer_result, _http_error, _round_entry)
 
+from . import trust as trust_policy
 from .capability import ordered_pool
 from .chat import (
     chat, extract_content_and_cost, _extract_json,
     REASONING_FALLBACK_PREFIX, _reported_cost, _chat_reservation_slots,
 )
-from .config import MORPH_MODEL
+from .config import HARD_TASK_MAX_COST, MORPH_MODEL
 from .consent import probe_consent, consent_renew
 from .batch import run_batch
 from .continuation import validate_continuation
@@ -163,6 +165,12 @@ class ApplyEngine:
             # engine only pins WHICH gate this request may execute (#5).
             verify_cmd = saved_verify_cmd
             continuation_gate = saved_verify_cmd if continuation.get("verify_gate_id") else None
+        if verify_cmd:
+            # Engine-boundary preflight (fail closed before any model spend):
+            # the gate must at least be shell-tokenizable. Existence on PATH
+            # stays a CLI-preflight concern so hermetic/library callers with
+            # stub gates are unaffected.
+            _verify_argv(verify_cmd)
         if backend not in ("harness", "morph", "diff"):
             raise HarnessError("backend must be 'harness', 'morph', or 'diff'")
         file_path = kwargs.get("file_path")
@@ -178,6 +186,24 @@ class ApplyEngine:
         task_id = kwargs.get("task_id")
         if task_id is None:
             task_id = continuation.get("task_id") or uuid.uuid4().hex[:8]
+        if resumed and kwargs.get("file_path") is not None:
+            # No file retarget (C4): a saved continuation's gate and hash
+            # were verified against ITS file. Reusing them on a different
+            # file would run the wrong gate over the wrong baseline.
+            saved_path = continuation.get("file_path")
+            if saved_path and os.path.abspath(kwargs["file_path"]) != \
+                    os.path.abspath(saved_path):
+                try:
+                    self.ledger.append("trust_gate", task_id=task_id,
+                                       model=kwargs.get("model"),
+                                       reason="continuation file retarget refused",
+                                       severity="hostile",
+                                       combined=None, correctness=None)
+                except Exception:
+                    pass
+                raise HarnessError(
+                    "continuation file_path does not match this run's --file; "
+                    "resume the saved file or start a fresh apply")
         max_tokens = kwargs.get("max_tokens") or 4096
         task_max_cost = (self.default_task_max_cost
                          if kwargs.get("task_max_cost") is None
@@ -234,6 +260,17 @@ class ApplyEngine:
                         if kwargs.get("require_consent") is None
                         else kwargs.get("require_consent"))
 
+        # ---- trust gates (bipolar -11..+11, hard) ----
+        # The model is known and no file has been read yet: deny before
+        # any mutation surface is touched. Denials ledger a trust_gate
+        # event (the evidence loop) and raise with the score + guidance.
+        _trust_decision = trust_policy.check_apply(
+            ledger=self.ledger,
+            report=self.ledger.participation_report(),
+            model=model, resumed=resumed, verify_only=verify_only,
+            verify_cmd=verify_cmd, task_max_cost=task_max_cost,
+            task_id=task_id, hard_task_cap=HARD_TASK_MAX_COST)
+
         with open(file_path, "r", encoding="utf-8") as f:
             original = f.read()
 
@@ -250,7 +287,9 @@ class ApplyEngine:
             continuation=continuation,
             continuation_gate=continuation_gate,
             task_runner=(kwargs.get("task_runner") or self.run_verify),
-            cancel_check=kwargs.get("cancel_check"))
+            cancel_check=kwargs.get("cancel_check"),
+            trust_combined=_trust_decision["combined"],
+            trust_correctness=_trust_decision["correctness"])
 
     def _record_billable(self, req, model_id, amount, status, **fields):
         """Record every billable apply attempt, including rotated failures."""

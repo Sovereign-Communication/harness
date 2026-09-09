@@ -57,7 +57,7 @@ _BOUND_MARKER_RE = re.compile(r"\bMAX_[A-Z0-9_]+\b|\blen\(\)\s*>\s*MAX_")
 
 VALID_KINDS = ("defect", "reassurance")
 MAX_EXPAND_DEPTH = 4
-_DEFN_RE = re.compile(r"(?:pub\s+)?(?:fn|const|static|struct|enum|trait|type)\s+([A-Za-z_][A-Za-z0-9_]*)")
+_DEFN_RE = re.compile(r"\b(?:pub\s+)?(?:fn|const|static|struct|enum|trait|type)\s+([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def _defined_in(source):

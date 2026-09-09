@@ -372,7 +372,8 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             transport, api_key, governor, panel_results, spec_model,
             max_tokens=judge_max_tokens, reasoning_effort=reasoning_effort,
             reasoning_token_budget=reasoning_token_budget, ledger=ledger,
-            task_id=task_id, fallback_pool=specialist_pool)
+            task_id=task_id, fallback_pool=specialist_pool,
+            claim_polarity=claim_polarity, profiles=_profiles)
         spec["tally"] = convergence_tally
         # The deterministic tally owns structured convergence. Responder
         # agreement and merge-gate eligibility are separate signals: a short

@@ -361,6 +361,22 @@ _PROBE_QUESTIONS = [
 ]
 
 
+def _probe_is_free(governor, model):
+    """Free-tier check for the probe lane, tolerant of minimal fakes.
+
+    A governor without live pricing cannot prove freeness: fail closed and
+    treat a BYOK-routed probe as paid (skip the model) rather than billing
+    invisible spend as $0.
+    """
+    is_free = getattr(governor, "is_free", None)
+    if is_free is None:
+        return False
+    try:
+        return bool(is_free(model))
+    except Exception:
+        return False
+
+
 def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
                            reasoning_effort=None, ledger=None, profiles=None,
                            task_id=None):
@@ -374,7 +390,8 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
     Reasoning models are probed WITH a reasoning effort (`low`) so the probe is
     fair to them; non-reasoning models run with reasoning off.
     """
-    from .chat import chat, extract_content_and_cost, _extract_json
+    from .chat import (chat, extract_content_and_cost, _extract_json,
+                       _reported_cost, _chat_reservation_slots)
     results = {}
     tid = task_id or "bench/probe"
     for m in models:
@@ -384,11 +401,16 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
                                       profiles[m].supports_reasoning)
             eff = "low" if declares_reasoning else "off"
         governor.check_byok(m)
+        # A reasoning-probed model may cost two POSTs per question (the
+        # reasoning-param rejection retry); reserve both or the ceiling is
+        # approximate for exactly the models the probe treats specially.
+        slots = _chat_reservation_slots(m, eff)
         json_ok = 0
         correct = 0
         errors = 0
         calls = 0
-        for q, want in _PROBE_QUESTIONS:
+        questions = list(_PROBE_QUESTIONS)
+        for qi, (q, want) in enumerate(questions):
             calls += 1
             status = None
             resp = {}
@@ -398,26 +420,79 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
                 # Every probe question is preflighted against the ceiling so
                 # the loop can never spend through it (same contract as every
                 # other governed lane).
-                governor.preflight(q, [(f"probe {m}", m, max_tokens, 0)])
+                governor.preflight(
+                    q, [(f"probe {m} #{i + 1}/{slots}", m, max_tokens, 0)
+                        for i in range(slots)])
                 status, resp = chat(transport, api_key, m,
                                     [{"role": "user", "content": q}], max_tokens,
                                     eff, 0.4, governor)
             except Exception as exc:
                 error_message = str(exc)
+            byok_skip = False
             if status == 200:
-                # Probe calls are ordinary governed calls: account for their
-                # reported cost before evaluating the response. The small
-                # fallback keeps the hermetic test seam compatible with minimal
-                # fake governors that only implement check_byok().
+                # BYOK is determined BEFORE billing: a paid-BYOK call bills
+                # invisibly, so tracking its reported cost would corrupt the
+                # governor (same rule as the panel lane: 0 tracked).
                 try:
-                    call_cost = float((resp.get("usage") or {}).get("cost") or 0.0)
-                except (AttributeError, TypeError, ValueError):
-                    call_cost = 0.0
-                record_actual = getattr(governor, "record_actual", None)
-                if record_actual is not None:
-                    record_actual(call_cost, m)
+                    _content, _finish, raw_cost, is_byok = \
+                        extract_content_and_cost(resp)
+                except Exception:
+                    raw_cost, is_byok = 0.0, False
+                if is_byok and not _probe_is_free(governor, m):
+                    byok_skip = True
+                else:
+                    # Ordinary governed call: account for the reported cost
+                    # before evaluating the response. The small fallback
+                    # keeps the hermetic test seam compatible with minimal
+                    # fake governors that only implement check_byok().
+                    try:
+                        call_cost = float(raw_cost or 0.0)
+                    except (AttributeError, TypeError, ValueError):
+                        call_cost = 0.0
+                    record_actual = getattr(governor, "record_actual", None)
+                    if record_actual is not None:
+                        record_actual(call_cost, m)
+            else:
+                # Error bodies can still carry a billable cost (a rejected
+                # reasoning param, a throttled-but-metered 429): dropping it
+                # would let the governor and the ledger disagree, the same
+                # hole every other lane already closes.
+                error_cost = _reported_cost(resp)
+                if error_cost:
+                    record_actual = getattr(governor, "record_actual", None)
+                    if record_actual is not None:
+                        try:
+                            record_actual(error_cost, m)
+                        except Exception as exc:
+                            error_message = str(exc)
+                            status, resp = None, {}
             ok = False
             corr = False
+            if byok_skip:
+                # Paid BYOK route: spend is invisible to the tracked key,
+                # exactly like the panel lane. Learn the prefix and stop
+                # burning questions on this model; the rest count as errors
+                # without further network calls. Nothing was billed above.
+                record_byok = getattr(governor, "record_byok", None)
+                if record_byok is not None:
+                    try:
+                        record_byok(m)
+                    except Exception:
+                        pass
+                error_message = ("paid BYOK route; probe skipped "
+                                 "(spend invisible to tracked key)")
+                errors += 1
+                skipped = len(questions) - qi - 1
+                errors += skipped
+                calls += skipped
+                if ledger is not None:
+                    ledger.append(
+                        "model_result", task_id=tid,
+                        event_note="probe", model=m,
+                        task_type="structured", json_expected=True,
+                        json_ok=False, correct=False, status="error",
+                        error=error_message)
+                break
             if status == 200:
                 try:
                     content, *_ = extract_content_and_cost(resp)

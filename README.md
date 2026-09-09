@@ -187,6 +187,9 @@ harness offer --task "Refactor the routing engine's backpressure path"
 harness apply --out state.json ...          # run 1
 harness continue --state state.json --out state2.json   # run 2 (takes over partial work)
 
+# Record a mid-task deferral / consent revocation (the CLI face of defer_work)
+harness defer --task-id <id> --reason "scope changed" --category alignment
+
 # Self-hosting loop in one command: hermetically ground a claims fixture,
 # get the defect gate-confirmed by a live panel, then gated self-apply.
 # Exit 0 only if every phase proved its claim.
@@ -233,7 +236,10 @@ Wire into any MCP host (Claude Code, Cursor, your own agents):
 ```
 
 Tools: `panel_verify`, `apply_edit`, `offer_work`, `defer_work`,
-`ledger_status`, `participation_report`, `spend_status`. `apply_edit` accepts
+`ledger_status`, `participation_report`, `spend_status`, `trust_status`.
+`trust_status` reports bipolar trust (-11..+11) for the host and a model,
+plus the correctness level that rations spend ceilings (read-only).
+`apply_edit` accepts
 `backend: "harness"|"morph"`, `verify_only`, `max_lines`, `model`, and the
 same continuation controls as the CLI. The hand-rolled server is spec-conformant (JSON-RPC 2.0 over stdio, `initialize` →
 `tools/list` → `tools/call`, `structuredContent` + `isError`).

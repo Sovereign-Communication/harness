@@ -1,0 +1,282 @@
+{
+  "scores": {
+    "A": 10.0,
+    "R": 10.0,
+    "SM": 10.0,
+    "SD": 10.0
+  },
+  "checks": {
+    "A": [
+      {
+        "id": "A1",
+        "label": "no-tools payload guard at the one chat seam",
+        "score": 1.0,
+        "evidence": "spend.assert_no_tools exists; chat() guards every payload; all 5 billable lanes (apply/panel/consent/capability/convergence) dispatch through chat()"
+      },
+      {
+        "id": "A2",
+        "label": "preflight covers reasoning/429 retry slots",
+        "score": 1.0,
+        "evidence": "reasoning/429 retry slots counted via _chat_reservation_slots (panel wired); apply/convergence/consent preflight before calls"
+      },
+      {
+        "id": "A3",
+        "label": "ceiling is a hard raise, lock-guarded",
+        "score": 1.0,
+        "evidence": "record_actual raises (never clamps) past max_cost under the spend lock; load_settings bounds max_cost to [0, HARD_MAX_COST]"
+      },
+      {
+        "id": "A4",
+        "label": "BYOK denylist + paid-BYOK fail-closed + learned rotation",
+        "score": 1.0,
+        "evidence": "denylist prefixes hard-block in chat(); consent rejects paid-BYOK routes and records the learned prefix"
+      },
+      {
+        "id": "A5",
+        "label": "key label exact-match gate, no label echo",
+        "score": 1.0,
+        "evidence": "expect-key-label is an exact binary match; the error reports mismatch only, never the resolved label"
+      },
+      {
+        "id": "A6",
+        "label": "gate runner shell-free + timeout",
+        "score": 1.0,
+        "evidence": "default_run_verify: shlex tokenization + shell=False + timeout kill; apply_gate runs gates through it"
+      },
+      {
+        "id": "A7",
+        "label": "verify gate preflighted before spend",
+        "score": 1.0,
+        "evidence": "validate_verify_command preflights --verify (tokenizable + executable resolvable) at the CLI boundary"
+      },
+      {
+        "id": "A8",
+        "label": "atomic write: symlink refusal + mode preservation",
+        "score": 1.0,
+        "evidence": "_atomic_write: temp staged in target dir, os.replace, mode preserved, symlink refused; apply_gate writes only through it"
+      },
+      {
+        "id": "A9",
+        "label": "failed-run rewind",
+        "score": 1.0,
+        "evidence": "terminal_failure rewinds the target to pre-run content when the run dies without a passed gate"
+      },
+      {
+        "id": "A10",
+        "label": "MCP allow_verify/allow_write + allowed_roots",
+        "score": 1.0,
+        "evidence": "apply_edit refuses without allow_write/allow_verify and confines every target to allowed_roots (realpath'd)"
+      },
+      {
+        "id": "A11",
+        "label": "consent fail-closed on unparseable",
+        "score": 1.0,
+        "evidence": "unparseable consent => synthetic defer with dispatched:false, never dispatched (ladder-exhaustion path included)"
+      },
+      {
+        "id": "A12",
+        "label": "continuation tamper gates before key setup",
+        "score": 1.0,
+        "evidence": "validate_continuation refuses tampered/mismatched state; 2 resume commands validate before session assembly (no key lookup first)"
+      },
+      {
+        "id": "A13",
+        "label": "hard config ceilings + fail-clean load",
+        "score": 1.0,
+        "evidence": "7 numeric settings range-validated; hard ceilings enforced in load_settings; unknown keys warned; load inside CLI try"
+      }
+    ],
+    "R": [
+      {
+        "id": "R1",
+        "label": "HTTP transient retry (429/5xx, Retry-After)",
+        "score": 1.0,
+        "evidence": "HttpTransport retries transient 429/5xx with Retry-After honor and capped exponential backoff"
+      },
+      {
+        "id": "R2",
+        "label": "reasoning param policy + cost-carrying retry",
+        "score": 1.0,
+        "evidence": "auto/omit/cap + retry-once-without + rejected-attempt cost merged into retry usage"
+      },
+      {
+        "id": "R3",
+        "label": "output usability is one verdict, protocol conditions",
+        "score": 1.0,
+        "evidence": "assess_output is the one usability verdict (assess=chat-owned, 2 lanes consume it)"
+      },
+      {
+        "id": "R4",
+        "label": "panel seat rotation + judge fallback + honest tally",
+        "score": 1.0,
+        "evidence": "failed panel seats refill from the candidate iterator; judge and specialist fall back; tally counts usable votes only"
+      },
+      {
+        "id": "R5",
+        "label": "apply rotation on all failure classes + readiness deferral",
+        "score": 1.0,
+        "evidence": "rotation covers error/BYOK/reasoning-only/readiness; ladder exhaustion => readiness deferral with continuation"
+      },
+      {
+        "id": "R6",
+        "label": "broken-gate detector on identical REAL outputs only",
+        "score": 1.0,
+        "evidence": "broken-gate detector filters to real verify_failed rounds (merge errors / api_error cannot trigger it)"
+      },
+      {
+        "id": "R7",
+        "label": "ungated partials never land in the tree",
+        "score": 1.0,
+        "evidence": "partial_content persists only inside the continuation state; apply.py holds no direct tree writer (all writes via apply_gate)"
+      },
+      {
+        "id": "R8",
+        "label": "batch envelope + fail-fast + real shared verdict",
+        "score": 1.0,
+        "evidence": "batch loops engine.apply_edit per file, breaks on first non-success, always returns the envelope, derives verify.passed from the last file's verdict"
+      },
+      {
+        "id": "R9",
+        "label": "ledger chain: no fork, quarantine, repair (dynamic)",
+        "score": 1.0,
+        "evidence": "chain_ok=True; quarantined=1; tamper_found=True@4 repair_kept=3 dropped=1 repaired_ok=True"
+      },
+      {
+        "id": "R10",
+        "label": "spend ceiling under concurrency (dynamic)",
+        "score": 1.0,
+        "evidence": "8x200 concurrent record_actual: spent=0.010000 <= 0.01, no lost updates (errors=0)"
+      },
+      {
+        "id": "R11",
+        "label": "config validation ranges + unknown-key warning",
+        "score": 1.0,
+        "evidence": "range-validated: ['apply_max_tokens', 'max_cost', 'max_panelists', 'max_rotations', 'max_tokens', 'reasoning_token_budget', 'task_max_cost']; unknown-key warning present"
+      },
+      {
+        "id": "R12",
+        "label": "continuation contract refuses all tamper classes (dynamic)",
+        "score": 1.0,
+        "evidence": "all 5 refusals hold: {'schema': True, 'no_gate': True, 'verify_flip': True, 'gate_id': True, 'bad_hash': True}"
+      },
+      {
+        "id": "R13",
+        "label": "full suite green hermetically",
+        "score": 1.0,
+        "evidence": "unittest: Ran 400 tests in 5.672s\n\nOK"
+      }
+    ],
+    "SM": [
+      {
+        "id": "S1",
+        "label": "import direction (interfaces on top)",
+        "score": 1.0,
+        "evidence": "import direction clean (0 upward edges)"
+      },
+      {
+        "id": "S2",
+        "label": "no re-export facades",
+        "score": 1.0,
+        "evidence": "no re-export shims (harness/core.py cannot regrow)"
+      },
+      {
+        "id": "S3",
+        "label": "result vocabulary one def site",
+        "score": 1.0,
+        "evidence": "result vocabulary owned by results.py only"
+      },
+      {
+        "id": "S4",
+        "label": "engine/router construction one owner",
+        "score": 1.0,
+        "evidence": "engine/router construction owned by session.py"
+      },
+      {
+        "id": "S5",
+        "label": "ruff clean",
+        "score": 1.0,
+        "evidence": "ruff check harness tests: clean"
+      },
+      {
+        "id": "S6",
+        "label": "test tree mirrors product tree",
+        "score": 1.0,
+        "evidence": "29/29 modules imported by tests"
+      },
+      {
+        "id": "S7",
+        "label": "one owner per policy (8 sampled)",
+        "score": 1.0,
+        "evidence": "all 8 sampled policies have exactly one definition site"
+      },
+      {
+        "id": "S8",
+        "label": "no dead validators",
+        "score": 1.0,
+        "evidence": "no dead validators (all wired or tested)"
+      }
+    ],
+    "SD": [
+      {
+        "id": "D1",
+        "label": "MCP tool parity with README",
+        "score": 1.0,
+        "evidence": "README documents all 9 MCP tools, no stale names"
+      },
+      {
+        "id": "D2",
+        "label": "CLI surface documented",
+        "score": 1.0,
+        "evidence": "12 top-level subcommands documented with the harness <cmd> form"
+      },
+      {
+        "id": "D3",
+        "label": "exit codes consistent",
+        "score": 1.0,
+        "evidence": "0 ok/preview, 3 deferred, 2 failed (+1 fatal, 130 SIGINT) consistent between results.py, cli.py and README"
+      },
+      {
+        "id": "D4",
+        "label": "config table keys real",
+        "score": 1.0,
+        "evidence": "13 README config keys all resolve to real settings (25 configurable)"
+      },
+      {
+        "id": "D5",
+        "label": "version single-sourced",
+        "score": 1.0,
+        "evidence": "pyproject=0.2.0 __version__=0.2.0 (one source)"
+      },
+      {
+        "id": "D6",
+        "label": "changelog discipline",
+        "score": 1.0,
+        "evidence": "format statement + [Unreleased] section present"
+      },
+      {
+        "id": "D7",
+        "label": "docs reference only real modules",
+        "score": 1.0,
+        "evidence": "all module references across 7 docs resolve to real files"
+      },
+      {
+        "id": "D8",
+        "label": "shipped model freshness guard (live: opt-in)",
+        "score": 1.0,
+        "evidence": "shipped_model_ids + capabilities --check-shipped wired; pricing lookup hard-fatals on stale ids; 5 :free pool ids; live check skipped (HARNESS_AUDIT_LIVE unset)"
+      },
+      {
+        "id": "D9",
+        "label": "dogfood loop documented + wired",
+        "score": 1.0,
+        "evidence": "dogfood loop documented (README) + wired (CLI) + round-1 report present in audits/self/"
+      },
+      {
+        "id": "D10",
+        "label": "CONTRIBUTING current",
+        "score": 1.0,
+        "evidence": "CONTRIBUTING references only real modules; layering rules present"
+      }
+    ]
+  }
+}

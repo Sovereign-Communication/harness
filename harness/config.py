@@ -214,12 +214,14 @@ def _warn_insecure_keyfile(path):
               f"{oct(mode)}); restrict it with chmod 600.", file=sys.stderr)
 
 
-def resolve_api_key(*, expected_label=None):
+def resolve_api_key():
     """Resolve the OpenRouter key: env file first, then the environment.
 
-    ``expected_label`` is an exact-match guard (audit #9b): when set, a key
-    whose label does not match exactly is refused rather than silently used,
-    and the label is never echoed into error text (no credential leakage).
+    Key identity is enforced by SpendGovernor.verify_key (exact match of
+    the live /key label, never echoed into errors). An earlier revision
+    tried to pre-check the label here by splitting the key string itself,
+    which can never yield a label -- that dead guard is gone rather than
+    left to reject every real key the day someone passes it a label.
     """
     key = None
     for p in (
@@ -237,10 +239,6 @@ def resolve_api_key(*, expected_label=None):
         if key:
             print("[warn] using OPENROUTER_API_KEY from the process environment; "
                   "prefer a 0600 key file for interactive use.", file=sys.stderr)
-    if key and expected_label:
-        label = key.split("-")[2] if key.count("-") >= 2 else ""
-        if label != expected_label:
-            raise ValueError("resolved key does not match the expected key label")
     return key
 
 

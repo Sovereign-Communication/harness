@@ -1,3 +1,4 @@
+import atexit
 import io
 import json
 import os
@@ -21,6 +22,10 @@ CHANGED = "def add(a, b):\n    return a + b + 0\n"
 
 
 _TMP = tempfile.TemporaryDirectory()
+# The temp dir lives at module scope so every test's ledger is isolated by an
+# unpredictable name; without an atexit hook it is GC'd at interpreter
+# shutdown, tripping -W error::ResourceWarning runs.
+atexit.register(_TMP.cleanup)
 
 
 def make_server(posts=None):
@@ -362,9 +367,15 @@ class McpProtocolTests(unittest.TestCase):
             f.write(ORIGINAL)
         before_pool = list(server.router.apply_pool)
         before_model = server.router.apply_model
+        # Unknown trust refuses gateless writes: exercise routing through a
+        # preview (no write, no gate run), which still builds the request
+        # pool exactly like a mutating call.
         resp = server._invoke("apply_edit", {"file": [target], "instruction": "change",
-                                             "require_consent": False})
-        self.assertEqual(resp["status"], "ok")
+                                             "require_consent": False,
+                                             "verify_only": True})
+        self.assertEqual(resp["status"], "preview")
+        with open(target, encoding="utf-8") as f:
+            self.assertEqual(f.read(), ORIGINAL)
         self.assertEqual(server.router.apply_pool, before_pool)
         self.assertEqual(server.router.apply_model, before_model)
 

@@ -12,6 +12,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from . import __version__
+from . import trust as trust_policy
 from .consent import probe_consent
 from .continuation import validate_continuation
 from .errors import HarnessError, ToolCancelled
@@ -417,7 +418,33 @@ class McpServer:
                 "description": "OpenRouter key identity, spend limit, remaining balance, and harness session spend.",
                 "inputSchema": {"type": "object", "properties": {}},
             },
+            {
+                "name": "trust_status",
+                "title": "Trust & correctness standing",
+                "description": "Bipolar trust scores (-11 extreme distrust, 0 unknown, +11 extreme "
+                               "trust) for the calling host and optionally one model, plus the "
+                               "correctness level that rations spend ceilings. Read-only.",
+                "inputSchema": {"type": "object", "properties": {
+                    "model": {"type": "string", "description": "Model id to score (defaults to none: host only)"},
+                }},
+            },
         ]
+
+    def _refuse(self, reason, message, task_id=None, model=None,
+                severity="soft"):
+        """Ledger a trust-boundary refusal (the evidence loop) and raise it.
+
+        Every safety denial is itself trust evidence: a host that keeps
+        pushing refused writes/execs accrues negative host trust, so the
+        gates tighten the more they are probed. First-use friction
+        (missing allow-flags) is soft; escape attempts are hostile.
+        """
+        try:
+            self.ledger.append("trust_gate", task_id=task_id, model=model,
+                               reason=reason, severity=severity)
+        except Exception:
+            pass
+        raise HarnessError(message)
 
     def _invoke(self, name, args, cancel_check=None):
         if name == "panel_verify":
@@ -458,26 +485,37 @@ class McpServer:
             allow_write = validate_mcp_bool(args.get("allow_write", False), "allow_write")
             verify_only = validate_mcp_bool(args.get("verify_only", False), "verify_only")
             if effective_verify_cmd and not verify_only and not (self.allow_verify or allow_verify):
-                raise HarnessError(
+                self._refuse(
+                    "mcp verify gate without allow_verify",
                     "verify_cmd was supplied but verify gates are not enabled for this MCP session; "
                     "re-send with allow_verify=true to confirm, or configure the server with "
-                    "allow_verify=True")
+                    "allow_verify=True",
+                    task_id=args.get("task_id"), model=args.get("model"))
             if not verify_only and not (self.allow_write or allow_write):
-                raise HarnessError(
+                self._refuse(
+                    "mcp file write without allow_write",
                     "MCP file writes are disabled for this session; re-send with allow_write=true "
-                    "or configure allow_write=True explicitly")
+                    "or configure allow_write=True explicitly",
+                    task_id=args.get("task_id"), model=args.get("model"))
             raw_files = args.get("file")
             files = validate_mcp_files(raw_files) if raw_files is not None else []
             target_files = list(files)
             if continuation.get("file_path"):
                 target_files.append(continuation["file_path"])
             if not self.allowed_roots:
-                raise HarnessError("MCP apply requires at least one configured allowed root")
+                self._refuse(
+                    "mcp apply with no allowed roots configured",
+                    "MCP apply requires at least one configured allowed root",
+                    task_id=args.get("task_id"), model=args.get("model"))
             for target_file in target_files:
                 target = os.path.realpath(os.path.abspath(target_file))
                 if not any(target == root or target.startswith(root + os.sep)
                            for root in self.allowed_roots):
-                    raise HarnessError("file is outside every allowed root for this MCP session")
+                    self._refuse(
+                        "mcp file outside allowed roots",
+                        "file is outside every allowed root for this MCP session",
+                        task_id=args.get("task_id"), model=args.get("model"),
+                        severity="hostile")
             if not files and not continuation:
                 raise HarnessError("apply_edit requires 'file' (or a continuation)")
             apply_flags = {}
@@ -538,9 +576,15 @@ class McpServer:
             return {"entries": self.ledger.tail(limit),
                     "verified": {"ok": ok, "first_bad_seq": bad_seq}}
         if name == "participation_report":
-            return self.ledger.participation_report()
+            report = self.ledger.participation_report()
+            report["trust"] = trust_policy.trust_status(report)
+            return report
         if name == "spend_status":
             return self.governor.key_status()
+        if name == "trust_status":
+            model_arg = validate_mcp_model(args.get("model"))
+            return trust_policy.trust_status(
+                self.ledger.participation_report(), model=model_arg)
         raise ValueError(f"unknown tool: {name}")
 
     def _write(self, obj):

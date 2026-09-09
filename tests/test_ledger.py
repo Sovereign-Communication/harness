@@ -234,5 +234,40 @@ class LedgerCorruptionTests(unittest.TestCase):
             self.assertEqual(led.quarantined, 2)
 
 
+class LedgerLockTests(unittest.TestCase):
+    def test_contended_lock_fails_closed_fast_not_forever(self):
+        """Regression: the POSIX acquire used blocking flock, so a wedged
+        peer hung appends forever and the retry budget was dead code. With
+        LOCK_NB the budget actually runs and fails closed with 'busy'."""
+        import time
+        import harness.ledger as ledger_mod
+        from harness.errors import HarnessError
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "led.jsonl")
+            led = AutonomyLedger(path)
+            lock_path = path + ".lock"
+            with open(lock_path, "a+b") as holder:
+                try:
+                    import msvcrt
+                    holder.seek(0)
+                    msvcrt.locking(holder.fileno(), msvcrt.LK_NBLCK, 1)
+                    hold = True
+                except ImportError:
+                    import fcntl
+                    fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    hold = True
+                self.assertTrue(hold)
+                old_attempts = ledger_mod._LOCK_ATTEMPTS
+                ledger_mod._LOCK_ATTEMPTS = 3
+                try:
+                    start = time.time()
+                    with self.assertRaisesRegex(HarnessError, "busy"):
+                        led.append("offer", task_id="t1", model="m")
+                    self.assertLess(time.time() - start, 5,
+                                    "bounded budget must fail fast, not hang")
+                finally:
+                    ledger_mod._LOCK_ATTEMPTS = old_attempts
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8,9 +8,10 @@ morph_lite.py, plus delegate_task.py's --verify/--max-rounds):
   harness offer    ask a model for consent on a work item
   harness defer    record a mid-task deferral / consent revocation
   harness continue continue a deferred/incomplete apply task
-  harness ledger   autonomy ledger: tail | verify | report
-  harness models   list live free OpenRouter models
-  harness spend    key identity & spend status
+   harness ledger   autonomy ledger: tail | verify | report
+   harness models   list live free OpenRouter models
+   harness spend    key identity & spend status
+   harness trust    trust & correctness standing (read-only)
   harness bench    run a manifest of known-answer tasks through the free tier
 
 Free tier is the default: `--free`/HARNESS_USE_FREE routes everything through
@@ -32,9 +33,8 @@ from .capability import (ensure_profiles, model_reliability, capability_fitness,
 from .filesafety import validate_target_file, validate_verify_command
 from .panel import panel_judge
 from .output import eprint
-from .session import (apply_session as _session, engine_for as _engine,  # noqa: F401 -- cli seams; tests patch/call these directly
-                      governor_for as _governor, ledger_for as _ledger,
-                      router_for as _router)
+from .session import (apply_session as _session, governor_for as _governor,
+                      ledger_for as _ledger, router_for as _router)
 from .results import terminal_exit_code
 from .saturation import advise, pre_run_warning
 import sys
@@ -433,7 +433,10 @@ def _cmd_ledger(opts, settings):
         kept, dropped = ledger.repair()
         _emit({"repaired": True, "kept": kept, "dropped": dropped}, opts.out)
     elif opts.ledger_cmd == "report":
-        _emit(ledger.participation_report(), opts.out)
+        from . import trust as trust_policy
+        report = ledger.participation_report()
+        report["trust"] = trust_policy.trust_status(report)
+        _emit(report, opts.out)
 
 
 def _cmd_bench(opts, settings):
@@ -471,6 +474,14 @@ def _cmd_models(opts, settings):
 def _cmd_spend(opts, settings):
     api_key, gov = _governor(settings)
     _emit(gov.key_status(), opts.out)
+
+
+def _cmd_trust(opts, settings):
+    """Read-only trust snapshot: no key, no network, no ledger writes."""
+    from . import trust as trust_policy
+    ledger = _ledger(settings)
+    _emit(trust_policy.trust_status(ledger.participation_report(),
+                                    model=opts.model), opts.out)
 
 
 def _cmd_capabilities(opts, settings):
@@ -640,6 +651,7 @@ _DISPATCH = {
     "bench": _cmd_bench,
     "capabilities": _cmd_capabilities,
     "spend": _cmd_spend,
+    "trust": _cmd_trust,
 }
 
 
@@ -760,6 +772,12 @@ def main(argv=None):
 
     sub.add_parser("spend", help="Key identity & spend status")
     _add_output_flags(sub.choices["spend"])
+
+    ptrust = sub.add_parser("trust", help="Trust & correctness standing from ledger history "
+                                          "(read-only: no key, no network)")
+    ptrust.add_argument("--model", default=None,
+                        help="model id to score (default: host standing only)")
+    _add_output_flags(ptrust)
 
     pdog = sub.add_parser(
         "dogfood", help="Self-hosting loop: ground -> live panel verify -> "

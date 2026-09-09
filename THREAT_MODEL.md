@@ -31,6 +31,7 @@ authority, so MCP write/exec surfaces are gated one step stricter than CLI.
 | Credential hygiene | Key files warn loudly when group/world readable (POSIX); `expect_key_label` supports exact match; labels never echoed in errors | `harness/config.py` |
 | Ledger tampering | Hash-chained JSONL entries; `verify` recomputes the chain; corrupt/torn lines are quarantined with a stderr note instead of crashing; cross-process advisory lock; 10 MB rotation | `harness/ledger.py` |
 | MCP tool abuse | `allow_verify` confirmation gate on verification commands; structured error codes; `notifications/cancelled` aborts in-flight work via cancellation events | `harness/mcp.py` |
+| Untrusted repeat callers | Bipolar trust (-11..+11, cold-start 0) per host/model/author with hard gates: refuse <= -6, preview-only when negative, gate-required writes at unknown; correctness rations ceilings; every denial ledgered as `trust_gate` evidence | `harness/trust.py`, `harness/apply.py`, `harness/apply_gate.py`, `harness/mcp.py`, `harness/session.py` |
 
 ## Accepted residual risks
 

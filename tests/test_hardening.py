@@ -2,6 +2,8 @@
 
 All hermetic: no network, no key.
 """
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -242,10 +244,69 @@ class ApplyConsentOptionalTests(unittest.TestCase):
             ledger = AutonomyLedger(os.path.join(d, "l.jsonl"))
             engine = ApplyEngine(fake, "k", gov, ledger, Router(["a"], "m/judge", "m/apply"),
                                  default_require_consent=False, default_renew_consent=True)
+            # Unknown trust requires gateless writes to carry a gate; the
+            # stub runner keeps this hermetic (the no-consent renewal path
+            # under test is unchanged).
+            engine.run_verify = lambda cmd: (0, "")
             r = engine.apply_edit(task_id="t", file_path=fp, instruction="bump",
-                                  backend="diff", require_consent=False)
+                                  backend="diff", require_consent=False,
+                                  verify_cmd="check")
             self.assertEqual(r["status"], "ok")
-            self.assertIn("return 10", open(fp, encoding="utf-8").read())
+            with open(fp, encoding="utf-8") as stream:
+                self.assertIn("return 10", stream.read())
+
+
+class BackupHijackTests(unittest.TestCase):
+    """A planted symlink at the predictable backup dir or destination must
+    fail the backup closed (warn + None), never redirect bytes elsewhere."""
+
+    def _symlink_or_skip(self, src, dst):
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks unavailable")
+        try:
+            os.symlink(src, dst)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+
+    def test_planted_destination_link_refused(self):
+        from harness.filesafety import backup_file
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "f.txt")
+            with open(src, "w", encoding="utf-8") as f:
+                f.write("original\n")
+            victim = os.path.join(d, "victim.txt")
+            with open(victim, "w", encoding="utf-8") as f:
+                f.write("victim\n")
+            import harness.filesafety as fs
+            with unittest.mock.patch.object(fs.tempfile, "gettempdir",
+                                            return_value=d):
+                dest = os.path.join(
+                    d, "harness-backups", "t-r1-f.txt")
+                os.makedirs(os.path.join(d, "harness-backups"))
+                self._symlink_or_skip(victim, dest)
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertIsNone(backup_file(src, "t", 1))
+            with open(victim, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "victim\n")
+
+    def test_hijacked_backup_dir_refused(self):
+        from harness.filesafety import backup_file
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "f.txt")
+            with open(src, "w", encoding="utf-8") as f:
+                f.write("original\n")
+            elsewhere = os.path.join(d, "elsewhere")
+            os.makedirs(elsewhere)
+            import harness.filesafety as fs
+            with unittest.mock.patch.object(fs.tempfile, "gettempdir",
+                                            return_value=os.path.join(d, "t")):
+                # Point gettempdir()/harness-backups at an attacker dir.
+                os.makedirs(os.path.join(d, "t"))
+                self._symlink_or_skip(
+                    elsewhere, os.path.join(d, "t", "harness-backups"))
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertIsNone(backup_file(src, "t", 1))
+            self.assertEqual(os.listdir(elsewhere), [])
 
 
 if __name__ == "__main__":

@@ -99,13 +99,17 @@ class TaskSandbox:
     """
 
     def __init__(self, task):
-        self.dir = os.path.abspath(task["dir"])
+        # realpath (not abspath): a parent-dir symlink (taskdir/link -> /etc
+        # with file=link/passwd) passes a purely lexical containment check
+        # while resolving outside the task directory.
+        self.dir = os.path.realpath(os.path.abspath(task["dir"]))
         if not task.get("file"):
             # Same clean contract as the other manifest errors -- a schema
             # error must not surface as a raw KeyError traceback.
             raise HarnessError(
                 f"bench task '{task.get('name', 'task')}' is missing required key 'file'")
-        self.file = os.path.abspath(os.path.join(self.dir, task["file"]))
+        self.file = os.path.realpath(
+            os.path.abspath(os.path.join(self.dir, task["file"])))
         if not (self.file == self.dir
                 or self.file.startswith(self.dir.rstrip(os.sep) + os.sep)):
             raise HarnessError(
@@ -118,6 +122,11 @@ class TaskSandbox:
     def restore(self):
         if os.path.islink(self.file):
             raise HarnessError(f"bench task file {self.file} became a symlink")
+        if os.path.islink(self.snapshot):
+            # A planted .orig link would redirect the snapshot read/write
+            # to an arbitrary file on restore.
+            raise HarnessError(
+                f"bench snapshot {self.snapshot} is a symlink; refusing")
         if not os.path.exists(self.file):
             raise HarnessError(f"bench task file not found: {self.file}")
         if os.path.exists(self.snapshot):

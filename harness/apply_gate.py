@@ -7,6 +7,7 @@ state records and returns the shared result shapes.
 """
 import os
 
+from . import trust as trust_policy
 from .continuation import bound_gate, gate_id
 from .errors import ToolCancelled
 from .filesafety import _atomic_write, backup_file, file_content_hash
@@ -27,6 +28,13 @@ class GatePolicy:
 
     def write_candidate(self, req, state, content, marker=None):
         """Back up and atomically write a changed candidate."""
+        # Write-time trust gate: unknown trust with no verification gate
+        # never lands unreviewed bytes on disk (consent/readiness/deferral
+        # paths return before this point, so honest deferrals are unaffected).
+        trust_policy.check_mutation(
+            ledger=self.ledger, combined=getattr(req, "trust_combined", 0),
+            verify_cmd=req.verify_cmd, task_id=req.task_id,
+            model=getattr(req, "model", None))
         if state.backup is None:
             state.backup = backup_file(req.file_path, req.task_id,
                                        marker or state.round_no)

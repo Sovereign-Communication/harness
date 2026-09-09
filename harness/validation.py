@@ -52,10 +52,6 @@ def finite_number(value, name, minimum=0.0, maximum=None, *, allow_zero=True):
     return result
 
 
-def validate_cost(value, name="cost", maximum=None):
-    return finite_number(value, name, 0.0, maximum)
-
-
 def validate_reasoning_effort(value):
     result = str(value or "auto").lower()
     allowed = ("auto", "off", "none", "low", "medium", "high", "on")

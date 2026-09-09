@@ -28,6 +28,27 @@ jobs:
       - name: Run tests (hermetic, no network, warnings clean)
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
 
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install development tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+      - name: Lint audit script
+        run: python -m ruff check audits
+      - name: 4-dimensional audit (9.5+ bar on every dimension)
+        run: python audits/self/audit.py
+      - name: Live model-freshness check (only when OPENROUTER_API_KEY secret is set)
+        if: ${{ secrets.OPENROUTER_API_KEY != '' }}
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python -m harness.cli capabilities --check-shipped
+
   package:
     runs-on: ubuntu-latest
     steps:

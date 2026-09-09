@@ -10,6 +10,40 @@ break APIs between minor versions).
 ## [Unreleased]
 
 ### Added
+- **Bipolar trust (-11..+11) with hard gates and correctness-rationed
+  ceilings (`harness/trust.py`, `docs/trust.md`).** Cold start is always 0
+  (unknown); clean runs earn slowly (3 per +1) while safety signals land
+  fast (bounded protocol-sloppiness, -1 guidance denials, -4 hostile
+  denials; ordinary verify misses move correctness, never trust).
+  Principals are host + model + continuation author (weakest link; author
+  only matters on resume). `<= -6` refuses mutation/exec, negative forces
+  preview-only, unknown writes require a gate (enforced at the write, so
+  consent/deferral paths still run). Correctness unlocks ceiling
+  fractions (0 -> today's defaults, negative below, +6.. full hard cap).
+  New surfaces: `harness trust`, MCP `trust_status`, additive `trust` on
+  ledger/MCP reports; every denial ledgered as `trust_gate` evidence.
+  Also closed: `--max-cost` override capped at `HARD_MAX_COST` (C2),
+  continuation file-retarget refused (C4), engine-boundary gate
+  tokenizability preflight, MCP boundary refusals ledgered.
+- **CI audit gate:** a new `audit` job in `.github/workflows/ci.yml` runs the
+  4-dimensional audit (`audits/self/audit.py`) with its 9.5+ per-dimension bar
+  on every push/PR, plus ruff over the audit script itself and an opt-in live
+  `capabilities --check-shipped` freshness re-check when the
+  `OPENROUTER_API_KEY` secret is configured (pure `/models` read, $0 spend).
+- **Audit sweep: spend, execution, and convergence hardening.** Probe lane
+  learns paid-BYOK prefixes and stops burning questions on them, reserves
+  reasoning-fallback slots per question, and bills error-path costs like
+  every other lane; `chat()` resolves a missing `usage.cost` once for all
+  lanes (free fills zero, paid estimates from token counts, blind fails
+  closed); transport retries fold dropped transient-attempt spend into the
+  final response; ledger appends use non-blocking cross-process locks;
+  backups and bench snapshots refuse planted symlinks; bench containment
+  resolves parent-dir symlinks; the convergence specialist names
+  reassurance-claim polarity and trims votes to the smallest candidate
+  window; consent renewals attribute to the answering model; the dead
+  key-fragment label guard is gone (live `/key` exact match remains);
+  claims `_DEFN_RE` word boundary restored so in-window definitions
+  suppress redundant auto-expansion.
 - **Consent-probe curation:** consent answers the parser cannot use (empty,
   reasoning-only, unparseable — ledgered as `consent_rotate`, HTTP tier faults
   excluded) now count toward the same two-strike demotion as the apply lane's
@@ -17,6 +51,20 @@ break APIs between minor versions).
   at the next panel/consent lane build.
 
 ### Fixed
+- **Fail-closed consent deferrals carry an explicit `dispatched: false`**
+  verdict in their result shape, so a consumer can branch on the dispatch
+  decision without inferring it from the synthetic defer's reason text
+  (4-dimension audit, A11).
+- **`validate_cost` deleted** - a finite_number alias with zero callers
+  (the dead "audit #15" validator pattern again); `finite_number` is the
+  one cost validator (audit SM8).
+- **The redundant `cli._engine` seam is gone.** Engine construction has one
+  owner (session.engine_for) since the architecture guard landed; the CLI's
+  re-export alias existed only for a round-1 test and invited a second
+  construction site. The key-wiring regression test now pins the real
+  constructor (audit SM2).
+- README documents `harness defer` (the CLI face of `defer_work` was
+  reachable but undocumented) (audit SD2).
 - **Multi-file batches always return the batch envelope**, even when they
   fail fast on file 1 (previously a one-result batch collapsed to the bare
   single-file shape, so consumers keying on `results` couldn't tell a batch

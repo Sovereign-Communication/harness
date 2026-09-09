@@ -17,8 +17,9 @@ from .ledger import AutonomyLedger
 from .router import Router
 from .saturation import pre_run_warning
 from .spend import SpendGovernor
-from .config import resolve_api_key
+from .config import HARD_MAX_COST, resolve_api_key
 from .errors import HarnessError
+from .validation import finite_number
 
 
 def governor_for(settings, max_cost_override=None):
@@ -30,7 +31,14 @@ def governor_for(settings, max_cost_override=None):
         raise HarnessError(
             "no OpenRouter API key found (OPENROUTER_API_KEY env, "
             "~/.config/scmorc/openrouter*.env, or ~/.config/harness/openrouter.env).")
-    max_cost = settings.max_cost if max_cost_override is None else max_cost_override
+    if max_cost_override is None:
+        max_cost = settings.max_cost
+    else:
+        # The CLI override is untrusted input like any other: it is capped
+        # at the same HARD_MAX_COST the settings path enforces, so an
+        # explicit --max-cost can never raise the ceiling past hard.
+        max_cost = finite_number(max_cost_override, "max_cost", 0.0,
+                                 HARD_MAX_COST)
     gov = SpendGovernor(HttpTransport(), api_key, settings.expect_key_label,
                         max_cost)
     gov.verify_key()

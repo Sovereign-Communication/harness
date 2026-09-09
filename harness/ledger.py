@@ -116,7 +116,11 @@ class AutonomyLedger:
                             msvcrt.locking(lf.fileno(), msvcrt.LK_NBLCK, 1)
                         except ImportError:
                             import fcntl
-                            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+                            # LOCK_NB: without it this blocks forever on
+                            # POSIX and the retry budget above is dead code
+                            # (Windows already uses LK_NBLCK).
+                            fcntl.flock(lf.fileno(),
+                                        fcntl.LOCK_EX | fcntl.LOCK_NB)
                         locked = True
                         break
                     except OSError:
@@ -320,6 +324,8 @@ class AutonomyLedger:
             "dispatch_start", "verify_round", "defer_midtask", "complete",
             "abort", "escalate",
         ], 0)
+        trust_gates = 0
+        trust_hostile = 0
         offers_required = 0
         model_stats = {}
         rounds_per_task = {}
@@ -351,6 +357,10 @@ class AutonomyLedger:
             ev = e["event"]
             if ev in counts:
                 counts[ev] += 1
+            if ev == "trust_gate":
+                trust_gates += 1
+                if e.get("severity") == "hostile":
+                    trust_hostile += 1
             if ev == "offer":
                 if e.get("required"):
                     offers_required += 1
@@ -380,6 +390,14 @@ class AutonomyLedger:
             elif ev == "complete":
                 m_ = ms(e.get("model"))
                 m_["completions"] = m_.get("completions", 0) + 1
+            elif ev == "trust_gate":
+                # Safety-denial evidence, attributed when the denial names
+                # a model (dispatch/mutation gates do; bare MCP boundary
+                # refusals may not -- those still count host-globally).
+                m_ = ms(e.get("model"))
+                m_["trust_denials"] = m_.get("trust_denials", 0) + 1
+                if e.get("severity") == "hostile":
+                    m_["trust_hostile"] = m_.get("trust_hostile", 0) + 1
             elif ev == "verify_round":
                 rounds_per_task.setdefault(e.get("task_id"), []).append(e.get("round"))
 
@@ -409,6 +427,8 @@ class AutonomyLedger:
             "completion_rate": rate(counts["complete"], counts["dispatch_start"]),
             "consent_required_offers": offers_required,
             "per_model": model_stats,
+            "trust_gates": trust_gates,
+            "trust_hostile": trust_hostile,
             "tracked_cost": round(tracked_cost, 9),
             "billable_event_count": cost_event_count,
             "consent_looks_degenerate": False,
@@ -502,7 +522,11 @@ class AutonomyLedger:
                 "confident_passed": passes,
                 "confident_failed": fails,
                 "confidence_precision": round(passes / denom, 3) if denom else None,
+                "success_pass": to["pass"],
+                "success_fail": to["fail"],
                 "success_rate": round(to["pass"] / t_denom, 3) if t_denom else None,
+                "structured_pass": structured_outcome[m_]["pass"],
+                "structured_fail": structured_outcome[m_]["fail"],
                 "structured_success_rate": (
                     round(structured_outcome[m_]["pass"] /
                           (structured_outcome[m_]["pass"] + structured_outcome[m_]["fail"]), 3)
@@ -513,6 +537,8 @@ class AutonomyLedger:
                 "samples": model_events[m_],
                 "unusable_outputs": model_stats.get(m_, {}).get("unusable_outputs", 0),
                 "consent_unusable": model_stats.get(m_, {}).get("consent_unusable", 0),
+                "trust_denials": model_stats.get(m_, {}).get("trust_denials", 0),
+                "trust_hostile": model_stats.get(m_, {}).get("trust_hostile", 0),
             }
         report["calibration"] = calibration
         denom = all_pass + all_fail

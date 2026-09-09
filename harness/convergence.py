@@ -199,10 +199,82 @@ def tally_convergence(panel_results, claim_polarity=None, of_panel=None):
     }
 
 
+def _polarity_note(claim_polarity):
+    """Name the reassurance claims (if any) with their inverted polarity.
+
+    The panel prompt marks reassurance claims as real:true == correctness
+    holds -- the opposite of defect polarity. Without the same note here
+    the specialist inverts them in prose while the deterministic tally
+    (which excludes them from the defect gate) stays right: two verdicts
+    that disagree about the same votes.
+    """
+    reassurance = sorted(cid for cid, kind in (claim_polarity or {}).items()
+                         if kind == "reassurance")
+    if not reassurance:
+        return ("All claims below are defect propositions; no reassurance "
+                "claims are present.")
+    ids = ", ".join(reassurance)
+    return ("REASSURANCE claims (opposite polarity -- real:true means the "
+            f"stated correctness HOLDS, not that a defect exists): {ids}. "
+            "Render their verdicts in the panel's own real/not_real "
+            "vocabulary and keep them out of defect convergence.")
+
+
+def _trim_votes_to_window(vote_lines, profiles, candidates, head_text,
+                          max_tokens):
+    """Cap specialist votes at the SMALLEST known candidate window.
+
+    The ladder rotates across models with different context windows; the
+    prompt must fit the tightest one or a smaller-window fallback
+    truncates mid-JSON and burns the ladder for nothing. Newest votes are
+    kept first; dropped models are named, never silent. Unknown windows
+    (or none known) mean no trim -- cost is still preflighted and a
+    truncation rotates fail-closed. The deterministic tally (computed
+    from full votes upstream) stays authoritative regardless.
+    Returns (kept_lines, dropped_model_names).
+    """
+    windows = []
+    for m_ in candidates:
+        try:
+            profile = (profiles or {}).get(m_)
+            if profile is not None:
+                windows.append(profile.max_source_tokens)
+        except AttributeError:
+            continue
+    if not windows:
+        return vote_lines, []
+    from .tokens import estimate_prompt_tokens
+    budget = int((min(windows) - estimate_prompt_tokens(head_text)
+                  - max_tokens) * 0.9)
+    if budget <= 0:
+        # Head alone fills the window: trimming votes cannot fix it.
+        # Let the provider truncate and the lane rotate, loudly.
+        return vote_lines, []
+    kept, dropped, used = [], [], 0
+    for line in reversed(vote_lines):
+        header = line.split("\n", 1)[0]
+        name = header
+        if name.startswith("--- Model: "):
+            name = name[len("--- Model: "):]
+        if name.endswith(" ---"):
+            name = name[:-len(" ---")]
+        tokens = estimate_prompt_tokens(line)
+        if used + tokens > budget and kept:
+            dropped.append(name)
+            continue
+        used += tokens
+        kept.append(line)
+    if dropped:
+        eprint(f"[convergence] context budget {budget} tokens: dropped oldest "
+               f"votes from {dropped} to fit the specialist window.")
+    return list(reversed(kept)), dropped
+
+
 def run_convergence_specialist(transport, api_key, governor, panel_results, model,
                                max_tokens=1200, reasoning_effort="auto",
                                reasoning_token_budget=0.4, ledger=None, task_id=None,
-                               fallback_pool=None):
+                               fallback_pool=None, claim_polarity=None,
+                               profiles=None):
     """A dedicated 'convergence specialist' renders the final verdict from the
     panel's per-claim JSON (defaults to the judge model when not overridden).
 
@@ -227,6 +299,7 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
         "The merge-gate converged field additionally requires every required panel slot to answer. "
         "Claims are DEFECT propositions: real:true means the stated defect genuinely exists. "
         "Do not invent claims or models.",
+        _polarity_note(claim_polarity),
         # Resource-cap disclosure: the model must know its budget up front so it
         # can plan to finish inside it instead of truncating mid-JSON.
         f"RESOURCE CAP: your entire response is limited to {max_tokens} output tokens, and "
@@ -236,12 +309,11 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
         "within the cap, assume nothing beyond it, and emit ONLY the JSON object as your "
         "visible content, starting with {.",
     ]
-    for r in panel_results:
-        # Full per-claim JSON: these are short, structured verdicts, and the
-        # preflight reserve (target * panel_tokens) already covers them. A
-        # truncated vote can silently drop claims and corrupt the tally.
-        lines.append(f"--- Model: {r.get('model')} ---\n{r.get('content') or ''}")
-    prompt = "\n".join(lines)
+    # Full per-claim JSON: these are short, structured verdicts, and the
+    # preflight reserve (target * panel_tokens) already covers them. A
+    # truncated vote can silently drop claims and corrupt the tally.
+    vote_lines = [f"--- Model: {r.get('model')} ---\n{r.get('content') or ''}"
+                  for r in panel_results]
 
     # Build the rotation ladder: primary first, then fallbacks (deduped,
     # learned-BYOK-blocked models dropped). Unknown fallback models are skipped
@@ -265,6 +337,17 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
             continue
         usable.append(m_)
     candidates = usable
+
+    vote_lines, dropped_votes = _trim_votes_to_window(
+        vote_lines, profiles, candidates, "\n".join(lines), max_tokens)
+    lines.extend(vote_lines)
+    if dropped_votes:
+        lines.append(
+            "[NOTE: oldest panel votes from "
+            f"{', '.join(dropped_votes)} were omitted to fit the "
+            "specialist's context window; the deterministic tally remains "
+            "authoritative for those claims.]")
+    prompt = "\n".join(lines)
 
     # Reserve the whole ladder up front (including each reasoning model's
     # possible no-reasoning retry) so the ceiling is exact before any call.
@@ -335,7 +418,8 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
             attempts.append({"model": m_, "status": "ok", "cost": cost})
             return {"status": "ok", "model": m_, "specialist": parsed,
                     "raw": content, "cost": total_cost, "error": None,
-                    "attempts": attempts}
+                    "attempts": attempts,
+                    "dropped_votes_from_prompt": dropped_votes}
         attempts.append({"model": m_, "status": "error",
                          "error": "no parseable JSON", "cost": cost})
         eprint(f"[convergence] {m_}: no parseable JSON; rotating.")

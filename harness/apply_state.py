@@ -34,6 +34,8 @@ class ApplyRequest:
     continuation_gate: object
     task_runner: object
     cancel_check: object
+    trust_combined: int = 0
+    trust_correctness: int = 0
 
 
 @dataclass

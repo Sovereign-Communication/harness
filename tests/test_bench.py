@@ -82,6 +82,50 @@ class BenchTests(unittest.TestCase):
         with open(sb.file, encoding="utf-8") as f:
             self.assertEqual(f.read(), "x = 0\n")
 
+    def test_task_sandbox_refuses_parent_dir_symlink_escape(self):
+        """A taskdir/link -> /outside with file=link/victim must not pass
+        containment: abspath is lexical, realpath is not."""
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks unavailable")
+        from harness.errors import HarnessError
+        outside = os.path.join(self.dir.name, "outside")
+        os.makedirs(outside)
+        victim = os.path.join(outside, "victim.txt")
+        with open(victim, "w", encoding="utf-8") as f:
+            f.write("victim\n")
+        taskdir = os.path.join(self.dir.name, "evil")
+        os.makedirs(taskdir)
+        try:
+            os.symlink(outside, os.path.join(taskdir, "link"))
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        task = {"name": "evil", "dir": taskdir, "file": "link/victim.txt"}
+        with self.assertRaisesRegex(HarnessError, "escapes its task directory"):
+            TaskSandbox(task)
+        with open(victim, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "victim\n")
+
+    def test_task_sandbox_refuses_planted_snapshot_link(self):
+        """A pre-planted file.orig symlink would redirect the snapshot
+        read/write to an arbitrary file on restore."""
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks unavailable")
+        from harness.errors import HarnessError
+        make_task(self.dir.name, "a", "x = 0\n")
+        task = load_manifest(self.dir.name)[0]
+        sb = TaskSandbox(task)
+        victim = os.path.join(self.dir.name, "victim.txt")
+        with open(victim, "w", encoding="utf-8") as f:
+            f.write("victim\n")
+        try:
+            os.symlink(victim, sb.snapshot)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        with self.assertRaisesRegex(HarnessError, "symlink"):
+            sb.restore()
+        with open(victim, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "victim\n")
+
     def test_run_bench_all_pass(self):
         for name, code in [("a", "x = 0\n"), ("b", "x = 0\n")]:
             make_task(self.dir.name, name, code)
