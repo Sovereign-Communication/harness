@@ -604,6 +604,11 @@ def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=No
         if _advice.get("reordered") and _advice.get("flagged"):
             eprint("[local_fit] advisory demoted within tier: "
                    + ", ".join(_advice["flagged"]))
+        if _advice.get("degenerate"):
+            # The artifact is unusable (saturated/indistinguishable scores);
+            # the layer kept the baseline order. Surface WHY it stood down.
+            eprint("[local_fit] advisory stood down: degenerate artifact ("
+                   + str(_advice["degenerate"]) + "); baseline order kept")
         return list(_advice.get("ordered") or ordered)
     except Exception:
         # The advisory layer must never break routing.
