@@ -163,7 +163,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 433 tests in 6.582s\n\nOK"
+        "evidence": "unittest: Ran 521 tests in 8.754s\n\nOK"
       }
     ],
     "SM": [
@@ -201,7 +201,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "29/29 modules imported by tests"
+        "evidence": "30/30 modules imported by tests"
       },
       {
         "id": "S7",
@@ -239,7 +239,7 @@
         "id": "D4",
         "label": "config table keys real",
         "score": 1.0,
-        "evidence": "13 README config keys all resolve to real settings (26 configurable)"
+        "evidence": "13 README config keys all resolve to real settings (28 configurable)"
       },
       {
         "id": "D5",

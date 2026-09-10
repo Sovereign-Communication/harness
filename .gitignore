@@ -6,6 +6,7 @@ dist/
 .harness-backups/
 *.orig
 .freebuff/
+tmp/
 audits/*/prompts/
 audits/*/_runs/
 audits/self/_runs/

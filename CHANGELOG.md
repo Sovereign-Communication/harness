@@ -9,7 +9,28 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
+### Added
+- **Multi-rung apply escalation ladder (opt-in).** When `allow_escalation` is
+  set and `escalation_pool` is configured, a failed cheap apply walks the
+  ladder (cheapest → most capable). Each rung produces COMPLETE file content
+  and is finished through the real verification gate — only a gated pass
+  counts. Judge condensed context (from the verify lane) is prepended for
+  rungs after the first. New `harness/escalation.py` driver,
+  `Router.escalation_pool` / `advance_escalation_rung` / `de_escalate_to_rung`,
+  `Settings.judge_top` and `Settings.escalation_pool`
+  (`HARNESS_JUDGE_TOP`, `HARNESS_ESCALATION_POOL`). Verify-lane specialist
+  JSON may include `escalation{needed,reason,condensed_context,target_rung}`
+  as telemetry; apply output is file content, not judge JSON.
+
 ### Fixed
+- **`--out` creates parent directories.** Relative paths like
+  `results/foo.json` no longer fail after a paid/free panel run with
+  `cannot write --out` when the parent folder is missing.
+- **Claims lint sees Python definitions.** `_DEFN_RE` now matches
+  `def`/`class` as well as Rust `fn`/`const`/… (and `pub(crate)`).
+- **Train-time tests skip without the `local-fit-train` extra.**
+  Clean runners without numpy/onnx no longer error; classes that import
+  `train` are skipped with an explicit reason.
 - **Local-fit advisory scores were inert on real data (saturation).** The
   trained net's real-data logits were tiny, so exported probabilities
   saturated (p_unusable ~0.15 for every candidate, spread ~0.03) and the

@@ -476,6 +476,27 @@ yes. Harness treats that as a bug to design around:
   rates per model and flags near-100% acceptance as *degenerate consent*.
 - The **checkbox** is `require_consent` — per dispatch and globally.
 
+## Multi-rung apply escalation (opt-in)
+
+When the cheap apply lane exhausts its verify budget and `allow_escalation`
+is set, harness walks an ordered ladder (`HARNESS_ESCALATION_POOL`) from
+cheapest to most capable. Each rung:
+
+1. Builds the same COMPLETE-file apply prompt (optional judge condensed
+   context for rungs after the first).
+2. Preflights against the spend governor.
+3. Runs the real verification gate — only a gated pass succeeds.
+
+The verify-lane convergence specialist may also emit an `escalation`
+directive (`needed`, `reason`, `condensed_context`, `target_rung`) as
+structured telemetry in the panel verdict. Apply responses are file content,
+not judge JSON.
+
+Config keys (env-overridable):
+- `HARNESS_ESCALATION_POOL` (comma-separated model ids)
+- `HARNESS_JUDGE_TOP` (smartest judge per tier)
+- `HARNESS_ALLOW_ESCALATION` (opt-in gate)
+
 ## Tests
 
 ```bash
