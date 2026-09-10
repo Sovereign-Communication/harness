@@ -554,6 +554,10 @@ def extract(
             continue
         with open(path, encoding="utf-8") as f:
             run = json.load(f)
+        if not isinstance(run, dict):
+            # Batch summaries / non-run JSON (e.g. a list summary.json) are
+            # not seat-level run artifacts.
+            continue
         rows, _ = extract_seats_from_run(path, run, observed)
         all_rows.extend(rows)
 
@@ -568,6 +572,8 @@ def extract(
             continue
         with open(path, encoding="utf-8") as f:
             run = json.load(f)
+        if not isinstance(run, dict):
+            continue
         rows, new_offset = extract_seats_from_run(path, run, observed, seat_index_offset=offset)
         for r in rows:
             base = observed.get(r.model, {})
