@@ -281,7 +281,9 @@ harness verify --prompt-file audit.txt --converge \
   reported as high agreement with an explicit `panel_shortfall` and
   `defer:true`, never as disagreement. Full 5/5 coverage produces a 1.0 gate
   rate, lifts `consensus.agreement` to `high`, and overrides the judge's
-  self-reported number.
+  self-reported number. A resource-cap trim is never a shortfall: the tally
+  always counts full votes, and any votes withheld from the judge prompt are
+  reported separately as `trimmed_for_judge`.
 - **Polarity convention: claims are defect propositions.** `real: true`
   unambiguously means the stated defect exists in the code. Phrase claims as
   "Defect: X is vulnerable to Y", never as "X is correct" — the latter is

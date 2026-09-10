@@ -206,6 +206,42 @@ class LedgerTests(unittest.TestCase):
         self.assertIn("theater", r["degenerate_note"])
 
 
+class LedgerCallerTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.dir.name, "ledger.jsonl")
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_caller_tagged_when_configured_untagged_by_default(self):
+        led = AutonomyLedger(self.path)
+        led.append("offer", task_id="t1", model="m")
+        self.assertNotIn("caller", led.entries()[-1])
+        led.caller = "mcp:probe/1.0"
+        led.append("offer", task_id="t2", model="m")
+        self.assertEqual(led.entries()[-1]["caller"], "mcp:probe/1.0")
+        # An explicit caller on the event wins over the session default.
+        led.append("offer", task_id="t3", model="m", caller="cli")
+        self.assertEqual(led.entries()[-1]["caller"], "cli")
+        ok, bad = AutonomyLedger(self.path).verify()
+        self.assertTrue(ok)
+        self.assertIsNone(bad)
+
+    def test_participation_report_breaks_out_per_caller(self):
+        led = AutonomyLedger(self.path)
+        led.append("complete", task_id="t1", model="m", status="ok")
+        led.caller = "mcp:probe/1.0"
+        led.append("complete", task_id="t2", model="m", status="ok")
+        led.append("trust_gate", task_id="t3", model="m",
+                   reason="x", severity="hostile")
+        r = led.participation_report()
+        self.assertEqual(r["completions"], 2)
+        self.assertEqual(r["per_caller"]["mcp:probe/1.0"]["completions"], 1)
+        self.assertEqual(r["per_caller"]["mcp:probe/1.0"]["trust_hostile"], 1)
+        self.assertNotIn("untagged", r["per_caller"])
+
+
 class LedgerCorruptionTests(unittest.TestCase):
     def test_torn_trailing_line_quarantined_not_crash(self):
         """The chain must stay readable and appendable after a torn write."""
@@ -232,6 +268,214 @@ class LedgerCorruptionTests(unittest.TestCase):
             led = AutonomyLedger(path)
             self.assertEqual(len(led.entries()), 0)
             self.assertEqual(led.quarantined, 2)
+
+
+class LedgerSegmentAnchorTests(unittest.TestCase):
+    """Rotation must leave a chained boundary record: a pruned prefix
+    reports as an explicit cut, never as a complete genesis chain."""
+
+    def _tiny_bytes(self, monkeypatch_keep=3):
+        import harness.ledger as ledger_mod
+        old_max, old_keep = (ledger_mod.LEDGER_MAX_BYTES,
+                             ledger_mod.LEDGER_KEEP_ROTATIONS)
+        ledger_mod.LEDGER_MAX_BYTES = 200
+        ledger_mod.LEDGER_KEEP_ROTATIONS = monkeypatch_keep
+        self.addCleanup(setattr, ledger_mod, "LEDGER_MAX_BYTES", old_max)
+        self.addCleanup(setattr, ledger_mod, "LEDGER_KEEP_ROTATIONS", old_keep)
+
+    def _anchor_of(self, path):
+        import json
+        with open(path, encoding="utf-8") as f:
+            return json.loads(f.readline())
+
+    def test_rotation_writes_chained_segment_anchor(self):
+        import hashlib
+        from harness.ledger import _canon
+        self._tiny_bytes()
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "led.jsonl")
+            led = AutonomyLedger(path)
+            led.append("offer", task_id="t1", model="m")
+            led.append("offer", task_id="t2", model="m")
+            rotated = [p for p in led._rotated_paths()]
+            self.assertEqual(len(rotated), 1)
+            anchor = self._anchor_of(path)
+            self.assertEqual(anchor["event"], "segment")
+            self.assertEqual(anchor["seq"], 3)
+            # The anchor chains onto the rotated tip, tip fields name it.
+            tip = led.entries()[1]
+            self.assertEqual(anchor["prev_hash"], tip["hash"])
+            self.assertEqual(anchor["tip_seq"], 2)
+            self.assertEqual(anchor["tip_hash"], tip["hash"])
+            body = {k: v for k, v in anchor.items() if k != "hash"}
+            self.assertEqual(
+                hashlib.sha256(_canon(body).encode("utf-8")).hexdigest(),
+                anchor["hash"])
+            # A fresh loader sees one continuous chain through the cut.
+            fresh = AutonomyLedger(path)
+            ok, bad = fresh.verify()
+            self.assertTrue(ok)
+            self.assertIsNone(bad)
+
+    def test_chain_status_reports_segments_and_cut(self):
+        self._tiny_bytes()
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "led.jsonl")
+            led = AutonomyLedger(path)
+            led.append("offer", task_id="t1", model="m")
+            led.append("offer", task_id="t2", model="m")
+            st = AutonomyLedger(path).chain_status()
+            self.assertTrue(st["ok"])
+            self.assertTrue(st["segmented"])
+            self.assertEqual(len(st["segments"]), 2)
+            self.assertEqual(st["first_retained_seq"], 1)
+            self.assertFalse(st["pruned"])
+            self.assertTrue(st["segments"][-1]["opens_with_segment_event"])
+
+    def test_pruned_prefix_reported_not_silent(self):
+        self._tiny_bytes(monkeypatch_keep=1)
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "led.jsonl")
+            led = AutonomyLedger(path)
+            for i in range(6):
+                led.append("offer", task_id=f"t{i}", model="m")
+            fresh = AutonomyLedger(path)
+            # Suffix rule preserved: retained links verify ...
+            ok, bad = fresh.verify()
+            self.assertTrue(ok)
+            self.assertIsNone(bad)
+            # ... but the cut is explicit, not a silent genesis.
+            st = fresh.chain_status()
+            self.assertTrue(st["segmented"])
+            self.assertTrue(st["pruned"])
+            self.assertGreater(st["first_retained_seq"], 1)
+
+    def test_repair_on_healthy_pruned_ledger_is_noop(self):
+        """A healthy pruned suffix needs no healing: repair must leave the
+        segment files alone (collapsing them would destroy the boundary
+        anchors that tell pruning from tampering)."""
+        self._tiny_bytes(monkeypatch_keep=1)
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "led.jsonl")
+            led = AutonomyLedger(path)
+            for i in range(6):
+                led.append("offer", task_id=f"t{i}", model="m")
+            fresh = AutonomyLedger(path)
+            self.assertGreater(fresh.entries()[0]["seq"], 1)
+            import hashlib
+            before = {}
+            for p in [path] + fresh._rotated_paths():
+                with open(p, "rb") as f:
+                    before[p] = hashlib.sha256(f.read()).hexdigest()
+            kept, dropped = fresh.repair()
+            self.assertEqual(dropped, 0)
+            for p, digest in before.items():
+                with open(p, "rb") as f:
+                    self.assertEqual(hashlib.sha256(f.read()).hexdigest(),
+                                     digest)
+            healed = AutonomyLedger(path)
+            ok, bad = healed.verify()
+            self.assertTrue(ok)
+            self.assertIsNone(bad)
+            st = healed.chain_status()
+            self.assertTrue(st["segmented"])
+            self.assertTrue(st["pruned"])
+            self.assertGreater(st["first_retained_seq"], 1)
+
+    def test_repair_preserves_healthy_segments_byte_identical(self):
+        """Repair truncates only the cut file: older retained segments must
+        survive byte-identical (they hold anchored evidence the repair must
+        not rewrite away)."""
+        import hashlib
+        self._tiny_bytes()
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "led.jsonl")
+            led = AutonomyLedger(path)
+            led.append("offer", task_id="t1", model="m")
+            led.append("offer", task_id="t2", model="m")
+            rotated = [p for p in led._rotated_paths()]
+            self.assertEqual(len(rotated), 1)
+            with open(rotated[0], "rb") as f:
+                before = f.read()
+            before_hash = hashlib.sha256(before).hexdigest()
+            # Fork the ACTIVE tail only (stale-writer duplicate).
+            tail = led.entries()
+            from harness.ledger import _canon
+            fork = {"seq": tail[-1]["seq"] + 1, "ts": "2026-09-06T19:14:06+00:00",
+                    "event": "abort", "task_id": "fork",
+                    "prev_hash": tail[-2]["hash"]}
+            fork["hash"] = hashlib.sha256(
+                _canon(fork).encode("utf-8")).hexdigest()
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(_canon(fork) + "\n")
+            reloaded = AutonomyLedger(path)
+            ok, _ = reloaded.verify()
+            self.assertFalse(ok)
+            kept, dropped = reloaded.repair()
+            self.assertGreaterEqual(dropped, 1)
+            with open(rotated[0], "rb") as f:
+                self.assertEqual(hashlib.sha256(f.read()).hexdigest(),
+                                 before_hash)
+            healed = AutonomyLedger(path)
+            ok, bad = healed.verify()
+            self.assertTrue(ok)
+            self.assertIsNone(bad)
+
+    def test_repair_truncates_tampered_active_on_pruned_load(self):
+        """Tamper in the active tail of a pruned load: repair truncates just
+        that file, keeps older segments byte-identical, and the healed chain
+        verifies as an explicit suffix (flag follows content)."""
+        import hashlib
+        from harness.ledger import _canon
+        self._tiny_bytes(monkeypatch_keep=1)
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "led.jsonl")
+            led = AutonomyLedger(path)
+            for i in range(6):
+                led.append("offer", task_id=f"t{i}", model="m")
+            fresh = AutonomyLedger(path)
+            self.assertGreater(fresh.entries()[0]["seq"], 1)
+            rotated = list(fresh._rotated_paths())
+            self.assertTrue(rotated)
+            with open(rotated[0], "rb") as f:
+                before = hashlib.sha256(f.read()).hexdigest()
+            tail = fresh.entries()
+            fork = {"seq": tail[-1]["seq"] + 1,
+                    "ts": "2026-09-06T19:14:06+00:00",
+                    "event": "abort", "task_id": "fork",
+                    "prev_hash": tail[-2]["hash"]}
+            fork["hash"] = hashlib.sha256(
+                _canon(fork).encode("utf-8")).hexdigest()
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(_canon(fork) + "\n")
+            reloaded = AutonomyLedger(path)
+            self.assertFalse(reloaded.verify()[0])
+            kept, dropped = reloaded.repair()
+            self.assertGreaterEqual(dropped, 1)
+            with open(rotated[0], "rb") as f:
+                self.assertEqual(hashlib.sha256(f.read()).hexdigest(), before)
+            healed = AutonomyLedger(path)
+            ok, bad = healed.verify()
+            self.assertTrue(ok)
+            self.assertIsNone(bad)
+            self.assertTrue(healed.chain_status()["pruned"])
+
+    def test_tamper_after_rotation_still_detected(self):
+        import json
+        self._tiny_bytes()
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "led.jsonl")
+            led = AutonomyLedger(path)
+            led.append("offer", task_id="t1", model="m")
+            led.append("offer", task_id="t2", model="m")
+            with open(path, encoding="utf-8") as f:
+                lines = f.read().splitlines()
+            entry = json.loads(lines[0])
+            entry["reason"] = "FORGED"
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(json.dumps(entry, sort_keys=True) + "\n")
+            ok, bad = AutonomyLedger(path).verify()
+            self.assertFalse(ok)
 
 
 class LedgerLockTests(unittest.TestCase):

@@ -68,7 +68,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     judge_blocked = governor.learned_blocked(judge)
     if not panel_pool:
         raise HarnessError("no available panel models after BYOK filtering")
-    target = max(1, min(max_panelists, len(panel_pool)))
+    target = max(1, min(int(max_panelists), len(panel_pool)))
 
     judge_max_tokens = max(768, max_tokens + 200)
     # Reserve for every candidate, bounded 429 retries, and provider reasoning
@@ -265,6 +265,12 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     # window when known, trimming the OLDEST panel contributions first (the
     # newest votes carry the most reliable verdicts) and never silently -- the
     # guard always reports what it dropped.
+    # Context-budget guard: trim a COPY for the judge prompt, never the
+    # evidence itself. The deterministic tally (below) always counts FULL
+    # votes, so a resource-cap trim reports as trimmed_for_judge -- never
+    # as a transport panel_shortfall, which means peers actually failed.
+    judge_results = list(panel_results)
+    trimmed_for_judge = []
     judge_ctx = None
     try:
         if _profiles and judge in _profiles:
@@ -274,7 +280,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     if judge_ctx:
         available = max(0, judge_ctx - estimate_prompt_tokens(prompt) - judge_max_tokens)
         budget = int(available * 0.9)
-        keep = list(reversed(panel_results))
+        keep = list(reversed(judge_results))
         dropped = []
         used = 0
         trimmed = []
@@ -288,10 +294,11 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         if dropped:
             eprint(f"[judge] context budget {budget} tokens: dropped oldest votes "
                    f"from {dropped} to stay within {judge}'s window.")
-        panel_results = list(reversed(trimmed))
+        judge_results = list(reversed(trimmed))
+        trimmed_for_judge = dropped
 
     judge_prompt = (
-        f"{len(panel_results)} independent models were asked the same question. Synthesize "
+        f"{len(judge_results)} independent models were asked the same question. Synthesize "
         f"their answers. Respond with a SINGLE JSON object and nothing else:\n"
         f"{{\"verdict\": \"<clear final recommendation>\", "
         f"\"agreement\": \"high\"|\"medium\"|\"low\"|\"none\", "
@@ -300,7 +307,11 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         f"\"defer\": true|false}}\n"
         f"Set defer=true when the panel cannot reach enough agreement to make a reliable call "
         f"(the work should be deferred rather than guessed). Do not paper over disagreement.\n\n")
-    for r in panel_results:
+    if trimmed_for_judge:
+        judge_prompt += (
+            f"[NOTE: votes from {', '.join(trimmed_for_judge)} were omitted "
+            f"for context budget; synthesize from the votes shown.]\n\n")
+    for r in judge_results:
         # Never truncate: panel verdicts are structured claims the judge must
         # weigh in full, and the preflight reserve covers their worst case.
         note = " [NOTE: cut off by token limit, may be incomplete]" if r["truncated"] else ""
@@ -449,6 +460,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         })
     result = {
         "panel_results": panel_results,
+        "trimmed_for_judge": trimmed_for_judge,
         "panel_failures": panel_failures,
         "required_panelists": target,
         "panel_tried": tried,

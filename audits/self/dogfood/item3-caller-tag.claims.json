@@ -1,0 +1,13 @@
+{
+  "context": "MCP serves one stdio peer per process, but CLI runs, bench runs, and MCP sessions all share one ledger file; `clientInfo` names the peer.",
+  "claims": [
+    {"id": "c1",
+     "text": "DEFECT: the initialize handler reads protocolVersion but never clientInfo, so the ledger cannot attribute any event to the connected peer and one abusive host taints every caller's shared standing",
+     "kind": "defect",
+     "source_refs": [7, 11]},
+    {"id": "c2",
+     "text": "DEFECT: host trust is computed from global session counts only, with no per-caller breakout, so two peers sharing one ledger file are indistinguishable",
+     "kind": "defect",
+     "source_refs": [39, 40, 48]}
+  ]
+}

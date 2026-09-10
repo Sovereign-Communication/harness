@@ -45,9 +45,14 @@ def governor_for(settings, max_cost_override=None):
     return api_key, gov
 
 
-def ledger_for(settings):
-    """The run's autonomy ledger (hash-chained JSONL at the configured path)."""
-    return AutonomyLedger(settings.ledger_path)
+def ledger_for(settings, caller="cli"):
+    """The run's autonomy ledger (hash-chained JSONL at the configured path).
+
+    caller tags every appended event for per-caller trust attribution
+    ("cli" for CLI runs, "mcp..." for MCP sessions, None to leave history
+    untagged as before).
+    """
+    return AutonomyLedger(settings.ledger_path, caller=caller)
 
 
 def router_for(settings):

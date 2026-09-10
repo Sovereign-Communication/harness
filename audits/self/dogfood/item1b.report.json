@@ -1,0 +1,245 @@
+{
+  "phases": [
+    {
+      "phase": "ground",
+      "status": "ok",
+      "claims": 2
+    },
+    {
+      "phase": "verify",
+      "status": "ok",
+      "confirmed_claims": [],
+      "tally": {
+        "converged": false,
+        "responder_converged": true,
+        "converged_claims": 0,
+        "responder_converged_claims": 2,
+        "total_claims": 2,
+        "convergence_rate": 1.0,
+        "gate_convergence_rate": 0.0,
+        "disagreement": false,
+        "disagreement_claims": [],
+        "panel_shortfall": true,
+        "missing_votes": 1,
+        "shortfall": {
+          "voted_by": 2,
+          "of_panel": 3,
+          "missing_votes": 1
+        },
+        "voted_by": 2,
+        "of_panel": 3,
+        "responding_models": [
+          "google/gemma-4-26b-a4b-it:free",
+          "cohere/north-mini-code:free"
+        ],
+        "claims": {
+          "c1": {
+            "verdict": "real",
+            "unanimous": true,
+            "responder_unanimous": true,
+            "converged": false,
+            "gate_unanimous": false,
+            "voted_by": 2,
+            "of_panel": 3,
+            "confidence": 0.875,
+            "votes": {
+              "real": 2,
+              "not_real": 0
+            },
+            "missing_votes": 1,
+            "panel_shortfall": true
+          },
+          "c2": {
+            "verdict": "real",
+            "unanimous": true,
+            "responder_unanimous": true,
+            "converged": false,
+            "gate_unanimous": false,
+            "voted_by": 2,
+            "of_panel": 3,
+            "confidence": 0.925,
+            "votes": {
+              "real": 2,
+              "not_real": 0
+            },
+            "missing_votes": 1,
+            "panel_shortfall": true
+          }
+        },
+        "reassurance": {}
+      }
+    }
+  ],
+  "status": "not_confirmed",
+  "verify": {
+    "panel_results": [
+      {
+        "model": "google/gemma-4-26b-a4b-it:free",
+        "content": "```json\n{\n  \"c1\": {\n    \"real\": true,\n    \"severity\": \"medium\",\n    \"confidence\": 0.9,\n    \"why\": \"Line 41 explicitly skips the 'prev_hash == None' check for the first entry of a segmented ledger, allowing an attacker to replace an old segment with a new one starting with an arbitrary 'prev_hash' anchor.\"\n  },\n  \"c2\": {\n    \"real\": true,\n    \"severity\": \"high\",\n    \"confidence\": 0.95,\n    \"why\": \"The rotation mechanism (os.replace) simply renames the file; there is no cryptographic link or cross-segment hash stored to prove the first entry of a new segment is the successor to the last entry of the previous segment.\"\n  }\n}\n```",
+        "finish_reason": "stop",
+        "cost": 0,
+        "truncated": false
+      },
+      {
+        "model": "cohere/north-mini-code:free",
+        "content": "{\"c1\": {\"real\": true, \"severity\": \"high\", \"confidence\": 0.85, \"why\": \"External anchor acceptance on first entry after rotation lets tampered history before rotation go undetected and verify cannot distinguish a truncated suffix from a complete genesis chain.\"}, \"c2\": {\"real\": true, \"severity\": \"high\", \"confidence\": 0.9, \"why\": \"Rotation only renames the file without adding a boundary record; continuity depends on writer\u2011provided prev_hash and cannot be independently verified from segment files alone.\"}}",
+        "finish_reason": "stop",
+        "cost": 0,
+        "truncated": false
+      }
+    ],
+    "panel_failures": [
+      {
+        "model": "google/gemma-4-31b-it:free",
+        "reason": "Provider returned error",
+        "status": 502,
+        "cost": 0.0,
+        "retries": 0
+      },
+      {
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "reason": "malformed, missing, or truncated per-claim JSON",
+        "status": "invalid_output",
+        "cost": 0,
+        "retries": 0
+      },
+      {
+        "model": "openrouter/free",
+        "reason": "malformed, missing, or truncated per-claim JSON",
+        "status": "invalid_output",
+        "cost": 0,
+        "retries": 0
+      },
+      {
+        "model": "inclusionai/ling-3.0-flash-fin:free",
+        "reason": "reasoning-only output (no visible content)",
+        "status": "invalid_output",
+        "cost": 0,
+        "retries": 0
+      }
+    ],
+    "required_panelists": 3,
+    "panel_tried": 6,
+    "judge_model": "google/gemma-4-31b-it:free",
+    "judge_synthesis": "```json\n{\n  \"verdict\": \"Both c1 and c2 are real vulnerabilities. c1 allows an attacker to anchor a new segment with an arbitrary hash, bypassing continuity checks. c2 identifies a lack of cryptographic linkage between rotated segments, preventing independent verification of the chain's continuity.\",\n  \"agreement\": \"high\",\n  \"confidence\": 0.9,\n  \"disagreements\": [\n    \"Severity of c1: one model rated it as medium, the other as high.\"\n  ],\n  \"defer\": false\n}\n```",
+    "judge_synthesis_status": "parseable",
+    "verdict": "Deterministic panel tally: c1=real (2/3); c2=real (2/3); panel shortfall 2/3; merge gate deferred",
+    "consensus": {
+      "agreement": "high",
+      "confidence": 1.0,
+      "disagreements": [],
+      "defer": true,
+      "panel_shortfall": true,
+      "missing_votes": 1,
+      "voted_by": 2,
+      "of_panel": 3,
+      "responder_converged": true,
+      "gate_converged": false,
+      "defer_reason": "panel_shortfall",
+      "judge_verdict": "Both c1 and c2 are real vulnerabilities. c1 allows an attacker to anchor a new segment with an arbitrary hash, bypassing continuity checks. c2 identifies a lack of cryptographic linkage between rotated segments, preventing independent verification of the chain's continuity."
+    },
+    "estimated_worst_case_cost": 0.0,
+    "actual_cost": 0.0,
+    "max_cost_ceiling": 0.02,
+    "convergence": {
+      "status": "ok",
+      "model": "google/gemma-4-31b-it:free",
+      "specialist": {
+        "converged": true,
+        "agreement": "high",
+        "confidence": 0.9,
+        "claims": {
+          "c1": {
+            "verdict": "real",
+            "converged": true,
+            "confidence": 0.875
+          },
+          "c2": {
+            "verdict": "real",
+            "converged": true,
+            "confidence": 0.925
+          }
+        },
+        "note": "panel shortfall: 2 of 3 slots voted; this consensus is NOT coverage-complete and must not authorize a task on its own"
+      },
+      "raw": "```json\n{\n  \"converged\": true,\n  \"agreement\": \"high\",\n  \"confidence\": 0.9,\n  \"claims\": {\n    \"c1\": {\n      \"verdict\": \"real\",\n      \"converged\": true,\n      \"confidence\": 0.875\n    },\n    \"c2\": {\n      \"verdict\": \"real\",\n      \"converged\": true,\n      \"confidence\": 0.925\n    }\n  }\n}\n```",
+      "cost": 0.0,
+      "error": null,
+      "attempts": [
+        {
+          "model": "google/gemma-4-31b-it:free",
+          "status": "ok",
+          "cost": 0
+        }
+      ],
+      "dropped_votes_from_prompt": [],
+      "tally": {
+        "converged": false,
+        "responder_converged": true,
+        "converged_claims": 0,
+        "responder_converged_claims": 2,
+        "total_claims": 2,
+        "convergence_rate": 1.0,
+        "gate_convergence_rate": 0.0,
+        "disagreement": false,
+        "disagreement_claims": [],
+        "panel_shortfall": true,
+        "missing_votes": 1,
+        "shortfall": {
+          "voted_by": 2,
+          "of_panel": 3,
+          "missing_votes": 1
+        },
+        "voted_by": 2,
+        "of_panel": 3,
+        "responding_models": [
+          "google/gemma-4-26b-a4b-it:free",
+          "cohere/north-mini-code:free"
+        ],
+        "claims": {
+          "c1": {
+            "verdict": "real",
+            "unanimous": true,
+            "responder_unanimous": true,
+            "converged": false,
+            "gate_unanimous": false,
+            "voted_by": 2,
+            "of_panel": 3,
+            "confidence": 0.875,
+            "votes": {
+              "real": 2,
+              "not_real": 0
+            },
+            "missing_votes": 1,
+            "panel_shortfall": true
+          },
+          "c2": {
+            "verdict": "real",
+            "unanimous": true,
+            "responder_unanimous": true,
+            "converged": false,
+            "gate_unanimous": false,
+            "voted_by": 2,
+            "of_panel": 3,
+            "confidence": 0.925,
+            "votes": {
+              "real": 2,
+              "not_real": 0
+            },
+            "missing_votes": 1,
+            "panel_shortfall": true
+          }
+        },
+        "reassurance": {}
+      }
+    },
+    "cost_by_model": {
+      "google/gemma-4-26b-a4b-it:free": 0.0,
+      "cohere/north-mini-code:free": 0.0,
+      "nvidia/nemotron-3-super-120b-a12b:free": 0.0,
+      "openrouter/free": 0.0,
+      "inclusionai/ling-3.0-flash-fin:free": 0.0,
+      "google/gemma-4-31b-it:free": 0.0
+    }
+  }
+}

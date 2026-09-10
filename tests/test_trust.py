@@ -303,6 +303,37 @@ class TrustStatusTests(unittest.TestCase):
         self.assertEqual(out["combined"], 0)  # host unknown caps it
         self.assertIn("session_fraction", out["correctness"])
 
+    def test_host_trust_breaks_out_per_caller(self):
+        """One abusive peer must not taint every other caller's standing:
+        per-caller history scores separately, global stays the fallback."""
+        report = {"completions": 12, "trust_gates": 2, "trust_hostile": 2,
+                  "calibration": {},
+                  "per_caller": {
+                      "mcp:good/1.0": {"completions": 12, "trust_gates": 0,
+                                       "trust_hostile": 0},
+                      "mcp:evil/9.9": {"completions": 0, "trust_gates": 2,
+                                       "trust_hostile": 2}}}
+        good, _ = trust.host_trust(report, caller="mcp:good/1.0")
+        self.assertEqual(good, 4)
+        evil, _ = trust.host_trust(report, caller="mcp:evil/9.9")
+        self.assertLessEqual(evil, trust.REFUSE_AT_OR_BELOW)
+        # Unknown callers stay unknown; the tainted global is the fallback.
+        unknown, _ = trust.host_trust(report, caller="mcp:new/0.1")
+        self.assertEqual(unknown, 0)
+        fallback, _ = trust.host_trust(report)
+        self.assertEqual(fallback, -4)
+
+    def test_trust_status_names_caller_and_table(self):
+        report = {"completions": 3, "trust_gates": 0, "trust_hostile": 0,
+                  "calibration": {},
+                  "per_caller": {"mcp:probe/1.0": {"completions": 3,
+                                                   "trust_gates": 0,
+                                                   "trust_hostile": 0}}}
+        out = trust.trust_status(report, caller="mcp:probe/1.0")
+        self.assertEqual(out["caller"]["id"], "mcp:probe/1.0")
+        self.assertEqual(out["caller"]["score"], 1)
+        self.assertEqual(out["per_caller"]["mcp:probe/1.0"]["score"], 1)
+
 
 class SessionCapTests(unittest.TestCase):
     def test_max_cost_override_capped_at_hard(self):

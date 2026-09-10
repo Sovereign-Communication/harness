@@ -1,0 +1,13 @@
+{
+  "context": "MCP serves one stdio peer; all tool calls share one governor, ledger, router, and engine.",
+  "claims": [
+    {"id": "c1",
+     "text": "DEFECT: every tools/call frame is submitted to one max_workers=1 executor, so a single long apply_edit or panel_verify blocks all later tools, including read-only status queries",
+     "kind": "defect",
+     "source_refs": [9, 52]},
+    {"id": "c2",
+     "text": "DEFECT: cancellation is cooperative-only: an uncancelled long run holds the single worker without bound while queued requests wait behind it",
+     "kind": "defect",
+     "source_refs": [62, 91]}
+  ]
+}

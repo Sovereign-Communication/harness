@@ -8,6 +8,7 @@ import math
 import os
 import sys
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -42,6 +43,20 @@ from .validation import (
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_VERSION = __version__
 
+# Tool lanes: one serial worker each. Mutation (file writes) stays strictly
+# serial for single-session engine semantics; spendy lanes (network calls
+# that can run minutes on a saturated tier) no longer head-of-line-block
+# the observation lane, so status/report queries always answer promptly.
+# Governor spend accounting and ledger appends are lock-guarded, and the
+# engine is only ever driven from the mutation lane, so lanes are safe to
+# run concurrently with each other.
+MUTATION_LANE = {"apply_edit"}
+SPENDY_LANE = {"panel_verify", "offer_work"}
+# Default per-tool deadline (seconds): cooperative, tripped through the
+# same cancel_check as notifications/cancelled. Configurable via
+# HARNESS_MCP_TOOL_TIMEOUT (60..7200).
+MCP_TOOL_TIMEOUT_DEFAULT = 1800
+
 
 def _valid_rpc_id(value):
     """JSON-RPC request ids are finite strings, numbers, or null."""
@@ -59,7 +74,8 @@ class McpServer:
 
     def __init__(self, *, transport, api_key, governor, ledger, router, engine,
                  max_panelists=3, use_free=True, stdin=None, stdout=None,
-                 allow_verify=False, allow_write=False, allowed_roots=None):
+                 allow_verify=False, allow_write=False, allowed_roots=None,
+                 tool_timeout=None, caller=None):
         self.transport = transport
         self.api_key = api_key
         self.governor = governor
@@ -74,6 +90,14 @@ class McpServer:
         self._cancel_lock = threading.Lock()
         self._cancelled = set()
         self._inflight = set()
+        self._starts = {}
+        self.tool_timeout = (MCP_TOOL_TIMEOUT_DEFAULT if tool_timeout is None
+                             else tool_timeout)
+        # Session authorship for the evidence loop: the stdio peer (captured
+        # from initialize clientInfo) or the embedding host. Ledger events
+        # created on this connection carry it; trust scores break out
+        # per-caller history from it.
+        self.caller = caller
         # Remote safety is explicit: verify commands and file writes are not
         # enabled merely because a protocol client can reach this process.
         self.allow_verify = bool(allow_verify)
@@ -81,15 +105,59 @@ class McpServer:
         self.allowed_roots = [os.path.realpath(os.path.abspath(root))
                               for root in (allowed_roots or [])]
 
+    # ---------------- lanes + deadlines ----------------
+    @staticmethod
+    def _lane_for(tool_name):
+        """Which serial lane runs a tool. Unknown/missing names ride the
+        observe lane and fail validation in the worker, as before."""
+        if tool_name in MUTATION_LANE:
+            return "mutation"
+        if tool_name in SPENDY_LANE:
+            return "spendy"
+        return "observe"
+
+    def _note_start(self, request_id):
+        """Stamp a request's deadline clock (first stamp wins: submit time,
+        so queueing behind a busy lane counts against the deadline)."""
+        if request_id is None:
+            return
+        with self._cancel_lock:
+            self._starts.setdefault(request_id, time.monotonic())
+
+    def _forget_start(self, request_id):
+        with self._cancel_lock:
+            self._starts.pop(request_id, None)
+
+    def _is_expired(self, request_id):
+        try:
+            with self._cancel_lock:
+                start = self._starts.get(request_id)
+            if start is None:
+                return False
+            return (time.monotonic() - start) > float(self.tool_timeout)
+        except (TypeError, ValueError):
+            return False
+
+    def _cancel_check(self, request_id, with_deadline=False):
+        """One cooperative predicate for cancellation AND deadlines, so an
+        uncancelled-but-overdue run stops at the same poll points a
+        cancelled one does (in-flight POST/subprocess still run to their
+        own timeouts -- documented residual, same as cancel)."""
+        if self._is_cancelled(request_id):
+            return True
+        return bool(with_deadline) and self._is_expired(request_id)
+
     # ---------------- JSON-RPC dispatch ----------------
     def serve_forever(self):
-        """Read frames until EOF while a single worker runs tools.
+        """Read frames until EOF while lane workers run tools.
 
         A reader/worker split is required so cancellation notifications can
-        arrive during provider or gate I/O. Tool execution stays serialized so
-        the governor, ledger, and engine retain their single-session semantics.
+        arrive during provider or gate I/O. Each lane stays serial -- the
+        mutation lane keeps single-session engine semantics -- but a long
+        apply/panel no longer head-of-line-blocks status queries.
         """
-        executor = ThreadPoolExecutor(max_workers=1)
+        pools = {lane: ThreadPoolExecutor(max_workers=1)
+                 for lane in ("mutation", "spendy", "observe")}
         try:
             while True:
                 line = self.stdin.readline()
@@ -132,7 +200,11 @@ class McpServer:
                                 })
                                 continue
                             self._inflight.add(request_id)
-                    executor.submit(self._write_tool_response, msg)
+                    params = msg.get("params", {})
+                    tool_name = params.get("name") if isinstance(params, dict) else None
+                    self._note_start(request_id)
+                    pools[self._lane_for(tool_name)].submit(
+                        self._write_tool_response, msg)
                     continue
 
                 response = self._handle(msg)
@@ -140,9 +212,10 @@ class McpServer:
                     self._write(response)
         finally:
             # Requests already accepted from the input stream still own a
-            # response. Let the serialized worker drain them after EOF; only
-            # an explicit notifications/cancelled message cancels work.
-            executor.shutdown(wait=True)
+            # response. Let every lane drain after EOF; only an explicit
+            # notifications/cancelled message cancels work.
+            for pool in pools.values():
+                pool.shutdown(wait=True)
 
     def _write_tool_response(self, msg):
         request_id = msg.get("id")
@@ -162,6 +235,32 @@ class McpServer:
                 with self._cancel_lock:
                     self._inflight.discard(request_id)
                     self._cancelled.discard(request_id)
+            self._forget_start(request_id)
+
+    @staticmethod
+    def _sanitize_caller_part(value):
+        text = str(value or "").strip()
+        kept = "".join(ch for ch in text
+                       if ch.isalnum() or ch in "._-+/ ")
+        return " ".join(kept.split())[:64]
+
+    def _capture_caller(self, params):
+        """Name the stdio peer from initialize clientInfo for the evidence
+        loop: subsequent ledger appends on this connection carry it, so
+        per-caller trust can tell peers apart. Unknown peers stay "mcp"."""
+        try:
+            info = params.get("clientInfo") or {}
+            name = self._sanitize_caller_part(info.get("name"))
+            version = self._sanitize_caller_part(info.get("version"))
+            if name and version:
+                self.caller = f"mcp:{name}/{version}"
+            elif name:
+                self.caller = f"mcp:{name}"
+            else:
+                self.caller = "mcp"
+            self.ledger.caller = self.caller
+        except Exception:
+            pass
 
     def _negotiate_version(self, requested):
         if requested is None:
@@ -190,6 +289,7 @@ class McpServer:
             except HarnessError as exc:
                 return {"jsonrpc": "2.0", "id": msg.get("id"),
                         "error": {"code": -32602, "message": str(exc)}}
+            self._capture_caller(params)
             return {
                 "jsonrpc": "2.0", "id": msg.get("id"),
                 "result": {
@@ -278,9 +378,12 @@ class McpServer:
                     "error": {"code": -32800,
                                "message": "Request cancelled before execution"}}
         try:
+            if "id" in msg:
+                self._note_start(request_id)
             result = self._invoke(
                 params["name"], args,
-                cancel_check=(lambda: self._is_cancelled(request_id))
+                cancel_check=(lambda rid=request_id:
+                              self._cancel_check(rid, with_deadline=True))
                 if "id" in msg else None,
             )
             return {"jsonrpc": "2.0", "id": request_id,
@@ -308,6 +411,10 @@ class McpServer:
                         "isError": True,
                         "errorKind": "invalid_input",
                     }}
+        finally:
+            # Direct (non-worker) invocations never pass through
+            # _write_tool_response: never leak deadline clocks.
+            self._forget_start(request_id)
 
     def _tools(self):
         return [
@@ -574,7 +681,8 @@ class McpServer:
             limit = validate_mcp_limit(args.get("limit"))
             ok, bad_seq = self.ledger.verify()
             return {"entries": self.ledger.tail(limit),
-                    "verified": {"ok": ok, "first_bad_seq": bad_seq}}
+                    "verified": {"ok": ok, "first_bad_seq": bad_seq},
+                    "chain": self.ledger.chain_status()}
         if name == "participation_report":
             report = self.ledger.participation_report()
             report["trust"] = trust_policy.trust_status(report)
@@ -584,7 +692,8 @@ class McpServer:
         if name == "trust_status":
             model_arg = validate_mcp_model(args.get("model"))
             return trust_policy.trust_status(
-                self.ledger.participation_report(), model=model_arg)
+                self.ledger.participation_report(), model=model_arg,
+                caller=self.caller)
         raise ValueError(f"unknown tool: {name}")
 
     def _write(self, obj):
@@ -600,7 +709,7 @@ def main(argv=None):  # pragma: no cover - thin wiring
     settings = load_settings()
     transport = composition.HttpTransport()
     api_key, governor = composition.governor_for(settings)
-    ledger = composition.ledger_for(settings)
+    ledger = composition.ledger_for(settings, caller="mcp")
     composition.pre_run_warning(governor=governor, ledger=ledger,
                                 use_free=settings.use_free)
     router = composition.router_for(settings)
@@ -611,6 +720,7 @@ def main(argv=None):  # pragma: no cover - thin wiring
         use_free=settings.use_free, allow_write=settings.mcp_allow_write,
         allow_verify=settings.mcp_allow_verify,
         allowed_roots=settings.mcp_allowed_roots,
+        tool_timeout=settings.mcp_tool_timeout,
     ).serve_forever()
 
 

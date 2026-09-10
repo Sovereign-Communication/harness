@@ -58,10 +58,25 @@ class ConfigRangeValidationTests(unittest.TestCase):
     def test_hard_ceiling_boundary_values_accepted(self):
         """The hard ceilings themselves remain configurable (e.g. CI wants 10¢)."""
         with mock.patch.dict(os.environ, {"HARNESS_MAX_COST": "0.10",
-                                          "HARNESS_TASK_MAX_COST": "0.25"}):
+                                           "HARNESS_TASK_MAX_COST": "0.25"}):
             s = load_settings()
         self.assertEqual(s.max_cost, 0.10)
         self.assertEqual(s.task_max_cost, 0.25)
+
+    def test_integer_settings_stay_integers(self):
+        """Regression (live dogfood): finite_number returns float, so every
+        integer setting arrived as 3.0 and range()/max_workers crashed the
+        first live panel fan-out -- a path the hermetic suite never took."""
+        with mock.patch.dict(os.environ, {"HARNESS_MAX_PANELISTS": "3",
+                                           "HARNESS_MAX_TOKENS": "2048",
+                                           "HARNESS_MAX_ROTATIONS": "2",
+                                           "HARNESS_MAX_COST": "0.02"}):
+            s = load_settings()
+        self.assertIs(type(s.max_panelists), int)
+        self.assertIs(type(s.max_tokens), int)
+        self.assertIs(type(s.max_rotations), int)
+        self.assertIs(type(s.max_cost), float)
+        range(s.max_panelists)  # must not raise
 
     def test_unknown_config_key_warns(self):
         """#15: an unknown key in config.json must warn on stderr, not vanish."""

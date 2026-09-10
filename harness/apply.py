@@ -269,7 +269,8 @@ class ApplyEngine:
             report=self.ledger.participation_report(),
             model=model, resumed=resumed, verify_only=verify_only,
             verify_cmd=verify_cmd, task_max_cost=task_max_cost,
-            task_id=task_id, hard_task_cap=HARD_TASK_MAX_COST)
+            task_id=task_id, hard_task_cap=HARD_TASK_MAX_COST,
+            caller=getattr(self.ledger, "caller", None))
 
         with open(file_path, "r", encoding="utf-8") as f:
             original = f.read()

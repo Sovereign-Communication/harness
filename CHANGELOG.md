@@ -10,6 +10,42 @@ break APIs between minor versions).
 ## [Unreleased]
 
 ### Added
+- **Dogfood-driven close-out of the four deferred audit items** (panel
+  evidence under `audits/self/dogfood/item{1,2,3b,4}.*`):
+  - *Ledger rotation anchors.* Every rotation opens the fresh active file
+    with a chained `segment` event naming the moved file and its tip, so
+    segment boundaries stay cryptographically linked. New `chain_status()`
+    reports validity plus retention shape (`segmented`, per-file bounds,
+    `first_retained_seq`, `pruned`); a pruned prefix reports as an explicit
+    cut, never as genesis. `repair()` now truncates only the cut file,
+    leaves healthy segments byte-identical, and is a no-op on healthy
+    ledgers; `ledger verify` / MCP `ledger_status` surface the chain
+    status. The dogfood panel confirmed the gap 2/2 before the fix.
+  - *MCP lanes + deadlines.* Three serial workers (`mutation`,
+    `spendy`, `observe`) replace the single worker, so a long apply/panel
+    no longer head-of-line-blocks status queries (frames correlate by id,
+    never position). Every request carries a cooperative deadline
+    (`HARNESS_MCP_TOOL_TIMEOUT`, 60..7200s, default 1800) tripped through
+    the same cancel path as `notifications/cancelled`. Confirmed 3/3.
+  - *Per-caller tagging.* Ledger events carry the session caller id
+    (`cli`, `mcp`, `mcp:<name>/<version>` from initialize clientInfo);
+    reports break out `per_caller` history and host trust scores named
+    peers separately, with the untagged global as fallback. New `harness
+    trust --caller` and MCP-side attribution included.
+  - *Tally-first judging.* The context-budget trim shapes only a copy for
+    the judge prompt (disclosed in-prompt); the deterministic tally counts
+    full votes and the result keeps them, so a resource-cap trim reports
+    as `trimmed_for_judge` -- never as transport `panel_shortfall`.
+- **Dogfood found a live crash first:** integer settings arrived as floats
+  (`finite_number` returns float), so `range()/max_workers` crashed the
+  first live panel fan-out -- a path the hermetic suite never took.
+  Settings coerce back to int, panel hardens its target, regression
+  pinned. The run spent $0.00 before failing.
+- **Free-tier diff-merge finding:** 12 model attempts across two items
+  wrote near-miss unified diffs (correct content, wrong hunk counts)
+  that the strict merger refused 12/12. Model-written diffs are not a
+  viable lane at this tier today; panel verification + hermetic gates
+  carried these items instead. Evidence in the item reports.
 - **Bipolar trust (-11..+11) with hard gates and correctness-rationed
   ceilings (`harness/trust.py`, `docs/trust.md`).** Cold start is always 0
   (unknown); clean runs earn slowly (3 per +1) while safety signals land

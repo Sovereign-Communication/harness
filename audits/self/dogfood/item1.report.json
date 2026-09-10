@@ -1,0 +1,228 @@
+{
+  "phases": [
+    {
+      "phase": "ground",
+      "status": "ok",
+      "claims": 2
+    },
+    {
+      "phase": "verify",
+      "status": "ok",
+      "confirmed_claims": [],
+      "tally": {
+        "converged": false,
+        "responder_converged": false,
+        "converged_claims": 0,
+        "responder_converged_claims": 0,
+        "total_claims": 2,
+        "convergence_rate": 0.0,
+        "gate_convergence_rate": 0.0,
+        "disagreement": true,
+        "disagreement_claims": [
+          "c1",
+          "c2"
+        ],
+        "panel_shortfall": false,
+        "missing_votes": 0,
+        "shortfall": null,
+        "voted_by": 3,
+        "of_panel": 3,
+        "responding_models": [
+          "google/gemma-4-26b-a4b-it:free",
+          "google/gemma-4-31b-it:free",
+          "nvidia/nemotron-3-super-120b-a12b:free"
+        ],
+        "claims": {
+          "c1": {
+            "verdict": "real",
+            "unanimous": false,
+            "responder_unanimous": false,
+            "converged": false,
+            "gate_unanimous": false,
+            "voted_by": 3,
+            "of_panel": 3,
+            "confidence": 0.917,
+            "votes": {
+              "real": 2,
+              "not_real": 1
+            },
+            "missing_votes": 0,
+            "panel_shortfall": false
+          },
+          "c2": {
+            "verdict": "real",
+            "unanimous": false,
+            "responder_unanimous": false,
+            "converged": false,
+            "gate_unanimous": false,
+            "voted_by": 3,
+            "of_panel": 3,
+            "confidence": 0.867,
+            "votes": {
+              "real": 2,
+              "not_real": 1
+            },
+            "missing_votes": 0,
+            "panel_shortfall": false
+          }
+        },
+        "reassurance": {}
+      }
+    }
+  ],
+  "status": "not_confirmed",
+  "verify": {
+    "panel_results": [
+      {
+        "model": "google/gemma-4-26b-a4b-it:free",
+        "content": "```json\n{\n  \"c1\": {\n    \"real\": true,\n    \"severity\": \"medium\",\n    \"confidence\": 0.9,\n    \"why\": \"The logic at line 41 explicitly allows the first entry of a segmented ledger to have an arbitrary 'prev_hash', making it impossible for verify() to distinguish a legitimate pruned segment from a malicious one that starts with a fake hash.\"\n  },\n  \"c2\": {\n    \"real\": true,\n    \"severity\": \"medium\",\n    \"confidence\": 0.85,\n    \"why\": \"The rotation logic performs file-level unlinking (line 25) without writing a continuity token or anchor between segments, meaning the boundary between the last entry of segment N and the first of N+1 is never cryptographically verified.\"\n  }\n}\n```",
+        "finish_reason": "stop",
+        "cost": 0,
+        "truncated": false
+      },
+      {
+        "model": "google/gemma-4-31b-it:free",
+        "content": "```json\n{\n  \"c1\": {\n    \"real\": true,\n    \"severity\": \"medium\",\n    \"confidence\": 0.9,\n    \"why\": \"Line 41 explicitly ignores the prev_hash check for the first entry of a segmented ledger, making a truncated chain look valid.\"\n  },\n  \"c2\": {\n    \"real\": true,\n    \"severity\": \"medium\",\n    \"confidence\": 0.8,\n    \"why\": \"Rotation relies on ephemeral state (_segmented) or filename patterns; no durable metadata records the pruning boundary.\"\n  }\n}\n```",
+        "finish_reason": "stop",
+        "cost": 0,
+        "truncated": false
+      },
+      {
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "content": "{\n  \"c1\": {\"real\": false, \"severity\": \"info\", \"confidence\": 0.95, \"why\": \"verify() intentionally accepts an external anchor for the first retained entry when segmented, as documented; this is expected behavior, not a defect.\"},\n  \"c2\": {\"real\": false, \"severity\": \"info\", \"confidence\": 0.95, \"why\": \"Rotation policy deliberately drops old segments without extra metadata; distinguishing pruning from tampering is outside the design scope, not a defect.\"}\n}",
+        "finish_reason": "stop",
+        "cost": 0,
+        "truncated": false
+      }
+    ],
+    "panel_failures": [],
+    "required_panelists": 3,
+    "panel_tried": 3,
+    "judge_model": "google/gemma-4-31b-it:free",
+    "judge_synthesis": "```json\n{\n  \"verdict\": \"The analysis is contradictory: two models identify vulnerabilities regarding the lack of continuity verification during ledger segmentation and",
+    "judge_synthesis_status": "unparseable",
+    "verdict": "Deterministic panel tally: c1=real (3/3); c2=real (3/3)",
+    "consensus": {
+      "agreement": "low",
+      "confidence": 0.0,
+      "disagreements": [
+        "c1",
+        "c2"
+      ],
+      "defer": true,
+      "panel_shortfall": false,
+      "missing_votes": 0,
+      "voted_by": 3,
+      "of_panel": 3,
+      "responder_converged": false,
+      "gate_converged": false,
+      "defer_reason": "responder_disagreement",
+      "judge_verdict": "```json\n{\n  \"verdict\": \"The analysis is contradictory: two models identify vulnerabilities regarding the lack of continuity verification during ledger segmentation and"
+    },
+    "estimated_worst_case_cost": 0.0,
+    "actual_cost": 0.0,
+    "max_cost_ceiling": 0.02,
+    "convergence": {
+      "status": "ok",
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "specialist": {
+        "converged": false,
+        "agreement": "low",
+        "confidence": 0.5,
+        "claims": {
+          "c1": {
+            "verdict": "not_real",
+            "converged": false,
+            "confidence": 0.6
+          },
+          "c2": {
+            "verdict": "not_real",
+            "converged": false,
+            "confidence": 0.6
+          }
+        }
+      },
+      "raw": "{\n  \"converged\": false,\n  \"agreement\": \"low\",\n  \"confidence\": 0.5,\n  \"claims\": {\n    \"c1\": {\n      \"verdict\": \"not_real\",\n      \"converged\": false,\n      \"confidence\": 0.6\n    },\n    \"c2\": {\n      \"verdict\": \"not_real\",\n      \"converged\": false,\n      \"confidence\": 0.6\n    }\n  }\n}",
+      "cost": 0.0,
+      "error": null,
+      "attempts": [
+        {
+          "model": "google/gemma-4-31b-it:free",
+          "status": "error",
+          "error": "no parseable JSON",
+          "cost": 0
+        },
+        {
+          "model": "google/gemma-4-26b-a4b-it:free",
+          "status": "ok",
+          "cost": 0
+        }
+      ],
+      "dropped_votes_from_prompt": [],
+      "tally": {
+        "converged": false,
+        "responder_converged": false,
+        "converged_claims": 0,
+        "responder_converged_claims": 0,
+        "total_claims": 2,
+        "convergence_rate": 0.0,
+        "gate_convergence_rate": 0.0,
+        "disagreement": true,
+        "disagreement_claims": [
+          "c1",
+          "c2"
+        ],
+        "panel_shortfall": false,
+        "missing_votes": 0,
+        "shortfall": null,
+        "voted_by": 3,
+        "of_panel": 3,
+        "responding_models": [
+          "google/gemma-4-26b-a4b-it:free",
+          "google/gemma-4-31b-it:free",
+          "nvidia/nemotron-3-super-120b-a12b:free"
+        ],
+        "claims": {
+          "c1": {
+            "verdict": "real",
+            "unanimous": false,
+            "responder_unanimous": false,
+            "converged": false,
+            "gate_unanimous": false,
+            "voted_by": 3,
+            "of_panel": 3,
+            "confidence": 0.917,
+            "votes": {
+              "real": 2,
+              "not_real": 1
+            },
+            "missing_votes": 0,
+            "panel_shortfall": false
+          },
+          "c2": {
+            "verdict": "real",
+            "unanimous": false,
+            "responder_unanimous": false,
+            "converged": false,
+            "gate_unanimous": false,
+            "voted_by": 3,
+            "of_panel": 3,
+            "confidence": 0.867,
+            "votes": {
+              "real": 2,
+              "not_real": 1
+            },
+            "missing_votes": 0,
+            "panel_shortfall": false
+          }
+        },
+        "reassurance": {}
+      }
+    },
+    "cost_by_model": {
+      "google/gemma-4-26b-a4b-it:free": 0.0,
+      "google/gemma-4-31b-it:free": 0.0,
+      "nvidia/nemotron-3-super-120b-a12b:free": 0.0
+    }
+  }
+}

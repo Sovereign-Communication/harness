@@ -428,10 +428,12 @@ def _cmd_ledger(opts, settings):
         _emit({"entries": ledger.tail(opts.n), "count": len(ledger.entries())}, opts.out)
     elif opts.ledger_cmd == "verify":
         ok, bad = ledger.verify()
-        _emit({"verified": ok, "first_bad_seq": bad}, opts.out)
+        _emit({"verified": ok, "first_bad_seq": bad,
+               "chain": ledger.chain_status()}, opts.out)
     elif opts.ledger_cmd == "repair":
         kept, dropped = ledger.repair()
-        _emit({"repaired": True, "kept": kept, "dropped": dropped}, opts.out)
+        _emit({"repaired": dropped > 0, "kept": kept, "dropped": dropped},
+              opts.out)
     elif opts.ledger_cmd == "report":
         from . import trust as trust_policy
         report = ledger.participation_report()
@@ -481,7 +483,8 @@ def _cmd_trust(opts, settings):
     from . import trust as trust_policy
     ledger = _ledger(settings)
     _emit(trust_policy.trust_status(ledger.participation_report(),
-                                    model=opts.model), opts.out)
+                                    model=opts.model,
+                                    caller=opts.caller), opts.out)
 
 
 def _cmd_capabilities(opts, settings):
@@ -777,6 +780,8 @@ def main(argv=None):
                                           "(read-only: no key, no network)")
     ptrust.add_argument("--model", default=None,
                         help="model id to score (default: host standing only)")
+    ptrust.add_argument("--caller", default=None,
+                        help="caller id to score (default: global session standing)")
     _add_output_flags(ptrust)
 
     pdog = sub.add_parser(

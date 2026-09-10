@@ -178,6 +178,7 @@ _ENV_NAMES = {
     "mcp_allow_write": "HARNESS_MCP_ALLOW_WRITE",
     "mcp_allow_verify": "HARNESS_MCP_ALLOW_VERIFY",
     "mcp_allowed_roots": "HARNESS_MCP_ALLOWED_ROOTS",
+    "mcp_tool_timeout": "HARNESS_MCP_TOOL_TIMEOUT",
 }
 
 
@@ -265,8 +266,9 @@ class Settings:
                  apply_model, apply_pool, escalation_model, max_cost, task_max_cost, max_tokens,
                  apply_max_tokens, reasoning_effort, reasoning_token_budget,
                  max_panelists, max_rotations, renew_consent, ledger_path,
-                 expect_key_label, default_require_consent, allow_escalation,
-                 mcp_allow_write=False, mcp_allow_verify=False, mcp_allowed_roots=None):
+                  expect_key_label, default_require_consent, allow_escalation,
+                  mcp_allow_write=False, mcp_allow_verify=False, mcp_allowed_roots=None,
+                  mcp_tool_timeout=1800):
         self.use_free = use_free
         self.panel = list(panel)
         self.panel_pool = list(panel_pool)
@@ -295,6 +297,7 @@ class Settings:
         self.mcp_allow_write = mcp_allow_write
         self.mcp_allow_verify = mcp_allow_verify
         self.mcp_allowed_roots = list(mcp_allowed_roots or [])
+        self.mcp_tool_timeout = mcp_tool_timeout
 
     def to_dict(self):
         return {k: getattr(self, k) for k in (
@@ -305,7 +308,7 @@ class Settings:
             "reasoning_effort", "reasoning_token_budget", "max_panelists",
             "max_rotations", "renew_consent", "ledger_path", "expect_key_label",
             "default_require_consent", "allow_escalation", "mcp_allow_write",
-            "mcp_allow_verify", "mcp_allowed_roots")}
+            "mcp_allow_verify", "mcp_allowed_roots", "mcp_tool_timeout")}
 
 
 def load_settings(overrides=None):
@@ -356,7 +359,11 @@ def load_settings(overrides=None):
             value = cast(raw)
         except (TypeError, ValueError, OverflowError):
             raise HarnessError(key + " must be a valid number")
-        return finite_number(value, key, lo, hi)
+        value = finite_number(value, key, lo, hi)
+        # finite_number always returns float: integer settings (panelists,
+        # tokens, rotations) must go back to int, or range()/max_workers
+        # crash the live lanes the hermetic suite never exercises.
+        return int(value) if cast is int else value
 
     max_cost = _num("max_cost", float, 0, HARD_MAX_COST, DEFAULT_MAX_COST)
     task_max_cost = _num("task_max_cost", float, 0, HARD_TASK_MAX_COST, DEFAULT_TASK_MAX_COST)
@@ -365,6 +372,10 @@ def load_settings(overrides=None):
     reasoning_token_budget = _num("reasoning_token_budget", float, 0.05, 1, 0.4)
     max_panelists = _num("max_panelists", int, 1, 10, 3)
     max_rotations = _num("max_rotations", int, 0, 20, 3)
+    # Per-tool deadline for the MCP server: cooperative (trips cancel_check,
+    # same path as notifications/cancelled), so an uncancelled-but-overdue
+    # run still stops at the next poll point instead of holding a lane.
+    mcp_tool_timeout = _num("mcp_tool_timeout", int, 60, 7200, 1800)
 
     return Settings(
         use_free=use_free,
@@ -392,4 +403,5 @@ def load_settings(overrides=None):
         mcp_allow_write=_as_bool(get("mcp_allow_write", False)),
         mcp_allow_verify=_as_bool(get("mcp_allow_verify", False)),
         mcp_allowed_roots=_split_list(str(get("mcp_allowed_roots", ""))),
+        mcp_tool_timeout=mcp_tool_timeout,
     )

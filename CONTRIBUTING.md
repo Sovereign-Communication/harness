@@ -135,6 +135,6 @@ merge.
 | `harness/cli.py` | interface + claims-specific verify mapping (claims prompt, lint, polarity); session aliases (`_governor`/`_engine`/...) kept as test seams |
 | `harness/consent.py` | the consent probe (sovereignty) |
 | `harness/ledger.py` | hash-chained JSONL autonomy ledger |
-| `harness/mcp.py` | MCP framing, tool contracts, boundary normalization, serialized scheduling, cancellation, engine dispatch, and response lifecycle; composes dependencies from session.py |
+| `harness/mcp.py` | MCP framing, tool contracts, boundary normalization, lane scheduling (mutation/spendy/observe), cooperative cancellation + per-tool deadlines, engine dispatch, and response lifecycle; composes dependencies from session.py |
 | `harness/bench.py` | hermetic known-answer benchmarks |
 | `tests/` | one test module per product owner (test_spend, test_panel, test_convergence, test_specialist, test_chat, test_ledger, test_prompts, ...); shared fakes and the `_gov` helper live in `tests/_fake.py` |

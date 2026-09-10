@@ -1,0 +1,148 @@
+{
+  "panel_results": [
+    {
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "content": "```json\n{\n  \"c1\": {\n    \"real\": true,\n    \"severity\": \"high\",\n    \"confidence\": 0.9,\n    \"why\": \"The initialize handler processes protocolVersion (line 11) but ignores clientInfo, preventing identity-based attribution in a shared ledger environment.\"\n  },\n  \"c2\": {\n    \"real\": true,\n    \"severity\": \"high\",\n    \"confidence\": 1.0,\n    \"why\": \"The host_trust function calculates score based on raw values from the report object without any mechanism to filter by a specific peer's identity.\"\n  }\n}\n```",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    },
+    {
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "content": "{\n  \"c1\": {\"real\": false, \"severity\": \"info\", \"confidence\": 0.8, \"why\": \"initialize handler may store clientInfo elsewhere; no evidence shown that ledger lacks attribution.\"},\n  \"c2\": {\"real\": true, \"severity\": \"medium\", \"confidence\": 0.9, \"why\": \"host_trust uses only aggregated counts; comment notes missing per-caller breakout.\"}\n}",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    }
+  ],
+  "panel_failures": [],
+  "required_panelists": 2,
+  "panel_tried": 2,
+  "judge_model": "google/gemma-4-31b-it:free",
+  "judge_synthesis": "```json\n{\n",
+  "judge_synthesis_status": "unparseable",
+  "verdict": "Deterministic panel tally: c1=real (2/2); c2=real (2/2)",
+  "consensus": {
+    "agreement": "low",
+    "confidence": 0.5,
+    "disagreements": [
+      "c1"
+    ],
+    "defer": true,
+    "panel_shortfall": false,
+    "missing_votes": 0,
+    "voted_by": 2,
+    "of_panel": 2,
+    "responder_converged": false,
+    "gate_converged": false,
+    "defer_reason": "responder_disagreement",
+    "judge_verdict": "```json\n{\n"
+  },
+  "estimated_worst_case_cost": 0.0,
+  "actual_cost": 0.0,
+  "max_cost_ceiling": 0.02,
+  "convergence": {
+    "status": "ok",
+    "model": "google/gemma-4-31b-it:free",
+    "specialist": {
+      "converged": false,
+      "agreement": "medium",
+      "confidence": 0.85,
+      "claims": {
+        "c1": {
+          "verdict": "not_real",
+          "converged": false,
+          "confidence": 0.85
+        },
+        "c2": {
+          "verdict": "real",
+          "converged": true,
+          "confidence": 0.95
+        }
+      }
+    },
+    "raw": "```json\n{\n  \"converged\": false,\n  \"agreement\": \"medium\",\n  \"confidence\": 0.85,\n  \"claims\": {\n    \"c1\": {\n      \"verdict\": \"not_real\",\n      \"converged\": false,\n      \"confidence\": 0.85\n    },\n    \"c2\": {\n      \"verdict\": \"real\",\n      \"converged\": true,\n      \"confidence\": 0.95\n    }\n  }\n}\n```",
+    "cost": 0.0,
+    "error": null,
+    "attempts": [
+      {
+        "model": "google/gemma-4-31b-it:free",
+        "status": "ok",
+        "cost": 0
+      }
+    ],
+    "dropped_votes_from_prompt": [],
+    "tally": {
+      "converged": false,
+      "responder_converged": false,
+      "converged_claims": 1,
+      "responder_converged_claims": 1,
+      "total_claims": 2,
+      "convergence_rate": 0.5,
+      "gate_convergence_rate": 0.5,
+      "disagreement": true,
+      "disagreement_claims": [
+        "c1"
+      ],
+      "panel_shortfall": false,
+      "missing_votes": 0,
+      "shortfall": null,
+      "voted_by": 2,
+      "of_panel": 2,
+      "responding_models": [
+        "google/gemma-4-26b-a4b-it:free",
+        "nvidia/nemotron-3-super-120b-a12b:free"
+      ],
+      "claims": {
+        "c1": {
+          "verdict": "real",
+          "unanimous": false,
+          "responder_unanimous": false,
+          "converged": false,
+          "gate_unanimous": false,
+          "voted_by": 2,
+          "of_panel": 2,
+          "confidence": 0.85,
+          "votes": {
+            "real": 1,
+            "not_real": 1
+          },
+          "missing_votes": 0,
+          "panel_shortfall": false
+        },
+        "c2": {
+          "verdict": "real",
+          "unanimous": true,
+          "responder_unanimous": true,
+          "converged": true,
+          "gate_unanimous": true,
+          "voted_by": 2,
+          "of_panel": 2,
+          "confidence": 0.95,
+          "votes": {
+            "real": 2,
+            "not_real": 0
+          },
+          "missing_votes": 0,
+          "panel_shortfall": false
+        }
+      },
+      "reassurance": {}
+    }
+  },
+  "cost_by_model": {
+    "google/gemma-4-26b-a4b-it:free": 0.0,
+    "nvidia/nemotron-3-super-120b-a12b:free": 0.0,
+    "google/gemma-4-31b-it:free": 0.0
+  },
+  "claims_grounding": {
+    "ok": true,
+    "issues": [],
+    "expansions": [
+      {
+        "identifier": "clientInfo",
+        "snippet": "MCP initialize params.clientInfo: {name, version} identifying the connecting peer"
+      }
+    ]
+  }
+}

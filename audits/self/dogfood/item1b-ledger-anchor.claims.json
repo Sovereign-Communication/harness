@@ -1,0 +1,13 @@
+{
+  "context": "Threat model promise: ledger tampering is controlled by hash-chained entries with verify recomputing the chain. The code comments describe the external-anchor acceptance as deliberate; judge whether that promise still holds after old segments are pruned.",
+  "claims": [
+    {"id": "c1",
+     "text": "DEFECT: after old segments are pruned, verify() still returns (True, None) and no ledger output distinguishes the retained suffix from a complete genesis chain, so prefix tampering hidden behind a rotation is undetectable",
+     "kind": "defect",
+     "source_refs": [41, 55]},
+    {"id": "c2",
+     "text": "DEFECT: rotation writes no boundary record linking the new segment to the previous segment's tip hash, so continuity across a rotation cannot be verified from the segment files alone",
+     "kind": "defect",
+     "source_refs": [19, 28]}
+  ]
+}

@@ -17,6 +17,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from .errors import HarnessError
+from .output import eprint
 
 
 def _canon(entry):
@@ -32,8 +33,13 @@ _LOCK_RETRY_SECONDS = 0.02
 
 
 class AutonomyLedger:
-    def __init__(self, path):
+    def __init__(self, path, caller=None):
         self.path = path
+        # Session authorship for the evidence loop (e.g. "cli",
+        # "mcp:peer/1.0"): stamped onto every appended event unless the
+        # call site names one explicitly. Unset (None) leaves history
+        # untagged, exactly as before.
+        self.caller = caller
         self._lock = threading.Lock()
         self._tail = []
         self._seq = 0
@@ -87,6 +93,15 @@ class AutonomyLedger:
             except OSError:
                 pass
         self._segmented = bool(self._rotated_paths())
+        # Anchor the cut: the new active file opens with a chained event
+        # naming the rotated file and its tip, so a fresh loader can tell
+        # pruning from prefix tampering. Failure degrades to today's
+        # behavior (an unmarked boundary), never to a lost append: the
+        # rotation already happened, the evidence is safe either way.
+        try:
+            self._append_segment_anchor(os.path.basename(rotated))
+        except OSError as e:
+            eprint(f"[ledger] segment anchor not written: {e}")
 
     @contextmanager
     def _file_lock(self):
@@ -154,6 +169,32 @@ class AutonomyLedger:
             f.write(line + chr(10))
             f.flush()
             os.fsync(f.fileno())  # torn-line resistance: never lose the tail
+
+    def _append_segment_anchor(self, rotated_name):
+        """Open the fresh active file with a chained boundary record.
+
+        Caller must hold both locks (only _rotate_if_needed calls this,
+        itself called from append under both locks). The anchor chains
+        normally -- seq tip+1, prev_hash tip -- so rotation never forks
+        the chain; it additionally names the moved file and its tip.
+        """
+        tip_seq, tip_hash = self._seq, self._prev_hash
+        entry = {
+            "seq": tip_seq + 1,
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "event": "segment",
+            "task_id": None,
+            "prev_hash": tip_hash,
+            "rotated": rotated_name,
+            "tip_seq": tip_seq,
+            "tip_hash": tip_hash,
+        }
+        body = dict(entry)
+        body["hash"] = hashlib.sha256(_canon(body).encode("utf-8")).hexdigest()
+        self._tail.append(body)
+        self._seq = body["seq"]
+        self._prev_hash = body["hash"]
+        self._persist(_canon(body))
 
     def _load(self):
         paths = self._ledger_paths()
@@ -227,6 +268,8 @@ class AutonomyLedger:
             "task_id": task_id,
             "prev_hash": self._prev_hash,
         }
+        if self.caller is not None:
+            entry.setdefault("caller", self.caller)
         entry.update(fields)
         body = dict(entry)
         body["hash"] = hashlib.sha256(_canon(body).encode("utf-8")).hexdigest()
@@ -285,35 +328,187 @@ class AutonomyLedger:
             return True, None
         return False, self._tail[n]["seq"]
 
-    def repair(self):
-        """Rewrite retained evidence to one active segment at its valid prefix.
+    def _segment_bounds(self):
+        """Per-file evidence inventory, oldest segment first.
 
-        Repair is intentionally destructive to the invalid tail and to segment
-        boundaries, so callers should archive the ledger directory first. A
-        single rebuilt file avoids leaving a repaired active segment chained to
-        a deleted/corrupt archive segment.
+        Re-reads the retained segment files (cheap: only verify/status
+        paths call this) so the report reflects disk, not memory. Blank
+        and corrupt lines are skipped exactly like _load skips them.
+        """
+        bounds = []
+        for source_path in self._ledger_paths():
+            first_seq = last_seq = first_prev = tip_hash = None
+            opens_with_segment = False
+            seen_valid = False
+            count = 0
+            try:
+                with open(source_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                            if (not isinstance(entry, dict)
+                                    or "seq" not in entry
+                                    or "hash" not in entry):
+                                raise ValueError("entry missing seq/hash")
+                        except (ValueError, TypeError):
+                            continue
+                        if not seen_valid:
+                            seen_valid = True
+                            first_seq = entry["seq"]
+                            first_prev = entry.get("prev_hash")
+                            opens_with_segment = entry.get("event") == "segment"
+                        last_seq = entry["seq"]
+                        tip_hash = entry["hash"]
+                        count += 1
+            except OSError:
+                continue
+            bounds.append({"path": os.path.basename(source_path),
+                           "entries": count, "first_seq": first_seq,
+                           "last_seq": last_seq, "first_prev": first_prev,
+                           "tip_hash": tip_hash,
+                           "opens_with_segment_event": opens_with_segment})
+        return bounds
+
+    def chain_status(self):
+        """Honest chain verdict: validity PLUS retention shape.
+
+        verify() answers "do the retained links check out"; this answers
+        the operator's real question -- "am I looking at a complete
+        genesis chain or a valid suffix of a pruned one". A pruned prefix
+        reports pruned=True with its cut seq; it never masquerades as
+        genesis, and tampering still fails ok=False either way.
+        """
+        ok, bad = self.verify()
+        bounds = self._segment_bounds()
+        first_retained = self._tail[0]["seq"] if self._tail else None
+        # Continuity from genesis: the first nonempty segment must open
+        # with prev_hash None, and every later segment must open exactly
+        # on the previous segment's tip (the anchor events make this
+        # checkable). Anything else is a pruned -- or deleted -- prefix,
+        # reported explicitly instead of masquerading as genesis.
+        complete, prev_tip, started = True, None, False
+        for b in bounds:
+            if not b["entries"]:
+                continue
+            if not started:
+                if b["first_prev"] is not None:
+                    complete = False
+                started = True
+            elif b["first_prev"] != prev_tip:
+                complete = False
+            prev_tip = b["tip_hash"]
+        pruned = started and not complete
+        return {"ok": ok, "first_bad_seq": bad,
+                "segmented": len(bounds) > 1, "segments": bounds,
+                "first_retained_seq": first_retained, "pruned": pruned,
+                "entries": len(self._tail),
+                "quarantined": getattr(self, "quarantined", 0)}
+
+    def _rewrite_file(self, source_path, entries):
+        """Atomically replace one segment file with the given valid entries
+        (tmp + fsync + replace, so a crash never leaves half a segment)."""
+        tmp = self.path + ".repair.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            for e in entries:
+                f.write(_canon(e) + chr(10))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, source_path)
+
+    def repair(self):
+        """Truncate the invalid tail, preserving healthy segments as files.
+
+        Repair is destructive to the invalid tail only: the segment file
+        holding the first bad entry is rewritten to its valid prefix (or
+        unlinked when nothing in it survives), every newer segment file is
+        unlinked, and every older segment file is left byte-identical --
+        collapsing healthy segments would destroy the boundary anchors
+        that tell pruning from tampering. A healthy ledger is a no-op
+        (callers should still archive the directory first: repair unlinks).
+        Returns (kept, dropped).
         """
         with self._lock:
             with self._file_lock():
                 kept = self._tail[:self._valid_prefix_len()]
                 dropped = len(self._tail) - len(kept)
-                if dropped or self._rotated_paths():
-                    tmp = self.path + ".repair.tmp"
-                    with open(tmp, "w", encoding="utf-8") as f:
-                        for e in kept:
-                            f.write(_canon(e) + chr(10))
-                        f.flush()
-                        os.fsync(f.fileno())
-                    os.replace(tmp, self.path)
+                if not dropped:
+                    return len(kept), 0
+                if not kept:
+                    # Nothing survives: reset to an empty active file and
+                    # drop every rotated segment (today's behavior).
+                    self._rewrite_file(self.path, [])
                     for segment in self._rotated_paths():
                         try:
                             os.unlink(segment)
                         except OSError:
                             pass
-                    self._tail = kept
-                    self._seq = kept[-1]["seq"] if kept else 0
-                    self._prev_hash = kept[-1]["hash"] if kept else None
+                    self._tail, self._seq, self._prev_hash = [], 0, None
                     self._segmented = False
+                    return 0, dropped
+                # Map the kept prefix back onto segment files, oldest
+                # first. Files before the cut are byte-identical (never
+                # rewritten); the cut file is truncated to its kept
+                # prefix; newer files are unlinked. Torn lines are
+                # matched exactly like _load matches them, so quarantine
+                # skips never shift the cut.
+                remaining = list(kept)
+                cut_done = False
+                for source_path in self._ledger_paths():
+                    if cut_done:
+                        try:
+                            os.unlink(source_path)
+                        except OSError:
+                            pass
+                        continue
+                    mine = []
+                    try:
+                        with open(source_path, "r", encoding="utf-8") as f:
+                            lines = f.read().splitlines()
+                    except OSError:
+                        continue
+                    cut_here = False
+                    for line in lines:
+                        if not remaining:
+                            cut_here = True
+                            break
+                        text = line.strip()
+                        if not text:
+                            continue
+                        try:
+                            entry = json.loads(text)
+                            if (not isinstance(entry, dict)
+                                    or "seq" not in entry
+                                    or "hash" not in entry):
+                                raise ValueError("entry missing seq/hash")
+                        except (ValueError, TypeError):
+                            continue
+                        if entry["seq"] == remaining[0]["seq"] and \
+                                entry["hash"] == remaining[0]["hash"]:
+                            mine.append(remaining.pop(0))
+                        else:
+                            cut_here = True
+                            break
+                    if cut_here:
+                        if mine:
+                            self._rewrite_file(source_path, mine)
+                        else:
+                            try:
+                                os.unlink(source_path)
+                            except OSError:
+                                pass
+                        cut_done = True
+                    # else: file fully kept -- untouched, byte-identical.
+                self._tail = kept
+                self._seq = kept[-1]["seq"] if kept else 0
+                self._prev_hash = kept[-1]["hash"] if kept else None
+                # A repaired chain starting mid-history is still a
+                # suffix, not genesis: recompute the flag from content,
+                # or verify() would call the next load tampered.
+                self._segmented = bool(kept) and \
+                    kept[0].get("prev_hash") is not None
         return len(kept), dropped
 
     def participation_report(self):
@@ -328,6 +523,7 @@ class AutonomyLedger:
         trust_hostile = 0
         offers_required = 0
         model_stats = {}
+        per_caller = {}
         rounds_per_task = {}
         billable_events = {
             "model_result", "consent_accept", "consent_decline", "consent_defer",
@@ -400,6 +596,17 @@ class AutonomyLedger:
                     m_["trust_hostile"] = m_.get("trust_hostile", 0) + 1
             elif ev == "verify_round":
                 rounds_per_task.setdefault(e.get("task_id"), []).append(e.get("round"))
+            caller = e.get("caller")
+            if caller:
+                cs = per_caller.setdefault(
+                    caller, {"completions": 0, "trust_gates": 0,
+                             "trust_hostile": 0})
+                if ev == "complete":
+                    cs["completions"] += 1
+                elif ev == "trust_gate":
+                    cs["trust_gates"] += 1
+                    if e.get("severity") == "hostile":
+                        cs["trust_hostile"] += 1
 
         offers = counts["offer"]
         accepts = counts["consent_accept"]
@@ -429,6 +636,7 @@ class AutonomyLedger:
             "per_model": model_stats,
             "trust_gates": trust_gates,
             "trust_hostile": trust_hostile,
+            "per_caller": per_caller,
             "tracked_cost": round(tracked_cost, 9),
             "billable_event_count": cost_event_count,
             "consent_looks_degenerate": False,

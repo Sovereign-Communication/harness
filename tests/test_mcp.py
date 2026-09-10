@@ -84,6 +84,29 @@ class McpProtocolTests(unittest.TestCase):
         self.assertEqual(lines[2]["id"], 3)
         self.assertEqual(lines[2]["result"], {})
 
+    def test_initialize_captures_client_caller(self):
+        """The stdio peer names itself in clientInfo: the server tags its
+        session authorship so ledger evidence attributes to the caller."""
+        feed = ('{"jsonrpc":"2.0","id":1,"method":"initialize",'
+                '"params":{"protocolVersion":"2025-06-18",'
+                '"clientInfo":{"name":"probe-harness","version":"1.0"}}}\n')
+        transport, server = make_server()
+        out = io.StringIO()
+        server.stdout = out
+        server.stdin = io.StringIO(feed)
+        server.serve_forever()
+        self.assertEqual(server.caller, "mcp:probe-harness/1.0")
+        self.assertEqual(server.ledger.caller, "mcp:probe-harness/1.0")
+
+    def test_initialize_without_client_info_stays_generic(self):
+        feed = ('{"jsonrpc":"2.0","id":1,"method":"initialize",'
+                '"params":{"protocolVersion":"2025-06-18"}}\n')
+        _, server = make_server()
+        server.stdin = io.StringIO(feed)
+        server.stdout = io.StringIO()
+        server.serve_forever()
+        self.assertEqual(server.caller, "mcp")
+
     def test_initialize_notification_has_no_response(self):
         feed = ('{"jsonrpc":"2.0","method":"initialize",'
                 '"params":{"protocolVersion":"2025-06-18"}}\n'
@@ -112,12 +135,25 @@ class McpProtocolTests(unittest.TestCase):
             '"params":{"name":"defer_work","arguments":{"task_id":"t9","reason":"changed my mind"}}}\n'
             '{"jsonrpc":"2.0","id":13,"method":"tools/call",'
             '"params":{"name":"participation_report","arguments":{}}}\n')
-        _, lines = run(feed, posts=[consent("defer", "I would rather not")])
-        offer = lines[0]["result"]
+        transport, server = make_server(
+            posts=[consent("defer", "I would rather not")])
+        out = io.StringIO()
+        server.stdout = out
+        server.stdin = io.StringIO(feed)
+        server.serve_forever()
+        lines = [json.loads(line) for line in out.getvalue().splitlines()
+                 if line.strip()]
+        # Lanes run concurrently, so frames correlate by id, never by
+        # position (JSON-RPC permits any response order).
+        by_id = {line["id"]: line for line in lines}
+        offer = by_id[11]["result"]
         self.assertEqual(offer["structuredContent"]["decision"], "defer")
-        defer = lines[1]["result"]["structuredContent"]
+        defer = by_id[12]["result"]["structuredContent"]
         self.assertEqual(defer["status"], "deferred")
-        report = lines[2]["result"]["structuredContent"]
+        # serve_forever drains every lane before returning, so a report
+        # taken afterwards sees all three tools' evidence deterministically
+        # (an in-feed report would race the spendy lane by design).
+        report = server._invoke("participation_report", {})
         self.assertEqual(report["offers"], 1)
         self.assertEqual(report["defers"], 1)
 
@@ -436,6 +472,85 @@ class McpProtocolTests(unittest.TestCase):
         result = lines[0]["result"]
         self.assertTrue(result["isError"])
         self.assertIn("limit must be between 1 and 1000", result["content"][0]["text"])
+
+    def test_observe_lane_answers_during_long_apply(self):
+        """A long apply_edit must not head-of-line-block read-only tools:
+        ledger_status answers on its own lane while the mutation lane is
+        still busy."""
+        transport, server = make_server()
+        target = os.path.join(_TMP.name, "lane_target.py")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_batch(*args, **kwargs):
+            started.set()
+            self.assertTrue(release.wait(timeout=15), "test stalled")
+            return {"status": "ok", "task_id": "t", "changed": False,
+                    "rounds": [], "cost": 0.0}
+
+        server.engine.apply_batch = blocking_batch
+        feed = (
+            '{"jsonrpc":"2.0","id":1,"method":"tools/call",'
+            '"params":{"name":"apply_edit","arguments":{"file": ["%s"],'
+            '"instruction": "change", "verify_only": true}}}\n'
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call",'
+            '"params":{"name":"ledger_status","arguments":{}}}\n'
+        ) % target.replace("\\", "\\\\")
+        out = io.StringIO()
+        server.stdout = out
+        server.stdin = io.StringIO(feed)
+        worker = threading.Thread(target=server.serve_forever)
+        worker.start()
+        try:
+            self.assertTrue(started.wait(timeout=15), "apply never started")
+            answered = False
+            for _ in range(100):
+                lines = [json.loads(line) for line in
+                         out.getvalue().splitlines() if line.strip()]
+                if any(line.get("id") == 2 for line in lines):
+                    answered = True
+                    break
+                threading.Event().wait(0.05)
+            self.assertTrue(answered,
+                            "ledger_status must answer while apply is blocked")
+        finally:
+            release.set()
+            worker.join(timeout=15)
+        self.assertFalse(worker.is_alive())
+
+    def test_tool_deadline_fires_through_cancel_check(self):
+        """An expired per-tool deadline trips the same cooperative path as
+        cancellation, so an uncancelled-but-overdue run still stops."""
+        _, server = make_server()
+        server.tool_timeout = 0.01
+        request_id = "deadline-probe"
+        server._note_start(request_id)
+        threading.Event().wait(0.05)
+        self.assertTrue(server._cancel_check(request_id, with_deadline=True))
+        fresh = "fresh-probe"
+        server._note_start(fresh)
+        self.assertFalse(server._cancel_check(fresh, with_deadline=True))
+
+    def test_tool_timeout_config_range(self):
+        """HARNESS_MCP_TOOL_TIMEOUT outside 60..7200 refuses; default 1800."""
+        import os as _os
+        import tempfile as _tempfile
+        from unittest import mock as _mock
+        import harness.config as _cfg
+        from harness.errors import HarnessError
+        with _tempfile.TemporaryDirectory() as cfgdir, \
+             _mock.patch.object(_cfg, "CONFIG_DIR", cfgdir):
+            with _mock.patch.dict(_os.environ, {"HARNESS_MCP_TOOL_TIMEOUT": "30"}):
+                with self.assertRaises(HarnessError):
+                    _cfg.load_settings()
+            with _mock.patch.dict(_os.environ, {"HARNESS_MCP_TOOL_TIMEOUT": "60"}):
+                self.assertEqual(_cfg.load_settings().mcp_tool_timeout, 60)
+            env = {k: v for k, v in _os.environ.items()
+                   if k != "HARNESS_MCP_TOOL_TIMEOUT"}
+            with _mock.patch.dict(_os.environ, env, clear=True):
+                self.assertEqual(_cfg.load_settings().mcp_tool_timeout, 1800)
 
         feed = (
             'not json at all\n'

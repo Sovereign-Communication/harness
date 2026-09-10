@@ -131,35 +131,49 @@ def model_trust(model, report):
     return score, reasons
 
 
-def host_trust(report):
+def _counts(source, completions_key="completions", gates_key="trust_gates",
+            hostile_key="trust_hostile"):
+    """Pull (completions, hostile, soft) counts out of a report section."""
+    def _int(key):
+        try:
+            return max(0, int(source.get(key) or 0))
+        except (TypeError, ValueError, AttributeError):
+            return 0
+    total = _int(gates_key)
+    hostile = _int(hostile_key)
+    return _int(completions_key), hostile, max(0, total - hostile)
+
+
+def host_trust(report, caller=None):
     """Trust earned by the calling host/session: (score, reasons).
 
-    v1 is a global session-hygiene score: every trust_gate denial on this
-    ledger is host-attributable (a refused write, exec, retarget, or gate
-    swap was *this* host's request), while completions are shared clean
-    evidence. Per-caller breakout lands with caller tagging; until then
-    one host's abuse correctly taints the shared session.
+    With a caller id, only that caller's tagged history scores -- one
+    abusive peer no longer taints every other caller's standing. Without
+    one (or when the caller has no tagged history), the global session
+    counts apply, so untagged and mixed history still gate honestly.
     """
     report = report or {}
-    try:
-        total = max(0, int(report.get("trust_gates") or 0))
-    except (TypeError, ValueError):
-        total = 0
-    try:
-        hostile = max(0, int(report.get("trust_hostile") or 0))
-    except (TypeError, ValueError):
-        hostile = 0
-    soft = max(0, total - hostile)
-    try:
-        completions = max(0, int(report.get("completions") or 0))
-    except (TypeError, ValueError):
-        completions = 0
+    if caller is not None:
+        entry = (report.get("per_caller") or {}).get(caller)
+        if entry is None:
+            return 0, [f"no history for caller {caller}: unknown"]
+        completions, hostile, soft = _counts(entry)
+        levels = min(MAX_TRUST, completions // CLEAN_PER_LEVEL)
+        strikes = hostile * STRIKE_HOSTILE + soft * STRIKE_SOFT
+        score = _clamp(levels - strikes)
+        reasons = [f"caller {caller}: {completions} completions "
+                   f"({levels} levels)",
+                   f"{hostile} hostile + {soft} guidance denials"]
+        if not completions and not (hostile + soft):
+            return 0, [f"no history for caller {caller}: unknown"]
+        return score, reasons
+    completions, hostile, soft = _counts(report)
     levels = min(MAX_TRUST, completions // CLEAN_PER_LEVEL)
     strikes = hostile * STRIKE_HOSTILE + soft * STRIKE_SOFT
     score = _clamp(levels - strikes)
     reasons = [f"{completions} completions ({levels} levels)",
                f"{hostile} hostile + {soft} guidance denials"]
-    if not total and not completions:
+    if not completions and not (hostile + soft):
         return 0, ["no host history: unknown"]
     return score, reasons
 
@@ -248,15 +262,17 @@ def gate_for_write_exec(combined):
 
 
 def check_apply(*, ledger, report, model, resumed, verify_only,
-                verify_cmd, task_max_cost, task_id, hard_task_cap):
+                verify_cmd, task_max_cost, task_id, hard_task_cap,
+                caller=None):
     """Enforce the hard gates for one apply request.
 
     Returns {"combined", "correctness", "allowed_task_ceiling", "notes"}.
     Denials append a trust_gate event (the evidence loop) and raise
     HarnessError with the score and how to proceed. Callers must invoke
     this AFTER the model is known and BEFORE any file write or gate run.
+    With a caller id the host leg scores that peer's tagged history.
     """
-    host_score, host_reasons = host_trust(report)
+    host_score, host_reasons = host_trust(report, caller=caller)
     model_score, model_reasons = model_trust(model, report)
     author = author_trust() if resumed else None
     combined = combined_trust(host_score, model_score,
@@ -343,15 +359,34 @@ def check_mutation(*, ledger, combined, verify_cmd, task_id, model):
             "this trust. Earn trust with preview-only runs first.")
 
 
-def trust_status(report, model=None):
-    """Read-only trust snapshot for CLI/MCP surfaces (no ledger writes)."""
-    host_score, host_reasons = host_trust(report)
+def trust_status(report, model=None, caller=None):
+    """Read-only trust snapshot for CLI/MCP surfaces (no ledger writes).
+
+    With a caller id the host section scores that caller's tagged history
+    (global stays the fallback), and the per_caller table carries every
+    tagged peer's standing.
+    """
+    host_score, host_reasons = host_trust(report, caller=caller)
     out = {"host": {"score": host_score, "reasons": host_reasons},
            "scale": {"min": MIN_TRUST, "unknown": UNKNOWN, "max": MAX_TRUST,
                      "refuse_at_or_below": REFUSE_AT_OR_BELOW,
                      "standard_from": STANDARD_FROM,
                      "expanded_from": EXPANDED_FROM},
            "trust_gates": (report or {}).get("trust_gates", 0)}
+    if caller is not None:
+        out["caller"] = {"id": caller, "score": host_score,
+                         "reasons": host_reasons}
+    table = {}
+    for cid, entry in ((report or {}).get("per_caller") or {}).items():
+        completions, hostile, soft = _counts(entry)
+        levels = min(MAX_TRUST, completions // CLEAN_PER_LEVEL)
+        table[cid] = {
+            "score": _clamp(levels - hostile * STRIKE_HOSTILE
+                            - soft * STRIKE_SOFT),
+            "completions": completions,
+            "trust_gates": hostile + soft,
+        }
+    out["per_caller"] = table
     if model:
         model_score, model_reasons = model_trust(model, report)
         correctness = correctness_level(model, report)

@@ -177,5 +177,68 @@ class VoteFidelityTests(unittest.TestCase):
         self.assertGreater(len(spec_payload), 4000)
 
 
+class TallyFirstTests(unittest.TestCase):
+    """H12: a resource-cap trim is not a transport shortfall. The tally
+    counts full votes; only the judge prompt is trimmed, and the trim is
+    reported as trimmed_for_judge -- never as panel_shortfall."""
+
+    SPEC = "{\"converged\":true,\"agreement\":\"high\",\"confidence\":1.0,\"claims\":{}}"
+
+    def _windowed(self):
+        old_vote = json.dumps({"c1": {"real": True, "confidence": 0.9}})
+        old_vote += "\nOLD-" + "x" * 12000
+        new_vote = json.dumps({"c1": {"real": True, "confidence": 0.9}})
+        new_vote += "\nNEW-" + "y" * 12000
+
+        def _entry(mid, ctx):
+            return {"id": mid, "pricing": {"prompt": "0.00000001",
+                                           "completion": "0.00000002"},
+                    "context_length": ctx}
+        # NOTE: JUDGE == P1 in the shared fakes, so the judge gets its own
+        # narrow-window id; the panelists share wide identical profiles
+        # (tie keeps submission order, sequential fan-out stays
+        # deterministic: P1 casts old_vote, P2 casts new_vote).
+        self._judge = "judge/small-window"
+        fake = FakeTransport(
+            models=[_entry(P1, 200000), _entry(P2, 200000),
+                    _entry(self._judge, 8192)],
+            posts=[comp(old_vote), comp(new_vote), comp("judge"),
+                   comp(self.SPEC)])
+        return fake, _gov(fake, max_cost=1.0)
+
+    def test_trim_does_not_shortfall_the_gate(self):
+        fake, gov = self._windowed()
+        result = panel_judge(
+            transport=fake, api_key="k", governor=gov, prompt="Q?",
+            panel=[P1, P2], judge=self._judge, run_convergence=True,
+            convergence_model=self._judge)
+        tally = result["convergence"]["tally"]
+        # Full votes: 2/2 responders, no transport failure anywhere.
+        self.assertEqual(tally["voted_by"], 2)
+        self.assertFalse(tally["panel_shortfall"])
+        self.assertTrue(tally["converged"])
+        self.assertTrue(result["convergence"]["tally"]["claims"]["c1"]
+                        ["gate_unanimous"])
+        # ...while the judge prompt took the trim, disclosed separately.
+        self.assertEqual(result["trimmed_for_judge"], [P1])
+        self.assertEqual(len(result["panel_results"]), 2)
+        self.assertFalse(result["consensus"]["defer"])
+        self.assertNotEqual(result["consensus"].get("defer_reason"),
+                            "panel_shortfall")
+
+    def test_no_trim_reports_empty_list(self):
+        fake = FakeTransport(
+            models=[m(P1), m(P2), m(JUDGE)],
+            posts=[comp(json.dumps({"c1": {"real": True, "confidence": 0.9}})),
+                   comp(json.dumps({"c1": {"real": True, "confidence": 0.9}})),
+                   comp("judge"), comp(self.SPEC)])
+        gov = _gov(fake, max_cost=1.0)
+        result = panel_judge(
+            transport=fake, api_key="k", governor=gov, prompt="Q?",
+            panel=[P1, P2], judge=JUDGE, run_convergence=True)
+        self.assertEqual(result["trimmed_for_judge"], [])
+        self.assertTrue(result["convergence"]["tally"]["converged"])
+
+
 if __name__ == "__main__":
     unittest.main()

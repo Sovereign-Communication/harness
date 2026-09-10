@@ -33,9 +33,12 @@ refuse-level writes). One exploit costs more than ten clean runs earn.
 * **Model**: verify-gate passes + known-answer passes earn; failures and
   unusable/consent-unusable outputs strike. Declared `/models` capability
   never substitutes for observed behavior -- unknown models score 0.
-* **Host/caller** (v1: global session hygiene): completions earn; every
-  `trust_gate` denial strikes -4. One host's abuse taints the shared
-  session. Per-caller breakout lands with caller tagging.
+* **Host/caller**: every ledger event carries the session's caller id
+  (`cli`, `mcp`, or `mcp:<name>/<version>` from initialize clientInfo),
+  and `host_trust` scores a named caller's tagged history separately --
+  one abusive peer no longer taints every other caller's standing. The
+  untagged global counts stay the fallback for unknown callers and old
+  history. Completions earn; guidance denials strike -1, hostile -4.
 * **Continuation author** (v1: always unknown): resumes get no file
   retarget, gate identity must match, hash must match when present.
 
