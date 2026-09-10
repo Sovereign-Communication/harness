@@ -85,8 +85,8 @@ class TestTrainingAndExport(unittest.TestCase):
             export_onnx(net, in_dim, model_path)
             export_metadata(stats, canonical_feature_order(), LABEL_INDEX, meta_path)
 
-            os.environ["HARVEST_LOCAL_FIT_ENABLE"] = "1"
-            os.environ["HARVEST_LOCAL_FIT_MODEL_DIR"] = d
+            os.environ["HARNESS_LOCAL_FIT_ENABLE"] = "1"
+            os.environ["HARNESS_LOCAL_FIT_MODEL_DIR"] = d
             try:
                 from harness.local_fit.config import load_scorer, is_enabled
                 self.assertTrue(is_enabled())
@@ -97,8 +97,8 @@ class TestTrainingAndExport(unittest.TestCase):
                 self.assertIn("truncated", scores)
                 self.assertIn("unusable", scores)
             finally:
-                os.environ.pop("HARVEST_LOCAL_FIT_ENABLE", None)
-                os.environ.pop("HARVEST_LOCAL_FIT_MODEL_DIR", None)
+                os.environ.pop("HARNESS_LOCAL_FIT_ENABLE", None)
+                os.environ.pop("HARNESS_LOCAL_FIT_MODEL_DIR", None)
 
     def test_flag_off_is_inert(self):
         from harness.local_fit.config import is_enabled, load_scorer
@@ -337,9 +337,9 @@ class TestFlagGatedHook(unittest.TestCase):
         self.assertGreater(len(rows), 0)
         with tempfile.TemporaryDirectory() as d:
             run_pipeline(rows, d)
-            os.environ["HARVEST_LOCAL_FIT_ENABLE"] = "1"
-            os.environ["HARVEST_LOCAL_FIT_MODEL_DIR"] = d
-            os.environ["HARVEST_LOCAL_FIT_USE_ADVISORY_ORDER"] = "1"
+            os.environ["HARNESS_LOCAL_FIT_ENABLE"] = "1"
+            os.environ["HARNESS_LOCAL_FIT_MODEL_DIR"] = d
+            os.environ["HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER"] = "1"
             try:
                 self.assertTrue(enabled())
                 cands = [{"id": i, "features": r.features, "existing_order_key": float(i)} for i, r in enumerate(rows[:5])]
@@ -353,9 +353,9 @@ class TestFlagGatedHook(unittest.TestCase):
                 ordered = apply_advisory_tiebreak(out)
                 self.assertEqual(len(ordered), len(cands))
             finally:
-                os.environ.pop("HARVEST_LOCAL_FIT_ENABLE", None)
-                os.environ.pop("HARVEST_LOCAL_FIT_MODEL_DIR", None)
-                os.environ.pop("HARVEST_LOCAL_FIT_USE_ADVISORY_ORDER", None)
+                os.environ.pop("HARNESS_LOCAL_FIT_ENABLE", None)
+                os.environ.pop("HARNESS_LOCAL_FIT_MODEL_DIR", None)
+                os.environ.pop("HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER", None)
 
     def test_hook_preserves_existing_order_when_tiebreak_off(self):
         """Even when enabled, if advisory ordering is off, existing_order_key order is preserved."""
@@ -367,9 +367,9 @@ class TestFlagGatedHook(unittest.TestCase):
         rows = extract(files)
         with tempfile.TemporaryDirectory() as d:
             run_pipeline(rows, d)
-            os.environ["HARVEST_LOCAL_FIT_ENABLE"] = "1"
-            os.environ["HARVEST_LOCAL_FIT_MODEL_DIR"] = d
-            os.environ["HARVEST_LOCAL_FIT_USE_ADVISORY_ORDER"] = "0"
+            os.environ["HARNESS_LOCAL_FIT_ENABLE"] = "1"
+            os.environ["HARNESS_LOCAL_FIT_MODEL_DIR"] = d
+            os.environ["HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER"] = "0"
             try:
                 cands = [{"id": i, "features": r.features, "existing_order_key": float(i)} for i, r in enumerate(rows[:5])]
                 # original order by existing_order_key ascending
@@ -378,9 +378,9 @@ class TestFlagGatedHook(unittest.TestCase):
                 ordered = apply_advisory_tiebreak(scored)
                 self.assertEqual([c["id"] for c in ordered], orig_order)
             finally:
-                os.environ.pop("HARVEST_LOCAL_FIT_ENABLE", None)
-                os.environ.pop("HARVEST_LOCAL_FIT_MODEL_DIR", None)
-                os.environ.pop("HARVEST_LOCAL_FIT_USE_ADVISORY_ORDER", None)
+                os.environ.pop("HARNESS_LOCAL_FIT_ENABLE", None)
+                os.environ.pop("HARNESS_LOCAL_FIT_MODEL_DIR", None)
+                os.environ.pop("HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER", None)
 
     def test_dispatch_hook_prototype_inert_when_disabled(self):
         """The illustrative dispatch hook is inert when flags are off."""
@@ -407,9 +407,9 @@ class TestFlagGatedHook(unittest.TestCase):
         rows = extract(files)
         with tempfile.TemporaryDirectory() as d:
             run_pipeline(rows, d)
-            os.environ["HARVEST_LOCAL_FIT_ENABLE"] = "1"
-            os.environ["HARVEST_LOCAL_FIT_MODEL_DIR"] = d
-            os.environ["HARVEST_LOCAL_FIT_USE_ADVISORY_ORDER"] = "1"
+            os.environ["HARNESS_LOCAL_FIT_ENABLE"] = "1"
+            os.environ["HARNESS_LOCAL_FIT_MODEL_DIR"] = d
+            os.environ["HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER"] = "1"
             try:
                 cands = [{"id": i, "features": r.features, "existing_order_key": float(i)} for i, r in enumerate(rows[:4])]
                 snap = decision_snapshot(cands)
@@ -418,9 +418,9 @@ class TestFlagGatedHook(unittest.TestCase):
                 self.assertGreaterEqual(snap["candidates_with_advisory"], 0)
                 self.assertEqual(len(snap["candidates"]), len(cands))
             finally:
-                os.environ.pop("HARVEST_LOCAL_FIT_ENABLE", None)
-                os.environ.pop("HARVEST_LOCAL_FIT_MODEL_DIR", None)
-                os.environ.pop("HARVEST_LOCAL_FIT_USE_ADVISORY_ORDER", None)
+                os.environ.pop("HARNESS_LOCAL_FIT_ENABLE", None)
+                os.environ.pop("HARNESS_LOCAL_FIT_MODEL_DIR", None)
+                os.environ.pop("HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER", None)
 
     def test_hook_explain(self):
         """explain() attaches an explanation dict."""
@@ -432,8 +432,8 @@ class TestFlagGatedHook(unittest.TestCase):
         rows = extract(files)
         with tempfile.TemporaryDirectory() as d:
             run_pipeline(rows, d)
-            os.environ["HARVEST_LOCAL_FIT_ENABLE"] = "1"
-            os.environ["HARVEST_LOCAL_FIT_MODEL_DIR"] = d
+            os.environ["HARNESS_LOCAL_FIT_ENABLE"] = "1"
+            os.environ["HARNESS_LOCAL_FIT_MODEL_DIR"] = d
             try:
                 cands = [{"id": 1, "features": rows[0].features}]
                 out = explain(cands)
@@ -443,8 +443,8 @@ class TestFlagGatedHook(unittest.TestCase):
                 self.assertIn("scorer_loaded", exp)
                 self.assertTrue(exp["scorer_loaded"])
             finally:
-                os.environ.pop("HARVEST_LOCAL_FIT_ENABLE", None)
-                os.environ.pop("HARVEST_LOCAL_FIT_MODEL_DIR", None)
+                os.environ.pop("HARNESS_LOCAL_FIT_ENABLE", None)
+                os.environ.pop("HARNESS_LOCAL_FIT_MODEL_DIR", None)
 
 
 class TestNoNetwork(unittest.TestCase):

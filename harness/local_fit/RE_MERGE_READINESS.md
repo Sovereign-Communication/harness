@@ -48,15 +48,15 @@ trust.py, cli.py, config.py, ledger.py, mcp.py, or any existing test.
 ----------------------
 Four environment variables control the layer:
 
-- HARVEST_LOCAL_FIT_ENABLE=1|true|yes — turns the advisory layer on
-- HARVEST_LOCAL_FIT_MODEL_DIR=path — directory containing model.onnx and
+- HARNESS_LOCAL_FIT_ENABLE=1|true|yes — turns the advisory layer on
+- HARNESS_LOCAL_FIT_MODEL_DIR=path — directory containing model.onnx and
   model_meta.json
-- HARVEST_LOCAL_FIT_USE_ADVISORY_ORDER=1|true|yes — also apply the advisory as
+- HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER=1|true|yes — also apply the advisory as
   a small tiebreak on top of an existing existing_order_key (still advisory only)
-- HARVEST_LOCAL_FIT_ADVISORY_TIEBREAK_WEIGHT=float, default 0.05 — size of the
+- HARNESS_LOCAL_FIT_ADVISORY_TIEBREAK_WEIGHT=float, default 0.05 — size of the
   advisory nudge when ordering is enabled
 
-When HARVEST_LOCAL_FIT_ENABLE is off, the layer is completely inert: it attaches
+When HARNESS_LOCAL_FIT_ENABLE is off, the layer is completely inert: it attaches
 empty advisory dicts, does not load the model, does not score, and does not
 reorder. The flags are read dynamically so tests can toggle them at runtime.
 
@@ -108,11 +108,11 @@ produced, (d) how/when it is refreshed, (e) the onnx dependency story.
     all attach empty advisory dicts and do not load the model.
   - `apply_advisory_tiebreak` returns candidates in their existing order.
   - No existing Harness behavior changes.
-- With HARVEST_LOCAL_FIT_ENABLE on but MODEL_DIR missing/invalid: inert
+- With HARNESS_LOCAL_FIT_ENABLE on but MODEL_DIR missing/invalid: inert
   (scorer fails to load, layer falls back to empty advisories).
 - With both ENABLE and MODEL_DIR on:
   - advisory scores are attached to candidates
-  - ordering is nudged only if HARVEST_LOCAL_FIT_USE_ADVISORY_ORDER is also on
+  - ordering is nudged only if HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER is also on
   - the existing order is never discarded
 
 8. Guarantees preserved
@@ -227,12 +227,12 @@ Build-over-audit-runs (alternative, not chosen as default)
 
 Shipped flag defaults (what would ship in the real repo)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- HARVEST_LOCAL_FIT_ENABLE: off by default (unset / "0").
-- HARVEST_LOCAL_FIT_MODEL_DIR: unset by default; when ENABLE is on, the layer
+- HARNESS_LOCAL_FIT_ENABLE: off by default (unset / "0").
+- HARNESS_LOCAL_FIT_MODEL_DIR: unset by default; when ENABLE is on, the layer
   falls back inert if MODEL_DIR is missing or the artifact cannot be loaded.
-- HARVEST_LOCAL_FIT_USE_ADVISORY_ORDER: off by default (unset / "0").
+- HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER: off by default (unset / "0").
   Even when ENABLE is on, ordering is only nudged if this is also on.
-- HARVEST_LOCAL_FIT_ADVISORY_TIEBREAK_WEIGHT: default 0.05 if set; does not
+- HARNESS_LOCAL_FIT_ADVISORY_TIEBREAK_WEIGHT: default 0.05 if set; does not
   apply unless USE_ADVISORY_ORDER is on.
 
 This means a merge ships the layer, the hook, and the dispatch_hook prototype,

@@ -10,9 +10,9 @@ small tiebreak nudge on top of an existing order key.
 
 Environment flags
 -----------------
-HARVEST_LOCAL_FIT_ENABLE=1|true|yes   — turn the advisory layer on
-HARVEST_LOCAL_FIT_MODEL_DIR=path        — directory with model.onnx + model_meta.json
-HARVEST_LOCAL_FIT_USE_ADVISORY_ORDER=1|true|yes — also apply the advisory as a
+HARNESS_LOCAL_FIT_ENABLE=1|true|yes   — turn the advisory layer on
+HARNESS_LOCAL_FIT_MODEL_DIR=path        — directory with model.onnx + model_meta.json
+HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER=1|true|yes — also apply the advisory as a
                                               small tiebreak on top of the existing
                                               existing_order_key (still advisory only)
 """
@@ -29,7 +29,7 @@ def enabled() -> bool:
 
 def use_advisory_ordering() -> bool:
     """Whether to apply the advisory as a small tiebreak on top of existing_order_key."""
-    return _env_bool("HARVEST_LOCAL_FIT_USE_ADVISORY_ORDER", False)
+    return _env_bool("HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER", False)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -94,7 +94,7 @@ def apply_advisory_tiebreak(
     if not use_advisory_ordering():
         return cands
 
-    weight = _env_float("HARVEST_LOCAL_FIT_ADVISORY_TIEBREAK_WEIGHT", 0.05)
+    weight = _env_float("HARNESS_LOCAL_FIT_ADVISORY_TIEBREAK_WEIGHT", 0.05)
 
     def key(c: Dict[str, Any]) -> float:
         base = float(c.get("existing_order_key") or 0.0)

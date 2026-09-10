@@ -34,8 +34,8 @@ existing order; it only nudges it when the feature flag is on.
   eval and multi-seed evaluation.
 - `model_loader.py` — thin loader so the advisory path can import the scorer
   without pulling in training code.
-- `config.py` — feature-flag entrypoint (`HARVEST_LOCAL_FIT_ENABLE` and
-  `HARVEST_LOCAL_FIT_MODEL_DIR`). Read dynamically so tests can toggle it.
+- `config.py` — feature-flag entrypoint (`HARNESS_LOCAL_FIT_ENABLE` and
+  `HARNESS_LOCAL_FIT_MODEL_DIR`). Read dynamically so tests can toggle it.
 - `advisory.py` — advisory entrypoint: `maybe_score_candidates` and
   `score_one`.
 - `hook.py` — flag-gated advisory hook prototype: `score_candidates`,
@@ -75,14 +75,14 @@ Labels are mutually exclusive and severity-ordered:
 
 ## Environment flags
 
-- `HARVEST_LOCAL_FIT_ENABLE` — set to `1`, `true`, or `yes` to enable the
+- `HARNESS_LOCAL_FIT_ENABLE` — set to `1`, `true`, or `yes` to enable the
   advisory layer.
-- `HARVEST_LOCAL_FIT_MODEL_DIR` — directory containing `model.onnx` and
+- `HARNESS_LOCAL_FIT_MODEL_DIR` — directory containing `model.onnx` and
   `model_meta.json`.
-- `HARVEST_LOCAL_FIT_USE_ADVISORY_ORDER` — set to `1`, `true`, or `yes` to
+- `HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER` — set to `1`, `true`, or `yes` to
   also apply the advisory as a small tiebreak on top of an existing
   `existing_order_key`. Still advisory-only.
-- `HARVEST_LOCAL_FIT_ADVISORY_TIEBREAK_WEIGHT` — float, default 0.05. Size of
+- `HARNESS_LOCAL_FIT_ADVISORY_TIEBREAK_WEIGHT` — float, default 0.05. Size of
   the advisory nudge when ordering is enabled.
 
 When disabled, the layer is inert and does not affect any existing behavior.
@@ -163,7 +163,7 @@ that shows where a real dispatch path would consult the advisory:
 1. When flags are off, it is inert: attaches empty advisory dicts and returns
    candidates unchanged.
 2. When enabled, it attaches advisory scores to each candidate.
-3. When `HARVEST_LOCAL_FIT_USE_ADVISORY_ORDER` is also on, it re-sorts by a
+3. When `HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER` is also on, it re-sorts by a
    small nudge on top of each candidate's `existing_order_key`. The existing
    order is never discarded.
 

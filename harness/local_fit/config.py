@@ -1,6 +1,6 @@
 """Opt-in advisory hook for local model-fit scoring.
 
-This module is guarded by HARVEST_LOCAL_FIT_ENABLE.
+This module is guarded by HARNESS_LOCAL_FIT_ENABLE.
 
 When disabled, it remains inert and does not affect existing behavior.
 When enabled, it provides advisory scores that may influence candidate
@@ -18,7 +18,7 @@ _META_FILE = "model_meta.json"
 
 
 def _env_enabled() -> bool:
-    return os.environ.get("HARVEST_LOCAL_FIT_ENABLE", "0").strip().lower() in (
+    return os.environ.get("HARNESS_LOCAL_FIT_ENABLE", "0").strip().lower() in (
         "1",
         "true",
         "yes",
@@ -26,7 +26,7 @@ def _env_enabled() -> bool:
 
 
 def _env_model_dir() -> str:
-    return os.environ.get("HARVEST_LOCAL_FIT_MODEL_DIR", "").strip()
+    return os.environ.get("HARNESS_LOCAL_FIT_MODEL_DIR", "").strip()
 
 
 def is_enabled() -> bool:
