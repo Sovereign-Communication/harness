@@ -42,7 +42,19 @@ import uuid
 
 from ._http import HttpTransport
 from .apply import validate_continuation
-from .bench import load_manifest, run_bench
+try:
+    from .bench import load_manifest, run_bench
+except Exception as _bench_import_exc:
+    # Self-hosting resilience: a deferred self-edit may leave
+    # harness/bench.py unimportable (SyntaxError included -- hence the
+    # broad catch), and that must not break unrelated commands, notably
+    # `continue`, which resumes exactly such states. Only `bench` itself
+    # may fail, at use time, as a clean HarnessError (see _cmd_bench).
+    # (Bound under a different name: `except ... as e` deletes e on exit.)
+    load_manifest = run_bench = None
+    _bench_import_error = _bench_import_exc
+else:
+    _bench_import_error = None
 from .claims import (
     build_claims_prompt, curate_claims_from_ledger, load_claims_manifest,
     load_definitions_file,
@@ -442,6 +454,10 @@ def _cmd_ledger(opts, settings):
 
 
 def _cmd_bench(opts, settings):
+    if load_manifest is None or run_bench is None:
+        raise HarnessError(
+            f"bench unavailable: harness/bench.py failed to import "
+            f"({_bench_import_error}); restore or repair it first")
     engine = _session(settings, opts.max_cost)
     tasks = load_manifest(opts.manifest)
     for t in tasks:

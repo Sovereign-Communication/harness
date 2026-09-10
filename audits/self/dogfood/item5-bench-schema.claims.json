@@ -1,0 +1,13 @@
+{
+  "context": "Bench manifests are operator-authored JSON; the loader and the sandbox validate schema errors as clean HarnessError refusals.",
+  "claims": [
+    {"id": "c1",
+     "text": "DEFECT: run_bench indexes task['instruction'] directly, so a manifest task missing that key crashes with a raw KeyError instead of the clean HarnessError every other manifest schema error gets",
+     "kind": "defect",
+     "source_refs": [21, 40]},
+    {"id": "c2",
+     "text": "DEFECT: run_bench indexes task['name'] directly, so a hand-built task dict without a name crashes with KeyError before any task runs",
+     "kind": "defect",
+     "source_refs": [34]}
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "status": "deferred",
+  "task_id": "dogfood-bench-schema-r2",
+  "rounds": [
+    {
+      "round": 1,
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "status": "verify_failed"
+    },
+    {
+      "round": 2,
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "status": "verify_failed"
+    },
+    {
+      "round": 3,
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "status": "deferred",
+      "reason": "The test imports load_manifest from harness.bench, but the provided file content does not contain this function."
+    },
+    {
+      "round": 1,
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "status": "deferred",
+      "cost": 0,
+      "verify_output": "",
+      "reason": "The test requires load_manifest from harness.bench, but we are only permitted to modify run_bench. Adding load_manifest would require changing other parts of the file, which is not allowed."
+    }
+  ],
+  "cost": 0.0,
+  "rotations": null,
+  "backend": "harness",
+  "verify_only": false,
+  "category": "capability",
+  "reason": "The test requires load_manifest from harness.bench, but we are only permitted to modify run_bench. Adding load_manifest would require changing other parts of the file, which is not allowed.",
+  "file": "C:\\Users\\SCM\\Documents\\GitHub\\Harness\\harness\\bench.py",
+  "remaining_scope": "Add the missing load_manifest function to harness.bench",
+  "verify_cmd": "python -m unittest tests.test_bench",
+  "verify_gate_id": "7c55f4217778fa91",
+  "verification_required": true,
+  "continuation": {
+    "schema_version": 1,
+    "file_path": "C:\\Users\\SCM\\Documents\\GitHub\\Harness\\harness\\bench.py",
+    "target_hash": "6d74bad505279deb48e58c0b93c828caa82015a2ceddb310cf29ba038aa8df31",
+    "task_id": "dogfood-bench-schema-r2",
+    "backend": "harness",
+    "verify_only": false,
+    "max_lines": 500,
+    "edit_snippet": null,
+    "verify_cmd": "python -m unittest tests.test_bench",
+    "verify_gate_id": "7c55f4217778fa91",
+    "verification_required": true,
+    "remaining_scope": "Add the missing load_manifest function to harness.bench",
+    "reason": "The test requires load_manifest from harness.bench, but we are only permitted to modify run_bench. Adding load_manifest would require changing other parts of the file, which is not allowed.",
+    "history": [
+      {
+        "round": 1,
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "status": "verify_failed"
+      },
+      {
+        "round": 2,
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "status": "verify_failed"
+      },
+      {
+        "round": 3,
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "status": "deferred",
+        "reason": "The test imports load_manifest from harness.bench, but the provided file content does not contain this function."
+      },
+      {
+        "round": 1,
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "status": "deferred",
+        "reason": "The test requires load_manifest from harness.bench, but we are only permitted to modify run_bench. Adding load_manifest would require changing other parts of the file, which is not allowed."
+      }
+    ]
+  }
+}

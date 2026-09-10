@@ -160,11 +160,16 @@ def run_bench(engine, manifest_tasks, runner=None):
     sandboxes = []
     try:
         for task in manifest_tasks:
+            # Same clean contract as the loader and the sandbox: schema
+            # errors abort the run as HarnessError, never as KeyError.
+            name = task.get("name") or "task"
             sandbox = TaskSandbox(task)
             sandbox.restore()
             sandboxes.append(sandbox)
             task_runner = runner or _cwd_runner(sandbox.dir, task.get("verify_timeout"))
-            name = task["name"]
+            if not task.get("instruction"):
+                raise HarnessError(
+                    f"bench task '{name}' is missing required key 'instruction'")
             eprint(f"[bench] running '{name}' ...")
             try:
                 r = engine.apply_edit(

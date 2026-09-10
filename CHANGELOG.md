@@ -46,6 +46,19 @@ break APIs between minor versions).
   that the strict merger refused 12/12. Model-written diffs are not a
   viable lane at this tier today; panel verification + hermetic gates
   carried these items instead. Evidence in the item reports.
+- **Whole-file exercise (bench schema validation):** panel-confirmed,
+  then 9 model whole-file attempts failed file fidelity (fences left in,
+  dropped functions, syntax breaks) before one honest capability
+  deferral; the 5-line fix landed directly with the red test as gate.
+  Two self-hosting findings came free: a deferred self-edit that breaks
+  `harness/bench.py` used to kill the CLI at its own import line (bench
+  imports guarded at module level now -- `continue` survives), and
+  whole-file writes normalize CRLF checkouts to LF (byte-faithful by
+  design; noted, not changed).
+- **`run_bench` validates its schema:** a task missing `instruction`
+  aborts as `HarnessError` like every other manifest schema error (was a
+  raw `KeyError`), and an unnamed task defaults to `"task"` mirroring
+  the loader.
 - **Bipolar trust (-11..+11) with hard gates and correctness-rationed
   ceilings (`harness/trust.py`, `docs/trust.md`).** Cold start is always 0
   (unknown); clean runs earn slowly (3 per +1) while safety signals land

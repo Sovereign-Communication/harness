@@ -1,0 +1,53 @@
+# harness/bench.py lines 81-90
+            raise HarnessError(
+                f"bench manifest must be a task list, a {{'tasks': [...]}} object, "
+                f"or a single task object: {path}")
+        for t in items:
+            t.setdefault("name", "task")
+            t["dir"] = root
+            tasks.append(t)
+    if not tasks:
+        raise HarnessError(f"bench manifest contains no tasks: {path}")
+    return tasks
+# harness/bench.py lines 101-112
+    def __init__(self, task):
+        # realpath (not abspath): a parent-dir symlink (taskdir/link -> /etc
+        # with file=link/passwd) passes a purely lexical containment check
+        # while resolving outside the task directory.
+        self.dir = os.path.realpath(os.path.abspath(task["dir"]))
+        if not task.get("file"):
+            # Same clean contract as the other manifest errors -- a schema
+            # error must not surface as a raw KeyError traceback.
+            raise HarnessError(
+                f"bench task '{task.get('name', 'task')}' is missing required key 'file'")
+        self.file = os.path.realpath(
+            os.path.abspath(os.path.join(self.dir, task["file"])))
+# harness/bench.py lines 159-186
+    results = []
+    sandboxes = []
+    try:
+        for task in manifest_tasks:
+            sandbox = TaskSandbox(task)
+            sandbox.restore()
+            sandboxes.append(sandbox)
+            task_runner = runner or _cwd_runner(sandbox.dir, task.get("verify_timeout"))
+            name = task["name"]
+            eprint(f"[bench] running '{name}' ...")
+            try:
+                r = engine.apply_edit(
+                    task_id=f"bench/{name}",
+                    file_path=sandbox.file,
+                    instruction=task["instruction"],
+                    verify_cmd=task.get("verify"),
+                    max_rounds=task.get("max_rounds", 3),
+                    require_consent=task.get("require_consent", False),
+                    max_tokens=task.get("max_tokens", 4096),
+                    task_max_cost=task.get("task_max_cost", 0.05),
+                    renew_consent=task.get("renew_consent", False),
+                    max_rotations=task.get("max_rotations", 3),
+                    task_runner=task_runner,
+                )
+            except HarnessError as e:
+                r = {"status": "error", "error": str(e)}
+            results.append({"name": name, **r})
+            eprint(f"[bench] '{name}' -> {r.get('status')}")

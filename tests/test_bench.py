@@ -126,6 +126,19 @@ class BenchTests(unittest.TestCase):
         with open(victim, encoding="utf-8") as f:
             self.assertEqual(f.read(), "victim\n")
 
+    def test_missing_instruction_fails_clean_not_keyerror(self):
+        """Every other manifest schema error aborts the run as a clean
+        HarnessError (missing file, garbage shape); a missing instruction
+        must not surface as a raw KeyError traceback instead."""
+        from harness.errors import HarnessError
+        make_task(self.dir.name, "a", "x = 0\n")
+        engine = self.make_engine([comp("x = 1\n")])
+        task = {"name": "a", "dir": os.path.join(self.dir.name, "a"),
+                "file": "mod.py", "verify": "python check.py"}
+        with self.assertRaisesRegex(HarnessError,
+                                    "missing required key 'instruction'"):
+            run_bench(engine, [task], runner=lambda cmd: (0, ""))
+
     def test_run_bench_all_pass(self):
         for name, code in [("a", "x = 0\n"), ("b", "x = 0\n")]:
             make_task(self.dir.name, name, code)

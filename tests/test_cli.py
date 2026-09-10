@@ -304,5 +304,33 @@ class LedgerTailCountTests(unittest.TestCase):
         gov.assert_not_called()
 
 
+class SelfHostImportTests(unittest.TestCase):
+    """Live dogfood finding: a deferred self-edit left harness/bench.py
+    unimportable (model dropped load_manifest), and `python -m harness.cli
+    continue` died at ITS import line before reaching the resume logic.
+    The bench import is guarded at module level, so a broken bench module
+    breaks only `bench` (clean HarnessError, before key/session setup) --
+    every other command, notably `continue`, still starts."""
+
+    def test_cli_imports_without_bench(self):
+        import importlib
+        import sys
+        import harness.cli as cli_mod
+        from harness.errors import HarnessError
+        with mock.patch.dict(sys.modules, {"harness.bench": None}):
+            reloaded = importlib.reload(cli_mod)
+        try:
+            self.assertTrue(hasattr(reloaded, "main"))
+            self.assertIsNone(reloaded.load_manifest)
+            # Only `bench` itself may fail, cleanly and before setup.
+            with mock.patch.object(
+                    reloaded, "_session",
+                    side_effect=AssertionError("session must not run")):
+                with self.assertRaisesRegex(HarnessError, "failed to import"):
+                    reloaded._cmd_bench(mock.Mock(), mock.Mock())
+        finally:
+            importlib.reload(cli_mod)
+
+
 if __name__ == "__main__":
     unittest.main()
