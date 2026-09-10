@@ -13,9 +13,6 @@ can toggle it at runtime without reloading the module.
 import os
 from typing import Any, Dict, List, Optional
 
-_MODEL_FILE = "model.onnx"
-_META_FILE = "model_meta.json"
-
 
 def _env_enabled() -> bool:
     return os.environ.get("HARNESS_LOCAL_FIT_ENABLE", "0").strip().lower() in (
@@ -39,10 +36,7 @@ def load_scorer() -> Optional[Any]:
     try:
         from .model_loader import LocalScorer
 
-        return LocalScorer(
-            os.path.join(_env_model_dir(), _MODEL_FILE),
-            os.path.join(_env_model_dir(), _META_FILE),
-        )
+        return LocalScorer(_env_model_dir())
     except Exception:
         return None
 

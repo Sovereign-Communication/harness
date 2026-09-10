@@ -10,7 +10,7 @@ Individual imports are attempted separately so one broken submodule cannot
 prevent the others from binding.
 """
 
-__all__ = ["schema", "extract", "config", "model_loader", "advisory", "hook", "dispatch_hook"]
+__all__ = ["schema", "extract", "config", "model_loader", "infer", "features", "advisory", "hook", "dispatch_hook"]
 
 for _mod in __all__:
     try:

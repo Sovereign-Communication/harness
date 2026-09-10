@@ -32,8 +32,15 @@ existing order; it only nudges it when the feature flag is on.
   small 2-layer feedforward net, exports it to ONNX opset 26 + metadata JSON,
   and provides the `LocalScorer` inference wrapper. Also includes hold-out
   eval and multi-seed evaluation.
+- `features.py` — the single canonical feature-vector builder (pure stdlib),
+  shared by training and inference so the two paths cannot drift.
+- `infer.py` — pure-stdlib runtime scorer: loads `model_weights.json` +
+  `model_meta.json` and runs the same forward pass as the exported ONNX graph
+  with no third-party imports.
 - `model_loader.py` — thin loader so the advisory path can import the scorer
-  without pulling in training code.
+  without pulling in training code. Prefers the stdlib artifact
+  (`model_weights.json`); falls back to the ONNX scorer only when
+  onnxruntime is importable.
 - `config.py` — feature-flag entrypoint (`HARNESS_LOCAL_FIT_ENABLE` and
   `HARNESS_LOCAL_FIT_MODEL_DIR`). Read dynamically so tests can toggle it.
 - `advisory.py` — advisory entrypoint: `maybe_score_candidates` and
@@ -176,10 +183,13 @@ for re-merge discussion.
 ## Development notes
 
 - Exported model uses ONNX opset 26 for compatibility with onnxruntime 1.29.
-- Inference uses `onnxruntime` `CPUExecutionProvider` only.
+- Runtime inference is **pure stdlib**: the scorer reads `model_weights.json`
+  and needs no third-party packages, preserving the repo's zero-dependency
+  identity even when the layer is enabled. A test pins this by asserting
+  numpy/onnx/onnxruntime never appear in `sys.modules` while scoring.
 - This code is developed in an isolated clone and is intended to be re-merged
   only after separate verification.
-- Dependencies for training/export/eval: `numpy`, `onnx`, `onnxruntime`.
-- Runtime inference dependency: `onnxruntime` only.
-- `onnx` is needed only to build/export the model artifact, not for runtime
-  inference.
+- Dependencies for training/export/eval only: `numpy`, `onnx`, `onnxruntime`
+  (installable via the `local-fit-train` optional extra). Runtime needs none.
+- ONNX remains available as a fallback artifact format for environments that
+  already have onnxruntime.

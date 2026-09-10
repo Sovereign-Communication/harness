@@ -21,8 +21,18 @@ from onnxruntime import InferenceSession
 
 
 # ---------------------------------------------------------------------------
-# Feature canonicalization
+# Feature canonicalization (canonical implementation lives in features.py)
 # ---------------------------------------------------------------------------
+
+# Vector canonicalization lives in features.py (pure stdlib) so training and
+# inference share one implementation and cannot drift. These wrappers keep
+# the historical train.py API for callers and tests.
+from .features import (  # noqa: F401
+    build_feature_vector,
+    expected_vector_length,
+    NUMERIC_FEATURES,
+)
+
 
 def feature_order() -> List[str]:
     from .schema import FEATURE_ORDER
@@ -42,122 +52,13 @@ def canonical_feature_order() -> List[str]:
         order.append(f"seat_role={v}")
     for v in REASONING_EFFORT_VOCAB:
         order.append(f"reasoning_effort={v}")
-    numerics = [
-        "structured_output_required", "max_tokens_requested", "prompt_chars",
-        "source_window_attached", "claims_count", "convergence_expected", "is_iterative",
-        "model_id_hash", "free_tier", "declared_context_length",
-        "declared_structured_json", "declared_reasoning",
-        "observed_usable_rate", "observed_truncation_rate", "observed_unusable_rate",
-        "observed_mean_resp_chars", "observed_median_resp_chars", "observed_max_resp_chars",
-        "observed_sample_count",
-        "prompt_tokens_est_over_context", "max_tokens_over_mean_resp",
-        "structured_need_vs_declared_json", "iterative_vs_truncation_rate",
-    ]
-    order.extend(numerics)
+    order.extend(NUMERIC_FEATURES)
     return order
 
 
-def build_feature_vector(row_features: Dict[str, Any], stats: Dict[str, Dict[str, float]]) -> List[float]:
-    from .schema import (
-        TASK_TYPE_VOCAB, SEAT_ROLE_VOCAB, REASONING_EFFORT_VOCAB,
-        one_hot,
-    )
-
-    order = feature_order()
-    vec: List[float] = []
-
-    def append_num(key: str, default: float = 0.0) -> None:
-        raw = row_features.get(key, default)
-        try:
-            val = float(raw)
-        except (TypeError, ValueError):
-            val = default
-        if key in stats:
-            m = stats[key].get("mean", 0.0)
-            s = stats[key].get("stdev", 1.0)
-            if s == 0:
-                s = 1.0
-            val = (val - m) / s
-        vec.append(val)
-
-    def append_bool(key: str, default: bool = False) -> None:
-        append_num(key, float(default))
-
-    def append_vocab(key: str, vocab: List[str]) -> None:
-        value = row_features.get(key, "")
-        vec.extend(one_hot(value, vocab))
-
-    append_vocab("task_type", TASK_TYPE_VOCAB)
-    append_vocab("seat_role", SEAT_ROLE_VOCAB)
-    append_vocab("reasoning_effort", REASONING_EFFORT_VOCAB)
-
-    # numerics
-    append_num("structured_output_required", 0.0)
-    append_num("max_tokens_requested", 2048.0)
-    append_num("prompt_chars", 0.0)
-    append_num("source_window_attached", 0.0)
-    append_num("claims_count", 0.0)
-    append_num("convergence_expected", 0.0)
-    append_num("is_iterative", 0.0)
-
-    # model id hash as scaled scalar
-    model_hash = row_features.get("model_id_hash", 0)
-    try:
-        h = float(model_hash)
-    except (TypeError, ValueError):
-        h = 0.0
-    if "model_id_hash" in stats:
-        m = stats["model_id_hash"].get("mean", 0.0)
-        s = stats["model_id_hash"].get("stdev", 1.0)
-        if s == 0:
-            s = 1.0
-        h = (h - m) / s
-    vec.append(h)
-
-    append_bool("free_tier", row_features.get("free_tier", False))
-    append_num("declared_context_length", 0.0)
-    append_bool("declared_structured_json", row_features.get("declared_structured_json", False))
-    append_bool("declared_reasoning", row_features.get("declared_reasoning", False))
-    append_num("observed_usable_rate", 0.0)
-    append_num("observed_truncation_rate", 0.0)
-    append_num("observed_unusable_rate", 0.0)
-    append_num("observed_mean_resp_chars", 0.0)
-    append_num("observed_median_resp_chars", 0.0)
-    append_num("observed_max_resp_chars", 0.0)
-    append_num("observed_sample_count", 0.0)
-
-    # interactions
-    append_num("prompt_tokens_est_over_context", 0.0)
-    append_num("max_tokens_over_mean_resp", 0.0)
-    append_num("structured_need_vs_declared_json", 0.0)
-    append_num("iterative_vs_truncation_rate", 0.0)
-
-    # extractor-only debug fields are intentionally excluded from the vector
-    # (e.g. truncated_flag, finish_reason, status).
-
-    return vec
-
-
-def expected_vector_length() -> int:
-    from .schema import TASK_TYPE_VOCAB, SEAT_ROLE_VOCAB, REASONING_EFFORT_VOCAB
-    n = 0
-    n += len(TASK_TYPE_VOCAB)
-    n += len(SEAT_ROLE_VOCAB)
-    n += len(REASONING_EFFORT_VOCAB)
-    # numerics + bools
-    numerics = [
-        "structured_output_required", "max_tokens_requested", "prompt_chars",
-        "source_window_attached", "claims_count", "convergence_expected", "is_iterative",
-        "model_id_hash", "free_tier", "declared_context_length",
-        "declared_structured_json", "declared_reasoning",
-        "observed_usable_rate", "observed_truncation_rate", "observed_unusable_rate",
-        "observed_mean_resp_chars", "observed_median_resp_chars", "observed_max_resp_chars",
-        "observed_sample_count",
-        "prompt_tokens_est_over_context", "max_tokens_over_mean_resp",
-        "structured_need_vs_declared_json", "iterative_vs_truncation_rate",
-    ]
-    n += len(numerics)
-    return n
+# NOTE: build_feature_vector and expected_vector_length are imported from
+# features.py above. The previous train.py-local implementations were removed
+# so there is exactly one canonical vector builder.
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +202,34 @@ class TinyNet:
 
 
 # ---------------------------------------------------------------------------
+# Stdlib weights export (runtime artifact for the zero-dependency scorer)
+# ---------------------------------------------------------------------------
+
+def export_weights(net: "TinyNet", path: str) -> None:
+    """Export the trained net's weights to model_weights.json.
+
+    This JSON artifact is what the pure-stdlib runtime scorer (infer.py)
+    consumes, so the enabled advisory path never needs onnxruntime. Layout
+    matches the ONNX graph: W1 (in_dim, hidden), b1 (hidden,), W2 (hidden, 3),
+    b2 (3,), all row-major nested lists of floats.
+    """
+    payload = {
+        "format": "harness-local-fit-stdlib-weights",
+        "version": 1,
+        "in_dim": int(net.w1.shape[0]),
+        "hidden": int(net.w1.shape[1]),
+        "outputs": 3,
+        "activation": "relu",
+        "w1": [[float(v) for v in row] for row in net.w1.tolist()],
+        "b1": [float(v) for v in net.b1.tolist()],
+        "w2": [[float(v) for v in row] for row in net.w2.tolist()],
+        "b2": [float(v) for v in net.b2.tolist()],
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
+
+
+# ---------------------------------------------------------------------------
 # ONNX export
 # ---------------------------------------------------------------------------
 
@@ -346,8 +275,8 @@ def export_metadata(
     payload: Dict[str, Any] = {
         "model_version": "0.1.0-draft",
         "producer": "harness_local_fit",
-        "runtime": "onnxruntime",
-        "provider": "CPUExecutionProvider",
+        "runtime": "stdlib-json",
+        "provider": "pure-stdlib",
         "input_dim": len(feature_order),
         "output_classes": ["unusable", "truncated", "usable_stop"],
         "feature_order": feature_order,
@@ -497,13 +426,24 @@ def run_pipeline(
 
     model_path = os.path.join(out_dir, "model.onnx")
     meta_path = os.path.join(out_dir, "model_meta.json")
+    weights_path = os.path.join(out_dir, "model_weights.json")
     export_onnx(net, in_dim, model_path)
+    export_weights(net, weights_path)
     export_metadata(stats, canonical_feature_order(), LABEL_INDEX, meta_path)
 
     # quick smoke inference inside this runtime
     probs = net.predict_proba(X[:1])
     scorer = LocalScorer(model_path, meta_path)
     ref = scorer.score(rows[0].features)
+
+    # The stdlib scorer must agree with the numpy/ONNX graph on the same row.
+    from .infer import StdlibScorer
+    std_scores = StdlibScorer(weights_path, meta_path).score(rows[0].features)
+    for k in ("unusable", "truncated", "usable_stop"):
+        if abs(std_scores[k] - ref[k]) > 1e-4:
+            raise AssertionError(
+                f"stdlib/ONNX scorer mismatch on {k}: {std_scores[k]} vs {ref[k]}"
+            )
 
     return {
         "rows": len(rows),
@@ -573,6 +513,7 @@ def run_eval(
     model_path = os.path.join(out_dir, "model.onnx")
     meta_path = os.path.join(out_dir, "model_meta.json")
     export_onnx(net, in_dim, model_path)
+    export_weights(net, os.path.join(out_dir, "model_weights.json"))
 
     eval_payload = {
         "train_files": [os.path.basename(f) for f in train_files],

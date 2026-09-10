@@ -23,6 +23,7 @@ harness-mcp = "harness.mcp:main"
 include = ["harness*"]
 [project.optional-dependencies]
 dev = ["ruff>=0.6", "build>=1.2", "twine>=5"]
+local-fit-train = ["numpy", "onnx", "onnxruntime"]
 
 [tool.ruff]
 line-length = 100
