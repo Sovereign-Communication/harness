@@ -16,17 +16,20 @@ class TestPackageBinding(unittest.TestCase):
     def test_plain_import_binds_public_submodules(self):
         # Import via importlib from a clean module name so this test works
         # regardless of whether harness.local_fit was already imported.
+        # dispatch is the live order_pool integration; the hook/dispatch_hook
+        # prototype seam was removed (contradictory ordering semantics), and
+        # train stays unbound (numpy at import time).
         import importlib
         pkg = importlib.import_module("harness.local_fit")
-        for name in ("schema", "extract", "config", "model_loader", "advisory", "hook", "dispatch_hook"):
+        for name in ("schema", "extract", "config", "model_loader", "infer",
+                     "features", "dispatch"):
             self.assertTrue(hasattr(pkg, name), f"harness.local_fit.{name} not bound on import")
             self.assertIs(getattr(pkg, name), importlib.import_module(f"harness.local_fit.{name}"))
 
-    def test_hook_callable_surface_reachable_from_package_import(self):
+    def test_dispatch_callable_surface_reachable_from_package_import(self):
         import importlib
         pkg = importlib.import_module("harness.local_fit")
-        self.assertTrue(callable(pkg.hook.score_candidates))
-        self.assertTrue(callable(pkg.dispatch_hook.maybe_score_and_order))
+        self.assertTrue(callable(pkg.dispatch.maybe_order_pool))
         self.assertTrue(callable(pkg.config.is_enabled))
 
 

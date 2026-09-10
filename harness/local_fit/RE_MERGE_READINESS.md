@@ -14,15 +14,18 @@ seat-level outcomes:
 - truncated — the seat output is truncated
 - unusable — the seat errors, is invalid, or is missing required content
 
-The headline advisory value is `usable_stop - truncated - unusable`, used as a
-small tiebreak nudge on top of existing ordering. The layer never replaces the
-existing order; it only nudges it when the feature flags are on.
+The headline advisory signal is `p_unusable` per candidate against a
+threshold (default 0.6, inclusive): flagged models sort after same-tier
+peers, never across the demotion boundary. The layer never replaces the
+existing order; it only demotes within a tier when the feature flags are on
+and the scores genuinely separate (the degenerate guard stands down
+otherwise).
 
 It is a non-LLM, CPU-only, ONNX-based local scorer. No PyTorch, no
 transformers, no LLM, no GPU runtime.
 
-2. Files in the clone (new, additive)
----------------------------------------
+2. Files in the clone (new, additive, minus the deleted prototype seam)
+--------------------------------------------------------------------------
 - harness/local_fit/__init__.py
 - harness/local_fit/README.md
 - harness/local_fit/RE_MERGE_READINESS.md
@@ -31,34 +34,49 @@ transformers, no LLM, no GPU runtime.
 - harness/local_fit/config.py
 - harness/local_fit/model_loader.py
 - harness/local_fit/train.py
-- harness/local_fit/advisory.py
-- harness/local_fit/hook.py
-- harness/local_fit/dispatch_hook.py
+- harness/local_fit/features.py
+- harness/local_fit/infer.py
+- harness/local_fit/dispatch.py
 - tests/test_local_fit_extract.py
 - tests/test_local_fit_model.py
+- tests/test_local_fit_features.py
+- tests/test_local_fit_infer.py
+- tests/test_local_fit_wiring.py
+- tests/test_local_fit_package.py
+- tests/test_local_fit_guard.py
+- tests/test_local_fit_probe.py
 
-All of these are new. None of them modify existing Harness modules.
+The `hook.py` / `dispatch_hook.py` / `advisory.py` prototype seam was
+deleted during review: it was unreachable from the live path, and its
+weight-nudge ordering could cross demotion tiers, contradicting the
+dispatch invariants. `dispatch.maybe_order_pool` is the single live
+integration; `train.py` is intentionally NOT bound in `__init__` (numpy
+at import time would break stdlib-only installs).
 
 3. What existing Harness files are touched
 -------------------------------------------
-None. This layer is entirely additive. It does not edit apply.py, panel.py,
-trust.py, cli.py, config.py, ledger.py, mcp.py, or any existing test.
+`harness/capability.py` only (`order_pool` consults
+`local_fit.dispatch.maybe_order_pool` behind the flags; the hook is never
+imported unless enabled), plus `pyproject.toml` (the `local-fit-train`
+optional extra) and CHANGELOG/docs. Everything else is additive.
 
 4. How the flags work
 ----------------------
 Four environment variables control the layer:
 
 - HARNESS_LOCAL_FIT_ENABLE=1|true|yes — turns the advisory layer on
-- HARNESS_LOCAL_FIT_MODEL_DIR=path — directory containing model.onnx and
-  model_meta.json
-- HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER=1|true|yes — also apply the advisory as
-  a small tiebreak on top of an existing existing_order_key (still advisory only)
-- HARNESS_LOCAL_FIT_ADVISORY_TIEBREAK_WEIGHT=float, default 0.05 — size of the
-  advisory nudge when ordering is enabled
+- HARNESS_LOCAL_FIT_MODEL_DIR=path — directory containing
+  `model_weights.json` and `model_meta.json` (stdlib path; legacy
+  `model.onnx`-only dirs fall back to onnxruntime when importable)
+- HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER=1|true|yes — advance OBSERVE to
+  INFLUENCE: models with p_unusable >= threshold sort after same-tier
+  peers (still advisory only; the demotion boundary is never crossed)
+- HARNESS_LOCAL_FIT_UNUSABLE_THRESHOLD=float, default 0.6, inclusive
 
-When HARNESS_LOCAL_FIT_ENABLE is off, the layer is completely inert: it attaches
-empty advisory dicts, does not load the model, does not score, and does not
-reorder. The flags are read dynamically so tests can toggle them at runtime.
+When HARNESS_LOCAL_FIT_ENABLE is off, the layer is completely inert: the
+hook module is never imported, nothing loads, nothing scores, and the
+baseline order is returned untouched. The flags are read dynamically so
+tests can toggle them at runtime.
 
 5. Training / eval data source
 -------------------------------
@@ -102,18 +120,16 @@ produced, (d) how/when it is refreshed, (e) the onnx dependency story.
 7. Exact off-by-default behavior
 ---------------------------------
 - Default state of the layer: OFF.
-- With flags off:
-  - `maybe_score_candidates`, `score_one`, `hook.score_candidates`,
-    `dispatch_hook.maybe_score_and_order`, `maybe_score_only`, `decision_snapshot`
-    all attach empty advisory dicts and do not load the model.
-  - `apply_advisory_tiebreak` returns candidates in their existing order.
-  - No existing Harness behavior changes.
+- With flags off: `dispatch.maybe_order_pool` returns the baseline order
+  untouched without importing anything beyond stdlib; the hook module is
+  never imported. No existing Harness behavior changes.
 - With HARNESS_LOCAL_FIT_ENABLE on but MODEL_DIR missing/invalid: inert
-  (scorer fails to load, layer falls back to empty advisories).
-- With both ENABLE and MODEL_DIR on:
-  - advisory scores are attached to candidates
-  - ordering is nudged only if HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER is also on
-  - the existing order is never discarded
+  (scorer fails to load, stage degrades to OFF semantics).
+- With both ENABLE and MODEL_DIR on (OBSERVE): scores are computed and
+  returned for logging; order is still exactly baseline.
+- With USE_ADVISORY_ORDER on as well (INFLUENCE): flagged models demote
+  within their demotion tier only; unflagged relative order, the demotion
+  boundary, and paid-tier price ordering are preserved exactly.
 
 8. Guarantees preserved
 ------------------------
@@ -145,24 +161,40 @@ The layer is advisory-only. It can suggest, not decide.
 6. The person turning it on accepts that this is advisory-only and does not
    change any existing guarantee.
 
-10. Current verification status
---------------------------------
-- Clone is at commit 571073644f116d3521dae774b5df718ef78d6e88, same as the
-  live Harness source.
-- 45 local_fit tests pass, all green.
-- Tests cover: label rules, extraction basics, all-audits extraction + union,
-  feature schema, feature vector shape, training + export smoke, ONNX runtime
-  load + score, advisory hook reads scores, flag-off inert, advisory key
-  ordering, run-level split determinism + no-leakage, hold-out eval artifact +
-  metadata + top1/top2 + stats-from-train-only, all-audits train/eval,
-  multi-seed eval range, flag-gated hook inert/score/ordering/explanation, and
+10. Current verification status (post review fixes)
+----------------------------------------------------
+- Review pass fixed: eval observed-map leakage (splits now enrich eval rows
+  from the TRAIN map only), specialist-row corruption (model/raw/cost read
+  from the conv dict, not the verdict), panel_failure role skew (trains as
+  panel, matching dispatch), structured_required flag parity, generator
+  inputs, seeded shuffling, ONNX width derivation, prototype-seam deletion,
+  CI-blocking numpy import, and the dead test assertion.
+- Tests cover: label rules (incl. exact severity priority), extraction
+  basics, all-audits extraction, feature schema, train/dispatch parity pin,
+  training + export smoke, ONNX runtime load + score, run-level split
+  determinism + no-leakage, hold-out eval artifact + metadata + top1/top2 +
+  stats-and-observed-from-train-only, all-audits train/eval, multi-seed
+  eval range, degenerate-guard unit + fail-closed behavior, mock-free
+  honest-behavior pins, mock-scorer reorder-mechanism pin, stdlib-only
+  runtime import isolation, package binding + flag contract, and
   no-network-import guardrails.
 - No network calls in the local_fit pipeline (asserted by tests).
-- Multi-seed eval over the full clone dataset (9 v4 runs, 59 union rows):
-  - eval top1 range 0.833 - 0.941, mean 0.883
+- Multi-seed eval over the full clone dataset (9 v4 runs, 59 union rows),
+  leakage-free, 5 seeds:
+  - eval top1 range 0.647 - 0.867, mean 0.761 (majority baseline ~0.64)
   - eval top2 range 1.000 - 1.000
-  - usable_stop R=1.000 across seeds; unusable P=1.000 across seeds
+  - unusable P 0.50-1.00, R 0.46-1.00; usable_stop P 0.65-1.00, R 0.73-1.00
   - truncated 0/0 (none in this data)
+- Leave-one-run-out routing study (9 folds, train-map calibration,
+  dispatch-shaped features): net vs trivial worst-train-rate baseline --
+  Spearman +0.730 vs +0.750 overall (+0.639 vs +0.670 excluding the one
+  dominant failing model), precision@1 8/8 both, precision@2 7/7 both.
+  Honest reading: on this corpus the net recapitulates ledger observed
+  rates and adds no measurable routing lift; the degenerate guard
+  correctly refuses to act on flat scores. INFLUENCE is safe to ship
+  (fail-closed) but its value on larger, more varied corpora is unproven.
+  The mock-scorer mechanism test proves the reorder path itself works
+  when signal exists.
 
 11. Open scoping questions before merge
 ----------------------------------------
@@ -231,30 +263,32 @@ Shipped flag defaults (what would ship in the real repo)
 - HARNESS_LOCAL_FIT_MODEL_DIR: unset by default; when ENABLE is on, the layer
   falls back inert if MODEL_DIR is missing or the artifact cannot be loaded.
 - HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER: off by default (unset / "0").
-  Even when ENABLE is on, ordering is only nudged if this is also on.
-- HARNESS_LOCAL_FIT_ADVISORY_TIEBREAK_WEIGHT: default 0.05 if set; does not
-  apply unless USE_ADVISORY_ORDER is on.
+  Even when ENABLE is on, ordering changes only if this is also on, and
+  then only as within-tier demotion of flagged models.
+- HARNESS_LOCAL_FIT_UNUSABLE_THRESHOLD: default 0.6, inclusive.
 
-This means a merge ships the layer, the hook, and the dispatch_hook prototype,
-but nothing behaves differently for end users until a maintainer explicitly opts
-in by setting the flags and pointing at a model bundle.
+This means a merge ships the layer, but nothing behaves differently for end
+users until a maintainer explicitly opts in by setting the flags and
+pointing at a model bundle. No model bundle ships with the layer: with no
+MODEL_DIR the enabled path degrades to OFF semantics, so there is nothing
+to enable accidentally.
 
 Minimal safe diff a maintainer would apply to merge off-by-default
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 1. Add the new files to the real repo:
-   - harness/local_fit/ (the whole directory as added in this clone)
-   - tests/test_local_fit_extract.py
-   - tests/test_local_fit_model.py
-2. Add harness/local_fit/model/ to .gitignore only if and when the artifact is
-   produced by a build step; if the bundle is committed, do NOT ignore it.
+    - harness/local_fit/ (schema, extract, config, model_loader, train,
+      features, infer, dispatch, README; no prototype seam)
+    - tests/test_local_fit_*.py
+2. Add the `local-fit-train` optional extra for regenerating artifacts.
 3. Add a short note to the top-level README that an optional local-fit advisory
    layer exists and is off by default.
-4. Do NOT wire the hook into any existing dispatch/panel/trust/apply code as
-   part of this merge. The dispatch_hook prototype is illustrative only and is
-   not called by any existing Harness module.
+4. The live wiring (`capability.order_pool` -> `dispatch.maybe_order_pool`)
+   ships in the same merge, guarded to bit-identical behavior unless all
+   three INFLUENCE conditions hold (ENABLE + MODEL_DIR + USE_ADVISORY_ORDER).
 5. Confirm the test suite is green in the real repo's environment.
 6. Turn the flags on only as a separate, deliberate step after the layer is in
-   the tree and the model bundle is in place.
+   the tree and a calibrated model bundle is in place (see the measured
+   value bounds in section 10: retrain over profile-enriched data first).
 
 Refresh policy (once the bundle exists in the real repo)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -293,8 +327,9 @@ What changed vs the original decision:
    (HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER=1: p_unusable >=
    HARNESS_LOCAL_FIT_UNUSABLE_THRESHOLD, default 0.6 inclusive, sorts the
    model after its peers WITHIN the same strike-demotion tier). The old
-   HARNESS_LOCAL_FIT_ADVISORY_TIEBREAK_WEIGHT flag still governs the
-   prototype candidate-list hook only, not live ordering.
+   HARNESS_LOCAL_FIT_ADVISORY_TIEBREAK_WEIGHT flag and the prototype
+   candidate-list hook are deleted (the weight-nudge could cross tiers,
+   contradicting these invariants).
 5. Known skew is documented in README (Training/serve parity section): the
    training extractor zero-fills declared_*/free_tier while dispatch reads
    real profiles, and the ledger has no truncation events. Retrain over

@@ -66,6 +66,10 @@ class TestExtractorDispatchParityPin(unittest.TestCase):
             prompt_chars=4000, max_tokens_requested=4096,
             reasoning_effort="low", source_window_attached=True,
             claims_count=5, convergence_expected=True, is_iterative=False,
+            # The caller supplies the label-consistent value: recomputing
+            # it from task_type alone diverges on convergence runs
+            # without a claims payload.
+            structured_required=True,
         )
         feats_dispatch = features.build_dispatch_features(
             "acme/model-a", task="structured", free_tier=True,

@@ -37,9 +37,9 @@ class StdlibScorer:
     """Score seat feature dicts with the exported weights, stdlib only."""
 
     def __init__(self, weights_path: str, metadata_path: str):
-        with open(weights_path, "r", encoding="utf-8") as f:
+        with open(weights_path, encoding="utf-8") as f:
             self.weights = json.load(f)
-        with open(metadata_path, "r", encoding="utf-8") as f:
+        with open(metadata_path, encoding="utf-8") as f:
             self.metadata = json.load(f)
 
         w1 = self.weights["w1"]

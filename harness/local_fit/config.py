@@ -1,17 +1,17 @@
-"""Opt-in advisory hook for local model-fit scoring.
+"""Flags and scorer loading for the local-fit advisory layer.
 
-This module is guarded by HARNESS_LOCAL_FIT_ENABLE.
+Only two functions here are on the live path (via :mod:`dispatch`):
+:func:`is_enabled` and :func:`load_scorer`. Everything else the prototype
+seam needed (per-seat scoring helpers, tiebreak keys) died with it: the
+live path scores through the scorer object directly and orders through
+:func:`dispatch.maybe_order_pool`, which owns the tier-preserving policy.
 
-When disabled, it remains inert and does not affect existing behavior.
-When enabled, it provides advisory scores that may influence candidate
-ordering in the isolated integration path only.
-
-The flag is read dynamically from the environment each call so that tests
-can toggle it at runtime without reloading the module.
+The flags are read dynamically from the environment each call so that
+tests can toggle them at runtime without reloading the module.
 """
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 
 def _env_enabled() -> bool:
@@ -39,50 +39,3 @@ def load_scorer() -> Optional[Any]:
         return LocalScorer(_env_model_dir())
     except Exception:
         return None
-
-
-def seat_scores(scorer: Any, row_features: Dict[str, Any]) -> Dict[str, Any]:
-    if scorer is None:
-        return {}
-    return scorer.score(row_features)
-
-
-def advisory_key(scores: Dict[str, Any]) -> float:
-    """Return a single advisory value: higher = better usability fit.
-
-    Simple fallback if only raw probabilities are available.
-    """
-    if not scores:
-        return 0.0
-    usable = scores.get("usable_stop", 0.0)
-    truncated = scores.get("truncated", 0.0)
-    unusable = scores.get("unusable", 0.0)
-    return float(usable) - float(truncated) - float(unusable)
-
-
-def order_candidates_with_advisory(
-    candidates: List[Dict[str, Any]],
-    scorer: Optional[Any],
-    use_advisory_as_tiebreak: bool = True,
-) -> List[Dict[str, Any]]:
-    """Return candidate list with optional advisory scores appended.
-
-    This does NOT reorder existing capability/reliability ordering here.
-    It attaches advisory scores for the caller to use as it sees fit.
-    """
-    if scorer is None:
-        for c in candidates:
-            c["local_fit_advisory"] = {}
-        return candidates
-
-    for c in candidates:
-        c["local_fit_advisory"] = seat_scores(scorer, c.get("features", {}))
-    if not use_advisory_as_tiebreak:
-        return candidates
-
-    def key(c: Dict[str, Any]) -> float:
-        base = c.get("existing_order_key", 0.0)
-        adv = advisory_key(c.get("local_fit_advisory", {}))
-        return base + adv * 0.05  # small weight; advisory is a nudge
-
-    return sorted(candidates, key=key, reverse=True)

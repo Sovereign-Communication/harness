@@ -145,6 +145,7 @@ def extract_seats_from_run(
             convergence_expected=_convergence_expected(run),
             is_iterative=_is_iterative_run(run),
             truncated_flag=truncated_flag,
+            structured_required=structured_required,
         )
 
         rows.append(
@@ -192,8 +193,14 @@ def extract_seats_from_run(
 
         label = resolve_label(row_dict, structured_required, parseable, truncated_flag)
         features = _build_features(
+            # A failed panel seat trains as a panel seat: dispatch emits
+            # role "panel" for every panel attempt (success or failure),
+            # so an out-of-vocabulary "panel_failure" bit would train on a
+            # signal that never appears at dispatch (all-zero collision
+            # with every unknown role). The failure itself lives in the
+            # label and the content features, where it belongs.
             task_type=task_type,
-            seat_role="panel_failure",
+            seat_role="panel",
             model=model,
             observed=observed,
             prompt_chars=len(run.get("prompt") or ""),
@@ -204,6 +211,7 @@ def extract_seats_from_run(
             convergence_expected=_convergence_expected(run),
             is_iterative=_is_iterative_run(run),
             truncated_flag=False,
+            structured_required=structured_required,
         )
 
         rows.append(
@@ -226,13 +234,19 @@ def extract_seats_from_run(
             )
         )
 
-    # Specialist seat, if present
+    # Specialist seat, if present. The rendered verdict lives on
+    # conv["specialist"] (converged/agreement/confidence/claims), but the
+    # seat's own metadata -- model, raw output, cost, status -- lives on
+    # the parent conv dict. Reading those fields from the verdict silently
+    # assigned every specialist row model "_", resp_chars 0, cost 0.
+    specialist_emitted = False
     if has_specialist:
         spec = conv.get("specialist")
-        model = spec.get("model") or spec.get("model_id") or "_"
+        model = conv.get("model") or conv.get("model_id") or "_"
         if isinstance(model, str) and model.strip():
+            specialist_emitted = True
             claims = spec.get("claims") or {}
-            raw = spec.get("raw")
+            raw = conv.get("raw")
             raw_present = bool(raw) and isinstance(raw, str) and raw.strip()
             # The specialist seat's primary structured output is the claims dict.
             # content_present reflects whether the seat produced its expected
@@ -245,7 +259,7 @@ def extract_seats_from_run(
 
             row_dict = {
                 "finish_reason": "stop",
-                "status": spec.get("status"),
+                "status": conv.get("status"),
                 "content_present": content_present,
                 "parseable": parseable,
                 "resp_chars": resp_chars,
@@ -267,28 +281,29 @@ def extract_seats_from_run(
                 convergence_expected=True,
                 is_iterative=False,
                 truncated_flag=False,
+                structured_required=structured_required,
             )
 
             rows.append(
                 SeatRow(
                     run=path,
-                    seat_index=seat_index_offset + len(panel) + len(panel_failures) + 1,
+                    seat_index=seat_index_offset + len(panel) + len(panel_failures),
                     features=features,
                     label=label,
                     model=model,
                     task_type="structured_claims",
                     seat_role="specialist",
                     finish_reason="stop",
-                    status=spec.get("status"),
+                    status=conv.get("status"),
                     content_present=content_present,
                     parseable=parseable,
-                    cost=float((spec.get("cost") if isinstance(spec.get("cost"), (int, float, str)) else 0) or 0),
+                    cost=float((conv.get("cost") if isinstance(conv.get("cost"), (int, float, str)) else 0) or 0),
                     prompt_chars=len(run.get("prompt") or ""),
                     resp_chars=resp_chars,
                 )
             )
 
-    return rows, seat_index_offset + len(panel) + len(panel_failures) + (1 if has_specialist else 0)
+    return rows, seat_index_offset + len(panel) + len(panel_failures) + (1 if specialist_emitted else 0)
 
 
 def _structured_required_for_run(run: Dict[str, Any], task_type: str) -> bool:
@@ -408,6 +423,7 @@ def _build_features(
     convergence_expected: bool,
     is_iterative: bool,
     truncated_flag: bool = False,
+    structured_required: bool = False,
 ) -> Dict[str, Any]:
     """Extractor-side feature build.
 
@@ -416,6 +432,10 @@ def _build_features(
     are produced by exactly one implementation and cannot drift. The parity
     pin test (tests/test_local_fit_features.py) proves the two call shapes
     produce identical dicts for equivalent seats.
+
+    ``structured_required`` must be the same value the label rule used:
+    recomputing it here from task_type alone diverges on convergence runs
+    without a claims payload (label says required, features said not).
     """
     from .features import build_dispatch_features
 
@@ -446,7 +466,7 @@ def _build_features(
         _extract_overrides={
             "seat_role": seat_role,
             "task_type": task_type,
-            "structured_output_required": task_type in ("structured_claims",),
+            "structured_output_required": structured_required,
             "max_tokens_requested": max_tokens_requested,
             "reasoning_effort": reasoning_effort,
             "prompt_chars": prompt_chars,
@@ -507,11 +527,23 @@ def mean(values: List[float]) -> float:
 def extract(
     run_paths: Iterable[str],
     row_filter=None,
+    observed_map=None,
 ) -> List[SeatRow]:
     """Extract seat rows from a set of existing run JSON paths (read-only).
 
     `row_filter` is an optional callable used for debugging subset extraction.
+
+    `observed_map` optionally supplies the per-model observed statistics used
+    for enrichment. It defaults to None, meaning "build from the rows being
+    extracted" (the historical behavior). Pass a map built from TRAIN rows
+    only when extracting EVAL rows: otherwise each split's observed rates
+    are computed from its own labels, and the evaluation measures how well
+    the net reads leaked answers instead of pre-dispatch signal. Dispatch
+    itself always uses live ledger calibration, never these maps.
     """
+    # Materialize: the two passes below each iterate run_paths, so a
+    # generator would silently yield nothing on the second pass.
+    run_paths = list(run_paths)
     observed: Dict[str, Dict[str, Any]] = {}
     all_rows: List[SeatRow] = []
 
@@ -520,12 +552,12 @@ def extract(
         path = os.path.abspath(path)
         if not os.path.isfile(path):
             continue
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             run = json.load(f)
         rows, _ = extract_seats_from_run(path, run, observed)
         all_rows.extend(rows)
 
-    observed = build_observed_map(all_rows)
+    observed = observed_map if observed_map is not None else build_observed_map(all_rows)
 
     # Second pass: rebuild with observed stats populated.
     enriched: List[SeatRow] = []
@@ -534,7 +566,7 @@ def extract(
         path = os.path.abspath(path)
         if not os.path.isfile(path):
             continue
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             run = json.load(f)
         rows, new_offset = extract_seats_from_run(path, run, observed, seat_index_offset=offset)
         for r in rows:

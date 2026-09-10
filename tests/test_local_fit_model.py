@@ -7,11 +7,20 @@ existing run JSON via the read-only extractor.
 import os
 import sys
 import tempfile
-
-import numpy as np
 import unittest
 
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - train-time extra absent
+    np = None
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+# Train-time tests need the optional local-fit-train extra (numpy/onnx).
+# Without it the modules under test cannot even import, so skip the class
+# instead of failing collection on clean CI runners.
+needs_numpy = unittest.skipUnless(
+    np is not None, "train-time deps (numpy) required")
 
 
 def extract_some_rows():
@@ -21,6 +30,7 @@ def extract_some_rows():
     return extract(files)
 
 
+@needs_numpy
 class TestFeatureVector(unittest.TestCase):
     def test_vector_length_matches_schema(self):
         from harness.local_fit.train import expected_vector_length, canonical_feature_order
@@ -34,6 +44,7 @@ class TestFeatureVector(unittest.TestCase):
         self.assertEqual(len(vec), expected_vector_length())
 
 
+@needs_numpy
 class TestTrainingAndExport(unittest.TestCase):
     def test_train_export_and_smoke(self):
         from harness.local_fit.train import run_pipeline
@@ -104,6 +115,7 @@ class TestTrainingAndExport(unittest.TestCase):
         self.assertIsNone(load_scorer())
 
 
+@needs_numpy
 class TestRunLevelSplit(unittest.TestCase):
     def test_split_by_file_is_deterministic(self):
         from harness.local_fit.train import split_files
@@ -127,6 +139,7 @@ class TestRunLevelSplit(unittest.TestCase):
         self.assertGreater(len(e), 0)
 
 
+@needs_numpy
 class TestHoldOutEval(unittest.TestCase):
     def test_run_eval_produces_artifact_with_eval_metadata(self):
         from harness.local_fit.train import run_eval, split_files
@@ -215,19 +228,7 @@ class TestHoldOutEval(unittest.TestCase):
         self.assertGreater(len(eval_stats), 0)
 
 
-class TestAdvisoryOrdering(unittest.TestCase):
-    def test_no_op_when_disabled(self):
-        from harness.local_fit.advisory import maybe_score_candidates
-        cands = [{"id": 1, "features": {}}, {"id": 2, "features": {}}]
-        out = maybe_score_candidates(cands, use_tiebreak=False)
-        for c in out:
-            self.assertEqual(c.get("local_fit_advisory"), {})
-
-    def test_advisory_key_combines_scores(self):
-        from harness.local_fit.config import advisory_key
-        self.assertGreater(advisory_key({"usable_stop": 0.8, "truncated": 0.1, "unusable": 0.05}), advisory_key({"usable_stop": 0.4, "truncated": 0.4, "unusable": 0.1}))
-
-
+@needs_numpy
 class TestAllAuditsTrainEval(unittest.TestCase):
     def test_all_audits_run_eval_succeeds(self):
         """Train + hold-out eval over the union of all available *_runs/ data."""
@@ -249,8 +250,6 @@ class TestAllAuditsTrainEval(unittest.TestCase):
             self.assertIn("eval", result)
             self.assertIn("eval_metrics", result)
             self.assertIn("train_metrics", result)
-            # union row counts are included in the result when run over all files
-            self.assertIn("union_rows", result) if False else None
 
     def test_all_audits_eval_artifact_carries_eval_block(self):
         from harness.local_fit.extract import all_run_files
@@ -270,6 +269,7 @@ class TestAllAuditsTrainEval(unittest.TestCase):
         self.assertIn("confusion", ev)
 
 
+@needs_numpy
 class TestMultiSeedEval(unittest.TestCase):
     def test_multi_seed_range_reproducible(self):
         """Run hold-out eval over a few seeds and report a compact range; results must be deterministic per seed."""
@@ -311,139 +311,6 @@ class TestMultiSeedEval(unittest.TestCase):
         self.assertLessEqual(max(tops), 1.0)
 
 
-class TestFlagGatedHook(unittest.TestCase):
-    def test_hook_disabled_is_inert(self):
-        """When flags are off, the hook attaches empty advisories and does not reorder."""
-        from harness.local_fit.hook import score_candidates, apply_advisory_tiebreak, enabled
-        self.assertFalse(enabled())
-        cands = [{"id": 1, "features": {}, "existing_order_key": 0.9},
-                 {"id": 2, "features": {}, "existing_order_key": 0.2}]
-        out = score_candidates(cands)
-        for c in out:
-            self.assertEqual(c.get("local_fit_advisory"), {})
-        # ordering must be preserved when disabled
-        self.assertEqual([c["id"] for c in apply_advisory_tiebreak(cands)], [1, 2])
-
-    def test_hook_enabled_attaches_scores(self):
-        """When flags are on and a model dir with a valid artifact is provided, scores are attached."""
-        from harness.local_fit.extract import all_run_files, extract
-        from harness.local_fit.train import run_pipeline
-        from harness.local_fit.hook import score_candidates, apply_advisory_tiebreak, enabled
-        import os
-        files = all_run_files("audits")
-        rows = extract(files)
-        self.assertGreater(len(rows), 0)
-        with tempfile.TemporaryDirectory() as d:
-            run_pipeline(rows, d)
-            os.environ["HARNESS_LOCAL_FIT_ENABLE"] = "1"
-            os.environ["HARNESS_LOCAL_FIT_MODEL_DIR"] = d
-            os.environ["HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER"] = "1"
-            try:
-                self.assertTrue(enabled())
-                cands = [{"id": i, "features": r.features, "existing_order_key": float(i)} for i, r in enumerate(rows[:5])]
-                out = score_candidates(cands)
-                for c in out:
-                    adv = c.get("local_fit_advisory", {})
-                    self.assertIn("usable_stop", adv)
-                    self.assertIn("truncated", adv)
-                    self.assertIn("unusable", adv)
-                    self.assertIn("best_guess", adv)
-                ordered = apply_advisory_tiebreak(out)
-                self.assertEqual(len(ordered), len(cands))
-            finally:
-                os.environ.pop("HARNESS_LOCAL_FIT_ENABLE", None)
-                os.environ.pop("HARNESS_LOCAL_FIT_MODEL_DIR", None)
-                os.environ.pop("HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER", None)
-
-    def test_hook_preserves_existing_order_when_tiebreak_off(self):
-        """Even when enabled, if advisory ordering is off, existing_order_key order is preserved."""
-        from harness.local_fit.extract import all_run_files, extract
-        from harness.local_fit.train import run_pipeline
-        from harness.local_fit.hook import score_candidates, apply_advisory_tiebreak
-        import os
-        files = all_run_files("audits")
-        rows = extract(files)
-        with tempfile.TemporaryDirectory() as d:
-            run_pipeline(rows, d)
-            os.environ["HARNESS_LOCAL_FIT_ENABLE"] = "1"
-            os.environ["HARNESS_LOCAL_FIT_MODEL_DIR"] = d
-            os.environ["HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER"] = "0"
-            try:
-                cands = [{"id": i, "features": r.features, "existing_order_key": float(i)} for i, r in enumerate(rows[:5])]
-                # original order by existing_order_key ascending
-                orig_order = [c["id"] for c in sorted(cands, key=lambda c: c["existing_order_key"])]
-                scored = score_candidates(cands)
-                ordered = apply_advisory_tiebreak(scored)
-                self.assertEqual([c["id"] for c in ordered], orig_order)
-            finally:
-                os.environ.pop("HARNESS_LOCAL_FIT_ENABLE", None)
-                os.environ.pop("HARNESS_LOCAL_FIT_MODEL_DIR", None)
-                os.environ.pop("HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER", None)
-
-    def test_dispatch_hook_prototype_inert_when_disabled(self):
-        """The illustrative dispatch hook is inert when flags are off."""
-        from harness.local_fit.dispatch_hook import maybe_score_and_order, maybe_score_only, decision_snapshot
-        cands = [{"id": 1, "features": {}, "existing_order_key": 0.5},
-                 {"id": 2, "features": {}, "existing_order_key": 0.8}]
-        out = maybe_score_and_order(cands)
-        for c in out:
-            self.assertEqual(c.get("local_fit_advisory"), {})
-        out2 = maybe_score_only(cands)
-        for c in out2:
-            self.assertEqual(c.get("local_fit_advisory"), {})
-        snap = decision_snapshot(cands)
-        self.assertFalse(snap["enabled"])
-        self.assertEqual(snap["candidates_with_advisory"], 0)
-
-    def test_dispatch_hook_decision_snapshot(self):
-        """When enabled, decision_snapshot returns a usable summary."""
-        from harness.local_fit.extract import all_run_files, extract
-        from harness.local_fit.train import run_pipeline
-        from harness.local_fit.dispatch_hook import decision_snapshot
-        import os
-        files = all_run_files("audits")
-        rows = extract(files)
-        with tempfile.TemporaryDirectory() as d:
-            run_pipeline(rows, d)
-            os.environ["HARNESS_LOCAL_FIT_ENABLE"] = "1"
-            os.environ["HARNESS_LOCAL_FIT_MODEL_DIR"] = d
-            os.environ["HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER"] = "1"
-            try:
-                cands = [{"id": i, "features": r.features, "existing_order_key": float(i)} for i, r in enumerate(rows[:4])]
-                snap = decision_snapshot(cands)
-                self.assertTrue(snap["enabled"])
-                self.assertIn("candidates", snap)
-                self.assertGreaterEqual(snap["candidates_with_advisory"], 0)
-                self.assertEqual(len(snap["candidates"]), len(cands))
-            finally:
-                os.environ.pop("HARNESS_LOCAL_FIT_ENABLE", None)
-                os.environ.pop("HARNESS_LOCAL_FIT_MODEL_DIR", None)
-                os.environ.pop("HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER", None)
-
-    def test_hook_explain(self):
-        """explain() attaches an explanation dict."""
-        from harness.local_fit.extract import all_run_files, extract
-        from harness.local_fit.train import run_pipeline
-        from harness.local_fit.hook import explain
-        import os
-        files = all_run_files("audits")
-        rows = extract(files)
-        with tempfile.TemporaryDirectory() as d:
-            run_pipeline(rows, d)
-            os.environ["HARNESS_LOCAL_FIT_ENABLE"] = "1"
-            os.environ["HARNESS_LOCAL_FIT_MODEL_DIR"] = d
-            try:
-                cands = [{"id": 1, "features": rows[0].features}]
-                out = explain(cands)
-                self.assertIn("_local_fit_explanation", out[0])
-                exp = out[0]["_local_fit_explanation"]
-                self.assertIn("usable_stop", exp)
-                self.assertIn("scorer_loaded", exp)
-                self.assertTrue(exp["scorer_loaded"])
-            finally:
-                os.environ.pop("HARNESS_LOCAL_FIT_ENABLE", None)
-                os.environ.pop("HARNESS_LOCAL_FIT_MODEL_DIR", None)
-
 
 class TestNoNetwork(unittest.TestCase):
     """Confirm the local_fit pipeline does not make network calls.
@@ -466,17 +333,21 @@ class TestNoNetwork(unittest.TestCase):
         for b in banned:
             self.assertNotIn(b, source, f"extract.py should not reference {b}")
 
-    def test_hook_module_has_no_network_imports(self):
-        import harness.local_fit.hook as h
-        source = open(h.__file__, encoding="utf-8").read().lower()
-        banned = ["requests", "openai", "anthropic", "httpx", "aiohttp", "urllib.request", "websocket"]
-        for b in banned:
-            self.assertNotIn(b, source, f"hook.py should not reference {b}")
-
-    def test_dispatch_hook_module_has_no_network_imports(self):
-        import harness.local_fit.dispatch_hook as d
+    def test_dispatch_module_has_no_network_imports(self):
+        import harness.local_fit.dispatch as d
         source = open(d.__file__, encoding="utf-8").read().lower()
         banned = ["requests", "openai", "anthropic", "httpx", "aiohttp", "urllib.request", "websocket"]
         for b in banned:
-            self.assertNotIn(b, source, f"dispatch_hook.py should not reference {b}")
+            self.assertNotIn(b, source, f"dispatch.py should not reference {b}")
+
+    def test_infer_module_has_no_network_imports(self):
+        import harness.local_fit.infer as m
+        source = open(m.__file__, encoding="utf-8").read().lower()
+        banned = ["requests", "openai", "anthropic", "httpx", "aiohttp", "urllib.request", "websocket"]
+        for b in banned:
+            self.assertNotIn(b, source, f"infer.py should not reference {b}")
+        # The runtime scorer documents the train-time deps by name but must
+        # never import them (stdlib-only dispatch path).
+        self.assertNotIn("import numpy", source)
+        self.assertNotIn("from numpy", source)
 

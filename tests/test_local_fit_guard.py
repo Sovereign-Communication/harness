@@ -307,26 +307,54 @@ class TestEndToEndRealArtifact(GuardTestBase):
         ordered, _ = self._order({})
         self.assertEqual(ordered, baseline)
 
-    def test_influence_demotes_bad_within_tier(self):
-        # BAD starts in the healthy tier (its ledger shows a couple of
-        # ambiguous samples, not yet 2 strikes) and sorts above OTHER on
-        # declared capability. The scorer knows from training data that BAD
-        # fails: this is exactly the advisory's value -- act before the
-        # ledger accumulates strikes. INFLUENCE must demote BAD below its
-        # healthy-tier peers WITHOUT crossing into the striked tier.
-        # The ledger history also feeds the observed_* features, so BAD's
-        # real failure history sharpens its dispatch-time score.
+    def test_influence_stands_down_on_flat_synthetic_scores(self):
+        # Honest-behavior pin for this corpus: the trained net emits
+        # near-identical dispatch scores for all three synthetic models
+        # (training shape and dispatch shape share almost nothing but the
+        # model hash), so the degenerate guard MUST stand down to baseline
+        # rather than reorder on noise. The mechanism itself (demotion on
+        # separating scores) is pinned by
+        # test_influence_demotes_flagged_within_tier below.
         clean = {"calibration": {
             GOOD: _report()["calibration"][GOOD],
             OTHER: _report()["calibration"][OTHER],
             BAD: {"samples": 12, "success_rate": 0.55, "unusable_outputs": 0,
                   "consent_unusable": 0},
         }}
-        # The ledger gives BAD only a middling success rate on a handful of
-        # samples (below the 2-strike demotion policy), while declared
-        # capability ties GOOD. The SCORER, though, has watched BAD fail
-        # every seat in training -- exactly the case where the advisory adds
-        # information the ledger has not yet accumulated into strikes.
+        profiles = _profiles()
+        profiles[BAD] = CapabilityProfile(
+            BAD, context_length=128000, free=True, prompt_price=0,
+            completion_price=0, supports_reasoning=True,
+            supports_structured_json=True)
+        pool = [GOOD, OTHER, BAD]
+        _flags_off()
+        baseline = order_pool(pool, profiles, clean, task="code",
+                              free_tier=True)
+        os.environ["HARNESS_LOCAL_FIT_ENABLE"] = "1"
+        os.environ["HARNESS_LOCAL_FIT_MODEL_DIR"] = self.model_dir
+        os.environ["HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER"] = "1"
+        os.environ["HARNESS_LOCAL_FIT_UNUSABLE_THRESHOLD"] = "0.0001"
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                ordered = order_pool(pool, profiles, clean, task="code",
+                                     free_tier=True)
+        finally:
+            _flags_off()
+        self.assertEqual(ordered, baseline)
+        self.assertIn("degenerate", buf.getvalue())
+
+    def test_influence_demotes_flagged_within_tier(self):
+        # Mechanism pin with a separating mock scorer: a flagged healthy
+        # model sorts last within its tier, unflagged peers keep baseline
+        # order, and the striked-demotion boundary is never crossed.
+        from unittest import mock
+        clean = {"calibration": {
+            GOOD: _report()["calibration"][GOOD],
+            OTHER: _report()["calibration"][OTHER],
+            BAD: {"samples": 12, "success_rate": 0.55, "unusable_outputs": 0,
+                  "consent_unusable": 0},
+        }}
         profiles = _profiles()
         profiles[BAD] = CapabilityProfile(
             BAD, context_length=128000, free=True, prompt_price=0,
@@ -338,31 +366,32 @@ class TestEndToEndRealArtifact(GuardTestBase):
                               free_tier=True)
         self.assertNotEqual(baseline[-1], BAD,
                             "test setup: BAD must start above last place")
-        # Pick the threshold from the artifact's own dispatch-time scores:
-        # between the highest healthy score and BAD's, so exactly BAD is
-        # flagged (a near-zero threshold would flag everyone and change
-        # nothing). Scores are deterministic for this corpus/net seed.
+
+        class _SeparatingScorer:
+            """Deterministic separating scores in pool order."""
+
+            def __init__(self, risks):
+                self._risks = list(risks)
+
+            def score(self, feats):
+                r = self._risks.pop(0) if self._risks else 0.0
+                return {"unusable": r, "truncated": 0.0,
+                        "usable_stop": 1.0 - r, "best_guess": "usable_stop"}
+
+        def _mkrisks():
+            # Risks follow the BASELINE call order (maybe_order_pool scores
+            # the baseline list in order): only BAD looks risky.
+            return _SeparatingScorer(
+                [0.90 if m == BAD else 0.05 for m in baseline])
+
         os.environ["HARNESS_LOCAL_FIT_ENABLE"] = "1"
         os.environ["HARNESS_LOCAL_FIT_MODEL_DIR"] = self.model_dir
         os.environ["HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER"] = "1"
-        from harness.local_fit.config import load_scorer
-        from harness.local_fit.features import build_dispatch_features
-        sc0 = load_scorer()
-        pscore = {
-            m: sc0.score(build_dispatch_features(
-                m, task="code", free_tier=True, profile=profiles[m],
-                calibration=clean["calibration"][m],
-                call_lane="apply"))["unusable"]
-            for m in pool}
-        bad_p = pscore[BAD]
-        healthy_top = max(p for m, p in pscore.items() if m != BAD)
-        self.assertGreater(bad_p, healthy_top,
-                           "scorer must rank BAD riskiest among the pool")
-        os.environ["HARNESS_LOCAL_FIT_UNUSABLE_THRESHOLD"] = (
-            f"{(bad_p + healthy_top) / 2:.6f}")
         try:
-            ordered = order_pool(pool, profiles, clean, task="code",
-                                 free_tier=True)
+            with mock.patch("harness.local_fit.config.load_scorer",
+                            return_value=_mkrisks()):
+                ordered = order_pool(pool, profiles, clean, task="code",
+                                     free_tier=True)
         finally:
             _flags_off()
         # BAD moved to the back of the healthy tier...

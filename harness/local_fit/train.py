@@ -126,10 +126,6 @@ def compute_stats(rows: List[Any]) -> Dict[str, Dict[str, float]]:
 # Small trainable net
 # ---------------------------------------------------------------------------
 
-def init_weights(shape: Tuple[int, int], scale: float = 0.1) -> np.ndarray:
-    return np.random.randn(*shape).astype(np.float32) * scale
-
-
 class TinyNet:
     """2-layer feedforward net with softmax output for 3 classes."""
 
@@ -182,11 +178,16 @@ class TinyNet:
         loss = -np.sum(y * np.log(probs + 1e-9)) / n
         return float(loss)
 
-    def train(self, x: np.ndarray, y: np.ndarray, epochs: int = 80, lr: float = 0.02) -> List[float]:
+    def train(self, x: np.ndarray, y: np.ndarray, epochs: int = 80, lr: float = 0.02,
+              shuffle_seed=None) -> List[float]:
+        # Seeded shuffling: repeated evaluations with the same seed must
+        # produce the same model. The global NumPy RNG made identical
+        # (split, seed) runs diverge with ambient RNG state.
+        rng = np.random.default_rng(shuffle_seed)
         losses: List[float] = []
         for i in range(epochs):
             idx = np.arange(x.shape[0])
-            np.random.shuffle(idx)
+            rng.shuffle(idx)
             xb = x[idx]
             yb = y[idx]
             loss = self.train_step(xb, yb, lr=lr)
@@ -318,14 +319,17 @@ def export_onnx(net: TinyNet, in_dim: int, path: str) -> None:
     X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [None, in_dim])
     Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [None, 3])
 
+    # Hidden width comes from the trained net, never a constant: a
+    # non-default width trained fine but exported a corrupt fixed-16 graph.
+    hidden = int(net.w1.shape[1])
     # ReLU node
-    w1 = helper.make_tensor("w1", TensorProto.FLOAT, [in_dim, 16], net.w1.flatten().tolist())
-    b1 = helper.make_tensor("b1", TensorProto.FLOAT, [16], net.b1.tolist())
+    w1 = helper.make_tensor("w1", TensorProto.FLOAT, [in_dim, hidden], net.w1.flatten().tolist())
+    b1 = helper.make_tensor("b1", TensorProto.FLOAT, [hidden], net.b1.tolist())
     matmul1 = helper.make_node("MatMul", ["X", "w1"], ["matmul1"])
     add1 = helper.make_node("Add", ["matmul1", "b1"], ["add1"])
     relu = helper.make_node("Relu", ["add1"], ["relu"])
 
-    w2 = helper.make_tensor("w2", TensorProto.FLOAT, [16, 3], net.w2.flatten().tolist())
+    w2 = helper.make_tensor("w2", TensorProto.FLOAT, [hidden, 3], net.w2.flatten().tolist())
     b2 = helper.make_tensor("b2", TensorProto.FLOAT, [3], net.b2.tolist())
     matmul2 = helper.make_node("MatMul", ["relu", "w2"], ["matmul2"])
     add2 = helper.make_node("Add", ["matmul2", "b2"], ["Y"])
@@ -470,7 +474,7 @@ class LocalScorer:
 
     def __init__(self, model_path: str, metadata_path: str):
         self.sess = InferenceSession(model_path, providers=["CPUExecutionProvider"])
-        with open(metadata_path, "r", encoding="utf-8") as f:
+        with open(metadata_path, encoding="utf-8") as f:
             self.metadata = json.load(f)
 
     def score(self, row_features: Dict[str, Any]) -> Dict[str, Any]:
@@ -502,7 +506,7 @@ def run_pipeline(
 
     in_dim = X.shape[1]
     net = TinyNet(in_dim, hidden=16, seed=13)
-    losses = net.train(X, Y, epochs=80, lr=0.02)
+    losses = net.train(X, Y, epochs=80, lr=0.02, shuffle_seed=13)
 
     model_path = os.path.join(out_dir, "model.onnx")
     meta_path = os.path.join(out_dir, "model_meta.json")
@@ -574,12 +578,18 @@ def run_eval(
     Statistics (means/stdevs) are computed from train rows only and applied
     to both train and eval rows, so eval cannot leak through normalization.
     """
-    from .extract import extract
+    from .extract import build_observed_map, extract
 
     os.makedirs(out_dir, exist_ok=True)
 
     train_rows = extract(train_files)
-    eval_rows = extract(eval_files)
+    # Eval rows are enriched with the TRAIN observed map, never their own:
+    # per-model observed rates are label-derived, so building them from eval
+    # rows leaks eval answers into eval features and the gate measures how
+    # well the net reads the leak. Statistics were already train-only; now
+    # observation is too (the summary text below finally tells the truth).
+    eval_rows = extract(eval_files,
+                        observed_map=build_observed_map(train_rows))
 
     if not train_rows:
         raise ValueError("no train rows extracted")
@@ -593,7 +603,8 @@ def run_eval(
 
     in_dim = X_train.shape[1]
     net = TinyNet(in_dim, hidden=hidden, seed=net_seed)
-    train_losses = net.train(X_train, Y_train, epochs=epochs, lr=lr)
+    train_losses = net.train(X_train, Y_train, epochs=epochs, lr=lr,
+                             shuffle_seed=net_seed)
 
     # Predict
     train_proba = net.predict_proba(X_train)

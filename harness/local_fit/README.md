@@ -42,12 +42,8 @@ existing order; it only nudges it when the feature flag is on.
   (`model_weights.json`); falls back to the ONNX scorer only when
   onnxruntime is importable.
 - `config.py` — feature-flag entrypoint (`HARNESS_LOCAL_FIT_ENABLE` and
-  `HARNESS_LOCAL_FIT_MODEL_DIR`). Read dynamically so tests can toggle it.
-- `advisory.py` — thin back-compat re-export of the hook API.
-- `hook.py` — flag-gated advisory hook: `score_candidates`,
-  `apply_advisory_tiebreak`, `explain`.
-- `dispatch_hook.py` — candidate-list wrapper (score + optional tiebreak),
-  kept for prototype callers.
+  `HARNESS_LOCAL_FIT_MODEL_DIR`) plus scorer loading. Read dynamically so
+  tests can toggle it.
 - `dispatch.py` — **the live integration**: `maybe_order_pool` is what
   `capability.order_pool` calls. Three-stage gating (OFF / OBSERVE /
   INFLUENCE) with tier-preserving demotion; see below.
@@ -110,8 +106,9 @@ Labels are mutually exclusive and severity-ordered:
 
 - `HARNESS_LOCAL_FIT_ENABLE` — set to `1`, `true`, or `yes` to enable the
   advisory layer.
-- `HARNESS_LOCAL_FIT_MODEL_DIR` — directory containing `model.onnx` and
-  `model_meta.json`.
+- `HARNESS_LOCAL_FIT_MODEL_DIR` — directory containing `model_weights.json`
+  and `model_meta.json` (stdlib runtime path; a legacy `model.onnx` alone
+  falls back to onnxruntime when importable).
 - `HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER` — set to `1`, `true`, or `yes` to
   advance from OBSERVE to INFLUENCE: likely-unusable models (per the threshold
   below) sort after their same-tier peers in live pool ordering. Still
@@ -163,31 +160,38 @@ carries frozen evaluation evidence, not just a smoke test.
 
 Key properties:
 - Split is by *run file*, not by row, so there is no within-run leakage.
-- The split is deterministic given a seed.
+- The split is deterministic given a seed (including the shuffle stream).
 - Statistics (means/stdevs) are computed from train rows only and applied to
-  both train and eval rows, so eval cannot leak through normalization.
+  both train and eval rows, and eval rows are enriched with the TRAIN
+  observed map only -- so eval cannot leak through normalization or through
+  label-derived observed rates. (An earlier revision built each split's
+  observed rates from its own labels and measured ~0.88; that number was
+  the leak, not the model.)
 - The exported `model_meta.json` includes an `eval` block with the frozen
   train/eval split, row counts, per-class metrics, confusion matrix, and
   top-1/top-2 accuracy.
 
 ### Multi-seed eval range on current clone data
 
-5 seeds, train_ratio 0.75, over the 9 v4 runs (59 union rows):
+5 seeds, train_ratio 0.75, over the 9 v4 runs (59 union rows), leakage-free:
 
 ```
-eval top1 range:   0.833 - 0.941   (mean 0.883)
+eval top1 range:   0.647 - 0.867   (mean 0.761)
 eval top2 range:   1.000 - 1.000
 train top1 range:  0.800 - 0.905
 train top2 range:  1.000 - 1.000
 ```
 
 Per-class (across seeds):
-- `unusable`: P=1.000 across seeds; R ranges ~0.57-0.83 (small eval support).
-- `usable_stop`: R=1.000 across seeds; P ranges ~0.79-0.92.
+- `unusable`: P ranges 0.50-1.00, R ranges 0.46-1.00 (small eval support).
+- `usable_stop`: P ranges 0.65-1.00, R ranges 0.73-1.00.
 - `truncated`: no truncated seats in this dataset, so 0/0 per seed.
 
-The model reliably separates usable_stop and unusable seats; truncated is
-currently untested by this data.
+The model beats the majority baseline (~0.64) modestly on extract
+features; truncated is untested by this data. Dispatch-time ranking
+quality is a separate, harder question -- see "Known skew" and the
+degenerate-artifact guard: when scores cannot separate candidates, the
+layer stands down instead of reordering on noise.
 
 ## Live integration: capability.order_pool
 
@@ -214,7 +218,7 @@ exception) degrades to the baseline order. Routing never breaks.
 
 ### Operationally recommended rollout
 
-1. Ship with flags off (the default). Confirm the 419-test suite is green.
+1. Ship with flags off (the default). Confirm the full hermetic suite is green.
 2. Train an artifact from your own audit runs (see Training above) and set
    ENABLE + MODEL_DIR to run in OBSERVE for a few days; compare logged scores
    against actual seat outcomes.

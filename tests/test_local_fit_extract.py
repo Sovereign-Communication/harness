@@ -74,13 +74,23 @@ class TestLabelRules(unittest.TestCase):
         self.assertEqual(self.resolve_label(r, True, False), self.L["unusable"])
 
     def test_severity_order_unusable_over_truncated(self):
+        # Both conditions at once (error finish AND truncated flag): the
+        # unusable verdict must win, not merely "not usable_stop".
         r = self.row(finish_reason="error", content_present=True)
-        # should never be labeled usable_stop
-        self.assertNotEqual(self.resolve_label(r, False, True), self.L["usable_stop"])
+        self.assertEqual(
+            self.resolve_label(r, False, True, truncated_flag=True),
+            self.L["unusable"])
 
     def test_severity_order_truncated_over_usable(self):
+        # A length finish with content present is truncated, exactly --
+        # and the truncated flag alone (stop finish) is sufficient too.
         r = self.row(finish_reason="length", content_present=True)
-        self.assertNotEqual(self.resolve_label(r, False, True), self.L["usable_stop"])
+        self.assertEqual(self.resolve_label(r, False, True),
+                         self.L["truncated"])
+        flagged = self.row(finish_reason="stop", content_present=True)
+        self.assertEqual(
+            self.resolve_label(flagged, False, True, truncated_flag=True),
+            self.L["truncated"])
 
 
 class TestExtractionBasics(unittest.TestCase):
