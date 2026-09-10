@@ -11,4 +11,5 @@ audits/*/prompts/
 audits/*/_runs/
 audits/self/_runs/
 audits/scmessenger/_runs/
+audits/scmessenger/round5/
 .env
