@@ -162,7 +162,7 @@ class GatePolicy:
             reason=("preview exhausted its rounds" if req.verify_only
                     else "verify rounds exhausted"), rotations=state.rotations)
         if not req.verify_only and os.path.isfile(req.file_path):
-            with open(req.file_path, "r", encoding="utf-8") as stream:
+            with open(req.file_path, encoding="utf-8") as stream:
                 tree_now = stream.read()
             if tree_now != req.original:
                 _atomic_write(req.file_path, req.original)

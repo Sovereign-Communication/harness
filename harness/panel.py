@@ -91,7 +91,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                           spec_model, judge_max_tokens, target * panel_tokens + 100))
     total_estimate, breakdown = governor.preflight(prompt, calls)
     eprint("[preflight] worst-case cost breakdown:")
-    for label, model, cost in breakdown:
+    for label, _model, cost in breakdown:
         eprint(f"  {label}: ${cost:.6f}")
     eprint(f"[preflight] TOTAL worst-case: ${total_estimate:.6f} "
            f"(ceiling: ${governor.max_cost:.6f})")

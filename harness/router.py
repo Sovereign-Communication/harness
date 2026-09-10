@@ -41,14 +41,6 @@ class Router:
                     "pool": self.apply_pool}
         raise ValueError(f"unknown task_type: {task_type}")
 
-    def next_model(self, kind, exclude):
-        """Next model in a pool not in the excluded set, or None if exhausted."""
-        pool = self.panel_pool if kind == "panel" else self.apply_pool
-        for m_ in pool:
-            if m_ not in exclude:
-                return m_
-        return None
-
     def escalation(self, override=None):
         """Return the escalation spec, or None if not allowed/configured."""
         allowed = self.allow_escalation if override is None else override

@@ -117,7 +117,7 @@ def parse_claims(data):
             try:
                 refs.append(int(r))
             except (TypeError, ValueError):
-                raise ValueError(f"claim '{cid}' source_ref '{r}' is not an integer line number")
+                raise ValueError(f"claim '{cid}' source_ref '{r}' is not an integer line number") from None
         claims.append(Claim(claim_id=cid, text=str(text).strip(),
                             kind=kind, source_refs=refs))
     return context, claims
@@ -125,16 +125,16 @@ def parse_claims(data):
 
 def load_claims_manifest(path):
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except OSError as e:
-        raise HarnessError(f"claims manifest not readable: {path} ({e.strerror or e})")
+        raise HarnessError(f"claims manifest not readable: {path} ({e.strerror or e})") from e
     except ValueError as e:
-        raise HarnessError(f"claims manifest is not valid JSON: {path} ({e})")
+        raise HarnessError(f"claims manifest is not valid JSON: {path} ({e})") from e
     try:
         return parse_claims(data)
     except (ValueError, KeyError, TypeError) as e:
-        raise HarnessError(f"claims manifest is malformed: {path} ({e})")
+        raise HarnessError(f"claims manifest is malformed: {path} ({e})") from e
 
 
 def curate_claims_from_ledger(entries, *, window=500, max_claims=3):
@@ -239,12 +239,12 @@ def load_definitions_file(path):
     definitions file is a clean HarnessError, never a raw traceback -- the
     interface layer turns it into a pre-network [FATAL]."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except OSError as e:
-        raise HarnessError(f"definitions file not readable: {path} ({e.strerror or e})")
+        raise HarnessError(f"definitions file not readable: {path} ({e.strerror or e})") from e
     except ValueError as e:
-        raise HarnessError(f"definitions file is not valid JSON: {path} ({e})")
+        raise HarnessError(f"definitions file is not valid JSON: {path} ({e})") from e
     return normalize_definitions(data)
 
 # ------------------------- identifier scanning -------------------------
@@ -360,8 +360,9 @@ def lint_claims(claims, quoted_source, source_index=None, context=None):
 
     extra = []
     for exp in expansions:
-        extra.append("----- auto-resolved definition of %s (referenced by the claims/"
-                     "context but outside the quoted window) -----" % exp["identifier"])
+        extra.append(f"----- auto-resolved definition of {exp['identifier']} "
+                     "(referenced by the claims/context but outside the "
+                     "quoted window) -----")
         extra.append(exp["snippet"])
     expanded_source = quoted_source + ("\n" + "\n".join(extra) if extra else "")
 

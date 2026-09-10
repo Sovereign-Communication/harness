@@ -491,13 +491,14 @@ class McpProtocolTests(unittest.TestCase):
                     "rounds": [], "cost": 0.0}
 
         server.engine.apply_batch = blocking_batch
+        quoted = target.replace("\\", "\\\\")
         feed = (
             '{"jsonrpc":"2.0","id":1,"method":"tools/call",'
-            '"params":{"name":"apply_edit","arguments":{"file": ["%s"],'
+            '"params":{"name":"apply_edit","arguments":{"file": ["' + quoted + '"],'
             '"instruction": "change", "verify_only": true}}}\n'
             '{"jsonrpc":"2.0","id":2,"method":"tools/call",'
             '"params":{"name":"ledger_status","arguments":{}}}\n'
-        ) % target.replace("\\", "\\\\")
+        )
         out = io.StringIO()
         server.stdout = out
         server.stdin = io.StringIO(feed)

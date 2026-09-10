@@ -6,9 +6,10 @@ Two scores, one policy each:
   ``-11`` is extreme distrust, ``0`` is unknown (the only cold-start value),
   ``+11`` is extreme trust. Levels *and* gates: the integer is stored and
   compared, and thresholds on it unlock actions (refuse / preview-only /
-  gated-standard / expanded). Trust accrues slowly (several clean runs per
-  +1) and drops fast (a single safety strike costs -4): one exploit costs
-  more than ten clean runs earn.
+  gated-standard / expanded). Trust accrues slowly (3 clean successes per
+  +1) and drops fast on safety signals (bounded protocol sloppiness,
+  -1 guidance denials, -4 hostile denials): one exploit costs more than
+  ten clean runs earn.
 * **Correctness vs ceiling.** A separate correctness level (same scale,
   from success evidence only) rations the spend ceiling: low correctness
   gets a small fraction of the hard cap, proven correctness unlocks the

@@ -17,9 +17,9 @@ free router and serves as a final fallback lane.
 """
 import json
 import os
-import sys
 
 from .errors import HarnessError
+from .output import eprint
 from .validation import finite_number
 
 CONFIG_DIR = os.path.expanduser("~/.config/harness")
@@ -67,7 +67,7 @@ CAPABILITIES_TTL = 24 * 3600  # refresh /models capability profiles at most once
 
 def load_byok_prefixes(path=BYOK_PREFIXES_PATH):
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return set(json.load(f))
     except (OSError, ValueError):
         return set()
@@ -185,7 +185,7 @@ _ENV_NAMES = {
 def _read_key_file(path):
     """Parse an `OPENROUTER_API_KEY=...` line out of an env file."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if "=" in line and not line.startswith("#"):
@@ -211,8 +211,8 @@ def _warn_insecure_keyfile(path):
     except OSError:
         return
     if mode & 0o077:
-        print(f"[warn] key file {path} is group/world readable (mode "
-              f"{oct(mode)}); restrict it with chmod 600.", file=sys.stderr)
+        eprint(f"[warn] key file {path} is group/world readable (mode "
+               f"{oct(mode)}); restrict it with chmod 600.")
 
 
 def resolve_api_key():
@@ -238,8 +238,8 @@ def resolve_api_key():
     if key is None:
         key = os.environ.get("OPENROUTER_API_KEY")
         if key:
-            print("[warn] using OPENROUTER_API_KEY from the process environment; "
-                  "prefer a 0600 key file for interactive use.", file=sys.stderr)
+            eprint("[warn] using OPENROUTER_API_KEY from the process environment; "
+                   "prefer a 0600 key file for interactive use.")
     return key
 
 
@@ -315,12 +315,12 @@ def load_settings(overrides=None):
     cfg = {}
     cfg_path = os.path.join(CONFIG_DIR, "config.json")
     if os.path.exists(cfg_path):
-        with open(cfg_path, "r", encoding="utf-8") as f:
+        with open(cfg_path, encoding="utf-8") as f:
             cfg = json.load(f)
     unknown = set(cfg) - set(_ENV_NAMES)
     if unknown:
-        print("[warn] unknown config keys ignored: " + ", ".join(sorted(unknown))
-              + f" (valid keys are in {cfg_path})", file=sys.stderr)
+        eprint("[warn] unknown config keys ignored: " + ", ".join(sorted(unknown))
+               + f" (valid keys are in {cfg_path})")
 
     def get(key, default):
         if overrides and key in overrides:
@@ -358,7 +358,7 @@ def load_settings(overrides=None):
         try:
             value = cast(raw)
         except (TypeError, ValueError, OverflowError):
-            raise HarnessError(key + " must be a valid number")
+            raise HarnessError(key + " must be a valid number") from None
         value = finite_number(value, key, lo, hi)
         # finite_number always returns float: integer settings (panelists,
         # tokens, rotations) must go back to int, or range()/max_workers

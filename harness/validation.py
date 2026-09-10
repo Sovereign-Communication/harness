@@ -24,7 +24,7 @@ def _integer(value, name, minimum, maximum):
     try:
         result = int(value)
     except (TypeError, ValueError, OverflowError):
-        raise HarnessError(f"{name} must be an integer")
+        raise HarnessError(f"{name} must be an integer") from None
     # Do not silently turn 1.5 into 1 or accept strings with trailing junk.
     if isinstance(value, float) and value != result:
         raise HarnessError(f"{name} must be an integer")
@@ -41,7 +41,7 @@ def finite_number(value, name, minimum=0.0, maximum=None, *, allow_zero=True):
     try:
         result = float(value)
     except (TypeError, ValueError, OverflowError):
-        raise HarnessError(f"{name} must be a number")
+        raise HarnessError(f"{name} must be a number") from None
     if not math.isfinite(result):
         raise HarnessError(f"{name} must be finite")
     if not allow_zero and result <= minimum:

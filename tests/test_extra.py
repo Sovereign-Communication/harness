@@ -11,7 +11,6 @@ from harness.panel import panel_judge
 from harness.spend import (
     SpendGovernor,
     discover_free_models,
-    resolve_models,
 )
 from tests._fake import FakeTransport, m, comp
 
@@ -87,10 +86,6 @@ class DiscoveryTests(unittest.TestCase):
         ])
         ids = discover_free_models(fake, "k", prefer=["z/gone:free"])
         self.assertEqual(ids, ["x/aa:free", "y/bb:free"])
-
-    def test_resolve_models_filters_existing(self):
-        fake = FakeTransport(models=[m(P1), m(P2)])
-        self.assertEqual(resolve_models(fake, "k", [P1, "nope/x"]), [P1])
 
 
 class PanelRotationTests(unittest.TestCase):

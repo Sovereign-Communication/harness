@@ -10,7 +10,6 @@ acceptance is a warning, not a success).
 import hashlib
 import json
 import os
-import sys
 import threading
 import time
 from collections import defaultdict
@@ -200,7 +199,7 @@ class AutonomyLedger:
         paths = self._ledger_paths()
         self._segmented = len(paths) > 1 or bool(self._rotated_paths())
         for source_path in paths:
-            with open(source_path, "r", encoding="utf-8") as f:
+            with open(source_path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -215,8 +214,8 @@ class AutonomyLedger:
                         # left a torn trailing line: quarantine the damage, keep
                         # the intact prefix, and never crash on load.
                         self.quarantined = getattr(self, "quarantined", 0) + 1
-                        print(f"[ledger] corrupt line quarantined in {source_path}; "
-                              "run `harness ledger verify` for status.", file=sys.stderr)
+                        eprint(f"[ledger] corrupt line quarantined in {source_path}; "
+                               "run `harness ledger verify` for status.")
                         continue
                     self._tail.append(entry)
                     self._seq = entry["seq"]
@@ -239,7 +238,7 @@ class AutonomyLedger:
         # after rotation: the active file alone is only the newest segment.
         for source_path in self._ledger_paths():
             try:
-                with open(source_path, "r", encoding="utf-8") as f:
+                with open(source_path, encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
                         if not line:
@@ -342,7 +341,7 @@ class AutonomyLedger:
             seen_valid = False
             count = 0
             try:
-                with open(source_path, "r", encoding="utf-8") as f:
+                with open(source_path, encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
                         if not line:
@@ -465,7 +464,7 @@ class AutonomyLedger:
                         continue
                     mine = []
                     try:
-                        with open(source_path, "r", encoding="utf-8") as f:
+                        with open(source_path, encoding="utf-8") as f:
                             lines = f.read().splitlines()
                     except OSError:
                         continue

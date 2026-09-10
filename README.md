@@ -208,10 +208,13 @@ harness dogfood --from-ledger --claims-out curated.json \
 harness dogfood --from-ledger --claims-out curated.json \
   --file harness/spend.py --instruction x --verify "python -m py_compile harness/spend.py"
 
-# Autonomy ledger, live free models, key status
-harness ledger report
+# Autonomy ledger, live free models, key status, trust standing
+harness ledger report          # includes chain status (segments, pruned cut)
+harness ledger verify          # chain integrity + retention shape
 harness models
 harness spend
+harness trust --model <id>     # bipolar trust + correctness (read-only)
+harness trust --caller <id>    # one peer's standing
 
 # Model capability profiles + reliability (hypothesis from /models, corrected
 # by observed evidence). --bench runs a real JSON probe on the free pool.
@@ -240,8 +243,12 @@ Tools: `panel_verify`, `apply_edit`, `offer_work`, `defer_work`,
 `trust_status` reports bipolar trust (-11..+11) for the host and a model,
 plus the correctness level that rations spend ceilings (read-only).
 `apply_edit` accepts
-`backend: "harness"|"morph"`, `verify_only`, `max_lines`, `model`, and the
-same continuation controls as the CLI. The hand-rolled server is spec-conformant (JSON-RPC 2.0 over stdio, `initialize` →
+`backend: "harness"|"morph"|"diff"`, `verify_only`, `max_lines`, `model`, and the
+same continuation controls as the CLI. Tools run on three serial lanes
+(`mutation`, `spendy`, `observe`) so status queries never queue behind a
+long edit, and every request carries a cooperative deadline
+(`HARNESS_MCP_TOOL_TIMEOUT`, default 1800s). Frames correlate by request
+id, never by position. The hand-rolled server is spec-conformant (JSON-RPC 2.0 over stdio, `initialize` →
 `tools/list` → `tools/call`, `structuredContent` + `isError`).
 
 ## Reasoning & effort, flushed out
@@ -479,27 +486,42 @@ hermetic tests — no network, no key. They pin: per-token pricing (regression
 on a ~1,000,000x undercount bug), no-tools payloads, hard/learned BYOK handling,
 key gates, mid-batch fail-closed, reasoning modes (incl. the
 retry-without-reasoning path), panel rotation, structured consensus parsing,
-ledger chain integrity and tamper detection, fail-closed consent, capability
+ledger chain integrity, tamper detection, rotation anchors and honest
+suffix-after-prune reporting, fail-closed consent (incl. renewal attribution
+to the answering model), capability
 deferral, the forced self-check (defer→rotate, all-defer accept, confident→proceed),
 confidence calibration (readiness vs verify join, unmatched-verdict handling),
-continuation resume, rotation on error, the vacuous-success guard, escalation
-gating, the MCP handshake, the bench manifest/task runner, and the convergence
+continuation resume (incl. file-retarget refusal), rotation on error, the vacuous-success guard, escalation
+gating, the MCP handshake (incl. lane scheduling that keeps status queries
+ahead of long edits, deadlines, per-caller tagging, and the allow_verify/cancel gates),
+the bench manifest/task runner (incl. schema validation and symlink-safe
+sandboxes), and the convergence
 specialist (deterministic per-claim tally, 5/5 unanimous == 100%, split
 non-convergence, default-to-judge-model, rotation on imperfect specialist
 output, defect-proposition polarity
-convention, reassurance-claim exclusion from the gate), and the capability
+convention, reassurance-claim exclusion from the gate, reassurance polarity
+in the specialist prompt, and smallest-window vote trimming), judge
+tally-first ordering (resource-cap trims report as `trimmed_for_judge`,
+never as shortfall), and the capability
 layer (parsing, scoring, context hard-gate, composite-reliability math incl.
 prior-shrink, observed-JSON-updates-declared, structured correctness evidence,
-probe persistence/error accounting, routing cost ties, registry persist/refresh/TTL,
+probe persistence/error accounting, probe BYOK learning and reasoning-slot
+reservation, routing cost ties, registry persist/refresh/TTL,
 ledger success-rate, the **real-fixture capability-ranking and stale-model
 filtering proofs**, and the unified MorphLite backend's read-only preview guarantees). The hardening
-suite adds: config range validation and unknown-key warnings (#15), the
+suite adds: config range validation and unknown-key warnings (#15), integer
+settings staying integers (a live-dogfood crash), the
 capabilities registry schema-version stamp (#15), per-model cost reporting
-and --quiet (#16), token-estimator property tests (#7/#20), and the unified
-diff + multi-file apply paths (#11/#12). A live playtest round then pinned:
+and --quiet (#16), token-estimator property tests (#7/#20), transport retry
+cost merging, missing-cost accounting (free fills zero, paid estimates,
+blind fails closed), non-blocking ledger locks, backup/snapshot symlink
+refusal, and the unified
+diff + multi-file apply paths (#11/#12). Bipolar trust (-11..+11, cold-start
+unknown, per-caller breakout, correctness-rationed ceilings, write-time
+gates) and EOL-preserving atomic writes are pinned alongside. A live playtest round then pinned:
 defer markers honored anywhere in a model response (sovereignty), the strict
 unified-diff matcher's no-fuzz contract, apply without an initial consent
-probe, and the MCP allow_verify/cancel gates.
+probe, and CLI survival when a deferred self-edit breaks an owned module.
 
 ## License
 

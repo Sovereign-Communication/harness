@@ -8,7 +8,8 @@ import sys
 
 # --quiet: suppress progress chatter but never warnings/fatals.
 QUIET = False
-_AUDIBLE_PREFIXES = ("[warn]", "[FATAL]", "[claims-lint]", "[BYOK]")
+_AUDIBLE_PREFIXES = ("[warn]", "[FATAL]", "[claims-lint]", "[BYOK]",
+                     "[ledger]")
 
 
 def eprint(*a, **kw):

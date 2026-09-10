@@ -80,14 +80,16 @@ class ConfigRangeValidationTests(unittest.TestCase):
 
     def test_unknown_config_key_warns(self):
         """#15: an unknown key in config.json must warn on stderr, not vanish."""
+        import contextlib
         import io
         import harness.config as cfg
         with tempfile.TemporaryDirectory() as d:
             cfg_path = os.path.join(d, "config.json")
             with open(cfg_path, "w", encoding="utf-8") as f:
                 json.dump({"max_cost": 0.05, "not_a_real_key": 1}, f)
+            err = io.StringIO()
             with mock.patch.object(cfg, "CONFIG_DIR", d), \
-                 mock.patch.object(cfg.sys, "stderr", new=io.StringIO()) as err:
+                 contextlib.redirect_stderr(err):
                 s = cfg.load_settings()
             self.assertIn("not_a_real_key", err.getvalue())
             self.assertEqual(s.max_cost, 0.05)
@@ -107,7 +109,7 @@ class CapabilitiesSchemaVersionTests(unittest.TestCase):
             path = os.path.join(d, "capabilities.json")
             profiles = build_profiles_from_models(self._models())
             save_profiles(path, profiles, fetched_at=123.0)
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             self.assertEqual(data["schema_version"], CAPABILITIES_SCHEMA_VERSION)
             loaded, fetched = load_profiles(path)
@@ -217,15 +219,15 @@ class UnifiedDiffEngineTests(unittest.TestCase):
 
     def test_context_mismatch_refused(self):
         diff = "@@ -1,2 +1,2 @@\n-LINE1\n+x\n line2\n"
-        with self.assertRaises(Exception):
+        with self.assertRaises(HarnessError):
             _apply_unified_diff(self.SRC, diff)
 
     def test_truncated_hunk_refused(self):
-        with self.assertRaises(Exception):
+        with self.assertRaises(HarnessError):
             _apply_unified_diff(self.SRC, "@@ -1,3 +1,1 @@\n line1\n")
 
     def test_prose_only_refused(self):
-        with self.assertRaises(Exception):
+        with self.assertRaises(HarnessError):
             _apply_unified_diff(self.SRC, "I made some changes, looks great!")
 
     def test_zero_context_insertion(self):

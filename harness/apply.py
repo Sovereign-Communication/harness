@@ -272,7 +272,7 @@ class ApplyEngine:
             task_id=task_id, hard_task_cap=HARD_TASK_MAX_COST,
             caller=getattr(self.ledger, "caller", None))
 
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             original = f.read()
 
         return ApplyRequest(

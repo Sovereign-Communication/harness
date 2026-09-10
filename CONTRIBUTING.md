@@ -113,8 +113,8 @@ cli.py / mcp.py          interfaces (arg parsing, JSON-RPC, tool contracts;
 ## Lint & test before pushing
 
 ```bash
-ruff check harness tests
-python -m unittest discover -s tests
+ruff check harness tests audits
+python -W error::ResourceWarning -m unittest discover -s tests
 ```
 
 CI runs both on Python 3.9 / 3.11 / 3.13. A failing or skipped check blocks

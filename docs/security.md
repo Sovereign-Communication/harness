@@ -23,8 +23,16 @@ not expose MCP write/execute access without deliberate configuration.
 - Continuations bind the saved verification command and target baseline.
 - MCP writes require explicit write authorization and configured allowed roots.
 - MCP verification commands require server or request authorization.
+- MCP tools run on serial mutation/spendy/observe lanes with a cooperative
+  per-tool deadline, so one long run cannot starve status queries forever.
+- Mutation requires earned trust: bipolar scores per host/model/author refuse,
+  force preview-only, or ration ceilings; every denial is ledgered evidence.
 - The ledger is hash-chained and reports corruption, but filesystem access can
   still rewrite or delete it; it is tamper-evident, not tamper-proof.
+  Rotation anchors each segment boundary, and a pruned prefix reports as an
+  explicit cut, never as a complete chain.
+- Backups, snapshots, and atomic writes refuse planted symlinks; sandbox
+  paths resolve parent symlinks before containment checks.
 
 ## Reporting
 

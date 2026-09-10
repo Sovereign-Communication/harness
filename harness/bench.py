@@ -35,12 +35,12 @@ from .output import eprint
 def _load_json_file(path, what):
     """Load a JSON file, presenting missing files and parse errors cleanly."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except OSError as e:
-        raise HarnessError(f"{what} not readable: {path} ({e.strerror or e})")
+        raise HarnessError(f"{what} not readable: {path} ({e.strerror or e})") from e
     except ValueError as e:
-        raise HarnessError(f"{what} is not valid JSON: {path} ({e})")
+        raise HarnessError(f"{what} is not valid JSON: {path} ({e})") from e
 
 
 def load_manifest(path):
@@ -60,7 +60,7 @@ def load_manifest(path):
                 t["dir"] = root
                 tasks.append(t)
             elif os.path.isdir(full) and os.path.exists(os.path.join(full, "task.json")):
-                with open(os.path.join(full, "task.json"), "r", encoding="utf-8") as f:
+                with open(os.path.join(full, "task.json"), encoding="utf-8") as f:
                     t = json.load(f)
                 t.setdefault("name", n)
                 t["dir"] = os.path.join(root, n)
@@ -130,13 +130,13 @@ class TaskSandbox:
         if not os.path.exists(self.file):
             raise HarnessError(f"bench task file not found: {self.file}")
         if os.path.exists(self.snapshot):
-            with open(self.snapshot, "r", encoding="utf-8", newline="") as src:
+            with open(self.snapshot, encoding="utf-8", newline="") as src:
                 # Byte-exact: the snapshot's bytes are authoritative here,
                 # not the tree's line-ending style (which a model edit may
                 # have changed mid-run).
                 _atomic_write(self.file, src.read(), newline=None)
         else:
-            with open(self.file, "r", encoding="utf-8", newline="") as src:
+            with open(self.file, encoding="utf-8", newline="") as src:
                 content = src.read()
             with open(self.snapshot, "w", encoding="utf-8", newline="") as out:
                 out.write(content)

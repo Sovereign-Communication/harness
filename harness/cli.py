@@ -72,10 +72,10 @@ def _split_opt_list(value):
 def _read_text(path, what):
     """Read a text file, turning a missing path into a presentable error."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return f.read()
     except OSError as e:
-        raise HarnessError(f"{what} not readable: {path} ({e.strerror or e})")
+        raise HarnessError(f"{what} not readable: {path} ({e.strerror or e})") from e
 
 
 def _read_json(path, what):
@@ -84,7 +84,7 @@ def _read_json(path, what):
     try:
         return json.loads(text)
     except ValueError as e:
-        raise HarnessError(f"{what} is not valid JSON: {path} ({e})")
+        raise HarnessError(f"{what} is not valid JSON: {path} ({e})") from e
 
 
 def _emit(result, out):
@@ -94,7 +94,7 @@ def _emit(result, out):
             with open(out, "w", encoding="utf-8") as f:
                 f.write(text)
         except OSError as e:
-            raise HarnessError(f"cannot write --out {out}: {e}")
+            raise HarnessError(f"cannot write --out {out}: {e}") from e
         eprint(f"[OK] result written to {out}")
     else:
         print(text)
@@ -595,13 +595,15 @@ def _cmd_capabilities(opts, settings):
 
 
 def _print_capabilities_table(out):
+    """Human table on stderr: stdout stays pure JSON for piping, and --quiet
+    suppresses the table while the JSON report still flows."""
     rows = out["models"]
     if not rows:
-        print("(no models in pools with capability profiles)")
+        eprint("(no models in pools with capability profiles)")
         return
     hdr = f"{'model':<42} {'ctx':>9} {'rsn':>3} {'jd':>4} {'jr':>4} {'cap':>5} {'f-str':>5} {'rel':>5}"
-    print(hdr)
-    print("-" * len(hdr))
+    eprint(hdr)
+    eprint("-" * len(hdr))
     for r in rows:
         probe = r.get("probe")
         probe_note = ""
@@ -610,10 +612,10 @@ def _print_capabilities_table(out):
                           f"correct={probe['correct_rate']} err={probe['errors']}")
         jd = r["json_declared"]
         jr = r["json_reliable"]
-        print(f"{r['model']:<42} {r['context']:>9,} {'Y' if r['reasoning'] else 'n':>3} "
-              f"{jd:>4.2f} {jr:>4.2f} "
-              f"{r['capability']:>5.2f} {r['fitness_structured']:>5.2f} "
-              f"{r['reliability_structured']:>5.2f}{probe_note}")
+        eprint(f"{r['model']:<42} {r['context']:>9,} {'Y' if r['reasoning'] else 'n':>3} "
+               f"{jd:>4.2f} {jr:>4.2f} "
+               f"{r['capability']:>5.2f} {r['fitness_structured']:>5.2f} "
+               f"{r['reliability_structured']:>5.2f}{probe_note}")
 
 
 def _add_engine_flags(p, *, max_tokens_default, verify_required=False):

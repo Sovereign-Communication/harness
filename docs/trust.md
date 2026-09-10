@@ -30,9 +30,12 @@ refuse-level writes). One exploit costs more than ten clean runs earn.
 
 ## Principals: host, model, author (weakest link)
 
-* **Model**: verify-gate passes + known-answer passes earn; failures and
-  unusable/consent-unusable outputs strike. Declared `/models` capability
-  never substitutes for observed behavior -- unknown models score 0.
+* **Model**: verify-gate passes + known-answer passes earn; protocol
+  sloppiness (reasoning-only / consent-unusable output) strikes bounded
+  at -3; hostile denials strike -4. Ordinary verify misses do *not* move
+  trust -- a caught miss is the gate working. Declared `/models`
+  capability never substitutes for observed behavior -- unknown models
+  score 0.
 * **Host/caller**: every ledger event carries the session's caller id
   (`cli`, `mcp`, or `mcp:<name>/<version>` from initialize clientInfo),
   and `host_trust` scores a named caller's tagged history separately --
@@ -60,5 +63,5 @@ the score and the unlocked ceiling, never silently clamped.
 A new principal's first runs are preview-only or tight-ceiling by
 construction. Each clean verify-passed round is ledgered evidence
 toward the next level -- the ramp is ~3 runs to +1, ~15 to +6,
-~30 to +11. `harness trust [--model ID]` and the MCP `trust_status`
-tool show the current standing and reasons, read-only.
+~30 to +11. `harness trust [--model ID] [--caller ID]` and the MCP
+`trust_status` tool show the current standing and reasons, read-only.

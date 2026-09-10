@@ -28,7 +28,7 @@ def _verify_argv(command):
     try:
         argv = shlex.split(command)
     except ValueError as e:
-        raise HarnessError(f"verify_cmd is not shell-tokenizable ({e}); quote it properly.")
+        raise HarnessError(f"verify_cmd is not shell-tokenizable ({e}); quote it properly.") from e
     if not argv:
         raise HarnessError("verify_cmd is empty.")
     return argv
@@ -79,11 +79,11 @@ def file_content_hash(path):
                 digest.update(chunk)
         return digest.hexdigest()
     except OSError as e:
-        raise HarnessError(f"cannot hash target file: {path} ({e})")
+        raise HarnessError(f"cannot hash target file: {path} ({e})") from e
 
 
 def _line_count(path):
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
+    with open(path, encoding="utf-8", errors="replace") as f:
         return sum(1 for _ in f)
 
 
@@ -142,7 +142,7 @@ def _atomic_write(path, content, *, follow=False, newline="preserve"):
     try:
         fd, tmp = tempfile.mkstemp(prefix=".harness-", suffix=".tmp", dir=d)
     except OSError as e:
-        raise _AtomicWriteError(f"cannot stage temp file in {d}: {e}")
+        raise _AtomicWriteError(f"cannot stage temp file in {d}: {e}") from e
     try:
         # newline="" writes the string unchanged: with preserve mode the
         # translation above already ran, and with newline=None the caller

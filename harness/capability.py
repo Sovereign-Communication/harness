@@ -298,7 +298,7 @@ CAPABILITIES_SCHEMA_VERSION = 1
 
 def load_profiles(path):
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
             if data.get("schema_version") != CAPABILITIES_SCHEMA_VERSION:
                 return {}, None  # foreign or older schema: treat as stale, refetch

@@ -70,7 +70,7 @@ def _reject_nonstandard_json(value):
 
 
 class McpServer:
-    """Serialized tool worker with an independent stdio reader."""
+    """Lane workers (one serial worker per lane) with an independent stdio reader."""
 
     def __init__(self, *, transport, api_key, governor, ledger, router, engine,
                  max_panelists=3, use_free=True, stdin=None, stdout=None,

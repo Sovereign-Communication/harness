@@ -6,6 +6,7 @@ owns the data crossing its request/run/outcome phases. The engine-level
 tests (test_apply.py) exercise them indirectly; this module pins their own
 contracts so the test tree mirrors the product tree.
 """
+import dataclasses
 import os
 import tempfile
 import unittest
@@ -208,7 +209,7 @@ class RewindTests(unittest.TestCase):
 class DataContractTests(unittest.TestCase):
     def test_request_is_frozen(self):
         req = _request("x")
-        with self.assertRaises(Exception):
+        with self.assertRaises(dataclasses.FrozenInstanceError):
             req.task_id = "other"
 
     def test_run_state_defaults(self):

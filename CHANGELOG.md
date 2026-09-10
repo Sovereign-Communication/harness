@@ -10,6 +10,16 @@ break APIs between minor versions).
 ## [Unreleased]
 
 ### Added
+- **Polish pass (sandpaper):** README test-coverage list rewritten to match
+  the current suite; `Router.next_model` and `spend.resolve_models`
+  deleted with their tests (zero production callers, per the no-dead-code
+  rubric); lint extended to `B007/B017/B904/UP015/UP031` with chained
+  (`from e`) or suppressed (`from None`) raises throughout; output
+  hygiene enforced (config warnings and ledger quarantine notices go
+  through `eprint`, `[ledger]` stays audible under `--quiet`, the
+  capabilities table moved off stdout so piped JSON parses); security and
+  releasing docs updated to the MCP lanes, trust gates, anchors, and the
+  real validation commands.
 - **Dogfood-driven close-out of the four deferred audit items** (panel
   evidence under `audits/self/dogfood/item{1,2,3b,4}.*`):
   - *Ledger rotation anchors.* Every rotation opens the fresh active file

@@ -21,7 +21,7 @@ class CostMathTests(unittest.TestCase):
         pt = estimate_prompt_tokens(prompt)
         expected = (pt * 1e-8 + 300 * 2e-8) * 2 + (pt + 700) * 1e-8 + 350 * 2e-8
         self.assertAlmostEqual(total, expected, places=12)
-        for _, model, cost in breakdown:
+        for _, _model, cost in breakdown:
             self.assertGreater(cost, 1e-9, "cost is mis-scaled by orders of magnitude")
         self.assertEqual(gov.spent, 0.0, "preflight must not spend anything")
 
