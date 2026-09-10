@@ -9,6 +9,28 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
+### Fixed
+- **Local-fit advisory scores were inert on real data (saturation).** The
+  trained net's real-data logits were tiny, so exported probabilities
+  saturated (p_unusable ~0.15 for every candidate, spread ~0.03) and the
+  INFLUENCE path reordered nothing at any threshold. Three-part mechanism
+  fix (data expansion is intentionally out of scope):
+  export-time temperature calibration (`train.export_temperature`, persisted
+  as `temperature` in `model_weights.json`/`model_meta.json`, applied as
+  logits/T by the stdlib scorer so the ONNX parity pin still holds); input
+  z-score clipping (`Z_CLIP=8`) in the runtime scorer so unseen-at-train-time
+  dispatch features (e.g. declared context length) cannot blow logits into a
+  pinned softmax; and a fail-closed degenerate-artifact guard in
+  `dispatch.maybe_order_pool` that detects unseparable score maps
+  (`score_spread_too_small`) and collapsed top-class probability
+  (`top_class_saturated`), keeps the baseline order, reports the reason on
+  the result and stderr (`capability.order_pool` logs the stand-down).
+  A pool that legitimately scores all-healthy (real spread, unpinned top-1)
+  is explicitly NOT degenerate: no reorder is then the correct outcome.
+  New mock-free end-to-end test trains on synthetic audit data containing a
+  genuinely failing model and proves INFLUENCE demotes it within its
+  strike-demotion tier while OFF/OBSERVE stay order-identical to baseline.
+
 ### Added
 - **Local model-fit advisory layer wired into pool ordering
   (`harness/local_fit/`, opt-in, off by default).** A small locally-trained
