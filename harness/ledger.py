@@ -47,6 +47,9 @@ class AutonomyLedger:
         # Count of corrupt/torn lines skipped at load (audit #8b: must exist
         # as a real attribute on every instance, clean load included).
         self.quarantined = 0
+        # Soft integrity: True when load recomputed a hash/prev/seq break.
+        self.chain_broken = False
+        self.first_bad_seq = None
         self._load()
 
     def _rotated_paths(self):
@@ -198,6 +201,8 @@ class AutonomyLedger:
     def _load(self):
         paths = self._ledger_paths()
         self._segmented = len(paths) > 1 or bool(self._rotated_paths())
+        self.chain_broken = False
+        expected_prev = None
         for source_path in paths:
             with open(source_path, encoding="utf-8") as f:
                 for line in f:
@@ -209,17 +214,34 @@ class AutonomyLedger:
                         if (not isinstance(entry, dict) or "seq" not in entry
                                 or "hash" not in entry):
                             raise ValueError("entry missing seq/hash")
+                        if not isinstance(entry["seq"], int) or entry["seq"] < 0:
+                            raise ValueError("seq must be a non-negative int")
+                        body = {k: v for k, v in entry.items() if k != "hash"}
+                        recomputed = hashlib.sha256(
+                            _canon(body).encode("utf-8")).hexdigest()
+                        if recomputed != entry["hash"]:
+                            raise ValueError("hash mismatch")
+                        if (expected_prev is not None
+                                and entry.get("prev_hash") != expected_prev
+                                and entry.get("event") != "segment"):
+                            raise ValueError("prev_hash linkage broken")
                     except (ValueError, TypeError):
-                        # The evidence chain must stay readable even if a crash
-                        # left a torn trailing line: quarantine the damage, keep
-                        # the intact prefix, and never crash on load.
+                        # Quarantine the damage, keep the intact prefix, and
+                        # flag the break so verify never silently passes.
                         self.quarantined = getattr(self, "quarantined", 0) + 1
+                        self.chain_broken = True
+                        if self.first_bad_seq is None:
+                            try:
+                                self.first_bad_seq = entry.get("seq")
+                            except Exception:
+                                self.first_bad_seq = -1
                         eprint(f"[ledger] corrupt line quarantined in {source_path}; "
                                "run `harness ledger verify` for status.")
                         continue
                     self._tail.append(entry)
                     self._seq = entry["seq"]
                     self._prev_hash = entry["hash"]
+                    expected_prev = entry["hash"]
 
     def _rebase_under_lock(self):
         """Re-read the file under the append lock and advance this instance
@@ -321,11 +343,17 @@ class AutonomyLedger:
         return len(self._tail)
 
     def verify(self):
-        """Recompute the hash chain. Returns (ok, first_bad_seq_or_None)."""
+        """Recompute the hash chain. Returns (ok, first_bad_seq_or_None).
+
+        A load that quarantined torn/tampered lines fails closed: the memory
+        prefix may be intact, but the on-disk evidence does not check out.
+        """
         n = self._valid_prefix_len()
-        if n == len(self._tail):
-            return True, None
-        return False, self._tail[n]["seq"]
+        if n != len(self._tail):
+            return False, self._tail[n]["seq"]
+        if getattr(self, "chain_broken", False):
+            return False, getattr(self, "first_bad_seq", None)
+        return True, None
 
     def _segment_bounds(self):
         """Per-file evidence inventory, oldest segment first.
@@ -404,7 +432,8 @@ class AutonomyLedger:
                 "segmented": len(bounds) > 1, "segments": bounds,
                 "first_retained_seq": first_retained, "pruned": pruned,
                 "entries": len(self._tail),
-                "quarantined": getattr(self, "quarantined", 0)}
+                "quarantined": getattr(self, "quarantined", 0),
+                "chain_broken_on_load": bool(getattr(self, "chain_broken", False))}
 
     def _rewrite_file(self, source_path, entries):
         """Atomically replace one segment file with the given valid entries
@@ -433,8 +462,27 @@ class AutonomyLedger:
             with self._file_lock():
                 kept = self._tail[:self._valid_prefix_len()]
                 dropped = len(self._tail) - len(kept)
-                if not dropped:
+                # Load-time quarantine can remove damage from memory without
+                # touching disk; treat those lines as repair-dropped too.
+                quarantined = int(getattr(self, "quarantined", 0) or 0)
+                if not dropped and not quarantined:
                     return len(kept), 0
+                # Unsegmented heal: rewrite the single active file to the kept
+                # prefix (this also removes quarantined torn tails).
+                if kept and quarantined and not dropped and not self._segmented:
+                    self._rewrite_file(self.path, kept)
+                    self._tail = kept
+                    self._seq = kept[-1]["seq"]
+                    self._prev_hash = kept[-1]["hash"]
+                    self.chain_broken = False
+                    self.quarantined = 0
+                    self.first_bad_seq = None
+                    return len(kept), quarantined
+                # Segmented: keep the existing per-file cut mapping so older
+                # segment files stay byte-identical. Fall through even when
+                # memory dropped==0 (quarantine already removed the damage
+                # from the tail); the walk drops the unmatched disk line.
+                dropped = dropped or quarantined
                 if not kept:
                     # Nothing survives: reset to an empty active file and
                     # drop every rotated segment (today's behavior).
@@ -446,7 +494,9 @@ class AutonomyLedger:
                             pass
                     self._tail, self._seq, self._prev_hash = [], 0, None
                     self._segmented = False
-                    return 0, dropped
+                    self.chain_broken = False
+                    self.quarantined = 0
+                    return 0, dropped or quarantined
                 # Map the kept prefix back onto segment files, oldest
                 # first. Files before the cut are byte-identical (never
                 # rewritten); the cut file is truncated to its kept
@@ -508,7 +558,10 @@ class AutonomyLedger:
                 # or verify() would call the next load tampered.
                 self._segmented = bool(kept) and \
                     kept[0].get("prev_hash") is not None
-        return len(kept), dropped
+                self.chain_broken = False
+                self.quarantined = 0
+                self.first_bad_seq = None
+        return len(kept), dropped or quarantined
 
     def participation_report(self):
         events = self._tail

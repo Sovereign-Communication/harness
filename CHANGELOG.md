@@ -23,6 +23,18 @@ break APIs between minor versions).
   as telemetry; apply output is file content, not judge JSON.
 
 ### Fixed
+- **Library apply filesystem jail.** `ApplyEngine(allowed_roots=...)` (wired
+  from `settings.mcp_allowed_roots` / `HARNESS_MCP_ALLOWED_ROOTS`) refuses
+  targets outside configured roots via realpath. Empty roots keeps the
+  historical unrestricted CLI behavior.
+- **Backup TOCTOU.** Backups use `O_CREAT|O_EXCL` with a unique dest name
+  and never prune the just-created file.
+- **Ledger load integrity.** Load recomputes each entry hash + prev_hash
+  linkage, requires integer `seq`, flags `chain_broken`, and `verify()`
+  fails closed when load quarantined damage (never a silent pass).
+  `repair()` heals quarantined torn tails (unsegmented rewrite; segmented
+  keeps older segments byte-identical).
+- **local_fit extract skips non-run JSON** (list `summary.json` etc.).
 - **PR #4 review (cubic/codex) follow-ups.** Escalation `needed` must be JSON
   boolean `true`; invalid `target_rung` coerces to 0; specialist
   `escalation`/`plan` surface on the consensus payload; apply ladder enforces

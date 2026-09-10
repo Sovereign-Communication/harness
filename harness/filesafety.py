@@ -12,6 +12,7 @@ import stat
 import subprocess
 import shutil
 import tempfile
+import uuid
 
 from .errors import HarnessError
 from .output import eprint
@@ -182,14 +183,16 @@ def backup_file(file_path, task_id, round_no):
     """Preserve the pre-edit file (content + permission mode) outside the
     working tree so a restore never has to trust the tree itself (#6).
     Failure is non-fatal but never silent. Returns the backup path or None.
+
+    TOCTOU hardening: the destination is created with O_CREAT|O_EXCL so a
+    pre-planted file or symlink at the predictable name cannot be followed
+    or overwritten.
     """
     d = os.path.join(tempfile.gettempdir(), "harness-backups")
     try:
         if os.path.islink(d):
             # Hijacked backup dir (a pre-planted symlink): every backup
-            # write below would land wherever the link points, and the
-            # predictable dest names below would let a link inside a
-            # hostile dir redirect to an arbitrary file. Fail closed.
+            # write below would land wherever the link points. Fail closed.
             raise OSError(f"backup dir is a symlink, refusing: {d}")
         os.makedirs(d, exist_ok=True)
         st = os.stat(file_path)
@@ -197,18 +200,39 @@ def backup_file(file_path, task_id, round_no):
         # 'bench/<name>'), which would land in the backup FILENAME and
         # break open() on every platform. Flatten them.
         safe_task = str(task_id).replace("/", "_").replace("\\", "_")
-        dest = os.path.join(d, f"{safe_task}-r{round_no}-{os.path.basename(file_path)}")
-        if os.path.islink(dest):
-            # Planted link at a predictable name: never follow it.
-            raise OSError(f"backup destination is a symlink, refusing: {dest}")
-        with open(file_path, "rb") as src, open(dest, "wb") as out:
-            shutil.copyfileobj(src, out)
+        # Unique dest so a prior backup (or a hostile plant) never collides
+        # with O_EXCL; prune still keys off the task+basename prefix.
+        unique = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        dest = os.path.join(
+            d, f"{safe_task}-r{round_no}-{unique}-{os.path.basename(file_path)}")
+        # O_EXCL: never open an existing path (including a symlink).
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            fd = os.open(dest, flags, 0o600)
+        except FileExistsError as e:
+            raise OSError(f"backup destination already exists, refusing: {dest}") from e
+        try:
+            with os.fdopen(fd, "wb") as out, open(file_path, "rb") as src:
+                shutil.copyfileobj(src, out)
+        except Exception:
+            try:
+                os.unlink(dest)
+            except OSError:
+                pass
+            raise
         os.chmod(dest, st.st_mode & 0o777)  # preserve mode for faithful restore
-        # Prune oldest backups of this file beyond the cap.
+        # Prune oldest backups of this file beyond the cap. Never unlink the
+        # just-created dest (unique names can sort first).
         prefix = f"{safe_task}-"
+        base = os.path.basename(file_path)
         siblings = sorted(fn for fn in os.listdir(d)
-                          if fn.startswith(prefix) and fn.endswith("-" + os.path.basename(file_path)))
-        for fn in siblings[:-MAX_BACKUPS_PER_FILE]:
+                          if fn.startswith(prefix) and fn.endswith("-" + base)
+                          and fn != os.path.basename(dest)
+                          and os.path.isfile(os.path.join(d, fn)))
+        # Keep at most MAX_BACKUPS_PER_FILE-1 older siblings plus the new one.
+        for fn in siblings[:-(max(0, MAX_BACKUPS_PER_FILE - 1))]:
             try:
                 os.unlink(os.path.join(d, fn))
             except OSError:

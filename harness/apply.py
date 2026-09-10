@@ -74,7 +74,8 @@ class ApplyEngine:
                  default_require_consent=True, run_verify=None,
                  default_renew_consent=True, reasoning_effort="auto",
                  reasoning_token_budget=0.4, default_max_rotations=3,
-                 default_task_max_cost=0.05, use_free=False):
+                 default_task_max_cost=0.05, use_free=False,
+                 allowed_roots=None):
         self.transport = transport
         self.api_key = api_key
         self.governor = governor
@@ -90,7 +91,26 @@ class ApplyEngine:
         # Free-tier flag for capability-aware pool ordering (cheap-first on
         # the paid tier, reliability-first when every model costs $0).
         self.use_free = bool(use_free)
+        # Optional filesystem jail for library/CLI apply (MCP already enforces
+        # roots). Empty/None leaves the historical unrestricted CLI behavior.
+        self.allowed_roots = [
+            os.path.realpath(os.path.abspath(r))
+            for r in (allowed_roots or [])
+            if r
+        ]
         self.gate = GatePolicy(ledger, governor)
+
+    def _enforce_roots(self, file_path):
+        """Refuse targets outside configured allowed_roots (realpath)."""
+        if not self.allowed_roots:
+            return
+        real = os.path.realpath(file_path)
+        for root in self.allowed_roots:
+            if real == root or real.startswith(root + os.sep):
+                return
+        raise HarnessError(
+            f"file_path outside allowed_roots: {file_path} "
+            f"(configured roots: {', '.join(self.allowed_roots)})")
 
     def _route_pool(self, apply_pool=None):
         """Capability-ordered apply pool for THIS request, or (None, None) to
@@ -180,6 +200,7 @@ class ApplyEngine:
         if file_path is None:
             raise HarnessError("apply requires file (or a continuation with file_path)")
         file_path = os.path.abspath(file_path)
+        self._enforce_roots(file_path)
         instruction = kwargs.get("instruction") or continuation.get("remaining_scope") or ""
         edit_snippet = kwargs.get("edit_snippet") or continuation.get("edit_snippet")
         if not instruction:

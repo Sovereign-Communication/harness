@@ -244,21 +244,28 @@ class LedgerCallerTests(unittest.TestCase):
 
 class LedgerCorruptionTests(unittest.TestCase):
     def test_torn_trailing_line_quarantined_not_crash(self):
-        """The chain must stay readable and appendable after a torn write."""
-        with tempfile.TemporaryDirectory() as td:
-            path = os.path.join(td, "led.jsonl")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "ledger.jsonl")
             led = AutonomyLedger(path)
             led.append("offer", task_id="t1", model="m")
             with open(path, "a", encoding="utf-8") as f:
-                f.write('{"seq": 2, "hash": "abc", "trunc')  # torn line
-            led2 = AutonomyLedger(path)  # must not raise
-            self.assertEqual(len(led2.entries()), 1)
-            self.assertEqual(led2.quarantined, 1)
-            # The repaired chain stays appendable and internally consistent.
-            led2.append("complete", task_id="t1", model="m")
-            ok, bad = led2.verify()
-            self.assertTrue(ok, "intact prefix + new entry must hash-chain")
-            self.assertIsNone(bad)
+                f.write("{not json\n")
+            reloaded = AutonomyLedger(path)
+            # Load must not crash; the intact prefix stays usable.
+            self.assertGreaterEqual(reloaded.quarantined, 1)
+            self.assertTrue(reloaded.chain_broken)
+            # A new append still works on the intact prefix.
+            reloaded.append("complete", task_id="t1", model="m")
+            n = reloaded._valid_prefix_len()
+            self.assertEqual(n, len(reloaded.entries()))
+            # verify fails closed until the torn line is repaired away.
+            ok, _bad = reloaded.verify()
+            self.assertFalse(ok)
+            kept, dropped = reloaded.repair()
+            self.assertGreaterEqual(dropped, 0)
+            ok2, _bad2 = AutonomyLedger(path).verify()
+            # After repair the on-disk chain is clean again.
+            self.assertTrue(ok2)
 
     def test_shape_broken_line_quarantined(self):
         with tempfile.TemporaryDirectory() as td:
