@@ -636,9 +636,38 @@ def sm_construction_owner():
 
 
 def sm_lint():
-    """Ruff (E/F/W) is clean over harness and tests."""
-    r = subprocess.run([sys.executable, "-m", "ruff", "check", "harness", "tests"],
-                       cwd=str(ROOT), capture_output=True, text=True, timeout=120)
+    """Ruff (E/F/W) is clean over harness and tests.
+
+    Resolution order: `ruff` on PATH, user/Python Scripts next to common
+    interpreters, then `python -m ruff` on this interpreter. CI installs the
+    `dev` extra into the same interpreter, so `-m ruff` always works there.
+    """
+    import shutil
+    candidates = [shutil.which("ruff")]
+    for py in (sys.executable, "C:/Python314/python.exe"):
+        # Common pip --user / Scripts locations for a ruff.exe entrypoint.
+        base = Path(py).resolve().parent
+        for rel in (
+            Path("Scripts") / "ruff.exe",
+            Path("Scripts") / "ruff",
+            Path("..") / "Scripts" / "ruff.exe",
+        ):
+            p = (base / rel).resolve()
+            if p.is_file():
+                candidates.append(str(p))
+    appdata = os.environ.get("APPDATA") or ""
+    if appdata:
+        candidates.append(os.path.join(
+            appdata, "Python", "Python314", "Scripts", "ruff.exe"))
+        candidates.append(os.path.join(
+            appdata, "Python", "Python311", "Scripts", "ruff.exe"))
+    ruff = next((c for c in candidates if c and os.path.isfile(c)), None)
+    if ruff:
+        argv = [ruff, "check", "harness", "tests"]
+    else:
+        argv = [sys.executable, "-m", "ruff", "check", "harness", "tests"]
+    r = subprocess.run(argv, cwd=str(ROOT), capture_output=True, text=True,
+                       timeout=120)
     ok = r.returncode == 0
     return _pass(ok, "ruff check harness tests: clean",
                  (r.stdout + r.stderr).strip()[-300:])
