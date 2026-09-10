@@ -43,6 +43,29 @@ class VerdictHonestyTests(unittest.TestCase):
         self.assertTrue(c1["converged"])
         self.assertEqual(c1["real_votes"], 3)
 
+    def test_verdict_string_uses_RNR_and_shortfall_word(self):
+        """Pin the operator-facing verdict: R/NR counts + SHORTFALL label."""
+        panel = [
+            _panel("a", {"C1": True}),
+            _panel("b", {"C1": False}),
+            # third seat missing -> shortfall vs of_panel=3
+        ]
+        t = tally_convergence(panel, of_panel=3)
+        self.assertTrue(t["panel_shortfall"])
+        summary = []
+        for cid, entry in t["claims"].items():
+            summary.append(
+                f"{cid}={entry['verdict']} "
+                f"({entry['real_votes']}R/{entry['not_real_votes']}NR of {entry['voted_by']})")
+        if t["panel_shortfall"]:
+            s = t["shortfall"]
+            summary.append(
+                f"SHORTFALL {s['voted_by']}/{s['of_panel']} slots voted; merge gate deferred")
+        verdict = "Deterministic panel tally: " + "; ".join(summary)
+        self.assertIn("1R/1NR", verdict)
+        self.assertIn("SHORTFALL", verdict)
+        self.assertNotIn("(3/3)", verdict)
+
 
 class AtomicWriteParentTests(unittest.TestCase):
     def test_refuses_symlink_parent_via_realpath_staging(self):
