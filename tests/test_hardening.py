@@ -271,6 +271,65 @@ class ApplyConsentOptionalTests(unittest.TestCase):
                 self.assertIn("return 10", stream.read())
 
 
+class EolPreservationTests(unittest.TestCase):
+    """Live dogfood finding: whole-file model output arrives LF-only (the
+    model never saw the tree's bytes), so _atomic_write flipped CRLF
+    checkouts file-wide -- a dirty tree for zero content change. Writes
+    now aim at the target's own detected style; snapshot restore stays
+    byte-exact via newline=None."""
+
+    def test_detect_newline(self):
+        from harness.filesafety import detect_newline
+        with tempfile.TemporaryDirectory() as d:
+            crlf = os.path.join(d, "crlf.txt")
+            with open(crlf, "wb") as f:
+                f.write(b"a\r\nb\r\n")
+            self.assertEqual(detect_newline(crlf), "\r\n")
+            lf = os.path.join(d, "lf.txt")
+            with open(lf, "wb") as f:
+                f.write(b"a\nb\n")
+            self.assertEqual(detect_newline(lf), "\n")
+            bare = os.path.join(d, "bare.txt")
+            with open(bare, "wb") as f:
+                f.write(b"no newlines here")
+            self.assertIsNone(detect_newline(bare))
+            mixed = os.path.join(d, "mixed.txt")
+            with open(mixed, "wb") as f:
+                f.write(b"a\nb\r\n")
+            self.assertEqual(detect_newline(mixed), "\r\n")
+            self.assertIsNone(detect_newline(os.path.join(d, "missing.txt")))
+
+    def test_atomic_write_preserves_crlf_target(self):
+        from harness.filesafety import _atomic_write
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "f.txt")
+            with open(p, "wb") as f:
+                f.write(b"def a():\r\n    return 1\r\n")
+            _atomic_write(p, "def a():\n    return 2\n")
+            with open(p, "rb") as f:
+                self.assertEqual(f.read(), b"def a():\r\n    return 2\r\n")
+
+    def test_atomic_write_leaves_lf_target_alone(self):
+        from harness.filesafety import _atomic_write
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "f.txt")
+            with open(p, "wb") as f:
+                f.write(b"a\n")
+            _atomic_write(p, "b\n")
+            with open(p, "rb") as f:
+                self.assertEqual(f.read(), b"b\n")
+
+    def test_atomic_write_none_is_byte_exact(self):
+        from harness.filesafety import _atomic_write
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "f.txt")
+            with open(p, "wb") as f:
+                f.write(b"a\r\n")
+            _atomic_write(p, "b\n", newline=None)
+            with open(p, "rb") as f:
+                self.assertEqual(f.read(), b"b\n")
+
+
 class BackupHijackTests(unittest.TestCase):
     """A planted symlink at the predictable backup dir or destination must
     fail the backup closed (warn + None), never redirect bytes elsewhere."""

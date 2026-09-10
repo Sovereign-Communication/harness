@@ -617,10 +617,30 @@ class ApplyTests(ApplyFixture):
                                            run=scripted_run([(1, "E: gate failed"),
                                                              (1, "E: gate failed")]))
         result = engine.apply_batch([p], instruction="add +0", verify_cmd="check",
-                                    require_consent=False, backend="diff")
+                                     require_consent=False, backend="diff")
         self.assertEqual(result["status"], "verify_failed")
         with open(p, encoding="utf-8") as f:
             self.assertEqual(f.read(), ORIGINAL)
+
+    def test_failed_run_rewind_preserves_crlf_bytes(self):
+        """Live dogfood finding on a CRLF checkout: the failed-run rewind
+        must restore the exact pre-run bytes, and the model's own LF write
+        must already have preserved the tree style (no EOL laundering)."""
+        p = self.make_file()
+        crlf = ORIGINAL.replace("\n", "\r\n").encode("utf-8")
+        with open(p, "wb") as f:
+            f.write(crlf)
+        good = ("--- a/math.py\n+++ b/math.py\n@@ -1,2 +1,2 @@\n"
+                "-def add(a, b):\n-    return a + b\n"
+                "+def add(a, b):\n+    return a + b + 0\n")
+        fake, _, _, engine = self.make_env(posts=[comp(good), comp(good), comp(good)],
+                                           run=scripted_run([(1, "E: gate failed"),
+                                                             (1, "E: gate failed")]))
+        result = engine.apply_batch([p], instruction="add +0", verify_cmd="check",
+                                    require_consent=False, backend="diff")
+        self.assertEqual(result["status"], "verify_failed")
+        with open(p, "rb") as f:
+            self.assertEqual(f.read(), crlf)
 
     # Windows maps every non-read-only file to 0o666 and ignores chmod bits,
     # so mode preservation is only observable on POSIX.

@@ -131,7 +131,10 @@ class TaskSandbox:
             raise HarnessError(f"bench task file not found: {self.file}")
         if os.path.exists(self.snapshot):
             with open(self.snapshot, "r", encoding="utf-8", newline="") as src:
-                _atomic_write(self.file, src.read())
+                # Byte-exact: the snapshot's bytes are authoritative here,
+                # not the tree's line-ending style (which a model edit may
+                # have changed mid-run).
+                _atomic_write(self.file, src.read(), newline=None)
         else:
             with open(self.file, "r", encoding="utf-8", newline="") as src:
                 content = src.read()

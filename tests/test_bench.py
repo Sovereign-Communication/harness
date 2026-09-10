@@ -139,6 +139,22 @@ class BenchTests(unittest.TestCase):
                                     "missing required key 'instruction'"):
             run_bench(engine, [task], runner=lambda cmd: (0, ""))
 
+    def test_sandbox_restore_is_byte_exact_across_styles(self):
+        """The snapshot's bytes are authoritative: restoring a CRLF snapshot
+        over an LF-dirtied tree must bring back CRLF bytes exactly, not the
+        tree's current style."""
+        make_task(self.dir.name, "a", "x = 0\n")
+        task = load_manifest(self.dir.name)[0]
+        sb = TaskSandbox(task)
+        with open(sb.file, "rb") as f:
+            original = f.read()
+        sb.restore()  # take the snapshot
+        with open(sb.file, "wb") as f:
+            f.write(b"x = 99\r\n")
+        sb.restore()
+        with open(sb.file, "rb") as f:
+            self.assertEqual(f.read(), original)
+
     def test_run_bench_all_pass(self):
         for name, code in [("a", "x = 0\n"), ("b", "x = 0\n")]:
             make_task(self.dir.name, name, code)

@@ -92,7 +92,28 @@ class _AtomicWriteError(OSError):
     or vanished directory) -- never follow through by writing anyway."""
 
 
-def _atomic_write(path, content, *, follow=False):
+def detect_newline(path):
+    """The target file's own line-ending style, or None when unknown.
+
+    Reads the first bytes only: a ``\\r\\n`` anywhere means CRLF (mixed
+    files normalize to CRLF); bare ``\\n`` means LF; no newline at all
+    (or an unreadable file) means None. Model output arrives with ``\\n``
+    endings -- it never saw the tree's bytes -- so writes must aim at the
+    target's style explicitly instead of laundering checkouts.
+    """
+    try:
+        with open(path, "rb") as f:
+            sample = f.read(8192)
+    except OSError:
+        return None
+    if b"\r\n" in sample:
+        return "\r\n"
+    if b"\n" in sample:
+        return "\n"
+    return None
+
+
+def _atomic_write(path, content, *, follow=False, newline="preserve"):
     """Atomically replace `path` with `content`, refusing unsafe targets.
 
     Without ``follow=True`` a pre-existing symlink is never followed (the
@@ -101,20 +122,31 @@ def _atomic_write(path, content, *, follow=False):
     target's permission mode is preserved (tempfile.mkstemp creates 0600,
     which would otherwise silently strip an executable bit from a verify
     script or gate artifact and change the semantics of the working tree).
+
+    ``newline="preserve"`` (default) translates the content to the target
+    file's own detected style, so a model-written LF body never flips a
+    CRLF checkout (and the failed-run rewind restores the exact original
+    style, since preserved writes never change it in the first place).
+    ``newline=None`` writes bytes exactly as given -- for snapshot restore,
+    where the snapshot's bytes, not the tree's style, are authoritative.
     """
     d = os.path.dirname(os.path.abspath(path)) or "."
     if os.path.islink(path) and not follow:
         raise _AtomicWriteError(
             f"refusing to write through symlink: {path} "
             "(delete the link or pass follow_symlinks=True)")
+    if newline == "preserve":
+        style = detect_newline(path)
+        if style == "\r\n":
+            content = content.replace("\r\n", "\n").replace("\n", "\r\n")
     try:
         fd, tmp = tempfile.mkstemp(prefix=".harness-", suffix=".tmp", dir=d)
     except OSError as e:
         raise _AtomicWriteError(f"cannot stage temp file in {d}: {e}")
     try:
-        # newline="" writes the string's own line endings unchanged: a
-        # snapshot/restore round-trip is byte-faithful instead of silently
-        # EOL-laundering CRLF fixtures into phantom diffs (live bench finding).
+        # newline="" writes the string unchanged: with preserve mode the
+        # translation above already ran, and with newline=None the caller
+        # takes full responsibility for the bytes (snapshot restore).
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
             f.write(content)
         try:

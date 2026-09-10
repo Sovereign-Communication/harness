@@ -163,7 +163,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 421 tests in 8.644s\n\nOK"
+        "evidence": "unittest: Ran 427 tests in 6.362s\n\nOK"
       }
     ],
     "SM": [

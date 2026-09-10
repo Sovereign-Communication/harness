@@ -53,8 +53,9 @@ break APIs between minor versions).
   Two self-hosting findings came free: a deferred self-edit that breaks
   `harness/bench.py` used to kill the CLI at its own import line (bench
   imports guarded at module level now -- `continue` survives), and
-  whole-file writes normalize CRLF checkouts to LF (byte-faithful by
-  design; noted, not changed).
+  whole-file writes normalized CRLF checkouts to LF (fixed:
+  `_atomic_write` now aims at the target's detected style, with an
+  explicit byte-exact mode that snapshot restore uses).
 - **`run_bench` validates its schema:** a task missing `instruction`
   aborts as `HarnessError` like every other manifest schema error (was a
   raw `KeyError`), and an unnamed task defaults to `"task"` mirroring
