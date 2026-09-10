@@ -46,7 +46,7 @@ from .prompts import (
     _extract_file_content, _parse_ready, _apply_unified_diff,
 )
 from .filesafety import (_line_count, default_run_verify, validate_target_file,
-                          _verify_argv)
+                          validate_verify_command)
 from .results import (_defer_result, _http_error, _round_entry)
 
 from . import trust as trust_policy
@@ -187,11 +187,10 @@ class ApplyEngine:
             verify_cmd = saved_verify_cmd
             continuation_gate = saved_verify_cmd if continuation.get("verify_gate_id") else None
         if verify_cmd:
-            # Engine-boundary preflight (fail closed before any model spend):
-            # the gate must at least be shell-tokenizable. Existence on PATH
-            # stays a CLI-preflight concern so hermetic/library callers with
-            # stub gates are unaffected.
-            _verify_argv(verify_cmd)
+            # Engine-boundary preflight: always shell-tokenizable. PATH
+            # existence stays opt-in (require_executable) so hermetic library
+            # stubs work; dogfood/CLI already checks PATH before spend.
+            validate_verify_command(verify_cmd, require_executable=False)
         if backend not in ("harness", "morph", "diff"):
             raise HarnessError("backend must be 'harness', 'morph', or 'diff'")
         file_path = kwargs.get("file_path")

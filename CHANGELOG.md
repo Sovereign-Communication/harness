@@ -23,6 +23,18 @@ break APIs between minor versions).
   as telemetry; apply output is file content, not judge JSON.
 
 ### Fixed
+- **Verdict honesty.** Panel tallies print `N R / M NR` vote counts, not
+  `(3/3)` participation that looked like unanimity. Shortfall lines say
+  `SHORTFALL` explicitly.
+- **Specialist vs tally.** When the specialist's claim map disagrees with the
+  deterministic majority, the conflict is recorded on
+  `convergence.specialist.tally_conflicts` and the tally is named authoritative.
+- **MCP verify default tokens.** `max_tokens` default raised 300 → 2048 to
+  match the CLI verify lane.
+- **Atomic write staging.** Temp files are staged under `realpath(parent)`.
+- **Bench snapshot.** `.orig` created with `O_CREAT|O_EXCL`.
+- **Verify gate tokenize.** Engine always shell-tokenizes `verify_cmd`;
+  PATH existence remains opt-in for hermetic stubs.
 - **Library apply filesystem jail.** `ApplyEngine(allowed_roots=...)` (wired
   from `settings.mcp_allowed_roots` / `HARNESS_MCP_ALLOWED_ROOTS`) refuses
   targets outside configured roots via realpath. Empty roots keeps the

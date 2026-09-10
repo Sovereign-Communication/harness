@@ -53,15 +53,14 @@ def default_run_verify(command, timeout=VERIFY_TIMEOUT, cwd=None):
     return result.returncode, (result.stdout or "") + (result.stderr or "")
 
 
-def validate_verify_command(command):
+def validate_verify_command(command, require_executable=True):
     """Preflight a --verify gate WITHOUT executing it: the command must be
-    shell-tokenizable and its interpreter/tool must be findable (shutil.which
-    covers PATH entries and direct script paths alike). Honesty, not a
-    guarantee -- a gate that exists can still fail at runtime. Its purpose is
-    the dogfood preflight: a typo'd gate must be caught before the paid panel
-    phase, exactly like a typo'd --file."""
+    shell-tokenizable and (when require_executable) its interpreter/tool must
+    be findable. Honesty, not a guarantee -- a gate that exists can still fail
+    at runtime. Engine callers pass require_executable=False so hermetic
+    library stubs stay usable; dogfood/CLI keep the PATH check."""
     argv = _verify_argv(command)
-    if shutil.which(argv[0]) is None:
+    if require_executable and shutil.which(argv[0]) is None:
         raise HarnessError(
             f"verify gate executable not found: {argv[0]} "
             "(the gate would fail every round; fix --verify before spending a live run)")
@@ -132,6 +131,9 @@ def _atomic_write(path, content, *, follow=False, newline="preserve"):
     where the snapshot's bytes, not the tree's style, are authoritative.
     """
     d = os.path.dirname(os.path.abspath(path)) or "."
+    # Parent-dir symlink: realpath the directory so staging never lands
+    # outside the intended tree when an intermediate component is a link.
+    d_real = os.path.realpath(d)
     if os.path.islink(path) and not follow:
         raise _AtomicWriteError(
             f"refusing to write through symlink: {path} "
@@ -141,9 +143,9 @@ def _atomic_write(path, content, *, follow=False, newline="preserve"):
         if style == "\r\n":
             content = content.replace("\r\n", "\n").replace("\n", "\r\n")
     try:
-        fd, tmp = tempfile.mkstemp(prefix=".harness-", suffix=".tmp", dir=d)
+        fd, tmp = tempfile.mkstemp(prefix=".harness-", suffix=".tmp", dir=d_real)
     except OSError as e:
-        raise _AtomicWriteError(f"cannot stage temp file in {d}: {e}") from e
+        raise _AtomicWriteError(f"cannot stage temp file in {d_real}: {e}") from e
     try:
         # newline="" writes the string unchanged: with preserve mode the
         # translation above already ran, and with newline=None the caller
