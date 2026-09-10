@@ -13,14 +13,18 @@ break APIs between minor versions).
 - **Multi-rung apply escalation ladder (opt-in).** When `allow_escalation` is
   set and `escalation_pool` is configured, a failed cheap apply walks the
   ladder (cheapest → most capable). Each rung produces COMPLETE file content
-  and is finished through the real verification gate — only a gated pass
-  counts. Judge condensed context (from the verify lane) is prepended for
-  rungs after the first. New `harness/escalation.py` driver,
-  `Router.escalation_pool` / `advance_escalation_rung` / `de_escalate_to_rung`,
-  `Settings.judge_top` and `Settings.escalation_pool`
-  (`HARNESS_JUDGE_TOP`, `HARNESS_ESCALATION_POOL`). Verify-lane specialist
-  JSON may include `escalation{needed,reason,condensed_context,target_rung}`
-  as telemetry; apply output is file content, not judge JSON.
+  and is finished through the real verification gate.
+- **Minority-dissent demotion.** Structured panels record models that vote in
+  the minority on defect claims (`minority_models` + ledger
+  `panel_minority_dissent`). After two strikes, `order_pool` sorts them below
+  unproven peers (same policy as unusable/consent-unusable). A lone dissenter
+  that is *correct* is not banned — it is demoted after *repeated* lone
+  dissent that invents conflicts.
+- **MCP shared-secret auth (optional).** `HARNESS_MCP_AUTH_TOKEN` /
+  `mcp_auth_token`: when set, `tools/call` requires matching
+  `params._meta.harness_token`. Unset keeps the documented stdio trust model.
+- **MCP `panel_verify.task_max_cost`.** Optional per-call ceiling (0–0.25);
+  refuses before network spend if the session budget cannot absorb it.
 
 ### Fixed
 - **Verdict honesty.** Panel tallies print `N R / M NR` vote counts, not

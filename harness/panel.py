@@ -473,6 +473,22 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                 f"SHORTFALL {s['voted_by']}/{s['of_panel']} slots voted; "
                 "merge gate deferred")
         consensus["verdict"] = "Deterministic panel tally: " + ("; ".join(summary) or "no defect claims")
+        # Structured-lane demotion evidence: a model that repeatedly votes in
+        # the minority on defect claims (lone dissenter) is a routing signal.
+        # One event is a strike; order_pool demotes at two (same policy as
+        # unusable_outputs).
+        if ledger and task_id:
+            for cid, entry in (convergence_tally.get("claims") or {}).items():
+                for model in (entry.get("minority_models") or []):
+                    ledger.append(
+                        "model_result", task_id=task_id, model=model,
+                        task_type="structured", json_expected=True,
+                        json_ok=True, status="ok",
+                        event_note="panel_minority_dissent",
+                        reason=f"minority dissent on {cid} "
+                               f"({entry.get('real_votes')}R/"
+                               f"{entry.get('not_real_votes')}NR)",
+                        minority_dissent=True)
         convergence_spec = spec
 
     # Print only after every planned call, including the optional specialist,

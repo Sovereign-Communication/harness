@@ -75,7 +75,7 @@ class McpServer:
     def __init__(self, *, transport, api_key, governor, ledger, router, engine,
                  max_panelists=3, use_free=True, stdin=None, stdout=None,
                  allow_verify=False, allow_write=False, allowed_roots=None,
-                 tool_timeout=None, caller=None):
+                 tool_timeout=None, caller=None, auth_token=None):
         self.transport = transport
         self.api_key = api_key
         self.governor = governor
@@ -93,6 +93,10 @@ class McpServer:
         self._starts = {}
         self.tool_timeout = (MCP_TOOL_TIMEOUT_DEFAULT if tool_timeout is None
                              else tool_timeout)
+        # Optional shared secret. When set, tools/call must present
+        # params._meta.harness_token (or params.harness_token) matching.
+        # Empty = inherited stdio authority (documented trust model).
+        self.auth_token = auth_token or None
         # Session authorship for the evidence loop: the stdio peer (captured
         # from initialize clientInfo) or the embedding host. Ledger events
         # created on this connection carry it; trust scores break out
@@ -355,8 +359,24 @@ class McpServer:
                                        "message": "Request cancelled before execution"}}
         return self._call_tool_impl(msg)
 
+    def _check_auth(self, msg):
+        """Shared-secret gate for tools/call when auth_token is configured."""
+        if not self.auth_token:
+            return None
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+        meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
+        token = meta.get("harness_token") or params.get("harness_token")
+        if token is None or not isinstance(token, str) or token != self.auth_token:
+            return {"jsonrpc": "2.0", "id": msg.get("id"),
+                    "error": {"code": -32001,
+                              "message": "unauthorized: harness_token required"}}
+        return None
+
     def _call_tool_impl(self, msg):
         request_id = msg.get("id")
+        denied = self._check_auth(msg)
+        if denied is not None:
+            return denied
         params = msg.get("params", {})
         if not isinstance(params, dict):
             return {"jsonrpc": "2.0", "id": request_id,
@@ -570,6 +590,18 @@ class McpServer:
             converge = validate_mcp_bool(args.get("converge", False), "converge")
             task_id = (validate_mcp_task_id(args.get("task_id"))
                        if args.get("task_id") is not None else None)
+            # Per-call spend ceiling (optional): refuse before any network
+            # call if the session governor cannot absorb it. Does not raise
+            # the session ceiling.
+            if args.get("task_max_cost") is not None:
+                tmc = finite_number(args.get("task_max_cost"), "task_max_cost",
+                                    0.0, 0.25)
+                remaining = max(0.0, float(self.governor.max_cost)
+                                - float(self.governor.spent))
+                if tmc > remaining:
+                    raise HarnessError(
+                        f"panel_verify task_max_cost {tmc} exceeds remaining "
+                        f"session budget {remaining:.6f}")
             return panel_judge(
                 transport=self.transport, api_key=self.api_key, governor=self.governor,
                 prompt=prompt, panel=model, judge=judge, max_tokens=max_tokens,
@@ -723,6 +755,7 @@ def main(argv=None):  # pragma: no cover - thin wiring
         allow_verify=settings.mcp_allow_verify,
         allowed_roots=settings.mcp_allowed_roots,
         tool_timeout=settings.mcp_tool_timeout,
+        auth_token=settings.mcp_auth_token,
     ).serve_forever()
 
 

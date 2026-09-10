@@ -556,7 +556,9 @@ def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=No
 
     def demotion(model):
         cal = (report or {}).get("calibration", {}).get(model, {})
-        strikes = (cal.get("unusable_outputs") or 0) + (cal.get("consent_unusable") or 0)
+        strikes = ((cal.get("unusable_outputs") or 0)
+                   + (cal.get("consent_unusable") or 0)
+                   + (cal.get("minority_dissent") or 0))
         return 1 if strikes >= UNUSABLE_DEMOTE_STRIKES else 0
     scored = []
     for m in pool:
