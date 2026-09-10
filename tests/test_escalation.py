@@ -159,8 +159,9 @@ class SettingsEscalationTests(unittest.TestCase):
         self.assertTrue(s.escalation_pool)
         self.assertTrue(s.judge_top)
         s2 = load_settings({"use_free": False})
-        self.assertTrue(any(not x.endswith(":free") for x in s2.escalation_pool)
-                        or s2.escalation_pool)
+        self.assertTrue(s2.escalation_pool)
+        self.assertTrue(any(not x.endswith(":free") for x in s2.escalation_pool),
+                        f"paid escalation pool should include non-free models: {s2.escalation_pool}")
 
 
 if __name__ == "__main__":

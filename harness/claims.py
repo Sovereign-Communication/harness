@@ -69,8 +69,20 @@ _DEFN_RE = re.compile(
 def _defined_in(source):
     """Names whose DEFINITION appears in source (fn/const/static/...). A bare
     call like `cloned.get_message_key(...)` is a reference, NOT a definition,
-    so the callee's definition is still auto-expanded -- the 04b lesson."""
-    return {m.group(1) for m in _DEFN_RE.finditer(source)}
+    so the callee's definition is still auto-expanded -- the 04b lesson.
+    Comment/docstring lines are ignored so `# class Hidden:` is not a def.
+    """
+    names = set()
+    for raw in source.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", "//", "*", "/*")):
+            continue
+        # Drop trailing // comments for Rust; keep the definition part.
+        if "//" in line and not line.startswith("http"):
+            line = line.split("//", 1)[0].rstrip()
+        for m in _DEFN_RE.finditer(line):
+            names.add(m.group(1))
+    return names
 
 
 

@@ -17,15 +17,19 @@ try:
     import onnx  # noqa: F401
 except ImportError:  # pragma: no cover - train-time extra absent
     onnx = None
+try:
+    import onnxruntime  # noqa: F401
+except ImportError:  # pragma: no cover - train-time extra absent
+    onnxruntime = None
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-# Train-time tests need the optional local-fit-train extra (numpy/onnx).
+# Train-time tests need the optional local-fit-train extra (numpy/onnx/onnxruntime).
 # Without it the modules under test cannot even import, so skip the class
 # instead of failing collection on clean CI runners.
 needs_numpy = unittest.skipUnless(
-    np is not None and onnx is not None,
-    "train-time deps (numpy+onnx) required")
+    np is not None and onnx is not None and onnxruntime is not None,
+    "train-time deps (numpy+onnx+onnxruntime) required")
 
 
 def extract_some_rows():

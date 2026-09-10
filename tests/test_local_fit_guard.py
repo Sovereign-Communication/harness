@@ -29,12 +29,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 try:
     import numpy  # noqa: F401
     import onnx  # noqa: F401
+    import onnxruntime  # noqa: F401
     _TRAIN_OK = True
 except ImportError:
     _TRAIN_OK = False
 
 needs_train = unittest.skipUnless(
-    _TRAIN_OK, "train-time deps (numpy+onnx) required")
+    _TRAIN_OK, "train-time deps (numpy+onnx+onnxruntime) required")
 
 from harness.capability import CapabilityProfile, order_pool
 

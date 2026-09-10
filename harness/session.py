@@ -56,13 +56,24 @@ def ledger_for(settings, caller="cli"):
 
 
 def router_for(settings):
-    """The lane router from the settings' curated pools."""
-    return Router(settings.panel, settings.judge, settings.apply_model,
+    """The lane router from the settings' curated pools.
+
+    Legacy single ``escalation_model`` keeps precedence over the multi-rung
+    ladder when both are configured, so an explicit override is never
+    silently ignored by a non-empty default pool. When escalation is allowed
+    and ``judge_top`` is set, the smartest per-tier judge is used.
+    """
+    ladder = None if settings.escalation_model else settings.escalation_pool
+    # Prefer the smartest per-tier judge only when escalation is actually
+    # allowed; otherwise keep the configured settings.judge.
+    judge = (settings.judge_top or settings.judge) if settings.allow_escalation \
+        else settings.judge
+    return Router(settings.panel, judge, settings.apply_model,
                   settings.escalation_model, settings.allow_escalation,
                   panel_pool=settings.panel_pool, apply_pool=settings.apply_pool,
                   specialist_pool=settings.specialist_pool,
-                  convergence_model=settings.convergence_model,
-                  escalation_pool=settings.escalation_pool)
+                  convergence_model=settings.convergence_model or judge,
+                  escalation_pool=ladder)
 
 
 def engine_for(settings, api_key, gov, ledger, router):

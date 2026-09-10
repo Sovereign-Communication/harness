@@ -690,6 +690,25 @@ class ApplyEngine:
         if not allowed:
             return None
 
+        # Seed judge condensed context / preferred rung from the verify lane
+        # so later rungs actually see the failure guidance.
+        for rnd in reversed(state.rounds):
+            esc = rnd.get("escalation") or {}
+            if isinstance(esc, dict) and esc.get("needed"):
+                state.escalation_condensed_context = esc.get("condensed_context") or ""
+                if esc.get("target_rung") is not None:
+                    state.de_escalation_target_rung = int(esc.get("target_rung") or 0)
+                break
+            # Specialist directives also live under the verify result.
+            spec = rnd.get("specialist") or {}
+            if isinstance(spec, dict):
+                esc = spec.get("escalation") or {}
+                if isinstance(esc, dict) and esc.get("needed"):
+                    state.escalation_condensed_context = esc.get("condensed_context") or ""
+                    if esc.get("target_rung") is not None:
+                        state.de_escalation_target_rung = int(esc.get("target_rung") or 0)
+                    break
+
         def base_prompt_fn(st, rung_context):
             last = st.rounds[-1] if st.rounds else {}
             tail = (last.get("verify_output") or "")[-VERIFY_FEEDBACK_CHARS:]
@@ -705,11 +724,27 @@ class ApplyEngine:
                                       backend=req.backend)
 
         def finish_fn(model, content, cost):
-            new_content = _extract_file_content(content) if content else state.current_content
+            if not content:
+                return self.gate.finish_escalation(
+                    req, state, model, state.current_content, cost, False)
+            if CAPABILITY_MARKER in content:
+                outcome = AttemptOutcome(
+                    model=model, model_used=model, content=content, cost=cost)
+                return self._capability_deferral(req, state, outcome)
+            if req.backend == "diff":
+                new_content = _apply_unified_diff(state.current_content, content)
+                if new_content is None:
+                    state.rounds.append(_round_entry(
+                        "escalation", model, "verify_failed",
+                        changed=False, verify_passed=False, cost=cost,
+                        verify_output="escalation returned a non-matching unified diff"))
+                    return None
+            else:
+                new_content = _extract_file_content(content)
             self.ledger.append("escalate", task_id=req.task_id,
                                from_model=req.model, to_model=model)
             return self.gate.finish_escalation(
-                req, state, model, new_content, cost, bool(content))
+                req, state, model, new_content, cost, bool(new_content))
 
         driver = EscalationDriver(
             router=self.router,
@@ -720,6 +755,8 @@ class ApplyEngine:
             task_id=req.task_id,
             reasoning_token_budget=self.reasoning_token_budget,
             max_tokens=req.max_tokens,
+            task_start_spent=req.task_start_spent,
+            task_max_cost=req.task_max_cost,
         )
         return driver.run_with_escalation(req, state, base_prompt_fn, finish_fn)
 

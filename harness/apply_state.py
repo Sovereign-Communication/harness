@@ -55,8 +55,6 @@ class RunState:
     consent_attempts: list = field(default_factory=list)
     # Auto-escalation / de-escalation state
     escalation_condensed_context: str = ""
-    escalation_plan: object = None
-    de_escalation_plan: object = None
     de_escalation_target_rung: int = 0
 
 

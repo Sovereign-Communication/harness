@@ -168,9 +168,9 @@ ESCALATION_POOL_PAID = [
 # Paid tier: the top of the paid escalation ladder (validated catalog id).
 DEFAULT_JUDGE_PAID_TOP = "ibm-granite/granite-4.0-h-micro"
 
-# Per-rung advisory cost caps (USD). The SpendGovernor preflight enforces
-# the overall task ceiling (HARD_TASK_MAX_COST=0.25); these are rung-level
-# hints for the judge's worth-gating decision.
+# Per-rung advisory cost caps (USD). Documented policy for operators and the
+# judge's worth-gating decision; the hard enforcement is still
+# HARD_TASK_MAX_COST / HARD_MAX_COST via SpendGovernor preflight.
 ESCALATION_RUNG_CAPS = {
     "free": [0.0, 0.0, 0.0],
     "paid": [0.02, 0.03, 0.05, 0.08, 0.15, 0.25],
