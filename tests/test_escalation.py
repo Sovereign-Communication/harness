@@ -8,7 +8,6 @@ from unittest import mock
 
 from harness.claims import _DEFN_RE, _defined_in
 from harness.cli import _emit
-from harness.errors import HarnessError
 from harness.router import Router
 
 

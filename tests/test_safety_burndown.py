@@ -2,7 +2,6 @@
 import os
 import tempfile
 import unittest
-from types import SimpleNamespace
 from unittest import mock
 
 from harness.errors import HarnessError

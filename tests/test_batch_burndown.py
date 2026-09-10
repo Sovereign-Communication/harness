@@ -4,10 +4,9 @@ import json
 import os
 import tempfile
 import unittest
-from types import SimpleNamespace
 
 from harness.convergence import tally_convergence
-from harness.filesafety import _AtomicWriteError, _atomic_write
+from harness.filesafety import _atomic_write
 from harness.validation import validate_mcp_max_tokens
 from harness.errors import HarnessError
 

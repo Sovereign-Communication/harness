@@ -18,6 +18,8 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+from harness.capability import CapabilityProfile, order_pool  # noqa: E402
+
 try:
     import numpy  # noqa: F401
     import onnx  # noqa: F401
@@ -28,8 +30,6 @@ except ImportError:
 
 needs_train = unittest.skipUnless(
     _TRAIN_OK, "train-time deps (numpy+onnx+onnxruntime) required")
-
-from harness.capability import CapabilityProfile, order_pool
 
 GOOD = "acme/good:free"
 MID = "acme/mid:free"
