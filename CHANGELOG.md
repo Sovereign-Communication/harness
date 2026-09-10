@@ -9,6 +9,28 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
+### Fixed
+- **Local-fit advisory scores were inert on real data (saturation).** The
+  trained net's real-data logits were tiny, so exported probabilities
+  saturated (p_unusable ~0.15 for every candidate, spread ~0.03) and the
+  INFLUENCE path reordered nothing at any threshold. Three-part mechanism
+  fix (data expansion is intentionally out of scope):
+  export-time temperature calibration (`train.export_temperature`, persisted
+  as `temperature` in `model_weights.json`/`model_meta.json`, applied as
+  logits/T by the stdlib scorer so the ONNX parity pin still holds); input
+  z-score clipping (`Z_CLIP=8`) in the runtime scorer so unseen-at-train-time
+  dispatch features (e.g. declared context length) cannot blow logits into a
+  pinned softmax; and a fail-closed degenerate-artifact guard in
+  `dispatch.maybe_order_pool` that detects unseparable score maps
+  (`score_spread_too_small`) and collapsed top-class probability
+  (`top_class_saturated`), keeps the baseline order, reports the reason on
+  the result and stderr (`capability.order_pool` logs the stand-down).
+  A pool that legitimately scores all-healthy (real spread, unpinned top-1)
+  is explicitly NOT degenerate: no reorder is then the correct outcome.
+  New mock-free end-to-end test trains on synthetic audit data containing a
+  genuinely failing model and proves INFLUENCE demotes it within its
+  strike-demotion tier while OFF/OBSERVE stay order-identical to baseline.
+
 ### Added
 - **Polish pass (sandpaper):** README test-coverage list rewritten to match
   the current suite; `Router.next_model` and `spend.resolve_models`
@@ -70,6 +92,39 @@ break APIs between minor versions).
   aborts as `HarnessError` like every other manifest schema error (was a
   raw `KeyError`), and an unnamed task defaults to `"task"` mirroring
   the loader.
+- **Local model-fit advisory layer wired into pool ordering
+  (`harness/local_fit/`, opt-in, off by default).** A small locally-trained
+  neural net (no LLM, no runtime dependencies) scores each candidate model
+  seat for unusable/truncated/usable-stop risk from pre-dispatch features
+  only (task, lane, declared profile, ledger calibration), and — only when
+  explicitly enabled — demotes scorer-flagged likely-unusable models after
+  their peers *within* the existing demotion tier of
+  `capability.order_pool`. Three-stage flag gating: OFF (default; the hook
+  is never imported or called), OBSERVE (`HARNESS_LOCAL_FIT_ENABLE` +
+  `HARNESS_LOCAL_FIT_MODEL_DIR`: score-and-log, order untouched), INFLUENCE
+  (`HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER=1`, threshold
+  `HARNESS_LOCAL_FIT_UNUSABLE_THRESHOLD` default 0.6, inclusive). The hook
+  is fail-closed end to end: any error degrades to the baseline order, and
+  it can never cross the strike-demotion boundary or reorder unflagged
+  models among themselves. Training/eval over `audits/*/_runs/*/*.json` via
+  the read-only extractor; train-time deps are the optional
+  `local-fit-train` extra; runtime inference is pure stdlib
+  (`model_weights.json` + `infer.py`, parity-pinned against the ONNX
+  export). Train/serve feature parity is enforced by a pinning test; the
+  enabled ordering path is tested to never import numpy/onnx/onnxruntime.
+- **Local-fit merge review (same bar as everything else):** the prototype
+  `hook`/`dispatch_hook`/`advisory` seam is deleted (unreachable from the
+  live path, with contradictory tier-crossing ordering); eval observed
+  maps are train-only (the old per-split maps leaked eval answers into
+  eval features); specialist rows read model/raw/cost from the conv dict;
+  shuffling is seeded; ONNX export derives width from the net; train-test
+  numpy imports are guarded for clean CI. Honestly measured on 9 v4 runs:
+  leakage-free eval top1 0.647–0.867 (mean 0.761 vs ~0.64 majority), and a
+  leave-one-run-out routing study shows the net recapitulating ledger
+  observed rates with no measurable lift over the trivial baseline
+  (Spearman +0.730 vs +0.750; precision@1 8/8 both) -- INFLUENCE is safe
+  to ship fail-closed, value on larger corpora unproven; see
+  `harness/local_fit/RE_MERGE_READINESS.md`.
 - **Bipolar trust (-11..+11) with hard gates and correctness-rationed
   ceilings (`harness/trust.py`, `docs/trust.md`).** Cold start is always 0
   (unknown); clean runs earn slowly (3 per +1) while safety signals land

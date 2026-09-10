@@ -525,7 +525,8 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
     return results
 
 
-def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=None):
+def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=None,
+               call_lane="apply"):
     """Order a model pool for routing, driven by the observed-CORRECTED view.
 
     Free tier (all $0, so cost is equal): sort by reliability descending, where
@@ -569,7 +570,49 @@ def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=No
         scored.sort(key=lambda x: (demotion(x[0]), -x[1], -x[2]))
     else:
         scored.sort(key=lambda x: (demotion(x[0]), x[3], -x[1], -x[2]))
-    return [m for m, _, _, _ in scored]
+    ordered = [m for m, _, _, _ in scored]
+
+    # Advisory local-fit hook (opt-in, off by default; see harness/local_fit/).
+    # Flag-gated inside; never raises. OFF: returns the baseline order untouched.
+    # OBSERVE: scores are computed and logged but the order is unchanged.
+    # INFLUENCE (HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER=1 + a model dir): models
+    # the scorer flags as likely-unusable sort after their peers WITHIN the same
+    # demotion tier -- it can never cross the demotion boundary or reorder
+    # unflagged models among themselves.
+    try:
+        _flag_on = os.environ.get("HARNESS_LOCAL_FIT_ENABLE", "").strip().lower() in (
+            "1", "true", "yes")
+        if not _flag_on:
+            return ordered
+        from .local_fit.dispatch import maybe_order_pool
+        by_model = {x[0]: (x[1], x[2], x[3]) for x in scored}
+        if free_tier:
+            baseline_keys = {m: (demotion(m), -v[0], -v[1])
+                             for m, v in by_model.items()}
+        else:
+            baseline_keys = {m: (demotion(m), v[2], -v[0], -v[1])
+                             for m, v in by_model.items()}
+        _advice = maybe_order_pool(
+            ordered,
+            task=task,
+            free_tier=bool(free_tier),
+            profiles=profiles,
+            calibration=(report or {}).get("calibration", {}),
+            call_lane=call_lane,
+            baseline_keys=baseline_keys,
+        )
+        if _advice.get("reordered") and _advice.get("flagged"):
+            eprint("[local_fit] advisory demoted within tier: "
+                   + ", ".join(_advice["flagged"]))
+        if _advice.get("degenerate"):
+            # The artifact is unusable (saturated/indistinguishable scores);
+            # the layer kept the baseline order. Surface WHY it stood down.
+            eprint("[local_fit] advisory stood down: degenerate artifact ("
+                   + str(_advice["degenerate"]) + "); baseline order kept")
+        return list(_advice.get("ordered") or ordered)
+    except Exception:
+        # The advisory layer must never break routing.
+        return ordered
 
 
 def ordered_pool(pool, *, governor, ledger, task, free_tier, profiles=None,
@@ -607,7 +650,7 @@ def ordered_pool(pool, *, governor, ledger, task, free_tier, profiles=None,
             pool_ = [m_ for m_ in pool_ if m_ in known]
         report = ledger.participation_report() if ledger is not None else None
         ordered = order_pool(pool_, profiles_, report, ledger=ledger,
-                             task=task, free_tier=free_tier)
+                             task=task, free_tier=free_tier, call_lane=call_lane)
         if not ordered:
             # Ordering produced nothing (e.g. every model hard-gated to a
             # zero capability prior) -- signal 'no informed ordering' rather
