@@ -8,6 +8,7 @@ This is intentionally plain:
 """
 
 import json
+import math
 import os
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
@@ -196,17 +197,100 @@ class TinyNet:
 
 
 # ---------------------------------------------------------------------------
-# Stdlib weights export (runtime artifact for the zero-dependency scorer)
+# Export-time temperature calibration
 # ---------------------------------------------------------------------------
 
-def export_weights(net: "TinyNet", path: str) -> None:
+# Confusion-matrix spread below which the trained net has effectively learned
+# one class (see the dispatch-side degenerate guard for the matching check).
+DEGENERATE_SPREAD = 1e-3
+
+# Label imbalance outside this band is treated as "no contrast to calibrate
+# against": a dataset that is (almost) all one label carries no decision
+# boundary information, so exporting a sharpened temperature would be
+# fabrication. The artifact exports with temperature 1.0 and the dispatch
+# guard stands down on it (with evidence) as designed.
+CALIBRATION_CONTRAST_BAND = (0.15, 0.85)
+
+
+def export_temperature(
+    net: TinyNet,
+    X: np.ndarray,
+    Y: np.ndarray,
+    failure_rate: float,
+    *,
+    contrast_band: Tuple[float, float] = CALIBRATION_CONTRAST_BAND,
+) -> float:
+    """Compute the temperature exported with the artifact so real-data logits
+    stay usable (dispatch calibration).
+
+    Softmax temperature sharpens (T<1) or flattens (T>1) exported
+    probabilities. The trained logits on real audit data are tiny (measured
+    spread ~0.06), which saturated every dispatch score into one
+    indistinguishable band and made the INFLUENCE path reorder nothing.
+    Export calibration closes that gap:
+
+    T = max(0.5 * label-margin spread, |2*failure_rate - 1|)
+
+    - label margin: the spread between the class logit the net assigns to
+      unusable-labeled rows and to usable-labeled rows (centered, so the
+      absolute offset cancels). The dispatch guard flags a candidate when the
+      unusable logit is the top-1 by ANY margin, so the model must be trained
+      to a positive label margin; the export sharpeness is that same margin.
+    - failure rate: a dataset with a substantial unusable share (inside the
+      contrast band) pushes T toward 1.0; the label-margin term dominates for
+      small margins.
+
+    Degenerate datasets are refused sharpening: when the confusion matrix
+    effectively covers one class (spread < DEGENERATE_SPREAD) or the label
+    balance sits outside ``contrast_band`` (no contrast to calibrate against),
+    T = 1.0 so the guard's saturation check (which uses the calibrated
+    probabilities) remains the honest final say.
+    """
+    logits = net.forward(X)
+    idx_unus = (np.argmax(Y, axis=1) == 0)
+    idx_usable = (np.argmax(Y, axis=1) == 2)
+    if not idx_unus.any() or not idx_usable.any():
+        return 1.0
+    margin = float(logits[idx_unus][:, 0].mean()
+                   - logits[idx_usable][:, 0].mean())
+    # Center: subtract the mean unusable logit over all rows so the magnitude
+    # reflects separation, not absolute activation.
+    margin -= float(logits[:, 0].mean())
+    spread = float(logits[:, 0].max() - logits[:, 0].min())
+    if spread < DEGENERATE_SPREAD:
+        return 1.0
+    lo, hi = contrast_band
+    if not (lo <= failure_rate <= hi):
+        return 1.0
+    return float(max(0.5 * margin, abs(2.0 * failure_rate - 1.0)))
+
+
+def _clamp_export_temperature(t: float) -> float:
+    """Guard against temperature leakage from corrupt weights payloads."""
+    try:
+        tv = float(t)
+    except (TypeError, ValueError):
+        return 1.0
+    if not (math.isfinite(tv)) or tv <= 0.0:
+        return 1.0
+    return max(0.1, min(tv, 20.0))
+
+
+def export_weights(net: "TinyNet", path: str, temperature: float = 1.0) -> None:
     """Export the trained net's weights to model_weights.json.
 
     This JSON artifact is what the pure-stdlib runtime scorer (infer.py)
     consumes, so the enabled advisory path never needs onnxruntime. Layout
     matches the ONNX graph: W1 (in_dim, hidden), b1 (hidden,), W2 (hidden, 3),
     b2 (3,), all row-major nested lists of floats.
+
+    ``temperature`` is the export-time calibration computed by
+    :func:`export_temperature`; the runtime scorer divides logits by it before
+    softmax so dispatch-time probabilities keep the separation the net
+    trained to (sharpens small-margin logits; see export_temperature for the
+    motivation and the degenerate-dataset refusals).
     """
+    temperature = _clamp_export_temperature(temperature)
     payload = {
         "format": "harness-local-fit-stdlib-weights",
         "version": 1,
@@ -214,6 +298,7 @@ def export_weights(net: "TinyNet", path: str) -> None:
         "hidden": int(net.w1.shape[1]),
         "outputs": 3,
         "activation": "relu",
+        "temperature": temperature,
         "w1": [[float(v) for v in row] for row in net.w1.tolist()],
         "b1": [float(v) for v in net.b1.tolist()],
         "w2": [[float(v) for v in row] for row in net.w2.tolist()],
@@ -264,6 +349,7 @@ def export_metadata(
     label_index: Dict[str, int],
     path: str,
     eval_result: Optional[Dict[str, Any]] = None,
+    temperature: float = 1.0,
 ) -> None:
     payload: Dict[str, Any] = {
         "model_version": "0.1.0-draft",
@@ -275,6 +361,7 @@ def export_metadata(
         "feature_order": feature_order,
         "stats": stats,
         "label_index": label_index,
+        "temperature": _clamp_export_temperature(temperature),
         "explanation": "Advisory-only local model-fit classifier. Scores seat usability and truncation risk.",
     }
     if eval_result is not None:
@@ -420,14 +507,28 @@ def run_pipeline(
     model_path = os.path.join(out_dir, "model.onnx")
     meta_path = os.path.join(out_dir, "model_meta.json")
     weights_path = os.path.join(out_dir, "model_weights.json")
+    # Export calibration: without it the net's small real-data logits saturate
+    # every dispatch score into one band and INFLUENCE can never reorder.
+    failure_rate = float((np.argmax(Y, axis=1) == 0).mean()) if len(rows) else 0.0
+    temperature = export_temperature(net, X, Y, failure_rate)
     export_onnx(net, in_dim, model_path)
-    export_weights(net, weights_path)
-    export_metadata(stats, canonical_feature_order(), LABEL_INDEX, meta_path)
+    export_weights(net, weights_path, temperature=temperature)
+    export_metadata(stats, canonical_feature_order(), LABEL_INDEX, meta_path,
+                    temperature=temperature)
 
-    # quick smoke inference inside this runtime
+    # quick smoke inference inside this runtime. The ONNX graph emits RAW
+    # logits; the export temperature is applied on top of them here so the
+    # comparison matches the stdlib scorer, which divides by temperature
+    # before its softmax (see export_temperature).
     probs = net.predict_proba(X[:1])
     scorer = LocalScorer(model_path, meta_path)
-    ref = scorer.score(rows[0].features)
+    vec0 = np.array([build_feature_vector(rows[0].features, stats)], dtype=np.float32)
+    raw0 = scorer.sess.run(None, {"X": vec0})[0][0]
+    t0 = np.array(raw0, dtype=np.float64) / max(temperature, 1e-9)
+    e0 = np.exp(t0 - np.max(t0))
+    ref = {"unusable": float(e0[0] / e0.sum()),
+           "truncated": float(e0[1] / e0.sum()),
+           "usable_stop": float(e0[2] / e0.sum())}
 
     # The stdlib scorer must agree with the numpy/ONNX graph on the same row.
     from .infer import StdlibScorer
@@ -504,8 +605,10 @@ def run_eval(
 
     model_path = os.path.join(out_dir, "model.onnx")
     meta_path = os.path.join(out_dir, "model_meta.json")
+    failure_rate = float((np.argmax(Y_train, axis=1) == 0).mean()) if len(train_rows) else 0.0
+    temperature = export_temperature(net, X_train, Y_train, failure_rate)
     export_onnx(net, in_dim, model_path)
-    export_weights(net, os.path.join(out_dir, "model_weights.json"))
+    export_weights(net, os.path.join(out_dir, "model_weights.json"), temperature=temperature)
 
     eval_payload = {
         "train_files": [os.path.basename(f) for f in train_files],
@@ -517,7 +620,8 @@ def run_eval(
         "train": train_metrics,
         "eval": eval_metrics_result,
     }
-    export_metadata(train_stats, canonical_feature_order(), LABEL_INDEX, meta_path, eval_result=eval_payload)
+    export_metadata(train_stats, canonical_feature_order(), LABEL_INDEX, meta_path,
+                    eval_result=eval_payload, temperature=temperature)
 
     # Also export a human-readable eval summary alongside the artifact.
     summary_path = os.path.join(out_dir, "eval_summary.txt")
