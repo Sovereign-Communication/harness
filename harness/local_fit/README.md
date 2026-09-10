@@ -43,12 +43,14 @@ existing order; it only nudges it when the feature flag is on.
   onnxruntime is importable.
 - `config.py` — feature-flag entrypoint (`HARNESS_LOCAL_FIT_ENABLE` and
   `HARNESS_LOCAL_FIT_MODEL_DIR`). Read dynamically so tests can toggle it.
-- `advisory.py` — advisory entrypoint: `maybe_score_candidates` and
-  `score_one`.
-- `hook.py` — flag-gated advisory hook prototype: `score_candidates`,
+- `advisory.py` — thin back-compat re-export of the hook API.
+- `hook.py` — flag-gated advisory hook: `score_candidates`,
   `apply_advisory_tiebreak`, `explain`.
-- `dispatch_hook.py` — illustrative wrapper showing where a real dispatch path
-  would consult the advisory. Inert unless flags are on.
+- `dispatch_hook.py` — candidate-list wrapper (score + optional tiebreak),
+  kept for prototype callers.
+- `dispatch.py` — **the live integration**: `maybe_order_pool` is what
+  `capability.order_pool` calls. Three-stage gating (OFF / OBSERVE /
+  INFLUENCE) with tier-preserving demotion; see below.
 
 ## Feature set
 
@@ -111,10 +113,11 @@ Labels are mutually exclusive and severity-ordered:
 - `HARNESS_LOCAL_FIT_MODEL_DIR` — directory containing `model.onnx` and
   `model_meta.json`.
 - `HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER` — set to `1`, `true`, or `yes` to
-  also apply the advisory as a small tiebreak on top of an existing
-  `existing_order_key`. Still advisory-only.
-- `HARNESS_LOCAL_FIT_ADVISORY_TIEBREAK_WEIGHT` — float, default 0.05. Size of
-  the advisory nudge when ordering is enabled.
+  advance from OBSERVE to INFLUENCE: likely-unusable models (per the threshold
+  below) sort after their same-tier peers in live pool ordering. Still
+  advisory-only; the strike-demotion boundary is never crossed.
+- `HARNESS_LOCAL_FIT_UNUSABLE_THRESHOLD` — float, default 0.6, inclusive.
+  Models with p_unusable >= this are flagged in INFLUENCE mode.
 
 When disabled, the layer is inert and does not affect any existing behavior.
 
@@ -186,23 +189,38 @@ Per-class (across seeds):
 The model reliably separates usable_stop and unusable seats; truncated is
 currently untested by this data.
 
-## Integration point (illustrative, flag-gated)
+## Live integration: capability.order_pool
 
-`dispatch_hook.maybe_score_and_order(candidates)` is an illustrative wrapper
-that shows where a real dispatch path would consult the advisory:
+The advisory layer is wired into `order_pool` in `harness/capability.py` (the
+single ordering choke point used by both the apply lane and the panel lane via
+`ordered_pool`). The call is guarded and lazy:
 
-1. When flags are off, it is inert: attaches empty advisory dicts and returns
-   candidates unchanged.
-2. When enabled, it attaches advisory scores to each candidate.
-3. When `HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER` is also on, it re-sorts by a
-   small nudge on top of each candidate's `existing_order_key`. The existing
-   order is never discarded.
+1. With `HARNESS_LOCAL_FIT_ENABLE` unset (default), the hook is not imported
+   and not called; the baseline order is returned untouched.
+2. With ENABLE + `HARNESS_LOCAL_FIT_MODEL_DIR` set (**OBSERVE**), candidates
+   are scored via the stdlib scorer and the scores are returned for logging;
+   the order still equals the baseline exactly.
+3. With `HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER=1` also set (**INFLUENCE**),
+   models whose `p_unusable` >= `HARNESS_LOCAL_FIT_UNUSABLE_THRESHOLD`
+   (default 0.6, inclusive) sort after their peers **within the same demotion
+   tier**. The hook cannot cross the strike-demotion boundary, cannot reorder
+   unflagged models among themselves, and cannot promote a flagged model.
+   Paid-tier price ordering is respected the same way: a flagged model moves
+   only behind same-tier peers. One stderr line is printed when a reorder
+   actually happens.
 
-There is also `maybe_score_only(candidates)` for the safest integration: attach
-advisory scores without touching any ordering.
+Any error anywhere in the hook (missing artifact, corrupt weights, scoring
+exception) degrades to the baseline order. Routing never breaks.
 
-This module does not touch any existing Harness routing math. It is a prototype
-for re-merge discussion.
+### Operationally recommended rollout
+
+1. Ship with flags off (the default). Confirm the 419-test suite is green.
+2. Train an artifact from your own audit runs (see Training above) and set
+   ENABLE + MODEL_DIR to run in OBSERVE for a few days; compare logged scores
+   against actual seat outcomes.
+3. Retrain over profile-enriched data (see Known skew) before enabling
+   USE_ADVISORY_ORDER, and start with a high threshold (e.g. 0.9) and lower it
+   as evidence accumulates.
 
 ## Development notes
 

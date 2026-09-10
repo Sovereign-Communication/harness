@@ -269,3 +269,45 @@ Decision made: for the first merge, ship an in-tree committed model bundle,
 off-by-default, runtime dependency onnxruntime only, train-time dependency
 numpy+onnx+onnxruntime only needed to regenerate. Do not wire into live
 dispatch as part of the merge.
+
+13. Wiring addendum (supersedes parts of sections 6, 9, 12 above)
+------------------------------------------------------------------
+Status update after the wiring decision was approved. Where this addendum
+disagrees with sections 6/9/12, this addendum wins.
+
+What changed vs the original decision:
+
+1. The layer IS now wired into live dispatch: capability.order_pool calls
+   local_fit.dispatch.maybe_order_pool. The call is lazy and guarded: with
+   HARNESS_LOCAL_FIT_ENABLE unset, the hook is never imported and never
+   called, and the baseline order is returned untouched (pinned by tests).
+2. The runtime dependency story changed for the better: inference is pure
+   stdlib (infer.py reads model_weights.json). onnxruntime is NOT required at
+   runtime; it remains a train-time-only dependency (optional extra
+   local-fit-train) for regenerating artifacts. The enabled ordering path is
+   tested to never import numpy/onnx/onnxruntime.
+3. Flags were renamed HARVEST_LOCAL_FIT_* -> HARNESS_LOCAL_FIT_* (no
+   consumers existed; legacy names are tested inert).
+4. The graduated gating replaced the old single tiebreak nudge:
+   OFF -> OBSERVE (score-and-log, order untouched) -> INFLUENCE
+   (HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER=1: p_unusable >=
+   HARNESS_LOCAL_FIT_UNUSABLE_THRESHOLD, default 0.6 inclusive, sorts the
+   model after its peers WITHIN the same strike-demotion tier). The old
+   HARNESS_LOCAL_FIT_ADVISORY_TIEBREAK_WEIGHT flag still governs the
+   prototype candidate-list hook only, not live ordering.
+5. Known skew is documented in README (Training/serve parity section): the
+   training extractor zero-fills declared_*/free_tier while dispatch reads
+   real profiles, and the ledger has no truncation events. Retrain over
+   profile-enriched data before relying on INFLUENCE ordering.
+
+Wiring contract (what reviewers should verify):
+
+- capability.order_pool's only behavioral change when the flag is off: none
+  (the hook is not called; suite proven green).
+- With the flag on but no valid artifact: OBSERVE degrades to OFF semantics
+  (empty scores, baseline order).
+- With INFLUENCE on: only flagged models move; they move after same-tier
+  peers only; the demotion boundary, unflagged relative order, and paid-tier
+  price ordering are all preserved exactly (property tests pin each).
+- Every failure mode (crash, bad artifact, scorer exception) degrades to the
+  baseline order. order_pool still never raises.

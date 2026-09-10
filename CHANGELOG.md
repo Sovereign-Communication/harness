@@ -10,6 +10,26 @@ break APIs between minor versions).
 ## [Unreleased]
 
 ### Added
+- **Local model-fit advisory layer wired into pool ordering
+  (`harness/local_fit/`, opt-in, off by default).** A small locally-trained
+  neural net (no LLM, no runtime dependencies) scores each candidate model
+  seat for unusable/truncated/usable-stop risk from pre-dispatch features
+  only (task, lane, declared profile, ledger calibration), and — only when
+  explicitly enabled — demotes scorer-flagged likely-unusable models after
+  their peers *within* the existing demotion tier of
+  `capability.order_pool`. Three-stage flag gating: OFF (default; the hook
+  is never imported or called), OBSERVE (`HARNESS_LOCAL_FIT_ENABLE` +
+  `HARNESS_LOCAL_FIT_MODEL_DIR`: score-and-log, order untouched), INFLUENCE
+  (`HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER=1`, threshold
+  `HARNESS_LOCAL_FIT_UNUSABLE_THRESHOLD` default 0.6, inclusive). The hook
+  is fail-closed end to end: any error degrades to the baseline order, and
+  it can never cross the strike-demotion boundary or reorder unflagged
+  models among themselves. Training/eval over `audits/*/_runs/*/*.json` via
+  the read-only extractor; train-time deps are the optional
+  `local-fit-train` extra; runtime inference is pure stdlib
+  (`model_weights.json` + `infer.py`, parity-pinned against the ONNX
+  export). Train/serve feature parity is enforced by a pinning test; the
+  enabled ordering path is tested to never import numpy/onnx/onnxruntime.
 - **Bipolar trust (-11..+11) with hard gates and correctness-rationed
   ceilings (`harness/trust.py`, `docs/trust.md`).** Cold start is always 0
   (unknown); clean runs earn slowly (3 per +1) while safety signals land
