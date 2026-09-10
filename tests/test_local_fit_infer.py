@@ -45,7 +45,7 @@ def _write_model(d: str, in_dim: int, meta_extra=None):
 
 class TestStdlibScorer(unittest.TestCase):
     def test_forward_pass_matches_hand_computation(self):
-        from harness.local_fit.infer import StdlibScorer, _softmax
+        from harness.local_fit.infer import StdlibScorer, _softmax, Z_CLIP
         from harness.local_fit.features import expected_vector_length
 
         in_dim = expected_vector_length()
@@ -58,16 +58,19 @@ class TestStdlibScorer(unittest.TestCase):
                  "reasoning_effort": "low"}
         vec = s.score(feats)
 
-        # Hand-compute the forward pass from the same weights.
+        # Hand-compute the forward pass from the same weights, including the
+        # input z-clip and the export temperature the runtime applies.
         from harness.local_fit.features import build_feature_vector
-        x = build_feature_vector(feats, {})
+        x = [max(-Z_CLIP, min(Z_CLIP, v))
+             for v in build_feature_vector(feats, {})]
         w1, b1, w2, b2 = weights["w1"], weights["b1"], weights["w2"], weights["b2"]
         h = []
         for j in range(len(b1)):
             acc = b1[j] + sum(x[i] * w1[i][j] for i in range(in_dim))
             h.append(max(0.0, acc))
         logits = [b2[k] + sum(h[j] * w2[j][k] for j in range(len(b1))) for k in range(3)]
-        expected = _softmax(logits)
+        t = s.temperature
+        expected = _softmax([v / t for v in logits])
 
         self.assertAlmostEqual(vec["unusable"], expected[0], places=7)
         self.assertAlmostEqual(vec["truncated"], expected[1], places=7)

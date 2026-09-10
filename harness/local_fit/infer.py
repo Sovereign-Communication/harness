@@ -23,6 +23,15 @@ from .features import build_feature_vector, expected_vector_length
 WEIGHTS_FILE = "model_weights.json"
 META_FILE = "model_meta.json"
 
+# Input z-scores beyond this magnitude are clipped before the forward pass.
+# Dispatch-time features can legitimately carry values the training corpus
+# never saw (e.g. a declared context length when training rows lacked one);
+# unclipped, a single such feature produces logits in the thousands, the
+# softmax pins to 0/0/1, and every candidate becomes indistinguishable — the
+# saturation the dispatch guard exists to catch. Clipping is applied
+# identically to every candidate so ordering within a pool stays honest.
+Z_CLIP = 8.0
+
 
 class StdlibScorer:
     """Score seat feature dicts with the exported weights, stdlib only."""
@@ -61,6 +70,19 @@ class StdlibScorer:
         self.b1 = b1
         self.w2 = w2
         self.b2 = b2
+        # Export-time calibration temperature: the runtime softmax divides
+        # logits by it so dispatch-time probabilities keep the separation the
+        # net trained to (see train.export_temperature). Unset/invalid -> 1.0
+        # (artifact written before the calibration field existed must keep
+        # loading; nothing is silently reshaped).
+        self.temperature = 1.0
+        try:
+            t = float(self.weights.get("temperature",
+                                       self.metadata.get("temperature", 1.0)))
+            if math.isfinite(t) and t > 0.0:
+                self.temperature = min(20.0, max(0.1, t))
+        except (TypeError, ValueError):
+            pass
         self.output_classes = self.metadata.get(
             "output_classes", ["unusable", "truncated", "usable_stop"]
         )
@@ -72,7 +94,10 @@ class StdlibScorer:
             raise ValueError(
                 f"feature vector length {len(vec)} != model in_dim {self.in_dim}"
             )
+        vec = [max(-Z_CLIP, min(Z_CLIP, v)) for v in vec]
         logits = self._forward(vec)
+        if self.temperature != 1.0:
+            logits = [v / self.temperature for v in logits]
         probs = _softmax(logits)
         best = max(range(len(probs)), key=lambda i: probs[i])
         return {
