@@ -67,6 +67,30 @@ Features are pre-dispatch only. No outcome data leaks into the input vector.
 Categorical features are one-hot encoded against fixed vocabularies.
 Numeric features are z-scored using stats persisted in the model metadata.
 
+## Train/serve parity
+
+Training and dispatch-side scoring share exactly one feature-dict builder
+(`features.build_dispatch_features`) and one vector builder
+(`features.build_feature_vector`). A pinning test
+(`tests/test_local_fit_features.py`) fails if the two call sites drift.
+
+### Known skew (read before enabling INFLUENCE mode)
+
+- **declared_* / free_tier**: the training extractor historically zero-filled
+  these (run JSON does not carry profile data; `build_observed_map` hardcodes
+  them). Dispatch fills them from the real `CapabilityProfile`. For any model
+  whose declared context/JSON/reasoning matters, dispatch-time inputs sit
+  outside the trained distribution. **Retrain over audit runs enriched with
+  profile data before relying on INFLUENCE ordering.**
+- **truncation_rate**: the ledger records no truncation events today, so the
+  dispatch-side feature is always 0.0; OBSERVE-mode scores still reflect the
+  usable/unusable signal, which the ledger does capture.
+- **prompt_chars / max_tokens**: pool ordering happens before the prompt is
+  built; dispatch uses the extractor's unknown-run defaults (0 chars, 2048
+  max tokens, reasoning "auto"). Task type, seat role, declared profile, and
+  observed ledger rates — the strongest signals — are all genuine at dispatch
+  time.
+
 ## Label rules
 
 Labels are mutually exclusive and severity-ordered:

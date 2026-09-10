@@ -34,6 +34,9 @@ from .schema import (
 )
 
 
+from .features import hash_model_id as _hash_model, safe_div as _safe_div, prompt_chars_estimate
+
+
 def guess_task_type(run: Dict[str, Any], keys: List[str]) -> str:
     """Best-effort task type from run shape and keys."""
     if "panel_results" in run and run.get("panel_results"):
@@ -413,58 +416,60 @@ def _build_features(
     is_iterative: bool,
     truncated_flag: bool = False,
 ) -> Dict[str, Any]:
+    """Extractor-side feature build.
+
+    Delegates to the shared, dependency-free builder in features.py so the
+    dispatch-side (capability.order_pool) and extraction-side feature dicts
+    are produced by exactly one implementation and cannot drift. The parity
+    pin test (tests/test_local_fit_features.py) proves the two call shapes
+    produce identical dicts for equivalent seats.
+    """
+    from .features import build_dispatch_features
+
     obs = observed.get(model, {})
-
-    return {
-        "task_type": task_type,
-        "seat_role": seat_role,
-        "structured_output_required": task_type in ("structured_claims",),
-        "max_tokens_requested": max_tokens_requested,
-        "reasoning_effort": reasoning_effort,
-        "prompt_chars": prompt_chars,
-        "source_window_attached": source_window_attached,
-        "claims_count": claims_count,
-        "convergence_expected": convergence_expected,
-        "is_iterative": is_iterative,
-        "model_id_hash": _hash_model(model),
-        "free_tier": _free_tier(observed),
-        "declared_context_length": obs.get("context_length", 0),
-        "declared_structured_json": obs.get("declared_structured_json", False),
-        "declared_reasoning": obs.get("declared_reasoning", False),
-        "observed_usable_rate": obs.get("usable_rate", 0.0),
-        "observed_truncation_rate": obs.get("truncation_rate", 0.0),
-        "observed_unusable_rate": obs.get("unusable_rate", 0.0),
-        "observed_mean_resp_chars": obs.get("mean_resp_chars", 0.0),
-        "observed_median_resp_chars": obs.get("median_resp_chars", 0.0),
-        "observed_max_resp_chars": obs.get("max_resp_chars", 0.0),
-        "observed_sample_count": obs.get("n", 0),
-        "prompt_tokens_est_over_context": _safe_div(prompt_chars_estimate(prompt_chars), obs.get("context_length", 1) or 1),
-        "max_tokens_over_mean_resp": _safe_div(max_tokens_requested, obs.get("mean_resp_chars", 1) or 1),
-        "structured_need_vs_declared_json": int(task_type == "structured_claims" and not obs.get("declared_structured_json", False)),
-        "iterative_vs_truncation_rate": _safe_div(float(is_iterative), max(obs.get("truncation_rate", 0.0), 1e-6)) if is_iterative else 0.0,
+    observed_row = {
+        "usable_rate": obs.get("usable_rate", 0.0),
+        "truncation_rate": obs.get("truncation_rate", 0.0),
+        "unusable_rate": obs.get("unusable_rate", 0.0),
+        "mean_resp_chars": obs.get("mean_resp_chars", 0.0),
+        "median_resp_chars": obs.get("median_resp_chars", 0.0),
+        "max_resp_chars": obs.get("max_resp_chars", 0.0),
+        "n": obs.get("n", 0),
     }
-
-
-def _hash_model(model: str) -> int:
-    h = 0
-    for ch in model:
-        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
-    return h
+    return build_dispatch_features(
+        model,
+        # Map the extractor's run-shape task_type onto the dispatch task
+        # vocabulary: structured_claims -> "structured", else "apply" for
+        # non-panel lanes; call_lane mirrors seat_role's panel/apply split.
+        task=("structured" if task_type == "structured_claims"
+              else ("default" if seat_role == "panel" else "apply")),
+        free_tier=bool(obs.get("free_tier", False)),
+        profile=None,
+        calibration=None,
+        call_lane=("panel" if seat_role == "panel" else "apply"),
+        observed=observed_row,
+        # Extraction knows richer context than dispatch; these keyword hooks
+        # exist so the shared builder can consume them without a shape change.
+        _extract_overrides={
+            "seat_role": seat_role,
+            "task_type": task_type,
+            "structured_output_required": task_type in ("structured_claims",),
+            "max_tokens_requested": max_tokens_requested,
+            "reasoning_effort": reasoning_effort,
+            "prompt_chars": prompt_chars,
+            "source_window_attached": source_window_attached,
+            "claims_count": claims_count,
+            "convergence_expected": convergence_expected,
+            "is_iterative": is_iterative,
+            "declared_context_length": obs.get("context_length", 0),
+            "declared_structured_json": obs.get("declared_structured_json", False),
+            "declared_reasoning": obs.get("declared_reasoning", False),
+        },
+    )
 
 
 def _free_tier(obs: Dict[str, Any]) -> bool:
     return bool(obs.get("free_tier", False))
-
-
-def _safe_div(a: float, b: float) -> float:
-    if b == 0:
-        return 0.0
-    return float(a) / float(b)
-
-
-def prompt_chars_estimate(chars: int) -> int:
-    # Very rough tokenizer-free estimate: ~4 chars per token on average text.
-    return max(1, chars // 4)
 
 
 def build_observed_map(rows: List[SeatRow]) -> Dict[str, Dict[str, Any]]:
