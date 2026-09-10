@@ -164,5 +164,114 @@ class SettingsEscalationTests(unittest.TestCase):
                         f"paid escalation pool should include non-free models: {s2.escalation_pool}")
 
 
+class ApplyLadderE2ETests(unittest.TestCase):
+    """Paid apply-ladder dogfood with fakes: gate-finished rungs, no live spend."""
+
+    def test_ladder_finishes_through_gate_on_second_rung(self):
+        from harness.apply import ApplyEngine
+        from harness.apply_state import RunState
+        from harness.filesafety import _atomic_write
+        from harness.router import Router
+
+        class Gov:
+            spent = 0.0
+            max_cost = 1.0
+
+            def preflight(self, *a, **k):
+                return None
+
+            def record_actual(self, cost, model):
+                self.spent += float(cost or 0)
+
+            def record_byok(self, model):
+                pass
+
+            def is_free(self, model):
+                return str(model).endswith(":free")
+
+            def check_byok(self, model):
+                return None
+
+            def fetch_pricing(self, models):
+                return None
+
+            def fetch_models(self):
+                return []
+
+        class Led:
+            def append(self, *a, **k):
+                return None
+
+            def participation_report(self, *a, **k):
+                return {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "t.py")
+            _atomic_write(target, "x = 1\n")
+            router = Router(
+                panel=["p"], judge="j", apply_model="free/a:free",
+                allow_escalation=True,
+                escalation_pool=["free/cheap:free", "paid/strong"],
+            )
+            engine = ApplyEngine(
+                transport=None, api_key="k", governor=Gov(), ledger=Led(),
+                router=router, default_require_consent=False,
+            )
+            from harness.apply_state import ApplyRequest
+            req = ApplyRequest(
+                task_id="t", file_path=target, instruction="fix",
+                edit_snippet=None, verify_cmd="python -c \"pass\"",
+                backend="harness", verify_only=False, max_lines=500,
+                max_rounds=1, max_tokens=256, task_max_cost=0.05, max_rot=0,
+                reasoning="off", renew=False, allow_escalation=True,
+                model="free/a:free", ordered=["free/cheap:free"],
+                profiles=None, want_consent=False, original="x = 1\n",
+                task_start_spent=0.0, continuation={}, continuation_gate=None,
+                task_runner=None, cancel_check=None,
+            )
+            state = RunState(rounds=[{
+                "round": 1, "model": "free/a:free", "status": "verify_failed",
+                "verify_output": "AssertionError", "cost": 0.0,
+            }], history=[], current_content="x = 1\n")
+            state.gate_broken = False
+
+            prompts = []
+
+            def base_prompt_fn(st, rung_context):
+                prompts.append(rung_context)
+                return "prompt"
+
+            def finish_fn(model, content, cost):
+                if model == "free/cheap:free":
+                    return None  # gate fail first rung
+                _atomic_write(target, "x = 2\n")
+                return {
+                    "status": "ok", "task_id": "t", "changed": True,
+                    "rounds": state.rounds, "cost": 0.01, "rotations": 0,
+                    "backend": "harness", "verify": {"passed": True},
+                    "escalated": True,
+                }
+
+            def fake_chat(transport, api_key, model, messages, max_tokens,
+                          effort, budget, governor):
+                return 200, {
+                    "choices": [{"message": {"content": "x = 2\n"},
+                                 "finish_reason": "stop"}],
+                    "usage": {"cost": 0.0},
+                }
+
+            from harness.escalation import EscalationDriver
+            with mock.patch("harness.escalation.chat", side_effect=fake_chat):
+                driver = EscalationDriver(
+                    router, None, "k", engine.governor, None, "t",
+                    max_tokens=256, task_start_spent=0.0, task_max_cost=0.05,
+                )
+                result = driver.run_with_escalation(
+                    req, state, base_prompt_fn, finish_fn)
+            self.assertIsNotNone(result)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(len(prompts), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

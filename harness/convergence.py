@@ -174,6 +174,10 @@ def tally_convergence(panel_results, claim_polarity=None, of_panel=None):
             "of_panel": required,
             "confidence": mean_conf,
             "votes": votes,
+            # Explicit R/NR counts so verdict strings never imply unanimity
+            # from participation alone.
+            "real_votes": votes["real"],
+            "not_real_votes": votes["not_real"],
             "missing_votes": max(0, required - total),
             "panel_shortfall": total < required,
         }

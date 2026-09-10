@@ -386,6 +386,32 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             task_id=task_id, fallback_pool=specialist_pool,
             claim_polarity=claim_polarity, profiles=_profiles)
         spec["tally"] = convergence_tally
+        # Specialist prose can invert polarity or disagree with the tally.
+        # Record conflicts so operators never trust specialist claim maps over
+        # the deterministic majority.
+        if isinstance(spec.get("specialist"), dict):
+            spec_claims = spec["specialist"].get("claims") or {}
+            conflicts = []
+            for cid, entry in (convergence_tally.get("claims") or {}).items():
+                sc = spec_claims.get(cid)
+                if not isinstance(sc, dict):
+                    continue
+                tally_v = entry.get("verdict")
+                spec_v = sc.get("verdict")
+                if tally_v and spec_v and tally_v != spec_v:
+                    conflicts.append({
+                        "claim": cid,
+                        "tally": tally_v,
+                        "specialist": spec_v,
+                        "tally_votes": f"{entry.get('real_votes')}R/"
+                                       f"{entry.get('not_real_votes')}NR",
+                    })
+            if conflicts:
+                spec["specialist"]["tally_conflicts"] = conflicts
+                spec["specialist"]["note"] = (
+                    (spec["specialist"].get("note") + " " if spec["specialist"].get("note") else "")
+                    + "specialist claim map disagrees with the deterministic tally; "
+                      "tally is authoritative")
         # The deterministic tally owns structured convergence. Responder
         # agreement and merge-gate eligibility are separate signals: a short
         # panel may be unanimously aligned while still being ineligible to
@@ -432,10 +458,20 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         consensus["judge_verdict"] = consensus.get("verdict", "")
         summary = []
         for cid, entry in convergence_tally["claims"].items():
-            summary.append(f"{cid}={entry['verdict']} ({entry['voted_by']}/{entry['of_panel']})")
+            # Participation is (voted_by/of_panel). Unanimity is a separate
+            # fact -- never print "3/3" as if it meant all agreed.
+            real_n = entry.get("real_votes")
+            nr_n = entry.get("not_real_votes")
+            if real_n is not None and nr_n is not None:
+                vote_note = f"{real_n}R/{nr_n}NR of {entry['voted_by']}"
+            else:
+                vote_note = f"{entry['voted_by']}/{entry['of_panel']}"
+            summary.append(f"{cid}={entry['verdict']} ({vote_note})")
         if convergence_tally["panel_shortfall"]:
             s = convergence_tally["shortfall"]
-            summary.append(f"panel shortfall {s['voted_by']}/{s['of_panel']}; merge gate deferred")
+            summary.append(
+                f"SHORTFALL {s['voted_by']}/{s['of_panel']} slots voted; "
+                "merge gate deferred")
         consensus["verdict"] = "Deterministic panel tally: " + ("; ".join(summary) or "no defect claims")
         convergence_spec = spec
 

@@ -135,8 +135,12 @@ def validate_mcp_limit(value, name="limit", default=20):
     return bounded_int(value, name, 1, 1000)
 
 
-def validate_mcp_max_tokens(value, default=300):
-    """Validate the optional MCP output-token budget."""
+def validate_mcp_max_tokens(value, default=2048):
+    """Validate the optional MCP output token budget.
+
+    Default matches the CLI verify lane so MCP hosts are not silently
+    truncated at a much smaller window.
+    """
     if value is None:
         value = default
     return bounded_int(value, "max_tokens", 1, MAX_TOKENS)
