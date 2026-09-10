@@ -458,6 +458,16 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             "defer_reason": consensus.get("defer_reason"),
             "judge_verdict": consensus.get("judge_verdict"),
         })
+    # Surface the specialist's escalation/plan directives on the consensus
+    # payload so callers can consume them without digging into the nested
+    # specialist blob (verify-lane telemetry for the apply ladder).
+    if isinstance(convergence_spec, dict):
+        spec_body = convergence_spec.get("specialist")
+        if isinstance(spec_body, dict):
+            if "escalation" in spec_body:
+                consensus_payload["escalation"] = spec_body.get("escalation")
+            if "plan" in spec_body:
+                consensus_payload["plan"] = spec_body.get("plan")
     result = {
         "panel_results": panel_results,
         "trimmed_for_judge": trimmed_for_judge,

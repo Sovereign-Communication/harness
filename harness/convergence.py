@@ -52,13 +52,20 @@ def _parse_consensus(judge_text):
     esc = parsed.get("escalation")
     escalation = None
     if isinstance(esc, dict):
-        needed = bool(esc.get("needed", False))
+        # Only a JSON boolean true enables escalation. Strings like "false"
+        # are truthy under bool() and must not open a paid ladder.
+        needed = esc.get("needed") is True
         if needed:
+            raw_rung = esc.get("target_rung", 0)
+            try:
+                target_rung = int(raw_rung) if raw_rung is not None else 0
+            except (TypeError, ValueError):
+                target_rung = 0
             escalation = {
                 "needed": True,
                 "reason": str(esc.get("reason", ""))[:500],
                 "condensed_context": str(esc.get("condensed_context", ""))[:8000],
-                "target_rung": int(esc.get("target_rung", 0)) if esc.get("target_rung") is not None else 0,
+                "target_rung": max(0, target_rung),
             }
         else:
             escalation = {"needed": False}
@@ -344,14 +351,13 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
         "response will be discarded and the task rotated to another model. Do your best "
         "within the cap, assume nothing beyond it, and emit ONLY the JSON object as your "
         "visible content, starting with {.",
-        # Escalation guidance
+        # Escalation guidance — needed must be the JSON boolean true, never a string.
         "ESCALATION GUIDANCE: If the panel's verdicts are inconclusive (low agreement, "
         "high deferral, or conflicting evidence), you MAY set \"escalation.needed\": true "
-        "and provide a \"condensed_context\" (max 8000 chars) summarizing the stuck state "
-        "for a more capable model. Set \"target_rung\" to the escalation ladder index "
-        "(0 = first rung). The system will de-escalate back to the tier that needed "
-        "escalation once a plan is produced. Include a \"plan\" with ordered steps for "
-        "cheaper models to execute.",
+        "(JSON boolean true only) and provide a \"condensed_context\" (max 8000 chars) "
+        "summarizing the stuck state for a more capable model. Set \"target_rung\" to a "
+        "non-negative integer ladder index (0 = first rung). Include a \"plan\" with "
+        "ordered steps for cheaper models to execute.",
     ]
     # Full per-claim JSON: these are short, structured verdicts, and the
     # preflight reserve (target * panel_tokens) already covers them. A

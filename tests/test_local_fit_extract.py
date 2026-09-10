@@ -171,12 +171,13 @@ class TestAllAuditsExtraction(unittest.TestCase):
         self.assertIn("panel", roles)
         self.assertIn("panel_failure", roles)
         self.assertIn("specialist", roles)
-        # Union row count should match the v4-only count (since v4 is all we have)
+        # Union must include every v4 row. Extra live-run dirs (e.g. a new
+        # dogfood round) may add rows; do not pin the union to v4-only.
         v4_path = os.path.join("audits", "scmessenger", "_runs", "v4")
         v4_files = [os.path.join(v4_path, f) for f in sorted(os.listdir(v4_path)) if f.endswith(".json")]
         v4_rows = extract(v4_files)
-        self.assertEqual(len(rows), len(v4_rows),
-                         "all-audits union should equal v4-only when v4 is the only *_runs/ data")
+        self.assertGreaterEqual(len(rows), len(v4_rows),
+                                "all-audits union must include every v4 row")
 
     def test_all_audits_union_label_distribution(self):
         from harness.local_fit.extract import all_run_files, extract

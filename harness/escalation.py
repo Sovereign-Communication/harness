@@ -12,6 +12,7 @@ plans from apply output (apply returns file content, not judge JSON).
 """
 from .chat import (_chat_reservation_slots, chat, extract_content_and_cost,
                    assess_output)
+from .errors import HarnessError
 from .output import eprint
 
 
@@ -19,7 +20,8 @@ class EscalationDriver:
     """Walk the escalation ladder and finish each candidate through the gate."""
 
     def __init__(self, router, transport, api_key, governor, ledger, task_id,
-                 reasoning_token_budget=0.4, max_tokens=4096):
+                 reasoning_token_budget=0.4, max_tokens=4096,
+                 task_start_spent=None, task_max_cost=None):
         self.router = router
         self.transport = transport
         self.api_key = api_key
@@ -28,7 +30,16 @@ class EscalationDriver:
         self.task_id = task_id
         self.reasoning_token_budget = reasoning_token_budget
         self.max_tokens = max_tokens
+        self.task_start_spent = task_start_spent
+        self.task_max_cost = task_max_cost
         self.escalation_history = []
+
+    def _within_task_budget(self):
+        """True when another escalation call still fits under --task-max-cost."""
+        if self.task_max_cost is None or self.task_start_spent is None:
+            return True
+        spent_now = float(getattr(self.governor, "spent", 0.0) or 0.0)
+        return (spent_now - float(self.task_start_spent)) < float(self.task_max_cost)
 
     def run_with_escalation(self, req, state, base_prompt_fn, finish_fn):
         """Try each escalation rung until a gated success or the ladder ends.
@@ -53,6 +64,9 @@ class EscalationDriver:
             start_rung = target
 
         for rung in range(start_rung, len(self.router.escalation_pool)):
+            if not self._within_task_budget():
+                eprint("[escalation] task budget exhausted; stopping ladder.")
+                break
             if not self.router.de_escalate_to_rung(rung):
                 break
             esc_spec = self.router.escalation(override=True)
@@ -67,7 +81,11 @@ class EscalationDriver:
             calls = [(f"escalation rung {rung + 1}/{len(self.router.escalation_pool)}",
                       model, self.max_tokens, 0)
                      for _ in range(slots)]
-            self.governor.preflight(prompt, calls)
+            try:
+                self.governor.preflight(prompt, calls)
+            except HarnessError as exc:
+                eprint(f"[escalation] rung {rung} refused by spend governor: {exc}")
+                break
 
             status, resp = chat(self.transport, self.api_key, model,
                                 [{"role": "user", "content": prompt}],
@@ -108,6 +126,8 @@ class EscalationDriver:
                 continue
 
             self.governor.record_actual(cost, model)
+            # A capability deferral is not file content -- hand it to finish_fn
+            # (which routes HARNESS_DEFER) instead of treating it as a write.
             usable, unusable = assess_output(content, finish, allow_truncated=False)
             if not usable:
                 eprint(f"[escalation] rung {rung} model {model}: {unusable}; rotating.")
@@ -131,7 +151,8 @@ class EscalationDriver:
             result = finish_fn(model, content, cost)
             if result and result.get("status") == "ok":
                 return result
-            # Gate failed: try the next (more capable) rung.
+            # Gate failed or capability-deferred: try the next (more capable) rung
+            # unless finish_fn already produced a terminal deferral.
 
         return None
 

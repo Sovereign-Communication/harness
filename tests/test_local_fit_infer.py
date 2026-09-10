@@ -14,12 +14,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 try:
     import numpy  # noqa: F401
     import onnx  # noqa: F401
+    import onnxruntime  # noqa: F401
     _TRAIN_OK = True
 except ImportError:
     _TRAIN_OK = False
 
 needs_train = unittest.skipUnless(
-    _TRAIN_OK, "train-time deps (numpy+onnx) required")
+    _TRAIN_OK, "train-time deps (numpy+onnx+onnxruntime) required")
 
 
 def _synth_weights(in_dim: int, hidden: int = 4, out: int = 3):
@@ -126,8 +127,8 @@ class TestStdlibScorer(unittest.TestCase):
         self.assertNotEqual(a, b)
 
 
-@needs_train
 class TestImportIsolation(unittest.TestCase):
+    @needs_train
     def test_enabled_scoring_path_imports_no_numpy_or_onnxruntime(self):
         """Scoring must not newly import numpy/onnx/onnxruntime or the train module.
 
@@ -182,6 +183,7 @@ class TestImportIsolation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertIsNone(model_loader.LocalScorer(d))
 
+    @needs_train
     def test_pipeline_exports_weights_json(self):
         from harness.local_fit.extract import all_run_files, extract
         from harness.local_fit.train import run_pipeline

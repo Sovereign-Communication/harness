@@ -23,6 +23,15 @@ break APIs between minor versions).
   as telemetry; apply output is file content, not judge JSON.
 
 ### Fixed
+- **PR #4 review (cubic/codex) follow-ups.** Escalation `needed` must be JSON
+  boolean `true`; invalid `target_rung` coerces to 0; specialist
+  `escalation`/`plan` surface on the consensus payload; apply ladder enforces
+  `--task-max-cost`, handles `diff` backend + `HARNESS_DEFER`, seeds judge
+  condensed context into RunState; legacy `escalation_model` keeps precedence
+  over the default ladder; `judge_top` used only when escalation is allowed;
+  dead `RunState` plan fields removed; train-time skips require
+  numpy+onnx+onnxruntime; `_defined_in` ignores comment lines; paid-pool
+  test no longer tautological; local_fit extract test accepts extra run dirs.
 - **`--out` creates parent directories.** Relative paths like
   `results/foo.json` no longer fail after a paid/free panel run with
   `cannot write --out` when the parent folder is missing.
