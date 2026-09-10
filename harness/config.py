@@ -220,6 +220,7 @@ _ENV_NAMES = {
     "mcp_allow_verify": "HARNESS_MCP_ALLOW_VERIFY",
     "mcp_allowed_roots": "HARNESS_MCP_ALLOWED_ROOTS",
     "mcp_tool_timeout": "HARNESS_MCP_TOOL_TIMEOUT",
+    "mcp_auth_token": "HARNESS_MCP_AUTH_TOKEN",
 }
 
 
@@ -309,7 +310,7 @@ class Settings:
                  max_panelists, max_rotations, renew_consent, ledger_path,
                   expect_key_label, default_require_consent, allow_escalation,
                   mcp_allow_write=False, mcp_allow_verify=False, mcp_allowed_roots=None,
-                  mcp_tool_timeout=1800):
+                  mcp_tool_timeout=1800, mcp_auth_token=None):
         self.use_free = use_free
         self.panel = list(panel)
         self.panel_pool = list(panel_pool)
@@ -345,6 +346,10 @@ class Settings:
         self.mcp_allow_verify = mcp_allow_verify
         self.mcp_allowed_roots = list(mcp_allowed_roots or [])
         self.mcp_tool_timeout = mcp_tool_timeout
+        # Shared secret for the stdio MCP peer. Empty/None = no token check
+        # (stdio inherits host authority; documented trust model). When set,
+        # every tools/call must present matching params._meta.harness_token.
+        self.mcp_auth_token = mcp_auth_token or None
 
     def to_dict(self):
         return {k: getattr(self, k) for k in (
@@ -355,7 +360,8 @@ class Settings:
             "reasoning_effort", "reasoning_token_budget", "max_panelists",
             "max_rotations", "renew_consent", "ledger_path", "expect_key_label",
             "default_require_consent", "allow_escalation", "mcp_allow_write",
-            "mcp_allow_verify", "mcp_allowed_roots", "mcp_tool_timeout")}
+            "mcp_allow_verify", "mcp_allowed_roots", "mcp_tool_timeout",
+            "mcp_auth_token")}
 
 
 def load_settings(overrides=None):
@@ -459,4 +465,5 @@ def load_settings(overrides=None):
         mcp_allow_verify=_as_bool(get("mcp_allow_verify", False)),
         mcp_allowed_roots=_split_list(str(get("mcp_allowed_roots", ""))),
         mcp_tool_timeout=mcp_tool_timeout,
+        mcp_auth_token=get("mcp_auth_token", None) or None,
     )

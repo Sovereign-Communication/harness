@@ -755,6 +755,13 @@ class AutonomyLedger:
                         "no usable content" in str(e.get("reason") or ""):
                     stats = model_stats.setdefault(m_, {})
                     stats["unusable_outputs"] = stats.get("unusable_outputs", 0) + 1
+                # Minority dissent on a structured claim (lone dissenter vs
+                # panel majority). Counted separately from unusable/429 so a
+                # model can be demoted for repeatedly inventing conflicts.
+                if e.get("minority_dissent") or \
+                        e.get("event_note") == "panel_minority_dissent":
+                    stats = model_stats.setdefault(m_, {})
+                    stats["minority_dissent"] = stats.get("minority_dissent", 0) + 1
                 # The live known-answer capability probe records `correct`; use
                 # it as structured-task ground truth rather than pretending a
                 # JSON-shaped but incorrect answer was a success.
@@ -797,6 +804,7 @@ class AutonomyLedger:
                 "samples": model_events[m_],
                 "unusable_outputs": model_stats.get(m_, {}).get("unusable_outputs", 0),
                 "consent_unusable": model_stats.get(m_, {}).get("consent_unusable", 0),
+                "minority_dissent": model_stats.get(m_, {}).get("minority_dissent", 0),
                 "trust_denials": model_stats.get(m_, {}).get("trust_denials", 0),
                 "trust_hostile": model_stats.get(m_, {}).get("trust_hostile", 0),
             }

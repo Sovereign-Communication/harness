@@ -121,20 +121,25 @@ def tally_convergence(panel_results, claim_polarity=None, of_panel=None):
     order = {}
     for r in panel_results:
         verdicts = extract_claim_verdicts(r.get("content") or "")
+        model = r.get("model")
         for cid, v in verdicts.items():
             kind = "reassurance" if claim_polarity.get(cid, "defect") == "reassurance" else "defect"
             if cid not in buckets:
                 buckets[cid] = {"kind": kind, "votes": {"real": 0, "not_real": 0},
-                                "confidences": [], "models": []}
+                                "confidences": [], "models": [],
+                                "by_model": {}}
                 order[cid] = kind
             c = buckets[cid]
-            c["votes"]["real" if v["real"] else "not_real"] += 1
+            vote = "real" if v["real"] else "not_real"
+            c["votes"][vote] += 1
             if v.get("confidence") is not None:
                 try:
                     c["confidences"].append(float(v["confidence"]))
                 except (TypeError, ValueError):
                     pass
-            c["models"].append(r.get("model"))
+            c["models"].append(model)
+            if model is not None:
+                c["by_model"][model] = vote
 
     per_claim = {}
     reassurance = {}
@@ -180,6 +185,14 @@ def tally_convergence(panel_results, claim_polarity=None, of_panel=None):
             "not_real_votes": votes["not_real"],
             "missing_votes": max(0, required - total),
             "panel_shortfall": total < required,
+            # Models whose vote was in the minority on this defect claim
+            # (used for structured-lane demotion after repeated lone dissent).
+            "minority_models": (
+                [m for m, v in c.get("by_model", {}).items() if v != majority]
+                if kind == "defect" and total > 0 and
+                votes["real"] > 0 and votes["not_real"] > 0
+                else []
+            ),
         }
         if kind == "defect":
             defect_total += 1

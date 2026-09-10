@@ -247,7 +247,12 @@ plus the correctness level that rations spend ceilings (read-only).
 same continuation controls as the CLI. Tools run on three serial lanes
 (`mutation`, `spendy`, `observe`) so status queries never queue behind a
 long edit, and every request carries a cooperative deadline
-(`HARNESS_MCP_TOOL_TIMEOUT`, default 1800s). Frames correlate by request
+(`HARNESS_MCP_TOOL_TIMEOUT`, default 1800s). Optional shared secret:
+`HARNESS_MCP_AUTH_TOKEN` / `mcp_auth_token` — when set, every `tools/call`
+must pass `params._meta.harness_token` (or `params.harness_token`). Leave
+unset for the documented stdio-inherits-host-authority model.
+`panel_verify` accepts optional `task_max_cost` (0–0.25) as a per-call
+ceiling check against the remaining session budget. Frames correlate by request
 id, never by position. The hand-rolled server is spec-conformant (JSON-RPC 2.0 over stdio, `initialize` →
 `tools/list` → `tools/call`, `structuredContent` + `isError`).
 
