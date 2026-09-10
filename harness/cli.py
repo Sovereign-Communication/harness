@@ -90,7 +90,10 @@ def _read_json(path, what):
 def _emit(result, out):
     text = json.dumps(result, indent=2)
     if out:
+        parent = os.path.dirname(os.path.abspath(out))
         try:
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             with open(out, "w", encoding="utf-8") as f:
                 f.write(text)
         except OSError as e:

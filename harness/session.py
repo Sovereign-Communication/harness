@@ -61,7 +61,8 @@ def router_for(settings):
                   settings.escalation_model, settings.allow_escalation,
                   panel_pool=settings.panel_pool, apply_pool=settings.apply_pool,
                   specialist_pool=settings.specialist_pool,
-                  convergence_model=settings.convergence_model)
+                  convergence_model=settings.convergence_model,
+                  escalation_pool=settings.escalation_pool)
 
 
 def engine_for(settings, api_key, gov, ledger, router):

@@ -57,7 +57,13 @@ _BOUND_MARKER_RE = re.compile(r"\bMAX_[A-Z0-9_]+\b|\blen\(\)\s*>\s*MAX_")
 
 VALID_KINDS = ("defect", "reassurance")
 MAX_EXPAND_DEPTH = 4
-_DEFN_RE = re.compile(r"\b(?:pub\s+)?(?:fn|const|static|struct|enum|trait|type)\s+([A-Za-z_][A-Za-z0-9_]*)")
+# Rust + Python definitions in-window. Word-boundary is load-bearing: a raw
+# \x08 here once disabled this entire suppression path.
+_DEFN_RE = re.compile(
+    r"\b(?:pub(?:\s*\([^)]*\))?\s+)?"
+    r"(?:fn|const|static|struct|enum|trait|type|def|class)\s+"
+    r"([A-Za-z_][A-Za-z0-9_]*)"
+)
 
 
 def _defined_in(source):

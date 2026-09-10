@@ -30,7 +30,8 @@ def _parse_consensus(judge_text):
         # malformed prose as a successful synthesis.
         return {"agreement": "unknown", "confidence": None, "disagreements": [],
                 "defer": True, "verdict": judge_text or "",
-                "defer_reason": "unparseable_judge_output"}
+                "defer_reason": "unparseable_judge_output",
+                "escalation": None, "plan": None}
     verdict = parsed.get("verdict")
     agreement = str(parsed.get("agreement", "unknown")).lower()
     if agreement not in ("high", "medium", "low", "none"):
@@ -45,12 +46,39 @@ def _parse_consensus(judge_text):
     if not isinstance(disagreements, list):
         disagreements = []
     defer = bool(parsed.get("defer", False)) or agreement in ("low", "none")
+
+    # Escalation directive (judge-driven auto-escalation).
+    # The judge may direct the system to escalate to a more capable model rung.
+    esc = parsed.get("escalation")
+    escalation = None
+    if isinstance(esc, dict):
+        needed = bool(esc.get("needed", False))
+        if needed:
+            escalation = {
+                "needed": True,
+                "reason": str(esc.get("reason", ""))[:500],
+                "condensed_context": str(esc.get("condensed_context", ""))[:8000],
+                "target_rung": int(esc.get("target_rung", 0)) if esc.get("target_rung") is not None else 0,
+            }
+        else:
+            escalation = {"needed": False}
+
+    # Plan artifact for de-escalation handoff.
+    plan = parsed.get("plan")
+    if isinstance(plan, dict):
+        # Validate plan structure minimally
+        pass
+    elif plan is not None:
+        plan = {"raw": str(plan)[:4000]}
+
     return {
         "verdict": verdict or judge_text or "",
         "agreement": agreement,
         "confidence": conf,
         "disagreements": disagreements,
         "defer": defer,
+        "escalation": escalation,
+        "plan": plan,
     }
 
 
@@ -271,10 +299,10 @@ def _trim_votes_to_window(vote_lines, profiles, candidates, head_text,
 
 
 def run_convergence_specialist(transport, api_key, governor, panel_results, model,
-                               max_tokens=1200, reasoning_effort="auto",
-                               reasoning_token_budget=0.4, ledger=None, task_id=None,
-                               fallback_pool=None, claim_polarity=None,
-                               profiles=None):
+                                max_tokens=1200, reasoning_effort="auto",
+                                reasoning_token_budget=0.4, ledger=None, task_id=None,
+                                fallback_pool=None, claim_polarity=None,
+                                profiles=None):
     """A dedicated 'convergence specialist' renders the final verdict from the
     panel's per-claim JSON (defaults to the judge model when not overridden).
 
@@ -287,6 +315,11 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
     attempt is preflight-reserved before the first call and billed per
     attempt, so the ceiling stays exact. The deterministic tally remains
     authoritative even if the whole lane fails.
+
+    Auto-escalation: the specialist may emit an "escalation" directive to
+    request a more capable model rung, with a condensed context for the next
+    rung. It may also emit a "plan" artifact for de-escalation handoff to
+    cheaper models after the escalated rung completes.
     """
     lines = [
         "You are a convergence specialist. N independent models each reviewed the same claims "
@@ -294,7 +327,10 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
         "Produce the FINAL convergence consensus as ONE JSON object, no prose:",
         "{\"converged\":true|false,\"agreement\":\"high|medium|low|none\","
         "\"confidence\":<0-1>,\"claims\":{\"<claim>\":{\"verdict\":\"real|not_real\","
-        "\"converged\":true|false,\"confidence\":<0-1>}}}",
+        "\"converged\":true|false,\"confidence\":<0-1>}}"
+        ",\"escalation\":{\"needed\":true|false,\"reason\":\"...\","
+        "\"condensed_context\":\"...\",\"target_rung\":0}"
+        ",\"plan\":{\"steps\":[\"...\"],\"target_tier\":\"cheap|paid|free\"}}",
         "Responder unanimity is present when every model that answered agrees on its verdict. "
         "The merge-gate converged field additionally requires every required panel slot to answer. "
         "Claims are DEFECT propositions: real:true means the stated defect genuinely exists. "
@@ -308,6 +344,14 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
         "response will be discarded and the task rotated to another model. Do your best "
         "within the cap, assume nothing beyond it, and emit ONLY the JSON object as your "
         "visible content, starting with {.",
+        # Escalation guidance
+        "ESCALATION GUIDANCE: If the panel's verdicts are inconclusive (low agreement, "
+        "high deferral, or conflicting evidence), you MAY set \"escalation.needed\": true "
+        "and provide a \"condensed_context\" (max 8000 chars) summarizing the stuck state "
+        "for a more capable model. Set \"target_rung\" to the escalation ladder index "
+        "(0 = first rung). The system will de-escalate back to the tier that needed "
+        "escalation once a plan is produced. Include a \"plan\" with ordered steps for "
+        "cheaper models to execute.",
     ]
     # Full per-claim JSON: these are short, structured verdicts, and the
     # preflight reserve (target * panel_tokens) already covers them. A

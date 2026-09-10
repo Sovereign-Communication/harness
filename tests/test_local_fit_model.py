@@ -13,6 +13,10 @@ try:
     import numpy as np
 except ImportError:  # pragma: no cover - train-time extra absent
     np = None
+try:
+    import onnx  # noqa: F401
+except ImportError:  # pragma: no cover - train-time extra absent
+    onnx = None
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -20,7 +24,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 # Without it the modules under test cannot even import, so skip the class
 # instead of failing collection on clean CI runners.
 needs_numpy = unittest.skipUnless(
-    np is not None, "train-time deps (numpy) required")
+    np is not None and onnx is not None,
+    "train-time deps (numpy+onnx) required")
 
 
 def extract_some_rows():
@@ -320,8 +325,13 @@ class TestNoNetwork(unittest.TestCase):
     guarantee.
     """
     def test_train_module_has_no_network_imports(self):
-        import harness.local_fit.train as t
-        source = open(t.__file__, encoding="utf-8").read().lower()
+        # Read the source file directly: importing train.py requires the
+        # optional onnx extra, which this guard must not depend on.
+        train_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "harness", "local_fit", "train.py")
+        with open(train_path, encoding="utf-8") as f:
+            source = f.read().lower()
         banned = ["requests", "openai", "anthropic", "httpx", "aiohttp", "urllib.request", "websocket"]
         for b in banned:
             self.assertNotIn(b, source, f"train.py should not reference {b}")

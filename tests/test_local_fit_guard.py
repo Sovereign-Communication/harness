@@ -26,6 +26,16 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+try:
+    import numpy  # noqa: F401
+    import onnx  # noqa: F401
+    _TRAIN_OK = True
+except ImportError:
+    _TRAIN_OK = False
+
+needs_train = unittest.skipUnless(
+    _TRAIN_OK, "train-time deps (numpy+onnx) required")
+
 from harness.capability import CapabilityProfile, order_pool
 
 GOOD = "syn/good:free"
@@ -228,6 +238,7 @@ class TestDegenerateArtifactFailsClosed(GuardTestBase):
         self.assertFalse(res["reordered"])
 
 
+@needs_train
 class TestEndToEndRealArtifact(GuardTestBase):
     """Mock-free: train -> export -> stdlib score -> order_pool INFLUENCE.
 
@@ -456,6 +467,7 @@ class TestEndToEndRealArtifact(GuardTestBase):
             self.assertEqual(hits, [], f"runtime scoring imported {hits}")
 
 
+@needs_train
 class TestExportCalibration(GuardTestBase):
     """Export-side temperature contract (train-time; numpy allowed here)."""
 

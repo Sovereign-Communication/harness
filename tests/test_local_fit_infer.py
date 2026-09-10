@@ -11,6 +11,16 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+try:
+    import numpy  # noqa: F401
+    import onnx  # noqa: F401
+    _TRAIN_OK = True
+except ImportError:
+    _TRAIN_OK = False
+
+needs_train = unittest.skipUnless(
+    _TRAIN_OK, "train-time deps (numpy+onnx) required")
+
 
 def _synth_weights(in_dim: int, hidden: int = 4, out: int = 3):
     """Deterministic hand-computable weights."""
@@ -116,6 +126,7 @@ class TestStdlibScorer(unittest.TestCase):
         self.assertNotEqual(a, b)
 
 
+@needs_train
 class TestImportIsolation(unittest.TestCase):
     def test_enabled_scoring_path_imports_no_numpy_or_onnxruntime(self):
         """Scoring must not newly import numpy/onnx/onnxruntime or the train module.

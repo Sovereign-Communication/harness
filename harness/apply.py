@@ -64,6 +64,7 @@ from .output import eprint
 from .prompts import build_apply_prompt, consent_mechanics_text
 from .tokens import estimate_prompt_tokens
 from .validation import validate_apply_request
+from .escalation import EscalationDriver
 
 VERIFY_FEEDBACK_CHARS = 6000
 
@@ -679,11 +680,51 @@ class ApplyEngine:
             return None
 
     def _escalate(self, req, state):
-        """Cheap model exhausted its retry budget -> optional gated escalation
-        to a stronger model, with the gate run again on its output. A
-        proven-broken gate would fail the escalation identically, so skip it.
-        Returns the ok terminal result, or None to fall through to the
-        terminal failure."""
+        """Multi-rung escalation when a ladder is configured; else legacy rung."""
+        if req.verify_only or not req.verify_cmd or state.gate_broken:
+            return None
+        if not self.router.escalation_pool:
+            return self._escalate_legacy(req, state)
+        allowed = req.allow_escalation if req.allow_escalation is not None \
+            else self.router.allow_escalation
+        if not allowed:
+            return None
+
+        def base_prompt_fn(st, rung_context):
+            last = st.rounds[-1] if st.rounds else {}
+            tail = (last.get("verify_output") or "")[-VERIFY_FEEDBACK_CHARS:]
+            round_ctx = (
+                "A cheaper model exhausted its retry budget without passing verification.\n"
+                f"Verification command: {req.verify_cmd}\n"
+                f"Last {VERIFY_FEEDBACK_CHARS} chars:\n```\\n{tail}\\n```\\n\\n"
+                "Return the corrected COMPLETE file content.")
+            if rung_context:
+                round_ctx = rung_context + "\n\n" + round_ctx
+            return build_apply_prompt(req.file_path, req.instruction, req.edit_snippet,
+                                      st.current_content, round_ctx, req.continuation,
+                                      backend=req.backend)
+
+        def finish_fn(model, content, cost):
+            new_content = _extract_file_content(content) if content else state.current_content
+            self.ledger.append("escalate", task_id=req.task_id,
+                               from_model=req.model, to_model=model)
+            return self.gate.finish_escalation(
+                req, state, model, new_content, cost, bool(content))
+
+        driver = EscalationDriver(
+            router=self.router,
+            transport=self.transport,
+            api_key=self.api_key,
+            governor=self.governor,
+            ledger=self.ledger,
+            task_id=req.task_id,
+            reasoning_token_budget=self.reasoning_token_budget,
+            max_tokens=req.max_tokens,
+        )
+        return driver.run_with_escalation(req, state, base_prompt_fn, finish_fn)
+
+    def _escalate_legacy(self, req, state):
+        """Legacy single-rung escalation (kept for backward compatibility)."""
         if req.verify_only or not req.verify_cmd or state.gate_broken:
             return None
         esc = self.router.escalation(override=req.allow_escalation)

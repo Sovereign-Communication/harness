@@ -139,6 +139,43 @@ SPECIALIST_POOL_PAID = [
     "deepseek/deepseek-chat",
 ]
 
+# ---- Escalation ladders (judge-driven auto-escalation with de-escalation) ----
+# Ordered from cheapest to most capable. The judge condenses context and
+# directs escalation rung-by-rung; after the escalated model produces a plan,
+# the system de-escalates back to the last tier that needed escalation.
+# Each rung has an implicit per-rung cost cap enforced by SpendGovernor.
+ESCALATION_POOL_FREE = [
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "cohere/north-mini-code:free",
+]
+
+# Paid escalation ladder: curated from live OpenRouter catalog (Sept 2026).
+# The top rung is the "smartest per price tier" capstone.
+# Per-rung cost caps are advisory (enforced by SpendGovernor preflight).
+# Only catalog-validated ids belong here (stale ids hard-fatal at fetch_pricing).
+ESCALATION_POOL_PAID = [
+    "inclusionai/ling-3.0-flash",
+    "meta-llama/llama-3.1-8b-instruct",
+    "deepseek/deepseek-chat",
+    "openai/gpt-4o-mini",
+    "openai/gpt-4o",
+    "ibm-granite/granite-4.0-h-micro",
+]
+
+# The smartest judge available per tier (used when judge auto-selection is on).
+# Free tier: gemma-4-31b-it:free (already DEFAULT_JUDGE for free).
+# Paid tier: the top of the paid escalation ladder (validated catalog id).
+DEFAULT_JUDGE_PAID_TOP = "ibm-granite/granite-4.0-h-micro"
+
+# Per-rung advisory cost caps (USD). The SpendGovernor preflight enforces
+# the overall task ceiling (HARD_TASK_MAX_COST=0.25); these are rung-level
+# hints for the judge's worth-gating decision.
+ESCALATION_RUNG_CAPS = {
+    "free": [0.0, 0.0, 0.0],
+    "paid": [0.02, 0.03, 0.05, 0.08, 0.15, 0.25],
+}
+
 
 def shipped_model_ids():
     """Every default lane model id this install ships with, across both tier
@@ -150,17 +187,21 @@ def shipped_model_ids():
     return (set(FREE_PANEL_POOL) | {FREE_JUDGE} | set(FREE_APPLY_POOL)
             | set(SPECIALIST_POOL_FREE)
             | set(DEFAULT_PANEL_PAID) | {DEFAULT_JUDGE_PAID}
-            | {DEFAULT_APPLY_MODEL_PAID} | set(SPECIALIST_POOL_PAID))
+            | {DEFAULT_APPLY_MODEL_PAID} | set(SPECIALIST_POOL_PAID)
+            | set(ESCALATION_POOL_FREE) | set(ESCALATION_POOL_PAID)
+            | {DEFAULT_JUDGE_PAID_TOP})
 
 _ENV_NAMES = {
     "use_free": "HARNESS_USE_FREE",
     "panel": "HARNESS_PANEL",
     "panel_pool": "HARNESS_PANEL_POOL",
     "judge": "HARNESS_JUDGE",
+    "judge_top": "HARNESS_JUDGE_TOP",
     "convergence_model": "HARNESS_CONVERGENCE_MODEL",
     "specialist_pool": "HARNESS_SPECIALIST_POOL",
     "apply_model": "HARNESS_APPLY_MODEL",
     "apply_pool": "HARNESS_APPLY_POOL",
+    "escalation_pool": "HARNESS_ESCALATION_POOL",
     "escalation_model": "HARNESS_ESCALATION_MODEL",
     "max_cost": "HARNESS_MAX_COST",
     "task_max_cost": "HARNESS_TASK_MAX_COST",
@@ -262,8 +303,8 @@ def _dedup(seq):
 
 
 class Settings:
-    def __init__(self, use_free, panel, panel_pool, judge, convergence_model, specialist_pool,
-                 apply_model, apply_pool, escalation_model, max_cost, task_max_cost, max_tokens,
+    def __init__(self, use_free, panel, panel_pool, judge, judge_top, convergence_model, specialist_pool,
+                 apply_model, apply_pool, escalation_pool, escalation_model, max_cost, task_max_cost, max_tokens,
                  apply_max_tokens, reasoning_effort, reasoning_token_budget,
                  max_panelists, max_rotations, renew_consent, ledger_path,
                   expect_key_label, default_require_consent, allow_escalation,
@@ -273,6 +314,8 @@ class Settings:
         self.panel = list(panel)
         self.panel_pool = list(panel_pool)
         self.judge = judge
+        # The smartest judge available for the current tier (free or paid).
+        self.judge_top = judge_top
         # Convergence specialist defaults to the same model as the judge.
         self.convergence_model = convergence_model or judge
         # Ordered fallback ladder for the specialist: the primary is tried
@@ -280,6 +323,10 @@ class Settings:
         self.specialist_pool = list(specialist_pool or [])
         self.apply_model = apply_model
         self.apply_pool = list(apply_pool)
+        # Escalation ladder (ordered cheapest->most capable). Used by the
+        # auto-escalation driver for judge-driven rung stepping.
+        self.escalation_pool = list(escalation_pool or [])
+        # Single escalation_model retained for backward-compat (single-rung mode).
         self.escalation_model = escalation_model
         self.max_cost = max_cost
         self.task_max_cost = task_max_cost
@@ -301,9 +348,9 @@ class Settings:
 
     def to_dict(self):
         return {k: getattr(self, k) for k in (
-            "use_free", "panel", "panel_pool", "judge", "convergence_model",
+            "use_free", "panel", "panel_pool", "judge", "judge_top", "convergence_model",
             "specialist_pool",
-            "apply_model", "apply_pool", "escalation_model", "max_cost",
+            "apply_model", "apply_pool", "escalation_pool", "escalation_model", "max_cost",
             "task_max_cost", "max_tokens", "apply_max_tokens",
             "reasoning_effort", "reasoning_token_budget", "max_panelists",
             "max_rotations", "renew_consent", "ledger_path", "expect_key_label",
@@ -334,19 +381,25 @@ def load_settings(overrides=None):
     if use_free:
         default_panel = FREE_PANEL_POOL
         default_judge = FREE_JUDGE
+        default_judge_top = FREE_JUDGE
         default_apply_pool = FREE_APPLY_POOL
         default_specialist_pool = SPECIALIST_POOL_FREE
+        default_escalation_pool = ESCALATION_POOL_FREE
     else:
         default_panel = DEFAULT_PANEL_PAID
         default_judge = DEFAULT_JUDGE_PAID
+        default_judge_top = DEFAULT_JUDGE_PAID_TOP
         default_apply_pool = [DEFAULT_APPLY_MODEL_PAID]
         default_specialist_pool = SPECIALIST_POOL_PAID
+        default_escalation_pool = ESCALATION_POOL_PAID
 
     panel = _split_list(str(get("panel", ",".join(default_panel)))) or default_panel
     panel_pool = _split_list(str(get("panel_pool", ",".join(panel)))) or panel
     apply_model = str(get("apply_model", default_apply_pool[0]))
     apply_pool = _split_list(str(get("apply_pool", ",".join(
         _dedup([apply_model] + default_apply_pool))))) or [apply_model]
+    judge_top = str(get("judge_top", default_judge_top))
+    escalation_pool = _split_list(str(get("escalation_pool", ",".join(default_escalation_pool)))) or default_escalation_pool
 
     # -- numeric range validation (fail closed on nonsense) ------------------
     # Cost ceilings are HARD: HARD_MAX_COST / HARD_TASK_MAX_COST are absolute
@@ -382,10 +435,12 @@ def load_settings(overrides=None):
         panel=panel,
         panel_pool=panel_pool,
         judge=str(get("judge", default_judge)),
+        judge_top=judge_top,
         convergence_model=get("convergence_model", None),
         specialist_pool=_split_list(str(get("specialist_pool", ",".join(default_specialist_pool)))) or default_specialist_pool,
         apply_model=apply_model,
         apply_pool=apply_pool,
+        escalation_pool=escalation_pool,
         escalation_model=get("escalation_model", None),
         max_cost=max_cost,
         task_max_cost=task_max_cost,
