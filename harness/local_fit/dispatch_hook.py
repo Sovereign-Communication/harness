@@ -22,7 +22,7 @@ ordering flag is also on, re-sorted by a small advisory tiebreak on top of
 the existing order key. The existing order is never discarded.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 from .hook import score_candidates, apply_advisory_tiebreak, enabled, use_advisory_ordering
 

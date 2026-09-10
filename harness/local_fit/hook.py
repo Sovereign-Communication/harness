@@ -17,7 +17,7 @@ HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER=1|true|yes — also apply the advisory as a
                                               existing_order_key (still advisory only)
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 from .config import is_enabled, load_scorer, seat_scores, advisory_key
 

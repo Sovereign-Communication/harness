@@ -8,15 +8,12 @@ This is intentionally plain:
 """
 
 import json
-import math
 import os
-import random
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import onnx
-import onnxruntime as ort
 from onnxruntime import InferenceSession
 
 
@@ -90,9 +87,6 @@ def build_dataset(rows: List[Any], stats: Dict[str, Dict[str, float]]) -> Tuple[
 
 def compute_stats(rows: List[Any]) -> Dict[str, Dict[str, float]]:
     """Compute means/stdevs for numeric features across extracted rows."""
-    from .schema import (
-        TASK_TYPE_VOCAB, SEAT_ROLE_VOCAB, REASONING_EFFORT_VOCAB,
-    )
     numerics = [
         "structured_output_required", "max_tokens_requested", "prompt_chars",
         "source_window_attached", "claims_count", "convergence_expected", "is_iterative",
@@ -234,7 +228,6 @@ def export_weights(net: "TinyNet", path: str) -> None:
 # ---------------------------------------------------------------------------
 
 def export_onnx(net: TinyNet, in_dim: int, path: str) -> None:
-    import onnx
     from onnx import helper, TensorProto
 
     X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [None, in_dim])
@@ -493,7 +486,6 @@ def run_eval(
         raise ValueError("no eval rows extracted")
 
     train_stats = compute_stats(train_rows)
-    eval_stats = compute_stats(eval_rows)
 
     X_train, Y_train = build_dataset(train_rows, train_stats)
     X_eval, Y_eval = build_dataset(eval_rows, train_stats)
@@ -611,7 +603,7 @@ def _eval_summary_text(payload: Dict[str, Any]) -> str:
     lines: List[str] = []
     lines.append("Local model-fit hold-out evaluation summary")
     lines.append("=" * 50)
-    lines.append(f"model_version: 0.1.0-draft")
+    lines.append("model_version: 0.1.0-draft")
     lines.append(f"seed: {payload['seed']}")
     lines.append(f"train_ratio: {payload['split']['train_ratio']}")
     lines.append("")

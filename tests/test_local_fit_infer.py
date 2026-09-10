@@ -3,9 +3,7 @@
 Guards the zero-runtime-dependency promise of the enabled advisory path.
 """
 
-import importlib
 import json
-import math
 import os
 import sys
 import tempfile
@@ -132,7 +130,7 @@ class TestImportIsolation(unittest.TestCase):
         self.assertGreater(len(rows), 0)
 
         with tempfile.TemporaryDirectory() as d:
-            result = run_pipeline(rows, d)  # train-time path; numpy allowed here
+            run_pipeline(rows, d)  # train-time path; numpy allowed here
             # Simulate a stdlib-only process: the loader must serve StdlibScorer.
             os.environ["HARNESS_LOCAL_FIT_ENABLE"] = "1"
             os.environ["HARNESS_LOCAL_FIT_MODEL_DIR"] = d
@@ -176,7 +174,7 @@ class TestImportIsolation(unittest.TestCase):
 
         rows = extract(all_run_files("audits"))
         with tempfile.TemporaryDirectory() as d:
-            result = run_pipeline(rows, d)
+            run_pipeline(rows, d)
             self.assertTrue(os.path.exists(os.path.join(d, "model_weights.json")))
             # stdlib scorer loads the pipeline's own artifact
             from harness.local_fit.infer import StdlibScorer

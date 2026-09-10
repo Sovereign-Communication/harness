@@ -4,11 +4,9 @@ These are hermetic where possible and only depend on extracted rows from
 existing run JSON via the read-only extractor.
 """
 
-import json
 import os
 import sys
 import tempfile
-from typing import Any, Dict
 
 import numpy as np
 import unittest
@@ -71,7 +69,7 @@ class TestTrainingAndExport(unittest.TestCase):
             self.assertEqual(len(probs), 3)
 
     def test_advisory_hook_reads_scores(self):
-        from harness.local_fit.train import compute_stats, build_feature_vector, build_dataset, export_onnx, export_metadata, canonical_feature_order, TinyNet, LABEL_INDEX
+        from harness.local_fit.train import compute_stats, build_dataset, export_onnx, export_metadata, canonical_feature_order, TinyNet, LABEL_INDEX
         rows = extract_some_rows()
         stats = compute_stats(rows)
         X, Y = build_dataset(rows, stats)
@@ -200,7 +198,7 @@ class TestHoldOutEval(unittest.TestCase):
 
     def test_eval_stats_from_train_only(self):
         """Verify that eval uses train stats, not eval stats, for normalization."""
-        from harness.local_fit.train import run_eval, split_files, compute_stats
+        from harness.local_fit.train import split_files, compute_stats
         from harness.local_fit.extract import extract
         v4 = os.path.join("audits", "scmessenger", "_runs", "v4")
         files = [os.path.join(v4, f) for f in sorted(os.listdir(v4)) if f.endswith(".json")]
@@ -330,7 +328,7 @@ class TestFlagGatedHook(unittest.TestCase):
         """When flags are on and a model dir with a valid artifact is provided, scores are attached."""
         from harness.local_fit.extract import all_run_files, extract
         from harness.local_fit.train import run_pipeline
-        from harness.local_fit.hook import score_candidates, apply_advisory_tiebreak, enabled, use_advisory_ordering
+        from harness.local_fit.hook import score_candidates, apply_advisory_tiebreak, enabled
         import os
         files = all_run_files("audits")
         rows = extract(files)

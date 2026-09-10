@@ -20,21 +20,14 @@ Labels are mutually exclusive and severity-ordered:
 import json
 import os
 import re
-from collections import Counter
-from typing import Any, Dict, Generator, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 from .schema import (
-    SEAT_ROLE_VOCAB,
-    SOURCE_KIND_VOCAB,
-    TASK_TYPE_VOCAB,
-    LABEL_ORDER,
     SeatRow,
     resolve_label,
-    one_hot,
 )
 
 
-from .features import hash_model_id as _hash_model, safe_div as _safe_div, prompt_chars_estimate
 
 
 def guess_task_type(run: Dict[str, Any], keys: List[str]) -> str:

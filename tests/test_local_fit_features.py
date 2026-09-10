@@ -106,7 +106,6 @@ class TestDispatchFeatureBuilder(unittest.TestCase):
     def test_public_dispatch_call_shape(self):
         from harness.local_fit.features import build_dispatch_features
         from harness.local_fit.schema import FEATURE_ORDER
-        from harness.local_fit.features import expected_vector_length
 
         feats = build_dispatch_features(
             "acme/model-a", task="structured", free_tier=True,

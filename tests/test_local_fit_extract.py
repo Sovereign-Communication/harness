@@ -1,9 +1,7 @@
 """Tests for the read-only seat extractor and label rules."""
 
-import json
 import os
 import sys
-import tempfile
 from typing import Any, Dict
 from collections import Counter
 

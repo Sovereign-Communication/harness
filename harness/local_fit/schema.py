@@ -9,7 +9,7 @@ Labels are mutually exclusive and severity-ordered:
 Features are pre-dispatch only. No outcome data leaks into the input vector.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
