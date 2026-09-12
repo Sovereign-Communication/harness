@@ -9,6 +9,7 @@ reasoning-only traces, and truncation are protocol conditions, not content,
 and must never be mined for votes, file bodies, or consent decisions.
 """
 import json
+import os
 
 from .config import OPENROUTER_CHAT_URL
 from .output import eprint
@@ -138,7 +139,8 @@ def assess_output(content, finish_reason=None, allow_truncated=False):
 # ------------------------- reasoning / effort -------------------------
 
 _REASONING_HINTS = ("reason", "thinking", "inkling", "qwq", "r1", "o3", "o4",
-                    "deepseek", "kimi", "glm-4.6", "glm-5.2", "glm-5.6", "minimax-reason")
+                    "deepseek", "kimi", "glm-4.6", "glm-5.2", "glm-5.6", "minimax-reason",
+                    "nemotron", "openrouter/free")
 _EFFORT_VALUES = ("auto", "off", "none", "low", "medium", "high", "on")
 _REASONING_PARAM_ERR_HINTS = ("reasoning", "unsupported parameter",
                               "unknown parameter", "unexpected parameter")

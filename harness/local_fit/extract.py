@@ -552,7 +552,7 @@ def extract(
         path = os.path.abspath(path)
         if not os.path.isfile(path):
             continue
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             run = json.load(f)
         if not isinstance(run, dict):
             # Batch summaries / non-run JSON (e.g. a list summary.json) are
@@ -570,7 +570,7 @@ def extract(
         path = os.path.abspath(path)
         if not os.path.isfile(path):
             continue
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             run = json.load(f)
         if not isinstance(run, dict):
             continue
