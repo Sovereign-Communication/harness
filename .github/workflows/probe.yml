@@ -1,9 +1,0 @@
-name: probe
-on:
-  push:
-    branches: ["fix/reasoning-model-hints-and-bom"]
-jobs:
-  ping:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo probe-ok
