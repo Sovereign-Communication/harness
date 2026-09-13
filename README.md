@@ -110,7 +110,7 @@ with `HARNESS_*` env overrides:
 | `panel` / `panel_pool` | curated free list | Ordered panel pool; failing members rotate |
 | `judge` | `google/gemma-4-31b-it:free` | JSON-reliable judge (best live track record) |
 | `convergence_model` | (same as `judge`) | Primary convergence-specialist model for `--converge` |
-| `specialist_pool` | free: minimax, gemma-4-31b, gemma-4-26b | Ordered specialist fallback ladder, strongest observed first |
+| `specialist_pool` | free: gemma-4-31b, gemma-4-26b | Ordered specialist fallback ladder, strongest observed first |
 | `apply_model` / `apply_pool` | free code-first pool | Ordered apply pool; rotates on error |
 | `reasoning_effort` | `auto` | `auto`/`off`/`none`/`low`/`medium`/`high`/`on` |
 | `reasoning_token_budget` | `0.4` | Fraction of `max_tokens` allowed for hidden reasoning |
@@ -187,6 +187,9 @@ harness offer --task "Refactor the routing engine's backpressure path"
 harness apply --out state.json ...          # run 1
 harness continue --state state.json --out state2.json   # run 2 (takes over partial work)
 
+# Record a mid-task deferral / consent revocation (the CLI face of defer_work)
+harness defer --task-id <id> --reason "scope changed" --category alignment
+
 # Self-hosting loop in one command: hermetically ground a claims fixture,
 # get the defect gate-confirmed by a live panel, then gated self-apply.
 # Exit 0 only if every phase proved its claim.
@@ -205,10 +208,13 @@ harness dogfood --from-ledger --claims-out curated.json \
 harness dogfood --from-ledger --claims-out curated.json \
   --file harness/spend.py --instruction x --verify "python -m py_compile harness/spend.py"
 
-# Autonomy ledger, live free models, key status
-harness ledger report
+# Autonomy ledger, live free models, key status, trust standing
+harness ledger report          # includes chain status (segments, pruned cut)
+harness ledger verify          # chain integrity + retention shape
 harness models
 harness spend
+harness trust --model <id>     # bipolar trust + correctness (read-only)
+harness trust --caller <id>    # one peer's standing
 
 # Model capability profiles + reliability (hypothesis from /models, corrected
 # by observed evidence). --bench runs a real JSON probe on the free pool.
@@ -219,6 +225,29 @@ harness capabilities --check-shipped   # CI-able freshness gate for shipped pool
 
 Exit codes: `0` ok, `1` fatal, `2` verify/lint failure (or unconfirmed run),
 `3` deferred / not confirmed (safe to `continue` or re-run later).
+
+## Web & desktop UI (Phase 2)
+
+```bash
+harness serve            # loopback web UI + JSON API (default 127.0.0.1:8765)
+harness serve --auth-token <secret>   # require X-Harness-Auth on /api routes
+harness-desktop          # pywebview native window over the same UI (browser fallback)
+```
+
+The third face of the same core: dispatch apply/verify/continue/bench from the
+browser, watch the run timeline live (typed progress events from
+`harness/events.py` — the same stream `--events FILE` writes), browse the
+autonomy ledger + chain integrity, and read capabilities/reliability tables.
+Every dispatch re-runs the exact CLI engine path — consent, spend preflight,
+verify-gate validation, and the trust gates are never bypassed; the UI adds a
+human confirmation step on top, never instead.
+
+Security posture: loopback bind only (non-loopback Host headers are refused —
+DNS-rebinding guard), optional shared token (`HARNESS_UI_AUTH_TOKEN`),
+secrets shown as presence-only in the settings view. The desktop shell
+(`pip install sovereign-harness[desktop]`) auto-generates a per-session token
+and passes it via the URL fragment. See [docs/ui-readiness.md](docs/ui-readiness.md)
+for the data contracts the UI consumes.
 
 ## MCP — native dispatch
 
@@ -233,9 +262,21 @@ Wire into any MCP host (Claude Code, Cursor, your own agents):
 ```
 
 Tools: `panel_verify`, `apply_edit`, `offer_work`, `defer_work`,
-`ledger_status`, `participation_report`, `spend_status`. `apply_edit` accepts
-`backend: "harness"|"morph"`, `verify_only`, `max_lines`, `model`, and the
-same continuation controls as the CLI. The hand-rolled server is spec-conformant (JSON-RPC 2.0 over stdio, `initialize` →
+`ledger_status`, `participation_report`, `spend_status`, `trust_status`.
+`trust_status` reports bipolar trust (-11..+11) for the host and a model,
+plus the correctness level that rations spend ceilings (read-only).
+`apply_edit` accepts
+`backend: "harness"|"morph"|"diff"`, `verify_only`, `max_lines`, `model`, and the
+same continuation controls as the CLI. Tools run on three serial lanes
+(`mutation`, `spendy`, `observe`) so status queries never queue behind a
+long edit, and every request carries a cooperative deadline
+(`HARNESS_MCP_TOOL_TIMEOUT`, default 1800s). Optional shared secret:
+`HARNESS_MCP_AUTH_TOKEN` / `mcp_auth_token` — when set, every `tools/call`
+must pass `params._meta.harness_token` (or `params.harness_token`). Leave
+unset for the documented stdio-inherits-host-authority model.
+`panel_verify` accepts optional `task_max_cost` (0–0.25) as a per-call
+ceiling check against the remaining session budget. Frames correlate by request
+id, never by position. The hand-rolled server is spec-conformant (JSON-RPC 2.0 over stdio, `initialize` →
 `tools/list` → `tools/call`, `structuredContent` + `isError`).
 
 ## Reasoning & effort, flushed out
@@ -262,7 +303,7 @@ consensus is measured, not self-reported:
 
 ```bash
 harness verify --prompt-file audit.txt --converge \
-  --panel "google/gemma-4-31b-it:free,minimax/minimax-m3:free" \
+  --panel "google/gemma-4-31b-it:free,openrouter/free" \
   --judge google/gemma-4-31b-it:free --out verdict.json
 ```
 
@@ -275,7 +316,9 @@ harness verify --prompt-file audit.txt --converge \
   reported as high agreement with an explicit `panel_shortfall` and
   `defer:true`, never as disagreement. Full 5/5 coverage produces a 1.0 gate
   rate, lifts `consensus.agreement` to `high`, and overrides the judge's
-  self-reported number.
+  self-reported number. A resource-cap trim is never a shortfall: the tally
+  always counts full votes, and any votes withheld from the judge prompt are
+  reported separately as `trimmed_for_judge`.
 - **Polarity convention: claims are defect propositions.** `real: true`
   unambiguously means the stated defect exists in the code. Phrase claims as
   "Defect: X is vulnerable to Y", never as "X is correct" — the latter is
@@ -293,9 +336,8 @@ harness verify --prompt-file audit.txt --converge \
   an HTTP error, a paid-BYOK route, empty or reasoning-only output, truncation
   against its token cap, or unparseable JSON, it rotates down a fallback ladder
 (`--specialist-pool` / `HARNESS_SPECIALIST_POOL`, or `specialist_pool` in
-config). The free ladder leads with **minimax-M3** (a perfect observed JSON
-emitter on the live record); the remaining models are tried in
-observed-reliability order, proven models first. Every
+config). The free ladder leads with catalog-validated emitters; the remaining
+models are tried in observed-reliability order, proven models first. Every
   attempt is preflight-reserved before the first call and billed per attempt,
   so the ceiling stays exact, the full attempt trail lands in
   `convergence.attempts` and the ledger, and the deterministic tally stays
@@ -419,10 +461,9 @@ harness capabilities --check-shipped  # $0.00: every shipped default pool id sti
   bounded errors and are persisted before the next probe question.
 
 The registry lives in `~/.config/harness/capabilities.json` (refreshed at most
-once per 24h, or with `--refresh`). The hypothesis is pinned to real data: a
-hermetic test runs the score over a committed `/models` fixture and fails if
-GLM-5.2 and minimax-M3 stop outranking gemma-4-31b — proof of the ranking,
-not an assertion.
+once per 24h, or with `--refresh`). The hypothesis is pinned to committed
+`/models` data: hermetic tests verify capability scoring, ordering, and stale
+model filtering without requiring a network call.
 
 ## The sovereignty model
 
@@ -463,6 +504,27 @@ yes. Harness treats that as a bug to design around:
   rates per model and flags near-100% acceptance as *degenerate consent*.
 - The **checkbox** is `require_consent` — per dispatch and globally.
 
+## Multi-rung apply escalation (opt-in)
+
+When the cheap apply lane exhausts its verify budget and `allow_escalation`
+is set, harness walks an ordered ladder (`HARNESS_ESCALATION_POOL`) from
+cheapest to most capable. Each rung:
+
+1. Builds the same COMPLETE-file apply prompt (optional judge condensed
+   context for rungs after the first).
+2. Preflights against the spend governor.
+3. Runs the real verification gate — only a gated pass succeeds.
+
+The verify-lane convergence specialist may also emit an `escalation`
+directive (`needed`, `reason`, `condensed_context`, `target_rung`) as
+structured telemetry in the panel verdict. Apply responses are file content,
+not judge JSON.
+
+Config keys (env-overridable):
+- `HARNESS_ESCALATION_POOL` (comma-separated model ids)
+- `HARNESS_JUDGE_TOP` (smartest judge per tier)
+- `HARNESS_ALLOW_ESCALATION` (opt-in gate)
+
 ## Tests
 
 ```bash
@@ -473,27 +535,42 @@ hermetic tests — no network, no key. They pin: per-token pricing (regression
 on a ~1,000,000x undercount bug), no-tools payloads, hard/learned BYOK handling,
 key gates, mid-batch fail-closed, reasoning modes (incl. the
 retry-without-reasoning path), panel rotation, structured consensus parsing,
-ledger chain integrity and tamper detection, fail-closed consent, capability
+ledger chain integrity, tamper detection, rotation anchors and honest
+suffix-after-prune reporting, fail-closed consent (incl. renewal attribution
+to the answering model), capability
 deferral, the forced self-check (defer→rotate, all-defer accept, confident→proceed),
 confidence calibration (readiness vs verify join, unmatched-verdict handling),
-continuation resume, rotation on error, the vacuous-success guard, escalation
-gating, the MCP handshake, the bench manifest/task runner, and the convergence
+continuation resume (incl. file-retarget refusal), rotation on error, the vacuous-success guard, escalation
+gating, the MCP handshake (incl. lane scheduling that keeps status queries
+ahead of long edits, deadlines, per-caller tagging, and the allow_verify/cancel gates),
+the bench manifest/task runner (incl. schema validation and symlink-safe
+sandboxes), and the convergence
 specialist (deterministic per-claim tally, 5/5 unanimous == 100%, split
 non-convergence, default-to-judge-model, rotation on imperfect specialist
 output, defect-proposition polarity
-convention, reassurance-claim exclusion from the gate), and the capability
+convention, reassurance-claim exclusion from the gate, reassurance polarity
+in the specialist prompt, and smallest-window vote trimming), judge
+tally-first ordering (resource-cap trims report as `trimmed_for_judge`,
+never as shortfall), and the capability
 layer (parsing, scoring, context hard-gate, composite-reliability math incl.
 prior-shrink, observed-JSON-updates-declared, structured correctness evidence,
-probe persistence/error accounting, routing cost ties, registry persist/refresh/TTL,
-ledger success-rate, the **real-fixture proof** that minimax-M3 and GLM-5.2 outrank
-gemma-4-31b, and the unified MorphLite backend's read-only preview guarantees). The hardening
-suite adds: config range validation and unknown-key warnings (#15), the
+probe persistence/error accounting, probe BYOK learning and reasoning-slot
+reservation, routing cost ties, registry persist/refresh/TTL,
+ledger success-rate, the **real-fixture capability-ranking and stale-model
+filtering proofs**, and the unified MorphLite backend's read-only preview guarantees). The hardening
+suite adds: config range validation and unknown-key warnings (#15), integer
+settings staying integers (a live-dogfood crash), the
 capabilities registry schema-version stamp (#15), per-model cost reporting
-and --quiet (#16), token-estimator property tests (#7/#20), and the unified
-diff + multi-file apply paths (#11/#12). A live playtest round then pinned:
+and --quiet (#16), token-estimator property tests (#7/#20), transport retry
+cost merging, missing-cost accounting (free fills zero, paid estimates,
+blind fails closed), non-blocking ledger locks, backup/snapshot symlink
+refusal, and the unified
+diff + multi-file apply paths (#11/#12). Bipolar trust (-11..+11, cold-start
+unknown, per-caller breakout, correctness-rationed ceilings, write-time
+gates) and EOL-preserving atomic writes are pinned alongside. A live playtest round then pinned:
 defer markers honored anywhere in a model response (sovereignty), the strict
 unified-diff matcher's no-fuzz contract, apply without an initial consent
-probe, and the MCP allow_verify/cancel gates.
+probe, and CLI survival when a deferred self-edit breaks an owned module.
 
 ## License
 

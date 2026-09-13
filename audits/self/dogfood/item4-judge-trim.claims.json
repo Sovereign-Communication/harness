@@ -1,0 +1,13 @@
+{
+  "context": "The deterministic tally is documented as authoritative for the merge gate; panel_shortfall is documented to mean peers actually failed, not resource caps.",
+  "claims": [
+    {"id": "c1",
+     "text": "DEFECT: the context-budget guard reassigns panel_results to the trimmed list before the tally runs, so a resource-cap trim is counted as missing votes and reported as a transport panel_shortfall",
+     "kind": "defect",
+     "source_refs": [35, 50]},
+    {"id": "c2",
+     "text": "DEFECT: the reassignment makes every downstream use of panel_results, including the run result and the tally input, see the trimmed list instead of the full evidence",
+     "kind": "defect",
+     "source_refs": [35]}
+  ]
+}

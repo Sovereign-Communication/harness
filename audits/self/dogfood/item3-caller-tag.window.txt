@@ -1,0 +1,97 @@
+# harness/mcp.py __init__ assignments (caller stored, never captured)
+        # Session authorship for the evidence loop: the stdio peer (captured
+        # from initialize clientInfo) or the embedding host. Ledger events
+        # created on this connection carry it; trust scores break out
+        # per-caller history from it.
+        self.caller = caller
+        # Remote safety is explicit: verify commands and file writes are not
+        # enabled merely because a protocol client can reach this process.
+        self.allow_verify = bool(allow_verify)
+        self.allow_write = bool(allow_write)
+        self.allowed_roots = [os.path.realpath(os.path.abspath(root))
+                              for root in (allowed_roots or [])]
+
+    # ---------------- lanes + deadlines ----------------
+    @staticmethod
+    def _lane_for(tool_name):
+        """Which serial lane runs a tool. Unknown/missing names ride the
+        observe lane and fail validation in the worker, as before."""
+        if tool_name in MUTATION_LANE:
+            return "mutation"
+# harness/mcp.py _handle: initialize branch (complete)
+    def _handle(self, msg):
+        method = msg.get("method")
+        is_notification = "id" not in msg
+        params = msg.get("params", {})
+        if not isinstance(params, dict):
+            if is_notification:
+                return None
+            return {"jsonrpc": "2.0", "id": msg.get("id"),
+                    "error": {"code": -32602, "message": "params must be an object"}}
+
+        if method == "initialize":
+            if is_notification:
+                return None
+            try:
+                version = self._negotiate_version(params.get("protocolVersion"))
+            except HarnessError as exc:
+                return {"jsonrpc": "2.0", "id": msg.get("id"),
+                        "error": {"code": -32602, "message": str(exc)}}
+            return {
+                "jsonrpc": "2.0", "id": msg.get("id"),
+                "result": {
+                    "protocolVersion": version,
+                    "capabilities": {"tools": {"listChanged": False}, "logging": {}},
+                    "serverInfo": {"name": "harness", "version": SERVER_VERSION},
+                },
+            }
+
+        if method == "notifications/initialized":
+            return None
+        if method == "notifications/cancelled":
+            return self._handle_cancellation(msg, is_notification)
+        if is_notification:
+            return None
+        if method == "ping":
+            return {"jsonrpc": "2.0", "id": msg.get("id"), "result": {}}
+        if method == "tools/list":
+            return {"jsonrpc": "2.0", "id": msg.get("id"),
+                    "result": {"tools": self._tools()}}
+        if method == "tools/call":
+            return self._call_tool(msg)
+        return {"jsonrpc": "2.0", "id": msg.get("id"),
+                "error": {"code": -32601, "message": f"Method not found: {method}"}}
+
+    def _handle_cancellation(self, msg, is_notification):
+        params = msg.get("params", {})
+# harness/trust.py host_trust
+def host_trust(report):
+    """Trust earned by the calling host/session: (score, reasons).
+
+    v1 is a global session-hygiene score: every trust_gate denial on this
+    ledger is host-attributable (a refused write, exec, retarget, or gate
+    swap was *this* host's request), while completions are shared clean
+    evidence. Per-caller breakout lands with caller tagging; until then
+    one host's abuse correctly taints the shared session.
+    """
+    report = report or {}
+    try:
+        total = max(0, int(report.get("trust_gates") or 0))
+    except (TypeError, ValueError):
+        total = 0
+    try:
+        hostile = max(0, int(report.get("trust_hostile") or 0))
+    except (TypeError, ValueError):
+        hostile = 0
+    soft = max(0, total - hostile)
+    try:
+        completions = max(0, int(report.get("completions") or 0))
+    except (TypeError, ValueError):
+        completions = 0
+    levels = min(MAX_TRUST, completions // CLEAN_PER_LEVEL)
+    strikes = hostile * STRIKE_HOSTILE + soft * STRIKE_SOFT
+    score = _clamp(levels - strikes)
+    reasons = [f"{completions} completions ({levels} levels)",
+               f"{hostile} hostile + {soft} guidance denials"]
+    if not total and not completions:
+        return 0, ["no host history: unknown"]

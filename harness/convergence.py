@@ -10,6 +10,7 @@ fallback ladder on any imperfect outcome, but its prose can never override
 the vote count.
 """
 
+from . import events as _events
 from .chat import (_chat_reservation_slots, _extract_json, _reported_cost,
                    assess_output, chat, extract_content_and_cost)
 from .errors import HarnessError
@@ -30,7 +31,8 @@ def _parse_consensus(judge_text):
         # malformed prose as a successful synthesis.
         return {"agreement": "unknown", "confidence": None, "disagreements": [],
                 "defer": True, "verdict": judge_text or "",
-                "defer_reason": "unparseable_judge_output"}
+                "defer_reason": "unparseable_judge_output",
+                "escalation": None, "plan": None}
     verdict = parsed.get("verdict")
     agreement = str(parsed.get("agreement", "unknown")).lower()
     if agreement not in ("high", "medium", "low", "none"):
@@ -45,12 +47,46 @@ def _parse_consensus(judge_text):
     if not isinstance(disagreements, list):
         disagreements = []
     defer = bool(parsed.get("defer", False)) or agreement in ("low", "none")
+
+    # Escalation directive (judge-driven auto-escalation).
+    # The judge may direct the system to escalate to a more capable model rung.
+    esc = parsed.get("escalation")
+    escalation = None
+    if isinstance(esc, dict):
+        # Only a JSON boolean true enables escalation. Strings like "false"
+        # are truthy under bool() and must not open a paid ladder.
+        needed = esc.get("needed") is True
+        if needed:
+            raw_rung = esc.get("target_rung", 0)
+            try:
+                target_rung = int(raw_rung) if raw_rung is not None else 0
+            except (TypeError, ValueError):
+                target_rung = 0
+            escalation = {
+                "needed": True,
+                "reason": str(esc.get("reason", ""))[:500],
+                "condensed_context": str(esc.get("condensed_context", ""))[:8000],
+                "target_rung": max(0, target_rung),
+            }
+        else:
+            escalation = {"needed": False}
+
+    # Plan artifact for de-escalation handoff.
+    plan = parsed.get("plan")
+    if isinstance(plan, dict):
+        # Validate plan structure minimally
+        pass
+    elif plan is not None:
+        plan = {"raw": str(plan)[:4000]}
+
     return {
         "verdict": verdict or judge_text or "",
         "agreement": agreement,
         "confidence": conf,
         "disagreements": disagreements,
         "defer": defer,
+        "escalation": escalation,
+        "plan": plan,
     }
 
 
@@ -86,20 +122,25 @@ def tally_convergence(panel_results, claim_polarity=None, of_panel=None):
     order = {}
     for r in panel_results:
         verdicts = extract_claim_verdicts(r.get("content") or "")
+        model = r.get("model")
         for cid, v in verdicts.items():
             kind = "reassurance" if claim_polarity.get(cid, "defect") == "reassurance" else "defect"
             if cid not in buckets:
                 buckets[cid] = {"kind": kind, "votes": {"real": 0, "not_real": 0},
-                                "confidences": [], "models": []}
+                                "confidences": [], "models": [],
+                                "by_model": {}}
                 order[cid] = kind
             c = buckets[cid]
-            c["votes"]["real" if v["real"] else "not_real"] += 1
+            vote = "real" if v["real"] else "not_real"
+            c["votes"][vote] += 1
             if v.get("confidence") is not None:
                 try:
                     c["confidences"].append(float(v["confidence"]))
                 except (TypeError, ValueError):
                     pass
-            c["models"].append(r.get("model"))
+            c["models"].append(model)
+            if model is not None:
+                c["by_model"][model] = vote
 
     per_claim = {}
     reassurance = {}
@@ -139,8 +180,20 @@ def tally_convergence(panel_results, claim_polarity=None, of_panel=None):
             "of_panel": required,
             "confidence": mean_conf,
             "votes": votes,
+            # Explicit R/NR counts so verdict strings never imply unanimity
+            # from participation alone.
+            "real_votes": votes["real"],
+            "not_real_votes": votes["not_real"],
             "missing_votes": max(0, required - total),
             "panel_shortfall": total < required,
+            # Models whose vote was in the minority on this defect claim
+            # (used for structured-lane demotion after repeated lone dissent).
+            "minority_models": (
+                [m for m, v in c.get("by_model", {}).items() if v != majority]
+                if kind == "defect" and total > 0 and
+                votes["real"] > 0 and votes["not_real"] > 0
+                else []
+            ),
         }
         if kind == "defect":
             defect_total += 1
@@ -199,22 +252,99 @@ def tally_convergence(panel_results, claim_polarity=None, of_panel=None):
     }
 
 
+def _polarity_note(claim_polarity):
+    """Name the reassurance claims (if any) with their inverted polarity.
+
+    The panel prompt marks reassurance claims as real:true == correctness
+    holds -- the opposite of defect polarity. Without the same note here
+    the specialist inverts them in prose while the deterministic tally
+    (which excludes them from the defect gate) stays right: two verdicts
+    that disagree about the same votes.
+    """
+    reassurance = sorted(cid for cid, kind in (claim_polarity or {}).items()
+                         if kind == "reassurance")
+    if not reassurance:
+        return ("All claims below are defect propositions; no reassurance "
+                "claims are present.")
+    ids = ", ".join(reassurance)
+    return ("REASSURANCE claims (opposite polarity -- real:true means the "
+            f"stated correctness HOLDS, not that a defect exists): {ids}. "
+            "Render their verdicts in the panel's own real/not_real "
+            "vocabulary and keep them out of defect convergence.")
+
+
+def _trim_votes_to_window(vote_lines, profiles, candidates, head_text,
+                          max_tokens):
+    """Cap specialist votes at the SMALLEST known candidate window.
+
+    The ladder rotates across models with different context windows; the
+    prompt must fit the tightest one or a smaller-window fallback
+    truncates mid-JSON and burns the ladder for nothing. Newest votes are
+    kept first; dropped models are named, never silent. Unknown windows
+    (or none known) mean no trim -- cost is still preflighted and a
+    truncation rotates fail-closed. The deterministic tally (computed
+    from full votes upstream) stays authoritative regardless.
+    Returns (kept_lines, dropped_model_names).
+    """
+    windows = []
+    for m_ in candidates:
+        try:
+            profile = (profiles or {}).get(m_)
+            if profile is not None:
+                windows.append(profile.max_source_tokens)
+        except AttributeError:
+            continue
+    if not windows:
+        return vote_lines, []
+    from .tokens import estimate_prompt_tokens
+    budget = int((min(windows) - estimate_prompt_tokens(head_text)
+                  - max_tokens) * 0.9)
+    if budget <= 0:
+        # Head alone fills the window: trimming votes cannot fix it.
+        # Let the provider truncate and the lane rotate, loudly.
+        return vote_lines, []
+    kept, dropped, used = [], [], 0
+    for line in reversed(vote_lines):
+        header = line.split("\n", 1)[0]
+        name = header
+        if name.startswith("--- Model: "):
+            name = name[len("--- Model: "):]
+        if name.endswith(" ---"):
+            name = name[:-len(" ---")]
+        tokens = estimate_prompt_tokens(line)
+        if used + tokens > budget and kept:
+            dropped.append(name)
+            continue
+        used += tokens
+        kept.append(line)
+    if dropped:
+        eprint(f"[convergence] context budget {budget} tokens: dropped oldest "
+               f"votes from {dropped} to fit the specialist window.")
+    return list(reversed(kept)), dropped
+
+
 def run_convergence_specialist(transport, api_key, governor, panel_results, model,
-                               max_tokens=1200, reasoning_effort="auto",
-                               reasoning_token_budget=0.4, ledger=None, task_id=None,
-                               fallback_pool=None):
+                                max_tokens=1200, reasoning_effort="auto",
+                                reasoning_token_budget=0.4, ledger=None, task_id=None,
+                                fallback_pool=None, claim_polarity=None,
+                                profiles=None):
     """A dedicated 'convergence specialist' renders the final verdict from the
     panel's per-claim JSON (defaults to the judge model when not overridden).
 
     The specialist is itself a rotating lane: ``model`` is the primary, then
     ``fallback_pool`` (strongest first -- the curated free ladder leads with
-    minimax and gemma on observed track record; GLM-5.2 sits last on its 0/22
+    proven free emitters on observed track record; stale ids are skipped
     observed JSON record) is tried in order. A candidate is rotated out on any
     imperfect outcome: HTTP error, paid-BYOK route, empty or reasoning-only
     output, truncation against the token cap, or unparseable JSON. Every
     attempt is preflight-reserved before the first call and billed per
     attempt, so the ceiling stays exact. The deterministic tally remains
     authoritative even if the whole lane fails.
+
+    Auto-escalation: the specialist may emit an "escalation" directive to
+    request a more capable model rung, with a condensed context for the next
+    rung. It may also emit a "plan" artifact for de-escalation handoff to
+    cheaper models after the escalated rung completes.
     """
     lines = [
         "You are a convergence specialist. N independent models each reviewed the same claims "
@@ -222,11 +352,15 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
         "Produce the FINAL convergence consensus as ONE JSON object, no prose:",
         "{\"converged\":true|false,\"agreement\":\"high|medium|low|none\","
         "\"confidence\":<0-1>,\"claims\":{\"<claim>\":{\"verdict\":\"real|not_real\","
-        "\"converged\":true|false,\"confidence\":<0-1>}}}",
+        "\"converged\":true|false,\"confidence\":<0-1>}}"
+        ",\"escalation\":{\"needed\":true|false,\"reason\":\"...\","
+        "\"condensed_context\":\"...\",\"target_rung\":0}"
+        ",\"plan\":{\"steps\":[\"...\"],\"target_tier\":\"cheap|paid|free\"}}",
         "Responder unanimity is present when every model that answered agrees on its verdict. "
         "The merge-gate converged field additionally requires every required panel slot to answer. "
         "Claims are DEFECT propositions: real:true means the stated defect genuinely exists. "
         "Do not invent claims or models.",
+        _polarity_note(claim_polarity),
         # Resource-cap disclosure: the model must know its budget up front so it
         # can plan to finish inside it instead of truncating mid-JSON.
         f"RESOURCE CAP: your entire response is limited to {max_tokens} output tokens, and "
@@ -235,13 +369,19 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
         "response will be discarded and the task rotated to another model. Do your best "
         "within the cap, assume nothing beyond it, and emit ONLY the JSON object as your "
         "visible content, starting with {.",
+        # Escalation guidance — needed must be the JSON boolean true, never a string.
+        "ESCALATION GUIDANCE: If the panel's verdicts are inconclusive (low agreement, "
+        "high deferral, or conflicting evidence), you MAY set \"escalation.needed\": true "
+        "(JSON boolean true only) and provide a \"condensed_context\" (max 8000 chars) "
+        "summarizing the stuck state for a more capable model. Set \"target_rung\" to a "
+        "non-negative integer ladder index (0 = first rung). Include a \"plan\" with "
+        "ordered steps for cheaper models to execute.",
     ]
-    for r in panel_results:
-        # Full per-claim JSON: these are short, structured verdicts, and the
-        # preflight reserve (target * panel_tokens) already covers them. A
-        # truncated vote can silently drop claims and corrupt the tally.
-        lines.append(f"--- Model: {r.get('model')} ---\n{r.get('content') or ''}")
-    prompt = "\n".join(lines)
+    # Full per-claim JSON: these are short, structured verdicts, and the
+    # preflight reserve (target * panel_tokens) already covers them. A
+    # truncated vote can silently drop claims and corrupt the tally.
+    vote_lines = [f"--- Model: {r.get('model')} ---\n{r.get('content') or ''}"
+                  for r in panel_results]
 
     # Build the rotation ladder: primary first, then fallbacks (deduped,
     # learned-BYOK-blocked models dropped). Unknown fallback models are skipped
@@ -265,6 +405,17 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
             continue
         usable.append(m_)
     candidates = usable
+
+    vote_lines, dropped_votes = _trim_votes_to_window(
+        vote_lines, profiles, candidates, "\n".join(lines), max_tokens)
+    lines.extend(vote_lines)
+    if dropped_votes:
+        lines.append(
+            "[NOTE: oldest panel votes from "
+            f"{', '.join(dropped_votes)} were omitted to fit the "
+            "specialist's context window; the deterministic tally remains "
+            "authoritative for those claims.]")
+    prompt = "\n".join(lines)
 
     # Reserve the whole ladder up front (including each reasoning model's
     # possible no-reasoning retry) so the ceiling is exact before any call.
@@ -299,6 +450,8 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
                              "cost": error_cost})
             _bill_event(m_, False, "error", error_cost)
             eprint(f"[convergence] {m_}: HTTP {status}; rotating.")
+            _events.emit("rotation", task_id=task_id, model=m_, lane="specialist",
+                         reason="http_error", http_status=status, error=error)
             result = {"status": "error", "model": m_, "error": error,
                       "cost": total_cost}
             continue
@@ -310,6 +463,8 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
                              "error": "paid BYOK route; no specialist verdict", "cost": 0.0})
             _bill_event(m_, False, "error", 0.0)
             eprint(f"[convergence] {m_}: BYOK-routed (paid); rotating.")
+            _events.emit("rotation", task_id=task_id, model=m_, lane="specialist",
+                         reason="paid_byok")
             result = {"status": "error", "model": m_,
                       "error": "paid BYOK route; no specialist verdict",
                       "cost": total_cost}
@@ -325,6 +480,8 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
                              "cost": cost})
             _bill_event(m_, False, "error", cost)
             eprint(f"[convergence] {m_}: {unusable}; rotating.")
+            _events.emit("rotation", task_id=task_id, model=m_, lane="specialist",
+                         reason="unusable_output", detail=unusable)
             result = {"status": "error", "model": m_, "error": unusable,
                       "cost": total_cost}
             continue
@@ -335,10 +492,13 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
             attempts.append({"model": m_, "status": "ok", "cost": cost})
             return {"status": "ok", "model": m_, "specialist": parsed,
                     "raw": content, "cost": total_cost, "error": None,
-                    "attempts": attempts}
+                    "attempts": attempts,
+                    "dropped_votes_from_prompt": dropped_votes}
         attempts.append({"model": m_, "status": "error",
                          "error": "no parseable JSON", "cost": cost})
         eprint(f"[convergence] {m_}: no parseable JSON; rotating.")
+        _events.emit("rotation", task_id=task_id, model=m_, lane="specialist",
+                     reason="unparseable_json")
         result = {"status": "error", "model": m_,
                   "error": "specialist returned no parseable JSON",
                   "cost": total_cost}

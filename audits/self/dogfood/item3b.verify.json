@@ -1,0 +1,156 @@
+{
+  "panel_results": [
+    {
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "content": "{\n  \"c1\": {\n    \"real\": true,\n    \"severity\": \"medium\",\n    \"confidence\": 0.93,\n    \"why\": \"Caller slot never set from initialize's clientInfo, so peer authorship missing from ledger events.\"\n  },\n  \"c2\": {\n    \"real\": false,\n    \"severity\": \"info\",\n    \"confidence\": 0.9,\n    \"why\": \"Comment indicates host\u2011level trust is intentional; per\u2011caller breakout planned via caller tagging.\"\n  }\n}",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    },
+    {
+      "model": "google/gemma-4-31b-it:free",
+      "content": "```json\n{\n  \"c1\": {\n    \"real\": true,\n    \"severity\": \"medium\",\n    \"confidence\": 1.0,\n    \"why\": \"The constructor initializes self.caller (line 6), but the 'initialize' method handler (lines 32-47) only extracts protocolVersion, leaving the caller identity unpopulated from clientInfo.\"\n  },\n  \"c2\": {\n    \"real\": true,\n    \"severity\": \"medium\",\n    \"confidence\": 0.9,\n    \"why\": \"host_trust calculates scores based on aggregate report values (trust_gates, trust_hostile, completions) without filtering or grouping by a caller identifier.\"\n  }\n}\n```",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    }
+  ],
+  "panel_failures": [
+    {
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "reason": "empty response",
+      "status": "invalid_output",
+      "cost": 0.0,
+      "retries": 0
+    }
+  ],
+  "required_panelists": 2,
+  "panel_tried": 3,
+  "judge_model": "google/gemma-4-31b-it:free",
+  "judge_synthesis": "```json\n{\n  \"verdict\": \"c1: real (medium severity); c2: not real/info (disputed)\",\n  \"agreement\": \"medium\",\n  \"confidence\": 0.8,\n  \"disagreements\": [\n    \"c2: One model identifies it as a real medium severity issue, while the other considers it intentional behavior/info level.\"\n  ],\n  \"defer\": false\n}\n```",
+  "judge_synthesis_status": "parseable",
+  "verdict": "Deterministic panel tally: c1=real (2/2); c2=real (2/2)",
+  "consensus": {
+    "agreement": "low",
+    "confidence": 0.5,
+    "disagreements": [
+      "c2"
+    ],
+    "defer": true,
+    "panel_shortfall": false,
+    "missing_votes": 0,
+    "voted_by": 2,
+    "of_panel": 2,
+    "responder_converged": false,
+    "gate_converged": false,
+    "defer_reason": "responder_disagreement",
+    "judge_verdict": "c1: real (medium severity); c2: not real/info (disputed)"
+  },
+  "estimated_worst_case_cost": 0.0,
+  "actual_cost": 0.0,
+  "max_cost_ceiling": 0.02,
+  "convergence": {
+    "status": "ok",
+    "model": "google/gemma-4-31b-it:free",
+    "specialist": {
+      "converged": false,
+      "agreement": "medium",
+      "confidence": 0.85,
+      "claims": {
+        "c1": {
+          "verdict": "real",
+          "converged": true,
+          "confidence": 0.965
+        },
+        "c2": {
+          "verdict": "not_real",
+          "converged": false,
+          "confidence": 0.5
+        }
+      }
+    },
+    "raw": "```json\n{\n  \"converged\": false,\n  \"agreement\": \"medium\",\n  \"confidence\": 0.85,\n  \"claims\": {\n    \"c1\": {\n      \"verdict\": \"real\",\n      \"converged\": true,\n      \"confidence\": 0.965\n    },\n    \"c2\": {\n      \"verdict\": \"not_real\",\n      \"converged\": false,\n      \"confidence\": 0.5\n    }\n  }\n}\n```",
+    "cost": 0.0,
+    "error": null,
+    "attempts": [
+      {
+        "model": "google/gemma-4-31b-it:free",
+        "status": "ok",
+        "cost": 0
+      }
+    ],
+    "dropped_votes_from_prompt": [],
+    "tally": {
+      "converged": false,
+      "responder_converged": false,
+      "converged_claims": 1,
+      "responder_converged_claims": 1,
+      "total_claims": 2,
+      "convergence_rate": 0.5,
+      "gate_convergence_rate": 0.5,
+      "disagreement": true,
+      "disagreement_claims": [
+        "c2"
+      ],
+      "panel_shortfall": false,
+      "missing_votes": 0,
+      "shortfall": null,
+      "voted_by": 2,
+      "of_panel": 2,
+      "responding_models": [
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "google/gemma-4-31b-it:free"
+      ],
+      "claims": {
+        "c1": {
+          "verdict": "real",
+          "unanimous": true,
+          "responder_unanimous": true,
+          "converged": true,
+          "gate_unanimous": true,
+          "voted_by": 2,
+          "of_panel": 2,
+          "confidence": 0.965,
+          "votes": {
+            "real": 2,
+            "not_real": 0
+          },
+          "missing_votes": 0,
+          "panel_shortfall": false
+        },
+        "c2": {
+          "verdict": "real",
+          "unanimous": false,
+          "responder_unanimous": false,
+          "converged": false,
+          "gate_unanimous": false,
+          "voted_by": 2,
+          "of_panel": 2,
+          "confidence": 0.9,
+          "votes": {
+            "real": 1,
+            "not_real": 1
+          },
+          "missing_votes": 0,
+          "panel_shortfall": false
+        }
+      },
+      "reassurance": {}
+    }
+  },
+  "cost_by_model": {
+    "nvidia/nemotron-3-super-120b-a12b:free": 0.0,
+    "google/gemma-4-26b-a4b-it:free": 0.0,
+    "google/gemma-4-31b-it:free": 0.0
+  },
+  "claims_grounding": {
+    "ok": true,
+    "issues": [],
+    "expansions": [
+      {
+        "identifier": "clientInfo",
+        "snippet": "MCP initialize params.clientInfo: {name, version} identifying the connecting peer"
+      }
+    ]
+  }
+}

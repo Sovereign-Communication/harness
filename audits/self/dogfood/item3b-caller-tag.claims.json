@@ -1,0 +1,13 @@
+{
+  "context": "MCP serves one stdio peer per process, but CLI runs, bench runs, and MCP sessions all share one ledger file; `clientInfo` names the peer.",
+  "claims": [
+    {"id": "c1",
+     "text": "DEFECT: the constructor stores a caller slot that initialize never fills from clientInfo -- the handler reads only protocolVersion -- so the slot stays None and no ledger event carries peer authorship",
+     "kind": "defect",
+     "source_refs": [6, 36]},
+    {"id": "c2",
+     "text": "DEFECT: host trust is computed from global session counts only, with no per-caller breakout, so two peers sharing one ledger file are indistinguishable",
+     "kind": "defect",
+     "source_refs": [79, 83, 88]}
+  ]
+}

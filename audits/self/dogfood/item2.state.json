@@ -1,0 +1,77 @@
+{
+ "status": "verify_failed",
+ "task_id": "dogfood-mcp-lanes",
+ "rounds": [
+  {
+   "round": 1,
+   "model": "google/gemma-4-31b-it:free",
+   "status": "merge_failed",
+   "cost": 0,
+   "verify_output": "diff merge failed: hunk at line 179 is truncated: expected -6/+7, got -3/3",
+   "changed": false,
+   "verify_passed": null
+  },
+  {
+   "round": 2,
+   "model": "google/gemma-4-31b-it:free",
+   "status": "merge_failed",
+   "cost": 0,
+   "verify_output": "diff merge failed: hunk at line 295 is truncated: expected -7/+8, got -5/6",
+   "changed": false,
+   "verify_passed": null
+  },
+  {
+   "round": 3,
+   "model": "google/gemma-4-31b-it:free",
+   "status": "merge_failed",
+   "cost": 0,
+   "verify_output": "diff merge failed: hunk at line 267 is truncated: expected -7/+8, got -6/7",
+   "changed": false,
+   "verify_passed": null
+  }
+ ],
+ "cost": 0.0,
+ "rotations": 0,
+ "backend": "diff",
+ "verify_only": false,
+ "backup": null,
+ "verify_cmd": "python -m unittest tests.test_mcp",
+ "verify": {
+  "command": "python -m unittest tests.test_mcp",
+  "passed": false,
+  "output_tail": "diff merge failed: hunk at line 267 is truncated: expected -7/+8, got -6/7"
+ },
+ "gate_ran": true,
+ "continuation": {
+  "schema_version": 1,
+  "file_path": "C:\\Users\\SCM\\Documents\\GitHub\\Harness\\harness\\config.py",
+  "task_id": "dogfood-mcp-lanes",
+  "backend": "diff",
+  "verify_only": false,
+  "max_lines": 500,
+  "edit_snippet": null,
+  "verify_cmd": "python -m unittest tests.test_mcp",
+  "verify_gate_id": "2822f93f9a09efeb",
+  "verification_required": true,
+  "target_hash": "ad86458e93aea83ad82039d3d605dcd874a5d34ca175bdf162daf2661359a1b7",
+  "remaining_scope": "Fix the verification failures for: Per-file section only; unified diffs only. mcp.py: add sets MUTATION_LANE={apply_edit} and SPENDY_LANE={panel_verify,offer_work} plus method _lane_for(tool_name) returning mutation, spendy, or observe. serve_forever builds three ThreadPoolExecutor(max_workers=1); route each tools/call by peeking params.name (missing/unknown goes observe); shut all down on EOF. Add ctor kwarg tool_timeout=None, const MCP_TOOL_TIMEOUT_DEFAULT=1800, self.tool_timeout or default, self._starts dict; add _note_start(rid) storing monotonic time under _cancel_lock, _is_expired(rid) vs tool_timeout, _cancel_check(rid, with_deadline=False); _note_start at submit, pop entry in _write_tool_response finally, wire _call_tool_impl cancel_check via _cancel_check with_deadline True. config.py: add HARNESS_MCP_TOOL_TIMEOUT to _ENV_NAMES, Settings field mcp_tool_timeout via _num int 60..7200 default 1800 and listed in to_dict; pass tool_timeout=settings.mcp_tool_timeout in main().",
+  "reason": "verification did not pass on the free tier; continue and fix",
+  "history": [
+   {
+    "round": 1,
+    "model": "google/gemma-4-31b-it:free",
+    "status": "merge_failed"
+   },
+   {
+    "round": 2,
+    "model": "google/gemma-4-31b-it:free",
+    "status": "merge_failed"
+   },
+   {
+    "round": 3,
+    "model": "google/gemma-4-31b-it:free",
+    "status": "merge_failed"
+   }
+  ]
+ }
+}

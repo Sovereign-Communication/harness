@@ -82,6 +82,79 @@ class BenchTests(unittest.TestCase):
         with open(sb.file, encoding="utf-8") as f:
             self.assertEqual(f.read(), "x = 0\n")
 
+    def test_task_sandbox_refuses_parent_dir_symlink_escape(self):
+        """A taskdir/link -> /outside with file=link/victim must not pass
+        containment: abspath is lexical, realpath is not."""
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks unavailable")
+        from harness.errors import HarnessError
+        outside = os.path.join(self.dir.name, "outside")
+        os.makedirs(outside)
+        victim = os.path.join(outside, "victim.txt")
+        with open(victim, "w", encoding="utf-8") as f:
+            f.write("victim\n")
+        taskdir = os.path.join(self.dir.name, "evil")
+        os.makedirs(taskdir)
+        try:
+            os.symlink(outside, os.path.join(taskdir, "link"))
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        task = {"name": "evil", "dir": taskdir, "file": "link/victim.txt"}
+        with self.assertRaisesRegex(HarnessError, "escapes its task directory"):
+            TaskSandbox(task)
+        with open(victim, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "victim\n")
+
+    def test_task_sandbox_refuses_planted_snapshot_link(self):
+        """A pre-planted file.orig symlink would redirect the snapshot
+        read/write to an arbitrary file on restore."""
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks unavailable")
+        from harness.errors import HarnessError
+        make_task(self.dir.name, "a", "x = 0\n")
+        task = load_manifest(self.dir.name)[0]
+        sb = TaskSandbox(task)
+        victim = os.path.join(self.dir.name, "victim.txt")
+        with open(victim, "w", encoding="utf-8") as f:
+            f.write("victim\n")
+        try:
+            os.symlink(victim, sb.snapshot)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        with self.assertRaisesRegex(HarnessError, "symlink"):
+            sb.restore()
+        with open(victim, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "victim\n")
+
+    def test_missing_instruction_fails_clean_not_keyerror(self):
+        """Every other manifest schema error aborts the run as a clean
+        HarnessError (missing file, garbage shape); a missing instruction
+        must not surface as a raw KeyError traceback instead."""
+        from harness.errors import HarnessError
+        make_task(self.dir.name, "a", "x = 0\n")
+        engine = self.make_engine([comp("x = 1\n")])
+        task = {"name": "a", "dir": os.path.join(self.dir.name, "a"),
+                "file": "mod.py", "verify": "python check.py"}
+        with self.assertRaisesRegex(HarnessError,
+                                    "missing required key 'instruction'"):
+            run_bench(engine, [task], runner=lambda cmd: (0, ""))
+
+    def test_sandbox_restore_is_byte_exact_across_styles(self):
+        """The snapshot's bytes are authoritative: restoring a CRLF snapshot
+        over an LF-dirtied tree must bring back CRLF bytes exactly, not the
+        tree's current style."""
+        make_task(self.dir.name, "a", "x = 0\n")
+        task = load_manifest(self.dir.name)[0]
+        sb = TaskSandbox(task)
+        with open(sb.file, "rb") as f:
+            original = f.read()
+        sb.restore()  # take the snapshot
+        with open(sb.file, "wb") as f:
+            f.write(b"x = 99\r\n")
+        sb.restore()
+        with open(sb.file, "rb") as f:
+            self.assertEqual(f.read(), original)
+
     def test_run_bench_all_pass(self):
         for name, code in [("a", "x = 0\n"), ("b", "x = 0\n")]:
             make_task(self.dir.name, name, code)

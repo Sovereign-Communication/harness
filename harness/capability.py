@@ -23,6 +23,7 @@ import math
 import os
 import time
 
+from .config import CAPABILITIES_PATH, CAPABILITIES_TTL
 from .output import eprint
 
 # ---- score weights (task-aware) ----------------------------------------------
@@ -46,6 +47,83 @@ CONTEXT_WINDOW_FRACTION = 0.6
 W_CAP = 0.4
 W_CAL = 0.3
 W_SUCC = 0.3
+
+def capabilities_payload(governor, ledger, *, panel_pool, apply_pool, judge,
+                         api_key=None, transport=None, refresh=False,
+                         bench=False, all_models=False):
+    """The ONE capabilities-envelope builder. Interfaces (CLI command, UI
+    server) call this with their own session objects; neither re-derives
+    profile collection or the per-model reliability rows (the MCP-parity
+    rule). ``ledger`` and ``transport`` are injected by the caller so this
+    module stays below the session composition layer."""
+    profiles, fetched_at, refreshed = ensure_profiles(
+        CAPABILITIES_PATH, governor.fetch_models, ttl=CAPABILITIES_TTL,
+        force=refresh)
+
+    if all_models:
+        ordered_ids = sorted(profiles.keys())
+    else:
+        ordered_ids = []
+        for mid in list(panel_pool) + list(apply_pool) + [judge]:
+            if mid not in ordered_ids:
+                ordered_ids.append(mid)
+
+    report = ledger.participation_report()
+
+    def row(mid):
+        p = profiles.get(mid)
+        if p is None:
+            return None
+        # Single owner: model_reliability computes everything from one place.
+        info = model_reliability(mid, p, report, ledger=ledger, task="structured")
+        return {
+            "model": mid, "free": p.free,
+            "context": p.context_length, "max_source_tokens": p.max_source_tokens,
+            "reasoning": p.supports_reasoning,
+            "json_declared": round(p.declared_json, 2),
+            "json_reliable": round(info["json_reliable"] or 0.0, 2),
+            "structured_json": p.supports_structured_json,
+            "capability": round(capability_score(p), 3),
+            "fitness_structured": round(info["capability"], 3),
+            "fitness_code": round(capability_fitness(p, "code"), 3),
+            "reliability_structured": round(info["reliability"], 3),
+            "observed": {
+                "confidence_precision": info["calibration"],
+                "success_rate": info["success"],
+                "samples": info["samples"],
+            },
+        }
+
+    rows = []
+    for mid in ordered_ids:
+        r = row(mid)
+        if r is not None:
+            rows.append(r)
+
+    if bench:
+        bench_models = [r["model"] for r in rows if r["free"]]
+        # Persist probe results as model_result events so they feed observed
+        # json reliability and routing (the evidence loop), and probe reasoning
+        # models with reasoning on so the probe is fair to them.
+        probe = probe_json_reliability(
+            transport=transport, api_key=api_key, governor=governor,
+            models=bench_models, ledger=ledger, profiles=profiles)
+        # Rebuild after persistence: the displayed reliability must include the
+        # evidence just collected, not the pre-probe snapshot.
+        report = ledger.participation_report()
+        refreshed_rows = []
+        for mid in ordered_ids:
+            r = row(mid)
+            if r is not None:
+                r["probe"] = probe.get(r["model"])
+                refreshed_rows.append(r)
+        rows = refreshed_rows
+
+    return {
+        "captured_at": fetched_at, "refreshed": refreshed,
+        "models": rows, "count": len(rows),
+    }
+
 
 # No-data prior: a model with no observed samples sits at this value for
 # calibration/success, and its effective weight is shrunk by n/(n+_SHRINK) so a
@@ -298,7 +376,7 @@ CAPABILITIES_SCHEMA_VERSION = 1
 
 def load_profiles(path):
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
             if data.get("schema_version") != CAPABILITIES_SCHEMA_VERSION:
                 return {}, None  # foreign or older schema: treat as stale, refetch
@@ -361,6 +439,22 @@ _PROBE_QUESTIONS = [
 ]
 
 
+def _probe_is_free(governor, model):
+    """Free-tier check for the probe lane, tolerant of minimal fakes.
+
+    A governor without live pricing cannot prove freeness: fail closed and
+    treat a BYOK-routed probe as paid (skip the model) rather than billing
+    invisible spend as $0.
+    """
+    is_free = getattr(governor, "is_free", None)
+    if is_free is None:
+        return False
+    try:
+        return bool(is_free(model))
+    except Exception:
+        return False
+
+
 def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
                            reasoning_effort=None, ledger=None, profiles=None,
                            task_id=None):
@@ -374,7 +468,8 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
     Reasoning models are probed WITH a reasoning effort (`low`) so the probe is
     fair to them; non-reasoning models run with reasoning off.
     """
-    from .chat import chat, extract_content_and_cost, _extract_json
+    from .chat import (chat, extract_content_and_cost, _extract_json,
+                       _reported_cost, _chat_reservation_slots)
     results = {}
     tid = task_id or "bench/probe"
     for m in models:
@@ -384,11 +479,16 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
                                       profiles[m].supports_reasoning)
             eff = "low" if declares_reasoning else "off"
         governor.check_byok(m)
+        # A reasoning-probed model may cost two POSTs per question (the
+        # reasoning-param rejection retry); reserve both or the ceiling is
+        # approximate for exactly the models the probe treats specially.
+        slots = _chat_reservation_slots(m, eff)
         json_ok = 0
         correct = 0
         errors = 0
         calls = 0
-        for q, want in _PROBE_QUESTIONS:
+        questions = list(_PROBE_QUESTIONS)
+        for qi, (q, want) in enumerate(questions):
             calls += 1
             status = None
             resp = {}
@@ -398,26 +498,79 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
                 # Every probe question is preflighted against the ceiling so
                 # the loop can never spend through it (same contract as every
                 # other governed lane).
-                governor.preflight(q, [(f"probe {m}", m, max_tokens, 0)])
+                governor.preflight(
+                    q, [(f"probe {m} #{i + 1}/{slots}", m, max_tokens, 0)
+                        for i in range(slots)])
                 status, resp = chat(transport, api_key, m,
                                     [{"role": "user", "content": q}], max_tokens,
                                     eff, 0.4, governor)
             except Exception as exc:
                 error_message = str(exc)
+            byok_skip = False
             if status == 200:
-                # Probe calls are ordinary governed calls: account for their
-                # reported cost before evaluating the response. The small
-                # fallback keeps the hermetic test seam compatible with minimal
-                # fake governors that only implement check_byok().
+                # BYOK is determined BEFORE billing: a paid-BYOK call bills
+                # invisibly, so tracking its reported cost would corrupt the
+                # governor (same rule as the panel lane: 0 tracked).
                 try:
-                    call_cost = float((resp.get("usage") or {}).get("cost") or 0.0)
-                except (AttributeError, TypeError, ValueError):
-                    call_cost = 0.0
-                record_actual = getattr(governor, "record_actual", None)
-                if record_actual is not None:
-                    record_actual(call_cost, m)
+                    _content, _finish, raw_cost, is_byok = \
+                        extract_content_and_cost(resp)
+                except Exception:
+                    raw_cost, is_byok = 0.0, False
+                if is_byok and not _probe_is_free(governor, m):
+                    byok_skip = True
+                else:
+                    # Ordinary governed call: account for the reported cost
+                    # before evaluating the response. The small fallback
+                    # keeps the hermetic test seam compatible with minimal
+                    # fake governors that only implement check_byok().
+                    try:
+                        call_cost = float(raw_cost or 0.0)
+                    except (AttributeError, TypeError, ValueError):
+                        call_cost = 0.0
+                    record_actual = getattr(governor, "record_actual", None)
+                    if record_actual is not None:
+                        record_actual(call_cost, m)
+            else:
+                # Error bodies can still carry a billable cost (a rejected
+                # reasoning param, a throttled-but-metered 429): dropping it
+                # would let the governor and the ledger disagree, the same
+                # hole every other lane already closes.
+                error_cost = _reported_cost(resp)
+                if error_cost:
+                    record_actual = getattr(governor, "record_actual", None)
+                    if record_actual is not None:
+                        try:
+                            record_actual(error_cost, m)
+                        except Exception as exc:
+                            error_message = str(exc)
+                            status, resp = None, {}
             ok = False
             corr = False
+            if byok_skip:
+                # Paid BYOK route: spend is invisible to the tracked key,
+                # exactly like the panel lane. Learn the prefix and stop
+                # burning questions on this model; the rest count as errors
+                # without further network calls. Nothing was billed above.
+                record_byok = getattr(governor, "record_byok", None)
+                if record_byok is not None:
+                    try:
+                        record_byok(m)
+                    except Exception:
+                        pass
+                error_message = ("paid BYOK route; probe skipped "
+                                 "(spend invisible to tracked key)")
+                errors += 1
+                skipped = len(questions) - qi - 1
+                errors += skipped
+                calls += skipped
+                if ledger is not None:
+                    ledger.append(
+                        "model_result", task_id=tid,
+                        event_note="probe", model=m,
+                        task_type="structured", json_expected=True,
+                        json_ok=False, correct=False, status="error",
+                        error=error_message)
+                break
             if status == 200:
                 try:
                     content, *_ = extract_content_and_cost(resp)
@@ -450,7 +603,8 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
     return results
 
 
-def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=None):
+def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=None,
+               call_lane="apply"):
     """Order a model pool for routing, driven by the observed-CORRECTED view.
 
     Free tier (all $0, so cost is equal): sort by reliability descending, where
@@ -480,7 +634,9 @@ def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=No
 
     def demotion(model):
         cal = (report or {}).get("calibration", {}).get(model, {})
-        strikes = (cal.get("unusable_outputs") or 0) + (cal.get("consent_unusable") or 0)
+        strikes = ((cal.get("unusable_outputs") or 0)
+                   + (cal.get("consent_unusable") or 0)
+                   + (cal.get("minority_dissent") or 0))
         return 1 if strikes >= UNUSABLE_DEMOTE_STRIKES else 0
     scored = []
     for m in pool:
@@ -494,7 +650,49 @@ def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=No
         scored.sort(key=lambda x: (demotion(x[0]), -x[1], -x[2]))
     else:
         scored.sort(key=lambda x: (demotion(x[0]), x[3], -x[1], -x[2]))
-    return [m for m, _, _, _ in scored]
+    ordered = [m for m, _, _, _ in scored]
+
+    # Advisory local-fit hook (opt-in, off by default; see harness/local_fit/).
+    # Flag-gated inside; never raises. OFF: returns the baseline order untouched.
+    # OBSERVE: scores are computed and logged but the order is unchanged.
+    # INFLUENCE (HARNESS_LOCAL_FIT_USE_ADVISORY_ORDER=1 + a model dir): models
+    # the scorer flags as likely-unusable sort after their peers WITHIN the same
+    # demotion tier -- it can never cross the demotion boundary or reorder
+    # unflagged models among themselves.
+    try:
+        _flag_on = os.environ.get("HARNESS_LOCAL_FIT_ENABLE", "").strip().lower() in (
+            "1", "true", "yes")
+        if not _flag_on:
+            return ordered
+        from .local_fit.dispatch import maybe_order_pool
+        by_model = {x[0]: (x[1], x[2], x[3]) for x in scored}
+        if free_tier:
+            baseline_keys = {m: (demotion(m), -v[0], -v[1])
+                             for m, v in by_model.items()}
+        else:
+            baseline_keys = {m: (demotion(m), v[2], -v[0], -v[1])
+                             for m, v in by_model.items()}
+        _advice = maybe_order_pool(
+            ordered,
+            task=task,
+            free_tier=bool(free_tier),
+            profiles=profiles,
+            calibration=(report or {}).get("calibration", {}),
+            call_lane=call_lane,
+            baseline_keys=baseline_keys,
+        )
+        if _advice.get("reordered") and _advice.get("flagged"):
+            eprint("[local_fit] advisory demoted within tier: "
+                   + ", ".join(_advice["flagged"]))
+        if _advice.get("degenerate"):
+            # The artifact is unusable (saturated/indistinguishable scores);
+            # the layer kept the baseline order. Surface WHY it stood down.
+            eprint("[local_fit] advisory stood down: degenerate artifact ("
+                   + str(_advice["degenerate"]) + "); baseline order kept")
+        return list(_advice.get("ordered") or ordered)
+    except Exception:
+        # The advisory layer must never break routing.
+        return ordered
 
 
 def ordered_pool(pool, *, governor, ledger, task, free_tier, profiles=None,
@@ -532,7 +730,7 @@ def ordered_pool(pool, *, governor, ledger, task, free_tier, profiles=None,
             pool_ = [m_ for m_ in pool_ if m_ in known]
         report = ledger.participation_report() if ledger is not None else None
         ordered = order_pool(pool_, profiles_, report, ledger=ledger,
-                             task=task, free_tier=free_tier)
+                             task=task, free_tier=free_tier, call_lane=call_lane)
         if not ordered:
             # Ordering produced nothing (e.g. every model hard-gated to a
             # zero capability prior) -- signal 'no informed ordering' rather

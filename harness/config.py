@@ -17,9 +17,9 @@ free router and serves as a final fallback lane.
 """
 import json
 import os
-import sys
 
 from .errors import HarnessError
+from .output import eprint
 from .validation import finite_number
 
 CONFIG_DIR = os.path.expanduser("~/.config/harness")
@@ -67,7 +67,7 @@ CAPABILITIES_TTL = 24 * 3600  # refresh /models capability profiles at most once
 
 def load_byok_prefixes(path=BYOK_PREFIXES_PATH):
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return set(json.load(f))
     except (OSError, ValueError):
         return set()
@@ -91,7 +91,6 @@ def save_byok_prefixes(path, prefixes):
 # refresh against the live list.
 FREE_PANEL_POOL = [
     "google/gemma-4-31b-it:free",
-    "minimax/minimax-m3:free",
     "inclusionai/ling-3.0-flash-fin:free",
     "google/gemma-4-26b-a4b-it:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
@@ -104,7 +103,6 @@ FREE_PANEL_POOL = [
 FREE_JUDGE = "google/gemma-4-31b-it:free"
 FREE_APPLY_POOL = [
     "google/gemma-4-31b-it:free",
-    "minimax/minimax-m3:free",
     "google/gemma-4-26b-a4b-it:free",
     "inclusionai/ling-3.0-flash-fin:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
@@ -113,16 +111,12 @@ FREE_APPLY_POOL = [
 ]
 
 # Convergence-specialist fallback ladder, tried in order after the primary
-# (which defaults to the judge). Ordered by OBSERVED track record, not
-# declared capability: minimax (32/32) and gemma (38/38) are perfect emitters
-# and lead; GLM-5.2 is 0/22 in the ledger -- declared frontier-class but
-# falsified by every probe and live call -- so it goes last, tried only when
-# everything proven has failed. Rotation must happen BEFORE the next start,
-# never after a first failure the ledger already predicted. The specialist
-# rotates down this ladder on HTTP error, paid-BYOK route, reasoning-only
-# output, truncation, or unparseable JSON.
+# (which defaults to the judge). Ordered by observed track record rather than
+# declared capability; only catalog-validated ids belong in shipped defaults.
+# Rotation happens before the next start, never after a first failure the
+# ledger already predicted. The specialist rotates down this ladder on HTTP
+# error, paid-BYOK route, reasoning-only output, truncation, or unparseable JSON.
 SPECIALIST_POOL_FREE = [
-    "minimax/minimax-m3:free",
     "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
 ]
@@ -145,6 +139,43 @@ SPECIALIST_POOL_PAID = [
     "deepseek/deepseek-chat",
 ]
 
+# ---- Escalation ladders (judge-driven auto-escalation with de-escalation) ----
+# Ordered from cheapest to most capable. The judge condenses context and
+# directs escalation rung-by-rung; after the escalated model produces a plan,
+# the system de-escalates back to the last tier that needed escalation.
+# Each rung has an implicit per-rung cost cap enforced by SpendGovernor.
+ESCALATION_POOL_FREE = [
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "cohere/north-mini-code:free",
+]
+
+# Paid escalation ladder: curated from live OpenRouter catalog (Sept 2026).
+# The top rung is the "smartest per price tier" capstone.
+# Per-rung cost caps are advisory (enforced by SpendGovernor preflight).
+# Only catalog-validated ids belong here (stale ids hard-fatal at fetch_pricing).
+ESCALATION_POOL_PAID = [
+    "inclusionai/ling-3.0-flash",
+    "meta-llama/llama-3.1-8b-instruct",
+    "deepseek/deepseek-chat",
+    "openai/gpt-4o-mini",
+    "openai/gpt-4o",
+    "ibm-granite/granite-4.0-h-micro",
+]
+
+# The smartest judge available per tier (used when judge auto-selection is on).
+# Free tier: gemma-4-31b-it:free (already DEFAULT_JUDGE for free).
+# Paid tier: the top of the paid escalation ladder (validated catalog id).
+DEFAULT_JUDGE_PAID_TOP = "ibm-granite/granite-4.0-h-micro"
+
+# Per-rung advisory cost caps (USD). Documented policy for operators and the
+# judge's worth-gating decision; the hard enforcement is still
+# HARD_TASK_MAX_COST / HARD_MAX_COST via SpendGovernor preflight.
+ESCALATION_RUNG_CAPS = {
+    "free": [0.0, 0.0, 0.0],
+    "paid": [0.02, 0.03, 0.05, 0.08, 0.15, 0.25],
+}
+
 
 def shipped_model_ids():
     """Every default lane model id this install ships with, across both tier
@@ -156,17 +187,21 @@ def shipped_model_ids():
     return (set(FREE_PANEL_POOL) | {FREE_JUDGE} | set(FREE_APPLY_POOL)
             | set(SPECIALIST_POOL_FREE)
             | set(DEFAULT_PANEL_PAID) | {DEFAULT_JUDGE_PAID}
-            | {DEFAULT_APPLY_MODEL_PAID} | set(SPECIALIST_POOL_PAID))
+            | {DEFAULT_APPLY_MODEL_PAID} | set(SPECIALIST_POOL_PAID)
+            | set(ESCALATION_POOL_FREE) | set(ESCALATION_POOL_PAID)
+            | {DEFAULT_JUDGE_PAID_TOP})
 
 _ENV_NAMES = {
     "use_free": "HARNESS_USE_FREE",
     "panel": "HARNESS_PANEL",
     "panel_pool": "HARNESS_PANEL_POOL",
     "judge": "HARNESS_JUDGE",
+    "judge_top": "HARNESS_JUDGE_TOP",
     "convergence_model": "HARNESS_CONVERGENCE_MODEL",
     "specialist_pool": "HARNESS_SPECIALIST_POOL",
     "apply_model": "HARNESS_APPLY_MODEL",
     "apply_pool": "HARNESS_APPLY_POOL",
+    "escalation_pool": "HARNESS_ESCALATION_POOL",
     "escalation_model": "HARNESS_ESCALATION_MODEL",
     "max_cost": "HARNESS_MAX_COST",
     "task_max_cost": "HARNESS_TASK_MAX_COST",
@@ -184,13 +219,15 @@ _ENV_NAMES = {
     "mcp_allow_write": "HARNESS_MCP_ALLOW_WRITE",
     "mcp_allow_verify": "HARNESS_MCP_ALLOW_VERIFY",
     "mcp_allowed_roots": "HARNESS_MCP_ALLOWED_ROOTS",
+    "mcp_tool_timeout": "HARNESS_MCP_TOOL_TIMEOUT",
+    "mcp_auth_token": "HARNESS_MCP_AUTH_TOKEN",
 }
 
 
 def _read_key_file(path):
     """Parse an `OPENROUTER_API_KEY=...` line out of an env file."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if "=" in line and not line.startswith("#"):
@@ -216,16 +253,18 @@ def _warn_insecure_keyfile(path):
     except OSError:
         return
     if mode & 0o077:
-        print(f"[warn] key file {path} is group/world readable (mode "
-              f"{oct(mode)}); restrict it with chmod 600.", file=sys.stderr)
+        eprint(f"[warn] key file {path} is group/world readable (mode "
+               f"{oct(mode)}); restrict it with chmod 600.")
 
 
-def resolve_api_key(*, expected_label=None):
+def resolve_api_key():
     """Resolve the OpenRouter key: env file first, then the environment.
 
-    ``expected_label`` is an exact-match guard (audit #9b): when set, a key
-    whose label does not match exactly is refused rather than silently used,
-    and the label is never echoed into error text (no credential leakage).
+    Key identity is enforced by SpendGovernor.verify_key (exact match of
+    the live /key label, never echoed into errors). An earlier revision
+    tried to pre-check the label here by splitting the key string itself,
+    which can never yield a label -- that dead guard is gone rather than
+    left to reject every real key the day someone passes it a label.
     """
     key = None
     for p in (
@@ -241,12 +280,8 @@ def resolve_api_key(*, expected_label=None):
     if key is None:
         key = os.environ.get("OPENROUTER_API_KEY")
         if key:
-            print("[warn] using OPENROUTER_API_KEY from the process environment; "
-                  "prefer a 0600 key file for interactive use.", file=sys.stderr)
-    if key and expected_label:
-        label = key.split("-")[2] if key.count("-") >= 2 else ""
-        if label != expected_label:
-            raise ValueError("resolved key does not match the expected key label")
+            eprint("[warn] using OPENROUTER_API_KEY from the process environment; "
+                   "prefer a 0600 key file for interactive use.")
     return key
 
 
@@ -269,16 +304,19 @@ def _dedup(seq):
 
 
 class Settings:
-    def __init__(self, use_free, panel, panel_pool, judge, convergence_model, specialist_pool,
-                 apply_model, apply_pool, escalation_model, max_cost, task_max_cost, max_tokens,
+    def __init__(self, use_free, panel, panel_pool, judge, judge_top, convergence_model, specialist_pool,
+                 apply_model, apply_pool, escalation_pool, escalation_model, max_cost, task_max_cost, max_tokens,
                  apply_max_tokens, reasoning_effort, reasoning_token_budget,
                  max_panelists, max_rotations, renew_consent, ledger_path,
-                 expect_key_label, default_require_consent, allow_escalation,
-                 mcp_allow_write=False, mcp_allow_verify=False, mcp_allowed_roots=None):
+                  expect_key_label, default_require_consent, allow_escalation,
+                  mcp_allow_write=False, mcp_allow_verify=False, mcp_allowed_roots=None,
+                  mcp_tool_timeout=1800, mcp_auth_token=None):
         self.use_free = use_free
         self.panel = list(panel)
         self.panel_pool = list(panel_pool)
         self.judge = judge
+        # The smartest judge available for the current tier (free or paid).
+        self.judge_top = judge_top
         # Convergence specialist defaults to the same model as the judge.
         self.convergence_model = convergence_model or judge
         # Ordered fallback ladder for the specialist: the primary is tried
@@ -286,6 +324,10 @@ class Settings:
         self.specialist_pool = list(specialist_pool or [])
         self.apply_model = apply_model
         self.apply_pool = list(apply_pool)
+        # Escalation ladder (ordered cheapest->most capable). Used by the
+        # auto-escalation driver for judge-driven rung stepping.
+        self.escalation_pool = list(escalation_pool or [])
+        # Single escalation_model retained for backward-compat (single-rung mode).
         self.escalation_model = escalation_model
         self.max_cost = max_cost
         self.task_max_cost = task_max_cost
@@ -303,29 +345,35 @@ class Settings:
         self.mcp_allow_write = mcp_allow_write
         self.mcp_allow_verify = mcp_allow_verify
         self.mcp_allowed_roots = list(mcp_allowed_roots or [])
+        self.mcp_tool_timeout = mcp_tool_timeout
+        # Shared secret for the stdio MCP peer. Empty/None = no token check
+        # (stdio inherits host authority; documented trust model). When set,
+        # every tools/call must present matching params._meta.harness_token.
+        self.mcp_auth_token = mcp_auth_token or None
 
     def to_dict(self):
         return {k: getattr(self, k) for k in (
-            "use_free", "panel", "panel_pool", "judge", "convergence_model",
+            "use_free", "panel", "panel_pool", "judge", "judge_top", "convergence_model",
             "specialist_pool",
-            "apply_model", "apply_pool", "escalation_model", "max_cost",
+            "apply_model", "apply_pool", "escalation_pool", "escalation_model", "max_cost",
             "task_max_cost", "max_tokens", "apply_max_tokens",
             "reasoning_effort", "reasoning_token_budget", "max_panelists",
             "max_rotations", "renew_consent", "ledger_path", "expect_key_label",
             "default_require_consent", "allow_escalation", "mcp_allow_write",
-            "mcp_allow_verify", "mcp_allowed_roots")}
+            "mcp_allow_verify", "mcp_allowed_roots", "mcp_tool_timeout",
+            "mcp_auth_token")}
 
 
 def load_settings(overrides=None):
     cfg = {}
     cfg_path = os.path.join(CONFIG_DIR, "config.json")
     if os.path.exists(cfg_path):
-        with open(cfg_path, "r", encoding="utf-8") as f:
+        with open(cfg_path, encoding="utf-8") as f:
             cfg = json.load(f)
     unknown = set(cfg) - set(_ENV_NAMES)
     if unknown:
-        print("[warn] unknown config keys ignored: " + ", ".join(sorted(unknown))
-              + f" (valid keys are in {cfg_path})", file=sys.stderr)
+        eprint("[warn] unknown config keys ignored: " + ", ".join(sorted(unknown))
+               + f" (valid keys are in {cfg_path})")
 
     def get(key, default):
         if overrides and key in overrides:
@@ -339,19 +387,25 @@ def load_settings(overrides=None):
     if use_free:
         default_panel = FREE_PANEL_POOL
         default_judge = FREE_JUDGE
+        default_judge_top = FREE_JUDGE
         default_apply_pool = FREE_APPLY_POOL
         default_specialist_pool = SPECIALIST_POOL_FREE
+        default_escalation_pool = ESCALATION_POOL_FREE
     else:
         default_panel = DEFAULT_PANEL_PAID
         default_judge = DEFAULT_JUDGE_PAID
+        default_judge_top = DEFAULT_JUDGE_PAID_TOP
         default_apply_pool = [DEFAULT_APPLY_MODEL_PAID]
         default_specialist_pool = SPECIALIST_POOL_PAID
+        default_escalation_pool = ESCALATION_POOL_PAID
 
     panel = _split_list(str(get("panel", ",".join(default_panel)))) or default_panel
     panel_pool = _split_list(str(get("panel_pool", ",".join(panel)))) or panel
     apply_model = str(get("apply_model", default_apply_pool[0]))
     apply_pool = _split_list(str(get("apply_pool", ",".join(
         _dedup([apply_model] + default_apply_pool))))) or [apply_model]
+    judge_top = str(get("judge_top", default_judge_top))
+    escalation_pool = _split_list(str(get("escalation_pool", ",".join(default_escalation_pool)))) or default_escalation_pool
 
     # -- numeric range validation (fail closed on nonsense) ------------------
     # Cost ceilings are HARD: HARD_MAX_COST / HARD_TASK_MAX_COST are absolute
@@ -363,8 +417,12 @@ def load_settings(overrides=None):
         try:
             value = cast(raw)
         except (TypeError, ValueError, OverflowError):
-            raise HarnessError(key + " must be a valid number")
-        return finite_number(value, key, lo, hi)
+            raise HarnessError(key + " must be a valid number") from None
+        value = finite_number(value, key, lo, hi)
+        # finite_number always returns float: integer settings (panelists,
+        # tokens, rotations) must go back to int, or range()/max_workers
+        # crash the live lanes the hermetic suite never exercises.
+        return int(value) if cast is int else value
 
     max_cost = _num("max_cost", float, 0, HARD_MAX_COST, DEFAULT_MAX_COST)
     task_max_cost = _num("task_max_cost", float, 0, HARD_TASK_MAX_COST, DEFAULT_TASK_MAX_COST)
@@ -373,16 +431,22 @@ def load_settings(overrides=None):
     reasoning_token_budget = _num("reasoning_token_budget", float, 0.05, 1, 0.4)
     max_panelists = _num("max_panelists", int, 1, 10, 3)
     max_rotations = _num("max_rotations", int, 0, 20, 3)
+    # Per-tool deadline for the MCP server: cooperative (trips cancel_check,
+    # same path as notifications/cancelled), so an uncancelled-but-overdue
+    # run still stops at the next poll point instead of holding a lane.
+    mcp_tool_timeout = _num("mcp_tool_timeout", int, 60, 7200, 1800)
 
     return Settings(
         use_free=use_free,
         panel=panel,
         panel_pool=panel_pool,
         judge=str(get("judge", default_judge)),
+        judge_top=judge_top,
         convergence_model=get("convergence_model", None),
         specialist_pool=_split_list(str(get("specialist_pool", ",".join(default_specialist_pool)))) or default_specialist_pool,
         apply_model=apply_model,
         apply_pool=apply_pool,
+        escalation_pool=escalation_pool,
         escalation_model=get("escalation_model", None),
         max_cost=max_cost,
         task_max_cost=task_max_cost,
@@ -400,4 +464,6 @@ def load_settings(overrides=None):
         mcp_allow_write=_as_bool(get("mcp_allow_write", False)),
         mcp_allow_verify=_as_bool(get("mcp_allow_verify", False)),
         mcp_allowed_roots=_split_list(str(get("mcp_allowed_roots", ""))),
+        mcp_tool_timeout=mcp_tool_timeout,
+        mcp_auth_token=get("mcp_auth_token", None) or None,
     )

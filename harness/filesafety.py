@@ -12,6 +12,7 @@ import stat
 import subprocess
 import shutil
 import tempfile
+import uuid
 
 from .errors import HarnessError
 from .output import eprint
@@ -28,7 +29,7 @@ def _verify_argv(command):
     try:
         argv = shlex.split(command)
     except ValueError as e:
-        raise HarnessError(f"verify_cmd is not shell-tokenizable ({e}); quote it properly.")
+        raise HarnessError(f"verify_cmd is not shell-tokenizable ({e}); quote it properly.") from e
     if not argv:
         raise HarnessError("verify_cmd is empty.")
     return argv
@@ -52,15 +53,14 @@ def default_run_verify(command, timeout=VERIFY_TIMEOUT, cwd=None):
     return result.returncode, (result.stdout or "") + (result.stderr or "")
 
 
-def validate_verify_command(command):
+def validate_verify_command(command, require_executable=True):
     """Preflight a --verify gate WITHOUT executing it: the command must be
-    shell-tokenizable and its interpreter/tool must be findable (shutil.which
-    covers PATH entries and direct script paths alike). Honesty, not a
-    guarantee -- a gate that exists can still fail at runtime. Its purpose is
-    the dogfood preflight: a typo'd gate must be caught before the paid panel
-    phase, exactly like a typo'd --file."""
+    shell-tokenizable and (when require_executable) its interpreter/tool must
+    be findable. Honesty, not a guarantee -- a gate that exists can still fail
+    at runtime. Engine callers pass require_executable=False so hermetic
+    library stubs stay usable; dogfood/CLI keep the PATH check."""
     argv = _verify_argv(command)
-    if shutil.which(argv[0]) is None:
+    if require_executable and shutil.which(argv[0]) is None:
         raise HarnessError(
             f"verify gate executable not found: {argv[0]} "
             "(the gate would fail every round; fix --verify before spending a live run)")
@@ -79,11 +79,11 @@ def file_content_hash(path):
                 digest.update(chunk)
         return digest.hexdigest()
     except OSError as e:
-        raise HarnessError(f"cannot hash target file: {path} ({e})")
+        raise HarnessError(f"cannot hash target file: {path} ({e})") from e
 
 
 def _line_count(path):
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
+    with open(path, encoding="utf-8", errors="replace") as f:
         return sum(1 for _ in f)
 
 
@@ -92,7 +92,28 @@ class _AtomicWriteError(OSError):
     or vanished directory) -- never follow through by writing anyway."""
 
 
-def _atomic_write(path, content, *, follow=False):
+def detect_newline(path):
+    """The target file's own line-ending style, or None when unknown.
+
+    Reads the first bytes only: a ``\\r\\n`` anywhere means CRLF (mixed
+    files normalize to CRLF); bare ``\\n`` means LF; no newline at all
+    (or an unreadable file) means None. Model output arrives with ``\\n``
+    endings -- it never saw the tree's bytes -- so writes must aim at the
+    target's style explicitly instead of laundering checkouts.
+    """
+    try:
+        with open(path, "rb") as f:
+            sample = f.read(8192)
+    except OSError:
+        return None
+    if b"\r\n" in sample:
+        return "\r\n"
+    if b"\n" in sample:
+        return "\n"
+    return None
+
+
+def _atomic_write(path, content, *, follow=False, newline="preserve"):
     """Atomically replace `path` with `content`, refusing unsafe targets.
 
     Without ``follow=True`` a pre-existing symlink is never followed (the
@@ -101,20 +122,34 @@ def _atomic_write(path, content, *, follow=False):
     target's permission mode is preserved (tempfile.mkstemp creates 0600,
     which would otherwise silently strip an executable bit from a verify
     script or gate artifact and change the semantics of the working tree).
+
+    ``newline="preserve"`` (default) translates the content to the target
+    file's own detected style, so a model-written LF body never flips a
+    CRLF checkout (and the failed-run rewind restores the exact original
+    style, since preserved writes never change it in the first place).
+    ``newline=None`` writes bytes exactly as given -- for snapshot restore,
+    where the snapshot's bytes, not the tree's style, are authoritative.
     """
     d = os.path.dirname(os.path.abspath(path)) or "."
+    # Parent-dir symlink: realpath the directory so staging never lands
+    # outside the intended tree when an intermediate component is a link.
+    d_real = os.path.realpath(d)
     if os.path.islink(path) and not follow:
         raise _AtomicWriteError(
             f"refusing to write through symlink: {path} "
             "(delete the link or pass follow_symlinks=True)")
+    if newline == "preserve":
+        style = detect_newline(path)
+        if style == "\r\n":
+            content = content.replace("\r\n", "\n").replace("\n", "\r\n")
     try:
-        fd, tmp = tempfile.mkstemp(prefix=".harness-", suffix=".tmp", dir=d)
+        fd, tmp = tempfile.mkstemp(prefix=".harness-", suffix=".tmp", dir=d_real)
     except OSError as e:
-        raise _AtomicWriteError(f"cannot stage temp file in {d}: {e}")
+        raise _AtomicWriteError(f"cannot stage temp file in {d_real}: {e}") from e
     try:
-        # newline="" writes the string's own line endings unchanged: a
-        # snapshot/restore round-trip is byte-faithful instead of silently
-        # EOL-laundering CRLF fixtures into phantom diffs (live bench finding).
+        # newline="" writes the string unchanged: with preserve mode the
+        # translation above already ran, and with newline=None the caller
+        # takes full responsibility for the bytes (snapshot restore).
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
             f.write(content)
         try:
@@ -138,6 +173,9 @@ def validate_target_file(file_path):
     engine boundary."""
     if not os.path.exists(file_path):
         raise HarnessError(f"file not found: {file_path}")
+    if os.path.islink(file_path):
+        raise HarnessError(
+            f"symlink targets are not editable: {file_path} (use the real file path)")
     if not os.path.isfile(file_path):
         raise HarnessError(
             f"not a regular file: {file_path} (directories are not editable)")
@@ -147,24 +185,56 @@ def backup_file(file_path, task_id, round_no):
     """Preserve the pre-edit file (content + permission mode) outside the
     working tree so a restore never has to trust the tree itself (#6).
     Failure is non-fatal but never silent. Returns the backup path or None.
+
+    TOCTOU hardening: the destination is created with O_CREAT|O_EXCL so a
+    pre-planted file or symlink at the predictable name cannot be followed
+    or overwritten.
     """
     d = os.path.join(tempfile.gettempdir(), "harness-backups")
     try:
+        if os.path.islink(d):
+            # Hijacked backup dir (a pre-planted symlink): every backup
+            # write below would land wherever the link points. Fail closed.
+            raise OSError(f"backup dir is a symlink, refusing: {d}")
         os.makedirs(d, exist_ok=True)
         st = os.stat(file_path)
         # Task ids may contain separators (bench names its tasks
         # 'bench/<name>'), which would land in the backup FILENAME and
         # break open() on every platform. Flatten them.
         safe_task = str(task_id).replace("/", "_").replace("\\", "_")
-        dest = os.path.join(d, f"{safe_task}-r{round_no}-{os.path.basename(file_path)}")
-        with open(file_path, "rb") as src, open(dest, "wb") as out:
-            shutil.copyfileobj(src, out)
+        # Unique dest so a prior backup (or a hostile plant) never collides
+        # with O_EXCL; prune still keys off the task+basename prefix.
+        unique = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        dest = os.path.join(
+            d, f"{safe_task}-r{round_no}-{unique}-{os.path.basename(file_path)}")
+        # O_EXCL: never open an existing path (including a symlink).
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            fd = os.open(dest, flags, 0o600)
+        except FileExistsError as e:
+            raise OSError(f"backup destination already exists, refusing: {dest}") from e
+        try:
+            with os.fdopen(fd, "wb") as out, open(file_path, "rb") as src:
+                shutil.copyfileobj(src, out)
+        except Exception:
+            try:
+                os.unlink(dest)
+            except OSError:
+                pass
+            raise
         os.chmod(dest, st.st_mode & 0o777)  # preserve mode for faithful restore
-        # Prune oldest backups of this file beyond the cap.
+        # Prune oldest backups of this file beyond the cap. Never unlink the
+        # just-created dest (unique names can sort first).
         prefix = f"{safe_task}-"
+        base = os.path.basename(file_path)
         siblings = sorted(fn for fn in os.listdir(d)
-                          if fn.startswith(prefix) and fn.endswith("-" + os.path.basename(file_path)))
-        for fn in siblings[:-MAX_BACKUPS_PER_FILE]:
+                          if fn.startswith(prefix) and fn.endswith("-" + base)
+                          and fn != os.path.basename(dest)
+                          and os.path.isfile(os.path.join(d, fn)))
+        # Keep at most MAX_BACKUPS_PER_FILE-1 older siblings plus the new one.
+        for fn in siblings[:-(max(0, MAX_BACKUPS_PER_FILE - 1))]:
             try:
                 os.unlink(os.path.join(d, fn))
             except OSError:

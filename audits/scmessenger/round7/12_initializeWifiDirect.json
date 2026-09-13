@@ -1,0 +1,192 @@
+{
+  "panel_results": [
+    {
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "content": "```json\n{\n  \"C1\": {\n    \"real\": true,\n    \"severity\": \"low\",\n    \"confidence\": 1.0,\n    \"why\": \"The catch block handles a generic Exception and performs a simple null assignment without recovery logic or differentiated error reporting.\"\n  },\n  \"C2\": {\n    \"real\": true,\n    \"severity\": \"medium\",\n    \"confidence\": 0.9,\n    \"why\": \"The function attempts to instantiate WifiDirectTransport immediately without checking hardware capabilities or manager availability.\"\n  },\n  \"C3\": {\n    \"real\": true,\n    \"severity\": \"info\",\n    \"confidence\": 0.95,\n    \"why\": \"The implementation correctly maps the provided callback parameters to the internal state and higher-level listener functions.\"\n  }\n}\n```",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    },
+    {
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "content": "{\n  \"C1\": {\"real\": true, \"severity\": \"low\", \"confidence\": 0.95, \"why\": \"Catches generic Exception and nulls wifiDirect without specific handling or retry.\"},\n  \"C2\": {\"real\": true, \"severity\": \"medium\", \"confidence\": 0.95, \"why\": \"Does not check WiFi Direct availability before attempting initialization.\"},\n  \"C3\": {\"real\": true, \"severity\": \"info\", \"confidence\": 0.95, \"why\": \"Callbacks correctly wire peer discovery, data receipt, and connection info handlers.\"}\n}",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    },
+    {
+      "model": "google/gemma-4-31b-it:free",
+      "content": "```json\n{\n  \"C1\": {\n    \"real\": true,\n    \"severity\": \"low\",\n    \"confidence\": 0.9,\n    \"why\": \"Catching Exception is a broad catch-all that swallows failures without notifying the caller or attempting recovery.\"\n  },\n  \"C2\": {\n    \"real\": true,\n    \"severity\": \"medium\",\n    \"confidence\": 0.8,\n    \"why\": \"The code assumes WifiDirectTransport can be initialized without checking hardware or OS capability, potentially leading to crashes or silent failures.\"\n  },\n  \"C3\": {\n    \"real\": true,\n    \"severity\": \"info\",\n    \"confidence\": 0.9,\n    \"why\": \"The callbacks are correctly mapped to the corresponding internal state updates and higher-level event handlers.\"\n  }\n}\n```",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    }
+  ],
+  "trimmed_for_judge": [],
+  "panel_failures": [],
+  "required_panelists": 3,
+  "panel_tried": 3,
+  "judge_model": "google/gemma-4-31b-it:free",
+  "judge_synthesis": "```json\n{\n  \"verdict\": \"C1: Real (Low), C2: Real (Medium), C3: Real (Info)\",\n  \"agreement\": \"high\",\n  \"confidence\": 0.95,\n  \"disagreements\": [],\n  \"defer\": false\n}\n```",
+  "judge_synthesis_status": "parseable",
+  "verdict": "Deterministic panel tally: C1=real (3R/0NR of 3); C2=real (3R/0NR of 3)",
+  "consensus": {
+    "agreement": "high",
+    "confidence": 1.0,
+    "disagreements": [],
+    "defer": false,
+    "panel_shortfall": false,
+    "missing_votes": 0,
+    "voted_by": 3,
+    "of_panel": 3,
+    "responder_converged": true,
+    "gate_converged": true,
+    "defer_reason": null,
+    "judge_verdict": "C1: Real (Low), C2: Real (Medium), C3: Real (Info)",
+    "escalation": {
+      "needed": false,
+      "reason": null,
+      "condensed_context": null,
+      "target_rung": 0
+    },
+    "plan": {
+      "steps": [],
+      "target_tier": "cheap"
+    }
+  },
+  "estimated_worst_case_cost": 0.0,
+  "actual_cost": 0.0,
+  "max_cost_ceiling": 0.02,
+  "convergence": {
+    "status": "ok",
+    "model": "google/gemma-4-31b-it:free",
+    "specialist": {
+      "converged": true,
+      "agreement": "high",
+      "confidence": 0.95,
+      "claims": {
+        "C1": {
+          "verdict": "real",
+          "converged": true,
+          "confidence": 0.95
+        },
+        "C2": {
+          "verdict": "real",
+          "converged": true,
+          "confidence": 0.88
+        }
+      },
+      "escalation": {
+        "needed": false,
+        "reason": null,
+        "condensed_context": null,
+        "target_rung": 0
+      },
+      "plan": {
+        "steps": [],
+        "target_tier": "cheap"
+      }
+    },
+    "raw": "```json\n{\n  \"converged\": true,\n  \"agreement\": \"high\",\n  \"confidence\": 0.95,\n  \"claims\": {\n    \"C1\": {\n      \"verdict\": \"real\",\n      \"converged\": true,\n      \"confidence\": 0.95\n    },\n    \"C2\": {\n      \"verdict\": \"real\",\n      \"converged\": true,\n      \"confidence\": 0.88\n    }\n  },\n  \"escalation\": {\n    \"needed\": false,\n    \"reason\": null,\n    \"condensed_context\": null,\n    \"target_rung\": 0\n  },\n  \"plan\": {\n    \"steps\": [],\n    \"target_tier\": \"cheap\"\n  }\n}\n```",
+    "cost": 0.0,
+    "error": null,
+    "attempts": [
+      {
+        "model": "google/gemma-4-31b-it:free",
+        "status": "ok",
+        "cost": 0
+      }
+    ],
+    "dropped_votes_from_prompt": [],
+    "tally": {
+      "converged": true,
+      "responder_converged": true,
+      "converged_claims": 2,
+      "responder_converged_claims": 2,
+      "total_claims": 2,
+      "convergence_rate": 1.0,
+      "gate_convergence_rate": 1.0,
+      "disagreement": false,
+      "disagreement_claims": [],
+      "panel_shortfall": false,
+      "missing_votes": 0,
+      "shortfall": null,
+      "voted_by": 3,
+      "of_panel": 3,
+      "responding_models": [
+        "google/gemma-4-26b-a4b-it:free",
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "google/gemma-4-31b-it:free"
+      ],
+      "claims": {
+        "C1": {
+          "verdict": "real",
+          "unanimous": true,
+          "responder_unanimous": true,
+          "converged": true,
+          "gate_unanimous": true,
+          "voted_by": 3,
+          "of_panel": 3,
+          "confidence": 0.95,
+          "votes": {
+            "real": 3,
+            "not_real": 0
+          },
+          "real_votes": 3,
+          "not_real_votes": 0,
+          "missing_votes": 0,
+          "panel_shortfall": false
+        },
+        "C2": {
+          "verdict": "real",
+          "unanimous": true,
+          "responder_unanimous": true,
+          "converged": true,
+          "gate_unanimous": true,
+          "voted_by": 3,
+          "of_panel": 3,
+          "confidence": 0.883,
+          "votes": {
+            "real": 3,
+            "not_real": 0
+          },
+          "real_votes": 3,
+          "not_real_votes": 0,
+          "missing_votes": 0,
+          "panel_shortfall": false
+        }
+      },
+      "reassurance": {
+        "C3": {
+          "verdict": "real",
+          "unanimous": true,
+          "responder_unanimous": true,
+          "converged": true,
+          "gate_unanimous": true,
+          "voted_by": 3,
+          "of_panel": 3,
+          "confidence": 0.933,
+          "votes": {
+            "real": 3,
+            "not_real": 0
+          },
+          "real_votes": 3,
+          "not_real_votes": 0,
+          "missing_votes": 0,
+          "panel_shortfall": false,
+          "note": "reassurance claim: reported separately and excluded from the defect convergence gate"
+        }
+      }
+    }
+  },
+  "cost_by_model": {
+    "google/gemma-4-26b-a4b-it:free": 0.0,
+    "nvidia/nemotron-3-super-120b-a12b:free": 0.0,
+    "google/gemma-4-31b-it:free": 0.0
+  },
+  "claims_grounding": {
+    "ok": true,
+    "issues": [],
+    "expansions": []
+  }
+}

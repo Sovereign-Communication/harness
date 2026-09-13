@@ -17,6 +17,7 @@ preserved and the continuation mode hands it to the next iteration. The apply
 prompt encodes that instruction; the consent ledger records these as
 category="capability" deferrals.
 """
+from . import events as _events
 from .chat import (chat, extract_content_and_cost, _extract_json, _reported_cost,
                    REASONING_FALLBACK_PREFIX)  # noqa: F401
 from .errors import HarnessError
@@ -166,6 +167,10 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
                          "cost": tracked_cost})
         if len(usable) > 1:
             eprint(f"[consent] {m_}: {fail_reason}; rotating.")
+        _events.emit("rotation", task_id=task_id, model=m_, lane="consent",
+                     reason="consent_unusable", detail=fail_reason)
+        _events.emit("rotation", task_id=task_id, model=m_, lane="consent",
+                     reason="consent_unusable", detail=fail_reason)
         if ledger:
             ledger.append("consent_rotate", task_id=task_id, model=m_,
                           reason=fail_reason, cost=tracked_cost)
@@ -182,6 +187,9 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
             "task_id": task_id,
             "model": model,
             "decision": "defer",
+            # Explicit dispatch verdict for consumers: fail-closed means the
+            # work was never dispatched, and the shape says so unambiguously.
+            "dispatched": False,
             "reason": reason,
             "redirect_model": None,
             "scope_suggestion": None,
@@ -194,6 +202,9 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
             ledger.append("consent_defer", task_id=task_id, model=model, reason=reason,
                           redirect_model=None, scope_suggestion=None,
                           cost=tracked_total, billable_cost=tracked_total)
+        _events.emit("consent_result", task_id=task_id, model=model,
+                     decision="defer", dispatched=False, fail_closed=True,
+                     reason=reason, cost=tracked_total)
         return result
 
     answered = m_
@@ -218,6 +229,9 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
                       reason=reason, redirect_model=result["redirect_model"],
                       scope_suggestion=result["scope_suggestion"], cost=tracked_total,
                       billable_cost=tracked_total)
+    _events.emit("consent_result", task_id=task_id, model=answered,
+                 decision=result["decision"], reason=reason,
+                 redirect_model=result["redirect_model"], cost=tracked_total)
     return result
 
 
@@ -231,11 +245,17 @@ def consent_renew(*, transport, api_key, governor, task_id, task, model,
     work preserved).
     """
     base = probe_consent(transport=transport, api_key=api_key, governor=governor,
-                         task_id=task_id, task=task, model=model, context=context,
-                         max_tokens=max_tokens, ledger=None, required=required,
-                         fallback_pool=fallback_pool)
+                          task_id=task_id, task=task, model=model, context=context,
+                          max_tokens=max_tokens, ledger=None, required=required,
+                          fallback_pool=fallback_pool)
     if ledger:
+        # Attribute to the model that ANSWERED (post-rotation), not the
+        # requested primary: billing a rotated renewal to the wrong model
+        # corrupts per-model calibration. Attempts ride along so the
+        # renewal's rotation evidence is not silently dropped (the probe
+        # runs ledger-less here to avoid double-counting offers).
         event = "consent_renew_accept" if base["decision"] == "accept" else "consent_renew_defer"
-        ledger.append(event, task_id=task_id, model=model, reason=base["reason"],
-                      cost=base["cost"])
+        ledger.append(event, task_id=task_id, model=base.get("model") or model,
+                      reason=base["reason"], cost=base["cost"],
+                      attempts=base.get("attempts") or [])
     return base

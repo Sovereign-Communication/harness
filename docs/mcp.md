@@ -35,10 +35,31 @@ specific disposable checkout rather than a home directory.
 ## Tools
 
 The server supports panel verification, scoped apply, consent, deferral,
-ledger status, participation reporting, and spend status. Results include
-machine-readable structured content and an `isError` flag for tool failures.
+ledger status, participation reporting, spend status, and trust status.
+Results include machine-readable structured content and an `isError` flag
+for tool failures. Response frames correlate by request id, never by
+position: lanes run concurrently, so a later request may answer first.
+
+## Scheduling: lanes and deadlines
+
+Tools run on three serial lanes -- `mutation` (`apply_edit`), `spendy`
+(`panel_verify`, `offer_work`), and `observe` (everything else, including
+unknown tool names before they fail validation). Each lane stays serial,
+so a long apply or panel never head-of-line-blocks status queries, and
+the engine is still driven from exactly one lane.
+
+Every request also carries a cooperative deadline,
+`mcp_tool_timeout` / `HARNESS_MCP_TOOL_TIMEOUT` (seconds, 60..7200,
+default 1800), tripped through the same `cancel_check` as
+`notifications/cancelled`: an uncancelled-but-overdue run stops at the
+next poll point. In-flight POSTs and subprocesses still run to their own
+timeouts -- the deadline bounds lane occupancy, not the transport.
 
 The supported protocol version is advertised during `initialize`; unsupported
-versions are rejected. Cancellation notifications are intended to stop work
-between governed operations, but verification process cancellation should be
-validated on the target platform before relying on it for hard interruption.
+versions are rejected. Notifications, including `initialize` and `tools/call`,
+never receive response frames. Identified request IDs are rejected while
+already in flight and remain reserved until their response has been serialized;
+accepted requests drain after stdin reaches EOF. Cancellation notifications
+only affect currently in-flight work and stop it cooperatively between governed
+operations. Verification process cancellation should be validated on the
+target platform before relying on it for hard interruption.

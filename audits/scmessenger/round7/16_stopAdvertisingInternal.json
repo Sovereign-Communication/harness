@@ -1,0 +1,202 @@
+{
+  "panel_results": [
+    {
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "content": "```json\n{\n  \"C1\": {\n    \"real\": false,\n    \"severity\": \"info\",\n    \"confidence\": 1.0,\n    \"why\": \"The SecurityException is caught at line 15, meaning stopAdvertising was actually called at line 11 before the exception was thrown.\"\n  },\n  \"C2\": {\n    \"real\": true,\n    \"severity\": \"low\",\n    \"confidence\": 0.9,\n    \"why\": \"If stopAdvertising fails due to an Exception, stopRotation() is skipped, but if it fails via SecurityException, it is also skipped, which is inconsistent logic.\"\n  },\n  \"C3\": {\n    \"real\": true,\n    \"severity\": \"info\",\n    \"confidence\": 1.0,\n    \"why\": \"The function implements early returns for null/false flags and explicit permission checks before attempting the operation.\"\n  }\n}\n```",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    },
+    {
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "content": "{\n  \"C1\": {\n    \"real\": false,\n    \"severity\": \"info\",\n    \"confidence\": 0.99,\n    \"why\": \"isAdvertising is not set to false in the SecurityException catch block\"\n  },\n  \"C2\": {\n    \"real\": false,\n    \"severity\": \"info\",\n    \"confidence\": 0.99,\n    \"why\": \"stopRotation() is not called when stopAdvertising fails; claim misstates the code\"\n  },\n  \"C3\": {\n    \"real\": true,\n    \"severity\": \"info\",\n    \"confidence\": 0.99,\n    \"why\": \"permission and isAdvertising flag are checked before attempting stopAdvertising\"\n  }\n}",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    },
+    {
+      "model": "google/gemma-4-31b-it:free",
+      "content": "```json\n{\n  \"C1\": {\n    \"real\": false,\n    \"severity\": \"info\",\n    \"confidence\": 1.0,\n    \"why\": \"If SecurityException is caught at line 15, isAdvertising is not set to false because it is at line 12; the exception happens at line 11.\"\n  },\n  \"C2\": {\n    \"real\": false,\n    \"severity\": \"info\",\n    \"confidence\": 1.0,\n    \"why\": \"stopRotation() is called in all exit paths (success, permission missing, or implicit failure via exception), though the logic implies it stops the timer regardless of API call success.\"\n  },\n  \"C3\": {\n    \"real\": true,\n    \"severity\": \"info\",\n    \"confidence\": 1.0,\n    \"why\": \"The code explicitly checks for null advertiser, isAdvertising flag, and permissions before attempting the API call.\"\n  }\n}\n```",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    }
+  ],
+  "trimmed_for_judge": [],
+  "panel_failures": [],
+  "required_panelists": 3,
+  "panel_tried": 3,
+  "judge_model": "google/gemma-4-31b-it:free",
+  "judge_synthesis": "```json\n{\n  \"verdict\": \"C1: false, C2: false, C3: true\",\n  \"agreement\": \"medium\",\n  \"confidence\": 0.8,\n  \"disagreements\": [\n    \"C2: One model considers it a real low-severity issue regarding inconsistent logic, while the other two consider it not a real issue.\"\n  ],\n  \"defer\": false\n}\n```",
+  "judge_synthesis_status": "parseable",
+  "verdict": "Deterministic panel tally: C1=not_real (0R/3NR of 3); C2=not_real (1R/2NR of 3)",
+  "consensus": {
+    "agreement": "low",
+    "confidence": 0.5,
+    "disagreements": [
+      "C2"
+    ],
+    "defer": true,
+    "panel_shortfall": false,
+    "missing_votes": 0,
+    "voted_by": 3,
+    "of_panel": 3,
+    "responder_converged": false,
+    "gate_converged": false,
+    "defer_reason": "responder_disagreement",
+    "judge_verdict": "C1: false, C2: false, C3: true",
+    "escalation": {
+      "needed": false,
+      "reason": "",
+      "condensed_context": "",
+      "target_rung": 0
+    },
+    "plan": {
+      "steps": [],
+      "target_tier": "free"
+    }
+  },
+  "estimated_worst_case_cost": 0.0,
+  "actual_cost": 0.0,
+  "max_cost_ceiling": 0.02,
+  "convergence": {
+    "status": "ok",
+    "model": "google/gemma-4-26b-a4b-it:free",
+    "specialist": {
+      "converged": true,
+      "agreement": "medium",
+      "confidence": 0.96,
+      "claims": {
+        "C1": {
+          "verdict": "not_real",
+          "converged": true,
+          "confidence": 0.99
+        },
+        "C2": {
+          "verdict": "not_real",
+          "converged": true,
+          "confidence": 0.95
+        }
+      },
+      "escalation": {
+        "needed": false,
+        "reason": "",
+        "condensed_context": "",
+        "target_rung": 0
+      },
+      "plan": {
+        "steps": [],
+        "target_tier": "free"
+      }
+    },
+    "raw": "{\n  \"converged\": true,\n  \"agreement\": \"medium\",\n  \"confidence\": 0.96,\n  \"claims\": {\n    \"C1\": {\n      \"verdict\": \"not_real\",\n      \"converged\": true,\n      \"confidence\": 0.99\n    },\n    \"C2\": {\n      \"verdict\": \"not_real\",\n      \"converged\": true,\n      \"confidence\": 0.95\n    }\n  },\n  \"escalation\": {\n    \"needed\": false,\n    \"reason\": \"\",\n    \"condensed_context\": \"\",\n    \"target_rung\": 0\n  },\n  \"plan\": {\n    \"steps\": [],\n    \"target_tier\": \"free\"\n  }\n}",
+    "cost": 0.0,
+    "error": null,
+    "attempts": [
+      {
+        "model": "google/gemma-4-31b-it:free",
+        "status": "error",
+        "error": "Provider returned error",
+        "cost": 0.0
+      },
+      {
+        "model": "google/gemma-4-26b-a4b-it:free",
+        "status": "ok",
+        "cost": 0
+      }
+    ],
+    "dropped_votes_from_prompt": [],
+    "tally": {
+      "converged": false,
+      "responder_converged": false,
+      "converged_claims": 1,
+      "responder_converged_claims": 1,
+      "total_claims": 2,
+      "convergence_rate": 0.5,
+      "gate_convergence_rate": 0.5,
+      "disagreement": true,
+      "disagreement_claims": [
+        "C2"
+      ],
+      "panel_shortfall": false,
+      "missing_votes": 0,
+      "shortfall": null,
+      "voted_by": 3,
+      "of_panel": 3,
+      "responding_models": [
+        "google/gemma-4-26b-a4b-it:free",
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "google/gemma-4-31b-it:free"
+      ],
+      "claims": {
+        "C1": {
+          "verdict": "not_real",
+          "unanimous": true,
+          "responder_unanimous": true,
+          "converged": true,
+          "gate_unanimous": true,
+          "voted_by": 3,
+          "of_panel": 3,
+          "confidence": 0.997,
+          "votes": {
+            "real": 0,
+            "not_real": 3
+          },
+          "real_votes": 0,
+          "not_real_votes": 3,
+          "missing_votes": 0,
+          "panel_shortfall": false
+        },
+        "C2": {
+          "verdict": "not_real",
+          "unanimous": false,
+          "responder_unanimous": false,
+          "converged": false,
+          "gate_unanimous": false,
+          "voted_by": 3,
+          "of_panel": 3,
+          "confidence": 0.963,
+          "votes": {
+            "real": 1,
+            "not_real": 2
+          },
+          "real_votes": 1,
+          "not_real_votes": 2,
+          "missing_votes": 0,
+          "panel_shortfall": false
+        }
+      },
+      "reassurance": {
+        "C3": {
+          "verdict": "real",
+          "unanimous": true,
+          "responder_unanimous": true,
+          "converged": true,
+          "gate_unanimous": true,
+          "voted_by": 3,
+          "of_panel": 3,
+          "confidence": 0.997,
+          "votes": {
+            "real": 3,
+            "not_real": 0
+          },
+          "real_votes": 3,
+          "not_real_votes": 0,
+          "missing_votes": 0,
+          "panel_shortfall": false,
+          "note": "reassurance claim: reported separately and excluded from the defect convergence gate"
+        }
+      }
+    }
+  },
+  "cost_by_model": {
+    "google/gemma-4-26b-a4b-it:free": 0.0,
+    "nvidia/nemotron-3-super-120b-a12b:free": 0.0,
+    "google/gemma-4-31b-it:free": 0.0
+  },
+  "claims_grounding": {
+    "ok": true,
+    "issues": [],
+    "expansions": []
+  }
+}

@@ -1,0 +1,102 @@
+# harness/mcp.py lines 85-145
+    def serve_forever(self):
+        """Read frames until EOF while a single worker runs tools.
+
+        A reader/worker split is required so cancellation notifications can
+        arrive during provider or gate I/O. Tool execution stays serialized so
+        the governor, ledger, and engine retain their single-session semantics.
+        """
+        executor = ThreadPoolExecutor(max_workers=1)
+        try:
+            while True:
+                line = self.stdin.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line, parse_constant=_reject_nonstandard_json)
+                except (json.JSONDecodeError, ValueError):
+                    self._write({"jsonrpc": "2.0", "id": None,
+                                 "error": {"code": -32700, "message": "Parse error"}})
+                    continue
+                if not isinstance(msg, dict) or "method" not in msg:
+                    rid = msg.get("id") if isinstance(msg, dict) else None
+                    self._write({"jsonrpc": "2.0", "id": rid,
+                                 "error": {"code": -32600, "message": "Invalid Request"}})
+                    continue
+                if "id" in msg and not _valid_rpc_id(msg.get("id")):
+                    self._write({"jsonrpc": "2.0", "id": None,
+                                 "error": {"code": -32600,
+                                            "message": "request id must be a JSON scalar"}})
+                    continue
+                if msg.get("jsonrpc") != "2.0" or not isinstance(msg.get("method"), str):
+                    self._write({"jsonrpc": "2.0", "id": msg.get("id"),
+                                 "error": {"code": -32600, "message": "Invalid Request"}})
+                    continue
+
+                if msg.get("method") == "tools/call":
+                    identified = "id" in msg
+                    request_id = msg.get("id")
+                    if identified:
+                        with self._cancel_lock:
+                            if request_id in self._inflight:
+                                self._write({
+                                    "jsonrpc": "2.0", "id": request_id,
+                                    "error": {"code": -32600,
+                                               "message": "duplicate request id is already in flight"},
+                                })
+                                continue
+                            self._inflight.add(request_id)
+                    executor.submit(self._write_tool_response, msg)
+                    continue
+
+                response = self._handle(msg)
+                if response is not None:
+                    self._write(response)
+        finally:
+            # Requests already accepted from the input stream still own a
+            # response. Let the serialized worker drain them after EOF; only
+            # an explicit notifications/cancelled message cancels work.
+            executor.shutdown(wait=True)
+# harness/mcp.py lines 218-256
+    def _handle_cancellation(self, msg, is_notification):
+        params = msg.get("params", {})
+        request_id = msg.get("id")
+        if not isinstance(params, dict):
+            if is_notification:
+                return None
+            return {"jsonrpc": "2.0", "id": request_id,
+                    "error": {"code": -32602, "message": "params must be an object"}}
+        if "requestId" not in params:
+            if is_notification:
+                return None
+            return {"jsonrpc": "2.0", "id": request_id,
+                    "error": {"code": -32602, "message": "requestId is required"}}
+        cancelled_id = params["requestId"]
+        if not _valid_rpc_id(cancelled_id):
+            if is_notification:
+                return None
+            return {"jsonrpc": "2.0", "id": request_id,
+                    "error": {"code": -32602,
+                               "message": "requestId must be a JSON scalar"}}
+        with self._cancel_lock:
+            if cancelled_id in self._inflight:
+                self._cancelled.add(cancelled_id)
+        return None
+
+    def _is_cancelled(self, request_id):
+        with self._cancel_lock:
+            return request_id in self._cancelled
+
+    def _call_tool(self, msg):
+        request_id = msg.get("id")
+        if "id" in msg:
+            with self._cancel_lock:
+                if request_id in self._cancelled:
+                    self._cancelled.discard(request_id)
+                    return {"jsonrpc": "2.0", "id": request_id,
+                            "error": {"code": -32800,
+                                       "message": "Request cancelled before execution"}}
+        return self._call_tool_impl(msg)

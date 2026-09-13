@@ -135,10 +135,32 @@ def assess_output(content, finish_reason=None, allow_truncated=False):
     return True, None
 
 
+def looks_truncated(text):
+    """Heuristic for a body cut off mid-JSON (never promoted to a verdict).
+
+    A fence that opens and never closes, or unbalanced braces/brackets,
+    means the provider stopped mid-object (the Sep-2026 seat-gate loss was a
+    57-char body that just stopped). Prose around balanced JSON is not
+    truncation.
+    """
+    if not text:
+        return False
+    if text.count("```") % 2 == 1:
+        return True
+    body = text
+    if "```" in body:
+        body = body.split("```", 2)[1]
+        if body.lstrip().lower().startswith("json") and "\n" in body:
+            body = body.split("\n", 1)[1]
+    return ((body.count("{") != body.count("}"))
+            or (body.count("[") != body.count("]")))
+
+
 # ------------------------- reasoning / effort -------------------------
 
 _REASONING_HINTS = ("reason", "thinking", "inkling", "qwq", "r1", "o3", "o4",
-                    "deepseek", "kimi", "glm-4.6", "glm-5.2", "glm-5.6", "minimax-reason")
+                    "o1", "gpt-5", "deepseek", "kimi", "glm-4.6", "glm-5.2", "glm-5.6",
+                    "minimax-reason", "nemotron", "openrouter/free")
 _EFFORT_VALUES = ("auto", "off", "none", "low", "medium", "high", "on")
 _REASONING_PARAM_ERR_HINTS = ("reasoning", "unsupported parameter",
                               "unknown parameter", "unexpected parameter")
@@ -189,13 +211,42 @@ def _chat_reservation_slots(model_id, reasoning_effort="auto", max_429_retries=0
     return reasoning_slots * (max(0, int(max_429_retries)) + 1)
 
 
+def _ensure_accounted(governor, model, resp, usage):
+    """Fill a missing usage.cost before any lane can bill the response.
+
+    A reported zero stays zero (the free tier). A *missing* cost on a free
+    model is 0. On a paid model it is estimated from the reported token
+    counts against live pricing and flagged cost_estimated; with neither
+    cost nor counts the call fails closed -- billing blind is how a paid
+    lane silently free-rides past its ceiling.
+    """
+    if governor.is_free(model):
+        usage["cost"] = 0.0
+        return
+    try:
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+    except (TypeError, ValueError):
+        prompt_tokens = completion_tokens = 0
+    if not prompt_tokens and not completion_tokens:
+        from .errors import HarnessError
+        raise HarnessError(
+            f"provider omitted usage accounting (no cost, no token counts) "
+            f"for paid model '{model}'; refusing to bill blind")
+    prompt_price, completion_price = governor.fetch_pricing([model])[model]
+    usage["cost"] = prompt_tokens * prompt_price + \
+        completion_tokens * completion_price
+    usage["cost_estimated"] = True
+
+
 def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto",
          reasoning_token_budget=0.4, governor=None):
     """One chat completion with the spend governor's payload guards.
 
     Reasoning is only included when the effort mode calls for it (auto => only
-    for reasoning-named models). If a provider rejects the reasoning
-    parameter, we retry once without it.
+    for reasoning-named models) and a provider rejection triggers one retry
+    without it. Every 200 response also passes cost accounting: a missing
+    usage.cost is resolved here, once, so no lane can bill a paid call as $0.
     """
     if governor:
         governor.check_byok(model)
@@ -211,6 +262,13 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
             governor.assert_no_tools(payload, model)
         return payload
 
+    def _account(status, resp):
+        if governor is not None and status == 200 and isinstance(resp, dict):
+            usage = resp.get("usage")
+            if isinstance(usage, dict) and "cost" not in usage:
+                _ensure_accounted(governor, model, resp, usage)
+        return status, resp
+
     want_reasoning = _effort_to_send(reasoning_effort, model) is not None
     status, resp = transport.post(OPENROUTER_CHAT_URL, api_key, build(want_reasoning))
     if want_reasoning and status != 200:
@@ -218,8 +276,12 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
                   if isinstance(resp, dict) else resp).lower()
         if any(h in err for h in _REASONING_PARAM_ERR_HINTS):
             eprint(f"[retry] {model} rejected reasoning param; retrying without it.")
+            from . import events as _events
+            _events.emit("rotation", model=model, reason="reasoning_param_rejected",
+                         note="provider retry without the reasoning parameter")
             prior_cost = _reported_cost(resp)
             retry_status, retry_resp = transport.post(
                 OPENROUTER_CHAT_URL, api_key, build(False))
-            return retry_status, _merge_retry_cost(retry_resp, prior_cost)
-    return status, resp
+            return _account(retry_status,
+                            _merge_retry_cost(retry_resp, prior_cost))
+    return _account(status, resp)

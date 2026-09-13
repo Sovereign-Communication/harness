@@ -1,0 +1,202 @@
+{
+  "panel_results": [
+    {
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "content": "```json\n{\n  \"C1\": {\n    \"real\": false,\n    \"severity\": \"info\",\n    \"confidence\": 1.0,\n    \"why\": \"The function uses .count() to determine the number of circuits, which inherently handles any number of components.\"\n  },\n  \"C2\": {\n    \"real\": true,\n    \"severity\": \"medium\",\n    \"confidence\": 0.9,\n    \"why\": \"Logic 'circuit_count > 1 || !is_tracked_reservation' returns true if is_tracked_reservation is false, regardless of circuit count.\"\n  },\n  \"C3\": {\n    \"real\": true,\n    \"severity\": \"info\",\n    \"confidence\": 1.0,\n    \"why\": \"Lines 6-7 explicitly check if circuit_count == 0 and return false.\"\n  }\n}\n```",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    },
+    {
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "content": "{\n  \"C1\": {\"real\": false, \"severity\": \"info\", \"confidence\": 0.9, \"why\": \"Function intentionally counts circuits and handles the >1 case; no pre\u2011validation is needed.\"},\n  \"C2\": {\"real\": false, \"severity\": \"info\", \"confidence\": 0.9, \"why\": \"Function matches spec: returns false for tracked reservations, true for untracked with a single circuit.\"},\n  \"C3\": {\"real\": true, \"severity\": \"low\", \"confidence\": 0.9, \"why\": \"Returns false when circuit_count==0, correctly treating zero circuits as non\u2011poison.\"}\n}",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    },
+    {
+      "model": "google/gemma-4-31b-it:free",
+      "content": "```json\n{\n  \"C1\": {\n    \"real\": false,\n    \"severity\": \"info\",\n    \"confidence\": 1.0,\n    \"why\": \"The function's purpose is to detect 'poison' circuits by counting them; validating a limit before counting is logically contradictory to the goal.\"\n  },\n  \"C2\": {\n    \"real\": false,\n    \"severity\": \"info\",\n    \"confidence\": 0.9,\n    \"why\": \"The logic `circuit_count > 1 || !is_tracked_reservation` correctly returns true if it's a single circuit but NOT tracked, which is the intended definition of a poison circuit.\"\n  },\n  \"C3\": {\n    \"real\": true,\n    \"severity\": \"info\",\n    \"confidence\": 1.0,\n    \"why\": \"Lines 6-8 explicitly return false if the circuit_count is 0.\"\n  }\n}\n```",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    }
+  ],
+  "trimmed_for_judge": [],
+  "panel_failures": [],
+  "required_panelists": 3,
+  "panel_tried": 3,
+  "judge_model": "google/gemma-4-31b-it:free",
+  "judge_synthesis": "```json\n{\n  \"verdict\": \"C1: False, C2: False, C3: True\",\n  \"agreement\": \"medium\",\n  \"confidence\": 0.8,\n  \"disagreements\": [\n    \"Model 1 identifies C2 as a real medium severity issue, whereas Models 2 and 3 identify C2 as false/info.\"\n  ],\n  \"defer\": false\n}\n```",
+  "judge_synthesis_status": "parseable",
+  "verdict": "Deterministic panel tally: C1=not_real (0R/3NR of 3); C2=not_real (1R/2NR of 3)",
+  "consensus": {
+    "agreement": "low",
+    "confidence": 0.5,
+    "disagreements": [
+      "C2"
+    ],
+    "defer": true,
+    "panel_shortfall": false,
+    "missing_votes": 0,
+    "voted_by": 3,
+    "of_panel": 3,
+    "responder_converged": false,
+    "gate_converged": false,
+    "defer_reason": "responder_disagreement",
+    "judge_verdict": "C1: False, C2: False, C3: True",
+    "escalation": {
+      "needed": false,
+      "reason": "",
+      "condensed_context": "",
+      "target_rung": 0
+    },
+    "plan": {
+      "steps": [],
+      "target_tier": "free"
+    }
+  },
+  "estimated_worst_case_cost": 0.0,
+  "actual_cost": 0.0,
+  "max_cost_ceiling": 0.02,
+  "convergence": {
+    "status": "ok",
+    "model": "google/gemma-4-26b-a4b-it:free",
+    "specialist": {
+      "converged": true,
+      "agreement": "high",
+      "confidence": 0.95,
+      "claims": {
+        "C1": {
+          "verdict": "not_real",
+          "converged": true,
+          "confidence": 1.0
+        },
+        "C2": {
+          "verdict": "not_real",
+          "converged": true,
+          "confidence": 0.9
+        }
+      },
+      "escalation": {
+        "needed": false,
+        "reason": "",
+        "condensed_context": "",
+        "target_rung": 0
+      },
+      "plan": {
+        "steps": [],
+        "target_tier": "free"
+      }
+    },
+    "raw": "{\n  \"converged\": true,\n  \"agreement\": \"high\",\n  \"confidence\": 0.95,\n  \"claims\": {\n    \"C1\": {\n      \"verdict\": \"not_real\",\n      \"converged\": true,\n      \"confidence\": 1.0\n    },\n    \"C2\": {\n      \"verdict\": \"not_real\",\n      \"converged\": true,\n      \"confidence\": 0.9\n    }\n  },\n  \"escalation\": {\n    \"needed\": false,\n    \"reason\": \"\",\n    \"condensed_context\": \"\",\n    \"target_rung\": 0\n  },\n  \"plan\": {\n    \"steps\": [],\n    \"target_tier\": \"free\"\n  }\n}",
+    "cost": 0.0,
+    "error": null,
+    "attempts": [
+      {
+        "model": "google/gemma-4-31b-it:free",
+        "status": "error",
+        "error": "no parseable JSON",
+        "cost": 0
+      },
+      {
+        "model": "google/gemma-4-26b-a4b-it:free",
+        "status": "ok",
+        "cost": 0
+      }
+    ],
+    "dropped_votes_from_prompt": [],
+    "tally": {
+      "converged": false,
+      "responder_converged": false,
+      "converged_claims": 1,
+      "responder_converged_claims": 1,
+      "total_claims": 2,
+      "convergence_rate": 0.5,
+      "gate_convergence_rate": 0.5,
+      "disagreement": true,
+      "disagreement_claims": [
+        "C2"
+      ],
+      "panel_shortfall": false,
+      "missing_votes": 0,
+      "shortfall": null,
+      "voted_by": 3,
+      "of_panel": 3,
+      "responding_models": [
+        "google/gemma-4-26b-a4b-it:free",
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "google/gemma-4-31b-it:free"
+      ],
+      "claims": {
+        "C1": {
+          "verdict": "not_real",
+          "unanimous": true,
+          "responder_unanimous": true,
+          "converged": true,
+          "gate_unanimous": true,
+          "voted_by": 3,
+          "of_panel": 3,
+          "confidence": 0.967,
+          "votes": {
+            "real": 0,
+            "not_real": 3
+          },
+          "real_votes": 0,
+          "not_real_votes": 3,
+          "missing_votes": 0,
+          "panel_shortfall": false
+        },
+        "C2": {
+          "verdict": "not_real",
+          "unanimous": false,
+          "responder_unanimous": false,
+          "converged": false,
+          "gate_unanimous": false,
+          "voted_by": 3,
+          "of_panel": 3,
+          "confidence": 0.9,
+          "votes": {
+            "real": 1,
+            "not_real": 2
+          },
+          "real_votes": 1,
+          "not_real_votes": 2,
+          "missing_votes": 0,
+          "panel_shortfall": false
+        }
+      },
+      "reassurance": {
+        "C3": {
+          "verdict": "real",
+          "unanimous": true,
+          "responder_unanimous": true,
+          "converged": true,
+          "gate_unanimous": true,
+          "voted_by": 3,
+          "of_panel": 3,
+          "confidence": 0.967,
+          "votes": {
+            "real": 3,
+            "not_real": 0
+          },
+          "real_votes": 3,
+          "not_real_votes": 0,
+          "missing_votes": 0,
+          "panel_shortfall": false,
+          "note": "reassurance claim: reported separately and excluded from the defect convergence gate"
+        }
+      }
+    }
+  },
+  "cost_by_model": {
+    "google/gemma-4-26b-a4b-it:free": 0.0,
+    "nvidia/nemotron-3-super-120b-a12b:free": 0.0,
+    "google/gemma-4-31b-it:free": 0.0
+  },
+  "claims_grounding": {
+    "ok": true,
+    "issues": [],
+    "expansions": []
+  }
+}

@@ -17,8 +17,9 @@ from .ledger import AutonomyLedger
 from .router import Router
 from .saturation import pre_run_warning
 from .spend import SpendGovernor
-from .config import resolve_api_key
+from .config import HARD_MAX_COST, resolve_api_key
 from .errors import HarnessError
+from .validation import finite_number
 
 
 def governor_for(settings, max_cost_override=None):
@@ -30,25 +31,49 @@ def governor_for(settings, max_cost_override=None):
         raise HarnessError(
             "no OpenRouter API key found (OPENROUTER_API_KEY env, "
             "~/.config/scmorc/openrouter*.env, or ~/.config/harness/openrouter.env).")
-    max_cost = settings.max_cost if max_cost_override is None else max_cost_override
+    if max_cost_override is None:
+        max_cost = settings.max_cost
+    else:
+        # The CLI override is untrusted input like any other: it is capped
+        # at the same HARD_MAX_COST the settings path enforces, so an
+        # explicit --max-cost can never raise the ceiling past hard.
+        max_cost = finite_number(max_cost_override, "max_cost", 0.0,
+                                 HARD_MAX_COST)
     gov = SpendGovernor(HttpTransport(), api_key, settings.expect_key_label,
                         max_cost)
     gov.verify_key()
     return api_key, gov
 
 
-def ledger_for(settings):
-    """The run's autonomy ledger (hash-chained JSONL at the configured path)."""
-    return AutonomyLedger(settings.ledger_path)
+def ledger_for(settings, caller="cli"):
+    """The run's autonomy ledger (hash-chained JSONL at the configured path).
+
+    caller tags every appended event for per-caller trust attribution
+    ("cli" for CLI runs, "mcp..." for MCP sessions, None to leave history
+    untagged as before).
+    """
+    return AutonomyLedger(settings.ledger_path, caller=caller)
 
 
 def router_for(settings):
-    """The lane router from the settings' curated pools."""
-    return Router(settings.panel, settings.judge, settings.apply_model,
+    """The lane router from the settings' curated pools.
+
+    Legacy single ``escalation_model`` keeps precedence over the multi-rung
+    ladder when both are configured, so an explicit override is never
+    silently ignored by a non-empty default pool. When escalation is allowed
+    and ``judge_top`` is set, the smartest per-tier judge is used.
+    """
+    ladder = None if settings.escalation_model else settings.escalation_pool
+    # Prefer the smartest per-tier judge only when escalation is actually
+    # allowed; otherwise keep the configured settings.judge.
+    judge = (settings.judge_top or settings.judge) if settings.allow_escalation \
+        else settings.judge
+    return Router(settings.panel, judge, settings.apply_model,
                   settings.escalation_model, settings.allow_escalation,
                   panel_pool=settings.panel_pool, apply_pool=settings.apply_pool,
                   specialist_pool=settings.specialist_pool,
-                  convergence_model=settings.convergence_model)
+                  convergence_model=settings.convergence_model or judge,
+                  escalation_pool=ladder)
 
 
 def engine_for(settings, api_key, gov, ledger, router):
@@ -63,7 +88,8 @@ def engine_for(settings, api_key, gov, ledger, router):
         reasoning_token_budget=settings.reasoning_token_budget,
         default_max_rotations=settings.max_rotations,
         default_task_max_cost=settings.task_max_cost,
-        use_free=settings.use_free)
+        use_free=settings.use_free,
+        allowed_roots=settings.mcp_allowed_roots)
 
 
 def apply_session(settings, max_cost=None):
@@ -78,3 +104,21 @@ def apply_session(settings, max_cost=None):
     ledger = ledger_for(settings)
     pre_run_warning(governor=gov, ledger=ledger, use_free=settings.use_free)
     return engine_for(settings, api_key, gov, ledger, router_for(settings))
+
+
+def run_meta(settings, governor):
+    """Run metadata for a result envelope's ``meta`` block: the settings
+    snapshot an interface (CLI, UI server) attaches so a consumer can
+    reproduce the run, plus the ceiling. Deliberately excludes the key
+    label (never echoed) and any secret material. Advisory: a non-numeric
+    ceiling (test fakes) degrades to None instead of failing the run."""
+    try:
+        ceiling = round(float(governor.max_cost), 6)
+    except (TypeError, ValueError):
+        ceiling = None
+    return {"use_free": settings.use_free,
+            "panel": settings.panel, "judge": settings.judge,
+            "apply_model": settings.apply_model,
+            "reasoning_effort": settings.reasoning_effort,
+            "max_cost_ceiling": ceiling,
+            "key_label_present": bool(settings.expect_key_label)}

@@ -1,0 +1,54 @@
+# harness/panel.py context-budget guard
+                            tried += 1
+                            _futures.add(_pool.submit(_run_panel_slot, _next_model))
+    if not panel_results:
+        raise HarnessError("all panel calls failed. Aborting.")
+
+    # Context-budget guard (#14b): untruncated votes are a fidelity win but a
+    # context hazard. Cap the assembled prompt at the judge model's usable
+    # window when known, trimming the OLDEST panel contributions first (the
+    # newest votes carry the most reliable verdicts) and never silently -- the
+    # guard always reports what it dropped.
+    judge_ctx = None
+    try:
+        if _profiles and judge in _profiles:
+            judge_ctx = _profiles[judge].max_source_tokens
+    except AttributeError:
+        judge_ctx = None
+    if judge_ctx:
+        available = max(0, judge_ctx - estimate_prompt_tokens(prompt) - judge_max_tokens)
+        budget = int(available * 0.9)
+        keep = list(reversed(panel_results))
+        dropped = []
+        used = 0
+        trimmed = []
+        for r in keep:
+            t = estimate_prompt_tokens(r["content"])
+            if used + t > budget and trimmed:
+                dropped.append(r["model"])
+                continue
+            used += t
+            trimmed.append(r)
+        if dropped:
+            eprint(f"[judge] context budget {budget} tokens: dropped oldest votes "
+                   f"from {dropped} to stay within {judge}'s window.")
+        panel_results = list(reversed(trimmed))
+
+    judge_prompt = (
+        f"{len(panel_results)} independent models were asked the same question. Synthesize "
+        f"their answers. Respond with a SINGLE JSON object and nothing else:\n"
+        f"{{\"verdict\": \"<clear final recommendation>\", "
+        f"\"agreement\": \"high\"|\"medium\"|\"low\"|\"none\", "
+        f"\"confidence\": <0.0 to 1.0>, "
+        f"\"disagreements\": [\"<each point where models disagree>\"], "
+        f"\"defer\": true|false}}\n"
+        f"Set defer=true when the panel cannot reach enough agreement to make a reliable call "
+# harness/panel.py convergence tally over (trimmed) panel_results
+    convergence_spec = None
+    convergence_tally = None
+    if run_convergence:
+        convergence_tally = tally_convergence(panel_results, claim_polarity=claim_polarity,
+                                              of_panel=target)
+        spec = run_convergence_specialist(
+            transport, api_key, governor, panel_results, spec_model,
+            max_tokens=judge_max_tokens, reasoning_effort=reasoning_effort,

@@ -1,0 +1,77 @@
+{
+ "status": "verify_failed",
+ "task_id": "dogfood-bench-schema",
+ "rounds": [
+  {
+   "round": 1,
+   "model": "nvidia/nemotron-3-super-120b-a12b:free",
+   "status": "verify_failed",
+   "cost": 0,
+   "verify_output": "Traceback (most recent call last):\n  File \"<frozen runpy>\", line 203, in _run_module_as_main\n  File \"<frozen runpy>\", line 88, in _run_code\n  File \"C:\\Python314\\Lib\\unittest\\__main__.py\", line 18, in <module>\n    main(module=None)\n    ~~~~^^^^^^^^^^^^^\n  File \"C:\\Python314\\Lib\\unittest\\main.py\", line 103, in __init__\n    self.parseArgs(argv)\n    ~~~~~~~~~~~~~~^^^^^^\n  File \"C:\\Python314\\Lib\\unittest\\main.py\", line 142, in parseArgs\n    self.createTests()\n    ~~~~~~~~~~~~~~~~^^\n  File \"C:\\Python314\\Lib\\unittest\\main.py\", line 153, in createTests\n    self.test = self.testLoader.loadTestsFromNames(self.testNames,\n                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n                                                   self.module)\n                                                   ^^^^^^^^^^^^\n  File \"C:\\Python314\\Lib\\unittest\\loader.py\", line 207, in loadTestsFromNames\n    suites = [self.loadTestsFromName(name, module) for name in names]\n              ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^\n  File \"C:\\Python314\\Lib\\unittest\\loader.py\", line 137, in loadTestsFromName\n    module = __import__(module_name)\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness\\tests\\test_bench.py\", line 7, in <module>\n    from harness.bench import load_manifest, run_bench, TaskSandbox\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness\\harness\\bench.py\", line 229\n    ```\n    ^\nSyntaxError: invalid syntax\n",
+   "changed": true,
+   "verify_passed": false
+  },
+  {
+   "round": 2,
+   "model": "nvidia/nemotron-3-super-120b-a12b:free",
+   "status": "verify_failed",
+   "cost": 0,
+   "verify_output": "Traceback (most recent call last):\n  File \"<frozen runpy>\", line 203, in _run_module_as_main\n  File \"<frozen runpy>\", line 88, in _run_code\n  File \"C:\\Python314\\Lib\\unittest\\__main__.py\", line 18, in <module>\n    main(module=None)\n    ~~~~^^^^^^^^^^^^^\n  File \"C:\\Python314\\Lib\\unittest\\main.py\", line 103, in __init__\n    self.parseArgs(argv)\n    ~~~~~~~~~~~~~~^^^^^^\n  File \"C:\\Python314\\Lib\\unittest\\main.py\", line 142, in parseArgs\n    self.createTests()\n    ~~~~~~~~~~~~~~~~^^\n  File \"C:\\Python314\\Lib\\unittest\\main.py\", line 153, in createTests\n    self.test = self.testLoader.loadTestsFromNames(self.testNames,\n                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n                                                   self.module)\n                                                   ^^^^^^^^^^^^\n  File \"C:\\Python314\\Lib\\unittest\\loader.py\", line 207, in loadTestsFromNames\n    suites = [self.loadTestsFromName(name, module) for name in names]\n              ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^\n  File \"C:\\Python314\\Lib\\unittest\\loader.py\", line 137, in loadTestsFromName\n    module = __import__(module_name)\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness\\tests\\test_bench.py\", line 7, in <module>\n    from harness.bench import load_manifest, run_bench, TaskSandbox\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness\\harness\\bench.py\", line 1\n    ^\nIndentationError: unexpected indent\n",
+   "changed": true,
+   "verify_passed": false
+  },
+  {
+   "round": 3,
+   "model": "openrouter/free",
+   "status": "verify_failed",
+   "cost": 0,
+   "verify_output": "Traceback (most recent call last):\n  File \"<frozen runpy>\", line 203, in _run_module_as_main\n  File \"<frozen runpy>\", line 88, in _run_code\n  File \"C:\\Python314\\Lib\\unittest\\__main__.py\", line 18, in <module>\n    main(module=None)\n    ~~~~^^^^^^^^^^^^^\n  File \"C:\\Python314\\Lib\\unittest\\main.py\", line 103, in __init__\n    self.parseArgs(argv)\n    ~~~~~~~~~~~~~~^^^^^^\n  File \"C:\\Python314\\Lib\\unittest\\main.py\", line 142, in parseArgs\n    self.createTests()\n    ~~~~~~~~~~~~~~~~^^\n  File \"C:\\Python314\\Lib\\unittest\\main.py\", line 153, in createTests\n    self.test = self.testLoader.loadTestsFromNames(self.testNames,\n                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n                                                   self.module)\n                                                   ^^^^^^^^^^^^\n  File \"C:\\Python314\\Lib\\unittest\\loader.py\", line 207, in loadTestsFromNames\n    suites = [self.loadTestsFromName(name, module) for name in names]\n              ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^\n  File \"C:\\Python314\\Lib\\unittest\\loader.py\", line 137, in loadTestsFromName\n    module = __import__(module_name)\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness\\tests\\test_bench.py\", line 7, in <module>\n    from harness.bench import load_manifest, run_bench, TaskSandbox\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness\\harness\\bench.py\", line 1\n    ^\nIndentationError: unexpected indent\n",
+   "changed": true,
+   "verify_passed": false
+  }
+ ],
+ "cost": 0.0,
+ "rotations": 2,
+ "backend": "harness",
+ "verify_only": false,
+ "backup": "C:\\Users\\SCM\\AppData\\Local\\Temp\\harness-backups\\dogfood-bench-schema-r1-bench.py",
+ "verify_cmd": "python -m unittest tests.test_bench",
+ "verify": {
+  "command": "python -m unittest tests.test_bench",
+  "passed": false,
+  "output_tail": "Traceback (most recent call last):\n  File \"<frozen runpy>\", line 203, in _run_module_as_main\n  File \"<frozen runpy>\", line 88, in _run_code\n  File \"C:\\Python314\\Lib\\unittest\\__main__.py\", line 18, in <module>\n    main(module=None)\n    ~~~~^^^^^^^^^^^^^\n  File \"C:\\Python314\\Lib\\unittest\\main.py\", line 103, in __init__\n    self.parseArgs(argv)\n    ~~~~~~~~~~~~~~^^^^^^\n  File \"C:\\Python314\\Lib\\unittest\\main.py\", line 142, in parseArgs\n    self.createTests()\n    ~~~~~~~~~~~~~~~~^^\n  File \"C:\\Python314\\Lib\\unittest\\main.py\", line 153, in createTests\n    self.test = self.testLoader.loadTestsFromNames(self.testNames,\n                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n                                                   self.module)\n                                                   ^^^^^^^^^^^^\n  File \"C:\\Python314\\Lib\\unittest\\loader.py\", line 207, in loadTestsFromNames\n    suites = [self.loadTestsFromName(name, module) for name in names]\n              ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^\n  File \"C:\\Python314\\Lib\\unittest\\loader.py\", line 137, in loadTestsFromName\n    module = __import__(module_name)\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness\\tests\\test_bench.py\", line 7, in <module>\n    from harness.bench import load_manifest, run_bench, TaskSandbox\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness\\harness\\bench.py\", line 1\n    ^\nIndentationError: unexpected indent\n"
+ },
+ "gate_ran": true,
+ "continuation": {
+  "schema_version": 1,
+  "file_path": "C:\\Users\\SCM\\Documents\\GitHub\\Harness\\harness\\bench.py",
+  "task_id": "dogfood-bench-schema",
+  "backend": "harness",
+  "verify_only": false,
+  "max_lines": 500,
+  "edit_snippet": null,
+  "verify_cmd": "python -m unittest tests.test_bench",
+  "verify_gate_id": "7c55f4217778fa91",
+  "verification_required": true,
+  "target_hash": "e48071cbf8c7072e4a644f30793c1a4d6a859136fdb2582adb645665714b71d5",
+  "remaining_scope": "Fix the verification failures for: In run_bench, fail manifest schema errors cleanly: at the top of the per-task loop set name = task.get('name') or 'task' (mirroring load_manifest's default) and use it for the running/done log lines and task_id; after the TaskSandbox restore, read instruction = task.get('instruction') and raise HarnessError(f'bench task {name} is missing required key instruction') when it is missing or empty; pass the validated instruction variable into apply_edit. Keep every other default, the HarnessError-per-task catch around apply_edit, the finally-restore, and summarize exactly as they are. Touch nothing else.",
+  "reason": "verification did not pass on the free tier; continue and fix",
+  "history": [
+   {
+    "round": 1,
+    "model": "nvidia/nemotron-3-super-120b-a12b:free",
+    "status": "verify_failed"
+   },
+   {
+    "round": 2,
+    "model": "nvidia/nemotron-3-super-120b-a12b:free",
+    "status": "verify_failed"
+   },
+   {
+    "round": 3,
+    "model": "openrouter/free",
+    "status": "verify_failed"
+   }
+  ]
+ }
+}

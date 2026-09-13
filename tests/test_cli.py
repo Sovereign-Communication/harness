@@ -94,17 +94,17 @@ class FriendlyInputErrorTests(unittest.TestCase):
 
 
 class EngineKeyWiringTests(unittest.TestCase):
-    """Dogfooding round 1 (audits/self): cli._engine() (the deduped ApplyEngine
-    construction site) dropped api_key, so EVERY engine-routed chat call went
-    out with no Authorization header and 401'd -- while panel-lane calls, which
-    receive the key directly, worked. Hermetic tests build engines directly, so
-    the suite never noticed. Pin the wiring: the engine must carry the same key
-    the governor verified."""
+    """Dogfooding round 1 (audits/self): an ApplyEngine construction site
+    dropped api_key, so EVERY engine-routed chat call went out with no
+    Authorization header and 401'd -- while panel-lane calls, which receive
+    the key directly, worked. Hermetic tests build engines directly, so the
+    suite never noticed. Pin the wiring at the one owner (session.engine_for):
+    the engine must carry the same key the governor verified."""
 
     def test_engine_receives_the_verified_api_key(self):
         settings = load_settings()
-        engine = cli._engine(settings, "sk-the-real-key", object(), object(),
-                             Router(["a"], "j", "m"))
+        engine = session.engine_for(settings, "sk-the-real-key", object(),
+                                    object(), Router(["a"], "j", "m"))
         self.assertEqual(engine.api_key, "sk-the-real-key")
 
     def test_bench_engine_key_reaches_apply_loop(self):
@@ -161,11 +161,16 @@ class EngineKeyWiringTests(unittest.TestCase):
                     posts.append(api_key)
                     return 401, {"error": {"message": "nope"}}
 
+            from harness.ledger import AutonomyLedger
             # Bench composes through session.apply_session; patch the
             # governor seam at its owner (session), so this proves the
             # session-composed engine carries the verified key end to end.
+            # The ledger is temp-isolated too: trust scores read history,
+            # so the machine's real ledger must never decide a hermetic run.
+            led = AutonomyLedger(os.path.join(d, "ledger.jsonl"))
             with mock.patch.object(session, "governor_for", side_effect=fake_governor), \
-                 mock.patch.object(session, "HttpTransport", TransportStub):
+                 mock.patch.object(session, "HttpTransport", TransportStub), \
+                 mock.patch.object(session, "ledger_for", return_value=led):
                 with contextlib.redirect_stderr(io.StringIO()):
                     with self.assertRaises(SystemExit) as ctx:
                         cli.main(["bench", os.path.join(d, "task.json"),
@@ -259,6 +264,7 @@ class LedgerTailCountTests(unittest.TestCase):
         ledger = mock.Mock()
         ledger.tail.side_effect = lambda n: calls.setdefault("n", n)
         ledger.entries.return_value = list(range(50))
+        ledger.chain_status.return_value = {"segments": 1, "entries": 50}
         out = io.StringIO()
         with mock.patch.object(cli, "_ledger", return_value=ledger), \
              mock.patch.object(cli, "_emit",
@@ -297,6 +303,34 @@ class LedgerTailCountTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 1)
         self.assertIn("positive", err.getvalue())
         gov.assert_not_called()
+
+
+class SelfHostImportTests(unittest.TestCase):
+    """Live dogfood finding: a deferred self-edit left harness/bench.py
+    unimportable (model dropped load_manifest), and `python -m harness.cli
+    continue` died at ITS import line before reaching the resume logic.
+    The bench import is guarded at module level, so a broken bench module
+    breaks only `bench` (clean HarnessError, before key/session setup) --
+    every other command, notably `continue`, still starts."""
+
+    def test_cli_imports_without_bench(self):
+        import importlib
+        import sys
+        import harness.cli as cli_mod
+        from harness.errors import HarnessError
+        with mock.patch.dict(sys.modules, {"harness.bench": None}):
+            reloaded = importlib.reload(cli_mod)
+        try:
+            self.assertTrue(hasattr(reloaded, "main"))
+            self.assertIsNone(reloaded.load_manifest)
+            # Only `bench` itself may fail, cleanly and before setup.
+            with mock.patch.object(
+                    reloaded, "_session",
+                    side_effect=AssertionError("session must not run")):
+                with self.assertRaisesRegex(HarnessError, "failed to import"):
+                    reloaded._cmd_bench(mock.Mock(), mock.Mock())
+        finally:
+            importlib.reload(cli_mod)
 
 
 if __name__ == "__main__":

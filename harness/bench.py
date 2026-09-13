@@ -28,6 +28,7 @@ import json
 import os
 
 from .filesafety import _atomic_write, default_run_verify, VERIFY_TIMEOUT
+from . import events as _events
 from .errors import HarnessError
 from .output import eprint
 
@@ -35,12 +36,12 @@ from .output import eprint
 def _load_json_file(path, what):
     """Load a JSON file, presenting missing files and parse errors cleanly."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except OSError as e:
-        raise HarnessError(f"{what} not readable: {path} ({e.strerror or e})")
+        raise HarnessError(f"{what} not readable: {path} ({e.strerror or e})") from e
     except ValueError as e:
-        raise HarnessError(f"{what} is not valid JSON: {path} ({e})")
+        raise HarnessError(f"{what} is not valid JSON: {path} ({e})") from e
 
 
 def load_manifest(path):
@@ -60,7 +61,7 @@ def load_manifest(path):
                 t["dir"] = root
                 tasks.append(t)
             elif os.path.isdir(full) and os.path.exists(os.path.join(full, "task.json")):
-                with open(os.path.join(full, "task.json"), "r", encoding="utf-8") as f:
+                with open(os.path.join(full, "task.json"), encoding="utf-8") as f:
                     t = json.load(f)
                 t.setdefault("name", n)
                 t["dir"] = os.path.join(root, n)
@@ -99,13 +100,17 @@ class TaskSandbox:
     """
 
     def __init__(self, task):
-        self.dir = os.path.abspath(task["dir"])
+        # realpath (not abspath): a parent-dir symlink (taskdir/link -> /etc
+        # with file=link/passwd) passes a purely lexical containment check
+        # while resolving outside the task directory.
+        self.dir = os.path.realpath(os.path.abspath(task["dir"]))
         if not task.get("file"):
             # Same clean contract as the other manifest errors -- a schema
             # error must not surface as a raw KeyError traceback.
             raise HarnessError(
                 f"bench task '{task.get('name', 'task')}' is missing required key 'file'")
-        self.file = os.path.abspath(os.path.join(self.dir, task["file"]))
+        self.file = os.path.realpath(
+            os.path.abspath(os.path.join(self.dir, task["file"])))
         if not (self.file == self.dir
                 or self.file.startswith(self.dir.rstrip(os.sep) + os.sep)):
             raise HarnessError(
@@ -118,15 +123,32 @@ class TaskSandbox:
     def restore(self):
         if os.path.islink(self.file):
             raise HarnessError(f"bench task file {self.file} became a symlink")
+        if os.path.islink(self.snapshot):
+            # A planted .orig link would redirect the snapshot read/write
+            # to an arbitrary file on restore.
+            raise HarnessError(
+                f"bench snapshot {self.snapshot} is a symlink; refusing")
         if not os.path.exists(self.file):
             raise HarnessError(f"bench task file not found: {self.file}")
         if os.path.exists(self.snapshot):
-            with open(self.snapshot, "r", encoding="utf-8", newline="") as src:
-                _atomic_write(self.file, src.read())
+            with open(self.snapshot, encoding="utf-8", newline="") as src:
+                # Byte-exact: the snapshot's bytes are authoritative here,
+                # not the tree's line-ending style (which a model edit may
+                # have changed mid-run).
+                _atomic_write(self.file, src.read(), newline=None)
         else:
-            with open(self.file, "r", encoding="utf-8", newline="") as src:
+            with open(self.file, encoding="utf-8", newline="") as src:
                 content = src.read()
-            with open(self.snapshot, "w", encoding="utf-8", newline="") as out:
+            # O_EXCL: never follow a planted .orig at the snapshot path.
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            try:
+                fd = os.open(self.snapshot, flags, 0o600)
+            except FileExistsError as e:
+                raise HarnessError(
+                    f"bench snapshot already exists, refusing: {self.snapshot}") from e
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as out:
                 out.write(content)
 
 
@@ -151,12 +173,18 @@ def run_bench(engine, manifest_tasks, runner=None):
     sandboxes = []
     try:
         for task in manifest_tasks:
+            # Same clean contract as the loader and the sandbox: schema
+            # errors abort the run as HarnessError, never as KeyError.
+            name = task.get("name") or "task"
             sandbox = TaskSandbox(task)
             sandbox.restore()
             sandboxes.append(sandbox)
             task_runner = runner or _cwd_runner(sandbox.dir, task.get("verify_timeout"))
-            name = task["name"]
+            if not task.get("instruction"):
+                raise HarnessError(
+                    f"bench task '{name}' is missing required key 'instruction'")
             eprint(f"[bench] running '{name}' ...")
+            _events.emit("bench_task", task_id=f"bench/{name}", phase="start", name=name)
             try:
                 r = engine.apply_edit(
                     task_id=f"bench/{name}",
@@ -175,6 +203,8 @@ def run_bench(engine, manifest_tasks, runner=None):
                 r = {"status": "error", "error": str(e)}
             results.append({"name": name, **r})
             eprint(f"[bench] '{name}' -> {r.get('status')}")
+            _events.emit("bench_task", task_id=f"bench/{name}", phase="end", name=name,
+                         status=r.get("status"), cost=r.get("cost"))
     finally:
         # Idempotency includes the tree we leave behind: restore every
         # fixture even on crash, or a successful run leaves solved tasks

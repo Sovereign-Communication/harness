@@ -18,16 +18,19 @@ Issues = "https://github.com/Sovereign-Communication/harness/issues"
 [project.scripts]
 harness = "harness.cli:main"
 harness-mcp = "harness.mcp:main"
+harness-desktop = "harness.ui:main"
 
 [tool.setuptools.packages.find]
 include = ["harness*"]
 [project.optional-dependencies]
 dev = ["ruff>=0.6", "build>=1.2", "twine>=5"]
+local-fit-train = ["numpy", "onnx", "onnxruntime"]
+desktop = ["pywebview>=5"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py39"
 
 [tool.ruff.lint]
-select = ["E", "F", "W"]
+select = ["E", "F", "W", "B007", "B017", "B904", "UP015", "UP031"]
 ignore = ["E501"]

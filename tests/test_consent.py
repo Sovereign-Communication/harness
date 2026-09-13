@@ -137,6 +137,25 @@ class ConsentProbeTests(unittest.TestCase):
         events = [e["event"] for e in self.ledger.entries()]
         self.assertEqual(events, ["consent_renew_accept"])
 
+    def test_renew_attributes_rotated_answer_to_answerer(self):
+        """A renewal that rotates must bill the model that answered, not
+        the requested primary -- otherwise per-model calibration learns
+        from the wrong teacher."""
+        models = [m(JUDGE), m(FALLBACK)]
+        fake = FakeTransport(models=models,
+                             posts=[comp(None, reasoning="hmm"),
+                                    consent("accept", "fits")])
+        gov = SpendGovernor(fake, "sk-test")
+        r = consent_renew(transport=fake, api_key="k", governor=gov,
+                          task_id="t1", task="continue work", model=JUDGE,
+                          ledger=self.ledger, fallback_pool=[FALLBACK])
+        self.assertEqual(r["decision"], "accept")
+        self.assertEqual(r["model"], FALLBACK)
+        entry = self.ledger.entries()[-1]
+        self.assertEqual(entry["event"], "consent_renew_accept")
+        self.assertEqual(entry["model"], FALLBACK)
+        self.assertEqual(len(entry["attempts"]), 1)
+
     def test_consent_cost_is_in_governor_and_ledger(self):
         fake = FakeTransport(models=self.models, posts=[consent("accept")])
         # Use a non-default amount so an accidental zero-cost path is visible.

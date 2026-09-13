@@ -2,6 +2,8 @@
 
 All hermetic: no network, no key.
 """
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -56,21 +58,38 @@ class ConfigRangeValidationTests(unittest.TestCase):
     def test_hard_ceiling_boundary_values_accepted(self):
         """The hard ceilings themselves remain configurable (e.g. CI wants 10¢)."""
         with mock.patch.dict(os.environ, {"HARNESS_MAX_COST": "0.10",
-                                          "HARNESS_TASK_MAX_COST": "0.25"}):
+                                           "HARNESS_TASK_MAX_COST": "0.25"}):
             s = load_settings()
         self.assertEqual(s.max_cost, 0.10)
         self.assertEqual(s.task_max_cost, 0.25)
 
+    def test_integer_settings_stay_integers(self):
+        """Regression (live dogfood): finite_number returns float, so every
+        integer setting arrived as 3.0 and range()/max_workers crashed the
+        first live panel fan-out -- a path the hermetic suite never took."""
+        with mock.patch.dict(os.environ, {"HARNESS_MAX_PANELISTS": "3",
+                                           "HARNESS_MAX_TOKENS": "2048",
+                                           "HARNESS_MAX_ROTATIONS": "2",
+                                           "HARNESS_MAX_COST": "0.02"}):
+            s = load_settings()
+        self.assertIs(type(s.max_panelists), int)
+        self.assertIs(type(s.max_tokens), int)
+        self.assertIs(type(s.max_rotations), int)
+        self.assertIs(type(s.max_cost), float)
+        range(s.max_panelists)  # must not raise
+
     def test_unknown_config_key_warns(self):
         """#15: an unknown key in config.json must warn on stderr, not vanish."""
+        import contextlib
         import io
         import harness.config as cfg
         with tempfile.TemporaryDirectory() as d:
             cfg_path = os.path.join(d, "config.json")
             with open(cfg_path, "w", encoding="utf-8") as f:
                 json.dump({"max_cost": 0.05, "not_a_real_key": 1}, f)
+            err = io.StringIO()
             with mock.patch.object(cfg, "CONFIG_DIR", d), \
-                 mock.patch.object(cfg.sys, "stderr", new=io.StringIO()) as err:
+                 contextlib.redirect_stderr(err):
                 s = cfg.load_settings()
             self.assertIn("not_a_real_key", err.getvalue())
             self.assertEqual(s.max_cost, 0.05)
@@ -90,7 +109,7 @@ class CapabilitiesSchemaVersionTests(unittest.TestCase):
             path = os.path.join(d, "capabilities.json")
             profiles = build_profiles_from_models(self._models())
             save_profiles(path, profiles, fetched_at=123.0)
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             self.assertEqual(data["schema_version"], CAPABILITIES_SCHEMA_VERSION)
             loaded, fetched = load_profiles(path)
@@ -200,15 +219,15 @@ class UnifiedDiffEngineTests(unittest.TestCase):
 
     def test_context_mismatch_refused(self):
         diff = "@@ -1,2 +1,2 @@\n-LINE1\n+x\n line2\n"
-        with self.assertRaises(Exception):
+        with self.assertRaises(HarnessError):
             _apply_unified_diff(self.SRC, diff)
 
     def test_truncated_hunk_refused(self):
-        with self.assertRaises(Exception):
+        with self.assertRaises(HarnessError):
             _apply_unified_diff(self.SRC, "@@ -1,3 +1,1 @@\n line1\n")
 
     def test_prose_only_refused(self):
-        with self.assertRaises(Exception):
+        with self.assertRaises(HarnessError):
             _apply_unified_diff(self.SRC, "I made some changes, looks great!")
 
     def test_zero_context_insertion(self):
@@ -242,10 +261,134 @@ class ApplyConsentOptionalTests(unittest.TestCase):
             ledger = AutonomyLedger(os.path.join(d, "l.jsonl"))
             engine = ApplyEngine(fake, "k", gov, ledger, Router(["a"], "m/judge", "m/apply"),
                                  default_require_consent=False, default_renew_consent=True)
+            # Unknown trust requires gateless writes to carry a gate; the
+            # stub runner keeps this hermetic (the no-consent renewal path
+            # under test is unchanged).
+            engine.run_verify = lambda cmd: (0, "")
             r = engine.apply_edit(task_id="t", file_path=fp, instruction="bump",
-                                  backend="diff", require_consent=False)
+                                  backend="diff", require_consent=False,
+                                  verify_cmd="check")
             self.assertEqual(r["status"], "ok")
-            self.assertIn("return 10", open(fp, encoding="utf-8").read())
+            with open(fp, encoding="utf-8") as stream:
+                self.assertIn("return 10", stream.read())
+
+
+class EolPreservationTests(unittest.TestCase):
+    """Live dogfood finding: whole-file model output arrives LF-only (the
+    model never saw the tree's bytes), so _atomic_write flipped CRLF
+    checkouts file-wide -- a dirty tree for zero content change. Writes
+    now aim at the target's own detected style; snapshot restore stays
+    byte-exact via newline=None."""
+
+    def test_detect_newline(self):
+        from harness.filesafety import detect_newline
+        with tempfile.TemporaryDirectory() as d:
+            crlf = os.path.join(d, "crlf.txt")
+            with open(crlf, "wb") as f:
+                f.write(b"a\r\nb\r\n")
+            self.assertEqual(detect_newline(crlf), "\r\n")
+            lf = os.path.join(d, "lf.txt")
+            with open(lf, "wb") as f:
+                f.write(b"a\nb\n")
+            self.assertEqual(detect_newline(lf), "\n")
+            bare = os.path.join(d, "bare.txt")
+            with open(bare, "wb") as f:
+                f.write(b"no newlines here")
+            self.assertIsNone(detect_newline(bare))
+            mixed = os.path.join(d, "mixed.txt")
+            with open(mixed, "wb") as f:
+                f.write(b"a\nb\r\n")
+            self.assertEqual(detect_newline(mixed), "\r\n")
+            self.assertIsNone(detect_newline(os.path.join(d, "missing.txt")))
+
+    def test_atomic_write_preserves_crlf_target(self):
+        from harness.filesafety import _atomic_write
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "f.txt")
+            with open(p, "wb") as f:
+                f.write(b"def a():\r\n    return 1\r\n")
+            _atomic_write(p, "def a():\n    return 2\n")
+            with open(p, "rb") as f:
+                self.assertEqual(f.read(), b"def a():\r\n    return 2\r\n")
+
+    def test_atomic_write_leaves_lf_target_alone(self):
+        from harness.filesafety import _atomic_write
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "f.txt")
+            with open(p, "wb") as f:
+                f.write(b"a\n")
+            _atomic_write(p, "b\n")
+            with open(p, "rb") as f:
+                self.assertEqual(f.read(), b"b\n")
+
+    def test_atomic_write_none_is_byte_exact(self):
+        from harness.filesafety import _atomic_write
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "f.txt")
+            with open(p, "wb") as f:
+                f.write(b"a\r\n")
+            _atomic_write(p, "b\n", newline=None)
+            with open(p, "rb") as f:
+                self.assertEqual(f.read(), b"b\n")
+
+
+class BackupHijackTests(unittest.TestCase):
+    """A planted symlink at the predictable backup dir or destination must
+    fail the backup closed (warn + None), never redirect bytes elsewhere."""
+
+    def _symlink_or_skip(self, src, dst):
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks unavailable")
+        try:
+            os.symlink(src, dst)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+
+    def test_planted_destination_link_is_bypassed_not_followed(self):
+        from harness.filesafety import backup_file
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "f.txt")
+            with open(src, "w", encoding="utf-8") as f:
+                f.write("original\n")
+            victim = os.path.join(d, "victim.txt")
+            with open(victim, "w", encoding="utf-8") as f:
+                f.write("victim\n")
+            import harness.filesafety as fs
+            with unittest.mock.patch.object(fs.tempfile, "gettempdir",
+                                            return_value=d):
+                backup_dir = os.path.join(d, "harness-backups")
+                os.makedirs(backup_dir)
+                # Plant a symlink at the legacy predictable name; the unique
+                # O_EXCL destination must neither follow nor overwrite it.
+                plant = os.path.join(backup_dir, "t-r1-f.txt")
+                self._symlink_or_skip(victim, plant)
+                with contextlib.redirect_stderr(io.StringIO()):
+                    dest = backup_file(src, "t", 1)
+                self.assertIsNotNone(dest)
+                self.assertNotEqual(os.path.realpath(dest),
+                                    os.path.realpath(victim))
+                self.assertTrue(os.path.islink(plant))  # plant untouched
+            with open(victim, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "victim\n")
+
+    def test_hijacked_backup_dir_refused(self):
+        from harness.filesafety import backup_file
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "f.txt")
+            with open(src, "w", encoding="utf-8") as f:
+                f.write("original\n")
+            elsewhere = os.path.join(d, "elsewhere")
+            os.makedirs(elsewhere)
+            import harness.filesafety as fs
+            with unittest.mock.patch.object(fs.tempfile, "gettempdir",
+                                            return_value=os.path.join(d, "t")):
+                # Point gettempdir()/harness-backups at an attacker dir.
+                os.makedirs(os.path.join(d, "t"))
+                self._symlink_or_skip(
+                    elsewhere, os.path.join(d, "t", "harness-backups"))
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertIsNone(backup_file(src, "t", 1))
+            self.assertEqual(os.listdir(elsewhere), [])
 
 
 if __name__ == "__main__":

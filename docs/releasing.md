@@ -12,9 +12,10 @@
 4. Run the complete validation suite:
 
    ```bash
-   python -m ruff check harness tests
+   python -m ruff check harness tests audits
    python -m compileall -q harness tests
    python -W error::ResourceWarning -m unittest discover -s tests -v
+   python audits/self/audit.py
    python -m build
    python -m twine check dist/*
    ```

@@ -8,10 +8,10 @@ accounting around them. It deliberately contains no prompt text (see
 own their contracts.
 
 Shape: :meth:`ApplyEngine.apply_edit` validates and freezes its arguments
-into one :class:`_ApplyRequest` (:meth:`ApplyEngine._prepare`), then
+into one :class:`ApplyRequest` (:meth:`ApplyEngine._prepare`), then
 :func:`_apply_edit` runs the phases -- initial consent, per-round renewal,
 rotation, merge, gate, escalation, and the honest terminal assembly. Every
-round-to-round mutation lives in one :class:`_RunState`; every terminal
+round-to-round mutation lives in one :class:`RunState`; every terminal
 result is built by :func:`_terminal_result` or :func:`_defer_result`, so a
 new outcome field has exactly one place to land.
 
@@ -36,99 +36,38 @@ vacuous success). Adds the sovereignty layer and free-tier iteration:
 """
 import os
 import uuid
-from dataclasses import dataclass, field
+
+from .apply_state import ApplyRequest, AttemptOutcome, RunState
+from .apply_gate import GatePolicy
 
 from .prompts import (
     MAX_FILE_LINES, MAX_APPLY_ROUNDS,
     CAPABILITY_MARKER,
     _extract_file_content, _parse_ready, _apply_unified_diff,
 )
-from .filesafety import (_atomic_write, _line_count, default_run_verify,
-                         file_content_hash, validate_target_file)
-from .results import (_terminal_result, _defer_result, _http_error,
-                      _round_entry)
+from .filesafety import (_line_count, default_run_verify, validate_target_file,
+                          validate_verify_command)
+from .results import (_defer_result, _http_error, _round_entry)
 
+from . import trust as trust_policy
 from .capability import ordered_pool
 from .chat import (
     chat, extract_content_and_cost, _extract_json,
     REASONING_FALLBACK_PREFIX, _reported_cost, _chat_reservation_slots,
 )
-from .config import MORPH_MODEL
+from . import events as _events
+from .config import HARD_TASK_MAX_COST, MORPH_MODEL
 from .consent import probe_consent, consent_renew
 from .batch import run_batch
-from .continuation import (gate_id as _gate_id, validate_continuation,
-                           bound_gate)
+from .continuation import validate_continuation
 from .errors import HarnessError, ToolCancelled
-from .filesafety import backup_file
 from .output import eprint
 from .prompts import build_apply_prompt, consent_mechanics_text
 from .tokens import estimate_prompt_tokens
 from .validation import validate_apply_request
+from .escalation import EscalationDriver
 
 VERIFY_FEEDBACK_CHARS = 6000
-
-
-@dataclass
-class _ApplyRequest:
-    """One apply call's frozen arguments: validated by
-    :meth:`ApplyEngine._prepare`, read-only for every phase after it."""
-    task_id: str
-    file_path: str
-    instruction: str
-    edit_snippet: object
-    verify_cmd: object
-    backend: str
-    verify_only: bool
-    max_lines: int
-    max_rounds: int
-    max_tokens: int
-    task_max_cost: float
-    max_rot: int
-    reasoning: str
-    renew: bool
-    allow_escalation: object
-    model: str
-    ordered: object          # capability-ordered pool, or None
-    profiles: object         # capability profiles, or None
-    want_consent: bool
-    original: str            # target content at run start (rewind baseline)
-    task_start_spent: float
-    continuation: dict
-    task_runner: object
-    cancel_check: object
-
-
-@dataclass
-class _RunState:
-    """Every round-to-round mutation of one apply run. Owned by
-    :func:`_apply_edit`; phases read it and append their records here."""
-    rounds: list
-    history: list
-    current_content: str
-    round_no: int = 0
-    round_ctx: object = None
-    gate_broken: bool = False
-    candidates: list = field(default_factory=list)
-    failed_models: set = field(default_factory=set)
-    deferred_models: dict = field(default_factory=dict)
-    rotations: int = 0
-    backup: object = None
-    consent_attempts: list = field(default_factory=list)
-
-
-@dataclass
-class _AttemptOutcome:
-    """What one round's model dispatch produced: the last-tried model id
-    (even when it failed), the accepted attempt's content/cost/readiness,
-    and the last raw response for terminal error reporting."""
-    model: object = None
-    model_used: object = None
-    content: object = None
-    cost: float = 0.0
-    ready: str = "missing"
-    resp: object = None
-    last_error: object = None
-    last_defer_reason: object = None
 
 
 class ApplyEngine:
@@ -136,7 +75,8 @@ class ApplyEngine:
                  default_require_consent=True, run_verify=None,
                  default_renew_consent=True, reasoning_effort="auto",
                  reasoning_token_budget=0.4, default_max_rotations=3,
-                 default_task_max_cost=0.05, use_free=False):
+                 default_task_max_cost=0.05, use_free=False,
+                 allowed_roots=None):
         self.transport = transport
         self.api_key = api_key
         self.governor = governor
@@ -144,9 +84,6 @@ class ApplyEngine:
         self.router = router
         self.default_require_consent = default_require_consent
         self.run_verify = run_verify or default_run_verify
-        # Gate identity: a continuation may only reuse the verification gate
-        # it was saved with (see _gate_id) -- #5 hardening.
-        self._continuation_gate = None
         self.default_renew_consent = default_renew_consent
         self.reasoning_effort = reasoning_effort
         self.reasoning_token_budget = reasoning_token_budget
@@ -155,6 +92,26 @@ class ApplyEngine:
         # Free-tier flag for capability-aware pool ordering (cheap-first on
         # the paid tier, reliability-first when every model costs $0).
         self.use_free = bool(use_free)
+        # Optional filesystem jail for library/CLI apply (MCP already enforces
+        # roots). Empty/None leaves the historical unrestricted CLI behavior.
+        self.allowed_roots = [
+            os.path.realpath(os.path.abspath(r))
+            for r in (allowed_roots or [])
+            if r
+        ]
+        self.gate = GatePolicy(ledger, governor)
+
+    def _enforce_roots(self, file_path):
+        """Refuse targets outside configured allowed_roots (realpath)."""
+        if not self.allowed_roots:
+            return
+        real = os.path.realpath(file_path)
+        for root in self.allowed_roots:
+            if real == root or real.startswith(root + os.sep):
+                return
+        raise HarnessError(
+            f"file_path outside allowed_roots: {file_path} "
+            f"(configured roots: {', '.join(self.allowed_roots)})")
 
     def _route_pool(self, apply_pool=None):
         """Capability-ordered apply pool for THIS request, or (None, None) to
@@ -182,7 +139,7 @@ class ApplyEngine:
         max_tokens, task_max_cost, allow_escalation, reasoning_effort,
         renew_consent, max_rotations, continuation, backend, verify_only,
         max_lines, task_runner, apply_pool -- validated and frozen by
-        :meth:`_prepare` into an :class:`_ApplyRequest`.
+        :meth:`_prepare` into an :class:`ApplyRequest`.
 
         ``apply_pool`` overrides the router's apply pool for THIS request only
         (already capability-ordered by the caller, or ordered here when the
@@ -201,7 +158,7 @@ class ApplyEngine:
         # Per-request state must never leak across applies on a shared engine
         # (the MCP server keeps one engine for its whole lifetime): a resume
         # pins this request's gate below, a fresh apply must start unpinned.
-        self._continuation_gate = None
+        continuation_gate = None
         backend = continuation.get("backend", kwargs.get("backend") or "harness")
         # A saved continuation owns its execution mode. A caller cannot turn a
         # failed, gated apply into a read-only preview and thereby bypass the
@@ -229,7 +186,12 @@ class ApplyEngine:
             # Gate identity was validated by validate_continuation; here the
             # engine only pins WHICH gate this request may execute (#5).
             verify_cmd = saved_verify_cmd
-            self._continuation_gate = saved_verify_cmd if continuation.get("verify_gate_id") else None
+            continuation_gate = saved_verify_cmd if continuation.get("verify_gate_id") else None
+        if verify_cmd:
+            # Engine-boundary preflight: always shell-tokenizable. PATH
+            # existence stays opt-in (require_executable) so hermetic library
+            # stubs work; dogfood/CLI already checks PATH before spend.
+            validate_verify_command(verify_cmd, require_executable=False)
         if backend not in ("harness", "morph", "diff"):
             raise HarnessError("backend must be 'harness', 'morph', or 'diff'")
         file_path = kwargs.get("file_path")
@@ -238,6 +200,7 @@ class ApplyEngine:
         if file_path is None:
             raise HarnessError("apply requires file (or a continuation with file_path)")
         file_path = os.path.abspath(file_path)
+        self._enforce_roots(file_path)
         instruction = kwargs.get("instruction") or continuation.get("remaining_scope") or ""
         edit_snippet = kwargs.get("edit_snippet") or continuation.get("edit_snippet")
         if not instruction:
@@ -245,6 +208,24 @@ class ApplyEngine:
         task_id = kwargs.get("task_id")
         if task_id is None:
             task_id = continuation.get("task_id") or uuid.uuid4().hex[:8]
+        if resumed and kwargs.get("file_path") is not None:
+            # No file retarget (C4): a saved continuation's gate and hash
+            # were verified against ITS file. Reusing them on a different
+            # file would run the wrong gate over the wrong baseline.
+            saved_path = continuation.get("file_path")
+            if saved_path and os.path.abspath(kwargs["file_path"]) != \
+                    os.path.abspath(saved_path):
+                try:
+                    self.ledger.append("trust_gate", task_id=task_id,
+                                       model=kwargs.get("model"),
+                                       reason="continuation file retarget refused",
+                                       severity="hostile",
+                                       combined=None, correctness=None)
+                except Exception:
+                    pass
+                raise HarnessError(
+                    "continuation file_path does not match this run's --file; "
+                    "resume the saved file or start a fresh apply")
         max_tokens = kwargs.get("max_tokens") or 4096
         task_max_cost = (self.default_task_max_cost
                          if kwargs.get("task_max_cost") is None
@@ -301,10 +282,22 @@ class ApplyEngine:
                         if kwargs.get("require_consent") is None
                         else kwargs.get("require_consent"))
 
-        with open(file_path, "r", encoding="utf-8") as f:
+        # ---- trust gates (bipolar -11..+11, hard) ----
+        # The model is known and no file has been read yet: deny before
+        # any mutation surface is touched. Denials ledger a trust_gate
+        # event (the evidence loop) and raise with the score + guidance.
+        _trust_decision = trust_policy.check_apply(
+            ledger=self.ledger,
+            report=self.ledger.participation_report(),
+            model=model, resumed=resumed, verify_only=verify_only,
+            verify_cmd=verify_cmd, task_max_cost=task_max_cost,
+            task_id=task_id, hard_task_cap=HARD_TASK_MAX_COST,
+            caller=getattr(self.ledger, "caller", None))
+
+        with open(file_path, encoding="utf-8") as f:
             original = f.read()
 
-        return _ApplyRequest(
+        return ApplyRequest(
             task_id=task_id, file_path=file_path, instruction=instruction,
             edit_snippet=edit_snippet, verify_cmd=verify_cmd, backend=backend,
             verify_only=verify_only, max_lines=max_lines,
@@ -314,8 +307,12 @@ class ApplyEngine:
             allow_escalation=kwargs.get("allow_escalation"), model=model,
             ordered=ordered, profiles=profiles, want_consent=want_consent,
             original=original, task_start_spent=task_start_spent,
-            continuation=continuation, task_runner=kwargs.get("task_runner"),
-            cancel_check=kwargs.get("cancel_check"))
+            continuation=continuation,
+            continuation_gate=continuation_gate,
+            task_runner=(kwargs.get("task_runner") or self.run_verify),
+            cancel_check=kwargs.get("cancel_check"),
+            trust_combined=_trust_decision["combined"],
+            trust_correctness=_trust_decision["correctness"])
 
     def _record_billable(self, req, model_id, amount, status, **fields):
         """Record every billable apply attempt, including rotated failures."""
@@ -356,7 +353,7 @@ class ApplyEngine:
         retry context, candidate selection, dispatch, merge, preview/write +
         gate -- then gated escalation and the honest terminal assembly.
         Single exit per outcome; every mutation lives in ``state``."""
-        state = _RunState(
+        state = RunState(
             rounds=list(req.continuation.get("history") or []),
             history=list(req.continuation.get("history") or []),
             # Capability deferrals keep un-gated partial output out of the
@@ -415,24 +412,11 @@ class ApplyEngine:
                     continue
             else:
                 new_content = _extract_file_content(outcome.content)
-            changed = new_content != state.current_content
-
-            if req.verify_only:
-                # MorphLite's --verify-only contract: return the proposed content
-                # without mutating the target or running a gate against old code.
-                return self._preview_terminal(req, state, outcome, new_content, changed)
-
-            if changed:
-                if state.backup is None:
-                    state.backup = backup_file(req.file_path, req.task_id, round_no)
-                _atomic_write(req.file_path, new_content)
-                state.current_content = new_content
-
-            result = self._write_and_gate(req, state, outcome, changed)
+            result = self.gate.apply_candidate(req, state, outcome, new_content)
             if result is not None:
                 return result
 
-        return self._escalate(req, state) or self._terminal_failure(req, state)
+        return self._escalate(req, state) or self.gate.terminal_failure(req, state)
 
     # ---------------- phases ----------------------------------------------
 
@@ -546,7 +530,7 @@ class ApplyEngine:
         across the pool on error / BYOK / reasoning-only / readiness-defer.
         Returns the attempt outcome; ``model_used`` is None when no model
         produced usable content."""
-        outcome = _AttemptOutcome(model=attempt_model)
+        outcome = AttemptOutcome(model=attempt_model)
         while attempt_model is not None:
             if req.cancel_check and req.cancel_check():
                 raise ToolCancelled()
@@ -571,6 +555,8 @@ class ApplyEngine:
                 [(f"apply attempt {i + 1}/{slots}", attempt_model, req.max_tokens, 0)
                  for i in range(slots)],
             )
+            _events.emit("attempt_start", task_id=req.task_id, model=attempt_model,
+                         round=state.round_no, backend=req.backend)
             status, resp = chat(self.transport, self.api_key, attempt_model,
                                 [{"role": "user", "content": prompt}], req.max_tokens,
                                 req.reasoning, self.reasoning_token_budget, self.governor)
@@ -584,6 +570,9 @@ class ApplyEngine:
                 state.failed_models.add(attempt_model)
                 state.rotations += 1
                 eprint(f"[apply] {attempt_model} FAILED: {err} -- rotating.")
+                _events.emit("rotation", task_id=req.task_id, model=attempt_model,
+                             reason="http_error", http_status=status, error=err,
+                             round=state.round_no)
             else:
                 content, _, cost, is_byok = extract_content_and_cost(resp)
                 outcome.cost = cost
@@ -599,6 +588,8 @@ class ApplyEngine:
                     state.failed_models.add(attempt_model)
                     state.rotations += 1
                     eprint(f"[apply] {attempt_model} is BYOK-routed (paid); recorded and rotating.")
+                    _events.emit("rotation", task_id=req.task_id, model=attempt_model,
+                                 reason="paid_byok", round=state.round_no)
                 elif not content or content.startswith(REASONING_FALLBACK_PREFIX):
                     # No usable output: a reasoning-only response must NOT be
                     # treated as file content (it would corrupt the target).
@@ -609,6 +600,8 @@ class ApplyEngine:
                     state.failed_models.add(attempt_model)
                     state.rotations += 1
                     eprint(f"[apply] {attempt_model} returned no content (reasoning-only); rotating.")
+                    _events.emit("rotation", task_id=req.task_id, model=attempt_model,
+                                 reason="reasoning_only", round=state.round_no)
                 else:
                     ready, ready_reason, content = _parse_ready(content)
                     if ready == "defer":
@@ -625,12 +618,21 @@ class ApplyEngine:
                         state.rotations += 1
                         eprint(f"[apply] {attempt_model} declares HARNESS_READY: defer "
                                f"({(ready_reason or '')[:70]}) -- rotating.")
+                        _events.emit("rotation", task_id=req.task_id, model=attempt_model,
+                                     reason="readiness_defer", detail=ready_reason,
+                                     round=state.round_no)
                     else:
                         self._record_billable(req, attempt_model, cost, "ok", readiness=ready)
                         if ready == "missing":
                             eprint(f"[apply] {attempt_model} did not emit HARNESS_READY; "
                                    f"treating as confident (verify + DEFER still guard).")
+                            _events.emit("readiness", task_id=req.task_id,
+                                         model=attempt_model, round=state.round_no,
+                                         decision="missing")
                         else:
+                            _events.emit("readiness", task_id=req.task_id,
+                                         model=attempt_model, round=state.round_no,
+                                         decision="confident")
                             self.ledger.append("readiness", task_id=req.task_id,
                                                model=attempt_model, round=state.round_no,
                                                decision="confident")
@@ -716,82 +718,89 @@ class ApplyEngine:
                                   "status": "merge_failed"})
             return None
 
-    def _preview_terminal(self, req, state, outcome, new_content, changed):
-        """--verify-only terminal: the proposal, honestly gate-free."""
-        state.rounds.append(_round_entry(state.round_no, outcome.model_used, "preview",
-                                         changed=changed, verify_passed=None,
-                                         cost=outcome.cost, verify_output=""))
-        state.history.append({"round": state.round_no, "model": outcome.model_used,
-                              "status": "preview"})
-        self.ledger.append("complete", task_id=req.task_id, model=outcome.model_used,
-                           rounds=state.round_no, status="preview", backend=req.backend,
-                           note="verify-only; proposal not written")
-        return _terminal_result("preview", task_id=req.task_id, rounds=state.rounds,
-                                cost=self.governor.spent, rotations=state.rotations,
-                                backend=req.backend, verify_only=True,
-                                changed=changed, proposed_content=new_content,
-                                backup=None)
-
-    def _write_and_gate(self, req, state, outcome, changed):
-        """Post-write verification: gate-free ok, vacuous retry, ok, or a
-        recorded verify_failed that feeds the next round. Returns the ok
-        terminal result, or None to continue the loop."""
-        round_no = state.round_no
-        if not req.verify_cmd:
-            state.rounds.append(_round_entry(round_no, outcome.model_used, "ok",
-                                             changed=changed, verify_passed=None,
-                                             cost=outcome.cost, verify_output=""))
-            state.history.append({"round": round_no, "model": outcome.model_used,
-                                  "status": "ok"})
-            self.ledger.append("complete", task_id=req.task_id, model=outcome.model_used,
-                               rounds=round_no, status="ok", note="no verification gate",
-                               rotations=state.rotations)
-            return _terminal_result("ok", task_id=req.task_id, rounds=state.rounds,
-                                    cost=self.governor.spent, rotations=state.rotations,
-                                    backend=req.backend, changed=changed,
-                                    backup=state.backup,
-                                    note="no verification gate supplied")
-        gate_runner = self._gate_runner(req.verify_cmd, req.task_runner)
-        if req.cancel_check and req.cancel_check():
-            raise ToolCancelled()
-        rc, out = gate_runner(req.verify_cmd)
-        self.ledger.append("verify_round", task_id=req.task_id, round=round_no,
-                           passed=(rc == 0), model=outcome.model_used,
-                           readiness=outcome.ready)
-        if rc == 0:
-            if not changed:
-                # Guard against vacuous success: the gate passed but nothing
-                # changed -- retry rather than claim an edit happened.
-                state.rounds.append(_round_entry(round_no, outcome.model_used, "vacuous",
-                                                 changed=False, verify_passed=True,
-                                                 cost=outcome.cost,
-                                                 verify_output="verify passed but no changes were applied"))
-                return None
-            state.rounds.append(_round_entry(round_no, outcome.model_used, "ok",
-                                             changed=True, verify_passed=True,
-                                             cost=outcome.cost, verify_output=""))
-            state.history.append({"round": round_no, "model": outcome.model_used,
-                                  "status": "ok"})
-            self.ledger.append("complete", task_id=req.task_id, model=outcome.model_used,
-                               rounds=round_no, status="ok", rotations=state.rotations)
-            return _terminal_result("ok", task_id=req.task_id, rounds=state.rounds,
-                                    cost=self.governor.spent, rotations=state.rotations,
-                                    backend=req.backend, changed=True,
-                                    backup=state.backup,
-                                    verify={"command": req.verify_cmd, "passed": True})
-        state.rounds.append(_round_entry(round_no, outcome.model_used, "verify_failed",
-                                         changed=changed, verify_passed=False,
-                                         cost=outcome.cost, verify_output=out))
-        state.history.append({"round": round_no, "model": outcome.model_used,
-                              "status": "verify_failed"})
-        return None
-
     def _escalate(self, req, state):
-        """Cheap model exhausted its retry budget -> optional gated escalation
-        to a stronger model, with the gate run again on its output. A
-        proven-broken gate would fail the escalation identically, so skip it.
-        Returns the ok terminal result, or None to fall through to the
-        terminal failure."""
+        """Multi-rung escalation when a ladder is configured; else legacy rung."""
+        if req.verify_only or not req.verify_cmd or state.gate_broken:
+            return None
+        if not self.router.escalation_pool:
+            return self._escalate_legacy(req, state)
+        allowed = req.allow_escalation if req.allow_escalation is not None \
+            else self.router.allow_escalation
+        if not allowed:
+            return None
+
+        # Seed judge condensed context / preferred rung from the verify lane
+        # so later rungs actually see the failure guidance.
+        for rnd in reversed(state.rounds):
+            esc = rnd.get("escalation") or {}
+            if isinstance(esc, dict) and esc.get("needed"):
+                state.escalation_condensed_context = esc.get("condensed_context") or ""
+                if esc.get("target_rung") is not None:
+                    state.de_escalation_target_rung = int(esc.get("target_rung") or 0)
+                break
+            # Specialist directives also live under the verify result.
+            spec = rnd.get("specialist") or {}
+            if isinstance(spec, dict):
+                esc = spec.get("escalation") or {}
+                if isinstance(esc, dict) and esc.get("needed"):
+                    state.escalation_condensed_context = esc.get("condensed_context") or ""
+                    if esc.get("target_rung") is not None:
+                        state.de_escalation_target_rung = int(esc.get("target_rung") or 0)
+                    break
+
+        def base_prompt_fn(st, rung_context):
+            last = st.rounds[-1] if st.rounds else {}
+            tail = (last.get("verify_output") or "")[-VERIFY_FEEDBACK_CHARS:]
+            round_ctx = (
+                "A cheaper model exhausted its retry budget without passing verification.\n"
+                f"Verification command: {req.verify_cmd}\n"
+                f"Last {VERIFY_FEEDBACK_CHARS} chars:\n```\\n{tail}\\n```\\n\\n"
+                "Return the corrected COMPLETE file content.")
+            if rung_context:
+                round_ctx = rung_context + "\n\n" + round_ctx
+            return build_apply_prompt(req.file_path, req.instruction, req.edit_snippet,
+                                      st.current_content, round_ctx, req.continuation,
+                                      backend=req.backend)
+
+        def finish_fn(model, content, cost):
+            if not content:
+                return self.gate.finish_escalation(
+                    req, state, model, state.current_content, cost, False)
+            if CAPABILITY_MARKER in content:
+                outcome = AttemptOutcome(
+                    model=model, model_used=model, content=content, cost=cost)
+                return self._capability_deferral(req, state, outcome)
+            if req.backend == "diff":
+                new_content = _apply_unified_diff(state.current_content, content)
+                if new_content is None:
+                    state.rounds.append(_round_entry(
+                        "escalation", model, "verify_failed",
+                        changed=False, verify_passed=False, cost=cost,
+                        verify_output="escalation returned a non-matching unified diff"))
+                    return None
+            else:
+                new_content = _extract_file_content(content)
+            self.ledger.append("escalate", task_id=req.task_id,
+                               from_model=req.model, to_model=model)
+            return self.gate.finish_escalation(
+                req, state, model, new_content, cost, bool(new_content))
+
+        driver = EscalationDriver(
+            router=self.router,
+            transport=self.transport,
+            api_key=self.api_key,
+            governor=self.governor,
+            ledger=self.ledger,
+            task_id=req.task_id,
+            reasoning_token_budget=self.reasoning_token_budget,
+            max_tokens=req.max_tokens,
+            task_start_spent=req.task_start_spent,
+            task_max_cost=req.task_max_cost,
+        )
+        return driver.run_with_escalation(req, state, base_prompt_fn, finish_fn)
+
+    def _escalate_legacy(self, req, state):
+        """Legacy single-rung escalation (kept for backward compatibility)."""
         if req.verify_only or not req.verify_cmd or state.gate_broken:
             return None
         esc = self.router.escalation(override=req.allow_escalation)
@@ -844,103 +853,10 @@ class ApplyEngine:
             if not usable:
                 content = None
         new_content = _extract_file_content(content) if content else state.current_content
-        changed = bool(content) and new_content != state.current_content
-        if changed:
-            if state.backup is None:
-                state.backup = backup_file(req.file_path, req.task_id, "esc")
-            _atomic_write(req.file_path, new_content)
-            state.current_content = new_content
-        gate_runner = self._gate_runner(req.verify_cmd, req.task_runner)
-        rc, out = (gate_runner(req.verify_cmd) if content
-                   else (1, "escalation returned no usable content"))
-        if rc == 0 and changed:
-            self.ledger.append("complete", task_id=req.task_id, model=esc["model"],
-                               rounds="escalation", status="ok")
-            state.rounds.append(_round_entry("escalation", esc["model"], "ok",
-                                             changed=True, verify_passed=True,
-                                             cost=cost, verify_output=""))
-            return _terminal_result("ok", task_id=req.task_id, rounds=state.rounds,
-                                    cost=self.governor.spent,
-                                    rotations=state.rotations, backend=req.backend,
-                                    changed=True, backup=state.backup,
-                                    verify={"command": req.verify_cmd, "passed": True},
-                                    escalated=True)
-        state.rounds.append(_round_entry("escalation", esc["model"], "verify_failed",
-                                         changed=changed, verify_passed=False,
-                                         cost=cost, verify_output=out))
-        return None
+        return self.gate.finish_escalation(
+            req, state, esc["model"], new_content, cost, bool(content))
 
-    def _terminal_failure(self, req, state):
-        """The honest exhausted terminal: rewind the tree to its pre-run
-        content (a run that never passed its gate must leave the tree as it
-        found it), record the abort, and report WHO failed."""
-        self.ledger.append("abort", task_id=req.task_id, model=req.model,
-                           reason=("preview exhausted its rounds"
-                                   if req.verify_only else "verify rounds exhausted"),
-                           rotations=state.rotations)
-        # The failed edit may sit in the target after the final gate failure;
-        # the continuation history (plus the filesafety backup) preserves the
-        # work -- the working tree is not the place for ungated code.
-        if not req.verify_only and os.path.isfile(req.file_path):
-            with open(req.file_path, "r", encoding="utf-8") as f:
-                tree_now = f.read()
-            if tree_now != req.original:
-                _atomic_write(req.file_path, req.original)
-                eprint("[apply] rewound target to its pre-run content "
-                       "(run did not pass its verification gate).")
-
-        last_out = ""
-        for r in reversed(state.rounds):
-            if r.get("verify_output"):
-                last_out = r["verify_output"][-VERIFY_FEEDBACK_CHARS:]
-                break
-        # The gate verdict must be honest about WHO failed. In --verify-only
-        # no gate ever ran, so a `passed: False` here would fabricate gate
-        # evidence out of a merge error; the gate was simply never reached.
-        # (Live finding: a preview with a bad diff reported verify_failed
-        # with 'diff merge failed' as its output_tail.)
-        gate_ran = not req.verify_only
-        if req.verify_only:
-            terminal_status = "preview_exhausted"
-            verify_block = {"command": req.verify_cmd, "passed": None,
-                            "note": "gate not run (verify-only preview)",
-                            "output_tail": last_out}
-            reason = ("preview exhausted its rounds without a clean proposal; "
-                      "no gate ran (verify-only)")
-            remaining = f"Produce a clean proposal for: {req.instruction}"
-        else:
-            terminal_status = "verify_failed"
-            verify_block = {"command": req.verify_cmd, "passed": False,
-                            "output_tail": last_out}
-            reason = "verification did not pass on the free tier; continue and fix"
-            remaining = f"Fix the verification failures for: {req.instruction}"
-        return _terminal_result(terminal_status, task_id=req.task_id, rounds=state.rounds,
-                                cost=self.governor.spent, rotations=state.rotations,
-                                backend=req.backend, verify_only=req.verify_only,
-                                backup=state.backup, verify_cmd=req.verify_cmd,
-                                verify=verify_block,
-                                gate_ran=gate_ran,
-                                continuation={
-                                    "file_path": req.file_path, "task_id": req.task_id,
-                                    "backend": req.backend, "verify_only": req.verify_only,
-                                    "max_lines": req.max_lines,
-                                    "edit_snippet": req.edit_snippet,
-                                    "verify_cmd": req.verify_cmd,
-                                    "verify_gate_id": (_gate_id(req.verify_cmd)
-                                                       if req.verify_cmd else None),
-                                    "verification_required": not req.verify_only,
-                                    "target_hash": file_content_hash(req.file_path),
-                                    "remaining_scope": remaining,
-                                    "reason": reason,
-                                    "history": state.history,
-                                })
 
     def apply_batch(self, files, **kwargs):
-        """Multi-file batch (#12). The loop, fail-fast, and envelope policy
-        live in harness/batch.py; the engine stays the per-file apply."""
+        """Run the shared multi-file policy over this engine."""
         return run_batch(self, files, **kwargs)
-
-    def _gate_runner(self, verify_cmd, task_runner=None):
-        """Bind-or-refuse this run's gate runner (policy in continuation.py)."""
-        return bound_gate(self._continuation_gate, verify_cmd,
-                          task_runner or self.run_verify)

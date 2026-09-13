@@ -10,13 +10,13 @@ acceptance is a warning, not a success).
 import hashlib
 import json
 import os
-import sys
 import threading
 import time
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from .errors import HarnessError
+from .output import eprint
 
 
 def _canon(entry):
@@ -32,8 +32,13 @@ _LOCK_RETRY_SECONDS = 0.02
 
 
 class AutonomyLedger:
-    def __init__(self, path):
+    def __init__(self, path, caller=None):
         self.path = path
+        # Session authorship for the evidence loop (e.g. "cli",
+        # "mcp:peer/1.0"): stamped onto every appended event unless the
+        # call site names one explicitly. Unset (None) leaves history
+        # untagged, exactly as before.
+        self.caller = caller
         self._lock = threading.Lock()
         self._tail = []
         self._seq = 0
@@ -42,6 +47,9 @@ class AutonomyLedger:
         # Count of corrupt/torn lines skipped at load (audit #8b: must exist
         # as a real attribute on every instance, clean load included).
         self.quarantined = 0
+        # Soft integrity: True when load recomputed a hash/prev/seq break.
+        self.chain_broken = False
+        self.first_bad_seq = None
         self._load()
 
     def _rotated_paths(self):
@@ -74,7 +82,6 @@ class AutonomyLedger:
             return
         if size < LEDGER_MAX_BYTES:
             return
-        directory = os.path.dirname(self.path) or "."
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%f")
         rotated = f"{self.path}.{stamp}"
         try:
@@ -88,6 +95,15 @@ class AutonomyLedger:
             except OSError:
                 pass
         self._segmented = bool(self._rotated_paths())
+        # Anchor the cut: the new active file opens with a chained event
+        # naming the rotated file and its tip, so a fresh loader can tell
+        # pruning from prefix tampering. Failure degrades to today's
+        # behavior (an unmarked boundary), never to a lost append: the
+        # rotation already happened, the evidence is safe either way.
+        try:
+            self._append_segment_anchor(os.path.basename(rotated))
+        except OSError as e:
+            eprint(f"[ledger] segment anchor not written: {e}")
 
     @contextmanager
     def _file_lock(self):
@@ -117,7 +133,11 @@ class AutonomyLedger:
                             msvcrt.locking(lf.fileno(), msvcrt.LK_NBLCK, 1)
                         except ImportError:
                             import fcntl
-                            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+                            # LOCK_NB: without it this blocks forever on
+                            # POSIX and the retry budget above is dead code
+                            # (Windows already uses LK_NBLCK).
+                            fcntl.flock(lf.fileno(),
+                                        fcntl.LOCK_EX | fcntl.LOCK_NB)
                         locked = True
                         break
                     except OSError:
@@ -152,11 +172,39 @@ class AutonomyLedger:
             f.flush()
             os.fsync(f.fileno())  # torn-line resistance: never lose the tail
 
+    def _append_segment_anchor(self, rotated_name):
+        """Open the fresh active file with a chained boundary record.
+
+        Caller must hold both locks (only _rotate_if_needed calls this,
+        itself called from append under both locks). The anchor chains
+        normally -- seq tip+1, prev_hash tip -- so rotation never forks
+        the chain; it additionally names the moved file and its tip.
+        """
+        tip_seq, tip_hash = self._seq, self._prev_hash
+        entry = {
+            "seq": tip_seq + 1,
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "event": "segment",
+            "task_id": None,
+            "prev_hash": tip_hash,
+            "rotated": rotated_name,
+            "tip_seq": tip_seq,
+            "tip_hash": tip_hash,
+        }
+        body = dict(entry)
+        body["hash"] = hashlib.sha256(_canon(body).encode("utf-8")).hexdigest()
+        self._tail.append(body)
+        self._seq = body["seq"]
+        self._prev_hash = body["hash"]
+        self._persist(_canon(body))
+
     def _load(self):
         paths = self._ledger_paths()
         self._segmented = len(paths) > 1 or bool(self._rotated_paths())
+        self.chain_broken = False
+        expected_prev = None
         for source_path in paths:
-            with open(source_path, "r", encoding="utf-8") as f:
+            with open(source_path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -166,17 +214,34 @@ class AutonomyLedger:
                         if (not isinstance(entry, dict) or "seq" not in entry
                                 or "hash" not in entry):
                             raise ValueError("entry missing seq/hash")
+                        if not isinstance(entry["seq"], int) or entry["seq"] < 0:
+                            raise ValueError("seq must be a non-negative int")
+                        body = {k: v for k, v in entry.items() if k != "hash"}
+                        recomputed = hashlib.sha256(
+                            _canon(body).encode("utf-8")).hexdigest()
+                        if recomputed != entry["hash"]:
+                            raise ValueError("hash mismatch")
+                        if (expected_prev is not None
+                                and entry.get("prev_hash") != expected_prev
+                                and entry.get("event") != "segment"):
+                            raise ValueError("prev_hash linkage broken")
                     except (ValueError, TypeError):
-                        # The evidence chain must stay readable even if a crash
-                        # left a torn trailing line: quarantine the damage, keep
-                        # the intact prefix, and never crash on load.
+                        # Quarantine the damage, keep the intact prefix, and
+                        # flag the break so verify never silently passes.
                         self.quarantined = getattr(self, "quarantined", 0) + 1
-                        print(f"[ledger] corrupt line quarantined in {source_path}; "
-                              "run `harness ledger verify` for status.", file=sys.stderr)
+                        self.chain_broken = True
+                        if self.first_bad_seq is None:
+                            try:
+                                self.first_bad_seq = entry.get("seq")
+                            except Exception:
+                                self.first_bad_seq = -1
+                        eprint(f"[ledger] corrupt line quarantined in {source_path}; "
+                               "run `harness ledger verify` for status.")
                         continue
                     self._tail.append(entry)
                     self._seq = entry["seq"]
                     self._prev_hash = entry["hash"]
+                    expected_prev = entry["hash"]
 
     def _rebase_under_lock(self):
         """Re-read the file under the append lock and advance this instance
@@ -195,7 +260,7 @@ class AutonomyLedger:
         # after rotation: the active file alone is only the newest segment.
         for source_path in self._ledger_paths():
             try:
-                with open(source_path, "r", encoding="utf-8") as f:
+                with open(source_path, encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
                         if not line:
@@ -224,6 +289,8 @@ class AutonomyLedger:
             "task_id": task_id,
             "prev_hash": self._prev_hash,
         }
+        if self.caller is not None:
+            entry.setdefault("caller", self.caller)
         entry.update(fields)
         body = dict(entry)
         body["hash"] = hashlib.sha256(_canon(body).encode("utf-8")).hexdigest()
@@ -276,42 +343,274 @@ class AutonomyLedger:
         return len(self._tail)
 
     def verify(self):
-        """Recompute the hash chain. Returns (ok, first_bad_seq_or_None)."""
+        """Recompute the hash chain. Returns (ok, first_bad_seq_or_None).
+
+        A load that quarantined torn/tampered lines fails closed: the memory
+        prefix may be intact, but the on-disk evidence does not check out.
+        """
         n = self._valid_prefix_len()
-        if n == len(self._tail):
-            return True, None
-        return False, self._tail[n]["seq"]
+        if n != len(self._tail):
+            return False, self._tail[n]["seq"]
+        if getattr(self, "chain_broken", False):
+            return False, getattr(self, "first_bad_seq", None)
+        return True, None
+
+    def _segment_bounds(self):
+        """Per-file evidence inventory, oldest segment first.
+
+        Re-reads the retained segment files (cheap: only verify/status
+        paths call this) so the report reflects disk, not memory. Blank
+        and corrupt lines are skipped exactly like _load skips them.
+        """
+        bounds = []
+        for source_path in self._ledger_paths():
+            first_seq = last_seq = first_prev = tip_hash = None
+            opens_with_segment = False
+            seen_valid = False
+            count = 0
+            try:
+                with open(source_path, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                            if (not isinstance(entry, dict)
+                                    or "seq" not in entry
+                                    or "hash" not in entry):
+                                raise ValueError("entry missing seq/hash")
+                        except (ValueError, TypeError):
+                            continue
+                        if not seen_valid:
+                            seen_valid = True
+                            first_seq = entry["seq"]
+                            first_prev = entry.get("prev_hash")
+                            opens_with_segment = entry.get("event") == "segment"
+                        last_seq = entry["seq"]
+                        tip_hash = entry["hash"]
+                        count += 1
+            except OSError:
+                continue
+            bounds.append({"path": os.path.basename(source_path),
+                           "entries": count, "first_seq": first_seq,
+                           "last_seq": last_seq, "first_prev": first_prev,
+                           "tip_hash": tip_hash,
+                           "opens_with_segment_event": opens_with_segment})
+        return bounds
+
+    def chain_status(self):
+        """Honest chain verdict: validity PLUS retention shape.
+
+        verify() answers "do the retained links check out"; this answers
+        the operator's real question -- "am I looking at a complete
+        genesis chain or a valid suffix of a pruned one". A pruned prefix
+        reports pruned=True with its cut seq; it never masquerades as
+        genesis, and tampering still fails ok=False either way.
+        """
+        ok, bad = self.verify()
+        bounds = self._segment_bounds()
+        first_retained = self._tail[0]["seq"] if self._tail else None
+        # Continuity from genesis: the first nonempty segment must open
+        # with prev_hash None, and every later segment must open exactly
+        # on the previous segment's tip (the anchor events make this
+        # checkable). Anything else is a pruned -- or deleted -- prefix,
+        # reported explicitly instead of masquerading as genesis.
+        complete, prev_tip, started = True, None, False
+        for b in bounds:
+            if not b["entries"]:
+                continue
+            if not started:
+                if b["first_prev"] is not None:
+                    complete = False
+                started = True
+            elif b["first_prev"] != prev_tip:
+                complete = False
+            prev_tip = b["tip_hash"]
+        pruned = started and not complete
+        return {"ok": ok, "first_bad_seq": bad,
+                "segmented": len(bounds) > 1, "segments": bounds,
+                "first_retained_seq": first_retained, "pruned": pruned,
+                "entries": len(self._tail),
+                "quarantined": getattr(self, "quarantined", 0),
+                "chain_broken_on_load": bool(getattr(self, "chain_broken", False))}
+
+    def _rewrite_file(self, source_path, entries):
+        """Atomically replace one segment file with the given valid entries
+        (tmp + fsync + replace, so a crash never leaves half a segment)."""
+        tmp = self.path + ".repair.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            for e in entries:
+                f.write(_canon(e) + chr(10))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, source_path)
+
+    def defer_stats(self, window=500):
+        """Operator view of WHY runs deferred, over the last ``window`` entries.
+
+        Structured panels record the defer decision on the run's 'complete'
+        row (``agreement='unknown'`` marks a lost/unparseable judge -- the
+        panel votes existed but produced no verdict); mid-task deferrals and
+        consent outcomes are recorded as their own ledger events. Surfaced so
+        an operator sees failure modes in aggregate instead of paging through
+        run files (the Sep-2026 SCMessenger handoff review's ask).
+        Returns a JSON-safe dict; deterministic for a given ledger.
+        """
+        recent = self._tail[-int(window):] if window else list(self._tail)
+        panel_runs = deferred = 0
+        agreements = defaultdict(int)
+        midtask = defaultdict(int)      # defer_midtask category -> count
+        consent = defaultdict(int)      # consent event -> count
+        status_deferred = 0
+        for e in recent:
+            ev = e.get("event")
+            if ev == "complete" and e.get("event_note") == "panel_judge":
+                panel_runs += 1
+                a = str(e.get("agreement") or "unknown")
+                agreements[a] += 1
+                if a == "unknown":
+                    deferred += 1
+            elif ev == "defer_midtask":
+                midtask[str(e.get("category") or "unspecified")] += 1
+            elif isinstance(ev, str) and ev.startswith("consent_"):
+                consent[ev] += 1
+            elif ev == "model_result" and e.get("status") == "deferred":
+                status_deferred += 1
+        by_consent = sum(consent.get(k, 0) for k in
+                         ("consent_defer", "consent_renew_defer", "consent_decline"))
+        by_midtask = sum(midtask.values())
+        return {
+            "window": len(recent),
+            "panel_runs": panel_runs,
+            "panel_deferred": deferred,
+            "panel_defer_rate": (round(deferred / panel_runs, 3)
+                                 if panel_runs else None),
+            "agreements": dict(sorted(agreements.items())),
+            "defer_midtask_by_category": dict(sorted(midtask.items())),
+            "defer_midtask_total": by_midtask,
+            "consent_by_outcome": dict(sorted(consent.items())),
+            "consent_blocked_total": by_consent,
+            "model_status_deferred": status_deferred,
+            "defer_total": deferred + by_midtask + by_consent,
+        }
 
     def repair(self):
-        """Rewrite retained evidence to one active segment at its valid prefix.
+        """Truncate the invalid tail, preserving healthy segments as files.
 
-        Repair is intentionally destructive to the invalid tail and to segment
-        boundaries, so callers should archive the ledger directory first. A
-        single rebuilt file avoids leaving a repaired active segment chained to
-        a deleted/corrupt archive segment.
+        Repair is destructive to the invalid tail only: the segment file
+        holding the first bad entry is rewritten to its valid prefix (or
+        unlinked when nothing in it survives), every newer segment file is
+        unlinked, and every older segment file is left byte-identical --
+        collapsing healthy segments would destroy the boundary anchors
+        that tell pruning from tampering. A healthy ledger is a no-op
+        (callers should still archive the directory first: repair unlinks).
+        Returns (kept, dropped).
         """
         with self._lock:
             with self._file_lock():
                 kept = self._tail[:self._valid_prefix_len()]
                 dropped = len(self._tail) - len(kept)
-                if dropped or self._rotated_paths():
-                    tmp = self.path + ".repair.tmp"
-                    with open(tmp, "w", encoding="utf-8") as f:
-                        for e in kept:
-                            f.write(_canon(e) + chr(10))
-                        f.flush()
-                        os.fsync(f.fileno())
-                    os.replace(tmp, self.path)
+                # Load-time quarantine can remove damage from memory without
+                # touching disk; treat those lines as repair-dropped too.
+                quarantined = int(getattr(self, "quarantined", 0) or 0)
+                if not dropped and not quarantined:
+                    return len(kept), 0
+                # Unsegmented heal: rewrite the single active file to the kept
+                # prefix (this also removes quarantined torn tails).
+                if kept and quarantined and not dropped and not self._segmented:
+                    self._rewrite_file(self.path, kept)
+                    self._tail = kept
+                    self._seq = kept[-1]["seq"]
+                    self._prev_hash = kept[-1]["hash"]
+                    self.chain_broken = False
+                    self.quarantined = 0
+                    self.first_bad_seq = None
+                    return len(kept), quarantined
+                # Segmented: keep the existing per-file cut mapping so older
+                # segment files stay byte-identical. Fall through even when
+                # memory dropped==0 (quarantine already removed the damage
+                # from the tail); the walk drops the unmatched disk line.
+                dropped = dropped or quarantined
+                if not kept:
+                    # Nothing survives: reset to an empty active file and
+                    # drop every rotated segment (today's behavior).
+                    self._rewrite_file(self.path, [])
                     for segment in self._rotated_paths():
                         try:
                             os.unlink(segment)
                         except OSError:
                             pass
-                    self._tail = kept
-                    self._seq = kept[-1]["seq"] if kept else 0
-                    self._prev_hash = kept[-1]["hash"] if kept else None
+                    self._tail, self._seq, self._prev_hash = [], 0, None
                     self._segmented = False
-        return len(kept), dropped
+                    self.chain_broken = False
+                    self.quarantined = 0
+                    return 0, dropped or quarantined
+                # Map the kept prefix back onto segment files, oldest
+                # first. Files before the cut are byte-identical (never
+                # rewritten); the cut file is truncated to its kept
+                # prefix; newer files are unlinked. Torn lines are
+                # matched exactly like _load matches them, so quarantine
+                # skips never shift the cut.
+                remaining = list(kept)
+                cut_done = False
+                for source_path in self._ledger_paths():
+                    if cut_done:
+                        try:
+                            os.unlink(source_path)
+                        except OSError:
+                            pass
+                        continue
+                    mine = []
+                    try:
+                        with open(source_path, encoding="utf-8") as f:
+                            lines = f.read().splitlines()
+                    except OSError:
+                        continue
+                    cut_here = False
+                    for line in lines:
+                        if not remaining:
+                            cut_here = True
+                            break
+                        text = line.strip()
+                        if not text:
+                            continue
+                        try:
+                            entry = json.loads(text)
+                            if (not isinstance(entry, dict)
+                                    or "seq" not in entry
+                                    or "hash" not in entry):
+                                raise ValueError("entry missing seq/hash")
+                        except (ValueError, TypeError):
+                            continue
+                        if entry["seq"] == remaining[0]["seq"] and \
+                                entry["hash"] == remaining[0]["hash"]:
+                            mine.append(remaining.pop(0))
+                        else:
+                            cut_here = True
+                            break
+                    if cut_here:
+                        if mine:
+                            self._rewrite_file(source_path, mine)
+                        else:
+                            try:
+                                os.unlink(source_path)
+                            except OSError:
+                                pass
+                        cut_done = True
+                    # else: file fully kept -- untouched, byte-identical.
+                self._tail = kept
+                self._seq = kept[-1]["seq"] if kept else 0
+                self._prev_hash = kept[-1]["hash"] if kept else None
+                # A repaired chain starting mid-history is still a
+                # suffix, not genesis: recompute the flag from content,
+                # or verify() would call the next load tampered.
+                self._segmented = bool(kept) and \
+                    kept[0].get("prev_hash") is not None
+                self.chain_broken = False
+                self.quarantined = 0
+                self.first_bad_seq = None
+        return len(kept), dropped or quarantined
 
     def participation_report(self):
         events = self._tail
@@ -321,8 +620,11 @@ class AutonomyLedger:
             "dispatch_start", "verify_round", "defer_midtask", "complete",
             "abort", "escalate",
         ], 0)
+        trust_gates = 0
+        trust_hostile = 0
         offers_required = 0
         model_stats = {}
+        per_caller = {}
         rounds_per_task = {}
         billable_events = {
             "model_result", "consent_accept", "consent_decline", "consent_defer",
@@ -352,6 +654,10 @@ class AutonomyLedger:
             ev = e["event"]
             if ev in counts:
                 counts[ev] += 1
+            if ev == "trust_gate":
+                trust_gates += 1
+                if e.get("severity") == "hostile":
+                    trust_hostile += 1
             if ev == "offer":
                 if e.get("required"):
                     offers_required += 1
@@ -381,8 +687,27 @@ class AutonomyLedger:
             elif ev == "complete":
                 m_ = ms(e.get("model"))
                 m_["completions"] = m_.get("completions", 0) + 1
+            elif ev == "trust_gate":
+                # Safety-denial evidence, attributed when the denial names
+                # a model (dispatch/mutation gates do; bare MCP boundary
+                # refusals may not -- those still count host-globally).
+                m_ = ms(e.get("model"))
+                m_["trust_denials"] = m_.get("trust_denials", 0) + 1
+                if e.get("severity") == "hostile":
+                    m_["trust_hostile"] = m_.get("trust_hostile", 0) + 1
             elif ev == "verify_round":
                 rounds_per_task.setdefault(e.get("task_id"), []).append(e.get("round"))
+            caller = e.get("caller")
+            if caller:
+                cs = per_caller.setdefault(
+                    caller, {"completions": 0, "trust_gates": 0,
+                             "trust_hostile": 0})
+                if ev == "complete":
+                    cs["completions"] += 1
+                elif ev == "trust_gate":
+                    cs["trust_gates"] += 1
+                    if e.get("severity") == "hostile":
+                        cs["trust_hostile"] += 1
 
         offers = counts["offer"]
         accepts = counts["consent_accept"]
@@ -410,6 +735,9 @@ class AutonomyLedger:
             "completion_rate": rate(counts["complete"], counts["dispatch_start"]),
             "consent_required_offers": offers_required,
             "per_model": model_stats,
+            "trust_gates": trust_gates,
+            "trust_hostile": trust_hostile,
+            "per_caller": per_caller,
             "tracked_cost": round(tracked_cost, 9),
             "billable_event_count": cost_event_count,
             "consent_looks_degenerate": False,
@@ -476,6 +804,13 @@ class AutonomyLedger:
                         "no usable content" in str(e.get("reason") or ""):
                     stats = model_stats.setdefault(m_, {})
                     stats["unusable_outputs"] = stats.get("unusable_outputs", 0) + 1
+                # Minority dissent on a structured claim (lone dissenter vs
+                # panel majority). Counted separately from unusable/429 so a
+                # model can be demoted for repeatedly inventing conflicts.
+                if e.get("minority_dissent") or \
+                        e.get("event_note") == "panel_minority_dissent":
+                    stats = model_stats.setdefault(m_, {})
+                    stats["minority_dissent"] = stats.get("minority_dissent", 0) + 1
                 # The live known-answer capability probe records `correct`; use
                 # it as structured-task ground truth rather than pretending a
                 # JSON-shaped but incorrect answer was a success.
@@ -503,7 +838,11 @@ class AutonomyLedger:
                 "confident_passed": passes,
                 "confident_failed": fails,
                 "confidence_precision": round(passes / denom, 3) if denom else None,
+                "success_pass": to["pass"],
+                "success_fail": to["fail"],
                 "success_rate": round(to["pass"] / t_denom, 3) if t_denom else None,
+                "structured_pass": structured_outcome[m_]["pass"],
+                "structured_fail": structured_outcome[m_]["fail"],
                 "structured_success_rate": (
                     round(structured_outcome[m_]["pass"] /
                           (structured_outcome[m_]["pass"] + structured_outcome[m_]["fail"]), 3)
@@ -514,6 +853,9 @@ class AutonomyLedger:
                 "samples": model_events[m_],
                 "unusable_outputs": model_stats.get(m_, {}).get("unusable_outputs", 0),
                 "consent_unusable": model_stats.get(m_, {}).get("consent_unusable", 0),
+                "minority_dissent": model_stats.get(m_, {}).get("minority_dissent", 0),
+                "trust_denials": model_stats.get(m_, {}).get("trust_denials", 0),
+                "trust_hostile": model_stats.get(m_, {}).get("trust_hostile", 0),
             }
         report["calibration"] = calibration
         denom = all_pass + all_fail

@@ -57,14 +57,32 @@ _BOUND_MARKER_RE = re.compile(r"\bMAX_[A-Z0-9_]+\b|\blen\(\)\s*>\s*MAX_")
 
 VALID_KINDS = ("defect", "reassurance")
 MAX_EXPAND_DEPTH = 4
-_DEFN_RE = re.compile(r"(?:pub\s+)?(?:fn|const|static|struct|enum|trait|type)\s+([A-Za-z_][A-Za-z0-9_]*)")
+# Rust + Python definitions in-window. Word-boundary is load-bearing: a raw
+# \x08 here once disabled this entire suppression path.
+_DEFN_RE = re.compile(
+    r"\b(?:pub(?:\s*\([^)]*\))?\s+)?"
+    r"(?:fn|const|static|struct|enum|trait|type|def|class)\s+"
+    r"([A-Za-z_][A-Za-z0-9_]*)"
+)
 
 
 def _defined_in(source):
     """Names whose DEFINITION appears in source (fn/const/static/...). A bare
     call like `cloned.get_message_key(...)` is a reference, NOT a definition,
-    so the callee's definition is still auto-expanded -- the 04b lesson."""
-    return {m.group(1) for m in _DEFN_RE.finditer(source)}
+    so the callee's definition is still auto-expanded -- the 04b lesson.
+    Comment/docstring lines are ignored so `# class Hidden:` is not a def.
+    """
+    names = set()
+    for raw in source.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", "//", "*", "/*")):
+            continue
+        # Drop trailing // comments for Rust; keep the definition part.
+        if "//" in line and not line.startswith("http"):
+            line = line.split("//", 1)[0].rstrip()
+        for m in _DEFN_RE.finditer(line):
+            names.add(m.group(1))
+    return names
 
 
 
@@ -117,7 +135,7 @@ def parse_claims(data):
             try:
                 refs.append(int(r))
             except (TypeError, ValueError):
-                raise ValueError(f"claim '{cid}' source_ref '{r}' is not an integer line number")
+                raise ValueError(f"claim '{cid}' source_ref '{r}' is not an integer line number") from None
         claims.append(Claim(claim_id=cid, text=str(text).strip(),
                             kind=kind, source_refs=refs))
     return context, claims
@@ -125,16 +143,18 @@ def parse_claims(data):
 
 def load_claims_manifest(path):
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        # utf-8-sig: handoff manifests authored via PowerShell ``>`` redirects
+        # arrive BOM'd; plain utf-8 fails json.load on the leading U+FEFF.
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except OSError as e:
-        raise HarnessError(f"claims manifest not readable: {path} ({e.strerror or e})")
+        raise HarnessError(f"claims manifest not readable: {path} ({e.strerror or e})") from e
     except ValueError as e:
-        raise HarnessError(f"claims manifest is not valid JSON: {path} ({e})")
+        raise HarnessError(f"claims manifest is not valid JSON: {path} ({e})") from e
     try:
         return parse_claims(data)
     except (ValueError, KeyError, TypeError) as e:
-        raise HarnessError(f"claims manifest is malformed: {path} ({e})")
+        raise HarnessError(f"claims manifest is malformed: {path} ({e})") from e
 
 
 def curate_claims_from_ledger(entries, *, window=500, max_claims=3):
@@ -239,12 +259,12 @@ def load_definitions_file(path):
     definitions file is a clean HarnessError, never a raw traceback -- the
     interface layer turns it into a pre-network [FATAL]."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except OSError as e:
-        raise HarnessError(f"definitions file not readable: {path} ({e.strerror or e})")
+        raise HarnessError(f"definitions file not readable: {path} ({e.strerror or e})") from e
     except ValueError as e:
-        raise HarnessError(f"definitions file is not valid JSON: {path} ({e})")
+        raise HarnessError(f"definitions file is not valid JSON: {path} ({e})") from e
     return normalize_definitions(data)
 
 # ------------------------- identifier scanning -------------------------
@@ -360,8 +380,9 @@ def lint_claims(claims, quoted_source, source_index=None, context=None):
 
     extra = []
     for exp in expansions:
-        extra.append("----- auto-resolved definition of %s (referenced by the claims/"
-                     "context but outside the quoted window) -----" % exp["identifier"])
+        extra.append(f"----- auto-resolved definition of {exp['identifier']} "
+                     "(referenced by the claims/context but outside the "
+                     "quoted window) -----")
         extra.append(exp["snippet"])
     expanded_source = quoted_source + ("\n" + "\n".join(extra) if extra else "")
 

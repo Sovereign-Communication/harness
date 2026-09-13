@@ -171,6 +171,83 @@ class SpecialistRotationTests(unittest.TestCase):
         self.assertEqual(_chat_reservation_slots("z-ai/glm-5.2:free"), 2)
         self.assertEqual(_chat_reservation_slots(P1), 1)
 
+    def test_specialist_prompt_names_reassurance_polarity(self):
+        """The panel prompt marks reassurance claims as inverted polarity;
+        the specialist prompt must carry the same note or it inverts them
+        in prose while the tally stays right."""
+        from harness.convergence import _polarity_note
+        self.assertIn("no reassurance", _polarity_note(None).lower())
+        self.assertIn("no reassurance", _polarity_note({}).lower())
+        note = _polarity_note({"c1": "defect", "c2": "reassurance"})
+        self.assertIn("c2", note)
+        self.assertNotIn("c1", note)
+        self.assertIn("opposite polarity", note)
+
+    def test_specialist_trims_to_smallest_candidate_window(self):
+        """A smaller-window specialist primary must see trimmed votes with
+        a disclosure -- not a silently truncated prompt that burns the
+        ladder on truncation-rotations."""
+        old_vote = json.dumps({"c1": {"real": True, "confidence": 0.9}})
+        old_vote += "\nOLD-" + "x" * 12000
+        new_vote = json.dumps({"c1": {"real": True, "confidence": 0.9}})
+        new_vote += "\nNEW-" + "y" * 12000
+
+        def _entry(mid, ctx):
+            return {"id": mid, "pricing": {"prompt": "0.00000001",
+                                           "completion": "0.00000002"},
+                    "context_length": ctx}
+        spec_id = "spec/small-window"
+        # Wide windows everywhere except the specialist primary: the judge
+        # guard keeps both votes, so only the specialist trim fires. (Plain
+        # fixture entries score zero capability and yield profiles=None,
+        # which disables every budget guard -- hence the explicit windows.)
+        fake = FakeTransport(
+            models=[_entry(P1, 200000), _entry(P2, 200000),
+                    _entry(spec_id, 8192)],
+            posts=[comp(old_vote), comp(new_vote), comp("judge"),
+                   comp(self.SPEC)])
+        gov = _gov(fake)
+        result = panel_judge(
+            transport=fake, api_key="k", governor=gov, prompt="Q?",
+            panel=[P1, P2], judge=JUDGE, run_convergence=True,
+            convergence_model=spec_id, specialist_pool=[])
+        conv = result["convergence"]
+        self.assertEqual(conv["status"], "ok")
+        # Panel fan-out completes in nondeterministic order, so either
+        # seat may be the trimmed oldest -- but exactly one vote goes and
+        # the tally (computed from full votes upstream) still decides.
+        self.assertEqual(len(conv["dropped_votes_from_prompt"]), 1)
+        prompt = fake.chat_posts()[-1][2]["messages"][0]["content"]
+        markers = [m for m in ("OLD-", "NEW-") if m in prompt]
+        self.assertEqual(len(markers), 1)
+        self.assertIn("deterministic tally remains authoritative", prompt)
+        self.assertEqual(len(conv["tally"]["claims"]), 1)
+
+    def test_specialist_no_trim_without_known_windows(self):
+        """Unknown windows mean no trim (cost is still preflighted and a
+        truncation rotates fail-closed) -- never a crash on missing data."""
+        from harness.convergence import _trim_votes_to_window
+        lines = ["--- Model: a ---\n{}", "--- Model: b ---\n{}"]
+        kept, dropped = _trim_votes_to_window(lines, None, ["m"], "head", 64)
+        self.assertEqual(kept, lines)
+        self.assertEqual(dropped, [])
+
+    def test_reassurance_claim_ids_reach_specialist_prompt(self):
+        votes = json.dumps({"c1": {"real": True, "confidence": 0.9},
+                            "c2": {"real": True, "confidence": 0.8}})
+        fake = FakeTransport(
+            models=[m(P1), m(P2), m(JUDGE), m(JUDGE)],
+            posts=[comp(votes), comp(votes), comp("judge"),
+                   comp(self.SPEC)])
+        gov = _gov(fake)
+        panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",
+                    panel=[P1, P2], judge=JUDGE, run_convergence=True,
+                    convergence_model=JUDGE,
+                    claim_polarity={"c2": "reassurance"})
+        prompt = fake.chat_posts()[-1][2]["messages"][0]["content"]
+        self.assertIn("c2", prompt)
+        self.assertIn("REASSURANCE", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,13 @@
+{
+  "context": "`verify` is the tamper-evidence verdict operators rely on; `_rotate_if_needed` is the only writer that moves evidence files.",
+  "claims": [
+    {"id": "c1",
+     "text": "DEFECT: verify() returns (True, None) for a ledger whose oldest retained segment starts mid-chain, so a pruned prefix is indistinguishable from a complete genesis chain",
+     "kind": "defect",
+     "source_refs": [41, 51, 55]},
+    {"id": "c2",
+     "text": "DEFECT: _rotate_if_needed moves the active file away and deletes segments past `LEDGER_KEEP_ROTATIONS` without persisting any boundary record, so a fresh loader cannot tell pruning from prefix tampering",
+     "kind": "defect",
+     "source_refs": [19, 23, 28]}
+  ]
+}

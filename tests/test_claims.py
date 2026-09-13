@@ -18,9 +18,9 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from harness.claims import (  # noqa: E402
-    Claim, build_claims_prompt, curate_claims_from_ledger, is_absence_styled,
-    is_load_bearing, lint_claims, load_claims_manifest, normalize_definitions,
-    parse_claims,
+    Claim, _defined_in, build_claims_prompt, curate_claims_from_ledger,
+    is_absence_styled, is_load_bearing, lint_claims, load_claims_manifest,
+    normalize_definitions, parse_claims,
 )
 from harness.cli import main as cli_main  # noqa: E402
 
@@ -210,6 +210,31 @@ class LintTests(unittest.TestCase):
         self.assertEqual([e["identifier"] for e in report["expansions"]],
                          ["MAX_SKIP_KEYS", "get_message_key"])
         self.assertEqual(report["expanded_source"].count("fn get_message_key"), 1)
+
+    def test_defined_in_matches_rust_definitions_including_pub(self):
+        # Regression: _DEFN_RE once held a literal backspace (\\x08) instead
+        # of a word boundary, so _defined_in always returned set() and every
+        # in-window definition was redundantly auto-appended.
+        src = ("pub fn decrypt() {}\nfn helper() {}\nconst MAX_N: usize = 4;\n"
+               "static SEED: u64 = 1;\nstruct Peer {}\nenum Kind {}\n"
+               "self.helper();\n")  # bare calls are references, not definitions
+        self.assertEqual(_defined_in(src),
+                         {"decrypt", "helper", "MAX_N", "SEED", "Peer", "Kind"})
+
+    def test_referenced_in_window_definition_is_suppressed(self):
+        # visible_helper is both referenced (context) and DEFINED in the
+        # window: suppression must keep it out of expansions entirely.
+        window = "pub fn visible_helper() {}\n" + WINDOW
+        defs = dict(DEFS)
+        defs["visible_helper"] = "fn visible_helper() {}"
+        ctx = CTX + " `visible_helper` wraps the setup."
+        claims = [Claim("c1", "no cap", source_refs=[1])]
+        report = lint_claims(claims, window, source_index=defs, context=ctx)
+        self.assertNotIn("visible_helper",
+                         [e["identifier"] for e in report["expansions"]])
+        # ...while genuinely out-of-window identifiers still expand.
+        self.assertIn("get_message_key",
+                      [e["identifier"] for e in report["expansions"]])
 
 class PromptTests(unittest.TestCase):
     def test_build_claims_prompt_embeds_numbered_source_expansions_and_refs(self):

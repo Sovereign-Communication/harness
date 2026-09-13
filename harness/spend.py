@@ -46,7 +46,7 @@ class SpendGovernor:
         try:
             info = self.transport.get(OPENROUTER_KEY_URL, self.api_key)
         except Exception as e:
-            raise HarnessError(f"could not verify key limit: {e}")
+            raise HarnessError(f"could not verify key limit: {e}") from e
         data = info.get("data", {})
         limit = data.get("limit")
         label = data.get("label", "<no label>")
@@ -56,6 +56,9 @@ class SpendGovernor:
         remaining = data.get("limit_remaining", 0)
         eprint(f"[OK] using key '{label}', limit=${limit}, remaining=${remaining:.6f} "
                f"(resets: {data.get('limit_reset')})")
+        from . import events as _events
+        _events.emit("spend_check", lane="key", limit=limit, remaining=remaining,
+                     reset=data.get("limit_reset"), expect_label=bool(self.expect_key_label))
         if self.expect_key_label is not None and label != self.expect_key_label:
             # Exact match (audit #9b): a substring match let a wrong-but-
             # similarly-named key through, and echoing labels into errors is
@@ -132,7 +135,7 @@ class SpendGovernor:
                                                       f"pricing.completion for '{mid}'", 0.0)
                     self._pricing_cache[mid] = (prompt_price, completion_price)
                 except (TypeError, ValueError):
-                    raise HarnessError(f"could not parse pricing for '{mid}': {p}")
+                    raise HarnessError(f"could not parse pricing for '{mid}': {p}") from None
             self._pricing_fetched_at = time.time()
         return {m_: self._pricing_cache[m_] for m_ in model_ids}
 
@@ -151,7 +154,7 @@ class SpendGovernor:
                 if self._models is not None:
                     eprint(f"[warn] model list refresh failed, using cached catalog: {e}")
                 else:
-                    raise HarnessError(f"could not fetch model list: {e}")
+                    raise HarnessError(f"could not fetch model list: {e}") from e
         return self._models
 
     def preflight(self, prompt_text, calls):
@@ -189,7 +192,7 @@ class SpendGovernor:
         try:
             actual = finite_number(cost or 0.0, "reported cost", 0.0)
         except HarnessError:
-            raise HarnessError(f"invalid reported cost {cost!r} (after '{label}').")
+            raise HarnessError(f"invalid reported cost {cost!r} (after '{label}').") from None
         if self.spent + actual > self.max_cost:
             raise HarnessError(
                 f"actual running cost ${self.spent + actual:.6f} would exceed ceiling "
@@ -230,10 +233,3 @@ def discover_free_models(transport, api_key, prefer=None, limit=40):
         if mid not in ordered:
             ordered.append(mid)
     return ordered[:limit]
-
-
-def resolve_models(transport, api_key, model_ids):
-    """Return only the ids that exist on the live model list."""
-    gov = SpendGovernor(transport, api_key)
-    ids = {m_["id"] for m_ in gov.fetch_models()}
-    return [m_ for m_ in model_ids if m_ in ids]

@@ -24,7 +24,7 @@ def _integer(value, name, minimum, maximum):
     try:
         result = int(value)
     except (TypeError, ValueError, OverflowError):
-        raise HarnessError(f"{name} must be an integer")
+        raise HarnessError(f"{name} must be an integer") from None
     # Do not silently turn 1.5 into 1 or accept strings with trailing junk.
     if isinstance(value, float) and value != result:
         raise HarnessError(f"{name} must be an integer")
@@ -41,7 +41,7 @@ def finite_number(value, name, minimum=0.0, maximum=None, *, allow_zero=True):
     try:
         result = float(value)
     except (TypeError, ValueError, OverflowError):
-        raise HarnessError(f"{name} must be a number")
+        raise HarnessError(f"{name} must be a number") from None
     if not math.isfinite(result):
         raise HarnessError(f"{name} must be finite")
     if not allow_zero and result <= minimum:
@@ -50,10 +50,6 @@ def finite_number(value, name, minimum=0.0, maximum=None, *, allow_zero=True):
         upper = "" if maximum is None else f", {maximum}"
         raise HarnessError(f"{name} must be in [{minimum}{upper}]")
     return result
-
-
-def validate_cost(value, name="cost", maximum=None):
-    return finite_number(value, name, 0.0, maximum)
 
 
 def validate_reasoning_effort(value):
@@ -115,3 +111,75 @@ def validate_batch_files(files):
             raise HarnessError("every file path must be a non-empty string")
         result.append(os.path.abspath(path))
     return result
+
+
+def validate_mcp_prompt(value):
+    """Validate the required prompt at the MCP trust boundary."""
+    return validate_text(value, "prompt", 100000, required=True)
+
+
+def validate_mcp_task(value):
+    """Validate the required work-item description at the MCP boundary."""
+    return validate_text(value, "task", 100000, required=True)
+
+
+def validate_mcp_task_id(value):
+    """Validate the required task identity for MCP lifecycle operations."""
+    return validate_text(value, "task_id", 512, required=True)
+
+
+def validate_mcp_limit(value, name="limit", default=20):
+    """Validate bounded positive pagination values before ledger slicing."""
+    if value is None:
+        value = default
+    return bounded_int(value, name, 1, 1000)
+
+
+def validate_mcp_max_tokens(value, default=2048):
+    """Validate the optional MCP output token budget.
+
+    Default matches the CLI verify lane so MCP hosts are not silently
+    truncated at a much smaller window.
+    """
+    if value is None:
+        value = default
+    return bounded_int(value, "max_tokens", 1, MAX_TOKENS)
+
+
+def validate_mcp_csv(value, name):
+    """Validate an optional comma-separated model list at the MCP boundary."""
+    if value is None:
+        return None
+    text = validate_text(value, name, 10000, required=True)
+    models = [item.strip() for item in text.split(",")]
+    if any(not model for model in models):
+        raise HarnessError(f"{name} must contain non-empty model ids")
+    return models
+
+
+def validate_mcp_model(value, name="model"):
+    """Validate an optional MCP model identifier."""
+    return validate_text(value, name, 512, required=True) if value is not None else None
+
+
+def validate_mcp_reasoning(value):
+    """Validate the MCP reasoning-effort enum."""
+    if value is None:
+        return "auto"
+    if not isinstance(value, str):
+        raise HarnessError("reasoning_effort must be a string")
+    return validate_reasoning_effort(value)
+
+
+def validate_mcp_bool(value, name):
+    """Validate a JSON boolean rather than applying Python truthiness."""
+    if not isinstance(value, bool):
+        raise HarnessError(f"{name} must be a boolean")
+    return value
+
+
+def validate_mcp_files(value):
+    """Normalize the MCP file argument to the engine's batch contract."""
+    if isinstance(value, str):
+        value = [value]
+    return validate_batch_files(value)

@@ -16,13 +16,16 @@ Python 3.9+; pure stdlib — the package has zero runtime dependencies.
 The package is layered; dependencies point one way, downward:
 
 ```
-cli.py / mcp.py          interfaces (arg parsing, JSON-RPC; no policy)
-  apply.py               apply engine: apply_edit validates + freezes its
-                         arguments into one _ApplyRequest (_prepare), then the
-                         phase helpers run the loop -- consent, renewal,
-                         rotation, merge, gate, escalation, terminal assembly
-                         -- mutating one _RunState; apply_batch orchestrates
-                         batches. Result SHAPES live in results.py below.
+cli.py / mcp.py          interfaces (arg parsing, JSON-RPC, tool contracts;
+                         boundary normalization; no engine policy)
+  apply.py               apply engine: validates inputs, dispatches models, and
+                         orchestrates consent, rotation, rounds, and escalation
+  apply_gate.py          candidate write/preview, verification, rewind, and
+                         terminal gate policy; receives request/run state but
+                         owns no run state
+  apply_state.py         immutable ApplyRequest + mutable RunState/AttemptOutcome;
+                         request-local data contracts; apply orchestration owns
+                         transitions and gate owns only filesystem effects
   results.py             the apply result vocabulary: _round_entry,
                          _terminal_result, _defer_result, _http_error -- one
                          def site per shape the CLI/MCP consume (a new
@@ -67,10 +70,10 @@ cli.py / mcp.py          interfaces (arg parsing, JSON-RPC; no policy)
   every dependency edge and hides the real owner. `tests/test_architecture.py`
   enforces both the import direction and the no-re-export rule (a module-level
   import the module never references is a re-export, mechanically detected).
-- **Apply results have one shape.** Every round entry is built by
-  `apply._round_entry` and every terminal result (ok / preview / deferred /
-  verify_failed) by `apply._terminal_result` — interfaces consume that shape,
-  they never reassemble it. New result fields go there, not at a call site.
+- **Apply results have one shape.** Every round entry and terminal result (ok /
+  preview / deferred / verify_failed) is built by `results.py` — interfaces
+  consume that shape, they never reassemble it. New result fields go there,
+  not at a call site.
 - **Engine flags have one definition.** The apply/continue flag cluster is
   declared once (`cli._add_engine_flags`) and output flags once
   (`cli._add_output_flags`); every subcommand that emits a report honors
@@ -80,10 +83,10 @@ cli.py / mcp.py          interfaces (arg parsing, JSON-RPC; no policy)
   and cost lands in the `AutonomyLedger` → results flow back as plain dicts
   the interface serializes. Nothing writes to stdout except the final JSON
   (`cli._emit`) or valid MCP frames (`mcp._write`).
-- **State:** per-request state belongs to the request (`apply_edit` locals,
-  gate pin reset at entry); session state to the engine objects the
-  interface constructs; evidence to the ledger; configuration to
-  `Settings` (built once in `load_settings`).
+- **State:** per-request state belongs to the request (`apply_edit` locals;
+  gate binding is stored only on `ApplyRequest`); session state belongs to the
+  engine objects the interface constructs; evidence belongs to the ledger;
+  configuration belongs to `Settings` (built once in `load_settings`).
 
 ## Ground rules
 
@@ -110,8 +113,8 @@ cli.py / mcp.py          interfaces (arg parsing, JSON-RPC; no policy)
 ## Lint & test before pushing
 
 ```bash
-ruff check harness tests
-python -m unittest discover -s tests
+ruff check harness tests audits
+python -W error::ResourceWarning -m unittest discover -s tests
 ```
 
 CI runs both on Python 3.9 / 3.11 / 3.13. A failing or skipped check blocks
@@ -124,12 +127,14 @@ merge.
 | `harness/config.py` | settings, key resolution, lane curation |
 | `harness/spend.py` | SpendGovernor: spend ceilings, BYOK, model discovery |
 | `harness/capability.py` | model capability profiles + observed evidence |
-| `harness/apply.py` | edit application: argument policy in one `_prepare`, the round loop in named phase helpers over one `_RunState` |
+| `harness/apply.py` | request preparation, model dispatch/rotation, and round orchestration |
+| `harness/apply_gate.py` | one candidate-to-gate transaction: write, verify, preview, rewind, and terminal gate results |
+| `harness/apply_state.py` | apply request data and mutable per-run state |
 | `harness/results.py` | the apply result vocabulary (round entries, terminal/deferred results, HTTP error rendering) -- one def site per result shape, plus the status-meaning policy: `SUCCESS_STATUSES` and `terminal_exit_code` (interfaces never re-derive what a status means) |
 | `harness/session.py` | composition owner: governor_for/ledger_for/router_for/engine_for + `apply_session` (pre-spend saturation look-ahead included) -- how ANY interface gets its dependencies; engine kwargs and tier policy change here exactly once |
 | `harness/cli.py` | interface + claims-specific verify mapping (claims prompt, lint, polarity); session aliases (`_governor`/`_engine`/...) kept as test seams |
 | `harness/consent.py` | the consent probe (sovereignty) |
 | `harness/ledger.py` | hash-chained JSONL autonomy ledger |
-| `harness/mcp.py` | MCP stdio server (dispatch surface); composes its dependencies from session.py -- zero own construction policy |
+| `harness/mcp.py` | MCP framing, tool contracts, boundary normalization, lane scheduling (mutation/spendy/observe), cooperative cancellation + per-tool deadlines, engine dispatch, and response lifecycle; composes dependencies from session.py |
 | `harness/bench.py` | hermetic known-answer benchmarks |
 | `tests/` | one test module per product owner (test_spend, test_panel, test_convergence, test_specialist, test_chat, test_ledger, test_prompts, ...); shared fakes and the `_gov` helper live in `tests/_fake.py` |
