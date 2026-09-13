@@ -213,9 +213,12 @@ class EnrichmentTests(unittest.TestCase):
                                   "expect_key_label": None})()
         opts = type("O", (), {"limit": 5, "all": True, "out": None})()
         with m.patch.object(cli, "_governor", return_value=("k", gov)), \
+                m.patch.object(cli, "discover_free_models",
+                               return_value=["a/model-a"]) as disc, \
                 m.patch.object(cli, "_emit",
                                side_effect=lambda r, o: captured.update(r=r)):
             cli._cmd_models(opts, settings)
+        disc.assert_called_once()  # hermetic: no real transport /models call
         r = captured["r"]
         self.assertEqual(r["count"], 2)
         self.assertEqual([row["id"] for row in r["models"]],
