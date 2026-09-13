@@ -9,7 +9,6 @@ reasoning-only traces, and truncation are protocol conditions, not content,
 and must never be mined for votes, file bodies, or consent decisions.
 """
 import json
-import os
 
 from .config import OPENROUTER_CHAT_URL
 from .output import eprint
@@ -136,11 +135,32 @@ def assess_output(content, finish_reason=None, allow_truncated=False):
     return True, None
 
 
+def looks_truncated(text):
+    """Heuristic for a body cut off mid-JSON (never promoted to a verdict).
+
+    A fence that opens and never closes, or unbalanced braces/brackets,
+    means the provider stopped mid-object (the Sep-2026 seat-gate loss was a
+    57-char body that just stopped). Prose around balanced JSON is not
+    truncation.
+    """
+    if not text:
+        return False
+    if text.count("```") % 2 == 1:
+        return True
+    body = text
+    if "```" in body:
+        body = body.split("```", 2)[1]
+        if body.lstrip().lower().startswith("json") and "\n" in body:
+            body = body.split("\n", 1)[1]
+    return ((body.count("{") != body.count("}"))
+            or (body.count("[") != body.count("]")))
+
+
 # ------------------------- reasoning / effort -------------------------
 
 _REASONING_HINTS = ("reason", "thinking", "inkling", "qwq", "r1", "o3", "o4",
-                    "deepseek", "kimi", "glm-4.6", "glm-5.2", "glm-5.6", "minimax-reason",
-                    "nemotron", "openrouter/free")
+                    "o1", "gpt-5", "deepseek", "kimi", "glm-4.6", "glm-5.2", "glm-5.6",
+                    "minimax-reason", "nemotron", "openrouter/free")
 _EFFORT_VALUES = ("auto", "off", "none", "low", "medium", "high", "on")
 _REASONING_PARAM_ERR_HINTS = ("reasoning", "unsupported parameter",
                               "unknown parameter", "unexpected parameter")
@@ -256,6 +276,9 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
                   if isinstance(resp, dict) else resp).lower()
         if any(h in err for h in _REASONING_PARAM_ERR_HINTS):
             eprint(f"[retry] {model} rejected reasoning param; retrying without it.")
+            from . import events as _events
+            _events.emit("rotation", model=model, reason="reasoning_param_rejected",
+                         note="provider retry without the reasoning parameter")
             prior_cost = _reported_cost(resp)
             retry_status, retry_resp = transport.post(
                 OPENROUTER_CHAT_URL, api_key, build(False))

@@ -1,0 +1,343 @@
+/* harness UI: no framework, no build step. Talks only to /api/*. */
+"use strict";
+
+// ---- auth token (desktop shell passes it via the URL fragment) ----------
+const TOKEN = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+
+async function api(path, opts = {}) {
+  const headers = Object.assign({"Content-Type": "application/json"}, opts.headers || {});
+  if (TOKEN) headers["X-Harness-Auth"] = TOKEN;
+  const res = await fetch(path, Object.assign({}, opts, {headers}));
+  let body = null;
+  try { body = await res.json(); } catch (_e) { /* non-JSON error page */ }
+  if (!res.ok) {
+    const msg = (body && body.error) ? body.error : `${res.status} ${res.statusText}`;
+    throw new Error(msg);
+  }
+  return body;
+}
+
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+const fmtCost = (v) => (typeof v === "number") ? `$${v.toFixed(6)}` : String(v ?? "–");
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const statusClass = (s) => "s-" + String(s || "").replace(/[^a-z_]/g, "");
+
+// ---- view routing --------------------------------------------------------
+$$("nav a").forEach((a) => a.addEventListener("click", () => {
+  $$("nav a").forEach((x) => x.classList.remove("active"));
+  a.classList.add("active");
+  $$(".view").forEach((v) => v.classList.remove("active"));
+  $(`#view-${a.dataset.view}`).classList.add("active");
+  if (a.dataset.view === "runs") refreshRuns();
+  if (a.dataset.view === "ledger") refreshLedger();
+}));
+
+// ---- live events ---------------------------------------------------------
+let lastSeq = 0;
+const EVENT_DETAIL = {
+  preflight: (e) => `worst-case ${fmtCost(e.worst_case)} vs ceiling ${fmtCost(e.ceiling)}`,
+  attempt_start: (e) => `${e.model} round ${e.round}`,
+  panel_call: (e) => `${e.model}`,
+  panel_vote: (e) => `${e.model} ${fmtCost(e.cost)} ${e.truncated ? "(truncated)" : ""}`,
+  judge_call: (e) => `${e.model}`,
+  judge_result: (e) => `${e.model}: ${e.status}`,
+  rotation: (e) => `${e.model || ""} ${e.reason}${e.error ? " — " + String(e.error).slice(0, 80) : ""}`,
+  readiness: (e) => `${e.model}: ${e.decision}`,
+  consent_result: (e) => `${e.decision}${e.fail_closed ? " (fail-closed)" : ""}`,
+  gate_start: (e) => `${e.command || ""}`,
+  gate_end: (e) => e.passed ? "PASS" : `FAIL rc=${e.rc}`,
+  escalation_rung: (e) => `rung ${e.rung ?? ""} ${e.model || ""}`,
+  spend_check: (e) => e.lane === "key"
+    ? `key limit ${fmtCost(e.limit)} remaining ${fmtCost(e.remaining)}`
+    : `spent ${fmtCost(e.spent)} / ${fmtCost(e.ceiling)}`,
+  bench_task: (e) => `${e.name}: ${e.phase}${e.status ? " -> " + e.status : ""}`,
+  terminal: (e) => `${e.status} cost ${fmtCost(e.cost)}`,
+  run_accepted: (e) => `${e.kind} (${e.ui_run})`,
+  run_finished: (e) => `${e.kind}: ${e.status}`,
+  run_cancel_requested: (e) => `${e.ui_run}`,
+};
+
+function renderEvent(e) {
+  const div = document.createElement("div");
+  div.className = "ev";
+  const time = new Date((e.ts || 0) * 1000).toLocaleTimeString();
+  const detailFn = EVENT_DETAIL[e.type];
+  const detail = detailFn ? detailFn(e) : JSON.stringify(Object.fromEntries(Object.entries(e).filter(([k]) => !["ts", "seq", "type", "task_id"].includes(k)))).slice(0, 120);
+  div.innerHTML = `<span class="t">${esc(time)}</span>` +
+    `<span class="type type-${esc(e.type)} ${esc(e.type)}">${esc(e.type)}</span>` +
+    `<span class="detail">${esc(detail)}</span>`;
+  div.dataset.seq = e.seq;
+  return div;
+}
+
+async function pollEvents() {
+  try {
+    const data = await api(`/api/events?after=${lastSeq}`);
+    if (data.events && data.events.length) {
+      const log = $("#live-events");
+      for (const e of data.events) {
+        lastSeq = Math.max(lastSeq, e.seq);
+        log.prepend(renderEvent(e));
+      }
+      while (log.children.length > 300) log.removeChild(log.lastChild);
+    }
+  } catch (_e) { /* server restarting; next tick retries */ }
+}
+
+// ---- dashboard -----------------------------------------------------------
+async function refreshDashboard() {
+  try {
+    const [spend, chain, runs] = await Promise.all([
+      api("/api/spend"), api("/api/ledger/verify"), api("/api/runs"),
+    ]);
+    const s = spend.session || {};
+    $("#d-spent").textContent = fmtCost(s.spent);
+    $("#d-ceiling").textContent = `ceiling ${fmtCost(s.ceiling)}`;
+    const frac = s.ceiling ? Math.min(1, (s.spent || 0) / s.ceiling) : 0;
+    const bar = $("#d-spend-bar");
+    bar.style.width = `${(frac * 100).toFixed(1)}%`;
+    bar.style.background = frac > 0.85 ? "var(--red)" : frac > 0.5 ? "var(--yellow)" : "var(--green)";
+    $("#d-key-limit").textContent = fmtCost(spend.limit);
+    $("#d-key-remaining").textContent = `remaining ${fmtCost(spend.remaining)} (resets ${spend.limit_reset || "–"})`;
+    $("#d-chain").textContent = chain.verified ? "OK" : "BROKEN";
+    $("#d-chain").style.color = chain.verified ? "var(--green)" : "var(--red)";
+    const c = chain.chain || {};
+    const seg = Array.isArray(c.segments) ? c.segments.length : c.segments;
+    $("#d-chain-detail").textContent = `${seg ?? "?"} segment(s), ${c.entries ?? "?"} entries`;
+    const r = runs.runs || [];
+    const active = r.filter((x) => x.status === "running").length;
+    $("#d-runs").textContent = r.length;
+    $("#d-runs-detail").textContent = active ? `${active} running` : "all settled";
+  } catch (e) {
+    $("#d-ceiling").textContent = `(${e.message})`;
+  }
+}
+
+// ---- dispatch ------------------------------------------------------------
+let dispatchKind = "apply";
+$$(".tab").forEach((b) => b.addEventListener("click", () => {
+  $$(".tab").forEach((x) => x.classList.remove("active"));
+  b.classList.add("active");
+  dispatchKind = b.dataset.kind;
+  syncKindFields();
+}));
+
+function syncKindFields() {
+  const isApplyLike = dispatchKind === "apply" || dispatchKind === "continue";
+  $("#f-file-label").hidden = dispatchKind !== "apply";
+  $("#f-state-label").hidden = dispatchKind !== "continue";
+  $("#f-manifest-label").hidden = dispatchKind !== "bench";
+  $("#f-verify-label").hidden = !isApplyLike;
+  $("#f-instruction-label").hidden = dispatchKind === "verify";
+  $("#f-prompt-label").hidden = dispatchKind !== "verify";
+  $("#f-promptfile-label").hidden = dispatchKind !== "verify";
+  $("#f-meta-row").hidden = !isApplyLike;
+  $("#confirm-box").hidden = true;
+  $("#btn-dispatch").disabled = true;
+  $("#dispatch-result").hidden = true;
+}
+
+let pendingArgs = null;
+$("#btn-review").addEventListener("click", () => {
+  const fd = new FormData($("#dispatch-form"));
+  const args = {};
+  for (const [k, v] of fd.entries()) {
+    if (typeof v === "string" && v.trim() !== "") args[k] = v.trim();
+  }
+  for (const k of ["verify_only", "require_consent"]) args[k] = !!fd.get(k);
+  // Client-side required-field gate: the server refuses these too, but
+  // reviewing an empty form ("file: ?") invites dispatching nothing.
+  const required = {
+    apply: "file", verify: "prompt", continue: "state", bench: "manifest",
+  }[dispatchKind];
+  const hasRequired = required === "prompt"
+    ? !!(args.prompt || args.prompt_file) : !!args[required];
+  if (!hasRequired) {
+    const out = $("#dispatch-result");
+    out.hidden = false;
+    out.textContent = `nothing to review: '${required}' is required`;
+    return;
+  }
+  const summary = {
+    apply: () => `file: ${args.file}\ninstruction: ${args.instruction || "(none)"}` +
+      `\nverify: ${args.verify || "(none — ungated)"}\nbackend: ${args.backend || "harness"}` +
+      `${args.verify_only ? "\nverify-only preview: NO file write, NO gate" : ""}` +
+      `${args.require_consent ? "\nconsent: required" : ""}`,
+    verify: () => `prompt: ${(args.prompt || args.prompt_file).slice(0, 200)}`,
+    continue: () => `state: ${args.state}\ninstruction: ${args.instruction || "(from state)"}`,
+    bench: () => `manifest: ${args.manifest}`,
+  }[dispatchKind]();
+  $("#confirm-summary").textContent = summary;
+  $("#confirm-box").hidden = false;
+  pendingArgs = args;
+  $("#btn-dispatch").disabled = false;
+});
+
+$("#dispatch-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if (!pendingArgs) return;
+  // Consume the pending args synchronously: a second rapid click must not
+  // POST the same dispatch twice (two real runs for one confirmation).
+  const args = pendingArgs;
+  pendingArgs = null;
+  try {
+    const run = await api("/api/runs", {
+      method: "POST", body: JSON.stringify({kind: dispatchKind, args}),
+    });
+    $("#confirm-box").hidden = true;
+    $("#btn-dispatch").disabled = true;
+    const out = $("#dispatch-result");
+    out.hidden = false;
+    out.textContent = `dispatched run ${run.id} (task ${run.task_id}) — see Runs`;
+    lastSeq = 0;
+    await refreshRuns();
+  } catch (e) {
+    const out = $("#dispatch-result");
+    out.hidden = false;
+    out.textContent = `dispatch refused: ${e.message}`;
+  }
+});
+
+// ---- runs ----------------------------------------------------------------
+async function refreshRuns() {
+  try {
+    const data = await api("/api/runs");
+    const list = $("#runs-list");
+    list.innerHTML = "";
+    for (const run of (data.runs || [])) {
+      const panel = document.createElement("div");
+      panel.className = "panel";
+      const head = `<div class="row" style="justify-content:space-between">
+        <div><strong>${esc(run.kind)}</strong>
+        <span class="${statusClass(run.status)}">${esc(run.status)}</span>
+        <span class="dim mono">${esc(run.id)} · task ${esc(run.task_id)}</span></div>
+        <div>${run.status === "running" && !run.cancelled
+          ? `<button data-cancel="${esc(run.id)}">Cancel</button>` : ""}
+        ${run.status !== "running" ? `<button data-result="${esc(run.id)}">Result</button>` : ""}</div>
+      </div>`;
+      panel.innerHTML = head + `<div class="run-detail mono dim"></div>`;
+      panel.querySelectorAll("[data-cancel]").forEach((b) =>
+        b.addEventListener("click", async () => {
+          await api(`/api/runs/${b.dataset.cancel}/cancel`, {method: "POST", body: "{}"});
+          refreshRuns();
+        }));
+      panel.querySelectorAll("[data-result]").forEach((b) =>
+        b.addEventListener("click", async () => {
+          const full = await api(`/api/runs/${b.dataset.result}/result`);
+          const det = panel.querySelector(".run-detail");
+          det.textContent = (full.result != null)
+            ? JSON.stringify(full.result, null, 2).slice(0, 6000)
+            : (full.error || "(no result)");
+        }));
+      list.appendChild(panel);
+    }
+    if (!(data.runs || []).length) {
+      list.innerHTML = `<div class="dim">No runs yet — dispatch one from the Dispatch tab.</div>`;
+    }
+  } catch (e) {
+    $("#runs-list").innerHTML = `<div class="dim">${esc(e.message)}</div>`;
+  }
+}
+
+// ---- ledger --------------------------------------------------------------
+async function refreshLedger() {
+  try {
+    const [tail, report, deferStats] = await Promise.all([
+      api("/api/ledger/tail?n=30"), api("/api/ledger/report"),
+      api("/api/ledger/defer-stats"),
+    ]);
+    const rows = (tail.entries || []).map((e) =>
+      `<tr><td>${esc(e.seq)}</td><td>${esc(e.event)}</td>` +
+      `<td>${esc(e.model || e.caller || "")}</td><td class="dim">${esc(JSON.stringify(
+        Object.fromEntries(Object.entries(e).filter(
+          ([k]) => !["seq", "ts", "event", "model", "caller", "hash", "prev_hash", "signature"].includes(k)
+        ))).slice(0, 120))}</td></tr>`).join("");
+    $("#ledger-tail").innerHTML =
+      `<table><tr><th>seq</th><th>event</th><th>model</th><th>fields</th></tr>${rows}</table>`;
+    const models = report.per_model || {};
+    const cal = report.calibration || {};
+    const mrows = Object.entries(models).map(([m, v]) => {
+      const c = cal[m] || {};
+      return `<tr><td>${esc(m)}</td><td>${esc(String(v.accepts ?? 0))}</td>` +
+        `<td>${esc(String(v.declines ?? 0))}</td><td>${esc(String(v.completions ?? 0))}</td>` +
+        `<td>${esc(String(v.unusable_outputs ?? 0))}</td>` +
+        `<td>${esc(fmtNum(c.confidence_precision))}</td></tr>`;
+    }).join("");
+    $("#ledger-report").innerHTML = mrows
+      ? `<table><tr><th>model</th><th>accepts</th><th>declines</th><th>completions</th><th>unusable</th><th>precision</th></tr>${mrows}</table>`
+      : `<div class="dim">No participation history yet.</div>`;
+    const ds = deferStats.defer_stats || {};
+    const rate = (typeof ds.panel_defer_rate === "number")
+      ? `${(ds.panel_defer_rate * 100).toFixed(1)}%` : "–";
+    const mid = Object.entries(ds.defer_midtask_by_category || {})
+      .map(([k, v]) => `${esc(k)}: ${v}`).join(", ") || "none";
+    $("#ledger-defer").innerHTML =
+      `<table><tr><th>panel runs</th><th>deferred</th><th>defer rate</th>` +
+      `<th>mid-task</th><th>consent-blocked</th><th>total</th></tr>` +
+      `<tr><td>${esc(ds.panel_runs ?? 0)}</td><td>${esc(ds.panel_deferred ?? 0)}</td>` +
+      `<td>${rate}</td><td class="dim">${mid}</td>` +
+      `<td>${esc(ds.consent_blocked_total ?? 0)}</td>` +
+      `<td><b>${esc(ds.defer_total ?? 0)}</b></td></tr></table>`;
+  } catch (e) {
+    $("#ledger-report").innerHTML = `<div class="dim">${esc(e.message)}</div>`;
+  }
+}
+function fmtNum(v) { return (typeof v === "number") ? v.toFixed(2) : "–"; }
+
+$("#btn-ledger-verify").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/ledger/verify");
+    $("#ledger-verify-out").textContent = r.verified
+      ? "chain OK" : `BROKEN at seq ${r.first_bad_seq}`;
+  } catch (e) {
+    $("#ledger-verify-out").textContent = e.message;
+  }
+});
+
+// ---- models / capabilities / settings ------------------------------------
+$("#btn-models-refresh").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/models?limit=60");
+    $("#models-out").innerHTML = `<table><tr><th>#</th><th>free model id</th></tr>` +
+      r.models.map((m, i) => `<tr><td>${i + 1}</td><td>${esc(m)}</td></tr>`).join("") +
+      `</table>`;
+  } catch (e) {
+    $("#models-out").innerHTML = `<div class="dim">${esc(e.message)}</div>`;
+  }
+});
+
+$("#btn-capabilities").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/capabilities");
+    const rows = (r.models || []).map((m) =>
+      `<tr><td>${esc(m.model)}</td><td>${m.context ? m.context.toLocaleString() : "–"}</td>` +
+      `<td>${m.reasoning ? "Y" : "n"}</td><td>${m.capability.toFixed(2)}</td>` +
+      `<td>${m.json_reliable.toFixed(2)}</td><td>${m.reliability_structured.toFixed(2)}</td></tr>`).join("");
+    $("#capabilities-out").innerHTML =
+      `<table><tr><th>model</th><th>ctx</th><th>rsn</th><th>cap</th><th>json</th><th>rel</th></tr>${rows}</table>`;
+  } catch (e) {
+    $("#capabilities-out").innerHTML = `<div class="dim">${esc(e.message)}</div>`;
+  }
+});
+
+api("/api/settings").then((r) => {
+  $("#settings-out").textContent = JSON.stringify(r.settings, null, 2);
+}).catch((e) => { $("#settings-out").textContent = e.message; });
+
+// ---- boot ----------------------------------------------------------------
+const FOOTER_NOTE = TOKEN
+  ? "token-protected session (desktop shell)" : "local session — add --auth-token to require a token";
+$("#footer-note").textContent = FOOTER_NOTE;
+
+pollEvents();
+setInterval(pollEvents, 1500);
+refreshDashboard();
+setInterval(refreshDashboard, 5000);
+// Runs must re-render while any run is unsettled, or a finished run shows
+// "running" forever (playtest: the Result button never appeared).
+setInterval(() => {
+  if (document.querySelector('nav a.active[data-view="runs"]') &&
+      document.querySelector("#runs-list .s-running")) refreshRuns();
+}, 2000);

@@ -163,7 +163,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 542 tests in 6.694s\n\nOK"
+        "evidence": "unittest: Ran 549 tests in 7.039s\n\nOK"
       }
     ],
     "SM": [
@@ -239,7 +239,7 @@
         "id": "D4",
         "label": "config table keys real",
         "score": 1.0,
-        "evidence": "13 README config keys all resolve to real settings (28 configurable)"
+        "evidence": "13 README config keys all resolve to real settings (29 configurable)"
       },
       {
         "id": "D5",

@@ -10,6 +10,7 @@ The convergence specialist (verify lane) may attach an escalation directive
 context is prepended for rungs after the first. This module does not invent
 plans from apply output (apply returns file content, not judge JSON).
 """
+from . import events as _events
 from .chat import (_chat_reservation_slots, chat, extract_content_and_cost,
                    assess_output)
 from .errors import HarnessError
@@ -73,6 +74,8 @@ class EscalationDriver:
             if not esc_spec:
                 break
             model = esc_spec["model"]
+            _events.emit("escalation_rung", task_id=self.task_id, model=model,
+                         rung=rung, ladder_size=len(self.router.escalation_pool))
 
             rung_context = self._get_rung_context(state, rung, condensed)
             prompt = base_prompt_fn(state, rung_context)

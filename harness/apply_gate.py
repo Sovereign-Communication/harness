@@ -7,6 +7,7 @@ state records and returns the shared result shapes.
 """
 import os
 
+from . import events as _events
 from . import trust as trust_policy
 from .continuation import bound_gate, gate_id
 from .errors import ToolCancelled
@@ -40,6 +41,8 @@ class GatePolicy:
                                        marker or state.round_no)
         _atomic_write(req.file_path, content)
         state.current_content = content
+        _events.emit("gate_start", task_id=req.task_id, phase="candidate_write",
+                     round=state.round_no, changed=True)
 
     def run_gate(self, req):
         """Run the request's bound verification command."""
@@ -89,15 +92,24 @@ class GatePolicy:
                 "complete", task_id=req.task_id, model=outcome.model_used,
                 rounds=round_no, status="ok", note="no verification gate",
                 rotations=state.rotations)
-            return _terminal_result(
+            result = _terminal_result(
                 "ok", task_id=req.task_id, rounds=state.rounds,
                 cost=self.governor.spent, rotations=state.rotations,
                 backend=req.backend, changed=changed, backup=state.backup,
                 note="no verification gate supplied")
+            _events.emit("terminal", task_id=req.task_id, status="ok",
+                         cost=self.governor.spent, rounds=round_no,
+                         note="no verification gate")
+            return result
 
         if req.cancel_check and req.cancel_check():
             raise ToolCancelled()
+        _events.emit("gate_start", task_id=req.task_id, round=round_no,
+                     command=req.verify_cmd)
         rc, out = self.runner(req)(req.verify_cmd)
+        _events.emit("gate_end", task_id=req.task_id, round=round_no,
+                     passed=(rc == 0), rc=rc,
+                     output_tail=(out or "")[-2000:])
         self.ledger.append(
             "verify_round", task_id=req.task_id, round=round_no,
             passed=(rc == 0), model=outcome.model_used, readiness=outcome.ready)
@@ -116,11 +128,14 @@ class GatePolicy:
             self.ledger.append(
                 "complete", task_id=req.task_id, model=outcome.model_used,
                 rounds=round_no, status="ok", rotations=state.rotations)
-            return _terminal_result(
+            result = _terminal_result(
                 "ok", task_id=req.task_id, rounds=state.rounds,
                 cost=self.governor.spent, rotations=state.rotations,
                 backend=req.backend, changed=True, backup=state.backup,
                 verify={"command": req.verify_cmd, "passed": True})
+            _events.emit("terminal", task_id=req.task_id, status="ok",
+                         cost=self.governor.spent, rounds=round_no, passed=True)
+            return result
         state.rounds.append(_round_entry(
             round_no, outcome.model_used, "verify_failed", changed=changed,
             verify_passed=False, cost=outcome.cost, verify_output=out))
@@ -131,6 +146,8 @@ class GatePolicy:
     def finish_escalation(self, req, state, model, new_content, cost,
                           content_available):
         """Finish the escalation candidate through the same gate transaction."""
+        _events.emit("escalation_rung", task_id=req.task_id, model=model,
+                     phase="gate")
         changed = bool(content_available) and new_content != state.current_content
         if changed:
             self.write_candidate(req, state, new_content, marker="esc")
@@ -144,12 +161,15 @@ class GatePolicy:
             state.rounds.append(_round_entry(
                 "escalation", model, "ok", changed=True,
                 verify_passed=True, cost=cost, verify_output=""))
-            return _terminal_result(
+            result = _terminal_result(
                 "ok", task_id=req.task_id, rounds=state.rounds,
                 cost=self.governor.spent, rotations=state.rotations,
                 backend=req.backend, changed=True, backup=state.backup,
                 verify={"command": req.verify_cmd, "passed": True},
                 escalated=True)
+            _events.emit("terminal", task_id=req.task_id, status="ok",
+                         cost=self.governor.spent, escalated=True, passed=True)
+            return result
         state.rounds.append(_round_entry(
             "escalation", model, "verify_failed", changed=changed,
             verify_passed=False, cost=cost, verify_output=out))
@@ -205,10 +225,14 @@ class GatePolicy:
             "reason": reason,
             "history": state.history,
         }
-        return _terminal_result(
+        result = _terminal_result(
             terminal_status, task_id=req.task_id, rounds=state.rounds,
             cost=self.governor.spent, rotations=state.rotations,
             backend=req.backend, verify_only=req.verify_only,
             backup=state.backup, verify_cmd=req.verify_cmd,
             verify=verify_block, gate_ran=gate_ran,
             continuation=continuation)
+        _events.emit("terminal", task_id=req.task_id, status=terminal_status,
+                     cost=self.governor.spent, rounds=state.round_no,
+                     gate_ran=gate_ran, passed=verify_block.get("passed"))
+        return result

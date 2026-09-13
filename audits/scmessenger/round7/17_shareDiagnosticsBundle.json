@@ -1,0 +1,230 @@
+{
+  "panel_results": [
+    {
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "content": "```json\n{\n  \"C1\": {\n    \"real\": true,\n    \"severity\": \"low\",\n    \"confidence\": 1.0,\n    \"why\": \"The catch block handles all exceptions uniformly, losing granularity between specific failure modes like I/O issues or Intent resolution errors.\"\n  },\n  \"C2\": {\n    \"real\": true,\n    \"severity\": \"medium\",\n    \"confidence\": 0.9,\n    \"why\": \"The function accepts an unbounded String which is passed to resolveShareTarget, potentially leading to excessive disk usage or OOM.\"\n  },\n  \"C3\": {\n    \"real\": true,\n    \"severity\": \"info\",\n    \"confidence\": 1.0,\n    \"why\": \"The code correctly uses Dispatchers.IO for the potentially blocking resolveShareTarget call.\"\n  },\n  \"C4\": {\n    \"real\": true,\n    \"severity\": \"info\",\n    \"confidence\": 1.0,\n    \"why\": \"The code explicitly adds FLAG_GRANT_READ_URI_PERMISSION to the intent to allow the receiving app access to the URI.\"\n  }\n}\n```",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    },
+    {
+      "model": "google/gemma-4-31b-it:free",
+      "content": "```json\n{\n  \"C1\": {\n    \"real\": true,\n    \"severity\": \"info\",\n    \"confidence\": 1.0,\n    \"why\": \"The catch block handles all Exceptions generically, losing specificity between different failure modes.\"\n  },\n  \"C2\": {\n    \"real\": true,\n    \"severity\": \"low\",\n    \"confidence\": 0.8,\n    \"why\": \"No validation on bundleText size is performed before passing it to resolveShareTarget, potentially leading to large file creation.\"\n  },\n  \"C3\": {\n    \"real\": true,\n    \"severity\": \"info\",\n    \"confidence\": 1.0,\n    \"why\": \"The code correctly wraps the potentially blocking resolveShareTarget call in Dispatchers.IO.\"\n  },\n  \"C4\": {\n    \"real\": true,\n    \"severity\": \"info\",\n    \"confidence\": 1.0,\n    \"why\": \"The intent correctly includes the required flag to allow the receiving app to read the FileProvider URI.\"\n  }\n}\n```",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    },
+    {
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "content": "{\n  \"C1\": {\"real\": false, \"severity\": \"low\", \"confidence\": 0.9, \"why\": \"Function distinguishes FileProvider misconfig via null check; only other exceptions are generic.\"},\n  \"C2\": {\"real\": true, \"severity\": \"medium\", \"confidence\": 0.8, \"why\": \"Unbounded bundleText may cause large temporary file creation, leading to DoS.\"},\n  \"C3\": {\"real\": true, \"severity\": \"info\", \"confidence\": 0.95, \"why\": \"Uses Dispatchers.IO to offload file I/O, keeping main thread free.\"},\n  \"C4\": {\"real\": true, \"severity\": \"info\", \"confidence\": 0.95, \"why\": \"FLAG_GRANT_READ_URI_PERMISSION is needed for sharing content URIs via FileProvider.\"}\n}",
+      "finish_reason": "stop",
+      "cost": 0,
+      "truncated": false
+    }
+  ],
+  "trimmed_for_judge": [],
+  "panel_failures": [],
+  "required_panelists": 3,
+  "panel_tried": 3,
+  "judge_model": "google/gemma-4-31b-it:free",
+  "judge_synthesis": "```json\n{\n  \"verdict\": \"C2, C3, and C4 are valid. C1 is disputed (two models find generic catch blocks problematic, one does not).\",\n  \"agreement\": \"medium\",\n  \"confidence\": 0.8,\n  \"disagreements\": [\n    \"Model 3 disagrees with Models 1 and 2 on C1, arguing that the generic catch block is not a real issue because specific failures are handled via null checks.\"\n  ],\n  \"defer\": false\n}\n```",
+  "judge_synthesis_status": "parseable",
+  "verdict": "Deterministic panel tally: C1=real (2R/1NR of 3); C2=real (3R/0NR of 3)",
+  "consensus": {
+    "agreement": "low",
+    "confidence": 0.5,
+    "disagreements": [
+      "C1"
+    ],
+    "defer": true,
+    "panel_shortfall": false,
+    "missing_votes": 0,
+    "voted_by": 3,
+    "of_panel": 3,
+    "responder_converged": false,
+    "gate_converged": false,
+    "defer_reason": "responder_disagreement",
+    "judge_verdict": "C2, C3, and C4 are valid. C1 is disputed (two models find generic catch blocks problematic, one does not).",
+    "escalation": {
+      "needed": true,
+      "reason": "Conflict on C1: Two models identify generic catch blocks as a defect, while one argues the null check provides sufficient distinction for critical failure modes.",
+      "condensed_context": "C1 involves whether generic exception handling in the catch block constitutes a defect. Models gemma-4-26b and gemma-4-31b claim it is real (confidence 1.0). Model nemotron-3-super claims it is not real (confidence 0.9), arguing that the null check for FileProvider configuration handles the primary failure mode.",
+      "target_rung": 0
+    },
+    "plan": {
+      "steps": [
+        "Review the specific catch block implementation to determine if granularity is required for system stability or just a stylistic preference.",
+        "Verify if the null check mentioned by Nemotron actually mitigates the 'loss of granularity' cited by the Gemma models."
+      ],
+      "target_tier": "paid"
+    }
+  },
+  "estimated_worst_case_cost": 0.0,
+  "actual_cost": 0.0,
+  "max_cost_ceiling": 0.02,
+  "convergence": {
+    "status": "ok",
+    "model": "google/gemma-4-31b-it:free",
+    "specialist": {
+      "converged": false,
+      "agreement": "medium",
+      "confidence": 0.8,
+      "claims": {
+        "C1": {
+          "verdict": "not_real",
+          "converged": false,
+          "confidence": 0.6
+        },
+        "C2": {
+          "verdict": "real",
+          "converged": true,
+          "confidence": 0.83
+        }
+      },
+      "escalation": {
+        "needed": true,
+        "reason": "Conflict on C1: Two models identify generic catch blocks as a defect, while one argues the null check provides sufficient distinction for critical failure modes.",
+        "condensed_context": "C1 involves whether generic exception handling in the catch block constitutes a defect. Models gemma-4-26b and gemma-4-31b claim it is real (confidence 1.0). Model nemotron-3-super claims it is not real (confidence 0.9), arguing that the null check for FileProvider configuration handles the primary failure mode.",
+        "target_rung": 0
+      },
+      "plan": {
+        "steps": [
+          "Review the specific catch block implementation to determine if granularity is required for system stability or just a stylistic preference.",
+          "Verify if the null check mentioned by Nemotron actually mitigates the 'loss of granularity' cited by the Gemma models."
+        ],
+        "target_tier": "paid"
+      },
+      "tally_conflicts": [
+        {
+          "claim": "C1",
+          "tally": "real",
+          "specialist": "not_real",
+          "tally_votes": "2R/1NR"
+        }
+      ],
+      "note": "specialist claim map disagrees with the deterministic tally; tally is authoritative"
+    },
+    "raw": "```json\n{\n  \"converged\": false,\n  \"agreement\": \"medium\",\n  \"confidence\": 0.8,\n  \"claims\": {\n    \"C1\": {\n      \"verdict\": \"not_real\",\n      \"converged\": false,\n      \"confidence\": 0.6\n    },\n    \"C2\": {\n      \"verdict\": \"real\",\n      \"converged\": true,\n      \"confidence\": 0.83\n    }\n  },\n  \"escalation\": {\n    \"needed\": true,\n    \"reason\": \"Conflict on C1: Two models identify generic catch blocks as a defect, while one argues the null check provides sufficient distinction for critical failure modes.\",\n    \"condensed_context\": \"C1 involves whether generic exception handling in the catch block constitutes a defect. Models gemma-4-26b and gemma-4-31b claim it is real (confidence 1.0). Model nemotron-3-super claims it is not real (confidence 0.9), arguing that the null check for FileProvider configuration handles the primary failure mode.\",\n    \"target_rung\": 0\n  },\n  \"plan\": {\n    \"steps\": [\n      \"Review the specific catch block implementation to determine if granularity is required for system stability or just a stylistic preference.\",\n      \"Verify if the null check mentioned by Nemotron actually mitigates the 'loss of granularity' cited by the Gemma models.\"\n    ],\n    \"target_tier\": \"paid\"\n  }\n}\n```",
+    "cost": 0.0,
+    "error": null,
+    "attempts": [
+      {
+        "model": "google/gemma-4-31b-it:free",
+        "status": "ok",
+        "cost": 0
+      }
+    ],
+    "dropped_votes_from_prompt": [],
+    "tally": {
+      "converged": false,
+      "responder_converged": false,
+      "converged_claims": 1,
+      "responder_converged_claims": 1,
+      "total_claims": 2,
+      "convergence_rate": 0.5,
+      "gate_convergence_rate": 0.5,
+      "disagreement": true,
+      "disagreement_claims": [
+        "C1"
+      ],
+      "panel_shortfall": false,
+      "missing_votes": 0,
+      "shortfall": null,
+      "voted_by": 3,
+      "of_panel": 3,
+      "responding_models": [
+        "google/gemma-4-26b-a4b-it:free",
+        "google/gemma-4-31b-it:free",
+        "nvidia/nemotron-3-super-120b-a12b:free"
+      ],
+      "claims": {
+        "C1": {
+          "verdict": "real",
+          "unanimous": false,
+          "responder_unanimous": false,
+          "converged": false,
+          "gate_unanimous": false,
+          "voted_by": 3,
+          "of_panel": 3,
+          "confidence": 0.967,
+          "votes": {
+            "real": 2,
+            "not_real": 1
+          },
+          "real_votes": 2,
+          "not_real_votes": 1,
+          "missing_votes": 0,
+          "panel_shortfall": false
+        },
+        "C2": {
+          "verdict": "real",
+          "unanimous": true,
+          "responder_unanimous": true,
+          "converged": true,
+          "gate_unanimous": true,
+          "voted_by": 3,
+          "of_panel": 3,
+          "confidence": 0.833,
+          "votes": {
+            "real": 3,
+            "not_real": 0
+          },
+          "real_votes": 3,
+          "not_real_votes": 0,
+          "missing_votes": 0,
+          "panel_shortfall": false
+        }
+      },
+      "reassurance": {
+        "C3": {
+          "verdict": "real",
+          "unanimous": true,
+          "responder_unanimous": true,
+          "converged": true,
+          "gate_unanimous": true,
+          "voted_by": 3,
+          "of_panel": 3,
+          "confidence": 0.983,
+          "votes": {
+            "real": 3,
+            "not_real": 0
+          },
+          "real_votes": 3,
+          "not_real_votes": 0,
+          "missing_votes": 0,
+          "panel_shortfall": false,
+          "note": "reassurance claim: reported separately and excluded from the defect convergence gate"
+        },
+        "C4": {
+          "verdict": "real",
+          "unanimous": true,
+          "responder_unanimous": true,
+          "converged": true,
+          "gate_unanimous": true,
+          "voted_by": 3,
+          "of_panel": 3,
+          "confidence": 0.983,
+          "votes": {
+            "real": 3,
+            "not_real": 0
+          },
+          "real_votes": 3,
+          "not_real_votes": 0,
+          "missing_votes": 0,
+          "panel_shortfall": false,
+          "note": "reassurance claim: reported separately and excluded from the defect convergence gate"
+        }
+      }
+    }
+  },
+  "cost_by_model": {
+    "google/gemma-4-26b-a4b-it:free": 0.0,
+    "google/gemma-4-31b-it:free": 0.0,
+    "nvidia/nemotron-3-super-120b-a12b:free": 0.0
+  },
+  "claims_grounding": {
+    "ok": true,
+    "issues": [],
+    "expansions": []
+  }
+}

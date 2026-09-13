@@ -113,9 +113,14 @@ class PanelJudgeTests(unittest.TestCase):
                         panel=[P1, P2], judge=JUDGE)
 
     def test_judge_failure_falls_back_to_raw_panels(self):
+        # The seat contract: a judge that cannot produce a verdict never
+        # fabricates one -- the run defers with raw panel outputs. Rotation
+        # gives the seat a bounded transient retry first (two 500s here) and
+        # both panelists voted, so no fallback candidate remains.
         fake = FakeTransport(models=[m(P1), m(P2), m(JUDGE)],
                              posts=[comp("take one"), comp("take two"),
-                                    (500, {"error": {"message": "judge down"}})])
+                                    (500, {"error": {"message": "judge down"}}),
+                                    (500, {"error": {"message": "judge still down"}})])
         gov = _gov(fake)
         result = panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",
                              panel=[P1, P2], judge=JUDGE)

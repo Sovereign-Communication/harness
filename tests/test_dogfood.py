@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from harness import cli, session
+from harness import capability, cli, session
 from harness.claims import load_claims_manifest
 
 
@@ -132,16 +132,16 @@ class CliCeilingWiringTests(unittest.TestCase):
 
     def test_capabilities_max_cost_reaches_governor(self):
         captured = {}
-        # Patch where the name is USED: cli binds capability policy at module
-        # level (architecture guard), so the patch target is the cli binding.
-        with mock.patch.object(cli, "ensure_profiles",
+        # Patch where the name is USED: profile collection lives in the
+        # capability layer (single owner), so the patch target is that binding.
+        with mock.patch.object(capability, "ensure_profiles",
                                return_value=({}, 0.0, False)):
             self._run(["capabilities", "--max-cost", "0.03"], captured)
         self.assertEqual(captured["override"], 0.03)
 
     def test_default_ceiling_when_flag_absent(self):
         captured = {}
-        with mock.patch.object(cli, "ensure_profiles",
+        with mock.patch.object(capability, "ensure_profiles",
                                return_value=({}, 0.0, False)):
             self._run(["capabilities"], captured)
         self.assertIsNone(captured["override"])

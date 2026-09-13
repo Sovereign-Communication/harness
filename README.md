@@ -226,6 +226,29 @@ harness capabilities --check-shipped   # CI-able freshness gate for shipped pool
 Exit codes: `0` ok, `1` fatal, `2` verify/lint failure (or unconfirmed run),
 `3` deferred / not confirmed (safe to `continue` or re-run later).
 
+## Web & desktop UI (Phase 2)
+
+```bash
+harness serve            # loopback web UI + JSON API (default 127.0.0.1:8765)
+harness serve --auth-token <secret>   # require X-Harness-Auth on /api routes
+harness-desktop          # pywebview native window over the same UI (browser fallback)
+```
+
+The third face of the same core: dispatch apply/verify/continue/bench from the
+browser, watch the run timeline live (typed progress events from
+`harness/events.py` — the same stream `--events FILE` writes), browse the
+autonomy ledger + chain integrity, and read capabilities/reliability tables.
+Every dispatch re-runs the exact CLI engine path — consent, spend preflight,
+verify-gate validation, and the trust gates are never bypassed; the UI adds a
+human confirmation step on top, never instead.
+
+Security posture: loopback bind only (non-loopback Host headers are refused —
+DNS-rebinding guard), optional shared token (`HARNESS_UI_AUTH_TOKEN`),
+secrets shown as presence-only in the settings view. The desktop shell
+(`pip install sovereign-harness[desktop]`) auto-generates a per-session token
+and passes it via the URL fragment. See [docs/ui-readiness.md](docs/ui-readiness.md)
+for the data contracts the UI consumes.
+
 ## MCP — native dispatch
 
 ```bash

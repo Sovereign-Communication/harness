@@ -10,6 +10,7 @@ fallback ladder on any imperfect outcome, but its prose can never override
 the vote count.
 """
 
+from . import events as _events
 from .chat import (_chat_reservation_slots, _extract_json, _reported_cost,
                    assess_output, chat, extract_content_and_cost)
 from .errors import HarnessError
@@ -449,6 +450,8 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
                              "cost": error_cost})
             _bill_event(m_, False, "error", error_cost)
             eprint(f"[convergence] {m_}: HTTP {status}; rotating.")
+            _events.emit("rotation", task_id=task_id, model=m_, lane="specialist",
+                         reason="http_error", http_status=status, error=error)
             result = {"status": "error", "model": m_, "error": error,
                       "cost": total_cost}
             continue
@@ -460,6 +463,8 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
                              "error": "paid BYOK route; no specialist verdict", "cost": 0.0})
             _bill_event(m_, False, "error", 0.0)
             eprint(f"[convergence] {m_}: BYOK-routed (paid); rotating.")
+            _events.emit("rotation", task_id=task_id, model=m_, lane="specialist",
+                         reason="paid_byok")
             result = {"status": "error", "model": m_,
                       "error": "paid BYOK route; no specialist verdict",
                       "cost": total_cost}
@@ -475,6 +480,8 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
                              "cost": cost})
             _bill_event(m_, False, "error", cost)
             eprint(f"[convergence] {m_}: {unusable}; rotating.")
+            _events.emit("rotation", task_id=task_id, model=m_, lane="specialist",
+                         reason="unusable_output", detail=unusable)
             result = {"status": "error", "model": m_, "error": unusable,
                       "cost": total_cost}
             continue
@@ -490,6 +497,8 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
         attempts.append({"model": m_, "status": "error",
                          "error": "no parseable JSON", "cost": cost})
         eprint(f"[convergence] {m_}: no parseable JSON; rotating.")
+        _events.emit("rotation", task_id=task_id, model=m_, lane="specialist",
+                     reason="unparseable_json")
         result = {"status": "error", "model": m_,
                   "error": "specialist returned no parseable JSON",
                   "cost": total_cost}

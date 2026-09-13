@@ -104,3 +104,21 @@ def apply_session(settings, max_cost=None):
     ledger = ledger_for(settings)
     pre_run_warning(governor=gov, ledger=ledger, use_free=settings.use_free)
     return engine_for(settings, api_key, gov, ledger, router_for(settings))
+
+
+def run_meta(settings, governor):
+    """Run metadata for a result envelope's ``meta`` block: the settings
+    snapshot an interface (CLI, UI server) attaches so a consumer can
+    reproduce the run, plus the ceiling. Deliberately excludes the key
+    label (never echoed) and any secret material. Advisory: a non-numeric
+    ceiling (test fakes) degrades to None instead of failing the run."""
+    try:
+        ceiling = round(float(governor.max_cost), 6)
+    except (TypeError, ValueError):
+        ceiling = None
+    return {"use_free": settings.use_free,
+            "panel": settings.panel, "judge": settings.judge,
+            "apply_model": settings.apply_model,
+            "reasoning_effort": settings.reasoning_effort,
+            "max_cost_ceiling": ceiling,
+            "key_label_present": bool(settings.expect_key_label)}
