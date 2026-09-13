@@ -565,7 +565,7 @@ def r_suite_green():
     m = re.search(r"Ran (\d+) tests?[^\n]*\n\n(OK|FAILED)", r.stdout + r.stderr)
     ok = m is not None and m.group(2) == "OK"
     return _pass(ok, f"unittest: {m.group(0).strip() if m else r.stderr[-200:]}",
-                 (r.stdout + r.stderr)[-400:])
+                 (r.stdout + r.stderr)[-2500:])
 
 
 # ============== SM — STRUCTURE ==============
