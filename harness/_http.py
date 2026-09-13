@@ -63,6 +63,7 @@ class HttpTransport(Transport):
                     return json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
                 body = e.read().decode("utf-8", errors="replace")
+                e.close()  # release the error stream; code/headers stay readable
                 if self._transient(e.code) and attempt < self.MAX_RETRIES:
                     last_err = e
                     time.sleep(self._retry_delay(attempt, e.headers.get("Retry-After")
@@ -123,6 +124,7 @@ class HttpTransport(Transport):
                                 dropped))
             except urllib.error.HTTPError as e:
                 body = e.read().decode("utf-8", errors="replace")
+                e.close()  # release the error stream; code/headers stay readable
                 try:
                     parsed = json.loads(body)
                 except json.JSONDecodeError:

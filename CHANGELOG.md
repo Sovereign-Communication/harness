@@ -10,6 +10,23 @@ break APIs between minor versions).
 ## [Unreleased]
 
 ### Added
+- **Judge-seat fallback rotation.** A failed judge (HTTP 5xx/408/429,
+  reasoning-only, truncated, or unparseable body) no longer discards a
+  converged panel's evidence: one bounded same-seat retry on transient
+  errors, then rotation to un-voted free panel-pool members. Every fallback
+  call is preflight-reserved, so the worst-case cost guarantee holds; paid
+  judges keep single-attempt semantics; the seat still never fabricates a
+  verdict (an exhausted seat defers with raw panel outputs).
+- **Truncation honesty on the judge seat.** A judge body cut off mid-JSON
+  (unbalanced braces/fence) is reported as `truncated`, not lumped in with
+  complete-but-malformed `unparseable` output (the Sep-11 seat-gate loss).
+- **`harness ledger defer-stats [window]`.** Operator aggregate of WHY runs
+  deferred: panel defer rate (lost judges), mid-task categories, consent
+  outcomes. Also on the web UI Ledger view and
+  `GET /api/ledger/defer-stats`.
+- **gpt-5 / o1 recognized as reasoning models.** `looks_reasoning` hints
+  extended so `auto` effort caps hidden thinking for OpenAI reasoning models
+  (three live `bod-governance` judge calls failed reasoning-only on Sep 13).
 - **Multi-rung apply escalation ladder (opt-in).** When `allow_escalation` is
   set and `escalation_pool` is configured, a failed cheap apply walks the
   ladder (cheapest → most capable). Each rung produces COMPLETE file content
@@ -27,6 +44,18 @@ break APIs between minor versions).
   refuses before network spend if the session budget cannot absorb it.
 
 ### Fixed
+- **Cancel works in the UI verify lane.** `run_verify_task` accepted the
+  run's cancel closure but never forwarded it to `panel_judge`, so Cancel
+  was a silent no-op in the web UI's main lane (apply and continue already
+  forwarded it). A cancelled verify now aborts at the next check (in-flight
+  calls are discarded, no judge call, no verdict), and the run reads
+  `cancelled: "cancelled by user"` instead of a misleading `error`.
+- **Result on a failed/cancelled run.** The UI Result button rendered
+  `null`; it now shows the run's error message.
+- **BOM tolerance on inbound files.** `--claims-file`, definitions files,
+  and CLI text/JSON readers decode `utf-8-sig`, so PowerShell-redirected
+  handoff artifacts (BOM'd `claims.json` from the rule8-281 run) load
+  instead of failing `json.load` with "Unexpected UTF-8 BOM".
 - **Verdict honesty.** Panel tallies print `N R / M NR` vote counts, not
   `(3/3)` participation that looked like unanimity. Shortfall lines say
   `SHORTFALL` explicitly.

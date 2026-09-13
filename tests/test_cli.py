@@ -264,6 +264,7 @@ class LedgerTailCountTests(unittest.TestCase):
         ledger = mock.Mock()
         ledger.tail.side_effect = lambda n: calls.setdefault("n", n)
         ledger.entries.return_value = list(range(50))
+        ledger.chain_status.return_value = {"segments": 1, "entries": 50}
         out = io.StringIO()
         with mock.patch.object(cli, "_ledger", return_value=ledger), \
              mock.patch.object(cli, "_emit",

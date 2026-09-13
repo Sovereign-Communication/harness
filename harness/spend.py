@@ -56,6 +56,9 @@ class SpendGovernor:
         remaining = data.get("limit_remaining", 0)
         eprint(f"[OK] using key '{label}', limit=${limit}, remaining=${remaining:.6f} "
                f"(resets: {data.get('limit_reset')})")
+        from . import events as _events
+        _events.emit("spend_check", lane="key", limit=limit, remaining=remaining,
+                     reset=data.get("limit_reset"), expect_label=bool(self.expect_key_label))
         if self.expect_key_label is not None and label != self.expect_key_label:
             # Exact match (audit #9b): a substring match let a wrong-but-
             # similarly-named key through, and echoing labels into errors is

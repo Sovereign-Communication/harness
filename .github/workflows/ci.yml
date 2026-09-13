@@ -30,6 +30,8 @@ jobs:
 
   audit:
     runs-on: ubuntu-latest
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -44,7 +46,7 @@ jobs:
       - name: 4-dimensional audit (9.5+ bar on every dimension)
         run: python audits/self/audit.py
       - name: Live model-freshness check (only when OPENROUTER_API_KEY secret is set)
-        if: ${{ secrets.OPENROUTER_API_KEY != '' }}
+        if: env.OPENROUTER_API_KEY != ''
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: python -m harness.cli capabilities --check-shipped

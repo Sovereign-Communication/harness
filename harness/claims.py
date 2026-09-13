@@ -143,7 +143,9 @@ def parse_claims(data):
 
 def load_claims_manifest(path):
     try:
-        with open(path, encoding="utf-8") as f:
+        # utf-8-sig: handoff manifests authored via PowerShell ``>`` redirects
+        # arrive BOM'd; plain utf-8 fails json.load on the leading U+FEFF.
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except OSError as e:
         raise HarnessError(f"claims manifest not readable: {path} ({e.strerror or e})") from e
@@ -257,7 +259,7 @@ def load_definitions_file(path):
     definitions file is a clean HarnessError, never a raw traceback -- the
     interface layer turns it into a pre-network [FATAL]."""
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except OSError as e:
         raise HarnessError(f"definitions file not readable: {path} ({e.strerror or e})") from e

@@ -11,8 +11,18 @@ Harness is a dependency-light Python package with three surfaces:
 - `config.py`: settings and model-pool defaults.
 - `validation.py`: shared trust-boundary validation.
 - `spend.py`: cost ceilings, pricing, BYOK, and model discovery.
-- `chat.py`: model transport payloads and output usability.
-- `panel.py`: panel/judge verification.
+- `chat.py`: model transport payloads and output usability (one owner of the
+  text-shape verdicts: `assess_output` for lane gates, `looks_truncated` for
+  bodies cut off mid-JSON).
+- `panel.py`: panel/judge verification. The judge seat is a rotation: one
+  predicate (`_judge_fallback_candidates`) names both the preflight reserve
+  seats and the runtime fallback candidates, so the worst-case ceiling always
+  covers rotation; `_run_judge_attempt` is the single owner of one seat
+  attempt (call, classify, bill, ledger, emit) shared by the primary, the
+  bounded transient retry, and each fallback. BYOK judges stay
+  single-attempt (`record_byok` only -- invisible spend never bills); the
+  seat never fabricates a verdict (exhausted seat defers with raw panel
+  outputs).
 - `convergence.py`: deterministic structured-claim tally and specialist lane.
 - `consent.py`: consent probes and renewal.
 - `apply.py`: request preparation, model dispatch, rotation, and round orchestration.

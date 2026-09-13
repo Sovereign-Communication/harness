@@ -17,6 +17,7 @@ preserved and the continuation mode hands it to the next iteration. The apply
 prompt encodes that instruction; the consent ledger records these as
 category="capability" deferrals.
 """
+from . import events as _events
 from .chat import (chat, extract_content_and_cost, _extract_json, _reported_cost,
                    REASONING_FALLBACK_PREFIX)  # noqa: F401
 from .errors import HarnessError
@@ -166,6 +167,10 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
                          "cost": tracked_cost})
         if len(usable) > 1:
             eprint(f"[consent] {m_}: {fail_reason}; rotating.")
+        _events.emit("rotation", task_id=task_id, model=m_, lane="consent",
+                     reason="consent_unusable", detail=fail_reason)
+        _events.emit("rotation", task_id=task_id, model=m_, lane="consent",
+                     reason="consent_unusable", detail=fail_reason)
         if ledger:
             ledger.append("consent_rotate", task_id=task_id, model=m_,
                           reason=fail_reason, cost=tracked_cost)
@@ -197,6 +202,9 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
             ledger.append("consent_defer", task_id=task_id, model=model, reason=reason,
                           redirect_model=None, scope_suggestion=None,
                           cost=tracked_total, billable_cost=tracked_total)
+        _events.emit("consent_result", task_id=task_id, model=model,
+                     decision="defer", dispatched=False, fail_closed=True,
+                     reason=reason, cost=tracked_total)
         return result
 
     answered = m_
@@ -221,6 +229,9 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
                       reason=reason, redirect_model=result["redirect_model"],
                       scope_suggestion=result["scope_suggestion"], cost=tracked_total,
                       billable_cost=tracked_total)
+    _events.emit("consent_result", task_id=task_id, model=answered,
+                 decision=result["decision"], reason=reason,
+                 redirect_model=result["redirect_model"], cost=tracked_total)
     return result
 
 

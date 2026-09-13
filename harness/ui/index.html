@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harness</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+  <div class="brand">⌘ harness <span class="sub">cost-bounded multi-model verification</span></div>
+  <div class="chips" id="header-chips"></div>
+</header>
+<nav id="nav">
+  <a data-view="dashboard" class="active">Dashboard</a>
+  <a data-view="dispatch">Dispatch</a>
+  <a data-view="runs">Runs</a>
+  <a data-view="ledger">Ledger</a>
+  <a data-view="models">Models</a>
+  <a data-view="capabilities">Capabilities</a>
+  <a data-view="settings">Settings</a>
+</nav>
+
+<main>
+  <!-- ======================= DASHBOARD ======================= -->
+  <section id="view-dashboard" class="view active">
+    <div class="cards">
+      <div class="card"><h3>Session spend</h3><div class="big" id="d-spent">–</div>
+        <div class="dim" id="d-ceiling"></div><div class="bar"><div id="d-spend-bar"></div></div></div>
+      <div class="card"><h3>Key</h3><div class="big" id="d-key-limit">–</div>
+        <div class="dim" id="d-key-remaining"></div></div>
+      <div class="card"><h3>Chain integrity</h3><div class="big" id="d-chain">–</div>
+        <div class="dim" id="d-chain-detail"></div></div>
+      <div class="card"><h3>Runs</h3><div class="big" id="d-runs">–</div>
+        <div class="dim" id="d-runs-detail"></div></div>
+    </div>
+    <h2>Live activity</h2>
+    <div id="live-events" class="eventlog" aria-live="polite"></div>
+  </section>
+
+  <!-- ======================= DISPATCH ======================= -->
+  <section id="view-dispatch" class="view">
+    <div class="tabs">
+      <button data-kind="apply" class="tab active">Apply</button>
+      <button data-kind="verify" class="tab">Verify</button>
+      <button data-kind="continue" class="tab">Continue</button>
+      <button data-kind="bench" class="tab">Bench</button>
+    </div>
+
+    <form id="dispatch-form" class="panel">
+      <!-- apply / continue -->
+      <label id="f-file-label">Target file
+        <input name="file" placeholder="core/src/store/outbox.rs">
+      </label>
+      <label id="f-state-label" hidden>Continuation state file
+        <input name="state" placeholder="state.json">
+      </label>
+      <label id="f-manifest-label" hidden>Bench manifest (dir or JSON)
+        <input name="manifest" placeholder="bench/tasks">
+      </label>
+      <label id="f-instruction-label">Instruction
+        <textarea name="instruction" rows="3"
+          placeholder="Verify flush_on_connect() persists all peers"></textarea>
+      </label>
+      <label id="f-verify-label">Verification gate (required for gated apply)
+        <input name="verify" placeholder="python -m unittest tests.test_x">
+      </label>
+      <label id="f-prompt-label" hidden>Prompt (or prompt file below)
+        <textarea name="prompt" rows="3"></textarea>
+      </label>
+      <label id="f-promptfile-label" hidden>Prompt file
+        <input name="prompt_file">
+      </label>
+      <div class="row" id="f-meta-row">
+        <label>Max rounds <input name="max_rounds" type="number" min="1" max="8" value="3"></label>
+        <label>Task max cost ($) <input name="task_max_cost" type="number" step="0.005" min="0" max="0.25" placeholder="0.05"></label>
+        <label>Backend
+          <select name="backend"><option>harness</option><option>diff</option><option>morph</option></select>
+        </label>
+      </div>
+      <div class="row checks">
+        <label><input type="checkbox" name="verify_only"> Verify-only preview (no write, no gate)</label>
+        <label><input type="checkbox" name="require_consent"> Require model consent</label>
+      </div>
+      <div class="confirm-box" id="confirm-box" hidden>
+        <strong>This will dispatch real work.</strong>
+        <div id="confirm-summary" class="mono"></div>
+        <div class="dim">Consent, spend preflight and the verification gate still apply —
+        this confirmation is in addition to them, never instead.</div>
+      </div>
+      <div class="row">
+        <button type="button" id="btn-review">Review dispatch</button>
+        <button type="submit" id="btn-dispatch" class="primary" disabled>Dispatch</button>
+      </div>
+    </form>
+    <div id="dispatch-result" class="panel mono" hidden></div>
+  </section>
+
+  <!-- ======================= RUNS ======================= -->
+  <section id="view-runs" class="view">
+    <div id="runs-list"></div>
+  </section>
+
+  <!-- ======================= LEDGER ======================= -->
+  <section id="view-ledger" class="view">
+    <div class="row">
+      <button id="btn-ledger-verify">Verify chain</button>
+      <span id="ledger-verify-out" class="mono"></span>
+    </div>
+    <h2>Defer stats</h2>
+    <div id="ledger-defer"></div>
+    <h2>Participation & calibration</h2>
+    <div id="ledger-report"></div>
+    <h2>Tail</h2>
+    <div id="ledger-tail"></div>
+  </section>
+
+  <!-- ======================= MODELS ======================= -->
+  <section id="view-models" class="view">
+    <button id="btn-models-refresh">List live free models</button>
+    <div id="models-out"></div>
+  </section>
+
+  <!-- ======================= CAPABILITIES ======================= -->
+  <section id="view-capabilities" class="view">
+    <button id="btn-capabilities">Load capability & reliability table</button>
+    <div id="capabilities-out"></div>
+  </section>
+
+  <!-- ======================= SETTINGS ======================= -->
+  <section id="view-settings" class="view">
+    <p class="dim">Read-only view (v1). Edit <code>~/.config/harness/config.json</code> or set
+      <code>HARNESS_*</code> env vars; secrets show as presence only.</p>
+    <pre id="settings-out" class="mono"></pre>
+  </section>
+</main>
+
+<footer><span id="footer-note" class="dim"></span></footer>
+<script src="/app.js"></script>
+</body>
+</html>

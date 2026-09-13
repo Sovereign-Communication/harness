@@ -23,6 +23,7 @@ import math
 import os
 import time
 
+from .config import CAPABILITIES_PATH, CAPABILITIES_TTL
 from .output import eprint
 
 # ---- score weights (task-aware) ----------------------------------------------
@@ -46,6 +47,83 @@ CONTEXT_WINDOW_FRACTION = 0.6
 W_CAP = 0.4
 W_CAL = 0.3
 W_SUCC = 0.3
+
+def capabilities_payload(governor, ledger, *, panel_pool, apply_pool, judge,
+                         api_key=None, transport=None, refresh=False,
+                         bench=False, all_models=False):
+    """The ONE capabilities-envelope builder. Interfaces (CLI command, UI
+    server) call this with their own session objects; neither re-derives
+    profile collection or the per-model reliability rows (the MCP-parity
+    rule). ``ledger`` and ``transport`` are injected by the caller so this
+    module stays below the session composition layer."""
+    profiles, fetched_at, refreshed = ensure_profiles(
+        CAPABILITIES_PATH, governor.fetch_models, ttl=CAPABILITIES_TTL,
+        force=refresh)
+
+    if all_models:
+        ordered_ids = sorted(profiles.keys())
+    else:
+        ordered_ids = []
+        for mid in list(panel_pool) + list(apply_pool) + [judge]:
+            if mid not in ordered_ids:
+                ordered_ids.append(mid)
+
+    report = ledger.participation_report()
+
+    def row(mid):
+        p = profiles.get(mid)
+        if p is None:
+            return None
+        # Single owner: model_reliability computes everything from one place.
+        info = model_reliability(mid, p, report, ledger=ledger, task="structured")
+        return {
+            "model": mid, "free": p.free,
+            "context": p.context_length, "max_source_tokens": p.max_source_tokens,
+            "reasoning": p.supports_reasoning,
+            "json_declared": round(p.declared_json, 2),
+            "json_reliable": round(info["json_reliable"] or 0.0, 2),
+            "structured_json": p.supports_structured_json,
+            "capability": round(capability_score(p), 3),
+            "fitness_structured": round(info["capability"], 3),
+            "fitness_code": round(capability_fitness(p, "code"), 3),
+            "reliability_structured": round(info["reliability"], 3),
+            "observed": {
+                "confidence_precision": info["calibration"],
+                "success_rate": info["success"],
+                "samples": info["samples"],
+            },
+        }
+
+    rows = []
+    for mid in ordered_ids:
+        r = row(mid)
+        if r is not None:
+            rows.append(r)
+
+    if bench:
+        bench_models = [r["model"] for r in rows if r["free"]]
+        # Persist probe results as model_result events so they feed observed
+        # json reliability and routing (the evidence loop), and probe reasoning
+        # models with reasoning on so the probe is fair to them.
+        probe = probe_json_reliability(
+            transport=transport, api_key=api_key, governor=governor,
+            models=bench_models, ledger=ledger, profiles=profiles)
+        # Rebuild after persistence: the displayed reliability must include the
+        # evidence just collected, not the pre-probe snapshot.
+        report = ledger.participation_report()
+        refreshed_rows = []
+        for mid in ordered_ids:
+            r = row(mid)
+            if r is not None:
+                r["probe"] = probe.get(r["model"])
+                refreshed_rows.append(r)
+        rows = refreshed_rows
+
+    return {
+        "captured_at": fetched_at, "refreshed": refreshed,
+        "models": rows, "count": len(rows),
+    }
+
 
 # No-data prior: a model with no observed samples sits at this value for
 # calibration/success, and its effective weight is shrunk by n/(n+_SHRINK) so a

@@ -25,16 +25,17 @@ import argparse
 import json
 import os
 import tempfile
+import time
 from .consent import probe_consent
 from .errors import HarnessError
 from .spend import discover_free_models
-from .capability import (ensure_profiles, model_reliability, capability_fitness,
-                         probe_json_reliability, capability_score)
 from .filesafety import validate_target_file, validate_verify_command
 from .panel import panel_judge
 from .output import eprint
 from .session import (apply_session as _session, governor_for as _governor,
-                      ledger_for as _ledger, router_for as _router)
+                      ledger_for as _ledger, router_for as _router,
+                      run_meta as _session_run_meta)
+from .capability import capabilities_payload as _capability_payload_owner
 from .results import terminal_exit_code
 from .saturation import advise, pre_run_warning
 import sys
@@ -60,8 +61,7 @@ from .claims import (
     load_definitions_file,
 )
 from .claims import parse_claims
-from .config import (CAPABILITIES_PATH, CAPABILITIES_TTL, load_settings,
-                     shipped_model_ids)
+from .config import load_settings, shipped_model_ids
 
 
 def _split_opt_list(value):
@@ -70,9 +70,12 @@ def _split_opt_list(value):
 
 
 def _read_text(path, what):
-    """Read a text file, turning a missing path into a presentable error."""
+    """Read a text file, turning a missing path into a presentable error.
+    utf-8-sig: Windows tooling (PowerShell ``>`` redirects) emits BOM'd text;
+    a leading U+FEFF would corrupt --prompt-file/--source-file input and make
+    handoff JSON files fail to parse."""
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             return f.read()
     except OSError as e:
         raise HarnessError(f"{what} not readable: {path} ({e.strerror or e})") from e
@@ -87,7 +90,12 @@ def _read_json(path, what):
         raise HarnessError(f"{what} is not valid JSON: {path} ({e})") from e
 
 
-def _emit(result, out):
+def _emit(result, out, force_json=False):
+    """The ONE result emitter: --out gets the JSON file; a piped stdout gets
+    machine JSON (the script contract, byte-compatible); a TTY gets the rich
+    rendering on stderr PLUS the same machine JSON on stdout -- pretty mode
+    adds, it never replaces, so scripts and humans read the same run."""
+    from . import render as _render
     text = json.dumps(result, indent=2)
     if out:
         parent = os.path.dirname(os.path.abspath(out))
@@ -100,6 +108,7 @@ def _emit(result, out):
             raise HarnessError(f"cannot write --out {out}: {e}") from e
         eprint(f"[OK] result written to {out}")
     else:
+        _render.pretty_print(result, out, force_json)
         print(text)
 
 
@@ -155,7 +164,14 @@ def _run_claims_verify(settings, *, prompt, task_id=None, max_tokens=None,
                         (reassurance_claims or "").split(",") if cid.strip()},
         free_tier=settings.use_free)
     result["cost_by_model"] = gov.cost_by_model()
+    result["meta"] = _run_meta(settings, gov)
     return result
+
+
+def _run_meta(settings, gov):
+    """CLI seam for session.run_meta (the ONE owner); kept so existing
+    tests and callers keep their patch point."""
+    return _session_run_meta(settings, gov)
 
 
 def _cmd_verify(opts, settings):
@@ -391,6 +407,7 @@ def _cmd_apply(opts, settings):
         max_rotations=opts.max_rotations, backend=opts.backend,
         verify_only=opts.verify_only, max_lines=opts.max_lines,
         continuation=continuation)
+    result["meta"] = _run_meta(settings, engine.governor)
     _emit_by_status(result, opts.out)
 
 
@@ -438,9 +455,12 @@ def _cmd_ledger(opts, settings):
         # tail(0) is [-0:] == the whole ledger; negative n slices from the
         # front -- both silent nonsense (same class as models --limit).
         raise HarnessError("ledger tail count must be a positive integer")
+    if opts.ledger_cmd == "defer-stats" and opts.window < 1:
+        raise HarnessError("defer-stats window must be a positive integer")
     ledger = _ledger(settings)
     if opts.ledger_cmd == "tail":
-        _emit({"entries": ledger.tail(opts.n), "count": len(ledger.entries())}, opts.out)
+        _emit({"entries": ledger.tail(opts.n), "count": len(ledger.entries()),
+               "chain": ledger.chain_status()}, opts.out)
     elif opts.ledger_cmd == "verify":
         ok, bad = ledger.verify()
         _emit({"verified": ok, "first_bad_seq": bad,
@@ -449,6 +469,8 @@ def _cmd_ledger(opts, settings):
         kept, dropped = ledger.repair()
         _emit({"repaired": dropped > 0, "kept": kept, "dropped": dropped},
               opts.out)
+    elif opts.ledger_cmd == "defer-stats":
+        _emit(ledger.defer_stats(window=opts.window), opts.out)
     elif opts.ledger_cmd == "report":
         from . import trust as trust_policy
         report = ledger.participation_report()
@@ -488,13 +510,36 @@ def _cmd_models(opts, settings):
     if opts.all:
         # A different cache intent (full catalog, not the free-only filter),
         # but the same verified key -- no second governor needed.
-        ids = sorted(m["id"] for m in gov.fetch_models(refresh=True))
-    _emit({"free_only": not opts.all, "models": ids, "count": len(ids)}, opts.out)
+        rows = []
+        for m in gov.fetch_models(refresh=True):
+            p = m.get("pricing") or {}
+            def _p(v):
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return None
+            rows.append({"id": m.get("id"),
+                         "context": m.get("context_length"),
+                         "prompt_price": _p(p.get("prompt")),
+                         "completion_price": _p(p.get("completion"))})
+        rows.sort(key=lambda r: r["id"] or "")
+        ids = [r["id"] for r in rows]
+    else:
+        rows = ids
+    _emit({"free_only": not opts.all, "models": rows, "count": len(rows),
+           "meta": {"source": "openrouter:/models", "fetched_at": time.time(),
+                    "use_free": settings.use_free}}, opts.out)
 
 
 def _cmd_spend(opts, settings):
     api_key, gov = _governor(settings)
-    _emit(gov.key_status(), opts.out)
+    status = gov.key_status()
+    # Enrichment (Phase 1): the session-level budget view the governor
+    # enforces, alongside the key-level data -- the same numbers a UI
+    # dashboard needs, from the one owner.
+    status["session"] = {"spent": gov.spent, "ceiling": gov.max_cost,
+                         "remaining": max(0.0, gov.max_cost - gov.spent)}
+    _emit(status, opts.out)
 
 
 def _cmd_trust(opts, settings):
@@ -525,76 +570,23 @@ def _cmd_capabilities(opts, settings):
             sys.exit(2)
         return
     api_key, gov = _governor(settings, opts.max_cost)
-    ledger = _ledger(settings)
-    profiles, fetched_at, refreshed = ensure_profiles(
-        CAPABILITIES_PATH, gov.fetch_models, ttl=CAPABILITIES_TTL, force=opts.refresh)
-
-    if opts.all:
-        ordered_ids = sorted(profiles.keys())
-    else:
-        ordered_ids = []
-        for mid in settings.panel_pool + settings.apply_pool + [settings.judge]:
-            if mid not in ordered_ids:
-                ordered_ids.append(mid)
-
-    report = ledger.participation_report()
-
-    def row(mid):
-        p = profiles.get(mid)
-        if p is None:
-            return None
-        # Single owner: model_reliability computes everything from one place.
-        info = model_reliability(mid, p, report, ledger=ledger, task="structured")
-        return {
-            "model": mid, "free": p.free,
-            "context": p.context_length, "max_source_tokens": p.max_source_tokens,
-            "reasoning": p.supports_reasoning,
-            "json_declared": round(p.declared_json, 2),
-            "json_reliable": round(info["json_reliable"] or 0.0, 2),
-            "structured_json": p.supports_structured_json,
-            "capability": round(capability_score(p), 3),
-            "fitness_structured": round(info["capability"], 3),
-            "fitness_code": round(capability_fitness(p, "code"), 3),
-            "reliability_structured": round(info["reliability"], 3),
-            "observed": {
-                "confidence_precision": info["calibration"],
-                "success_rate": info["success"],
-                "samples": info["samples"],
-            },
-        }
-
-    rows = []
-    for mid in ordered_ids:
-        r = row(mid)
-        if r is not None:
-            rows.append(r)
-
-    if opts.bench:
-        bench_models = [r["model"] for r in rows if r["free"]]
-        # Persist probe results as model_result events so they feed observed
-        # json reliability and routing (the evidence loop), and probe reasoning
-        # models with reasoning on so the probe is fair to them.
-        probe = probe_json_reliability(transport=HttpTransport(), api_key=api_key,
-                                       governor=gov, models=bench_models,
-                                       ledger=ledger, profiles=profiles)
-        # Rebuild after persistence: the displayed reliability must include the
-        # evidence just collected, not the pre-probe snapshot.
-        report = ledger.participation_report()
-        refreshed_rows = []
-        for mid in ordered_ids:
-            r = row(mid)
-            if r is not None:
-                r["probe"] = probe.get(r["model"])
-                refreshed_rows.append(r)
-        rows = refreshed_rows
-
-    out = {
-        "captured_at": fetched_at, "refreshed": refreshed,
-        "models": rows, "count": len(rows),
-    }
+    out = _capabilities_payload(settings, gov, api_key=api_key,
+                                refresh=opts.refresh, bench=opts.bench,
+                                all_models=opts.all)
     if not opts.json:
         _print_capabilities_table(out)
     _emit(out, opts.out)
+
+
+def _capabilities_payload(settings, gov, api_key=None, refresh=False,
+                          bench=False, all_models=False):
+    """CLI seam for capability.capabilities_payload (the ONE owner); the
+    session objects come from the CLI's own composition."""
+    return _capability_payload_owner(
+        gov, _ledger(settings), panel_pool=settings.panel_pool,
+        apply_pool=settings.apply_pool, judge=settings.judge,
+        api_key=api_key, transport=HttpTransport(), refresh=refresh,
+        bench=bench, all_models=all_models)
 
 
 def _print_capabilities_table(out):
@@ -651,11 +643,18 @@ def _add_engine_flags(p, *, max_tokens_default, verify_required=False):
 
 
 def _add_output_flags(p):
-    """--out (JSON report destination) + --quiet (stderr progress off). Every
-    subcommand that produces a report or progress output takes both."""
+    """--out (JSON report destination) + --quiet (stderr progress off), plus
+    the Phase-1 UI groundwork flags: --events (typed JSONL progress stream for
+    UI consumers) and --no-color (strip ANSI from rich stderr rendering).
+    Every subcommand that produces a report or progress output takes all."""
     p.add_argument("--out", default=None)
     p.add_argument("--quiet", action="store_true",
                    help="suppress stderr progress notes; report only")
+    p.add_argument("--events", default=None, metavar="FILE",
+                   help="append typed JSONL progress events to FILE (UI telemetry; "
+                        "the JSON result is unchanged)")
+    p.add_argument("--no-color", action="store_true",
+                   help="disable ANSI color in stderr rendering (NO_COLOR is honored too)")
 
 
 # Command -> handler. `required=True` subparsers make an unknown command
@@ -681,10 +680,25 @@ _DISPATCH = {
 
 def main(argv=None):
     args = argv if argv is not None else sys.argv[1:]
+    # The UI faces exit before settings/ledger setup: they run their own
+    # servers and manage their own state (serve needs no key until a
+    # dispatch happens; each runner loads settings itself).
+    if args[:1] == ["serve"]:
+        from .server import main as _serve
+        return _serve(args[1:])
+    if args[:1] == ["desktop"]:
+        from .ui import main as _desktop
+        return _desktop(args[1:])
     ap = argparse.ArgumentParser(
         prog="harness",
         description="Cost-bounded multi-model verification & coding harness with AI sovereignty.")
     sub = ap.add_subparsers(dest="command", required=True)
+
+    # Structured so --help lists the UI faces alongside the data commands.
+    sub.add_parser("serve", help="Local web UI + JSON API over the core (loopback; "
+                                 "--auth-token optional, HARNESS_UI_AUTH_TOKEN)")
+    sub.add_parser("desktop", help="Native desktop window over the same web UI "
+                                   "(pywebview; browser fallback)")
 
     pv = sub.add_parser("verify", help="Panel + judge verification (back-compat with fusion_lite.py)")
     pv.add_argument("--prompt-file")
@@ -750,6 +764,12 @@ def main(argv=None):
         _add_output_flags(_p)
     _p = pls.add_parser("tail", help="show the last N ledger entries (default 20)")
     _p.add_argument("n", nargs="?", type=int, default=20)
+    _add_output_flags(_p)
+    _p = pls.add_parser("defer-stats", help="aggregate WHY runs deferred "
+                                            "(panel defer rate, mid-task "
+                                            "categories, consent outcomes)")
+    _p.add_argument("window", nargs="?", type=int, default=500,
+                    help="how many of the most recent entries to scan (default 500)")
     _add_output_flags(_p)
     _p = pls.add_parser("repair", help="truncate the ledger to its longest valid "
                                        "hash-chain prefix (drops forked/duplicate tail)")
@@ -838,6 +858,16 @@ def main(argv=None):
     opts = ap.parse_args(args)
     import harness.output as _output
     _output.QUIET = bool(getattr(opts, "quiet", False))
+    # Phase-1 UI groundwork: optional typed event stream + color policy.
+    # The sink is module-global state registered once per CLI invocation;
+    # with no --events flag nothing is registered and emit() is a no-op.
+    from . import events as _events
+    from . import render as _render
+    if getattr(opts, "events", None):
+        _events.add_jsonl_sink(opts.events)
+    _render.set_color_enabled(
+        not getattr(opts, "no_color", False)
+        and not os.environ.get("NO_COLOR"))
     try:
         settings = load_settings()
         _DISPATCH[opts.command](opts, settings)

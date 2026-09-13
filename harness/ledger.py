@@ -446,6 +446,55 @@ class AutonomyLedger:
             os.fsync(f.fileno())
         os.replace(tmp, source_path)
 
+    def defer_stats(self, window=500):
+        """Operator view of WHY runs deferred, over the last ``window`` entries.
+
+        Structured panels record the defer decision on the run's 'complete'
+        row (``agreement='unknown'`` marks a lost/unparseable judge -- the
+        panel votes existed but produced no verdict); mid-task deferrals and
+        consent outcomes are recorded as their own ledger events. Surfaced so
+        an operator sees failure modes in aggregate instead of paging through
+        run files (the Sep-2026 SCMessenger handoff review's ask).
+        Returns a JSON-safe dict; deterministic for a given ledger.
+        """
+        recent = self._tail[-int(window):] if window else list(self._tail)
+        panel_runs = deferred = 0
+        agreements = defaultdict(int)
+        midtask = defaultdict(int)      # defer_midtask category -> count
+        consent = defaultdict(int)      # consent event -> count
+        status_deferred = 0
+        for e in recent:
+            ev = e.get("event")
+            if ev == "complete" and e.get("event_note") == "panel_judge":
+                panel_runs += 1
+                a = str(e.get("agreement") or "unknown")
+                agreements[a] += 1
+                if a == "unknown":
+                    deferred += 1
+            elif ev == "defer_midtask":
+                midtask[str(e.get("category") or "unspecified")] += 1
+            elif isinstance(ev, str) and ev.startswith("consent_"):
+                consent[ev] += 1
+            elif ev == "model_result" and e.get("status") == "deferred":
+                status_deferred += 1
+        by_consent = sum(consent.get(k, 0) for k in
+                         ("consent_defer", "consent_renew_defer", "consent_decline"))
+        by_midtask = sum(midtask.values())
+        return {
+            "window": len(recent),
+            "panel_runs": panel_runs,
+            "panel_deferred": deferred,
+            "panel_defer_rate": (round(deferred / panel_runs, 3)
+                                 if panel_runs else None),
+            "agreements": dict(sorted(agreements.items())),
+            "defer_midtask_by_category": dict(sorted(midtask.items())),
+            "defer_midtask_total": by_midtask,
+            "consent_by_outcome": dict(sorted(consent.items())),
+            "consent_blocked_total": by_consent,
+            "model_status_deferred": status_deferred,
+            "defer_total": deferred + by_midtask + by_consent,
+        }
+
     def repair(self):
         """Truncate the invalid tail, preserving healthy segments as files.
 

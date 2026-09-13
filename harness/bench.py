@@ -28,6 +28,7 @@ import json
 import os
 
 from .filesafety import _atomic_write, default_run_verify, VERIFY_TIMEOUT
+from . import events as _events
 from .errors import HarnessError
 from .output import eprint
 
@@ -183,6 +184,7 @@ def run_bench(engine, manifest_tasks, runner=None):
                 raise HarnessError(
                     f"bench task '{name}' is missing required key 'instruction'")
             eprint(f"[bench] running '{name}' ...")
+            _events.emit("bench_task", task_id=f"bench/{name}", phase="start", name=name)
             try:
                 r = engine.apply_edit(
                     task_id=f"bench/{name}",
@@ -201,6 +203,8 @@ def run_bench(engine, manifest_tasks, runner=None):
                 r = {"status": "error", "error": str(e)}
             results.append({"name": name, **r})
             eprint(f"[bench] '{name}' -> {r.get('status')}")
+            _events.emit("bench_task", task_id=f"bench/{name}", phase="end", name=name,
+                         status=r.get("status"), cost=r.get("cost"))
     finally:
         # Idempotency includes the tree we leave behind: restore every
         # fixture even on crash, or a successful run leaves solved tasks

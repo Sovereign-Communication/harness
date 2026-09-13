@@ -55,6 +55,7 @@ from .chat import (
     chat, extract_content_and_cost, _extract_json,
     REASONING_FALLBACK_PREFIX, _reported_cost, _chat_reservation_slots,
 )
+from . import events as _events
 from .config import HARD_TASK_MAX_COST, MORPH_MODEL
 from .consent import probe_consent, consent_renew
 from .batch import run_batch
@@ -554,6 +555,8 @@ class ApplyEngine:
                 [(f"apply attempt {i + 1}/{slots}", attempt_model, req.max_tokens, 0)
                  for i in range(slots)],
             )
+            _events.emit("attempt_start", task_id=req.task_id, model=attempt_model,
+                         round=state.round_no, backend=req.backend)
             status, resp = chat(self.transport, self.api_key, attempt_model,
                                 [{"role": "user", "content": prompt}], req.max_tokens,
                                 req.reasoning, self.reasoning_token_budget, self.governor)
@@ -567,6 +570,9 @@ class ApplyEngine:
                 state.failed_models.add(attempt_model)
                 state.rotations += 1
                 eprint(f"[apply] {attempt_model} FAILED: {err} -- rotating.")
+                _events.emit("rotation", task_id=req.task_id, model=attempt_model,
+                             reason="http_error", http_status=status, error=err,
+                             round=state.round_no)
             else:
                 content, _, cost, is_byok = extract_content_and_cost(resp)
                 outcome.cost = cost
@@ -582,6 +588,8 @@ class ApplyEngine:
                     state.failed_models.add(attempt_model)
                     state.rotations += 1
                     eprint(f"[apply] {attempt_model} is BYOK-routed (paid); recorded and rotating.")
+                    _events.emit("rotation", task_id=req.task_id, model=attempt_model,
+                                 reason="paid_byok", round=state.round_no)
                 elif not content or content.startswith(REASONING_FALLBACK_PREFIX):
                     # No usable output: a reasoning-only response must NOT be
                     # treated as file content (it would corrupt the target).
@@ -592,6 +600,8 @@ class ApplyEngine:
                     state.failed_models.add(attempt_model)
                     state.rotations += 1
                     eprint(f"[apply] {attempt_model} returned no content (reasoning-only); rotating.")
+                    _events.emit("rotation", task_id=req.task_id, model=attempt_model,
+                                 reason="reasoning_only", round=state.round_no)
                 else:
                     ready, ready_reason, content = _parse_ready(content)
                     if ready == "defer":
@@ -608,12 +618,21 @@ class ApplyEngine:
                         state.rotations += 1
                         eprint(f"[apply] {attempt_model} declares HARNESS_READY: defer "
                                f"({(ready_reason or '')[:70]}) -- rotating.")
+                        _events.emit("rotation", task_id=req.task_id, model=attempt_model,
+                                     reason="readiness_defer", detail=ready_reason,
+                                     round=state.round_no)
                     else:
                         self._record_billable(req, attempt_model, cost, "ok", readiness=ready)
                         if ready == "missing":
                             eprint(f"[apply] {attempt_model} did not emit HARNESS_READY; "
                                    f"treating as confident (verify + DEFER still guard).")
+                            _events.emit("readiness", task_id=req.task_id,
+                                         model=attempt_model, round=state.round_no,
+                                         decision="missing")
                         else:
+                            _events.emit("readiness", task_id=req.task_id,
+                                         model=attempt_model, round=state.round_no,
+                                         decision="confident")
                             self.ledger.append("readiness", task_id=req.task_id,
                                                model=attempt_model, round=state.round_no,
                                                decision="confident")
