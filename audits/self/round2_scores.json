@@ -163,7 +163,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 549 tests in 7.039s\n\nOK"
+        "evidence": "unittest: Ran 618 tests in 18.119s\n\nOK"
       }
     ],
     "SM": [
@@ -201,7 +201,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "30/30 modules imported by tests"
+        "evidence": "34/34 modules imported by tests"
       },
       {
         "id": "S7",
@@ -257,7 +257,7 @@
         "id": "D7",
         "label": "docs reference only real modules",
         "score": 1.0,
-        "evidence": "all module references across 7 docs resolve to real files"
+        "evidence": "all module references across 10 docs resolve to real files"
       },
       {
         "id": "D8",
