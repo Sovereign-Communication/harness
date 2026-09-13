@@ -344,7 +344,7 @@ class BackupHijackTests(unittest.TestCase):
         except (OSError, NotImplementedError):
             self.skipTest("symlinks unavailable")
 
-    def test_planted_destination_link_refused(self):
+    def test_planted_destination_link_is_bypassed_not_followed(self):
         from harness.filesafety import backup_file
         with tempfile.TemporaryDirectory() as d:
             src = os.path.join(d, "f.txt")
@@ -356,12 +356,18 @@ class BackupHijackTests(unittest.TestCase):
             import harness.filesafety as fs
             with unittest.mock.patch.object(fs.tempfile, "gettempdir",
                                             return_value=d):
-                dest = os.path.join(
-                    d, "harness-backups", "t-r1-f.txt")
-                os.makedirs(os.path.join(d, "harness-backups"))
-                self._symlink_or_skip(victim, dest)
+                backup_dir = os.path.join(d, "harness-backups")
+                os.makedirs(backup_dir)
+                # Plant a symlink at the legacy predictable name; the unique
+                # O_EXCL destination must neither follow nor overwrite it.
+                plant = os.path.join(backup_dir, "t-r1-f.txt")
+                self._symlink_or_skip(victim, plant)
                 with contextlib.redirect_stderr(io.StringIO()):
-                    self.assertIsNone(backup_file(src, "t", 1))
+                    dest = backup_file(src, "t", 1)
+                self.assertIsNotNone(dest)
+                self.assertNotEqual(os.path.realpath(dest),
+                                    os.path.realpath(victim))
+                self.assertTrue(os.path.islink(plant))  # plant untouched
             with open(victim, encoding="utf-8") as f:
                 self.assertEqual(f.read(), "victim\n")
 

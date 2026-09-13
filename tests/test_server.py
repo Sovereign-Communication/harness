@@ -272,7 +272,19 @@ class RunLifecycleTests(ServerHarness):
                     break
             return {"status": "error", "error": "cancelled"}
 
-        with mock.patch("harness.panel.panel_judge", fake_panel_judge):
+        settings = type("S", (), {"use_free": True, "panel_pool": ["m/a"],
+                                  "judge": "m/j", "reasoning_effort": "auto",
+                                  "reasoning_token_budget": None,
+                                  "max_panelists": 2})()
+
+        with mock.patch("harness.panel.panel_judge", fake_panel_judge), \
+             mock.patch.object(ui_server, "load_settings",
+                               return_value=settings), \
+             mock.patch.object(ui_server, "governor_for",
+                               return_value=("k", mock.Mock())), \
+             mock.patch.object(ui_server, "ledger_for",
+                               return_value=mock.Mock()), \
+             mock.patch("harness.saturation.pre_run_warning"):
             conn = self._conn()
             try:
                 _, run = _request(conn, "POST", "/api/runs",
