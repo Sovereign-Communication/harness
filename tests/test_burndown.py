@@ -76,7 +76,10 @@ class JudgeRotationTests(unittest.TestCase):
             models=[m(P1), m(P2), m(JUDGE),
                     m(FREE_FALLBACK, prompt="0", completion="0")],
             posts=posts)
-        gov = _gov(fake)
+        # Isolated learning state: the live byok_prefixes.json must never
+        # decide whether a test's rotation candidate is eligible.
+        with tempfile.TemporaryDirectory() as tmp:
+            gov = _gov(fake, byok_prefixes_path=os.path.join(tmp, "byok.json"))
         opts = dict(transport=fake, api_key="k", governor=gov, prompt="Q?",
                     panel=[P1, P2, FREE_FALLBACK], judge=JUDGE, max_panelists=2)
         opts.update(kw)
@@ -165,7 +168,8 @@ class JudgeRotationTests(unittest.TestCase):
                              posts=[comp("take one"),
                                     comp(GOOD_SYNTHESIS),   # fallback panelist
                                     comp(GOOD_SYNTHESIS)])  # judge seat: fine
-        gov = _gov(fake)
+        with tempfile.TemporaryDirectory() as tmp:
+            gov = _gov(fake, byok_prefixes_path=os.path.join(tmp, "byok.json"))
         result = panel_judge(transport=fake, api_key="k", governor=gov,
                              prompt="Q?", panel=[P1, FREE_FALLBACK], judge=JUDGE)
         self.assertEqual(result["judge_synthesis_status"], "parseable")
@@ -313,8 +317,8 @@ class DeferStatsServerTests(unittest.TestCase):
             import http.client
             t = threading.Thread(target=httpd.serve_forever, daemon=True)
             t.start()
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
             try:
-                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
                 conn.request("GET", "/api/ledger/defer-stats?window=50",
                              headers={"Host": "127.0.0.1"})
                 resp = conn.getresponse()
@@ -323,6 +327,7 @@ class DeferStatsServerTests(unittest.TestCase):
                 self.assertEqual(data["defer_stats"]["panel_runs"], 3)
                 ledger.defer_stats.assert_called_once_with(window=50)
             finally:
+                conn.close()  # CI runs with -W error::ResourceWarning
                 httpd.shutdown()
                 httpd.server_close()
                 t.join(timeout=5)
