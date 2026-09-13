@@ -7,6 +7,8 @@ cooperative cancel, and the event-stream contract.
 """
 import http.client
 import json
+import os
+import tempfile
 import threading
 import time
 import unittest
@@ -46,6 +48,11 @@ class ServerHarness(unittest.TestCase):
         self.addCleanup(self._teardown)
 
     def _teardown(self):
+        # Uninstall the event sink: it lives in the module-global events bus
+        # (capped at MAX_SINKS); leaking one per test silently starves later
+        # servers once the cap is reached.
+        from harness import events as _events
+        _events.remove_sink(self.httpd.ui._on_event)
         self.httpd.shutdown()
         self.httpd.server_close()
         self.thread.join(timeout=5)
@@ -381,6 +388,205 @@ class SettingsViewTests(ServerHarness):
             self.assertNotIn("expect_key_label\": \"", blob)
         finally:
             conn.close()
+
+
+class TrustEndpointTests(ServerHarness):
+    """GET /api/trust: CLI `trust` parity, one policy owner (trust.trust_status)."""
+
+    def test_trust_snapshot_shape(self):
+        report = {"per_caller": {"cli": {"completions": 12, "trust_gates": 1}},
+                  "trust_gates": 1}
+        ledger = mock.Mock(participation_report=lambda: report)
+        with mock.patch.object(ui_server, "load_settings"), \
+             mock.patch.object(ui_server, "ledger_for", return_value=ledger):
+            conn = self._conn()
+            try:
+                status, data = _request(conn, "GET", "/api/trust?caller=cli")
+                self.assertEqual(status, 200)
+                self.assertIn("host", data)
+                self.assertIn("per_caller", data)
+                self.assertEqual(data["caller"]["id"], "cli")
+                self.assertIn("cli", data["per_caller"])
+                self.assertIn("scale", data)
+            finally:
+                conn.close()
+
+    def test_trust_endpoint_survives_ledger_failure(self):
+        def boom():
+            raise RuntimeError("ledger unreadable")
+        ledger = mock.Mock(participation_report=boom)
+        with mock.patch.object(ui_server, "load_settings"), \
+             mock.patch.object(ui_server, "ledger_for", return_value=ledger):
+            conn = self._conn()
+            try:
+                status, data = _request(conn, "GET", "/api/trust")
+                self.assertEqual(status, 503)
+                self.assertIn("ledger unreadable", data["error"])
+                self.assertIsNone(data["host"]["score"])
+            finally:
+                conn.close()
+
+
+class ClaimsLaneTests(ServerHarness):
+    """The verify lane's structured-claims path: validation, pre-network lint
+    rejection, envelope parity with the CLI's claims verify, and abort-spend
+    honesty (in-flight billed calls reach the cancelled envelope)."""
+
+    GROUNDED = {"claims": [{"id": "c_ok", "text": "capped at 256 with eviction",
+                            "source_refs": [6]}]}
+    UNGROUNDED = {"claims": [{"id": "c_bad",
+                              "text": "UNBOUNDED GAP: there is no upper bound "
+                              "on the message_number gap here."}]}
+    WINDOW = (
+        "pub fn decrypt(&mut self, message_number: u32) -> Result<Vec<u8>> {\n"
+        "    if let Some(key) = self.skipped_keys.get(&message_number) {\n"
+        "        return Ok(key);\n"
+        "    }\n"
+        "    let mut cloned = (*self).clone();\n"
+        "    let message_key = cloned.get_message_key(message_number)?;\n"
+        "    *self = cloned;\n"
+        "    Ok(message_key)\n"
+        "}\n"
+    )
+
+    def _files(self, grounded=True):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+
+        def w(name, text):
+            p = os.path.join(td.name, name)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(text)
+            return p
+        return (w("claims.json", json.dumps(
+                    self.GROUNDED if grounded else self.UNGROUNDED)),
+                w("window.txt", self.WINDOW))
+
+    def _settings(self):
+        return type("S", (), {"use_free": True, "panel_pool": ["m/a"],
+                              "panel": ["m/a"], "apply_model": "m/apply",
+                              "judge": "m/j", "reasoning_effort": "auto",
+                              "reasoning_token_budget": None,
+                              "max_panelists": 2, "max_cost": 0.02,
+                              "expect_key_label": False})()
+
+    def _engine_patches(self, panel_judge, gov=None):
+        if gov is None:
+            gov = mock.Mock()
+            gov.spent = 0.0
+            gov.max_cost = 0.02
+            gov.cost_by_model.return_value = {}
+        return [mock.patch("harness.panel.panel_judge", panel_judge),
+                mock.patch.object(ui_server, "load_settings",
+                                  return_value=self._settings()),
+                mock.patch.object(ui_server, "governor_for",
+                                  return_value=("k", gov)),
+                mock.patch.object(ui_server, "ledger_for",
+                                  return_value=mock.Mock()),
+                mock.patch("harness.saturation.pre_run_warning")]
+
+    def _dispatch(self, args):
+        conn = self._conn()
+        try:
+            status, run = _request(conn, "POST", "/api/runs",
+                                   body={"kind": "verify", "args": args})
+            return status, run
+        finally:
+            conn.close()
+
+    def _await_settled(self, run_id):
+        conn = self._conn()
+        try:
+            for _ in range(100):
+                _, full = _request(conn, "GET", f"/api/runs/{run_id}/result")
+                if full["status"] != "running":
+                    return full
+                time.sleep(0.05)
+            self.fail("run never settled")
+        finally:
+            conn.close()
+
+    def test_claims_dispatch_requires_source_file(self):
+        conn = self._conn()
+        try:
+            status, data = _request(conn, "POST", "/api/runs",
+                                    body={"kind": "verify",
+                                          "args": {"claims_file": "x.json"}})
+            self.assertEqual(status, 400)
+            self.assertIn("source_file", data["error"])
+            self.assertEqual(self.httpd.ui.runs, {})
+        finally:
+            conn.close()
+
+    def test_claims_lane_rejects_ungrounded_claims_before_network(self):
+        """An ungrounded claim set finishes ``rejected`` with the lint report
+        attached and never reaches the engine (no key, no network)."""
+        reached = threading.Event()
+
+        def must_not_run(*a, **k):
+            reached.set()
+            return {"status": "ok"}
+        cf, sf = self._files(grounded=False)
+        with mock.patch("harness.panel.panel_judge", must_not_run):
+            status, run = self._dispatch({"claims_file": cf,
+                                          "source_file": sf})
+            self.assertEqual(status, 201)
+            full = self._await_settled(run["id"])
+        self.assertFalse(reached.is_set(), "engine must not run on lint reject")
+        self.assertEqual(full["result"]["status"], "rejected")
+        self.assertFalse(full["result"]["lint"]["ok"])
+        self.assertIsNone(full["result"]["verdict"])
+
+    def test_claims_lane_builds_prompt_and_runs_engine(self):
+        seen = {}
+
+        def fake_panel_judge(**kwargs):
+            seen["prompt"] = kwargs["prompt"]
+            return {"status": "ok", "verdict": {"decision": "yes"},
+                    "judge_synthesis": "claims verified"}
+        cf, sf = self._files()
+        patches = self._engine_patches(fake_panel_judge)
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            status, run = self._dispatch({"claims_file": cf,
+                                          "source_file": sf})
+            self.assertEqual(status, 201)
+            full = self._await_settled(run["id"])
+        self.assertEqual(full["result"]["status"], "ok")
+        self.assertEqual(full["result"]["verdict"]["decision"], "yes")
+        self.assertIn("Source under review", seen["prompt"])
+        self.assertIn("c_ok", seen["prompt"])
+
+    def test_cancelled_run_reports_actual_spend(self):
+        """Spend honesty: panel calls that bill before the cooperative cancel
+        lands are real spend and must reach the envelope's actual_cost."""
+        gov = mock.Mock()
+        gov.spent = 0.0007
+        gov.max_cost = 0.02
+        gov.cost_by_model.return_value = {"m/a": 0.0007}
+        release = threading.Event()
+
+        def fake_panel_judge(**kwargs):
+            release.wait(5)
+            from harness.errors import ToolCancelled
+            raise ToolCancelled()
+        patches = self._engine_patches(fake_panel_judge, gov=gov)
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            status, run = self._dispatch({"prompt": "hi"})
+            self.assertEqual(status, 201)
+            cancel_conn = self._conn()
+            try:
+                cstatus, _ = _request(cancel_conn, "POST",
+                                      f"/api/runs/{run['id']}/cancel",
+                                      body={})
+                self.assertEqual(cstatus, 200)
+            finally:
+                cancel_conn.close()
+            release.set()
+            full = self._await_settled(run["id"])
+        self.assertEqual(full["status"], "cancelled")
+        self.assertEqual(full["error"], "cancelled by user")
+        self.assertEqual(full["result"]["actual_cost"], 0.0007)
+        self.assertEqual(full["result"]["cost_by_model"], {"m/a": 0.0007})
 
 
 class TtlCacheTests(unittest.TestCase):

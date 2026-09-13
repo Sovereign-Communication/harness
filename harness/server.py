@@ -111,10 +111,20 @@ def validate_dispatch(kind, args):
     elif kind == "verify":
         has_prompt = bool(_opt_str(args, "prompt"))
         pf = _opt_str(args, "prompt_file")
-        if not has_prompt and not pf:
-            raise HarnessError("verify requires 'prompt' or 'prompt_file'")
+        cf = _opt_str(args, "claims_file")
+        if not has_prompt and not pf and not cf:
+            raise HarnessError("verify requires 'prompt', 'prompt_file', "
+                               "or 'claims_file'")
         if pf and not os.path.isfile(pf):
             raise HarnessError(f"prompt_file does not exist: {pf}")
+        if cf:
+            sf = _opt_str(args, "source_file", required=True)
+            if not os.path.isfile(sf):
+                raise HarnessError(f"source_file does not exist: {sf}")
+            df = _opt_str(args, "definitions_file")
+            if df and not os.path.isfile(df):
+                raise HarnessError(f"definitions_file does not exist: {df}")
+        _opt_str(args, "claim_context")
         _opt_str(args, "judge")
         _opt_str(args, "panel")
         if args.get("max_cost") is not None:
@@ -162,31 +172,58 @@ def run_apply_task(task_id, args, cancel_check):
 
 
 def run_verify_task(task_id, args, cancel_check):
-    """The verify lane: same assembly as the CLI's _run_claims_verify, minus
-    the claims-manifest options (UI dispatch covers the prompt lane; the
-    structured-claims manifest remains a CLI/file workflow)."""
+    """The verify lane: same assembly as the CLI's _run_claims_verify.
+    Covers both the prompt lane and the structured-claims lane (claims
+    manifest + source window + optional definitions); lint runs pre-network
+    and an ungrounded claim set finishes the run as ``rejected``.
+    """
     from .panel import panel_judge
     from ._http import HttpTransport
     from .saturation import pre_run_warning
+    from .claims import (build_claims_prompt, load_claims_manifest,
+                         load_definitions_file)
     settings = load_settings()
     if args.get("prompt_file"):
-        with open(args["prompt_file"], encoding="utf-8") as f:
+        with open(args["prompt_file"], encoding="utf-8-sig") as f:
             prompt = f.read()
+    elif args.get("claims_file"):
+        with open(args["source_file"], encoding="utf-8-sig") as f:
+            quoted = f.read()
+        manifest_ctx, claims = load_claims_manifest(args["claims_file"])
+        defs = (load_definitions_file(args["definitions_file"])
+                if args.get("definitions_file") else {})
+        context = (args.get("claim_context") if args.get("claim_context")
+                   else manifest_ctx)
+        prompt, claims_lint = build_claims_prompt(
+            claims, quoted, source_index=defs, context=context)
+        if not claims_lint["ok"]:
+            return {"status": "rejected", "lint": claims_lint, "verdict": None,
+                    "actual_cost": 0.0}
     else:
         prompt = args["prompt"]
     api_key, gov = governor_for(settings, args.get("max_cost"))
     ledger = ledger_for(settings)
     pre_run_warning(governor=gov, ledger=ledger, use_free=settings.use_free)
-    result = panel_judge(
-        transport=HttpTransport(), api_key=api_key, governor=gov, prompt=prompt,
-        panel=list(settings.panel_pool), judge=args.get("judge") or settings.judge,
-        max_tokens=None,
-        reasoning_effort=args.get("reasoning_effort") or settings.reasoning_effort,
-        reasoning_token_budget=settings.reasoning_token_budget,
-        task_id=task_id, ledger=ledger,
-        max_panelists=settings.max_panelists,
-        free_tier=settings.use_free,
-        cancel_check=cancel_check)
+    try:
+        result = panel_judge(
+            transport=HttpTransport(), api_key=api_key, governor=gov, prompt=prompt,
+            panel=list(settings.panel_pool), judge=args.get("judge") or settings.judge,
+            max_tokens=None,
+            reasoning_effort=args.get("reasoning_effort") or settings.reasoning_effort,
+            reasoning_token_budget=settings.reasoning_token_budget,
+            task_id=task_id, ledger=ledger,
+            max_panelists=settings.max_panelists,
+            free_tier=settings.use_free,
+            cancel_check=cancel_check)
+    except ToolCancelled:
+        # Spend honesty: in-flight calls that billed before the cooperative
+        # cancel landed are real spend and must reach the envelope.
+        return {"status": "cancelled", "verdict": None,
+                "judge_synthesis_status": "cancelled",
+                "panel_results": [], "panel_failures": [],
+                "actual_cost": gov.spent, "max_cost_ceiling": gov.max_cost,
+                "cost_by_model": gov.cost_by_model(),
+                "meta": run_meta(settings, gov)}
     result["cost_by_model"] = gov.cost_by_model()
     result["meta"] = run_meta(settings, gov)
     return result
@@ -307,6 +344,10 @@ class UiState:
                             cancel_flag.is_set)
             record["result"] = result
             record["status"] = str(result.get("status") or "done")
+            if record["status"] == "cancelled":
+                # The lane caught ToolCancelled to build an honest spend
+                # envelope; the run-level wording must still say who did it.
+                record["error"] = "cancelled by user"
         except HarnessError as e:
             record["error"] = str(e)
             record["status"] = "error"
@@ -403,6 +444,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         try:
             if path == "/api/status":
                 return self._api_status()
+            if path == "/api/trust":
+                return self._api_trust(q)
             if path == "/api/runs":
                 return self._api_runs()
             if path == "/api/events":
@@ -480,6 +523,20 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             "auth_required": bool(self.ui.auth_token),
             "events_buffered": len(self.ui.events), "runs": runs[:50],
         })
+
+    def _api_trust(self, q):
+        """Read-only trust snapshot (CLI `trust` parity): no key, no network,
+        no ledger writes. One owner for the policy: trust.trust_status."""
+        from . import trust as trust_policy
+        caller = (q.get("caller") or [None])[0]
+        try:
+            ledger = ledger_for(load_settings())
+            report = ledger.participation_report()
+            return self._send_json(
+                trust_policy.trust_status(report, caller=caller))
+        except Exception as e:
+            return self._send_json({"error": str(e), "host": {"score": None,
+                                   "reasons": [str(e)]}}, code=503)
 
     def _api_runs(self):
         with self.ui.lock:
