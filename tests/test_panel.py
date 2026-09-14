@@ -200,9 +200,9 @@ class TallyFirstTests(unittest.TestCase):
                                            "completion": "0.00000002"},
                     "context_length": ctx}
         # NOTE: JUDGE == P1 in the shared fakes, so the judge gets its own
-        # narrow-window id; the panelists share wide identical profiles
-        # (tie keeps submission order, sequential fan-out stays
-        # deterministic: P1 casts old_vote, P2 casts new_vote).
+        # narrow-window id; the panelists share wide identical profiles, so
+        # the tie keeps pool order (deterministic on every interpreter): P1
+        # is seat 1 and casts old_vote, P2 is seat 2 and casts new_vote.
         self._judge = "judge/small-window"
         fake = FakeTransport(
             models=[_entry(P1, 200000), _entry(P2, 200000),
