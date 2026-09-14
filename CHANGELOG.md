@@ -10,6 +10,14 @@ break APIs between minor versions).
 ## [Unreleased]
 
 ### Added
+- **Full web-UI parity for the verify lane.** The Dispatch → Verify tab now
+  covers the structured-claims workflow (claims manifest + source file +
+  optional definitions), with pre-network lint rejection surfaced as a
+  `rejected` run; `/api/trust` exposes the CLI `trust` snapshot on a new
+  Trust view; Result cards show a human verdict summary (verdict, votes,
+  judge, cost, synthesis) with the raw JSON envelope behind a toggle; every
+  view refreshes when entered; Settings shows server status from
+  `/api/status`.
 - **Judge-seat fallback rotation.** A failed judge (HTTP 5xx/408/429,
   reasoning-only, truncated, or unparseable body) no longer discards a
   converged panel's evidence: one bounded same-seat retry on transient
@@ -44,6 +52,13 @@ break APIs between minor versions).
   refuses before network spend if the session budget cannot absorb it.
 
 ### Fixed
+- **Abort-spend honesty.** A cancelled verify no longer drops the spend of
+  in-flight panel calls that billed before the cooperative cancel landed:
+  the envelope reports the true `actual_cost` and per-model breakdown, and
+  the UI maps the lane-level `ToolCancelled` to an honest `cancelled` run.
+- **Event-sink leak in the UI server tests.** `ServerHarness` now uninstalls
+  its events sink on teardown; leaked sinks could silently starve later
+  servers once the bus's `MAX_SINKS` cap was reached.
 - **Cancel works in the UI verify lane.** `run_verify_task` accepted the
   run's cancel closure but never forwarded it to `panel_judge`, so Cancel
   was a silent no-op in the web UI's main lane (apply and continue already

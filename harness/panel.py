@@ -369,6 +369,13 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                             _futures.add(_pool.submit(_run_panel_slot, _next_model))
     if not panel_results:
         raise HarnessError("all panel calls failed. Aborting.")
+    # Report votes in pool order regardless of completion order: with a fast
+    # (or sequential) transport several futures can be done before the first
+    # wait(), and _done's set order would otherwise decide which vote is
+    # "oldest" for the trim below. Pool order is the defined order; on every
+    # interpreter, both fan-out modes.
+    _pool_order = {m_: i for i, m_ in enumerate(panel_pool)}
+    panel_results.sort(key=lambda r: _pool_order.get(r["model"], len(_pool_order)))
 
     # Context-budget guard (#14b): cap the assembled prompt at the judge
     # model's usable window when known, trimming the OLDEST panel
