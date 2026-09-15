@@ -47,14 +47,22 @@ def consent_json(decision, reason="ok"):
                        "redirect_model": None, "scope_suggestion": None})
 
 
-def run(feed, posts=None):
-    transport, server = make_server(posts)
+def _serve(server, feed):
+    """One owner for driving frames through the real stdio loop: ``feed``
+    is stdin text (str or sequence of frames) or a reader object with
+    ``readline``; returns the parsed reply frames."""
+    if not hasattr(feed, "readline"):
+        feed = io.StringIO(feed if isinstance(feed, str) else "".join(feed))
     out = io.StringIO()
     server.stdout = out
-    server.stdin = io.StringIO(feed)
+    server.stdin = feed
     server.serve_forever()
-    lines = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
-    return transport, lines
+    return [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+
+
+def run(feed, posts=None):
+    transport, server = make_server(posts)
+    return transport, _serve(server, feed)
 
 
 # Reusable frames for the cancellation e2e scenarios. Post-trip liveness is
@@ -161,8 +169,14 @@ def gated_cancellation_server(*, gate_post, posts, tool_timeout=None,
             raise AssertionError("tool deadline never expired")
         transport.release.set()
 
-    def drive(request, gate_wait=None, extra_frames=()):
+    def drive(request, gate_wait=None, extra_frames=(), prove_liveness=True):
+        # Liveness is proven by default: the ping + ledger_status frames ride
+        # the same stdin after the trip and their replies must come back.
+        # Opt out only for scenarios where the trip is expected to end the
+        # loop itself.
         frames = [request] + list(extra_frames)
+        if prove_liveness:
+            frames += LIVENESS_FRAMES
 
         class Feed:
             idx = 0
@@ -180,12 +194,17 @@ def gated_cancellation_server(*, gate_post, posts, tool_timeout=None,
                 transport.release.set()  # EOF: never leave the gate shut
                 return ""
 
-        out = io.StringIO()
-        server.stdout = out
-        server.stdin = Feed()
-        server.serve_forever()
-        return [json.loads(line) for line in out.getvalue().splitlines()
-                if line.strip()]
+        lines = _serve(server, Feed())
+        if prove_liveness:
+            replies = {line.get("id"): line for line in lines}
+            if replies.get(99, {}).get("result") != {}:
+                raise AssertionError(
+                    "frame loop wedged: ping after the trip got no reply")
+            sc = replies.get(100, {}).get("result", {}).get("structuredContent", {})
+            if not sc.get("verified", {}).get("ok"):
+                raise AssertionError(
+                    "frame loop wedged: ledger_status after the trip got no reply")
+        return lines
 
     return SimpleNamespace(transport=transport, governor=governor,
                            ledger=ledger, server=server,
@@ -229,10 +248,7 @@ class McpProtocolTests(unittest.TestCase):
                 '"params":{"protocolVersion":"2025-06-18",'
                 '"clientInfo":{"name":"probe-harness","version":"1.0"}}}\n')
         transport, server = make_server()
-        out = io.StringIO()
-        server.stdout = out
-        server.stdin = io.StringIO(feed)
-        server.serve_forever()
+        _serve(server, feed)
         self.assertEqual(server.caller, "mcp:probe-harness/1.0")
         self.assertEqual(server.ledger.caller, "mcp:probe-harness/1.0")
 
@@ -240,9 +256,7 @@ class McpProtocolTests(unittest.TestCase):
         feed = ('{"jsonrpc":"2.0","id":1,"method":"initialize",'
                 '"params":{"protocolVersion":"2025-06-18"}}\n')
         _, server = make_server()
-        server.stdin = io.StringIO(feed)
-        server.stdout = io.StringIO()
-        server.serve_forever()
+        _serve(server, feed)
         self.assertEqual(server.caller, "mcp")
 
     def test_initialize_notification_has_no_response(self):
@@ -285,15 +299,11 @@ class McpProtocolTests(unittest.TestCase):
             feed = ('{"jsonrpc":"2.0","id":40,"method":"tools/call",'
                     '"params":{"name":"panel_verify","arguments":'
                     '{"prompt":"sound?","judge":"' + P2 + '"}}}\n')
-            out = io.StringIO()
-            server.stdout = out
-            server.stdin = io.StringIO(feed)
-            server.serve_forever()
+            response = _serve(server, feed)[0]
         finally:
             mcp_module._service_run_verify = original
         # The tool result shape is unchanged: the service return becomes the
         # structuredContent verbatim (no meta/cost attachment in MCP).
-        response = json.loads(out.getvalue())
         self.assertFalse(response["result"]["isError"])
         self.assertEqual(response["result"]["structuredContent"],
                          {"status": "ok", "verdict": "sound",
@@ -317,9 +327,9 @@ class McpProtocolTests(unittest.TestCase):
         """The trip contract shared by every cancelled/deadline scenario.
         Lanes run concurrently, so frames correlate by id, never by
         position (JSON-RPC permits any response order). Asserts the
-        established -32800 shape, honest spend (in-flight POSTs are the
-        documented residual, never hidden), a clean inflight set, and a
-        live frame loop (the liveness frames' replies came back)."""
+        established -32800 shape and honest spend (in-flight POSTs are the
+        documented residual, never hidden); liveness after the trip is
+        proven by the shared drive, on by default."""
         by_id = {line.get("id"): line for line in lines}
         response = by_id[request_id]
         self.assertEqual(response["error"]["code"], -32800)
@@ -327,8 +337,6 @@ class McpProtocolTests(unittest.TestCase):
         self.assertEqual(len(h.transport.chat_posts()), posts)
         self.assertGreater(h.governor.spent, 0.0)
         self.assertEqual(h.server._inflight, set())
-        self.assertEqual(by_id[99]["result"], {})
-        self.assertTrue(by_id[100]["result"]["structuredContent"]["verified"]["ok"])
 
     def test_panel_verify_cancelled_run_maps_to_protocol_error(self):
         """Explicit notifications/cancelled, end to end: the first panel
@@ -339,7 +347,7 @@ class McpProtocolTests(unittest.TestCase):
         error without hiding the spend."""
         h = gated_cancellation_server(gate_post=2, posts=[comp("yes"), comp("yes")])
         lines = h.drive(PANEL_REQUEST_41, gate_wait=h.wait_gated,
-                        extra_frames=(CANCELLATION_41,) + LIVENESS_FRAMES)
+                        extra_frames=(CANCELLATION_41,))
         # The first seat billed and completed; the second seat's POST was
         # already in flight (in-flight POSTs run to their own timeout -- the
         # documented residual) and its real spend is preserved too.
@@ -357,8 +365,7 @@ class McpProtocolTests(unittest.TestCase):
         h = gated_cancellation_server(gate_post=2, posts=[comp("yes"), comp("yes")],
                                       tool_timeout=0.05)  # seat 1 is far faster
         lines = h.drive(PANEL_REQUEST_42,
-                        gate_wait=lambda: h.deadline_expired(42),
-                        extra_frames=LIVENESS_FRAMES)
+                        gate_wait=lambda: h.deadline_expired(42))
         # Seat 1 billed; seat 2's POST was in flight past its poll point and
         # completed (documented residual) -- spend preserved, never hidden.
         self.assert_cancelled_trip(lines, 42, h, posts=2)
@@ -371,8 +378,10 @@ class McpProtocolTests(unittest.TestCase):
         honesty: the stop lands before any file mutation, so the target's
         bytes are untouched; the ledger carries only honest attempt
         evidence (the billable failed attempt, no readiness/escalation/
-        deferral overclaims); the completed attempt's real cost is
-        preserved, not hidden. Liveness rides the real frame loop."""
+        deferral overclaims); dispatch_start is honest pre-poll evidence
+        (the run began before any poll could trip); the completed attempt's
+        real cost is preserved, not hidden. Liveness rides the real frame
+        loop, proven by default in the shared drive."""
         h = gated_cancellation_server(
             gate_post=1, posts=[comp("")],  # empty content -> no-usable-output rotation
             tool_timeout=0.05, apply_pool=[APPLY, P1])
@@ -384,8 +393,7 @@ class McpProtocolTests(unittest.TestCase):
         # hits the consent gate instead).
         target = _write_target("deadline_target.py")
         lines = h.drive(apply_request_43(target),
-                        gate_wait=lambda: h.deadline_expired(43),
-                        extra_frames=LIVENESS_FRAMES)
+                        gate_wait=lambda: h.deadline_expired(43))
         # The one completed in-flight attempt's cost is real spend
         # (documented residual) -- preserved, never hidden.
         self.assert_cancelled_trip(lines, 43, h, posts=1)
@@ -415,12 +423,7 @@ class McpProtocolTests(unittest.TestCase):
             '"params":{"name":"participation_report","arguments":{}}}\n')
         transport, server = make_server(
             posts=[consent("defer", "I would rather not")])
-        out = io.StringIO()
-        server.stdout = out
-        server.stdin = io.StringIO(feed)
-        server.serve_forever()
-        lines = [json.loads(line) for line in out.getvalue().splitlines()
-                 if line.strip()]
+        lines = _serve(server, feed)
         # Lanes run concurrently, so frames correlate by id, never by
         # position (JSON-RPC permits any response order).
         by_id = {line["id"]: line for line in lines}
@@ -512,31 +515,24 @@ class McpProtocolTests(unittest.TestCase):
     def test_unexpected_tool_exception_still_returns_protocol_error(self):
         server = make_server()[1]
         server._invoke = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
-        out = io.StringIO()
-        server.stdout = out
-        server.stdin = io.StringIO('{"jsonrpc":"2.0","id":22,"method":"tools/call",'
-                                    '"params":{"name":"ledger_status","arguments":{}}}\n')
-        server.serve_forever()
-        response = json.loads(out.getvalue())
+        response = _serve(
+            server,
+            '{"jsonrpc":"2.0","id":22,"method":"tools/call",'
+            '"params":{"name":"ledger_status","arguments":{}}}\n')[0]
         self.assertEqual(response["error"]["code"], -32603)
 
     def test_duplicate_request_id_is_rejected_while_in_flight(self):
         server = make_server()[1]
-        out = io.StringIO()
-        server.stdout = out
-        server.stdin = io.StringIO(
-            '{"jsonrpc":"2.0","id":7,"method":"tools/call",'
-            '"params":{"name":"ledger_status","arguments":{}}}\n')
         server._inflight.add(7)
-        server.serve_forever()
-        response = json.loads(out.getvalue())
+        response = _serve(
+            server,
+            '{"jsonrpc":"2.0","id":7,"method":"tools/call",'
+            '"params":{"name":"ledger_status","arguments":{}}}\n')[0]
         self.assertEqual(response["error"]["code"], -32600)
         self.assertIn("duplicate request id", response["error"]["message"])
 
     def test_duplicate_id_stays_reserved_until_response_is_written(self):
         server = make_server()[1]
-        out = io.StringIO()
-        server.stdout = out
         ready = threading.Event()
         release = threading.Event()
         original_call = server._call_tool
@@ -565,10 +561,7 @@ class McpProtocolTests(unittest.TestCase):
                 return ""
 
         server._call_tool = delayed_call
-        server.stdin = Feed()
-        server.serve_forever()
-        responses = [json.loads(line) for line in out.getvalue().splitlines()
-                     if line.strip()]
+        responses = _serve(server, Feed())
         self.assertEqual(len(responses), 2)
         self.assertEqual(sum("error" in response for response in responses), 1)
         self.assertEqual(responses[0]["error"]["code"], -32600)
