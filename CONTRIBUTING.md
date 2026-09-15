@@ -71,8 +71,11 @@ cli.py / mcp.py          interfaces (arg parsing, JSON-RPC, tool contracts;
   enforces both the import direction and the no-re-export rule (a module-level
   import the module never references is a re-export, mechanically detected).
 - **One struct idiom.** Immutable structs are frozen dataclasses
-  (`@dataclass(frozen=True)`); bare `__slots__` is only for mutable value
-  structs (e.g. `capability.py`'s profile row, updated in place).
+  (`@dataclass(frozen=True)`), with no exceptions -- where a struct's
+  construction does real resolution/coercion work, keep the custom
+  `__init__` (`init=False`) and set fields via `object.__setattr__`, as
+  `PanelLanePolicy` and `CapabilityProfile` do; reworked instances use
+  `dataclasses.replace`, never field mutation.
 - **Apply results have one shape.** Every round entry and terminal result (ok /
   preview / deferred / verify_failed) is built by `results.py` — interfaces
   consume that shape, they never reassemble it. New result fields go there,

@@ -179,5 +179,29 @@ class SchemaModulePurityTests(unittest.TestCase):
                          "no defs): " + ", ".join(offenders))
 
 
+class StructIdiomTests(unittest.TestCase):
+    """Immutable structs are frozen dataclasses, with no exceptions --
+    CONTRIBUTING.md's one-struct-idiom rule. A bare __slots__ class was the
+    mutable-by-convention idiom that let assignment silently succeed; the
+    guard keeps it from regrowing."""
+
+    def test_no_slots_classes_in_harness(self):
+        offenders = []
+        for name, path in _module_names():
+            with open(path, encoding="utf-8") as source:
+                tree = ast.parse(source.read(), path)
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.ClassDef) and
+                        any(isinstance(entry, ast.Assign) and
+                            any(getattr(t, "id", None) == "__slots__"
+                                for t in entry.targets)
+                            for entry in node.body)):
+                    offenders.append(f"{name}.{node.name}")
+        self.assertEqual(offenders, [],
+                         "__slots__ classes are the retired mutable struct "
+                         "idiom -- use @dataclass(frozen=True): "
+                         + ", ".join(offenders))
+
+
 if __name__ == "__main__":
     unittest.main()

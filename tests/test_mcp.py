@@ -170,10 +170,12 @@ def gated_cancellation_server(*, gate_post, posts, tool_timeout=None,
         transport.release.set()
 
     def drive(request, gate_wait=None, extra_frames=(), prove_liveness=True):
-        # Liveness is proven by default: the ping + ledger_status frames ride
-        # the same stdin after the trip and their replies must come back.
-        # Opt out only for scenarios where the trip is expected to end the
-        # loop itself.
+        # Liveness is default-on for every scenario: the ping +
+        # ledger_status frames ride the same stdin after the trip and their
+        # replies must come back. prove_liveness=False exists for scenarios
+        # with no post-trip answer to prove; it feeds only the scenario's
+        # own frames and asserts nothing live (the knob test pins these
+        # mechanics).
         frames = [request] + list(extra_frames)
         if prove_liveness:
             frames += LIVENESS_FRAMES
