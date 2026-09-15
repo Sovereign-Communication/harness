@@ -16,8 +16,12 @@ Python 3.9+; pure stdlib — the package has zero runtime dependencies.
 The package is layered; dependencies point one way, downward:
 
 ```
-cli.py / mcp.py          interfaces (arg parsing, JSON-RPC, tool contracts;
-                         boundary normalization; no engine policy)
+cli.py / mcp.py          interfaces (arg parsing, JSON-RPC; boundary
+                         normalization; no engine policy)
+  mcp_schemas.py         MCP tool contracts as pure data (no imports, no
+                         logic; one consumer: mcp.py)
+  mcp_lanes.py           MCP lane-scheduling policy (LANES, lane_for):
+                         which serial worker runs each tool
   apply.py               apply engine: validates inputs, dispatches models, and
                          orchestrates consent, rotation, rounds, and escalation
   apply_gate.py          candidate write/preview, verification, rewind, and
@@ -141,6 +145,8 @@ merge.
 | `harness/cli.py` | interface + claims-specific verify mapping (claims prompt, lint, polarity); session aliases (`_governor`/`_engine`/...) kept as test seams |
 | `harness/consent.py` | the consent probe (sovereignty) |
 | `harness/ledger.py` | hash-chained JSONL autonomy ledger |
-| `harness/mcp.py` | MCP framing, tool contracts, boundary normalization, lane scheduling (mutation/spendy/observe), cooperative cancellation + per-tool deadlines, engine dispatch, and response lifecycle; composes dependencies from session.py |
+| `harness/mcp.py` | MCP framing, boundary normalization, engine dispatch, cooperative cancellation + per-tool deadlines (the frame loop owns the cancellation lifecycle), and response lifecycle; composes dependencies from session.py |
+| `harness/mcp_schemas.py` | MCP tool contracts as pure data (no imports, no logic; one consumer: mcp.py) |
+| `harness/mcp_lanes.py` | MCP lane-scheduling policy (mutation/spendy/observe): `LANES`, `lane_for` -- which serial worker runs each tool |
 | `harness/bench.py` | hermetic known-answer benchmarks |
 | `tests/` | one test module per product owner (test_spend, test_panel, test_convergence, test_specialist, test_chat, test_ledger, test_prompts, ...); shared fakes and the `_gov` helper live in `tests/_fake.py` |
