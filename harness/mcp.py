@@ -1,8 +1,9 @@
 """Native MCP stdio server.
 
-This module owns JSON-RPC framing, scheduling, cancellation, response
-serialization, and engine dispatch; the tool contracts (schemas) live in
-harness/mcp_schemas.py as pure data.
+This module owns JSON-RPC framing, dispatch, cancellation lifecycle, and
+response serialization; the tool contracts (schemas) live in
+harness/mcp_schemas.py as pure data, and the lane-scheduling policy
+(which serial worker runs each tool) lives in harness/mcp_lanes.py.
 """
 import json
 import math
@@ -18,6 +19,7 @@ from . import trust as trust_policy
 from .consent import probe_consent
 from .continuation import validate_continuation
 from .errors import HarnessError, ToolCancelled
+from .mcp_lanes import LANES, lane_for
 from .mcp_schemas import TOOL_SCHEMAS
 from .service import run_verify as _service_run_verify
 from .validation import (
@@ -45,15 +47,6 @@ from .validation import (
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_VERSION = __version__
 
-# Tool lanes: one serial worker each. Mutation (file writes) stays strictly
-# serial for single-session engine semantics; spendy lanes (network calls
-# that can run minutes on a saturated tier) no longer head-of-line-block
-# the observation lane, so status/report queries always answer promptly.
-# Governor spend accounting and ledger appends are lock-guarded, and the
-# engine is only ever driven from the mutation lane, so lanes are safe to
-# run concurrently with each other.
-MUTATION_LANE = {"apply_edit"}
-SPENDY_LANE = {"panel_verify", "offer_work"}
 # Default per-tool deadline (seconds): cooperative, tripped through the
 # same cancel_check as notifications/cancelled. Configurable via
 # HARNESS_MCP_TOOL_TIMEOUT (60..7200).
@@ -111,17 +104,7 @@ class McpServer:
         self.allowed_roots = [os.path.realpath(os.path.abspath(root))
                               for root in (allowed_roots or [])]
 
-    # ---------------- lanes + deadlines ----------------
-    @staticmethod
-    def _lane_for(tool_name):
-        """Which serial lane runs a tool. Unknown/missing names ride the
-        observe lane and fail validation in the worker, as before."""
-        if tool_name in MUTATION_LANE:
-            return "mutation"
-        if tool_name in SPENDY_LANE:
-            return "spendy"
-        return "observe"
-
+    # ---------------- deadlines + cancellation ----------------
     def _note_start(self, request_id):
         """Stamp a request's deadline clock (first stamp wins: submit time,
         so queueing behind a busy lane counts against the deadline)."""
@@ -163,7 +146,7 @@ class McpServer:
         apply/panel no longer head-of-line-blocks status queries.
         """
         pools = {lane: ThreadPoolExecutor(max_workers=1)
-                 for lane in ("mutation", "spendy", "observe")}
+                 for lane in LANES}
         try:
             while True:
                 line = self.stdin.readline()
@@ -209,7 +192,7 @@ class McpServer:
                     params = msg.get("params", {})
                     tool_name = params.get("name") if isinstance(params, dict) else None
                     self._note_start(request_id)
-                    pools[self._lane_for(tool_name)].submit(
+                    pools[lane_for(tool_name)].submit(
                         self._write_tool_response, msg)
                     continue
 

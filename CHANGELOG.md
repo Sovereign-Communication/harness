@@ -306,6 +306,12 @@ break APIs between minor versions).
   dispatch (785 → 664 lines). Byte-identity proven by replaying the full
   `tools/list` response through the real stdio frame loop before and after
   the extraction.
+- **MCP lane scheduling is pure policy.** `LANES`, the lane membership
+  constants, and `lane_for` moved verbatim from `mcp.py` into a new
+  `mcp_lanes.py`, leaving the protocol adapter as framing + dispatch +
+  cancellation lifecycle (664 → 646 lines). Per-lane dispatch proven
+  byte-identical by an instrumented frame-loop probe (one request per
+  lane, submit-to-pool correlation) before and after the extraction.
 - **One immutable-struct idiom.** `PanelLanePolicy` and
   `ResolvedVerifyInputs` converted from `__slots__` + read-only-property
   boilerplate to frozen dataclasses (`apply_state.py`'s idiom), deleting
@@ -316,6 +322,12 @@ break APIs between minor versions).
   attribute-surface replay -- and immutability is now genuinely enforced:
   attribute assignment raises `FrozenInstanceError` (the previous idiom was
   mutable-by-convention; nothing relied on that laxity).
+- **The struct-idiom rule is universal.** `CapabilityProfile` converted to
+  a frozen dataclass (the last bare-`__slots__` class): the TTL refresh
+  goes through `dataclasses.replace`, and the custom init gained a
+  `_fetched_at` keyword (replace re-calls `__init__` with every field) so
+  every existing caller stays valid. Zero `__slots__` remain in
+  `harness/`, enforced by a new architecture-guard check.
 - **CLI claims assembly consolidated.** `harness verify --claims-file` now
   prepares its prompt through `service.prepare_verify` (one owner for
   BOM-tolerant reading, manifest parsing, grounding, convergence
