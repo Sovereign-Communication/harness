@@ -279,6 +279,19 @@ break APIs between minor versions).
   disconnected (the CLI wrote `core.QUIET`; `eprint` reads `output.QUIET`).
 
 ### Changed
+- **No verify assembly left handler-side.** `mcp.py`'s `panel_verify` no
+  longer lane-defaults locally (panel pool, judge, convergence model,
+  specialists): validated-None arguments flow through to
+  `service.run_verify`, whose caller→router→settings resolution is the one
+  owner. `cli._read_text` is now a delegation stub to
+  `service.read_text_file`, the ONE BOM-tolerant reader; the name stays for
+  its other call sites and patch seam. Error wording unchanged.
+- **One resolved-inputs owner for verify.** `service.run_verify`'s eight
+  inline `arg or router.X or settings.X` fallback chains collapsed into the
+  immutable `ResolvedVerifyInputs` struct (the `PanelLanePolicy` move),
+  built once and read by `pre_run_warning` and the `panel_judge` call;
+  fallback order preserved exactly, public signature unchanged, behavior
+  proven byte-identical by a nine-scenario resolved-inputs oracle.
 - **MCP verify lane unified onto the service layer.** `panel_verify` no
   longer imports `panel_judge` or self-assembles convergence/router kwargs:
   it delegates to `service.run_verify` (the same owner the CLI and web
