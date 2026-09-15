@@ -17,6 +17,7 @@ free router and serves as a final fallback lane.
 """
 import json
 import os
+from dataclasses import dataclass
 
 from .errors import HarnessError
 from .output import eprint
@@ -98,6 +99,15 @@ def effective_lane_policy(role, max_tokens=None, reasoning_effort=None):
     raise ValueError(f"unknown lane role: {role}")
 
 
+@dataclass(frozen=True)
+class _Lane:
+    """One lane's resolved spend: the max_tokens floor and reasoning effort."""
+
+    tokens: int
+    effort: str
+
+
+@dataclass(frozen=True)
 class PanelLanePolicy:
     """Immutable resolved lane policy for one ``panel_judge`` run.
 
@@ -122,17 +132,9 @@ class PanelLanePolicy:
             defeats the window-aware vote trim on small-window specialists).
     """
 
-    __slots__ = ("_lanes",)
-
-    class _Lane:
-        __slots__ = ("tokens", "effort")
-
-        def __init__(self, tokens, effort):
-            self.tokens = tokens
-            self.effort = effort
-
-        def __repr__(self):
-            return f"_Lane(tokens={self.tokens!r}, effort={self.effort!r})"
+    vote: _Lane
+    judge: _Lane
+    specialist: _Lane
 
     def __init__(self, *, max_tokens=None, reasoning_effort="auto",
                  run_convergence=False):
@@ -144,27 +146,9 @@ class PanelLanePolicy:
             "judge", max_tokens=max_tokens, reasoning_effort=reasoning_effort)
         spec_tokens, spec_effort = effective_lane_policy(
             "vote", max_tokens=max_tokens, reasoning_effort=reasoning_effort)
-        self._lanes = {
-            "vote": self._Lane(vote_tokens, vote_effort),
-            "judge": self._Lane(judge_tokens, judge_effort),
-            "specialist": self._Lane(spec_tokens, spec_effort),
-        }
-
-    @property
-    def vote(self):
-        return self._lanes["vote"]
-
-    @property
-    def judge(self):
-        return self._lanes["judge"]
-
-    @property
-    def specialist(self):
-        return self._lanes["specialist"]
-
-    def __repr__(self):
-        return (f"PanelLanePolicy(vote={self.vote!r}, judge={self.judge!r}, "
-                f"specialist={self.specialist!r})")
+        object.__setattr__(self, "vote", _Lane(vote_tokens, vote_effort))
+        object.__setattr__(self, "judge", _Lane(judge_tokens, judge_effort))
+        object.__setattr__(self, "specialist", _Lane(spec_tokens, spec_effort))
 
 # BYOK spend is invisible to the tracked key's balance (confirmed on the
 # SCMessenger account: mistralai/ routed via BYOK, plus the P0 block below for

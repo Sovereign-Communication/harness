@@ -300,6 +300,22 @@ break APIs between minor versions).
   JSON-RPC frames, and its historical result shape (no meta/cost
   attachment, no service-side task id). The cancelled-run envelope moved to
   the service; MCP still answers its established `-32800` protocol error.
+- **MCP tool schemas are pure data.** The ~140-line schema dict literal
+  moved from `mcp.py` into a new `mcp_schemas.py` data-only module (no
+  imports, no logic), leaving the protocol adapter as framing + lanes +
+  dispatch (785 → 664 lines). Byte-identity proven by replaying the full
+  `tools/list` response through the real stdio frame loop before and after
+  the extraction.
+- **One immutable-struct idiom.** `PanelLanePolicy` and
+  `ResolvedVerifyInputs` converted from `__slots__` + read-only-property
+  boilerplate to frozen dataclasses (`apply_state.py`'s idiom), deleting
+  ~33 net lines of boilerplate; the keyword-only constructors are kept
+  (`init=False` + `object.__setattr__`) so resolution logic, attribute
+  surface, and every call site are unchanged. Behavior proven identical by
+  the nine-scenario resolved-inputs oracle and the lane-policy
+  attribute-surface replay -- and immutability is now genuinely enforced:
+  attribute assignment raises `FrozenInstanceError` (the previous idiom was
+  mutable-by-convention; nothing relied on that laxity).
 - **CLI claims assembly consolidated.** `harness verify --claims-file` now
   prepares its prompt through `service.prepare_verify` (one owner for
   BOM-tolerant reading, manifest parsing, grounding, convergence

@@ -14,6 +14,7 @@ call site -- apply request validation is the engine's own boundary contract
 (``ApplyEngine._prepare``), not a service-layer concern.
 """
 import uuid
+from dataclasses import dataclass
 
 from .errors import HarnessError, ToolCancelled
 from .panel import panel_judge
@@ -117,6 +118,7 @@ def prepare_verify(*, prompt=None, prompt_file=None, claims_file=None,
     }
 
 
+@dataclass(frozen=True)
 class ResolvedVerifyInputs:
     """Immutable resolved inputs for one ``run_verify`` execution.
 
@@ -132,9 +134,14 @@ class ResolvedVerifyInputs:
     final fallback is the judge model itself.
     """
 
-    __slots__ = ("_use_free", "_panel", "_judge", "_convergence_model",
-                 "_specialist_pool", "_reasoning_effort",
-                 "_reasoning_token_budget", "_max_panelists")
+    use_free: bool
+    panel: list
+    judge: str
+    convergence_model: str
+    specialist_pool: list
+    reasoning_effort: str
+    reasoning_token_budget: float
+    max_panelists: int
 
     def __init__(self, *, settings, router, panel, judge, convergence_model,
                  specialist_pool, reasoning_effort, reasoning_token_budget,
@@ -149,57 +156,33 @@ class ResolvedVerifyInputs:
                          if settings is not None else settings_default)
             return value
 
-        self._use_free = (settings.use_free if settings is not None
-                          else bool(free_tier))
-        self._panel = list(panel if panel is not None else
-                           router_or_settings("panel_pool", []))
+        object.__setattr__(self, "use_free",
+                           settings.use_free if settings is not None
+                           else bool(free_tier))
+        object.__setattr__(self, "panel",
+                           list(panel if panel is not None else
+                                router_or_settings("panel_pool", [])))
         default_judge = router_or_settings("judge", None)
-        self._judge = judge or default_judge
-        self._reasoning_effort = (reasoning_effort if reasoning_effort is not None
-                                  else getattr(settings, "reasoning_effort", "auto"))
-        self._reasoning_token_budget = (
-            reasoning_token_budget if reasoning_token_budget is not None else
-            getattr(settings, "reasoning_token_budget", 0.4))
-        self._max_panelists = (max_panelists if max_panelists is not None else
-                               getattr(settings, "max_panelists", 3))
+        resolved_judge = judge or default_judge
+        object.__setattr__(self, "judge", resolved_judge)
+        object.__setattr__(self, "reasoning_effort",
+                           reasoning_effort if reasoning_effort is not None
+                           else getattr(settings, "reasoning_effort", "auto"))
+        object.__setattr__(self, "reasoning_token_budget",
+                           reasoning_token_budget
+                           if reasoning_token_budget is not None else
+                           getattr(settings, "reasoning_token_budget", 0.4))
+        object.__setattr__(self, "max_panelists",
+                           max_panelists if max_panelists is not None else
+                           getattr(settings, "max_panelists", 3))
         default_convergence = router_or_settings("convergence_model", None)
-        self._convergence_model = (convergence_model or default_convergence
-                                   or self._judge)
+        object.__setattr__(self, "convergence_model",
+                           convergence_model or default_convergence
+                           or resolved_judge)
         default_specialists = router_or_settings("specialist_pool", [])
-        self._specialist_pool = (specialist_pool if specialist_pool is not None
-                                 else list(default_specialists or []))
-
-    @property
-    def use_free(self):
-        return self._use_free
-
-    @property
-    def panel(self):
-        return self._panel
-
-    @property
-    def judge(self):
-        return self._judge
-
-    @property
-    def convergence_model(self):
-        return self._convergence_model
-
-    @property
-    def specialist_pool(self):
-        return self._specialist_pool
-
-    @property
-    def reasoning_effort(self):
-        return self._reasoning_effort
-
-    @property
-    def reasoning_token_budget(self):
-        return self._reasoning_token_budget
-
-    @property
-    def max_panelists(self):
-        return self._max_panelists
+        object.__setattr__(self, "specialist_pool",
+                           specialist_pool if specialist_pool is not None
+                           else list(default_specialists or []))
 
 
 def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
