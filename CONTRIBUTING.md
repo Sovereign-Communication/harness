@@ -136,17 +136,28 @@ merge.
 |---|---|
 | `harness/config.py` | settings, key resolution, lane curation |
 | `harness/spend.py` | SpendGovernor: spend ceilings, BYOK, model discovery |
+| `harness/router.py` | cheap-first routing ladder: model pools, rotation, gated escalation |
 | `harness/capability.py` | model capability profiles + observed evidence |
+| `harness/saturation.py` | one free-tier saturation policy: per-attempt evidence -> the plain-language verdict terminal surfaces print when the tier fail-closes |
+| `harness/rankings.py` | rankings-driven pool-candidate refresh: OpenRouter daily-traffic evidence -> candidate report (evidence-driven, not folklore-driven) |
 | `harness/apply.py` | request preparation, model dispatch/rotation, and round orchestration |
+| `harness/batch.py` | multi-file batch orchestration: one governed session per file, shared task budget, fail-fast -- owns the LOOP, the engine owns the per-file apply |
 | `harness/apply_gate.py` | one candidate-to-gate transaction: write, verify, preview, rewind, and terminal gate results |
 | `harness/apply_state.py` | apply request data and mutable per-run state |
 | `harness/results.py` | the apply result vocabulary (round entries, terminal/deferred results, HTTP error rendering) -- one def site per result shape, plus the status-meaning policy: `SUCCESS_STATUSES` and `terminal_exit_code` (interfaces never re-derive what a status means) |
+| `harness/escalation.py` | auto-escalation driver: judge-directed rung stepping for apply -- a rung only counts if the real gate passes |
 | `harness/session.py` | composition owner: governor_for/ledger_for/router_for/engine_for + `apply_session` (pre-spend saturation look-ahead included) -- how ANY interface gets its dependencies; engine kwargs and tier policy change here exactly once |
+| `harness/service.py` | the ONE verify/claims run assembly (prompt, claims flags, resolved inputs, cancelled envelope, cost/meta) -- what `harness verify`, `harness serve`, and MCP all consume |
+| `harness/validation.py` | shared validation for untrusted CLI/MCP/batch/library inputs -- every safety-sensitive limit passes through here before any model call or file mutation |
 | `harness/cli.py` | interface + claims-specific verify mapping (claims prompt, lint, polarity); session aliases (`_governor`/`_engine`/...) kept as test seams |
 | `harness/consent.py` | the consent probe (sovereignty) |
 | `harness/ledger.py` | hash-chained JSONL autonomy ledger |
+| `harness/trust.py` | bipolar trust (-11..+11) per host/model/author: levels AND gates -- thresholds unlock actions, safety signals drop trust fast |
+| `harness/events.py` | typed progress event stream: the ONE owner of live run telemetry (structured JSON to sinks; advisory, never control flow) |
 | `harness/mcp.py` | MCP framing, boundary normalization, engine dispatch, cooperative cancellation + per-tool deadlines (the frame loop owns the cancellation lifecycle), and response lifecycle; composes dependencies from session.py |
 | `harness/mcp_schemas.py` | MCP tool contracts as pure data (no imports, no logic; one consumer: mcp.py) |
 | `harness/mcp_lanes.py` | MCP lane-scheduling policy (mutation/spendy/observe): `LANES`, `lane_for` -- which serial worker runs each tool |
+| `harness/server.py` | `harness serve`: localhost web UI + JSON API -- the third face; dispatch calls the same engine entry points, no new policy |
+| `harness/render.py` | the ONE human-facing pretty-printer: TTY tables of result envelopes on stderr; read-only, machine JSON stays the stdout contract |
 | `harness/bench.py` | hermetic known-answer benchmarks |
 | `tests/` | one test module per product owner (test_spend, test_panel, test_convergence, test_specialist, test_chat, test_ledger, test_prompts, ...); shared fakes and the `_gov` helper live in `tests/_fake.py` |

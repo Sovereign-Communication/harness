@@ -12,6 +12,8 @@ from harness.apply import ApplyEngine
 from harness.spend import SpendGovernor
 from harness.ledger import AutonomyLedger
 from harness.mcp import McpServer
+from harness.mcp_lanes import LANES, lane_for
+from harness.mcp_schemas import TOOL_SCHEMAS
 from harness.router import Router
 from tests._fake import FakeTransport, m, comp, consent
 
@@ -845,6 +847,35 @@ class McpProtocolTests(unittest.TestCase):
         _, lines = run(feed)
         self.assertEqual(lines[0]["error"]["code"], -32700)
         self.assertEqual(lines[1]["error"]["code"], -32601)
+
+
+class LaneSchedulingTests(unittest.TestCase):
+    """The lane contract mcp.py's pool wiring depends on: LANES is the
+    pool-creation order and lane_for routes every tool contract name.
+    Pinned so a reorder or membership drift cannot pass silently --
+    serve_forever builds one pool per LANES entry in tuple order."""
+
+    def test_lanes_tuple_is_pool_creation_order(self):
+        self.assertEqual(LANES, ("mutation", "spendy", "observe"))
+
+    def test_lane_for_covers_every_tool_contract(self):
+        # Deriving names from TOOL_SCHEMAS means a new or renamed tool
+        # breaks this pin until its lane is stated explicitly.
+        self.assertEqual(
+            {name: lane_for(name) for name in
+             (t["name"] for t in TOOL_SCHEMAS)},
+            {"apply_edit": "mutation",
+             "panel_verify": "spendy",
+             "offer_work": "spendy",
+             "ledger_status": "observe",
+             "defer_work": "observe",
+             "participation_report": "observe",
+             "spend_status": "observe",
+             "trust_status": "observe"})
+
+    def test_unknown_and_missing_names_ride_observe(self):
+        self.assertEqual(lane_for("not_a_tool"), "observe")
+        self.assertEqual(lane_for(None), "observe")
 
 
 if __name__ == "__main__":
