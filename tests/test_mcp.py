@@ -413,6 +413,19 @@ class McpProtocolTests(unittest.TestCase):
         self.assertNotIn("escalate", events)
         self.assertNotIn("defer_midtask", events)
 
+    def test_liveness_opt_out_appends_no_liveness_frames(self):
+        """The prove_liveness knob's contract, driven: with the opt-out the
+        drive feeds only the scenario's own frames -- no ping/ledger_status
+        appended (their reply ids 99/100 are absent) -- and runs no liveness
+        assertion (the drive returns without raising)."""
+        h = gated_cancellation_server(gate_post=2, posts=[comp("yes"), comp("yes")])
+        lines = h.drive(PANEL_REQUEST_41, gate_wait=h.wait_gated,
+                        extra_frames=(CANCELLATION_41,), prove_liveness=False)
+        self.assert_cancelled_trip(lines, 41, h, posts=2)
+        reply_ids = {line.get("id") for line in lines}
+        self.assertNotIn(99, reply_ids)
+        self.assertNotIn(100, reply_ids)
+
     def test_offer_and_defer_tools(self):
         feed = (
             '{"jsonrpc":"2.0","id":11,"method":"tools/call",'

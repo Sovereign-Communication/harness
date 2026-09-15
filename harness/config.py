@@ -100,7 +100,7 @@ def effective_lane_policy(role, max_tokens=None, reasoning_effort=None):
 
 
 @dataclass(frozen=True)
-class _Lane:
+class LanePolicy:
     """One lane's resolved spend: the max_tokens floor and reasoning effort."""
 
     tokens: int
@@ -132,9 +132,9 @@ class PanelLanePolicy:
             defeats the window-aware vote trim on small-window specialists).
     """
 
-    vote: _Lane
-    judge: _Lane
-    specialist: _Lane
+    vote: LanePolicy
+    judge: LanePolicy
+    specialist: LanePolicy
 
     def __init__(self, *, max_tokens=None, reasoning_effort="auto",
                  run_convergence=False):
@@ -146,9 +146,9 @@ class PanelLanePolicy:
             "judge", max_tokens=max_tokens, reasoning_effort=reasoning_effort)
         spec_tokens, spec_effort = effective_lane_policy(
             "vote", max_tokens=max_tokens, reasoning_effort=reasoning_effort)
-        object.__setattr__(self, "vote", _Lane(vote_tokens, vote_effort))
-        object.__setattr__(self, "judge", _Lane(judge_tokens, judge_effort))
-        object.__setattr__(self, "specialist", _Lane(spec_tokens, spec_effort))
+        object.__setattr__(self, "vote", LanePolicy(vote_tokens, vote_effort))
+        object.__setattr__(self, "judge", LanePolicy(judge_tokens, judge_effort))
+        object.__setattr__(self, "specialist", LanePolicy(spec_tokens, spec_effort))
 
 # BYOK spend is invisible to the tracked key's balance (confirmed on the
 # SCMessenger account: mistralai/ routed via BYOK, plus the P0 block below for

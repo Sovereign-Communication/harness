@@ -162,5 +162,22 @@ class ImportDirectionTests(unittest.TestCase):
                          "harness/session.py only: " + ", ".join(offenders))
 
 
+class SchemaModulePurityTests(unittest.TestCase):
+    """mcp_schemas.py is pure data: the MCP tool contract dicts and nothing
+    else. Its docstring states the keep-it-data-only rule; this mechanizes it
+    so the rule holds for as long as the guard runs."""
+
+    def test_mcp_schemas_is_data_only(self):
+        with open(os.path.join(PKG, "mcp_schemas.py"), encoding="utf-8") as src:
+            tree = ast.parse(src.read(), "mcp_schemas.py")
+        offenders = [type(node).__name__ for node in tree.body
+                     if isinstance(node, (ast.Import, ast.ImportFrom,
+                                          ast.FunctionDef, ast.AsyncFunctionDef,
+                                          ast.ClassDef))]
+        self.assertEqual(offenders, [],
+                         "mcp_schemas.py must stay data-only (no imports, "
+                         "no defs): " + ", ".join(offenders))
+
+
 if __name__ == "__main__":
     unittest.main()

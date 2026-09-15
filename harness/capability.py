@@ -140,6 +140,8 @@ DEFAULT_TTL = 24 * 3600  # refresh /models capabilities at most once / TTL
 class CapabilityProfile:
     """Declared capability of a single model, derived from a /models entry."""
 
+    # Mutable value struct (a profile row, updated in place) -- outside the
+    # frozen-dataclass rule for immutable policy structs (see CONTRIBUTING.md).
     __slots__ = ("model_id", "context_length", "free", "prompt_price",
                  "completion_price", "supports_reasoning",
                  "supports_structured_json", "supports_json_schema",

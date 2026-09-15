@@ -70,6 +70,9 @@ cli.py / mcp.py          interfaces (arg parsing, JSON-RPC, tool contracts;
   every dependency edge and hides the real owner. `tests/test_architecture.py`
   enforces both the import direction and the no-re-export rule (a module-level
   import the module never references is a re-export, mechanically detected).
+- **One struct idiom.** Immutable structs are frozen dataclasses
+  (`@dataclass(frozen=True)`); bare `__slots__` is only for mutable value
+  structs (e.g. `capability.py`'s profile row, updated in place).
 - **Apply results have one shape.** Every round entry and terminal result (ok /
   preview / deferred / verify_failed) is built by `results.py` — interfaces
   consume that shape, they never reassemble it. New result fields go there,
