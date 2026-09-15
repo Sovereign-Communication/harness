@@ -329,6 +329,120 @@ class McpProtocolTests(unittest.TestCase):
         self.assertGreater(governor.spent, 0.0)
         self.assertEqual(server._inflight, set())
 
+    def test_tool_deadline_stops_mutation_lane_and_frame_loop_stays_live(self):
+        """End-to-end tool deadline on the mutation lane through the real
+        stdio frame loop: an overdue deadline stops an apply_edit run at
+        ApplyEngine's next attempt/round poll (in-flight POSTs have no poll
+        -- the documented residual), answering the same -32800 frame as the
+        spendy lane. Mutation honesty: the stop lands before any file
+        mutation, so the target's bytes are untouched and no dispatch_start
+        is ledgered; the completed attempt's real cost is preserved, not
+        hidden. Also proves post-trip lane liveness: a trivial request
+        answers after the trip -- cancellation never wedges the frame loop.
+        """
+        class GatedTransport(FakeTransport):
+            def __init__(self, **kw):
+                super().__init__(**kw)
+                self.first_started = threading.Event()
+                self.release = threading.Event()
+                self._count = 0
+
+            def post(self, *args, **kwargs):
+                self._count += 1
+                if self._count == 1:
+                    self.first_started.set()
+                    self.release.wait(10)
+                return super().post(*args, **kwargs)
+
+        transport = GatedTransport(models=[m(JUDGE), m(P1), m(P2), m(APPLY)],
+                                   posts=[comp("")])  # empty content -> no-usable-output rotation
+        governor = SpendGovernor(transport, "sk-test")
+        ledger = AutonomyLedger(os.path.join(_TMP.name,
+                                             f"ledger-{os.urandom(4).hex()}.jsonl"))
+        router = Router([P1, P2], JUDGE, APPLY)
+        # Two-model apply pool: after the gated attempt returns a
+        # reasoning-only response (the rotating, billable error path),
+        # rotation must reach the NEXT attempt-top poll -- a single-model
+        # pool would terminate the run without another poll and never trip.
+        router.apply_pool = [APPLY, P1]
+        engine = ApplyEngine(transport, "sk-test", governor, ledger, router,
+                             default_require_consent=True)
+        server = McpServer(transport=transport, api_key="sk-test",
+                           governor=governor, ledger=ledger, router=router,
+                           engine=engine, allow_write=True,
+                           allowed_roots=[_TMP.name])
+        server.tool_timeout = 0.05
+
+        target = os.path.join(_TMP.name, "deadline_target.py")
+        with open(target, "w", encoding="utf-8") as stream:
+            stream.write(ORIGINAL)
+        quoted = target.replace("\\", "\\\\")
+
+        class Feed:
+            calls = 0
+
+            def readline(self):
+                if Feed.calls == 0:
+                    Feed.calls += 1
+                    return ('{"jsonrpc":"2.0","id":43,"method":"tools/call",'
+                            '"params":{"name":"apply_edit","arguments":'
+                            '{"file": ["' + quoted + '"],'
+                            '"instruction": "change it to return a + b + 0",'
+                            '"require_consent": false, "renew_consent": false}}}\n')
+                if Feed.calls == 1:
+                    Feed.calls += 1
+                    # Release only once the first POST is genuinely in
+                    # flight AND the submit-time deadline has provably
+                    # expired (bounded backstop: fail, never hang).
+                    if not transport.first_started.wait(10):
+                        transport.release.set()
+                        raise AssertionError("apply never made a call")
+                    for _ in range(2500):
+                        if server._is_expired(43):
+                            break
+                        time.sleep(0.002)
+                    else:
+                        transport.release.set()
+                        raise AssertionError("tool deadline never expired")
+                    transport.release.set()
+                    return ""
+                return ""
+
+        out = io.StringIO()
+        server.stdout = out
+        server.stdin = Feed()
+        server.serve_forever()
+        response = json.loads(out.getvalue())
+        # The deadline answers the same established protocol error on the
+        # mutation lane as on the spendy lane -- one cooperative stop.
+        self.assertEqual(response["error"]["code"], -32800)
+        self.assertEqual(response["error"]["message"], "Request cancelled")
+        # Mutation honesty: the stop landed before any file mutation.
+        with open(target, encoding="utf-8") as stream:
+            self.assertEqual(stream.read(), ORIGINAL)
+        # The ledger carries only honest attempt evidence -- the billable
+        # failed attempt -- and no post-content progress (readiness,
+        # escalation, deferral) that would overclaim a cancelled run.
+        model_results = [entry for entry in ledger.tail(100)
+                         if entry.get("event") == "model_result"]
+        self.assertTrue(model_results)
+        self.assertTrue(all(entry.get("status") == "error"
+                            for entry in model_results))
+        events = {entry.get("event") for entry in ledger.tail(100)}
+        self.assertNotIn("readiness", events)
+        self.assertNotIn("escalate", events)
+        self.assertNotIn("defer_midtask", events)
+        # The one completed in-flight attempt's cost is real spend
+        # (documented residual) -- preserved, never hidden.
+        self.assertEqual(len(transport.chat_posts()), 1)
+        self.assertGreater(governor.spent, 0.0)
+        # Post-trip lane liveness: the server still answers after a
+        # deadline trip -- cancellation never wedges the frame loop.
+        status = server._invoke("ledger_status", {"limit": 5})
+        self.assertTrue(status["verified"]["ok"])
+        ping = server._handle({"jsonrpc": "2.0", "id": 99, "method": "ping"})
+        self.assertEqual(ping["result"], {})
+
     def test_offer_and_defer_tools(self):
         feed = (
             '{"jsonrpc":"2.0","id":11,"method":"tools/call",'
