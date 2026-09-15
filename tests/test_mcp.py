@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 
 from harness.apply import ApplyEngine
 from harness.spend import SpendGovernor
@@ -54,6 +55,142 @@ def run(feed, posts=None):
     server.serve_forever()
     lines = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
     return transport, lines
+
+
+# Reusable frames for the cancellation e2e scenarios. Post-trip liveness is
+# proven through the REAL frame loop: these two requests ride the same stdin
+# after the trip and their replies must come back.
+CANCELLATION_41 = ('{"jsonrpc":"2.0","method":"notifications/cancelled",'
+                   '"params":{"requestId":41}}\n')
+PANEL_REQUEST_41 = ('{"jsonrpc":"2.0","id":41,"method":"tools/call",'
+                    '"params":{"name":"panel_verify","arguments":'
+                    '{"prompt":"sound?"}}}\n')
+PANEL_REQUEST_42 = ('{"jsonrpc":"2.0","id":42,"method":"tools/call",'
+                    '"params":{"name":"panel_verify","arguments":'
+                    '{"prompt":"sound?"}}}\n')
+
+
+def apply_request_43(target):
+    quoted = target.replace("\\", "\\\\")
+    return ('{"jsonrpc":"2.0","id":43,"method":"tools/call",'
+            '"params":{"name":"apply_edit","arguments":'
+            '{"file": ["' + quoted + '"],'
+            '"instruction": "change it to return a + b + 0",'
+            '"require_consent": false, "renew_consent": false}}}\n')
+
+
+LIVENESS_FRAMES = (
+    '{"jsonrpc":"2.0","id":99,"method":"ping"}\n',
+    '{"jsonrpc":"2.0","id":100,"method":"tools/call",'
+    '"params":{"name":"ledger_status","arguments":{}}}\n',
+)
+
+
+def _write_target(name):
+    """A fresh apply target holding the canonical ORIGINAL bytes."""
+    path = os.path.join(_TMP.name, name)
+    with open(path, "w", encoding="utf-8") as stream:
+        stream.write(ORIGINAL)
+    return path
+
+
+def gated_cancellation_server(*, gate_post, posts, tool_timeout=None,
+                             apply_pool=None):
+    """One fixture for the three cancellation e2e scenarios (explicit
+    notification, spendy-lane deadline, mutation-lane deadline).
+
+    GatedTransport holds post number ``gate_post`` (1-based) behind an
+    event so each scenario can make its trip deterministic: release only
+    after the cancel/deadline condition provably holds, never on a
+    sleep. ``tool_timeout`` stamps the per-tool deadline; ``apply_pool``
+    overrides the router's apply pool (the mutation lane needs two models
+    so rotation reaches the next attempt poll).
+
+    Returns a handle with ``wait_gated`` (block until the gated POST is
+    in flight), ``deadline_expired`` (bounded-poll the submit-time
+    deadline, then release -- fail, never hang) and ``drive`` (feed the
+    request, run ``gate_wait`` after it, then any extra frames, through
+    the real serve_forever/stdin path; returns parsed reply frames).
+    The gate is always released at EOF so a failing test errors instead
+    of hanging.
+    """
+    class GatedTransport(FakeTransport):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.gated = threading.Event()
+            self.release = threading.Event()
+            self._count = 0
+
+        def post(self, *args, **kwargs):
+            self._count += 1
+            if self._count == gate_post:
+                self.gated.set()
+                self.release.wait(10)
+            return super().post(*args, **kwargs)
+
+    transport = GatedTransport(models=[m(JUDGE), m(P1), m(P2), m(APPLY)],
+                               posts=list(posts))
+    governor = SpendGovernor(transport, "sk-test")
+    ledger = AutonomyLedger(os.path.join(_TMP.name,
+                                         f"ledger-{os.urandom(4).hex()}.jsonl"))
+    router = Router([P1, P2], JUDGE, APPLY)
+    if apply_pool is not None:
+        router.apply_pool = list(apply_pool)
+    engine = ApplyEngine(transport, "sk-test", governor, ledger, router,
+                         default_require_consent=True)
+    server = McpServer(transport=transport, api_key="sk-test",
+                       governor=governor, ledger=ledger, router=router,
+                       engine=engine, allow_write=True,
+                       allowed_roots=[_TMP.name])
+    if tool_timeout is not None:
+        server.tool_timeout = tool_timeout
+
+    def wait_gated():
+        if not transport.gated.wait(10):
+            transport.release.set()
+            raise AssertionError("gated POST never started")
+
+    def deadline_expired(request_id):
+        wait_gated()
+        for _ in range(2500):
+            if server._is_expired(request_id):
+                break
+            time.sleep(0.002)
+        else:
+            transport.release.set()
+            raise AssertionError("tool deadline never expired")
+        transport.release.set()
+
+    def drive(request, gate_wait=None, extra_frames=()):
+        frames = [request] + list(extra_frames)
+
+        class Feed:
+            idx = 0
+
+            def readline(self):
+                # The gate_wait runs on the call AFTER the request frame was
+                # returned -- i.e. once serve_forever has submitted it --
+                # never before, or the request would never reach a worker.
+                if gate_wait is not None and Feed.idx == 1:
+                    gate_wait()
+                if Feed.idx < len(frames):
+                    line = frames[Feed.idx]
+                    Feed.idx += 1
+                    return line
+                transport.release.set()  # EOF: never leave the gate shut
+                return ""
+
+        out = io.StringIO()
+        server.stdout = out
+        server.stdin = Feed()
+        server.serve_forever()
+        return [json.loads(line) for line in out.getvalue().splitlines()
+                if line.strip()]
+
+    return SimpleNamespace(transport=transport, governor=governor,
+                           ledger=ledger, server=server,
+                           wait_gated=wait_gated,
+                           deadline_expired=deadline_expired, drive=drive)
 
 
 class McpProtocolTests(unittest.TestCase):
@@ -176,272 +313,97 @@ class McpProtocolTests(unittest.TestCase):
         # No verify assembly left behind in the protocol module.
         self.assertFalse(hasattr(mcp_module, "panel_judge"))
 
-    def test_panel_verify_cancelled_run_maps_to_protocol_error(self):
-        """End-to-end cancellation through the real stdio frame loop: the
-        first panel seat bills normally, a notifications/cancelled arrives
-        while the second seat's call is in flight, the cooperative
-        cancel_check trips, the service builds the honest cancelled envelope
-        (in-flight billed spend included), and MCP answers its established
-        -32800 error without hiding the spend."""
-        class GatedTransport(FakeTransport):
-            def __init__(self, **kw):
-                super().__init__(**kw)
-                self.second_started = threading.Event()
-                self.release = threading.Event()
-                self._count = 0
-
-            def post(self, *args, **kwargs):
-                self._count += 1
-                if self._count == 2:
-                    self.second_started.set()
-                    self.release.wait(10)
-                return super().post(*args, **kwargs)
-
-        transport = GatedTransport(models=[m(JUDGE), m(P1), m(P2), m(APPLY)],
-                                   posts=[comp("yes"), comp("yes")])
-        governor = SpendGovernor(transport, "sk-test")
-        ledger = AutonomyLedger(os.path.join(_TMP.name,
-                                             f"ledger-{os.urandom(4).hex()}.jsonl"))
-        router = Router([P1, P2], JUDGE, APPLY)
-        engine = ApplyEngine(transport, "sk-test", governor, ledger, router,
-                             default_require_consent=True)
-        server = McpServer(transport=transport, api_key="sk-test",
-                           governor=governor, ledger=ledger, router=router,
-                           engine=engine, allow_write=True,
-                           allowed_roots=[_TMP.name])
-
-        class Feed:
-            calls = 0
-
-            def readline(self):
-                if Feed.calls == 0:
-                    Feed.calls += 1
-                    return ('{"jsonrpc":"2.0","id":41,"method":"tools/call",'
-                            '"params":{"name":"panel_verify","arguments":'
-                            '{"prompt":"sound?"}}}\n')
-                if Feed.calls == 1:
-                    Feed.calls += 1
-                    # Cancel only after the second seat's network call is
-                    # genuinely in flight (deterministic, no sleeps) and the
-                    # first seat has billed.
-                    if not transport.second_started.wait(10):
-                        transport.release.set()
-                        raise AssertionError("panel never made two calls")
-                    return ('{"jsonrpc":"2.0","method":"notifications/cancelled",'
-                            '"params":{"requestId":41}}\n')
-                transport.release.set()
-                return ""
-
-        out = io.StringIO()
-        server.stdout = out
-        server.stdin = Feed()
-        server.serve_forever()
-        response = json.loads(out.getvalue())
-        # The established protocol-level cancellation error is unchanged.
+    def assert_cancelled_trip(self, lines, request_id, h, posts):
+        """The trip contract shared by every cancelled/deadline scenario.
+        Lanes run concurrently, so frames correlate by id, never by
+        position (JSON-RPC permits any response order). Asserts the
+        established -32800 shape, honest spend (in-flight POSTs are the
+        documented residual, never hidden), a clean inflight set, and a
+        live frame loop (the liveness frames' replies came back)."""
+        by_id = {line.get("id"): line for line in lines}
+        response = by_id[request_id]
         self.assertEqual(response["error"]["code"], -32800)
         self.assertEqual(response["error"]["message"], "Request cancelled")
+        self.assertEqual(len(h.transport.chat_posts()), posts)
+        self.assertGreater(h.governor.spent, 0.0)
+        self.assertEqual(h.server._inflight, set())
+        self.assertEqual(by_id[99]["result"], {})
+        self.assertTrue(by_id[100]["result"]["structuredContent"]["verified"]["ok"])
+
+    def test_panel_verify_cancelled_run_maps_to_protocol_error(self):
+        """Explicit notifications/cancelled, end to end: the first panel
+        seat bills normally, the cancel notification arrives while the
+        second seat's call is in flight, the cooperative cancel_check
+        trips, the service builds the honest cancelled envelope (in-flight
+        billed spend included), and MCP answers its established -32800
+        error without hiding the spend."""
+        h = gated_cancellation_server(gate_post=2, posts=[comp("yes"), comp("yes")])
+        lines = h.drive(PANEL_REQUEST_41, gate_wait=h.wait_gated,
+                        extra_frames=(CANCELLATION_41,) + LIVENESS_FRAMES)
         # The first seat billed and completed; the second seat's POST was
         # already in flight (in-flight POSTs run to their own timeout -- the
         # documented residual) and its real spend is preserved too.
-        self.assertEqual(len(transport.chat_posts()), 2)
-        self.assertGreater(governor.spent, 0.0)
-        self.assertEqual(server._inflight, set())
+        self.assert_cancelled_trip(lines, 41, h, posts=2)
 
     def test_tool_deadline_stops_delegated_run_at_protocol_error(self):
-        """End-to-end tool deadline through the real stdio frame loop: no
+        """Tool deadline on the spendy lane, end to end: no
         notifications/cancelled is ever sent -- the only trip mechanism is
         the per-tool deadline stamped at submit time, polled through the
         service-delegated cancel_check. The first seat completes and bills;
         the second seat's POST (held by the gate) runs to completion after
         release -- the documented in-flight residual -- and its post-POST
         poll trips the expired deadline, so the service builds the honest
-        cancelled envelope and MCP answers -32800 without hiding spend.
-        Deterministic: the gate releases only once the deadline is provably
-        expired, never on a hope-and-a-sleep."""
-        class GatedTransport(FakeTransport):
-            def __init__(self, **kw):
-                super().__init__(**kw)
-                self.second_started = threading.Event()
-                self.release = threading.Event()
-                self._count = 0
-
-            def post(self, *args, **kwargs):
-                self._count += 1
-                if self._count == 2:
-                    self.second_started.set()
-                    self.release.wait(10)
-                return super().post(*args, **kwargs)
-
-        transport = GatedTransport(models=[m(JUDGE), m(P1), m(P2), m(APPLY)],
-                                   posts=[comp("yes"), comp("yes")])
-        governor = SpendGovernor(transport, "sk-test")
-        ledger = AutonomyLedger(os.path.join(_TMP.name,
-                                             f"ledger-{os.urandom(4).hex()}.jsonl"))
-        router = Router([P1, P2], JUDGE, APPLY)
-        engine = ApplyEngine(transport, "sk-test", governor, ledger, router,
-                             default_require_consent=True)
-        server = McpServer(transport=transport, api_key="sk-test",
-                           governor=governor, ledger=ledger, router=router,
-                           engine=engine, allow_write=True,
-                           allowed_roots=[_TMP.name])
-        server.tool_timeout = 0.05  # seat 1's in-memory call is far faster
-
-        class Feed:
-            calls = 0
-
-            def readline(self):
-                if Feed.calls == 0:
-                    Feed.calls += 1
-                    return ('{"jsonrpc":"2.0","id":42,"method":"tools/call",'
-                            '"params":{"name":"panel_verify","arguments":'
-                            '{"prompt":"sound?"}}}\n')
-                if Feed.calls == 1:
-                    Feed.calls += 1
-                    # Hold until the second seat is genuinely in flight AND
-                    # the submit-time deadline clock has provably expired
-                    # (bounded backstop: 5s, then fail instead of hanging).
-                    if not transport.second_started.wait(10):
-                        transport.release.set()
-                        raise AssertionError("panel never made two calls")
-                    for _ in range(2500):
-                        if server._is_expired(42):
-                            break
-                        time.sleep(0.002)
-                    else:
-                        transport.release.set()
-                        raise AssertionError("tool deadline never expired")
-                    transport.release.set()
-                    return ""
-                return ""
-
-        out = io.StringIO()
-        server.stdout = out
-        server.stdin = Feed()
-        server.serve_forever()
-        response = json.loads(out.getvalue())
-        # The deadline path answers the same established protocol error as
-        # an explicit cancellation -- one cooperative stop, one message.
-        self.assertEqual(response["error"]["code"], -32800)
-        self.assertEqual(response["error"]["message"], "Request cancelled")
+        cancelled envelope and MCP answers -32800 without hiding spend."""
+        h = gated_cancellation_server(gate_post=2, posts=[comp("yes"), comp("yes")],
+                                      tool_timeout=0.05)  # seat 1 is far faster
+        lines = h.drive(PANEL_REQUEST_42,
+                        gate_wait=lambda: h.deadline_expired(42),
+                        extra_frames=LIVENESS_FRAMES)
         # Seat 1 billed; seat 2's POST was in flight past its poll point and
         # completed (documented residual) -- spend preserved, never hidden.
-        self.assertEqual(len(transport.chat_posts()), 2)
-        self.assertGreater(governor.spent, 0.0)
-        self.assertEqual(server._inflight, set())
+        self.assert_cancelled_trip(lines, 42, h, posts=2)
 
     def test_tool_deadline_stops_mutation_lane_and_frame_loop_stays_live(self):
-        """End-to-end tool deadline on the mutation lane through the real
-        stdio frame loop: an overdue deadline stops an apply_edit run at
-        ApplyEngine's next attempt/round poll (in-flight POSTs have no poll
-        -- the documented residual), answering the same -32800 frame as the
-        spendy lane. Mutation honesty: the stop lands before any file
-        mutation, so the target's bytes are untouched and no dispatch_start
-        is ledgered; the completed attempt's real cost is preserved, not
-        hidden. Also proves post-trip lane liveness: a trivial request
-        answers after the trip -- cancellation never wedges the frame loop.
-        """
-        class GatedTransport(FakeTransport):
-            def __init__(self, **kw):
-                super().__init__(**kw)
-                self.first_started = threading.Event()
-                self.release = threading.Event()
-                self._count = 0
-
-            def post(self, *args, **kwargs):
-                self._count += 1
-                if self._count == 1:
-                    self.first_started.set()
-                    self.release.wait(10)
-                return super().post(*args, **kwargs)
-
-        transport = GatedTransport(models=[m(JUDGE), m(P1), m(P2), m(APPLY)],
-                                   posts=[comp("")])  # empty content -> no-usable-output rotation
-        governor = SpendGovernor(transport, "sk-test")
-        ledger = AutonomyLedger(os.path.join(_TMP.name,
-                                             f"ledger-{os.urandom(4).hex()}.jsonl"))
-        router = Router([P1, P2], JUDGE, APPLY)
-        # Two-model apply pool: after the gated attempt returns a
-        # reasoning-only response (the rotating, billable error path),
-        # rotation must reach the NEXT attempt-top poll -- a single-model
-        # pool would terminate the run without another poll and never trip.
-        router.apply_pool = [APPLY, P1]
-        engine = ApplyEngine(transport, "sk-test", governor, ledger, router,
-                             default_require_consent=True)
-        server = McpServer(transport=transport, api_key="sk-test",
-                           governor=governor, ledger=ledger, router=router,
-                           engine=engine, allow_write=True,
-                           allowed_roots=[_TMP.name])
-        server.tool_timeout = 0.05
-
-        target = os.path.join(_TMP.name, "deadline_target.py")
-        with open(target, "w", encoding="utf-8") as stream:
-            stream.write(ORIGINAL)
-        quoted = target.replace("\\", "\\\\")
-
-        class Feed:
-            calls = 0
-
-            def readline(self):
-                if Feed.calls == 0:
-                    Feed.calls += 1
-                    return ('{"jsonrpc":"2.0","id":43,"method":"tools/call",'
-                            '"params":{"name":"apply_edit","arguments":'
-                            '{"file": ["' + quoted + '"],'
-                            '"instruction": "change it to return a + b + 0",'
-                            '"require_consent": false, "renew_consent": false}}}\n')
-                if Feed.calls == 1:
-                    Feed.calls += 1
-                    # Release only once the first POST is genuinely in
-                    # flight AND the submit-time deadline has provably
-                    # expired (bounded backstop: fail, never hang).
-                    if not transport.first_started.wait(10):
-                        transport.release.set()
-                        raise AssertionError("apply never made a call")
-                    for _ in range(2500):
-                        if server._is_expired(43):
-                            break
-                        time.sleep(0.002)
-                    else:
-                        transport.release.set()
-                        raise AssertionError("tool deadline never expired")
-                    transport.release.set()
-                    return ""
-                return ""
-
-        out = io.StringIO()
-        server.stdout = out
-        server.stdin = Feed()
-        server.serve_forever()
-        response = json.loads(out.getvalue())
-        # The deadline answers the same established protocol error on the
-        # mutation lane as on the spendy lane -- one cooperative stop.
-        self.assertEqual(response["error"]["code"], -32800)
-        self.assertEqual(response["error"]["message"], "Request cancelled")
+        """Tool deadline on the mutation lane, end to end: an overdue
+        deadline stops an apply_edit run at ApplyEngine's next attempt/round
+        poll (in-flight POSTs have no poll -- the documented residual),
+        answering the same -32800 frame as the spendy lane. Mutation
+        honesty: the stop lands before any file mutation, so the target's
+        bytes are untouched; the ledger carries only honest attempt
+        evidence (the billable failed attempt, no readiness/escalation/
+        deferral overclaims); the completed attempt's real cost is
+        preserved, not hidden. Liveness rides the real frame loop."""
+        h = gated_cancellation_server(
+            gate_post=1, posts=[comp("")],  # empty content -> no-usable-output rotation
+            tool_timeout=0.05, apply_pool=[APPLY, P1])
+        # Two-model apply pool; the gated attempt returns empty content -- the
+        # rotating, billable no-usable-output error path -- so rotation
+        # must reach the NEXT attempt-top poll (a single-model pool would
+        # terminate the run without another poll and never trip; a 200
+        # with garbage content is NOT rotated -- "treating as confident"
+        # hits the consent gate instead).
+        target = _write_target("deadline_target.py")
+        lines = h.drive(apply_request_43(target),
+                        gate_wait=lambda: h.deadline_expired(43),
+                        extra_frames=LIVENESS_FRAMES)
+        # The one completed in-flight attempt's cost is real spend
+        # (documented residual) -- preserved, never hidden.
+        self.assert_cancelled_trip(lines, 43, h, posts=1)
         # Mutation honesty: the stop landed before any file mutation.
         with open(target, encoding="utf-8") as stream:
             self.assertEqual(stream.read(), ORIGINAL)
         # The ledger carries only honest attempt evidence -- the billable
         # failed attempt -- and no post-content progress (readiness,
         # escalation, deferral) that would overclaim a cancelled run.
-        model_results = [entry for entry in ledger.tail(100)
+        model_results = [entry for entry in h.ledger.tail(100)
                          if entry.get("event") == "model_result"]
         self.assertTrue(model_results)
         self.assertTrue(all(entry.get("status") == "error"
                             for entry in model_results))
-        events = {entry.get("event") for entry in ledger.tail(100)}
+        events = {entry.get("event") for entry in h.ledger.tail(100)}
         self.assertNotIn("readiness", events)
         self.assertNotIn("escalate", events)
         self.assertNotIn("defer_midtask", events)
-        # The one completed in-flight attempt's cost is real spend
-        # (documented residual) -- preserved, never hidden.
-        self.assertEqual(len(transport.chat_posts()), 1)
-        self.assertGreater(governor.spent, 0.0)
-        # Post-trip lane liveness: the server still answers after a
-        # deadline trip -- cancellation never wedges the frame loop.
-        status = server._invoke("ledger_status", {"limit": 5})
-        self.assertTrue(status["verified"]["ok"])
-        ping = server._handle({"jsonrpc": "2.0", "id": 99, "method": "ping"})
-        self.assertEqual(ping["result"], {})
 
     def test_offer_and_defer_tools(self):
         feed = (
