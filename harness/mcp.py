@@ -581,12 +581,16 @@ class McpServer:
     def _invoke(self, name, args, cancel_check=None):
         if name == "panel_verify":
             prompt = validate_mcp_prompt(args.get("prompt"))
+            # Lane defaults (panel pool, judge, convergence, specialists) are
+            # NOT resolved here: validated-None flows to the service, whose
+            # arg-or-router-or-settings resolution is the ONE owner. The
+            # boundary only validates raw input; task_max_cost reads only
+            # the governor, and no result field needs a resolved lane.
             panel_arg = validate_mcp_csv(args.get("panel"), "panel")
             specialist_arg = validate_mcp_csv(args.get("specialist_pool"), "specialist_pool")
-            judge = validate_mcp_model(args.get("judge"), "judge") or self.router.judge
-            convergence_model = (validate_mcp_model(args.get("convergence_model"), "convergence_model")
-                                 or self.router.convergence_model)
-            model = panel_arg or list(self.router.panel_pool)
+            judge = validate_mcp_model(args.get("judge"), "judge")
+            convergence_model = validate_mcp_model(args.get("convergence_model"),
+                                                   "convergence_model")
             max_tokens = validate_mcp_max_tokens(args.get("max_tokens"))
             reasoning = validate_mcp_reasoning(
                 args.get("reasoning_effort", self.engine.reasoning_effort))
@@ -606,17 +610,17 @@ class McpServer:
                         f"panel_verify task_max_cost {tmc} exceeds remaining "
                         f"session budget {remaining:.6f}")
             # Lane assembly belongs to the canonical service layer (the same
-            # owner the CLI and web server consume): governor/ledger wiring,
-            # pre-run look-ahead, the cancelled-run envelope, and convergence
-            # defaults. MCP keeps only protocol concerns -- boundary
-            # validation, session-injected dependencies, and its historical
-            # result shape (no meta/cost attachment, no service-side task id).
+            # owner the CLI and web server consume): lane resolution,
+            # governor/ledger wiring, pre-run look-ahead, and the
+            # cancelled-run envelope. MCP keeps only protocol concerns --
+            # boundary validation, session-injected dependencies, and its
+            # historical result shape (no meta/cost attachment, no
+            # service-side task id).
             result = _service_run_verify(
                 None, prompt=prompt, task_id=task_id, cancel_check=cancel_check,
-                judge=judge, reasoning_effort=reasoning, panel=model,
+                judge=judge, reasoning_effort=reasoning, panel=panel_arg,
                 converge=converge, convergence_model=convergence_model,
-                specialist_pool=(specialist_arg if specialist_arg is not None
-                                 else self.router.specialist_pool),
+                specialist_pool=specialist_arg,
                 max_tokens=max_tokens, api_key=self.api_key,
                 governor=self.governor, ledger=self.ledger,
                 transport=self.transport,

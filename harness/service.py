@@ -117,6 +117,91 @@ def prepare_verify(*, prompt=None, prompt_file=None, claims_file=None,
     }
 
 
+class ResolvedVerifyInputs:
+    """Immutable resolved inputs for one ``run_verify`` execution.
+
+    Construction applies every caller override EXACTLY ONCE, in the
+    preserved fallback order caller arg -> session router -> settings --
+    the same move that fixed the specialist reserve/call mismatch
+    (:class:`harness.config.PanelLanePolicy`): there is ONE place to look
+    up where a lane input came from, instead of eight parallel
+    ``arg or router.X or settings.X`` chains threaded through the body.
+    ``run_verify`` builds this once at the top; everything downstream
+    (``pre_run_warning``, the ``panel_judge`` call) reads the resolved
+    fields. ``convergence_model`` resolves after ``judge`` because its
+    final fallback is the judge model itself.
+    """
+
+    __slots__ = ("_use_free", "_panel", "_judge", "_convergence_model",
+                 "_specialist_pool", "_reasoning_effort",
+                 "_reasoning_token_budget", "_max_panelists")
+
+    def __init__(self, *, settings, router, panel, judge, convergence_model,
+                 specialist_pool, reasoning_effort, reasoning_token_budget,
+                 max_panelists, free_tier):
+        def router_or_settings(attr, settings_default):
+            # Router value wins unless it is absent (None); then settings,
+            # then the field's own default. A falsy-but-present router value
+            # (e.g. "") still wins over settings -- the historical semantics.
+            value = getattr(router, attr, None) if router is not None else None
+            if value is None:
+                value = (getattr(settings, attr, settings_default)
+                         if settings is not None else settings_default)
+            return value
+
+        self._use_free = (settings.use_free if settings is not None
+                          else bool(free_tier))
+        self._panel = list(panel if panel is not None else
+                           router_or_settings("panel_pool", []))
+        default_judge = router_or_settings("judge", None)
+        self._judge = judge or default_judge
+        self._reasoning_effort = (reasoning_effort if reasoning_effort is not None
+                                  else getattr(settings, "reasoning_effort", "auto"))
+        self._reasoning_token_budget = (
+            reasoning_token_budget if reasoning_token_budget is not None else
+            getattr(settings, "reasoning_token_budget", 0.4))
+        self._max_panelists = (max_panelists if max_panelists is not None else
+                               getattr(settings, "max_panelists", 3))
+        default_convergence = router_or_settings("convergence_model", None)
+        self._convergence_model = (convergence_model or default_convergence
+                                   or self._judge)
+        default_specialists = router_or_settings("specialist_pool", [])
+        self._specialist_pool = (specialist_pool if specialist_pool is not None
+                                 else list(default_specialists or []))
+
+    @property
+    def use_free(self):
+        return self._use_free
+
+    @property
+    def panel(self):
+        return self._panel
+
+    @property
+    def judge(self):
+        return self._judge
+
+    @property
+    def convergence_model(self):
+        return self._convergence_model
+
+    @property
+    def specialist_pool(self):
+        return self._specialist_pool
+
+    @property
+    def reasoning_effort(self):
+        return self._reasoning_effort
+
+    @property
+    def reasoning_token_budget(self):
+        return self._reasoning_token_budget
+
+    @property
+    def max_panelists(self):
+        return self._max_panelists
+
+
 def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
                max_cost=None, judge=None, reasoning_effort=None, panel=None,
                converge=False, convergence_model=None, specialist_pool=None,
@@ -156,56 +241,30 @@ def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
             raise ValueError("verify requires settings or an injected ledger")
         ledger = ledger_for(settings)
 
-    use_free = (settings.use_free if settings is not None
-                else bool(free_tier))
-    default_panel = (getattr(router, "panel_pool", None)
-                     if router is not None else None)
-    if default_panel is None:
-        default_panel = getattr(settings, "panel_pool", []) if settings is not None else []
-    panel_models = list(panel if panel is not None else default_panel)
-    default_judge = (getattr(router, "judge", None)
-                     if router is not None else None)
-    if default_judge is None:
-        default_judge = getattr(settings, "judge", None) if settings is not None else None
-    judge_model = judge or default_judge
-    effort = (reasoning_effort if reasoning_effort is not None else
-              getattr(settings, "reasoning_effort", "auto"))
-    token_budget = (reasoning_token_budget
-                    if reasoning_token_budget is not None else
-                    getattr(settings, "reasoning_token_budget", 0.4))
-    panelist_limit = (max_panelists if max_panelists is not None else
-                      getattr(settings, "max_panelists", 3))
-    default_convergence = (getattr(router, "convergence_model", None)
-                           if router is not None else None)
-    if default_convergence is None:
-        default_convergence = (getattr(settings, "convergence_model", None)
-                               if settings is not None else None)
-    convergence_model = convergence_model or default_convergence or judge_model
-    default_specialists = (getattr(router, "specialist_pool", None)
-                           if router is not None else None)
-    if default_specialists is None:
-        default_specialists = (getattr(settings, "specialist_pool", [])
-                               if settings is not None else [])
-    specialist_models = (specialist_pool if specialist_pool is not None else
-                          list(default_specialists or []))
-    pre_run_warning(governor=gov, ledger=ledger, use_free=use_free)
+    resolved = ResolvedVerifyInputs(
+        settings=settings, router=router, panel=panel, judge=judge,
+        convergence_model=convergence_model, specialist_pool=specialist_pool,
+        reasoning_effort=reasoning_effort,
+        reasoning_token_budget=reasoning_token_budget,
+        max_panelists=max_panelists, free_tier=free_tier)
+    pre_run_warning(governor=gov, ledger=ledger, use_free=resolved.use_free)
     if task_id is None and generate_task_id:
         task_id = uuid.uuid4().hex[:8]
     try:
         result = panel_judge(
             transport=transport or HttpTransport(), api_key=api_key, governor=gov,
-            prompt=prompt, panel=panel_models, judge=judge_model,
-            max_tokens=max_tokens, reasoning_effort=effort,
-            reasoning_token_budget=token_budget,
+            prompt=prompt, panel=resolved.panel, judge=resolved.judge,
+            max_tokens=max_tokens, reasoning_effort=resolved.reasoning_effort,
+            reasoning_token_budget=resolved.reasoning_token_budget,
             task_id=task_id, ledger=ledger,
-            max_panelists=panelist_limit,
+            max_panelists=resolved.max_panelists,
             run_convergence=converge,
-            convergence_model=convergence_model,
-            specialist_pool=specialist_models,
+            convergence_model=resolved.convergence_model,
+            specialist_pool=resolved.specialist_pool,
             claim_polarity={cid.strip(): "reassurance" for cid in
                             (reassurance_claims or "").split(",")
                             if cid.strip()},
-            free_tier=use_free, cancel_check=cancel_check)
+            free_tier=resolved.use_free, cancel_check=cancel_check)
     except ToolCancelled:
         return cancelled_envelope(gov, settings, include_meta=attach_meta)
     if attach_meta:

@@ -36,6 +36,7 @@ from .session import (apply_session as _session, governor_for as _governor,
                       run_meta as _session_run_meta)
 from .service import prepare_verify as _prepare_verify
 from .service import run_verify as _service_verify
+from .service import read_text_file as _service_read_text
 from .rankings import build_rankings_report as _rankings_report
 from .capability import capabilities_payload as _capability_payload_owner
 from .results import terminal_exit_code
@@ -72,15 +73,12 @@ def _split_opt_list(value):
 
 
 def _read_text(path, what):
-    """Read a text file, turning a missing path into a presentable error.
+    """CLI alias for the ONE BOM-tolerant reader (service.read_text_file).
     utf-8-sig: Windows tooling (PowerShell ``>`` redirects) emits BOM'd text;
     a leading U+FEFF would corrupt --prompt-file/--source-file input and make
-    handoff JSON files fail to parse."""
-    try:
-        with open(path, encoding="utf-8-sig") as f:
-            return f.read()
-    except OSError as e:
-        raise HarnessError(f"{what} not readable: {path} ({e.strerror or e})") from e
+    handoff JSON files fail to parse. Kept as a named seam so existing tests
+    and callers keep their patch point."""
+    return _service_read_text(path, what)
 
 
 def _read_json(path, what):
