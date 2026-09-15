@@ -19,6 +19,7 @@ category="capability" deferrals.
 """
 from . import events as _events
 from .chat import (chat, extract_content_and_cost, _extract_json, _reported_cost,
+                   _chat_reservation_slots,
                    REASONING_FALLBACK_PREFIX)  # noqa: F401
 from .errors import HarnessError
 from .output import eprint
@@ -109,10 +110,14 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
     preflight = getattr(governor, "preflight", None)
     if preflight is not None:
         # Include the system instruction in the estimate; it is part of the
-        # billable prompt just like the work-item text. One slot per candidate
-        # (the probe runs with reasoning disabled, so no reasoning fallback).
+        # billable prompt just like the work-item text. Slots come from the
+        # same owner as every other lane: an explicit-disable ("none") probe
+        # can draw the mandatory-reasoning 400 and its no-reasoning retry, so
+        # one governed logical request may be two provider calls.
         preflight(CONSENT_SYSTEM_PROMPT + "\n" + user,
-                  [(f"consent:{m_}", m_, max_tokens, 0) for m_ in usable])
+                  [(f"consent:{m_}", m_, max_tokens, 0)
+                   for m_ in usable
+                   for _ in range(_chat_reservation_slots(m_, "none"))])
 
     if ledger:
         ledger.append("offer", task_id=task_id, model=model, required=required)

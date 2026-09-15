@@ -159,10 +159,15 @@ def looks_truncated(text):
 # ------------------------- reasoning / effort -------------------------
 
 _REASONING_HINTS = ("reason", "thinking", "inkling", "qwq", "r1", "o3", "o4",
-                    "o1", "gpt-5", "deepseek", "kimi", "glm-4.6", "glm-5.2", "glm-5.6",
-                    "minimax-reason", "nemotron", "openrouter/free")
+                    "o1", "gpt-5", "deepseek", "kimi", "glm-4.6", "glm-5.2", "glm-5.3",
+                    "glm-5.6", "minimax-reason", "nemotron", "openrouter/free")
 _EFFORT_VALUES = ("auto", "off", "none", "low", "medium", "high", "on")
-_REASONING_PARAM_ERR_HINTS = ("reasoning", "unsupported parameter",
+# Hints matched against a provider's error body when the reasoning parameter
+# may have caused the rejection. "mandatory" covers the mandatory-reasoning
+# routes that reject an explicit {"effort": "none"} disable with HTTP 400
+# ("Reasoning is mandatory for this endpoint and cannot be disabled").
+_REASONING_PARAM_ERR_HINTS = ("reasoning", "mandatory",
+                              "unsupported parameter",
                               "unknown parameter", "unexpected parameter")
 
 
@@ -176,11 +181,16 @@ def _effort_to_send(reasoning_effort, model_id):
     """Resolve the reasoning effort string to send, or None to omit.
 
     "auto" sends a capped low effort for reasoning-named models and omits the
-    key entirely for everyone else. "off"/"none" always omit.
+    key entirely for everyone else. "off"/"none" resolve to the explicit
+    disable ("none"): for reasoning-native models (deepseek/*, z-ai/glm-*,
+    moonshotai/kimi-*), OMITTING the reasoning key means the provider default
+    -- reasoning ON -- which starves the visible output at vote budgets. A
+    mandatory-reasoning route rejects the explicit disable with HTTP 400 and
+    the standard param-rejection retry then runs the provider default.
     """
     e = (reasoning_effort or "auto").lower()
     if e in ("off", "none"):
-        return None
+        return "none"
     if e == "auto":
         return "low" if looks_reasoning(model_id) else None
     if e == "on":
@@ -191,10 +201,17 @@ def _effort_to_send(reasoning_effort, model_id):
 
 
 def _build_reasoning_param(model_id, reasoning_effort, max_tokens, budget):
-    """Return the reasoning dict to embed in the payload, or None."""
+    """Return the reasoning dict to embed in the payload, or None.
+
+    An explicit disable sends {"effort": "none"} with no max_tokens cap (a
+    token cap is meaningless when reasoning is off; OpenRouter's documented
+    effort vocabulary is low|medium|high|none).
+    """
     effort = _effort_to_send(reasoning_effort, model_id)
     if effort is None:
         return None
+    if effort == "none":
+        return {"effort": "none"}
     cap = max(1, int(max_tokens * budget))
     return {"effort": effort, "max_tokens": cap}
 
@@ -205,9 +222,13 @@ def _chat_reservation_slots(model_id, reasoning_effort="auto", max_429_retries=0
     A provider may reject a reasoning parameter, causing ``chat`` to make one
     fallback request. Panel calls may also make one bounded 429 retry. The
     preflight reservation must cover both possibilities or the ceiling is only
-    approximate for reasoning models.
+    approximate for reasoning models. An explicit disable ("none") is a
+    single-call request -- EXCEPT it may draw the mandatory-reasoning 400 and
+    its retry, which the generic two-slot branch already covers ("none" is a
+    reasoning parameter and can be rejected like any other).
     """
-    reasoning_slots = 2 if _effort_to_send(reasoning_effort, model_id) is not None else 1
+    effort = _effort_to_send(reasoning_effort, model_id)
+    reasoning_slots = 2 if effort is not None else 1
     return reasoning_slots * (max(0, int(max_429_retries)) + 1)
 
 
@@ -243,10 +264,14 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
          reasoning_token_budget=0.4, governor=None):
     """One chat completion with the spend governor's payload guards.
 
-    Reasoning is only included when the effort mode calls for it (auto => only
-    for reasoning-named models) and a provider rejection triggers one retry
-    without it. Every 200 response also passes cost accounting: a missing
-    usage.cost is resolved here, once, so no lane can bill a paid call as $0.
+    Reasoning is included whenever the effort mode resolves to a value --
+    including the explicit disable ("off"/"none" => {"effort": "none"}) --
+    and a provider rejection triggers one retry without the reasoning key
+    (mandatory-reasoning routes reject the disable with HTTP 400; the retry
+    then runs the provider default). A rejected attempt's billable cost is
+    merged into the retry response. Every 200 response also passes cost
+    accounting: a missing usage.cost is resolved here, once, so no lane can
+    bill a paid call as $0.
     """
     if governor:
         governor.check_byok(model)

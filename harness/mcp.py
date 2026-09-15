@@ -1,7 +1,9 @@
 """Native MCP stdio server.
 
-This module owns JSON-RPC framing, scheduling, cancellation, response
-serialization, MCP tool contracts, and engine dispatch.
+This module owns JSON-RPC framing, dispatch, cancellation lifecycle, and
+response serialization; the tool contracts (schemas) live in
+harness/mcp_schemas.py as pure data, and the lane-scheduling policy
+(which serial worker runs each tool) lives in harness/mcp_lanes.py.
 """
 import json
 import math
@@ -17,7 +19,9 @@ from . import trust as trust_policy
 from .consent import probe_consent
 from .continuation import validate_continuation
 from .errors import HarnessError, ToolCancelled
-from .panel import panel_judge
+from .mcp_lanes import LANES, lane_for
+from .mcp_schemas import TOOL_SCHEMAS
+from .service import run_verify as _service_run_verify
 from .validation import (
     MAX_LINES,
     MAX_ROUNDS,
@@ -43,15 +47,6 @@ from .validation import (
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_VERSION = __version__
 
-# Tool lanes: one serial worker each. Mutation (file writes) stays strictly
-# serial for single-session engine semantics; spendy lanes (network calls
-# that can run minutes on a saturated tier) no longer head-of-line-block
-# the observation lane, so status/report queries always answer promptly.
-# Governor spend accounting and ledger appends are lock-guarded, and the
-# engine is only ever driven from the mutation lane, so lanes are safe to
-# run concurrently with each other.
-MUTATION_LANE = {"apply_edit"}
-SPENDY_LANE = {"panel_verify", "offer_work"}
 # Default per-tool deadline (seconds): cooperative, tripped through the
 # same cancel_check as notifications/cancelled. Configurable via
 # HARNESS_MCP_TOOL_TIMEOUT (60..7200).
@@ -109,17 +104,7 @@ class McpServer:
         self.allowed_roots = [os.path.realpath(os.path.abspath(root))
                               for root in (allowed_roots or [])]
 
-    # ---------------- lanes + deadlines ----------------
-    @staticmethod
-    def _lane_for(tool_name):
-        """Which serial lane runs a tool. Unknown/missing names ride the
-        observe lane and fail validation in the worker, as before."""
-        if tool_name in MUTATION_LANE:
-            return "mutation"
-        if tool_name in SPENDY_LANE:
-            return "spendy"
-        return "observe"
-
+    # ---------------- deadlines + cancellation ----------------
     def _note_start(self, request_id):
         """Stamp a request's deadline clock (first stamp wins: submit time,
         so queueing behind a busy lane counts against the deadline)."""
@@ -161,7 +146,7 @@ class McpServer:
         apply/panel no longer head-of-line-blocks status queries.
         """
         pools = {lane: ThreadPoolExecutor(max_workers=1)
-                 for lane in ("mutation", "spendy", "observe")}
+                 for lane in LANES}
         try:
             while True:
                 line = self.stdin.readline()
@@ -207,7 +192,7 @@ class McpServer:
                     params = msg.get("params", {})
                     tool_name = params.get("name") if isinstance(params, dict) else None
                     self._note_start(request_id)
-                    pools[self._lane_for(tool_name)].submit(
+                    pools[lane_for(tool_name)].submit(
                         self._write_tool_response, msg)
                     continue
 
@@ -437,127 +422,7 @@ class McpServer:
             self._forget_start(request_id)
 
     def _tools(self):
-        return [
-            {
-                "name": "panel_verify",
-                "title": "Multi-model verification",
-                "description": "Panel of cheap/free models answers a self-contained question, then a judge "
-                               "synthesizes a structured verdict (agreement, confidence, disagreements, "
-                               "defer). Cost-bounded. No web/file tools by design.",
-                "inputSchema": {"type": "object", "properties": {
-                    "prompt": {"type": "string", "description": "Self-contained question + context"},
-                    "panel": {"type": "string", "description": "Comma-separated model pool. Defaults to configured panel pool."},
-                    "judge": {"type": "string", "description": "Judge model id. Defaults to configured judge."},
-                    "max_tokens": {"type": "integer", "default": 2048},
-                    "reasoning_effort": {"type": "string", "enum": ["auto", "off", "none", "low", "medium", "high", "on"]},
-                    "converge": {"type": "boolean", "description": "Run the convergence specialist on per-claim votes (requires per-claim JSON panel output)"},
-                    "convergence_model": {"type": "string", "description": "Primary specialist model (default: judge)"},
-                    "specialist_pool": {"type": "string", "description": "Comma-separated specialist fallback ladder, strongest first (default: configured pool)"},
-                    "task_id": {"type": "string"},
-                    "task_max_cost": {"type": "number", "minimum": 0, "maximum": 0.25,
-                                      "description": "Optional per-call cost ceiling (USD), capped at HARD_TASK_MAX_COST"},
-                }, "required": ["prompt"]},
-            },
-            {
-                "name": "apply_edit",
-                "title": "Scoped code edit with verification",
-                "description": "Make a single, scoped (<500-line file) code change, run a verification "
-                               "gate, retry up to max_rounds, renew consent each round, defer instead of "
-                               "guessing at the capability limit, and rotate models on error. Returns a "
-                               "continuation state when deferred.",
-                "inputSchema": {"type": "object", "properties": {
-                    "file": {"anyOf": [
-                                 {"type": "string"},
-                                 {"type": "array", "items": {"type": "string"},
-                                  "minItems": 1},
-                             ],
-                             "description": "Path to a file, or paths for a multi-file batch "
-                                            "(one governed session per file, shared task budget, "
-                                            "fail-fast)"},
-                    "instruction": {"type": "string", "description": "What to change (<=1000 chars)"},
-                    "edit_snippet": {"type": "string", "description": "Intent anchor snippet (<=2000 chars)"},
-                    "verify_cmd": {"type": "string", "description": "Shell command gate, e.g. 'cargo check' (requires server allow_verify)"},
-                    "allow_verify": {"type": "boolean", "description": "Explicit confirmation to run a verify gate in this request (required when allow_verify is not enabled server-side)"},
-                    "max_rounds": {"type": "integer", "default": 3, "minimum": 1, "maximum": 20},
-                    "max_tokens": {"type": "integer", "minimum": 64, "maximum": 200000,
-                                    "description": "Maximum output tokens per model call"},
-                    "require_consent": {"type": "boolean", "description": "Ask the model if it accepts the work first"},
-                    "renew_consent": {"type": "boolean", "description": "Re-check consent before each round (continued consensus)"},
-                    "max_rotations": {"type": "integer", "minimum": 0, "maximum": 20,
-                                       "description": "How many model rotations to allow on error"},
-                    "allow_escalation": {"type": "boolean", "description": "Permit escalation to the configured stronger model"},
-                    "reasoning_effort": {"type": "string", "enum": ["auto", "off", "none", "low", "medium", "high", "on"]},
-                    "model": {"type": "string", "description": "Explicit model override; otherwise the corrected apply route is used"},
-                    "backend": {"type": "string", "enum": ["harness", "morph", "diff"], "default": "harness", "description": "morph: MorphLite-compatible structured editing; diff: strict unified-diff editing (no file-size ceiling)"},
-                    "verify_only": {"type": "boolean", "description": "Return the proposal without writing or running the verification gate"},
-                    "max_lines": {"type": "integer", "default": 500, "minimum": 1, "maximum": 500,
-                                   "description": "Per-file line ceiling (1-500)"},
-                    "task_max_cost": {"type": "number", "description": "Per-task cost ceiling"},
-                    "allow_write": {"type": "boolean", "description": "Explicit confirmation that this MCP request may write files"},
-                    "continuation": {"type": "object", "description": "State from a deferred run to resume"},
-                    "task_id": {"type": "string"},
-                }, "anyOf": [
-                    {"required": ["instruction"]},
-                    {"required": ["continuation"]},
-                ]},
-            },
-            {
-                "name": "offer_work",
-                "title": "Ask for consent on a work item",
-                "description": "Probe whether a model accepts, declines, defers, or redirects a work item. "
-                               "Dispatch is allowed only on 'accept'.",
-                "inputSchema": {"type": "object", "properties": {
-                    "task": {"type": "string", "description": "Work item description"},
-                    "task_id": {"type": "string"},
-                    "model": {"type": "string", "description": "Model to ask (defaults to configured judge)"},
-                    "context": {"type": "string"},
-                }, "required": ["task"]},
-            },
-            {
-                "name": "defer_work",
-                "title": "Revoke consent mid-task",
-                "description": "A model (or operator) may defer/revoke consent at any point. Partial work is "
-                               "preserved; the task returns to the queue with the reason recorded. This is the "
-                               "continued-consensus hook: the sovereign model can call it to stop work.",
-                "inputSchema": {"type": "object", "properties": {
-                    "task_id": {"type": "string"},
-                    "reason": {"type": "string"},
-                    "category": {"type": "string", "description": "e.g. capability, consent, alignment"},
-                }, "required": ["task_id"]},
-            },
-            {
-                "name": "ledger_status",
-                "title": "Autonomy ledger",
-                "description": "Tail of the append-only, hash-chained autonomy/participation ledger, plus "
-                               "chain-integrity status.",
-                "inputSchema": {"type": "object", "properties": {
-                    "limit": {"type": "integer", "default": 20, "minimum": 1},
-                }},
-            },
-            {
-                "name": "participation_report",
-                "title": "Autonomy & participation metrics",
-                "description": "Aggregate metrics: offers, accept/decline/defer/redirect rates, completions, "
-                               "deferral points, per-model participation, and a degenerate-consent flag.",
-                "inputSchema": {"type": "object", "properties": {}},
-            },
-            {
-                "name": "spend_status",
-                "title": "Key & spend status",
-                "description": "OpenRouter key identity, spend limit, remaining balance, and harness session spend.",
-                "inputSchema": {"type": "object", "properties": {}},
-            },
-            {
-                "name": "trust_status",
-                "title": "Trust & correctness standing",
-                "description": "Bipolar trust scores (-11 extreme distrust, 0 unknown, +11 extreme "
-                               "trust) for the calling host and optionally one model, plus the "
-                               "correctness level that rations spend ceilings. Read-only.",
-                "inputSchema": {"type": "object", "properties": {
-                    "model": {"type": "string", "description": "Model id to score (defaults to none: host only)"},
-                }},
-            },
-        ]
+        return TOOL_SCHEMAS
 
     def _refuse(self, reason, message, task_id=None, model=None,
                 severity="soft"):
@@ -578,12 +443,16 @@ class McpServer:
     def _invoke(self, name, args, cancel_check=None):
         if name == "panel_verify":
             prompt = validate_mcp_prompt(args.get("prompt"))
+            # Lane defaults (panel pool, judge, convergence, specialists) are
+            # NOT resolved here: validated-None flows to the service, whose
+            # arg-or-router-or-settings resolution is the ONE owner. The
+            # boundary only validates raw input; task_max_cost reads only
+            # the governor, and no result field needs a resolved lane.
             panel_arg = validate_mcp_csv(args.get("panel"), "panel")
             specialist_arg = validate_mcp_csv(args.get("specialist_pool"), "specialist_pool")
-            judge = validate_mcp_model(args.get("judge"), "judge") or self.router.judge
-            convergence_model = (validate_mcp_model(args.get("convergence_model"), "convergence_model")
-                                 or self.router.convergence_model)
-            model = panel_arg or list(self.router.panel_pool)
+            judge = validate_mcp_model(args.get("judge"), "judge")
+            convergence_model = validate_mcp_model(args.get("convergence_model"),
+                                                   "convergence_model")
             max_tokens = validate_mcp_max_tokens(args.get("max_tokens"))
             reasoning = validate_mcp_reasoning(
                 args.get("reasoning_effort", self.engine.reasoning_effort))
@@ -602,16 +471,31 @@ class McpServer:
                     raise HarnessError(
                         f"panel_verify task_max_cost {tmc} exceeds remaining "
                         f"session budget {remaining:.6f}")
-            return panel_judge(
-                transport=self.transport, api_key=self.api_key, governor=self.governor,
-                prompt=prompt, panel=model, judge=judge, max_tokens=max_tokens,
-                reasoning_effort=reasoning,
+            # Lane assembly belongs to the canonical service layer (the same
+            # owner the CLI and web server consume): lane resolution,
+            # governor/ledger wiring, pre-run look-ahead, and the
+            # cancelled-run envelope. MCP keeps only protocol concerns --
+            # boundary validation, session-injected dependencies, and its
+            # historical result shape (no meta/cost attachment, no
+            # service-side task id).
+            result = _service_run_verify(
+                None, prompt=prompt, task_id=task_id, cancel_check=cancel_check,
+                judge=judge, reasoning_effort=reasoning, panel=panel_arg,
+                converge=converge, convergence_model=convergence_model,
+                specialist_pool=specialist_arg,
+                max_tokens=max_tokens, api_key=self.api_key,
+                governor=self.governor, ledger=self.ledger,
+                transport=self.transport,
                 reasoning_token_budget=self.engine.reasoning_token_budget,
-                task_id=task_id, ledger=self.ledger, max_panelists=self.max_panelists,
-                run_convergence=converge, convergence_model=convergence_model,
-                specialist_pool=(specialist_arg if specialist_arg is not None
-                                 else self.router.specialist_pool),
-                free_tier=self.use_free, cancel_check=cancel_check)
+                max_panelists=self.max_panelists, free_tier=self.use_free,
+                router=self.router, generate_task_id=False, attach_meta=False)
+            if result.get("status") == "cancelled":
+                # The service builds the honest cancelled envelope (in-flight
+                # spend included); this protocol face still answers its
+                # established JSON-RPC cancellation error, via the same
+                # ToolCancelled mapping every other cancelled lane uses.
+                raise ToolCancelled()
+            return result
 
         if name == "apply_edit":
             continuation = validate_continuation(args.get("continuation"))

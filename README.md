@@ -221,6 +221,12 @@ harness trust --caller <id>    # one peer's standing
 harness capabilities
 harness capabilities --bench
 harness capabilities --check-shipped   # CI-able freshness gate for shipped pools
+
+# Rankings-driven candidate refresh (evidence, not folklore): daily OpenRouter
+# rankings -> catalog intersection -> pool-candidate proposals. --probe gates
+# each candidate through a billable one-vote probe (reasoning disabled).
+harness rankings --top 15
+harness rankings --probe --max-cost 0.05 --out rankings.json
 ```
 
 Exit codes: `0` ok, `1` fatal, `2` verify/lint failure (or unconfirmed run),
@@ -285,12 +291,33 @@ id, never by position. The hand-rolled server is spec-conformant (JSON-RPC 2.0 o
 
 - `auto` (default): a *capped* `reasoning:{effort:low, max_tokens:…}` is sent
   only to reasoning-named models; everyone else gets a plain call.
-- `off` / `none`: never send the parameter.
+- `off` / `none`: send the EXPLICIT disable `reasoning:{effort:"none"}`.
+  Omitting the key means the provider default -- reasoning ON -- for
+  reasoning-native models (deepseek/*, z-ai/glm-*, kimi-*), which starves
+  the visible output at vote budgets. The disable carries no token cap. A
+  mandatory-reasoning route (glm-5.3-flash, gpt-5-mini) rejects the disable
+  with HTTP 400 and Harness retries once without the parameter (provider
+  default), merging the rejected attempt's billable cost.
 - `low` / `medium` / `high` / `on`: always send it, with a token cap so
   reasoning models leave room for a real answer instead of returning empty
   content.
 - If a provider *rejects* the reasoning parameter, Harness retries once
   without it automatically.
+
+### Task-shaped lane budgets
+
+Budgets are task-shaped, not one-size (ONE owner:
+`config.effective_lane_policy`):
+
+| Lane | Output budget | Reasoning | Rationale |
+|---|---|---|---|
+| Panel/claim votes | >= 4096 | `off` (explicit disable) | votes are cheap decisions; hidden thinking starves the visible JSON |
+| Judge synthesis | >= 8192 | caller's mode, else `auto` | bounded depth for synthesis |
+| Convergence specialist | >= 4096 | caller's mode, else `off` | per-claim JSON renderer (window-aware trim must stay usable) |
+| Escalation rungs | >= 8192 | caller's mode, else `auto` | "bigger/better when hard" |
+| Apply | 4096 (unchanged) | caller's mode | historical behavior preserved |
+
+An explicit caller `--max-tokens` / `--reasoning-effort` always wins.
 
 ## Convergence specialist — structured claims audits
 

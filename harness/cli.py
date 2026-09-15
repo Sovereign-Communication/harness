@@ -30,14 +30,17 @@ from .consent import probe_consent
 from .errors import HarnessError
 from .spend import discover_free_models
 from .filesafety import validate_target_file, validate_verify_command
-from .panel import panel_judge
 from .output import eprint
 from .session import (apply_session as _session, governor_for as _governor,
-                      ledger_for as _ledger, router_for as _router,
+                      ledger_for as _ledger,
                       run_meta as _session_run_meta)
+from .service import prepare_verify as _prepare_verify
+from .service import run_verify as _service_verify
+from .service import read_text_file as _service_read_text
+from .rankings import build_rankings_report as _rankings_report
 from .capability import capabilities_payload as _capability_payload_owner
 from .results import terminal_exit_code
-from .saturation import advise, pre_run_warning
+from .saturation import advise
 import sys
 import uuid
 
@@ -70,15 +73,12 @@ def _split_opt_list(value):
 
 
 def _read_text(path, what):
-    """Read a text file, turning a missing path into a presentable error.
+    """CLI alias for the ONE BOM-tolerant reader (service.read_text_file).
     utf-8-sig: Windows tooling (PowerShell ``>`` redirects) emits BOM'd text;
     a leading U+FEFF would corrupt --prompt-file/--source-file input and make
-    handoff JSON files fail to parse."""
-    try:
-        with open(path, encoding="utf-8-sig") as f:
-            return f.read()
-    except OSError as e:
-        raise HarnessError(f"{what} not readable: {path} ({e.strerror or e})") from e
+    handoff JSON files fail to parse. Kept as a named seam so existing tests
+    and callers keep their patch point."""
+    return _service_read_text(path, what)
 
 
 def _read_json(path, what):
@@ -138,34 +138,20 @@ def _run_claims_verify(settings, *, prompt, task_id=None, max_tokens=None,
                        reasoning_effort=None, converge=False, judge=None,
                        convergence_model=None, specialist_pool=None,
                        reassurance_claims="", panel=None, max_cost=None):
-    """The ONE claims-verify execution path: governor setup, panel_judge run,
-    cost attribution. `verify` and `dogfood` both call this; interfaces only
-    prepare inputs and present the result. Panel ordering (catalog seed,
-    capability sort, degrade-to-given-order) is the panel lane's own job."""
-    api_key, gov = _governor(settings, max_cost)
-    ledger = _ledger(settings)
-    # Pre-spend look-ahead; advice only, never a gate.
-    pre_run_warning(governor=gov, ledger=ledger, use_free=settings.use_free)
-    panel = (panel or ",".join(settings.panel_pool)).split(",")
-    result = panel_judge(
-        transport=HttpTransport(), api_key=api_key, governor=gov, prompt=prompt,
-        panel=panel,
-        judge=judge or settings.judge,
-        max_tokens=max_tokens,
-        reasoning_effort=reasoning_effort or settings.reasoning_effort,
-        reasoning_token_budget=settings.reasoning_token_budget,
-        task_id=task_id or uuid.uuid4().hex[:8], ledger=ledger,
-        max_panelists=settings.max_panelists,
-        run_convergence=converge,
-        convergence_model=convergence_model or settings.convergence_model,
-        specialist_pool=(specialist_pool if specialist_pool
-                         else _router(settings).specialist_pool),
-        claim_polarity={cid.strip(): "reassurance" for cid in
-                        (reassurance_claims or "").split(",") if cid.strip()},
-        free_tier=settings.use_free)
-    result["cost_by_model"] = gov.cost_by_model()
-    result["meta"] = _run_meta(settings, gov)
-    return result
+    """Claims-verify execution via the canonical service layer. Kept as a
+    named seam because `dogfood` composes it and tests patch it; the
+    assembly itself (governor, ledger, pre-run look-ahead, panel_judge
+    kwargs, cancelled envelope, cost/meta) has ONE owner: service.run_verify.
+    Interfaces only prepare inputs and present results. Panel ordering
+    (catalog seed, capability sort, degrade-to-given-order) is the panel
+    lane's own job."""
+    return _service_verify(
+        settings, prompt=prompt, task_id=task_id,
+        max_cost=max_cost, judge=judge, reasoning_effort=reasoning_effort,
+        max_tokens=max_tokens, panel=panel, converge=converge,
+        convergence_model=convergence_model,
+        specialist_pool=specialist_pool,
+        reassurance_claims=reassurance_claims)
 
 
 def _run_meta(settings, gov):
@@ -176,19 +162,27 @@ def _run_meta(settings, gov):
 
 def _cmd_verify(opts, settings):
     # P0 structured-claims mode: lint + auto-expand BEFORE any network call, so
-    # an ungrounded claim is rejected without spending a cent.
-    claims_lint = None
-    prompt = None
-    if opts.claims_file:
-        if not opts.source_file:
-            raise HarnessError("verify --claims-file requires --source-file "
-                               "(the verbatim code window the panel will review).")
-        manifest_ctx, claims = load_claims_manifest(opts.claims_file)
-        quoted = _read_text(opts.source_file, "--source-file")
-        defs = load_definitions_file(opts.definitions_file) if opts.definitions_file else {}
-        context = opts.claim_context if opts.claim_context is not None else manifest_ctx
-        prompt, claims_lint = build_claims_prompt(claims, quoted, source_index=defs,
-                                                  context=context)
+    # ONE owner for prompt assembly (the canonical service layer): file
+    # reading, manifest parsing, grounding, and convergence/polarity
+    # derivation all live in service.prepare_verify. The CLI keeps only
+    # presentation -- lint printing, the rejected exit, and the reassurance
+    # banner. Error wording is preserved verbatim at the CLI boundary.
+    if not (opts.claims_file or opts.prompt_file or opts.prompt):
+        raise HarnessError(
+            "verify requires --prompt-file/--prompt or --claims-file.")
+    if opts.claims_file and not opts.source_file:
+        raise HarnessError("verify --claims-file requires --source-file "
+                           "(the verbatim code window the panel will review).")
+    if opts.prompt is not None and not opts.prompt.strip():
+        raise HarnessError("prompt is empty.")
+    prepared = _prepare_verify(
+        prompt=opts.prompt, prompt_file=opts.prompt_file,
+        claims_file=opts.claims_file, source_file=opts.source_file,
+        definitions_file=opts.definitions_file,
+        claim_context=opts.claim_context)
+    prompt = prepared["prompt"]
+    claims_lint = prepared["claims_lint"]
+    if claims_lint is not None:
         if not claims_lint["ok"]:
             for issue in claims_lint["issues"]:
                 eprint(f"[claims-lint] {issue['severity'].upper()} "
@@ -197,17 +191,8 @@ def _cmd_verify(opts, settings):
             sys.exit(2)
         # structured-claims mode always runs the convergence gate (deterministic
         # tally) and derives the polarity map from the manifest kinds.
-        opts.converge = True
-        opts.reassurance_claims = ",".join(c.claim_id for c in claims
-                                           if c.kind == "reassurance")
-    elif opts.prompt_file:
-        prompt = _read_text(opts.prompt_file, "--prompt-file")
-    elif opts.prompt:
-        prompt = opts.prompt
-    else:
-        raise HarnessError("verify requires --prompt-file/--prompt or --claims-file.")
-    if not prompt.strip():
-        raise HarnessError("prompt is empty.")
+        opts.converge = prepared["converge"]
+        opts.reassurance_claims = prepared["reassurance_claims"]
     result = _run_claims_verify(
         settings, prompt=prompt, task_id=opts.task_id,
         max_tokens=opts.max_tokens, reasoning_effort=opts.reasoning_effort,
@@ -551,6 +536,21 @@ def _cmd_trust(opts, settings):
                                     caller=opts.caller), opts.out)
 
 
+def _cmd_rankings(opts, settings):
+    """Rankings-driven candidate report (advisory; no config mutation).
+
+    One GET for the daily rankings plus the cached live catalog; with
+    --probe, each proposed candidate additionally pays one governed vote.
+    """
+    api_key, gov = _governor(settings, opts.max_cost)
+    report = _rankings_report(
+        HttpTransport(), api_key, gov,
+        top_n=opts.top, probe_candidates=bool(opts.probe))
+    report["cost_by_model"] = gov.cost_by_model()
+    report["meta"] = _run_meta(settings, gov)
+    _emit(report, opts.out)
+
+
 def _cmd_capabilities(opts, settings):
     if getattr(opts, "check_shipped", False):
         # Freshness validation of the SHIPPED default lanes: pure /models read
@@ -675,6 +675,7 @@ _DISPATCH = {
     "capabilities": _cmd_capabilities,
     "spend": _cmd_spend,
     "trust": _cmd_trust,
+    "rankings": _cmd_rankings,
 }
 
 
@@ -816,6 +817,19 @@ def main(argv=None):
 
     sub.add_parser("spend", help="Key identity & spend status")
     _add_output_flags(sub.choices["spend"])
+
+    prank = sub.add_parser(
+        "rankings",
+        help="Daily OpenRouter rankings: top models, climbers, and "
+             "evidence-driven pool-candidate proposals")
+    prank.add_argument("--top", type=int, default=None,
+                       help="how many ranked models to report (default: 15)")
+    prank.add_argument("--probe", action="store_true",
+                       help="gate each proposed candidate through the one-vote "
+                            "probe (billable, spend-governed)")
+    prank.add_argument("--max-cost", type=float, default=None,
+                       help="session cost ceiling in dollars (default: configured max_cost)")
+    _add_output_flags(prank)
 
     ptrust = sub.add_parser("trust", help="Trust & correctness standing from ledger history "
                                           "(read-only: no key, no network)")

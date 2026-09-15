@@ -17,6 +17,7 @@ free router and serves as a final fallback lane.
 """
 import json
 import os
+from dataclasses import dataclass
 
 from .errors import HarnessError
 from .output import eprint
@@ -28,6 +29,9 @@ CONFIG_DIR = os.path.expanduser("~/.config/harness")
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+# Daily usage rankings (model_permaslug + total_tokens per day). The
+# evidence source for pool-candidate refresh (see harness/rankings.py).
+OPENROUTER_RANKINGS_URL = "https://openrouter.ai/api/v1/datasets/rankings-daily"
 
 # MorphLite-compatible transformation backend. Selecting the `morph` backend
 # explicitly opts into this model; ordinary Harness routing remains unchanged.
@@ -36,7 +40,11 @@ MORPH_MODEL = "morph/morph-v3-fast"
 # Cost ceilings. The philosophy (inherited from fusion_lite.py): worst-case
 # cost is a *guarantee*, computed before any network call, not an estimate.
 HARD_MAX_COST = 0.10        # per-call ceiling can never be raised past this
-DEFAULT_MAX_COST = 0.02     # default per-call ceiling
+# Default per-call (per-lane-run) ceiling. Raised from $0.02 with the verified
+# 2026-09-13 paid slates: the wider vote pool's worst-case preflight reserve is
+# ~$0.04 (actual verified cost of a 5-vote paid panel: $0.0038 -- see
+# docs/MODEL_SELECTION_HANDOFF_2026-09-13.md). HARD_MAX_COST is unchanged.
+DEFAULT_MAX_COST = 0.05
 HARD_TASK_MAX_COST = 0.25   # per-task (multi-round apply) hard ceiling
 DEFAULT_TASK_MAX_COST = 0.05
 # Verify token budget. On the free tier cost is $0 regardless, so this is
@@ -48,6 +56,99 @@ DEFAULT_TASK_MAX_COST = 0.05
 # ignored/truncated by OpenRouter, so a large value here is safe.
 DEFAULT_MAX_TOKENS = 2048
 DEFAULT_APPLY_MAX_TOKENS = 4096
+
+# ---- lane budgets and reasoning modes (ONE policy owner) -------------------
+# Task-shaped token budgets (2026-09-13 operator ruling: "stop using reasoning
+# if it's not needed here, or if it is, then appropriately allocate tokens").
+# A vote is a cheap decision: hidden thinking starves the visible JSON, so
+# structured votes run with reasoning explicitly disabled and a >=4096 output
+# budget (600-700 starved even non-reasoning emitters into truncation). Judge
+# synthesis, the convergence specialist, and escalation rungs need bounded
+# depth: >=8192 with the caller's reasoning mode (auto by default; the
+# auto/low heuristic lives in chat.py). Explicit caller configuration always
+# wins over these defaults. Apply keeps its own 4096 budget untouched.
+MIN_VOTE_TOKENS = 4096
+MIN_SYNTHESIS_TOKENS = 8192
+# Structured claim votes are frequently longer than ordinary prose; the vote
+# lane raises its floor when convergence is requested (kept next to the other
+# lane minima as the ONE policy home; convergence.py imports it back for its
+# own consumers).
+MIN_CONVERGENCE_PANEL_TOKENS = 4096
+
+
+def effective_lane_policy(role, max_tokens=None, reasoning_effort=None):
+    """The ONE owner of per-lane token budgets and reasoning modes.
+
+    role is one of "vote" (panel/claim votes), "judge" (judge synthesis and
+    the convergence specialist), "escalation" (deep rungs), or "apply"
+    (unchanged historical behavior). Returns ``(max_tokens, reasoning_effort)``
+    with the lane minimum applied and the reasoning mode resolved: an explicit
+    caller effort always passes through; otherwise votes disable reasoning
+    ("off" -- an explicit ``{"effort": "none"}`` payload post-patch) and
+    synthesis/escalation lanes default to "auto".
+    """
+    requested = int(max_tokens or 0)
+    if role == "vote":
+        effort = reasoning_effort or "off"
+        return max(requested, MIN_VOTE_TOKENS), effort
+    if role in ("judge", "escalation"):
+        effort = reasoning_effort or "auto"
+        return max(requested, MIN_SYNTHESIS_TOKENS), effort
+    if role == "apply":
+        return requested, (reasoning_effort or "auto")
+    raise ValueError(f"unknown lane role: {role}")
+
+
+@dataclass(frozen=True)
+class LanePolicy:
+    """One lane's resolved spend: the max_tokens floor and reasoning effort."""
+
+    tokens: int
+    effort: str
+
+
+@dataclass(frozen=True)
+class PanelLanePolicy:
+    """Immutable resolved lane policy for one ``panel_judge`` run.
+
+    Construction applies every caller override EXACTLY ONCE through
+    :func:`effective_lane_policy` (still the single policy source); consumers
+    -- reservation computations and chat calls -- read
+    ``policy.vote.tokens`` / ``policy.judge.tokens`` /
+    ``policy.specialist.tokens`` (and ``.effort``) instead of parallel
+    token/effort locals threaded through the lane. This is the struct that
+    would have prevented the specialist reserve/call mismatch: there is one
+    place to look up what a lane spends.
+
+    Attributes (post-override):
+        vote: panel votes; when convergence is requested the vote floor is
+            the structured-claims minimum (a caller's lower bound is kept but
+            raised to avoid truncation in the vote JSON).
+        judge: judge synthesis; reserve rows use ``judge_reserve_tokens``
+            (the synthesis budget plus the fixed headroom the prompt-builder
+            adds), never a different lane's budget.
+        specialist: the convergence specialist's JSON-rendering lane -- at the
+            vote floor by ruling, NOT the synthesis floor (an 8192 budget
+            defeats the window-aware vote trim on small-window specialists).
+    """
+
+    vote: LanePolicy
+    judge: LanePolicy
+    specialist: LanePolicy
+
+    def __init__(self, *, max_tokens=None, reasoning_effort="auto",
+                 run_convergence=False):
+        vote_tokens, vote_effort = effective_lane_policy(
+            "vote", max_tokens=max_tokens, reasoning_effort=reasoning_effort)
+        if run_convergence:
+            vote_tokens = max(vote_tokens, MIN_CONVERGENCE_PANEL_TOKENS)
+        judge_tokens, judge_effort = effective_lane_policy(
+            "judge", max_tokens=max_tokens, reasoning_effort=reasoning_effort)
+        spec_tokens, spec_effort = effective_lane_policy(
+            "vote", max_tokens=max_tokens, reasoning_effort=reasoning_effort)
+        object.__setattr__(self, "vote", LanePolicy(vote_tokens, vote_effort))
+        object.__setattr__(self, "judge", LanePolicy(judge_tokens, judge_effort))
+        object.__setattr__(self, "specialist", LanePolicy(spec_tokens, spec_effort))
 
 # BYOK spend is invisible to the tracked key's balance (confirmed on the
 # SCMessenger account: mistralai/ routed via BYOK, plus the P0 block below for
@@ -122,21 +223,41 @@ SPECIALIST_POOL_FREE = [
 ]
 
 # ---- Paid lanes (use_free=False) ----
-# Curated from the live OpenRouter catalog (Sept 2026); same policy as the
+# Curated from the live OpenRouter catalog and per-call probes (2026-09-13;
+# evidence: docs/MODEL_SELECTION_HANDOFF_2026-09-13.md). Same policy as the
 # free pools -- stale ids hard-fatal at fetch_pricing, so re-validate before
 # shipping a change here (the round-1 free-pool fix is the precedent).
+# Vote pool: reasoning-OFF emitters verified parseable at 4096 budgets,
+# ordered cheapest first (gemini-3.8-flash supersedes the banned
+# gemini-2.5-pro; the V3-era deepseek ids and granite/llama-3.1-8b are
+# dropped as superseded/oldest-generation).
 DEFAULT_PANEL_PAID = [
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4.1-flash",
     "inclusionai/ling-3.0-flash",
-    "meta-llama/llama-3.1-8b-instruct",
-    "ibm-granite/granite-4.0-h-micro",
+    "openai/gpt-4o-mini",
+    "openai/gpt-5-mini",
+    "openai/gpt-5.6-luna",
+    "google/gemini-3.8-flash",
 ]
-DEFAULT_JUDGE_PAID = "inclusionai/ling-3.0-flash"
-DEFAULT_APPLY_MODEL_PAID = "deepseek/deepseek-chat"
+# Value-oriented deep-thinking judge (operator-endorsed); its route is
+# MANDATORY-reasoning, which the chat lane supports via the param-rejection
+# retry (an explicit disable draws one free 400, then the provider default).
+DEFAULT_JUDGE_PAID = "z-ai/glm-5.3-flash"
+# Apply primary: the operator pick (rankings #3 and climbing), with verified
+# cheaper/fallback candidates.
+DEFAULT_APPLY_MODEL_PAID = "deepseek/deepseek-v4.1-flash"
+DEFAULT_APPLY_POOL_PAID = [
+    "deepseek/deepseek-v4.1-flash",
+    "deepseek/deepseek-v4-flash",
+    "openai/gpt-4o-mini",
+    "openai/gpt-5.6-luna",
+]
 
 # Paid-lane specialist fallbacks (after the primary): strong JSON emitters
 # first.
 SPECIALIST_POOL_PAID = [
-    "deepseek/deepseek-chat",
+    "deepseek/deepseek-v4.1-flash",
 ]
 
 # ---- Escalation ladders (judge-driven auto-escalation with de-escalation) ----
@@ -150,30 +271,29 @@ ESCALATION_POOL_FREE = [
     "cohere/north-mini-code:free",
 ]
 
-# Paid escalation ladder: curated from live OpenRouter catalog (Sept 2026).
-# The top rung is the "smartest per price tier" capstone.
+# Paid escalation ladder: curated from the verified deep-think tier
+# (2026-09-13 probes), cheapest -> most capable. The top rung is the
+# "smartest per price tier" capstone.
 # Per-rung cost caps are advisory (enforced by SpendGovernor preflight).
 # Only catalog-validated ids belong here (stale ids hard-fatal at fetch_pricing).
 ESCALATION_POOL_PAID = [
-    "inclusionai/ling-3.0-flash",
-    "meta-llama/llama-3.1-8b-instruct",
-    "deepseek/deepseek-chat",
-    "openai/gpt-4o-mini",
-    "openai/gpt-4o",
-    "ibm-granite/granite-4.0-h-micro",
+    "z-ai/glm-5.3-flash",
+    "deepseek/deepseek-v4-pro",
+    "openai/gpt-4.1",
+    "openai/gpt-5.6-sol",
 ]
 
 # The smartest judge available per tier (used when judge auto-selection is on).
 # Free tier: gemma-4-31b-it:free (already DEFAULT_JUDGE for free).
-# Paid tier: the top of the paid escalation ladder (validated catalog id).
-DEFAULT_JUDGE_PAID_TOP = "ibm-granite/granite-4.0-h-micro"
+# Paid tier: flagship-class from the verified deep-think tier.
+DEFAULT_JUDGE_PAID_TOP = "openai/gpt-5.6-sol"
 
 # Per-rung advisory cost caps (USD). Documented policy for operators and the
 # judge's worth-gating decision; the hard enforcement is still
 # HARD_TASK_MAX_COST / HARD_MAX_COST via SpendGovernor preflight.
 ESCALATION_RUNG_CAPS = {
     "free": [0.0, 0.0, 0.0],
-    "paid": [0.02, 0.03, 0.05, 0.08, 0.15, 0.25],
+    "paid": [0.03, 0.06, 0.10, 0.20],
 }
 
 
@@ -187,7 +307,7 @@ def shipped_model_ids():
     return (set(FREE_PANEL_POOL) | {FREE_JUDGE} | set(FREE_APPLY_POOL)
             | set(SPECIALIST_POOL_FREE)
             | set(DEFAULT_PANEL_PAID) | {DEFAULT_JUDGE_PAID}
-            | {DEFAULT_APPLY_MODEL_PAID} | set(SPECIALIST_POOL_PAID)
+            | set(DEFAULT_APPLY_POOL_PAID) | set(SPECIALIST_POOL_PAID)
             | set(ESCALATION_POOL_FREE) | set(ESCALATION_POOL_PAID)
             | {DEFAULT_JUDGE_PAID_TOP})
 
@@ -395,7 +515,7 @@ def load_settings(overrides=None):
         default_panel = DEFAULT_PANEL_PAID
         default_judge = DEFAULT_JUDGE_PAID
         default_judge_top = DEFAULT_JUDGE_PAID_TOP
-        default_apply_pool = [DEFAULT_APPLY_MODEL_PAID]
+        default_apply_pool = list(DEFAULT_APPLY_POOL_PAID)
         default_specialist_pool = SPECIALIST_POOL_PAID
         default_escalation_pool = ESCALATION_POOL_PAID
 

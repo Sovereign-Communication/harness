@@ -13,13 +13,17 @@ the vote count.
 from . import events as _events
 from .chat import (_chat_reservation_slots, _extract_json, _reported_cost,
                    assess_output, chat, extract_content_and_cost)
+from .config import MIN_CONVERGENCE_PANEL_TOKENS, MIN_SYNTHESIS_TOKENS
 from .errors import HarnessError
 from .output import eprint
 
 MAX_429_RETRIES = 2
 # Backoff base for bounded 429 retries; Retry-After headers take precedence.
 RETRY_429_BACKOFF_SECONDS = 0.5
-DEFAULT_CONVERGENCE_PANEL_TOKENS = 4096
+# The vote-lane floor for structured claims lives with the other lane minima
+# (config.MIN_CONVERGENCE_PANEL_TOKENS). Kept as a re-export alias for any
+# historical readers; the policy owner is config.py.
+DEFAULT_CONVERGENCE_PANEL_TOKENS = MIN_CONVERGENCE_PANEL_TOKENS
 
 
 def _parse_consensus(judge_text):
@@ -324,7 +328,8 @@ def _trim_votes_to_window(vote_lines, profiles, candidates, head_text,
 
 
 def run_convergence_specialist(transport, api_key, governor, panel_results, model,
-                                max_tokens=1200, reasoning_effort="auto",
+                                max_tokens=MIN_SYNTHESIS_TOKENS,
+                                reasoning_effort="auto",
                                 reasoning_token_budget=0.4, ledger=None, task_id=None,
                                 fallback_pool=None, claim_polarity=None,
                                 profiles=None):

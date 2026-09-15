@@ -57,6 +57,10 @@ const EVENT_DETAIL = {
   run_accepted: (e) => `${e.kind} (${e.ui_run})`,
   run_finished: (e) => `${e.kind}: ${e.status}`,
   run_cancel_requested: (e) => `${e.ui_run}`,
+  pool_filtered: (e) => `${e.lane || ""}: ${e.reason} — ${(e.models || []).join(", ")}`,
+  rankings_probe: (e) => e.phase === "start"
+    ? `probing ${e.model}`
+    : `${e.model}: ${e.ok ? "PASS" : "FAIL"} ${fmtCost(e.cost)}`,
 };
 
 function renderEvent(e) {
@@ -345,6 +349,7 @@ $("#btn-ledger-verify").addEventListener("click", async () => {
 });
 
 // ---- trust ----------------------------------------------------------------
+$("#btn-trust-refresh").addEventListener("click", refreshTrust);
 async function refreshTrust() {
   try {
     const caller = $("#trust-caller").value;

@@ -22,6 +22,7 @@ import json
 import math
 import os
 import time
+from dataclasses import dataclass, replace
 
 from .config import CAPABILITIES_PATH, CAPABILITIES_TTL
 from .output import eprint
@@ -137,32 +138,50 @@ _SHRINK = 2
 DEFAULT_TTL = 24 * 3600  # refresh /models capabilities at most once / TTL
 
 
+@dataclass(frozen=True)
 class CapabilityProfile:
     """Declared capability of a single model, derived from a /models entry."""
 
-    __slots__ = ("model_id", "context_length", "free", "prompt_price",
-                 "completion_price", "supports_reasoning",
-                 "supports_structured_json", "supports_json_schema",
-                 "supports_response_format", "tool_use", "input_modalities",
-                 "name", "_fetched_at")
+    model_id: str
+    context_length: int
+    free: bool
+    prompt_price: float
+    completion_price: float
+    supports_reasoning: bool
+    supports_structured_json: bool
+    supports_json_schema: bool
+    supports_response_format: bool
+    tool_use: bool
+    input_modalities: list
+    name: str
+    # Stamped by load_profiles via dataclasses.replace; not part of to_dict().
+    _fetched_at: object
 
     def __init__(self, model_id, context_length=None, free=False,
                  prompt_price=0.0, completion_price=0.0, supports_reasoning=False,
                  supports_structured_json=False, supports_json_schema=False,
                  supports_response_format=False, tool_use=False,
-                 input_modalities=None, name=None):
-        self.model_id = model_id
-        self.context_length = int(context_length) if context_length else 0
-        self.free = free
-        self.prompt_price = float(prompt_price or 0.0)
-        self.completion_price = float(completion_price or 0.0)
-        self.supports_reasoning = supports_reasoning
-        self.supports_structured_json = supports_structured_json
-        self.supports_json_schema = supports_json_schema
-        self.supports_response_format = supports_response_format
-        self.tool_use = tool_use
-        self.input_modalities = list(input_modalities) if input_modalities else []
-        self.name = name
+                 input_modalities=None, name=None, _fetched_at=None):
+        # Frozen dataclass: every field goes through object.__setattr__,
+        # like PanelLanePolicy's wiring (the coercion work stays here).
+        object.__setattr__(self, "model_id", model_id)
+        object.__setattr__(self, "context_length",
+                           int(context_length) if context_length else 0)
+        object.__setattr__(self, "free", free)
+        object.__setattr__(self, "prompt_price", float(prompt_price or 0.0))
+        object.__setattr__(self, "completion_price",
+                           float(completion_price or 0.0))
+        object.__setattr__(self, "supports_reasoning", supports_reasoning)
+        object.__setattr__(self, "supports_structured_json",
+                           supports_structured_json)
+        object.__setattr__(self, "supports_json_schema", supports_json_schema)
+        object.__setattr__(self, "supports_response_format",
+                           supports_response_format)
+        object.__setattr__(self, "tool_use", tool_use)
+        object.__setattr__(self, "input_modalities",
+                           list(input_modalities) if input_modalities else [])
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "_fetched_at", _fetched_at)
 
     # -- JSON capability: declared ---------------------------------------------------
     @property
@@ -382,9 +401,8 @@ def load_profiles(path):
                 return {}, None  # foreign or older schema: treat as stale, refetch
         out = {}
         for mid, d in (data.get("models") or {}).items():
-            p = CapabilityProfile.from_dict(d)
-            p._fetched_at = data.get("fetched_at")
-            out[mid] = p
+            out[mid] = replace(CapabilityProfile.from_dict(d),
+                               _fetched_at=data.get("fetched_at"))
         return out, data.get("fetched_at")
     except (OSError, ValueError, AttributeError):
         return {}, None

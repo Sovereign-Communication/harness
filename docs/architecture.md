@@ -8,7 +8,13 @@ Harness is a dependency-light Python package with three surfaces:
 
 ## Ownership
 
-- `config.py`: settings and model-pool defaults.
+- `config.py`: settings, model-pool defaults, and lane budgets
+  (`effective_lane_policy` is the ONE owner of per-lane output budgets and
+  reasoning modes; lanes resolve policy through it, never locally).
+- `service.py`: canonical verify/claims request assembly shared by the CLI
+  and web interfaces (prompt/claims reading, cancelled-run envelope,
+  cost/meta attachment). Interfaces consume it; they do not re-derive the
+  verify lane.
 - `validation.py`: shared trust-boundary validation.
 - `spend.py`: cost ceilings, pricing, BYOK, and model discovery.
 - `chat.py`: model transport payloads and output usability (one owner of the
@@ -34,6 +40,9 @@ Harness is a dependency-light Python package with three surfaces:
 - `continuation.py`: persisted continuation authority and gate identity.
 - `ledger.py`: hash-chained evidence.
 - `results.py`: apply result vocabulary and exit-code policy.
+- `rankings.py`: rankings-driven pool-candidate refresh (daily OpenRouter
+  rankings -> catalog intersection -> one-vote probe gate). Advisory only:
+  it never mutates configuration.
 - `session.py`: dependency composition.
 - `mcp.py`: MCP JSON-RPC framing, request lifecycle, tool contracts, boundary validation, and engine dispatch.
 
