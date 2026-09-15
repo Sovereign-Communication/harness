@@ -17,7 +17,7 @@ from . import trust as trust_policy
 from .consent import probe_consent
 from .continuation import validate_continuation
 from .errors import HarnessError, ToolCancelled
-from .panel import panel_judge
+from .service import run_verify as _service_run_verify
 from .validation import (
     MAX_LINES,
     MAX_ROUNDS,
@@ -448,7 +448,10 @@ class McpServer:
                     "prompt": {"type": "string", "description": "Self-contained question + context"},
                     "panel": {"type": "string", "description": "Comma-separated model pool. Defaults to configured panel pool."},
                     "judge": {"type": "string", "description": "Judge model id. Defaults to configured judge."},
-                    "max_tokens": {"type": "integer", "default": 2048},
+                    "max_tokens": {"type": "integer", "default": 2048,
+                                   "description": "Per-call output budget. The vote lane enforces its "
+                                                  "own minimum (4096) and the judge/specialist lanes "
+                                                  "theirs (8192); an explicit value here wins."},
                     "reasoning_effort": {"type": "string", "enum": ["auto", "off", "none", "low", "medium", "high", "on"]},
                     "converge": {"type": "boolean", "description": "Run the convergence specialist on per-claim votes (requires per-claim JSON panel output)"},
                     "convergence_model": {"type": "string", "description": "Primary specialist model (default: judge)"},
@@ -602,16 +605,31 @@ class McpServer:
                     raise HarnessError(
                         f"panel_verify task_max_cost {tmc} exceeds remaining "
                         f"session budget {remaining:.6f}")
-            return panel_judge(
-                transport=self.transport, api_key=self.api_key, governor=self.governor,
-                prompt=prompt, panel=model, judge=judge, max_tokens=max_tokens,
-                reasoning_effort=reasoning,
-                reasoning_token_budget=self.engine.reasoning_token_budget,
-                task_id=task_id, ledger=self.ledger, max_panelists=self.max_panelists,
-                run_convergence=converge, convergence_model=convergence_model,
+            # Lane assembly belongs to the canonical service layer (the same
+            # owner the CLI and web server consume): governor/ledger wiring,
+            # pre-run look-ahead, the cancelled-run envelope, and convergence
+            # defaults. MCP keeps only protocol concerns -- boundary
+            # validation, session-injected dependencies, and its historical
+            # result shape (no meta/cost attachment, no service-side task id).
+            result = _service_run_verify(
+                None, prompt=prompt, task_id=task_id, cancel_check=cancel_check,
+                judge=judge, reasoning_effort=reasoning, panel=model,
+                converge=converge, convergence_model=convergence_model,
                 specialist_pool=(specialist_arg if specialist_arg is not None
                                  else self.router.specialist_pool),
-                free_tier=self.use_free, cancel_check=cancel_check)
+                max_tokens=max_tokens, api_key=self.api_key,
+                governor=self.governor, ledger=self.ledger,
+                transport=self.transport,
+                reasoning_token_budget=self.engine.reasoning_token_budget,
+                max_panelists=self.max_panelists, free_tier=self.use_free,
+                router=self.router, generate_task_id=False, attach_meta=False)
+            if result.get("status") == "cancelled":
+                # The service builds the honest cancelled envelope (in-flight
+                # spend included); this protocol face still answers its
+                # established JSON-RPC cancellation error, via the same
+                # ToolCancelled mapping every other cancelled lane uses.
+                raise ToolCancelled()
+            return result
 
         if name == "apply_edit":
             continuation = validate_continuation(args.get("continuation"))

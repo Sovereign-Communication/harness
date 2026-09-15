@@ -172,61 +172,31 @@ def run_apply_task(task_id, args, cancel_check):
 
 
 def run_verify_task(task_id, args, cancel_check):
-    """The verify lane: same assembly as the CLI's _run_claims_verify.
-    Covers both the prompt lane and the structured-claims lane (claims
-    manifest + source window + optional definitions); lint runs pre-network
-    and an ungrounded claim set finishes the run as ``rejected``.
-    """
-    from .panel import panel_judge
-    from ._http import HttpTransport
-    from .saturation import pre_run_warning
-    from .claims import (build_claims_prompt, load_claims_manifest,
-                         load_definitions_file)
+    """The verify lane via the canonical service layer (harness.service):
+    one assembly for the prompt lane and the structured-claims lane across
+    CLI and UI -- lint runs pre-network, an ungrounded claim set finishes
+    the run as ``rejected``, and a cooperative cancel returns the honest
+    spend envelope."""
+    from .service import build_verify_prompt, run_verify
     settings = load_settings()
-    if args.get("prompt_file"):
-        with open(args["prompt_file"], encoding="utf-8-sig") as f:
-            prompt = f.read()
-    elif args.get("claims_file"):
-        with open(args["source_file"], encoding="utf-8-sig") as f:
-            quoted = f.read()
-        manifest_ctx, claims = load_claims_manifest(args["claims_file"])
-        defs = (load_definitions_file(args["definitions_file"])
-                if args.get("definitions_file") else {})
-        context = (args.get("claim_context") if args.get("claim_context")
-                   else manifest_ctx)
-        prompt, claims_lint = build_claims_prompt(
-            claims, quoted, source_index=defs, context=context)
-        if not claims_lint["ok"]:
-            return {"status": "rejected", "lint": claims_lint, "verdict": None,
-                    "actual_cost": 0.0}
-    else:
-        prompt = args["prompt"]
-    api_key, gov = governor_for(settings, args.get("max_cost"))
-    ledger = ledger_for(settings)
-    pre_run_warning(governor=gov, ledger=ledger, use_free=settings.use_free)
     try:
-        result = panel_judge(
-            transport=HttpTransport(), api_key=api_key, governor=gov, prompt=prompt,
-            panel=list(settings.panel_pool), judge=args.get("judge") or settings.judge,
-            max_tokens=None,
-            reasoning_effort=args.get("reasoning_effort") or settings.reasoning_effort,
-            reasoning_token_budget=settings.reasoning_token_budget,
-            task_id=task_id, ledger=ledger,
-            max_panelists=settings.max_panelists,
-            free_tier=settings.use_free,
-            cancel_check=cancel_check)
-    except ToolCancelled:
-        # Spend honesty: in-flight calls that billed before the cooperative
-        # cancel landed are real spend and must reach the envelope.
-        return {"status": "cancelled", "verdict": None,
-                "judge_synthesis_status": "cancelled",
-                "panel_results": [], "panel_failures": [],
-                "actual_cost": gov.spent, "max_cost_ceiling": gov.max_cost,
-                "cost_by_model": gov.cost_by_model(),
-                "meta": run_meta(settings, gov)}
-    result["cost_by_model"] = gov.cost_by_model()
-    result["meta"] = run_meta(settings, gov)
-    return result
+        prompt, claims_lint = build_verify_prompt(
+            prompt=args.get("prompt"),
+            prompt_file=args.get("prompt_file"),
+            claims_file=args.get("claims_file"),
+            source_file=args.get("source_file"),
+            definitions_file=args.get("definitions_file"),
+            claim_context=args.get("claim_context"))
+    except ValueError as e:
+        raise HarnessError(str(e)) from None
+    if claims_lint is not None and not claims_lint["ok"]:
+        return {"status": "rejected", "lint": claims_lint, "verdict": None,
+                "actual_cost": 0.0}
+    return run_verify(settings, prompt=prompt, task_id=task_id,
+                      cancel_check=cancel_check,
+                      max_cost=args.get("max_cost"),
+                      judge=args.get("judge"),
+                      reasoning_effort=args.get("reasoning_effort"))
 
 
 def run_continue_task(task_id, args, cancel_check):

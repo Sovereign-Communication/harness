@@ -18,9 +18,9 @@ from .chat import (_chat_reservation_slots, _extract_json, _reported_cost,
                    assess_output, chat, extract_content_and_cost,
                    looks_truncated, REASONING_FALLBACK_PREFIX)
 from .capability import ordered_pool
-from .config import DEFAULT_MAX_TOKENS
+from .config import DEFAULT_MAX_TOKENS, PanelLanePolicy
 from . import events as _events
-from .convergence import (DEFAULT_CONVERGENCE_PANEL_TOKENS, MAX_429_RETRIES,
+from .convergence import (MAX_429_RETRIES,
                           RETRY_429_BACKOFF_SECONDS, _parse_consensus,
                           extract_claim_verdicts, run_convergence_specialist,
                           tally_convergence)
@@ -44,20 +44,33 @@ def _judge_fallback_candidates(pool, judge, governor, *, exclude=()):
             and not governor.learned_blocked(m_) and governor.is_free(m_)]
 
 
-def _judge_fallback_reserve(pool, judge, governor, judge_max_tokens, extra_tokens):
-    """Preflight reserve rows for the judge rotation (same predicate)."""
-    return [(f"{c} (judge fallback reserve)", c, judge_max_tokens, extra_tokens)
-            for c in _judge_fallback_candidates(pool, judge, governor)]
+def _judge_fallback_reserve(pool, judge, governor, judge_reserve_tokens,
+                            extra_tokens, judge_effort="auto"):
+    """Preflight reserve rows for the judge rotation (same predicate).
+
+    Slot count comes from the same owner as every other reserve: each
+    candidate carries its own reasoning-param-rejection slots, exactly like
+    the primary seat above (a non-reasoning candidate is one call; a
+    reasoning candidate may draw the 400-and-retry pair)."""
+    rows = []
+    for c in _judge_fallback_candidates(pool, judge, governor):
+        slots = _chat_reservation_slots(c, judge_effort)
+        for i in range(slots):
+            rows.append((f"{c} (judge fallback reserve {i + 1}/{slots})", c,
+                         judge_reserve_tokens, extra_tokens))
+    return rows
 
 
 def _run_judge_attempt(*, transport, api_key, governor, judge_prompt, model,
-                       judge_max_tokens, reasoning_effort,
+                       judge_reserve_tokens, reasoning_effort,
                        reasoning_token_budget, task_id, ledger, task_type,
                        cancel_check=None, retry=False):
     """One judge-seat attempt: call, classify, bill, ledger, emit.
 
     The ONE owner of attempt mechanics, shared by the primary seat, the
-    bounded transient retry, and fallback rotation. Returns
+    bounded transient retry, and fallback rotation. ``judge_reserve_tokens``
+    is the resolved judge lane budget (the same number the preflight rows
+    reserve -- one lookup, reserve and call cannot diverge). Returns
     ``(status_note, content, cost)`` where status_note is one of
     ``parseable`` (content is the verdict body), ``byok_blocked``,
     ``reasoning_only``, ``truncated``, ``unparseable``, or ``http_<code>``.
@@ -71,7 +84,7 @@ def _run_judge_attempt(*, transport, api_key, governor, judge_prompt, model,
         raise ToolCancelled()
     status, resp = chat(transport, api_key, model,
                         [{"role": "user", "content": judge_prompt}],
-                        judge_max_tokens, reasoning_effort,
+                        judge_reserve_tokens, reasoning_effort,
                         reasoning_token_budget, governor)
     cost = _reported_cost(resp)
     err = (resp.get("error", {}).get("message", str(resp))
@@ -121,11 +134,22 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     in the pool until max_panelists succeed or the pool is exhausted.
     """
     max_tokens = max_tokens or DEFAULT_MAX_TOKENS
-    panel_tokens = max_tokens
-    if run_convergence:
-        # Structured claim JSON is frequently longer than ordinary prose. Keep
-        # the caller's lower bound but avoid wasting panel slots on truncation.
-        panel_tokens = max(panel_tokens, DEFAULT_CONVERGENCE_PANEL_TOKENS)
+    # Lane policy (ONE owner: config). Construction applies the caller's
+    # --max-tokens/--reasoning-effort overrides exactly once, per lane:
+    #   * votes are cheap decisions -- a >=4096 output budget with reasoning
+    #     explicitly disabled ({"effort": "none"}) keeps hidden thinking from
+    #     starving the visible JSON (the 2026-09-13 BoD failures:
+    #     reasoning-only output at 600-token vote budgets);
+    #   * judge synthesis needs bounded depth, not a starved vote budget:
+    #     >=8192 with "auto" reasoning (low for reasoning-named models);
+    #   * the specialist renders per-claim JSON from the votes -- the
+    #     handoff's "JSON extraction" row (4096, like votes). Resolving it at
+    #     the judge's 8192 synthesis floor would defeat the window-aware vote
+    #     trim for small-window specialists (budget <= 0 disables the guard)
+    #     and rotate a workable lane on truncation.
+    policy = PanelLanePolicy(max_tokens=max_tokens,
+                             reasoning_effort=reasoning_effort,
+                             run_convergence=run_convergence)
     panel_pool = list(panel)
 
     spec_model = convergence_model or judge
@@ -144,41 +168,74 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         free_tier=bool(free_tier), call_lane="panel")
     if _profiles is not None:
         panel_pool = ordered
+    # Strike/demotion visibility: order_pool demotes (and hard-gates) members
+    # on ledger evidence; the dispatch log names every demoted id so callers
+    # can reconcile "why did my pool lose/reorder members?" (2026-09-13
+    # handoff, section 4.2: strike gating must not be opaque).
+    _demoted = [m_ for m_ in panel_pool
+                if ordered and m_ not in ordered] if _profiles is not None else []
+    if _demoted:
+        eprint("[panel] strike/demotion gating removed from dispatch: "
+               + ", ".join(_demoted))
+        _events.emit("pool_filtered", task_id=task_id, lane="panel",
+                     reason="demotion_strike", models=_demoted)
 
     # Rotate out any org-prefix previously observed routing via BYOK (paid).
+    # VISIBLE (2026-09-13 handoff, section 4.1): silent filtering shrank a
+    # 6-model pool to 4 seats and confused dispatch accounting.
+    _byok_removed = [m_ for m_ in panel_pool if governor.learned_blocked(m_)]
+    if _byok_removed:
+        eprint("[panel] " + ", ".join(_byok_removed)
+               + " skipped: learned-BYOK org filter (paid route)"
+               " -- widen the pool or clear byok_prefixes.json to restore.")
+        _events.emit("pool_filtered", task_id=task_id, lane="panel",
+                     reason="learned_byok", models=_byok_removed)
     panel_pool = [m_ for m_ in panel_pool if not governor.learned_blocked(m_)]
     judge_blocked = governor.learned_blocked(judge)
     if not panel_pool:
         raise HarnessError("no available panel models after BYOK filtering")
     target = max(1, min(int(max_panelists), len(panel_pool)))
 
-    judge_max_tokens = max(768, max_tokens + 200)
+    judge_reserve_tokens = max(768, policy.judge.tokens + 200)
     # Reserve for every candidate, bounded 429 retries, and provider reasoning
     # fallbacks. A malformed/rate-limited member may consume a call before a
     # replacement fills its slot; a reasoning rejection may consume a fallback
     # request before the same logical call succeeds.
     calls = []
     for m_ in panel_pool:
-        slots = _chat_reservation_slots(m_, reasoning_effort, MAX_429_RETRIES)
+        slots = _chat_reservation_slots(m_, policy.vote.effort, MAX_429_RETRIES)
         for i in range(slots):
-            calls.append((f"{m_} (panel attempt {i + 1}/{slots})", m_, panel_tokens, 0))
-    judge_slots = _chat_reservation_slots(judge, reasoning_effort)
-    for i in range(judge_slots):
-        calls.append((f"{judge} (judge attempt {i + 1}/{judge_slots})", judge,
-                      judge_max_tokens, target * panel_tokens + 100))
+            calls.append((f"{m_} (panel attempt {i + 1}/{slots})", m_,
+                          policy.vote.tokens, 0))
+    judge_slots = _chat_reservation_slots(judge, policy.judge.effort)
+    # +1: the primary seat's bounded transient retry (http_5xx/408/429) is a
+    # real extra attempt the loop below can make; without its row the ceiling
+    # is approximate exactly when the provider is failing.
+    for i in range(judge_slots + 1):
+        calls.append((f"{judge} (judge attempt {i + 1}/{judge_slots + 1})", judge,
+                      judge_reserve_tokens, target * policy.vote.tokens + 100))
     # Judge fallback reserve (P0 handoff fix): a judge seat with no second
     # attempt turned one bad judge body (truncation, http_502, reasoning-only)
     # into a lost verdict despite a converged panel -- three proven modes in
     # the SCMessenger handoff. Same predicate the rotation uses, so the
-    # worst-case ceiling always covers every call rotation can make.
+    # worst-case ceiling always covers every call rotation can make. The
+    # reserve names the whole pool (over-covering models the exclude set will
+    # drop at runtime) -- deliberate, so an envelope can never under-price a
+    # rotation the ceiling was supposed to guarantee.
     calls.extend(_judge_fallback_reserve(
-        panel_pool, judge, governor, judge_max_tokens,
-        target * panel_tokens + 100))
+        panel_pool, judge, governor, judge_reserve_tokens,
+        target * policy.vote.tokens + 100, judge_effort=policy.judge.effort))
     if run_convergence:
-        spec_slots = _chat_reservation_slots(spec_model, reasoning_effort)
+        # Reserve what the call can actually spend (the specialist lane's own
+        # lane's own resolved budget), not the judge synthesis budget -- a
+        # reserve that exceeds the call's worst case overstates the ceiling.
+        # The specialist consumes the panel votes just like the judge does, so
+        # the same extra_input applies.
+        spec_slots = _chat_reservation_slots(spec_model, policy.specialist.effort)
         for i in range(spec_slots):
             calls.append((f"{spec_model} (convergence attempt {i + 1}/{spec_slots})",
-                          spec_model, judge_max_tokens, target * panel_tokens + 100))
+                          spec_model, policy.specialist.tokens,
+                          target * policy.vote.tokens + 100))
     total_estimate, breakdown = governor.preflight(prompt, calls)
     _events.emit("preflight", task_id=task_id, lane="panel",
                  worst_case=total_estimate, ceiling=governor.max_cost,
@@ -205,8 +262,8 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         response_cost_recorded = False
         while True:
             status, resp = chat(transport, api_key, model,
-                                [{"role": "user", "content": prompt}], panel_tokens,
-                                reasoning_effort, reasoning_token_budget, governor)
+                                [{"role": "user", "content": prompt}], policy.vote.tokens,
+                                policy.vote.effort, reasoning_token_budget, governor)
             if cancel_check and cancel_check():
                 from .errors import ToolCancelled
                 raise ToolCancelled()
@@ -392,7 +449,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     except AttributeError:
         judge_ctx = None
     if judge_ctx:
-        available = max(0, judge_ctx - estimate_prompt_tokens(prompt) - judge_max_tokens)
+        available = max(0, judge_ctx - estimate_prompt_tokens(prompt) - judge_reserve_tokens)
         budget = int(available * 0.9)
         keep = list(reversed(judge_results))
         dropped = []
@@ -453,8 +510,8 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     judge_synthesis_status = "not_run"
     _attempt_kw = dict(transport=transport, api_key=api_key, governor=governor,
                        judge_prompt=judge_prompt,
-                       judge_max_tokens=judge_max_tokens,
-                       reasoning_effort=reasoning_effort,
+                       judge_reserve_tokens=judge_reserve_tokens,
+                       reasoning_effort=policy.judge.effort,
                        reasoning_token_budget=reasoning_token_budget,
                        task_id=task_id, ledger=ledger,
                        task_type=judge_task_type, cancel_check=cancel_check)
@@ -512,7 +569,8 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                                               of_panel=target)
         spec = run_convergence_specialist(
             transport, api_key, governor, panel_results, spec_model,
-            max_tokens=judge_max_tokens, reasoning_effort=reasoning_effort,
+            max_tokens=policy.specialist.tokens,
+            reasoning_effort=policy.specialist.effort,
             reasoning_token_budget=reasoning_token_budget, ledger=ledger,
             task_id=task_id, fallback_pool=specialist_pool,
             claim_polarity=claim_polarity, profiles=_profiles)
@@ -543,6 +601,33 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                     (spec["specialist"].get("note") + " " if spec["specialist"].get("note") else "")
                     + "specialist claim map disagrees with the deterministic tally; "
                       "tally is authoritative")
+        # Non-authoritative deterministic tally artifact (2026-09-13 ruling:
+        # an EXHAUSTED structured judge must still produce a reviewable
+        # summary). Built only when no parseable judge synthesis exists. It
+        # renders what the VOTES prove -- nothing more -- so it carries no
+        # verdict authority: judge_synthesis_status on the envelope remains
+        # the authority statement. Same deterministic tally the (parseable)
+        # judge verdict is held to, computed before this point from full
+        # votes.
+        if judge_synthesis_status != "parseable":
+                consensus["tally_artifact"] = {
+                "authoritative": False,
+                "note": ("deterministic vote tally rendered without a parseable "
+                         "judge synthesis; informational only -- not a verdict"),
+                "judge_synthesis_status": judge_synthesis_status,
+                "converged": convergence_tally["converged"],
+                "responder_converged": convergence_tally["responder_converged"],
+                "voted_by": convergence_tally["voted_by"],
+                "of_panel": convergence_tally["of_panel"],
+                "panel_shortfall": convergence_tally["panel_shortfall"],
+                "claims": {cid: {
+                    "verdict": entry["verdict"],
+                    "votes": f"{entry.get('real_votes')}R/{entry.get('not_real_votes')}NR"
+                             f" of {entry['voted_by']}/{entry['of_panel']}",
+                    "confidence": entry.get("confidence"),
+                } for cid, entry in convergence_tally["claims"].items()},
+                "reassurance": sorted(convergence_tally["reassurance"]),
+            }
         # The deterministic tally owns structured convergence. Responder
         # agreement and merge-gate eligibility are separate signals: a short
         # panel may be unanimously aligned while still being ineligible to
@@ -643,6 +728,10 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             "defer_reason": consensus.get("defer_reason"),
             "judge_verdict": consensus.get("judge_verdict"),
         })
+        # Non-authoritative deterministic tally artifact for an exhausted
+        # structured judge (see the block above where it is built).
+        if "tally_artifact" in consensus:
+            consensus_payload["tally_artifact"] = consensus["tally_artifact"]
     # Surface the specialist's escalation/plan directives on the consensus
     # payload so callers can consume them without digging into the nested
     # specialist blob (verify-lane telemetry for the apply ladder).

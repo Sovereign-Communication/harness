@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from harness import cli, session
+from harness import cli, service, session
 from harness.config import load_settings
 from harness.errors import HarnessError
 from harness.router import Router
@@ -32,9 +32,10 @@ class MaxCostWiringTests(unittest.TestCase):
             gov.is_free.return_value = True
             return "key", gov
 
-        with mock.patch.object(cli, "_governor", side_effect=fake_governor), \
-             mock.patch.object(cli, "panel_judge", return_value={}), \
-             mock.patch.object(session, "HttpTransport"):
+        with mock.patch.object(service, "governor_for",
+                               side_effect=fake_governor), \
+             mock.patch.object(service, "panel_judge", return_value={}), \
+             mock.patch.object(service, "HttpTransport"):
             cli.main(["verify", "--prompt", "hi", "--max-cost", "0.005"])
         self.assertEqual(captured["override"], 0.005)
 
@@ -51,9 +52,10 @@ class MaxCostWiringTests(unittest.TestCase):
             gov.cost_by_model.return_value = {}
             return "key", gov
 
-        with mock.patch.object(cli, "_governor", side_effect=fake_governor), \
-             mock.patch.object(cli, "panel_judge", return_value={}), \
-             mock.patch.object(session, "HttpTransport"):
+        with mock.patch.object(service, "governor_for",
+                               side_effect=fake_governor), \
+             mock.patch.object(service, "panel_judge", return_value={}), \
+             mock.patch.object(service, "HttpTransport"):
             cli.main(["verify", "--prompt", "hi"])
         self.assertIsNone(captured["override"])
 

@@ -22,6 +22,12 @@ harness-desktop = "harness.ui:main"
 
 [tool.setuptools.packages.find]
 include = ["harness*"]
+
+# The web/desktop UI ships inside the package: `harness serve` / `harness
+# desktop` read these files at runtime (harness/ui/), so an installed wheel
+# must carry them or every static page 500s.
+[tool.setuptools.package-data]
+harness = ["ui/*.html", "ui/*.js", "ui/*.css"]
 [project.optional-dependencies]
 dev = ["ruff>=0.6", "build>=1.2", "twine>=5"]
 local-fit-train = ["numpy", "onnx", "onnxruntime"]

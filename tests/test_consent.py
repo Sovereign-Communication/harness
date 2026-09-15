@@ -70,7 +70,12 @@ class ConsentRotationTests(unittest.TestCase):
         probe_consent(transport=fake, api_key="k", governor=gov, task_id="pf",
                       task="Do the work", model=JUDGE, ledger=None,
                       fallback_pool=[FALLBACK])
-        self.assertEqual([c[1] for c in preflight_calls], [JUDGE, FALLBACK])
+        # Reserve == call: the probe runs reasoning-disabled ("none"), which
+        # is a reasoning parameter -- a mandatory-reasoning route may reject
+        # it with the 400 and consume the no-reasoning retry. Two slots per
+        # candidate is the exact worst case (_chat_reservation_slots).
+        self.assertEqual([c[1] for c in preflight_calls],
+                         [JUDGE, JUDGE, FALLBACK, FALLBACK])
 
     def test_renew_passes_fallback_pool(self):
         fake = FakeTransport(models=self.models,

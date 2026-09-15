@@ -793,7 +793,11 @@ class ApplyEngine:
             ledger=self.ledger,
             task_id=req.task_id,
             reasoning_token_budget=self.reasoning_token_budget,
+            # Apply keeps its normal 4096-token behavior; an ESCALATION rung
+            # is deep adjudication and gets the synthesis lane budget (>=8192,
+            # auto) inside the driver via the ONE lane-policy owner.
             max_tokens=req.max_tokens,
+            reasoning_effort=req.reasoning,
             task_start_spent=req.task_start_spent,
             task_max_cost=req.task_max_cost,
         )

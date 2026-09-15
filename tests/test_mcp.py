@@ -127,6 +127,125 @@ class McpProtocolTests(unittest.TestCase):
         text = result["content"][0]["text"]
         self.assertIsInstance(json.loads(text), dict)
 
+    def test_panel_verify_delegates_to_service_layer(self):
+        """MCP's verify lane must delegate to the canonical service seam
+        (the same owner the CLI and web server consume): the protocol layer
+        keeps boundary validation and its historical result shape, but lane
+        assembly, cancellation envelope, and cost/meta have ONE owner."""
+        import harness.mcp as mcp_module
+        captured = {}
+
+        def fake_run_verify(settings=None, **kwargs):
+            captured.update(kwargs)
+            captured["settings"] = settings
+            return {"status": "ok", "verdict": "sound", "actual_cost": 0.0}
+
+        transport, server = make_server()
+        original = mcp_module._service_run_verify
+        mcp_module._service_run_verify = fake_run_verify
+        try:
+            feed = ('{"jsonrpc":"2.0","id":40,"method":"tools/call",'
+                    '"params":{"name":"panel_verify","arguments":'
+                    '{"prompt":"sound?","judge":"' + P2 + '"}}}\n')
+            out = io.StringIO()
+            server.stdout = out
+            server.stdin = io.StringIO(feed)
+            server.serve_forever()
+        finally:
+            mcp_module._service_run_verify = original
+        # The tool result shape is unchanged: the service return becomes the
+        # structuredContent verbatim (no meta/cost attachment in MCP).
+        response = json.loads(out.getvalue())
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(response["result"]["structuredContent"],
+                         {"status": "ok", "verdict": "sound",
+                          "actual_cost": 0.0})
+        # Session-injected dependencies flow to the service; the service is
+        # told MCP owns the task-id and meta contracts.
+        self.assertIs(captured["governor"], server.governor)
+        self.assertIs(captured["ledger"], server.ledger)
+        self.assertIs(captured["transport"], transport)
+        self.assertIs(captured["router"], server.router)
+        self.assertFalse(captured["generate_task_id"])
+        self.assertFalse(captured["attach_meta"])
+        self.assertIsNone(captured["settings"])
+        self.assertEqual(captured["prompt"], "sound?")
+        self.assertEqual(captured["judge"], P2)  # boundary validation passed through
+        self.assertIsNotNone(captured["cancel_check"])  # cooperative cancel threaded
+        # No verify assembly left behind in the protocol module.
+        self.assertFalse(hasattr(mcp_module, "panel_judge"))
+
+    def test_panel_verify_cancelled_run_maps_to_protocol_error(self):
+        """End-to-end cancellation through the real stdio frame loop: the
+        first panel seat bills normally, a notifications/cancelled arrives
+        while the second seat's call is in flight, the cooperative
+        cancel_check trips, the service builds the honest cancelled envelope
+        (in-flight billed spend included), and MCP answers its established
+        -32800 error without hiding the spend."""
+        class GatedTransport(FakeTransport):
+            def __init__(self, **kw):
+                super().__init__(**kw)
+                self.second_started = threading.Event()
+                self.release = threading.Event()
+                self._count = 0
+
+            def post(self, *args, **kwargs):
+                self._count += 1
+                if self._count == 2:
+                    self.second_started.set()
+                    self.release.wait(10)
+                return super().post(*args, **kwargs)
+
+        transport = GatedTransport(models=[m(JUDGE), m(P1), m(P2), m(APPLY)],
+                                   posts=[comp("yes"), comp("yes")])
+        governor = SpendGovernor(transport, "sk-test")
+        ledger = AutonomyLedger(os.path.join(_TMP.name,
+                                             f"ledger-{os.urandom(4).hex()}.jsonl"))
+        router = Router([P1, P2], JUDGE, APPLY)
+        engine = ApplyEngine(transport, "sk-test", governor, ledger, router,
+                             default_require_consent=True)
+        server = McpServer(transport=transport, api_key="sk-test",
+                           governor=governor, ledger=ledger, router=router,
+                           engine=engine, allow_write=True,
+                           allowed_roots=[_TMP.name])
+
+        class Feed:
+            calls = 0
+
+            def readline(self):
+                if Feed.calls == 0:
+                    Feed.calls += 1
+                    return ('{"jsonrpc":"2.0","id":41,"method":"tools/call",'
+                            '"params":{"name":"panel_verify","arguments":'
+                            '{"prompt":"sound?"}}}\n')
+                if Feed.calls == 1:
+                    Feed.calls += 1
+                    # Cancel only after the second seat's network call is
+                    # genuinely in flight (deterministic, no sleeps) and the
+                    # first seat has billed.
+                    if not transport.second_started.wait(10):
+                        transport.release.set()
+                        raise AssertionError("panel never made two calls")
+                    return ('{"jsonrpc":"2.0","method":"notifications/cancelled",'
+                            '"params":{"requestId":41}}\n')
+                transport.release.set()
+                return ""
+
+        out = io.StringIO()
+        server.stdout = out
+        server.stdin = Feed()
+        server.serve_forever()
+        response = json.loads(out.getvalue())
+        # The established protocol-level cancellation error is unchanged.
+        self.assertEqual(response["error"]["code"], -32800)
+        self.assertEqual(response["error"]["message"], "Request cancelled")
+        # The first seat billed and completed; the second seat's POST was
+        # already in flight (in-flight POSTs run to their own timeout -- the
+        # documented residual) and its real spend is preserved too.
+        self.assertEqual(len(transport.chat_posts()), 2)
+        self.assertGreater(governor.spent, 0.0)
+        self.assertEqual(server._inflight, set())
+
     def test_offer_and_defer_tools(self):
         feed = (
             '{"jsonrpc":"2.0","id":11,"method":"tools/call",'

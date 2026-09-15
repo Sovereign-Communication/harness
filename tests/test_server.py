@@ -282,15 +282,18 @@ class RunLifecycleTests(ServerHarness):
         settings = type("S", (), {"use_free": True, "panel_pool": ["m/a"],
                                   "judge": "m/j", "reasoning_effort": "auto",
                                   "reasoning_token_budget": None,
-                                  "max_panelists": 2})()
+                                  "max_panelists": 2, "max_cost": 0.02,
+                                  "specialist_pool": None,
+                                  "convergence_model": None,
+                                  "expect_key_label": False})()
 
-        with mock.patch("harness.panel.panel_judge", fake_panel_judge), \
+        with mock.patch("harness.service.panel_judge", fake_panel_judge), \
              mock.patch.object(ui_server, "load_settings",
                                return_value=settings), \
-             mock.patch.object(ui_server, "governor_for",
-                               return_value=("k", mock.Mock())), \
-             mock.patch.object(ui_server, "ledger_for",
-                               return_value=mock.Mock()), \
+             mock.patch("harness.service.governor_for",
+                        return_value=("k", mock.Mock())), \
+             mock.patch("harness.service.ledger_for",
+                        return_value=mock.Mock()), \
              mock.patch("harness.saturation.pre_run_warning"):
             conn = self._conn()
             try:
@@ -468,6 +471,8 @@ class ClaimsLaneTests(ServerHarness):
                               "judge": "m/j", "reasoning_effort": "auto",
                               "reasoning_token_budget": None,
                               "max_panelists": 2, "max_cost": 0.02,
+                              "specialist_pool": None,
+                              "convergence_model": None,
                               "expect_key_label": False})()
 
     def _engine_patches(self, panel_judge, gov=None):
@@ -476,13 +481,13 @@ class ClaimsLaneTests(ServerHarness):
             gov.spent = 0.0
             gov.max_cost = 0.02
             gov.cost_by_model.return_value = {}
-        return [mock.patch("harness.panel.panel_judge", panel_judge),
+        return [mock.patch("harness.service.panel_judge", panel_judge),
                 mock.patch.object(ui_server, "load_settings",
                                   return_value=self._settings()),
-                mock.patch.object(ui_server, "governor_for",
-                                  return_value=("k", gov)),
-                mock.patch.object(ui_server, "ledger_for",
-                                  return_value=mock.Mock()),
+                mock.patch("harness.service.governor_for",
+                           return_value=("k", gov)),
+                mock.patch("harness.service.ledger_for",
+                           return_value=mock.Mock()),
                 mock.patch("harness.saturation.pre_run_warning")]
 
     def _dispatch(self, args):
@@ -527,7 +532,7 @@ class ClaimsLaneTests(ServerHarness):
             reached.set()
             return {"status": "ok"}
         cf, sf = self._files(grounded=False)
-        with mock.patch("harness.panel.panel_judge", must_not_run):
+        with mock.patch("harness.service.panel_judge", must_not_run):
             status, run = self._dispatch({"claims_file": cf,
                                           "source_file": sf})
             self.assertEqual(status, 201)
