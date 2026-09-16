@@ -28,7 +28,7 @@
 8. Review `THREAT_MODEL.md`, `docs/security.md`, and the changelog for current
    behavior and residual risks.
 9. Commit and tag only after CI passes on every supported Python version.
-   Standing deviation (2026-09-15): CI never fires on this repo (private-repo Actions minutes, falsified in PR #8), so this gate is satisfied by the documented merge-basis pattern -- the full local battery green on every available interpreter plus the branch's last fired CI run.
+   Historical note: CI was silent during PR #8 (2026-09-15, suspected private-repo Actions minutes; that merge rested on the documented merge-basis pattern -- full local battery green on every available interpreter). CI fires and is enforced as of the PR #9 merge (2026-09-16, run 35136528041 green at 185d827), so this gate is again a real CI gate.
 
 The project intentionally keeps runtime dependencies at zero. Build and lint
 packages are development-only extras.
