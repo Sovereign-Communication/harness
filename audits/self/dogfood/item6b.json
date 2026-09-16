@@ -1,0 +1,351 @@
+{
+  "phases": [
+    {
+      "phase": "ground",
+      "status": "ok",
+      "claims": 3
+    },
+    {
+      "phase": "verify",
+      "status": "ok",
+      "confirmed_claims": [],
+      "tally": {
+        "converged": false,
+        "responder_converged": true,
+        "converged_claims": 0,
+        "responder_converged_claims": 3,
+        "total_claims": 3,
+        "convergence_rate": 1.0,
+        "gate_convergence_rate": 0.0,
+        "disagreement": false,
+        "disagreement_claims": [],
+        "panel_shortfall": true,
+        "missing_votes": 1,
+        "shortfall": {
+          "voted_by": 2,
+          "of_panel": 3,
+          "missing_votes": 1
+        },
+        "voted_by": 2,
+        "of_panel": 3,
+        "responding_models": [
+          "nvidia/nemotron-3-super-120b-a12b:free",
+          "cohere/north-mini-code:free"
+        ],
+        "claims": {
+          "c1": {
+            "verdict": "real",
+            "unanimous": true,
+            "responder_unanimous": true,
+            "converged": false,
+            "gate_unanimous": false,
+            "voted_by": 2,
+            "of_panel": 3,
+            "confidence": 0.94,
+            "votes": {
+              "real": 2,
+              "not_real": 0
+            },
+            "real_votes": 2,
+            "not_real_votes": 0,
+            "missing_votes": 1,
+            "panel_shortfall": true,
+            "minority_models": []
+          },
+          "c2": {
+            "verdict": "real",
+            "unanimous": true,
+            "responder_unanimous": true,
+            "converged": false,
+            "gate_unanimous": false,
+            "voted_by": 2,
+            "of_panel": 3,
+            "confidence": 0.965,
+            "votes": {
+              "real": 2,
+              "not_real": 0
+            },
+            "real_votes": 2,
+            "not_real_votes": 0,
+            "missing_votes": 1,
+            "panel_shortfall": true,
+            "minority_models": []
+          },
+          "c3": {
+            "verdict": "real",
+            "unanimous": true,
+            "responder_unanimous": true,
+            "converged": false,
+            "gate_unanimous": false,
+            "voted_by": 2,
+            "of_panel": 3,
+            "confidence": 0.94,
+            "votes": {
+              "real": 2,
+              "not_real": 0
+            },
+            "real_votes": 2,
+            "not_real_votes": 0,
+            "missing_votes": 1,
+            "panel_shortfall": true,
+            "minority_models": []
+          }
+        },
+        "reassurance": {}
+      }
+    }
+  ],
+  "saturated": true,
+  "status": "not_confirmed",
+  "verify": {
+    "panel_results": [
+      {
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "content": "{\n  \"c1\": {\"real\": true, \"severity\": \"medium\", \"confidence\": 0.98, \"why\": \"fail_closed_by_model shows 2 for cohere/north-mini-code:free, matching claim of verification rounds exhausted 2 times.\"},\n  \"c2\": {\"real\": true, \"severity\": \"high\", \"confidence\": 0.98, \"why\": \"fail_closed_by_model shows 258 for google/gemma-4-31b-it:free, matching claim of verification rounds exhausted 258 times.\"},\n  \"c3\": {\"real\": true, \"severity\": \"medium\", \"confidence\": 0.98, \"why\": \"fail_closed_by_model shows 7 for minimax/minimax-m3:free, matching claim of verification rounds exhausted 7 times.\"}\n}",
+        "finish_reason": "stop",
+        "cost": 0,
+        "truncated": false
+      },
+      {
+        "model": "cohere/north-mini-code:free",
+        "content": "{\"c1\": {\"real\": true, \"severity\": \"high\", \"confidence\": 0.9, \"why\": \"Source shows 2 fail_closed entries for cohere/north-mini-code:free indicating verification rounds exhausted.\"}, \"c2\": {\"real\": true, \"severity\": \"critical\", \"confidence\": 0.95, \"why\": \"Source shows 258 fail_closed entries for google/gemma-4-31b-it:free indicating verification rounds exhausted.\"}, \"c3\": {\"real\": true, \"severity\": \"high\", \"confidence\": 0.9, \"why\": \"Source shows 7 fail_closed entries for minimax/minimax-m3:free indicating verification rounds exhausted.\"}}",
+        "finish_reason": "stop",
+        "cost": 0,
+        "truncated": false
+      }
+    ],
+    "trimmed_for_judge": [],
+    "panel_failures": [
+      {
+        "model": "openrouter/free",
+        "reason": "reasoning-only output (no visible content)",
+        "status": "invalid_output",
+        "cost": 0,
+        "retries": 0
+      },
+      {
+        "model": "inclusionai/ling-3.0-flash-fin:free",
+        "reason": "reasoning-only output (no visible content)",
+        "status": "invalid_output",
+        "cost": 0,
+        "retries": 0
+      }
+    ],
+    "required_panelists": 3,
+    "panel_tried": 4,
+    "judge_model": "google/gemma-4-31b-it:free",
+    "judge_synthesis": null,
+    "judge_synthesis_status": "byok_blocked",
+    "verdict": "Deterministic panel tally: c1=real (2R/0NR of 2); c2=real (2R/0NR of 2); c3=real (2R/0NR of 2); SHORTFALL 2/3 slots voted; merge gate deferred",
+    "consensus": {
+      "agreement": "high",
+      "confidence": 1.0,
+      "disagreements": [],
+      "defer": true,
+      "panel_shortfall": true,
+      "missing_votes": 1,
+      "voted_by": 2,
+      "of_panel": 3,
+      "responder_converged": true,
+      "gate_converged": false,
+      "defer_reason": "panel_shortfall",
+      "judge_verdict": "[raw panel outputs only -- no synthesis available]",
+      "tally_artifact": {
+        "authoritative": false,
+        "note": "deterministic vote tally rendered without a parseable judge synthesis; informational only -- not a verdict",
+        "judge_synthesis_status": "byok_blocked",
+        "converged": false,
+        "responder_converged": true,
+        "voted_by": 2,
+        "of_panel": 3,
+        "panel_shortfall": true,
+        "claims": {
+          "c1": {
+            "verdict": "real",
+            "votes": "2R/0NR of 2/3",
+            "confidence": 0.94
+          },
+          "c2": {
+            "verdict": "real",
+            "votes": "2R/0NR of 2/3",
+            "confidence": 0.965
+          },
+          "c3": {
+            "verdict": "real",
+            "votes": "2R/0NR of 2/3",
+            "confidence": 0.94
+          }
+        },
+        "reassurance": []
+      },
+      "escalation": {
+        "needed": false,
+        "reason": null,
+        "condensed_context": null,
+        "target_rung": 0
+      },
+      "plan": {
+        "steps": [],
+        "target_tier": "free"
+      }
+    },
+    "estimated_worst_case_cost": 0.0,
+    "actual_cost": 0.0,
+    "max_cost_ceiling": 0.05,
+    "convergence": {
+      "status": "ok",
+      "model": "google/gemma-4-31b-it:free",
+      "specialist": {
+        "converged": true,
+        "agreement": "high",
+        "confidence": 0.96,
+        "claims": {
+          "c1": {
+            "verdict": "real",
+            "converged": true,
+            "confidence": 0.94
+          },
+          "c2": {
+            "verdict": "real",
+            "converged": true,
+            "confidence": 0.965
+          },
+          "c3": {
+            "verdict": "real",
+            "converged": true,
+            "confidence": 0.94
+          }
+        },
+        "escalation": {
+          "needed": false,
+          "reason": null,
+          "condensed_context": null,
+          "target_rung": 0
+        },
+        "plan": {
+          "steps": [],
+          "target_tier": "free"
+        },
+        "note": "panel shortfall: 2 of 3 slots voted; this consensus is NOT coverage-complete and must not authorize a task on its own"
+      },
+      "raw": "```json\n{\n  \"converged\": true,\n  \"agreement\": \"high\",\n  \"confidence\": 0.96,\n  \"claims\": {\n    \"c1\": {\n      \"verdict\": \"real\",\n      \"converged\": true,\n      \"confidence\": 0.94\n    },\n    \"c2\": {\n      \"verdict\": \"real\",\n      \"converged\": true,\n      \"confidence\": 0.965\n    },\n    \"c3\": {\n      \"verdict\": \"real\",\n      \"converged\": true,\n      \"confidence\": 0.94\n    }\n  },\n  \"escalation\": {\n    \"needed\": false,\n    \"reason\": null,\n    \"condensed_context\": null,\n    \"target_rung\": 0\n  },\n  \"plan\": {\n    \"steps\": [],\n    \"target_tier\": \"free\"\n  }\n}\n```",
+      "cost": 0.0,
+      "error": null,
+      "attempts": [
+        {
+          "model": "google/gemma-4-31b-it:free",
+          "status": "ok",
+          "cost": 0
+        }
+      ],
+      "dropped_votes_from_prompt": [],
+      "tally": {
+        "converged": false,
+        "responder_converged": true,
+        "converged_claims": 0,
+        "responder_converged_claims": 3,
+        "total_claims": 3,
+        "convergence_rate": 1.0,
+        "gate_convergence_rate": 0.0,
+        "disagreement": false,
+        "disagreement_claims": [],
+        "panel_shortfall": true,
+        "missing_votes": 1,
+        "shortfall": {
+          "voted_by": 2,
+          "of_panel": 3,
+          "missing_votes": 1
+        },
+        "voted_by": 2,
+        "of_panel": 3,
+        "responding_models": [
+          "nvidia/nemotron-3-super-120b-a12b:free",
+          "cohere/north-mini-code:free"
+        ],
+        "claims": {
+          "c1": {
+            "verdict": "real",
+            "unanimous": true,
+            "responder_unanimous": true,
+            "converged": false,
+            "gate_unanimous": false,
+            "voted_by": 2,
+            "of_panel": 3,
+            "confidence": 0.94,
+            "votes": {
+              "real": 2,
+              "not_real": 0
+            },
+            "real_votes": 2,
+            "not_real_votes": 0,
+            "missing_votes": 1,
+            "panel_shortfall": true,
+            "minority_models": []
+          },
+          "c2": {
+            "verdict": "real",
+            "unanimous": true,
+            "responder_unanimous": true,
+            "converged": false,
+            "gate_unanimous": false,
+            "voted_by": 2,
+            "of_panel": 3,
+            "confidence": 0.965,
+            "votes": {
+              "real": 2,
+              "not_real": 0
+            },
+            "real_votes": 2,
+            "not_real_votes": 0,
+            "missing_votes": 1,
+            "panel_shortfall": true,
+            "minority_models": []
+          },
+          "c3": {
+            "verdict": "real",
+            "unanimous": true,
+            "responder_unanimous": true,
+            "converged": false,
+            "gate_unanimous": false,
+            "voted_by": 2,
+            "of_panel": 3,
+            "confidence": 0.94,
+            "votes": {
+              "real": 2,
+              "not_real": 0
+            },
+            "real_votes": 2,
+            "not_real_votes": 0,
+            "missing_votes": 1,
+            "panel_shortfall": true,
+            "minority_models": []
+          }
+        },
+        "reassurance": {}
+      }
+    },
+    "cost_by_model": {
+      "cohere/north-mini-code:free": 0.0,
+      "nvidia/nemotron-3-super-120b-a12b:free": 0.0,
+      "openrouter/free": 0.0,
+      "inclusionai/ling-3.0-flash-fin:free": 0.0,
+      "google/gemma-4-31b-it:free": 0.0
+    },
+    "meta": {
+      "use_free": true,
+      "panel": [
+        "google/gemma-4-31b-it:free",
+        "inclusionai/ling-3.0-flash-fin:free",
+        "google/gemma-4-26b-a4b-it:free",
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "cohere/north-mini-code:free",
+        "openrouter/free"
+      ],
+      "judge": "google/gemma-4-31b-it:free",
+      "apply_model": "google/gemma-4-31b-it:free",
+      "reasoning_effort": "auto",
+      "max_cost_ceiling": 0.05,
+      "key_label_present": false
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "status": "ok",
+  "task_id": "apply",
+  "rounds": [
+    {
+      "round": 1,
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "status": "ok",
+      "cost": 0,
+      "verify_output": "",
+      "changed": true,
+      "verify_passed": true
+    }
+  ],
+  "cost": 0.0,
+  "rotations": 0,
+  "backend": "harness",
+  "changed": true,
+  "backup": "C:\\Users\\SCM\\AppData\\Local\\Temp\\harness-backups\\apply-r1-6536-d15e99a4-scratch_dogfood_target.py",
+  "verify": {
+    "command": "python -c \"import scratch_dogfood_target; assert scratch_dogfood_target.sub(10, 4) == 6\"",
+    "passed": true
+  },
+  "file": "C:\\Users\\SCM\\Documents\\GitHub\\Harness\\scratch_dogfood_target.py",
+  "diff": "--- a\n+++ b\n@@ -7,3 +7,7 @@\n \n def mul(a, b):\n     return a * b\n+\n+\n+def sub(a, b):\n+    return a - b\n",
+  "meta": {
+    "use_free": true,
+    "panel": [
+      "google/gemma-4-31b-it:free",
+      "inclusionai/ling-3.0-flash-fin:free",
+      "google/gemma-4-26b-a4b-it:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
+      "cohere/north-mini-code:free",
+      "openrouter/free"
+    ],
+    "judge": "google/gemma-4-31b-it:free",
+    "apply_model": "google/gemma-4-31b-it:free",
+    "reasoning_effort": "auto",
+    "max_cost_ceiling": 0.05,
+    "key_label_present": false
+  }
+}

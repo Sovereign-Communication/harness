@@ -1,0 +1,20 @@
+{
+  "context": "Curated by 'harness dogfood --from-ledger' from the local autonomy ledger: the harness auditing its own recorded run evidence.",
+  "claims": [
+    {
+      "id": "c1",
+      "text": "Apply runs led by model 'cohere/north-mini-code:free' ended with verification rounds exhausted 2 times in recent ledger evidence; a model that cannot pass the gate wastes every round it leads.",
+      "source_refs": []
+    },
+    {
+      "id": "c2",
+      "text": "Apply runs led by model 'google/gemma-4-31b-it:free' ended with verification rounds exhausted 258 times in recent ledger evidence; a model that cannot pass the gate wastes every round it leads.",
+      "source_refs": []
+    },
+    {
+      "id": "c3",
+      "text": "Apply runs led by model 'minimax/minimax-m3:free' ended with verification rounds exhausted 7 times in recent ledger evidence; a model that cannot pass the gate wastes every round it leads.",
+      "source_refs": []
+    }
+  ]
+}

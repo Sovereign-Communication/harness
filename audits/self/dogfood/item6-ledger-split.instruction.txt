@@ -1,0 +1,1 @@
+Complete the ledger.py/apply.py separation pass: extract the pure-policy block into its own module per the cli_parser precedent, with behavior byte-identical.
