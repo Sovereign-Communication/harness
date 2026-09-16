@@ -192,5 +192,223 @@ class ProbeGateTests(unittest.TestCase):
         self.assertFalse(ok)
 
 
+class UiContractPinTests(unittest.TestCase):
+    """Mechanizes the rankings envelope-to-UI field contract: every key the
+    web view reads must exist on an envelope produced by rankings.py's real
+    builder driven through the real endpoint assembler -- not a hand-written
+    fixture. A rename of any consumed key (top[].slug/total_tokens/trend,
+    ranked_in_catalog[].model_id, proposed_candidates[].probe.ok/detail,
+    window.start/end/days) fails the battery instead of silently blanking
+    the Rankings view (audit find: only an audit probe could catch it).
+
+    Two layers: a key-level pin that always runs, and -- when a node runtime
+    exists -- execution of the real loadRankings extracted from app.js.
+    """
+
+    _envelope = None
+
+    @classmethod
+    def _real_envelope(cls):
+        if cls._envelope is not None:
+            return cls._envelope
+        import json as _json
+        import unittest.mock
+        from harness import rankings, server
+
+        fake = FakeTransport(posts=[])
+        fake.get = lambda url, api_key, timeout=30: (
+            {"data": _rows()} if url.endswith("rankings-daily")
+            else {"data": fake.models})
+        fake.models = [m("deepseek/deepseek-v4.1-flash"),
+                       m("openai/gpt-5.6-luna")]
+        import os
+        import tempfile
+        from harness.spend import SpendGovernor
+        td = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(td.cleanup)
+        gov = SpendGovernor(fake, "sk-test", byok_prefixes_path=os.path.join(
+            td.name, "byok.json"))
+        with unittest.mock.patch.object(rankings, "shipped_model_ids",
+                                        return_value=["openai/gpt-5.6-luna"]):
+            report = rankings.build_rankings_report(fake, "k", gov)
+        # Attach a real probe verdict shape (the probe.ok/detail keys the UI
+        # reads) without spending: the one-vote gate's documented success
+        # contract is HTTP 200 + parseable JSON (rankings._probe_vote).
+        for cand in report["proposed_candidates"]:
+            cand["probe"] = {"ok": True, "detail": "parseable JSON vote",
+                             "cost": 0.0}
+            report["probed_candidates"].append(cand)
+
+        class _Resp:
+            def __init__(self):
+                self.obj = None
+
+            def _send_json(self, obj, code=200):
+                # Mirror the real serializer so the envelope is shaped like
+                # what the browser parses (server._send_json).
+                self.obj = _json.loads(_json.dumps(obj, indent=2))
+
+        resp = _Resp()
+        # The endpoint's own open()/json.load path must run: write the real
+        # report to a real file and point _rankings_reports at it. A bare
+        # filename stub makes the endpoint honestly report available=false.
+        import os
+        import tempfile
+        report_dir = tempfile.TemporaryDirectory(prefix="ui-pin-")
+        cls.addClassCleanup(report_dir.cleanup)
+        report_path = os.path.join(report_dir.name, "rankings-2026-01-01.json")
+        with open(report_path, "w", encoding="utf-8") as f:
+            _json.dump(report, f)
+        with unittest.mock.patch.object(server, "_rankings_reports",
+                                        return_value=[report_path]):
+            server.UiRequestHandler._api_rankings(resp)
+        cls._envelope = resp.obj
+        return cls._envelope
+
+    _JS_API_MEMBERS = frozenset((
+        "length", "map", "filter", "join", "includes", "slice", "split",
+        "forEach", "push",
+    ))
+
+    @staticmethod
+    def _loadrankings_source():
+        import re
+        with open("harness/ui/app.js", encoding="utf-8") as f:
+            src = f.read()
+        return re.search(r"(function loadRankings[\s\S]*?\n\})", src).group(1)
+
+    def test_ui_consumed_keys_exist_on_real_envelope(self):
+        """The always-on layer: every member read the real loadRankings
+        makes, derived from app.js source rather than a hand-list, must
+        resolve on the real envelope -- the available path through the real
+        endpoint and both unavailable fallbacks. A key rename on either
+        side fails here even where node is unavailable."""
+        import os
+        import re
+        import tempfile
+        import unittest.mock
+        from harness import server
+        env = self._real_envelope()
+        fn = self._loadrankings_source()
+        reads = {}
+        for var, key in re.findall(r"\b(r|rep|w|t|c|p)\.([a-z_][a-z_0-9]*)",
+                                   fn):
+            if key not in self._JS_API_MEMBERS:
+                reads.setdefault(var, set()).add(key)
+        rep = env["report"]
+        # The structural spine is pinned exactly: UI-side additions or
+        # renames of these reads require a conscious pin update.
+        self.assertEqual(reads["rep"], {"window", "top",
+                                        "ranked_in_catalog",
+                                        "proposed_candidates"})
+        self.assertEqual(reads["r"], {"available", "report", "latest",
+                                      "reports", "error", "note"})
+        for key in ("available", "report", "latest", "reports"):
+            self.assertIn(key, env)
+        for key in reads["w"]:
+            self.assertIn(key, rep["window"], f"window.{key} missing")
+        for key in reads["t"]:
+            self.assertIn(key, rep["top"][0], f"top[].{key} missing")
+        rows = (rep["ranked_in_catalog"][0], rep["proposed_candidates"][0])
+        for key in reads["c"]:
+            self.assertTrue(any(key in row for row in rows),
+                            f"candidate row key .{key} missing")
+        for key in reads["p"]:
+            self.assertIn(key, rep["proposed_candidates"][0]["probe"],
+                          f"probe.{key} missing")
+
+        class _Resp:
+            obj = None
+
+            def _send_json(self, obj, code=200):
+                self.obj = obj
+
+        # The fallback branches are real contract too, driven through the
+        # real endpoint: no reports on disk, and an unreadable report file.
+        resp = _Resp()
+        with unittest.mock.patch.object(server, "_rankings_reports",
+                                        return_value=[]):
+            server.UiRequestHandler._api_rankings(resp)
+        fallback = {"note": resp.obj}
+        with tempfile.TemporaryDirectory() as td:
+            bad = os.path.join(td, "broken.json")
+            with open(bad, "w", encoding="utf-8") as f:
+                f.write("{not json")
+            resp2 = _Resp()
+            with unittest.mock.patch.object(server, "_rankings_reports",
+                                            return_value=[bad]):
+                server.UiRequestHandler._api_rankings(resp2)
+        fallback["error"] = resp2.obj
+        for key in ({"error", "note"} & reads["r"]):
+            self.assertIn(key, fallback[key],
+                          f"fallback envelope missing .{key}")
+
+    def test_real_loadrankings_renders_real_envelope(self):
+        """The proof layer where node exists: the real loadRankings source,
+        extracted from app.js, executed against the real envelope, with
+        per-row value co-occurrence -- each rendered row must contain its
+        own envelope row's values, so a renamed key on either side blanks
+        exactly one cell and fails even when the same value appears
+        elsewhere on the page (the global-substring blind spot).
+        Vacuity-proven by planted renames during development."""
+        import json as _json
+        import re
+        import shutil
+        import subprocess
+        if shutil.which("node") is None:
+            self.skipTest("node runtime not installed (optional deps: JS "
+                          "render layer; the key-contract pin still runs)")
+        env = self._real_envelope()
+        with open("harness/ui/app.js", encoding="utf-8") as f:
+            app = f.read()
+        fn = re.search(r"(function loadRankings[\s\S]*?\n\})", app).group(1)
+        esc = re.search(
+            r"(const esc = [^\n]+\n  \(c\) => \([^\n]+\);)", app).group(1)
+        script = (
+            esc + "\n"
+            "const html = {};\n"
+            'const $ = (id) => ({ set innerHTML(v) { html[id] = v; } });\n'
+            'const api = async () => globalThis.__resp;\n'
+            "globalThis.__resp = " + _json.dumps(env) + ";\n"
+            "const loadRankings = async " + fn + ";\n"
+            "await loadRankings();\n"
+            "const out = html['#rankings-out'] || '';\n"
+            "const seg = (from, to) => out.slice(out.indexOf(from),\n"
+            "  to ? out.indexOf(to) : undefined);\n"
+            "const rows = (h) => h.split('<tr>').slice(1)\n"
+            "  .filter((s) => s.includes('<td>')).map((s) => s.split('</tr>')[0]);\n"
+            "const rep = globalThis.__resp.report;\n"
+            "const fail = [];\n"
+            "const check = (where, row, vals) => vals.forEach((v) => {\n"
+            "  if (!row.includes(String(v))) fail.push(where + ' lost value: ' + v);\n"
+            "});\n"
+            "rep.top.forEach((t, i) => check('top[' + i + ']',\n"
+            "  rows(seg('Top by traffic', 'Ranked'))[i] || '',\n"
+            "  [t.slug, String(t.total_tokens), t.trend]));\n"
+            "rep.ranked_in_catalog.forEach((c, i) => check('ranked[' + i + ']',\n"
+            "  rows(seg('Ranked ∩ live catalog', 'Proposed candidates'))[i] || '',\n"
+            "  [c.slug, c.model_id, String(c.total_tokens), c.trend]));\n"
+            "rep.proposed_candidates.forEach((c, i) => check('proposed[' + i + ']',\n"
+            "  rows(seg('Proposed candidates', ''))[i] || '',\n"
+            "  [c.model_id, String(c.total_tokens),\n"
+            "   (c.probe && c.probe.ok ? 'pass (' : 'fail — ') + c.probe.detail + ')']));\n"
+            "const head = out.slice(0, out.indexOf('<h2>'));\n"
+            "check('window', head,\n"
+            "  [rep.window.start, rep.window.end, String(rep.window.days)]);\n"
+            "if (fail.length) {\n"
+            "  console.log('CONTRACT FAIL: ' + fail.join(' | '));\n"
+            "  process.exit(1);\n"
+            "}\n"
+            "console.log('UI-CONTRACT OK: per-row co-occurrence satisfied');\n"
+        )
+        r = subprocess.run(["node", "--input-type=module", "-e", script],
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(
+            r.returncode, 0,
+            "real loadRankings failed on the real envelope: "
+            + (r.stdout or "") + (r.stderr or ""))
+        self.assertIn("UI-CONTRACT OK", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

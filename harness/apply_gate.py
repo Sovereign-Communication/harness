@@ -13,7 +13,7 @@ from .continuation import bound_gate, gate_id
 from .errors import ToolCancelled
 from .filesafety import _atomic_write, backup_file, file_content_hash
 from .output import eprint
-from .results import _round_entry, _terminal_result
+from .results import _content_diff, _round_entry, _terminal_result
 
 
 class GatePolicy:
@@ -73,7 +73,9 @@ class GatePolicy:
             "preview", task_id=req.task_id, rounds=state.rounds,
             cost=self.governor.spent, rotations=state.rotations,
             backend=req.backend, verify_only=True, changed=changed,
-            proposed_content=new_content, backup=None)
+            proposed_content=new_content, backup=None,
+            file=req.file_path, diff=_content_diff(state.current_content,
+                                                   new_content))
 
     def write_and_verify(self, req, state, outcome, changed):
         """Run the authoritative gate after a candidate write.
@@ -96,7 +98,9 @@ class GatePolicy:
                 "ok", task_id=req.task_id, rounds=state.rounds,
                 cost=self.governor.spent, rotations=state.rotations,
                 backend=req.backend, changed=changed, backup=state.backup,
-                note="no verification gate supplied")
+                note="no verification gate supplied",
+                file=req.file_path, diff=_content_diff(req.original,
+                                                       state.current_content))
             _events.emit("terminal", task_id=req.task_id, status="ok",
                          cost=self.governor.spent, rounds=round_no,
                          note="no verification gate")
@@ -132,7 +136,9 @@ class GatePolicy:
                 "ok", task_id=req.task_id, rounds=state.rounds,
                 cost=self.governor.spent, rotations=state.rotations,
                 backend=req.backend, changed=True, backup=state.backup,
-                verify={"command": req.verify_cmd, "passed": True})
+                verify={"command": req.verify_cmd, "passed": True},
+                file=req.file_path, diff=_content_diff(req.original,
+                                                       state.current_content))
             _events.emit("terminal", task_id=req.task_id, status="ok",
                          cost=self.governor.spent, rounds=round_no, passed=True)
             return result
@@ -166,7 +172,9 @@ class GatePolicy:
                 cost=self.governor.spent, rotations=state.rotations,
                 backend=req.backend, changed=True, backup=state.backup,
                 verify={"command": req.verify_cmd, "passed": True},
-                escalated=True)
+                escalated=True,
+                file=req.file_path, diff=_content_diff(req.original,
+                                                       new_content))
             _events.emit("terminal", task_id=req.task_id, status="ok",
                          cost=self.governor.spent, escalated=True, passed=True)
             return result

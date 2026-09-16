@@ -246,6 +246,24 @@ function resultSummary(r) {
       (r.lint.issues || []).map((i) => i.claim_id || i.code || "?").join(", "))})`) : "");
   const synth = (r.judge_synthesis || "").trim();
   if (synth) html += `<div class="sum-row"><span class="k">synthesis</span><span>${esc(synth.slice(0, 400))}${synth.length > 400 ? "…" : ""}</span></div>`;
+  // Change preview for apply/continue results: what changed in the touched
+  // file, computed server-side from content the run already held (see
+  // results._content_diff). Read-only evidence, like every other row here.
+  if (r.diff) {
+    const body = r.diff.split("\n").slice(0, 400).map((line) => {
+      const cls = line.startsWith("+") ? "ln-add"
+        : line.startsWith("-") ? "ln-del"
+        : (line.startsWith("@@") ? "ln-meta" : "ln-ctx");
+      return `<div class="${cls}">${esc(line) || "&nbsp;"}</div>`;
+    }).join("");
+    const note = r.diff.split("\n").length > 400
+      ? `<div class="dim">… diff truncated at 400 lines (full diff in the raw JSON)</div>` : "";
+    html += `<div class="sum-row"><span class="k">changes</span></div>` +
+      (r.file ? `<div class="d-file dim mono">${esc(r.file)}</div>` : "") +
+      `<div class="diff-view mono">${body}</div>${note}`;
+  } else if (r.status === "ok" && r.changed === false) {
+    html += row("changes", "none (model proposal matched the current content)");
+  }
   const reasons = Array.isArray(verdict.reasons) ? verdict.reasons
     : Array.isArray(r.reasons) ? r.reasons : [];
   if (reasons.length) html += row("reasons", reasons.map((x) => esc(x)).join("; "));
@@ -410,6 +428,50 @@ async function loadCapabilities() {
 }
 $("#btn-capabilities").addEventListener("click", loadCapabilities);
 
+// ---- rankings (read-only mirror) ------------------------------------------
+async function loadRankings() {
+  try {
+    const r = await api("/api/rankings");
+    const out = $("#rankings-out");
+    if (!r.available) {
+      out.innerHTML = `<div class="dim">${esc(r.error || r.note)}</div>`;
+      return;
+    }
+    const rep = r.report;
+    const w = rep.window || {};
+    const head = `<div class="dim" style="margin:6px 0">report ${esc(r.latest)}` +
+      ` · window ${esc(w.start || "?")} → ${esc(w.end || "?")} (${esc(String(w.days ?? "?"))} days)` +
+      `${(r.reports || []).length > 1 ? ` · ${r.reports.length} report(s) on disk` : ""}</div>`;
+    const rows = (rep.top || []).map((t) =>
+      `<tr><td>${esc(t.slug)}</td><td class="mono">${esc(String(t.total_tokens ?? ""))}</td>` +
+      `<td>${esc(t.trend || "")}</td></tr>`).join("");
+    let html = head +
+      `<h2>Top by traffic</h2>` +
+      (rows ? `<table><tr><th>model</th><th>total tokens</th><th>trend</th></tr>${rows}</table>`
+            : `<div class="dim">No ranked models in this report.</div>`);
+    const ranked = rep.ranked_in_catalog || [];
+    if (ranked.length) {
+      html += `<h2>Ranked ∩ live catalog</h2><table><tr><th>slug</th><th>catalog id</th><th>tokens</th><th>trend</th></tr>` +
+        ranked.map((c) => `<tr><td>${esc(c.slug)}</td><td>${esc(c.model_id)}</td>` +
+          `<td class="mono">${esc(String(c.total_tokens ?? ""))}</td><td>${esc(c.trend || "")}</td></tr>`).join("") +
+        `</table>`;
+    }
+    const proposed = rep.proposed_candidates || [];
+    if (proposed.length) {
+      html += `<h2>Proposed candidates (advisory)</h2><table><tr><th>catalog id</th><th>tokens</th><th>probe</th></tr>` +
+        proposed.map((c) => {
+          const p = c.probe;
+          const verdict = p ? (p.ok ? `pass (${esc(p.detail)})` : `fail — ${esc(p.detail)}`) : "not probed";
+          return `<tr><td>${esc(c.model_id)}</td><td class="mono">${esc(String(c.total_tokens ?? ""))}</td>` +
+            `<td>${verdict}</td></tr>`;
+        }).join("") + `</table>`;
+    }
+    out.innerHTML = html;
+  } catch (e) {
+    $("#rankings-out").innerHTML = `<div class="dim">${esc(e.message)}</div>`;
+  }
+}
+
 api("/api/settings").then((r) => {
   $("#settings-out").textContent = JSON.stringify(r.settings, null, 2);
 }).catch((e) => { $("#settings-out").textContent = e.message; });
@@ -426,6 +488,7 @@ api("/api/status").then((r) => {
 const VIEW_REFRESH = {
   dashboard: refreshDashboard, runs: refreshRuns, ledger: refreshLedger,
   trust: refreshTrust, capabilities: loadCapabilities, models: loadModels,
+  rankings: loadRankings,
 };
 
 const FOOTER_NOTE = TOKEN

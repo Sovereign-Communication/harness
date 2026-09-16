@@ -335,5 +335,163 @@ class SelfHostImportTests(unittest.TestCase):
             importlib.reload(cli_mod)
 
 
+class ApplyBatchKeepGoingCliTests(unittest.TestCase):
+    """Batch fail-soft through the REAL CLI entry point (parser -> dispatch
+    -> engine -> batch loop -> exit policy): --keep-going continues past a
+    failed file and the batch still exits honestly; the default (no flag)
+    stays fail-fast byte-for-byte."""
+
+    def _run(self, d, a, b, extra):
+        from harness.apply import ApplyEngine
+        from harness.ledger import AutonomyLedger
+        from harness.router import Router
+        from harness.spend import SpendGovernor
+        from tests._applyfixture import scripted_run
+        from tests._fake import FakeTransport, comp, m
+
+        CHANGED = "def add(a, b):\n    return a + b + 0\n"
+        fake = FakeTransport(models=[m("deepseek/deepseek-chat"),
+                                     m("inclusionai/ling-2.6-flash")],
+                             posts=[comp(CHANGED), comp(CHANGED)])
+        gov = SpendGovernor(fake, "sk-test")
+        gov.max_cost = 0.05
+        ledger = AutonomyLedger(os.path.join(d, "ledger.jsonl"))
+        router = Router(["a", "b"], "inclusionai/ling-2.6-flash",
+                        "deepseek/deepseek-chat")
+        engine = ApplyEngine(fake, "k", gov, ledger, router,
+                             default_require_consent=False,
+                             default_renew_consent=False)
+        engine.run_verify = scripted_run([(1, "boom"), (0, "")])
+        out_path = os.path.join(d, "result.json")
+        argv = ["apply", "--file", a, "--file", b, "--instruction", "change",
+                "--verify", "check", "--max-rounds", "1",
+                "--out", out_path] + extra
+        with mock.patch.object(cli, "_session", return_value=engine), \
+             mock.patch.object(session, "governor_for", return_value=("k", gov)), \
+             contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(argv)
+        with open(out_path, encoding="utf-8") as f:
+            return ctx.exception.code, json.load(f)
+
+    def test_keep_going_runs_remaining_files_and_exits_honestly(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = os.path.join(d, "a.py")
+            b = os.path.join(d, "b.py")
+            for p in (a, b):
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write("def add(a, b):\n    return a + b\n")
+            code, result = self._run(d, a, b, ["--keep-going"])
+            # Honest exit: a mixed batch is still a failure.
+            self.assertEqual(code, 2)
+            self.assertEqual(result["status"], "verify_failed")
+            self.assertEqual(result["statuses"],
+                             {"verify_failed": 1, "ok": 1})
+            self.assertEqual(len(result["results"]), 2)
+            self.assertFalse(result["verify"]["passed"])
+            with open(b, encoding="utf-8") as f:
+                self.assertEqual(f.read(),
+                                 "def add(a, b):\n    return a + b + 0\n")
+
+    def test_default_without_flag_stays_fail_fast(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = os.path.join(d, "a.py")
+            b = os.path.join(d, "b.py")
+            for p in (a, b):
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write("def add(a, b):\n    return a + b\n")
+            code, result = self._run(d, a, b, [])
+            self.assertEqual(code, 2)
+            self.assertEqual(result["status"], "verify_failed")
+            self.assertEqual(result["statuses"], {"verify_failed": 1})
+            self.assertEqual(len(result["results"]), 1)
+            with open(b, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "def add(a, b):\n    return a + b\n")
+
+
+class CliResumeE2eTests(unittest.TestCase):
+    """A SUCCESSFUL resume through the real entry point (parser -> dispatch
+    -> engine -> run_batch -> _prepare): the per-file payload must carry the
+    validated continuation and the saved task identity. The dual-mode
+    options path silently dropped the continuation to None and survived two
+    commits because only the rejection path was e2e-tested."""
+
+    def _run(self, d, target, argv_extra):
+        from harness.apply import ApplyEngine
+        from harness.continuation import gate_id
+        from harness.ledger import AutonomyLedger
+        from harness.router import Router
+        from harness.spend import SpendGovernor
+        from tests._applyfixture import scripted_run
+        from tests._fake import FakeTransport, comp, m
+
+        CHANGED = "def add(a, b):\n    return a + b + 0\n"
+        state_path = os.path.join(d, "state.json")
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump({"file_path": target, "task_id": "orig-task",
+                       "verify_cmd": "check", "verify_gate_id": gate_id("check"),
+                       "verify_only": False, "verification_required": True,
+                       "remaining_scope": "make add() defensive",
+                       "rounds": []}, f)
+        fake = FakeTransport(models=[m("deepseek/deepseek-chat")],
+                             posts=[comp(CHANGED)])
+        gov = SpendGovernor(fake, "sk-test")
+        gov.max_cost = 0.05
+        ledger = AutonomyLedger(os.path.join(d, "ledger.jsonl"))
+        engine = ApplyEngine(fake, "k", gov, ledger,
+                             Router(["a"], "a", "deepseek/deepseek-chat"),
+                             default_require_consent=False,
+                             default_renew_consent=False)
+        engine.run_verify = scripted_run([(0, "")])
+        out_path = os.path.join(d, "result.json")
+        seen = {}
+        real_prepare = ApplyEngine._prepare
+
+        def spying_prepare(self, kwargs):
+            seen.update(kwargs)
+            return real_prepare(self, kwargs)
+
+        argv = argv_extra + ["--continue-from" if argv_extra[:1] == ["apply"]
+                             else "--state", state_path,
+                             "--verify", "check", "--out", out_path]
+        with mock.patch.object(cli, "_session", return_value=engine), \
+             mock.patch.object(session, "governor_for", return_value=("k", gov)), \
+             mock.patch.object(ApplyEngine, "_prepare", spying_prepare), \
+             contextlib.redirect_stderr(io.StringIO()):
+            cli.main(argv)
+        with open(out_path, encoding="utf-8") as f:
+            return seen, json.load(f)
+
+    def test_apply_continue_from_completes_resume_with_saved_identity(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "math.py")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("def add(a, b):\n    return a + b\n")
+            seen, result = self._run(d, target, ["apply"])
+            # The saved task identity rides the per-file payload: a resume
+            # is the same task, not a new one.
+            self.assertEqual(seen["task_id"], "orig-task")
+            self.assertEqual(seen["file_path"], target)
+            self.assertEqual(seen["continuation"]["task_id"], "orig-task")
+            # The resume completed: gate passed, edit written, honest exit.
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["task_id"], "orig-task")
+            self.assertTrue(result["verify"]["passed"])
+            with open(target, encoding="utf-8") as f:
+                self.assertEqual(f.read(),
+                                 "def add(a, b):\n    return a + b + 0\n")
+
+    def test_continue_face_completes_resume_with_saved_identity(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "math.py")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("def add(a, b):\n    return a + b\n")
+            seen, result = self._run(d, target, ["continue"])
+            self.assertEqual(seen["task_id"], "orig-task")
+            self.assertEqual(seen["continuation"]["task_id"], "orig-task")
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["task_id"], "orig-task")
+
+
 if __name__ == "__main__":
     unittest.main()

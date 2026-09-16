@@ -31,14 +31,35 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from . import events as _events
+from .batch import BatchOptions
 from .config import HARD_TASK_MAX_COST, HARD_MAX_COST, load_settings
 from .errors import HarnessError, ToolCancelled
 from .session import (apply_session, governor_for, ledger_for, run_meta)
 
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 MAX_EVENT_BUFFER = 4000
+
+# Rankings reports (advisory, read-only mirror): the `harness rankings`
+# output layout -- rankings/rankings-YYYY-MM-DD.json -- the same files the
+# weekly workflow uploads as its artifact. The UI renders the latest
+# report; it never generates one (refresh stays CLI-only, so nothing
+# auto-mutates).
+RANKINGS_REPORT_DIR = "rankings"
+RANKINGS_REPORT_RE = re.compile(r"^rankings-\d{4}-\d{2}-\d{2}.*\.json$")
 RUN_ID_RE = re.compile(r"^/api/runs/([A-Za-z0-9_-]{1,64})$")
 RUN_SUB_RE = re.compile(r"^/api/runs/([A-Za-z0-9_-]{1,64})/(result|events|cancel)$")
+
+
+def _rankings_reports():
+    """Available rankings reports, newest filename first. The test seam:
+    patch this to serve fixture reports without touching the filesystem."""
+    try:
+        names = os.listdir(RANKINGS_REPORT_DIR)
+    except OSError:
+        return []
+    return [os.path.join(RANKINGS_REPORT_DIR, n)
+            for n in sorted((n for n in names if RANKINGS_REPORT_RE.match(n)),
+                            reverse=True)]
 
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -157,15 +178,17 @@ def run_apply_task(task_id, args, cancel_check):
     settings = load_settings()
     engine = apply_session(settings)
     result = engine.apply_batch(
-        [args["file"]], task_id=task_id, instruction=args["instruction"],
-        edit_snippet=args.get("edit_snippet"), verify_cmd=args.get("verify"),
-        max_rounds=args.get("max_rounds") or 3,
-        require_consent=args.get("require_consent"),
-        model=args.get("model"),
-        task_max_cost=args.get("task_max_cost"),
-        backend=args.get("backend") or "harness",
-        verify_only=bool(args.get("verify_only")),
-        cancel_check=cancel_check)
+        [args["file"]], task_id=task_id, cancel_check=cancel_check,
+        options=BatchOptions(
+            instruction=args["instruction"],
+            edit_snippet=args.get("edit_snippet"),
+            verify_cmd=args.get("verify"),
+            max_rounds=args.get("max_rounds") or 3,
+            require_consent=args.get("require_consent"),
+            model=args.get("model"),
+            task_max_cost=args.get("task_max_cost"),
+            backend=args.get("backend") or "harness",
+            verify_only=bool(args.get("verify_only"))))
     if isinstance(result, dict):
         result["meta"] = run_meta(settings, engine.governor)
     return result
@@ -206,11 +229,12 @@ def run_continue_task(task_id, args, cancel_check):
         continuation = validate_continuation(json.load(f))
     engine = apply_session(settings)
     return engine.apply_batch(
-        [None], task_id=task_id,
-        instruction=args.get("instruction"),
-        verify_cmd=args.get("verify"),
-        max_rounds=args.get("max_rounds") or 3,
-        cancel_check=cancel_check, continuation=continuation)
+        [None], task_id=task_id, cancel_check=cancel_check,
+        options=BatchOptions(
+            instruction=args.get("instruction"),
+            verify_cmd=args.get("verify"),
+            max_rounds=args.get("max_rounds") or 3,
+            continuation=continuation))
 
 
 def run_bench_task(task_id, args, cancel_check):
@@ -440,6 +464,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_capabilities()
             if path == "/api/models":
                 return self._api_models(q)
+            if path == "/api/rankings":
+                return self._api_rankings()
             return self._error(404, f"no such endpoint: {path}")
         except HarnessError as e:
             return self._error(400, str(e))
@@ -628,6 +654,37 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                         prefer=settings.panel_pool, limit=limit)}
         payload = self.ui.cached("models", build)
         return self._send_json({"count": len(payload["models"]), **payload})
+
+    def _api_rankings(self):
+        """Read-only mirror of the rankings report (the data the weekly
+        workflow files as its artifact): latest report verbatim plus the
+        list of available ones. Strictly read-only -- no generation, no
+        probe, no config mutation; `harness rankings` stays the one
+        producer. A missing or unreadable report is a 200 with
+        ``available: false`` (the empty/stale state is normal, not an
+        error) and never falls back to an older file silently."""
+        reports = _rankings_reports()
+        if not reports:
+            return self._send_json({
+                "reports": [], "latest": None, "available": False,
+                "note": "no rankings report found; generate one with: "
+                        "harness rankings (or the weekly workflow artifact)",
+            })
+        latest = reports[0]
+        try:
+            with open(latest, encoding="utf-8") as f:
+                report = json.load(f)
+        except (OSError, ValueError) as e:
+            return self._send_json({
+                "reports": [os.path.basename(p) for p in reports],
+                "latest": os.path.basename(latest), "available": False,
+                "error": f"latest rankings report is unreadable: {e}",
+            })
+        return self._send_json({
+            "reports": [os.path.basename(p) for p in reports],
+            "latest": os.path.basename(latest),
+            "available": True, "report": report,
+        })
 
 
 def make_server(host="127.0.0.1", port=8765, auth_token=None):

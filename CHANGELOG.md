@@ -10,6 +10,126 @@ break APIs between minor versions).
 ## [Unreleased]
 
 ### Added
+- **Batch fail-soft (`apply --keep-going`).** A multi-file batch can
+  continue past a failed file instead of aborting: every per-file result --
+  failures included -- stays in the batch envelope, the overall status
+  names the FIRST failure (a later success can never mask a mixed batch
+  into `ok`), and the shared-gate verdict reports not-passed. Fail-fast
+  remains the default and is byte-identical to prior behavior; the flag
+  lives on the apply parser only (continue/dogfood untouched); no retry
+  logic, no analytics. Proven through the real CLI entry point (mixed and
+  default runs via `cli.main` with the emitted `--out` JSON), plus loop
+  pins on the engine batch surface.
+- **Apply change preview in the UI.** Every changed-terminal apply result
+  (preview, ok, gated ok, escalated ok) now carries a unified `diff` of the
+  touched file plus its `file` path, computed once where the run already
+  held both sides in memory (`results._content_diff` -- no filesystem reads,
+  no new capability). The web UI's result summary renders it as a
+  color-coded, escaped, 400-line-capped changes block -- the scoped-edit
+  trust surface, visible exactly where trust gates force preview-only --
+  with the raw-JSON toggle remaining for the full envelope. Proven end to
+  end: unit pins on every terminal shape, a server-level test that the
+  envelope reaches `/api/runs/{id}/result` unstripped, a live probe through
+  the real served server, and a render proof executing the actual
+  `resultSummary` against the live payload.
+- **Rankings surface (server + UI, strictly read-only).** `GET /api/rankings`
+  serves the latest rankings report verbatim — the same data the weekly
+  workflow files as its artifact (`window`, `top`, `climbers`,
+  `ranked_in_catalog`, `proposed_candidates` with probe verdicts) — plus the
+  list of reports on disk, newest first. A missing or unreadable report is a
+  200 with `available: false` and an actionable note (the empty/stale state
+  is normal, never a silent fallback to an older file). A Rankings view in
+  the web UI renders it with the established enter-to-refresh contract. The
+  hard constraint holds: the endpoint and view never generate, probe, or
+  mutate configuration — `harness rankings` stays the one producer, so
+  nothing auto-mutates. Covered by endpoint tests through the real server
+  surface, including a mechanized read-only check.
+- **MCP progress streaming (the one deferred UI-readiness item).** A client
+  that includes `params._meta.progressToken` on an identified `tools/call`
+  now receives one `notifications/progress` frame per typed run event
+  (`panel_call`, `gate_end`, `rotation`, ...) while the tool runs: same
+  token, monotonically increasing `progress`, human-readable `message`, no
+  `total` (the lanes don't know one). Frames stop at completion (the sink
+  is removed with the request -- success, error, or cancel); a request
+  without a token gets zero progress frames, exactly the historical
+  behavior, and a malformed token is ignored (`_meta` is advisory -- a
+  telemetry preference can never fail a run). Implemented as an events-bus
+  sink bound to the request, so panel/apply lanes stay telemetry-only and
+  the protocol adapter owns only the frame translation. Proven end to end
+  through the real stdio frame loop.
+
+### Changed
+- **The rankings envelope-to-UI field contract is mechanized.** A contract
+  pin derives every member read the real `loadRankings` makes from app.js
+  source (not a hand-list) and asserts each resolves on an envelope produced
+  by rankings.py's real builder through the real endpoint assembler,
+  including both `available: false` fallbacks; where a node runtime exists,
+  the real renderer is executed against the real envelope with per-row value
+  co-occurrence. Vacuity-proven: planted key renames on either side (UI or
+  server envelope) fail the battery instead of silently blanking the view.
+- **Skip hygiene is mechanized.** The suite's 10 skips (on Windows) are all
+  environment gates, not convenience: 7 symlink-privilege gates
+  (WinError 1314 without Developer Mode -- security-relevant symlink-escape
+  paths that CI's Linux legs run for real) and 3 POSIX-mode-bit gates; the
+  optional-dep gates (local_fit's numpy/onnx training deps, the live-key
+  catalog freshness check) follow the same classified pattern and are
+  already exercised wherever the environment provides them. A new
+  architecture-guard class (`SkipHygieneTests`) keeps it that way: every
+  skip reason must state its category (platform / privilege / optional dep
+  / live credential), and blunt unconditional `@unittest.skip` disables are
+  banned -- proven to fire on both violation shapes.
+- **`ci.yml` gains a `workflow_dispatch` trigger.** CI never fired for the
+  branch's final heads (zero check-runs for `f187cb3`/`141d21a` across two
+  pushes -- confirmed environmental, PR #8 merge-basis comment); a manual
+  dispatch is the cheapest re-emit path once Actions minutes are restored.
+  No job, matrix, or gate content changed.
+- **One per-file options owner for the batch CLI face.** `cli._cmd_apply`'s
+  ~18 hand-threaded kwargs into `apply_batch` (re-packed into a dict by
+  `run_batch`) collapsed into the immutable `BatchOptions` bundle: one
+  definition constructed in one place, consumed by the loop, and every
+  caller (CLI apply/continue/dogfood, MCP tools/call, both server task
+  runners) now passes it -- `run_batch` is single-mode. Run-level knobs
+  (task_id, keep_going, apply_pool, cancel_check, resume routing) stay
+  run_batch parameters -- they describe the batch, not a file's session.
+  `_cmd_continue` now builds the same bundle through the same helper.
+  `--keep-going`'s apply-parser-only scope is documented at the definition
+  site as the deliberate divergence it is (the multi-file batch is the only
+  multi-file surface). Behavior byte-identical: full battery green; the
+  bundle's field defaults are pinned equal to run_batch's legacy signature
+  (vacuity-proven) and the run-level pool/cancel-check merge is pinned with
+  non-None values.
+
+### Fixed
+- **The self-audit's MCP-tool extraction is blind no more.** The schema
+  extraction moved the tool literals out of mcp.py, so the audit's source
+  grep returned an empty tool list — README parity then reported every
+  real tool stale while the missing-side check ran vacuous. The audit
+  now imports the names from mcp_schemas (the contract owner); CI's
+  audit job is back to a meaningful 10/10.
+
+- **Resume through a BatchOptions bundle delivers the saved state.** The
+  dual-mode options path silently dropped the run-level `continuation` to
+  None in the per-file payload (the merge covered only apply_pool and
+  cancel_check), so a CLI resume ran as a fresh apply; no test drove a
+  successful resume end to end. Single-mode run_batch now validates and
+  delivers the run-level parameter (or the bundle-carried one), pinned by
+  a regression test and proven end to end through the real CLI entry
+  point on both resume faces (apply --continue-from, continue).
+
+- **Miscounted-diff hunk headers no longer waste the apply lane.** Dogfood
+  evidence recorded 12/12 near-miss refusals of diffs whose body lines were
+  correct but whose `@@` header miscounted ("truncated: expected -6/+24,
+  got -6/26"), each burning a full failed apply round; the worst variant
+  merged while silently dropping the body's tail. Hunk bodies now parse to
+  their natural end (next `@@`, junk line, or EOF) and the body decides; a
+  recovered hunk must still describe a change, a short old-side at EOF is
+  still refused as truncation-ambiguous, junk after a miscounted body is
+  still refused, and the exact-source match still gates every line that
+  reaches disk -- the validation gate is unchanged.
+
+## [0.3.0] — 2026-09-15
+
+### Added
 - **Explicit reasoning disable (the "off means OFF" fix).** `off`/`none`
   now send `reasoning:{"effort":"none"}` instead of omitting the key --
   omitting means the provider default (reasoning ON) for reasoning-native

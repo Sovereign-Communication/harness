@@ -46,6 +46,7 @@ import uuid
 
 from ._http import HttpTransport
 from .apply import validate_continuation
+from .batch import BatchOptions
 try:
     from .bench import load_manifest, run_bench
 except Exception as _bench_import_exc:
@@ -324,14 +325,18 @@ def _cmd_dogfood(opts, settings):
     # ---- phase 3: gated self-apply ----------------------------------------
     engine = _session(settings)
     result = engine.apply_batch(
-        [opts.file], task_id=opts.task_id, instruction=opts.instruction,
-        verify_cmd=opts.verify, max_rounds=opts.max_rounds,
-        require_consent=opts.require_consent, model=opts.model,
-        max_tokens=opts.max_tokens, task_max_cost=opts.task_max_cost,
-        allow_escalation=opts.allow_escalation,
-        reasoning_effort=opts.reasoning_effort,
-        renew_consent=opts.renew_consent, max_rotations=opts.max_rotations,
-        backend=opts.backend, max_lines=opts.max_lines)
+        [opts.file], task_id=opts.task_id,
+        options=BatchOptions(
+            instruction=opts.instruction, verify_cmd=opts.verify,
+            max_rounds=opts.max_rounds,
+            require_consent=opts.require_consent, model=opts.model,
+            max_tokens=opts.max_tokens,
+            task_max_cost=opts.task_max_cost,
+            allow_escalation=opts.allow_escalation,
+            reasoning_effort=opts.reasoning_effort,
+            renew_consent=opts.renew_consent,
+            max_rotations=opts.max_rotations, backend=opts.backend,
+            max_lines=opts.max_lines))
     _phase("apply", {"status": result["status"], "cost": result.get("cost")})
     report["apply"] = result
     report["status"] = ("ok" if result["status"] == "ok"
@@ -364,6 +369,20 @@ def _cmd_lint_claims(opts, settings=None):
         sys.exit(2)
 
 
+def _batch_options(opts, continuation=None):
+    """The per-file session options for apply and continue, built once."""
+    return BatchOptions(
+        instruction=opts.instruction, edit_snippet=opts.edit_snippet,
+        verify_cmd=opts.verify, max_rounds=opts.max_rounds,
+        require_consent=opts.require_consent, model=opts.model,
+        max_tokens=opts.max_tokens, task_max_cost=opts.task_max_cost,
+        allow_escalation=opts.allow_escalation,
+        reasoning_effort=opts.reasoning_effort, renew_consent=opts.renew_consent,
+        max_rotations=opts.max_rotations, backend=opts.backend,
+        verify_only=opts.verify_only, max_lines=opts.max_lines,
+        continuation=continuation)
+
+
 def _cmd_apply(opts, settings):
     # Validate persisted state before key/model setup. A malformed or ungated
     # continuation must fail without even fetching /key or /models.
@@ -383,15 +402,9 @@ def _cmd_apply(opts, settings):
     # The engine owns the batch loop (and, on resume, replaces the file list
     # with the continuation's own target).
     result = engine.apply_batch(
-        files or [None], task_id=opts.task_id, instruction=opts.instruction,
-        edit_snippet=opts.edit_snippet, verify_cmd=opts.verify,
-        max_rounds=opts.max_rounds, require_consent=opts.require_consent,
-        model=opts.model, max_tokens=opts.max_tokens,
-        task_max_cost=opts.task_max_cost, allow_escalation=opts.allow_escalation,
-        reasoning_effort=opts.reasoning_effort, renew_consent=opts.renew_consent,
-        max_rotations=opts.max_rotations, backend=opts.backend,
-        verify_only=opts.verify_only, max_lines=opts.max_lines,
-        continuation=continuation)
+        files or [None], task_id=opts.task_id,
+        options=_batch_options(opts, continuation),
+        keep_going=opts.keep_going)
     result["meta"] = _run_meta(settings, engine.governor)
     _emit_by_status(result, opts.out)
 
@@ -404,15 +417,8 @@ def _cmd_continue(opts, settings):
         _read_json(opts.state, "--state continuation"))
     engine = _session(settings)
     result = engine.apply_batch(
-        [None], task_id=opts.task_id, instruction=opts.instruction,
-        edit_snippet=opts.edit_snippet, verify_cmd=opts.verify,
-        max_rounds=opts.max_rounds, require_consent=opts.require_consent,
-        model=opts.model, max_tokens=opts.max_tokens,
-        task_max_cost=opts.task_max_cost, allow_escalation=opts.allow_escalation,
-        reasoning_effort=opts.reasoning_effort, renew_consent=opts.renew_consent,
-        max_rotations=opts.max_rotations, backend=opts.backend,
-        verify_only=opts.verify_only, max_lines=opts.max_lines,
-        continuation=continuation)
+        [None], task_id=opts.task_id,
+        options=_batch_options(opts, continuation))
     _emit_by_status(result, opts.out, continued=True)
 
 
@@ -640,6 +646,11 @@ def _add_engine_flags(p, *, max_tokens_default, verify_required=False):
                    help="return the proposed content without writing or running the verification gate")
     p.add_argument("--max-lines", type=int, default=500,
                    help="per-file line ceiling (1-500)")
+    # --keep-going deliberately diverges from this helper: it is defined on
+    # the apply parser only, because the multi-file batch is the only
+    # multi-file surface (continue is one file by construction, dogfood runs
+    # its own manifest). Do not 'fix' it back into lockstep here.
+    # See run_batch's keep_going contract (harness/batch.py).
 
 
 def _add_output_flags(p):
@@ -736,6 +747,10 @@ def main(argv=None):
                     help="target file; repeat the flag for a multi-file batch (one session, shared gate)")
     pa.add_argument("--instruction", default=None)
     _add_engine_flags(pa, max_tokens_default=4096)
+    pa.add_argument("--keep-going", dest="keep_going", action="store_true", default=False,
+                    help="multi-file batch: continue past a failed file; per-file results "
+                         "are preserved and the batch still fails honestly (fail-fast "
+                         "remains the default)")
     pa.add_argument("--continue-from", default=None, help="resume a deferred task from state.json")
     _add_output_flags(pa)
 

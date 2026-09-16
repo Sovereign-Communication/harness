@@ -259,15 +259,32 @@ def _number_lines(text):
 
 
 def _apply_unified_diff(current, diff_text):
-    """Apply a strict unified diff to `current`; return the new content (#11).
+    """Apply a unified diff to `current`; return the new content (#11).
 
     Every hunk must match the source EXACTLY - no fuzz. A mismatch raises
     HarnessError so the round can be retried with the error as feedback
     instead of writing a silently corrupt merge. Standard git-style
     headers are tolerated; prose around the diff is skipped.
+
+    Hunk-header line counts are claims, not law (dogfood evidence: the
+    dominant free-tier near-miss was a model miscounting its own @@
+    header while the body lines were correct -- recorded as "hunk at
+    line N is truncated: expected -X/+Y, got -X/+Z", 12/12 refusals).
+    A count mismatch no longer refuses the diff: the hunk's actual body
+    decides, and that body still faces the same exact-source match
+    below, so genuinely wrong content is refused exactly as before.
+    A recovered hunk must still describe a change (a pure-context body
+    stays refused -- it cannot be anchored honestly).
     """
     text = diff_text.replace("\\r\\n", "\n")
     lines = text.split("\n")
+    if lines and lines[-1] == "":
+        # split() artifact of a trailing newline, not diff content. A
+        # well-formed window never reaches it (its counts stop first)
+        # and the outer scan only skips it -- but a hungry window on a
+        # miscounted header would swallow it as a phantom context line
+        # and corrupt the hunk's old-side length.
+        lines.pop()
     hunks = []
     i = 0
     n = len(lines)
@@ -280,32 +297,63 @@ def _apply_unified_diff(current, diff_text):
         old_len = int(m.group(2)) if m.group(2) is not None else 1
         new_len = int(m.group(4)) if m.group(4) is not None else 1
         i += 1
+        # A hunk body runs to its natural end: the next @@ header, a
+        # non-diff line (prose), or EOF. Header counts are claims, not
+        # law (dogfood evidence: the dominant free-tier near-miss was a
+        # model miscounting its own @@ counts while the body was correct
+        # -- recorded as "truncated: expected -6/+24, got -6/26",
+        # 12/12 refusals). A count-driven window would either refuse
+        # that good body or, when the lie fills the window exactly,
+        # silently drop the body's tail.
         old_body, new_body = [], []
-        while i < n and (len(old_body) < old_len or len(new_body) < new_len):
+        ended = "eof"
+        while i < n:
             ln = lines[i]
             if ln.startswith("@@"):
+                ended = "@@"
                 break
             tag, rest = (ln[0], ln[1:]) if ln else (' ', '')
-            if tag == ' ':
-                old_body.append(rest)
-                new_body.append(rest)
-            elif tag == '-':
-                old_body.append(rest)
-            elif tag == '+':
-                new_body.append(rest)
-            elif tag == chr(92):
-                pass  # no-newline marker
+            if tag in (' ', '-', '+', chr(92)):
+                if tag == ' ':
+                    old_body.append(rest)
+                    new_body.append(rest)
+                elif tag == '-':
+                    old_body.append(rest)
+                elif tag == '+':
+                    new_body.append(rest)
+                # '\': no-newline marker, not a content line
+                i += 1
             else:
-                raise HarnessError(f"malformed diff line: {ln[:60]!r}")
-            i += 1
+                ended = "prose"
+                break  # junk: the body is over
         if len(old_body) != old_len or len(new_body) != new_len:
-            raise HarnessError(
-                f"hunk at line {old_start} is truncated: expected -{old_len}/+{new_len}, "
-                f"got -{len(old_body)}/{len(new_body)}")
+            if ended == "prose":
+                # The header already disagrees and junk follows the
+                # body: its completeness is unknowable. The historical
+                # parser refused in-window garbage; keep that refusal.
+                raise HarnessError(f"malformed diff line: {ln[:60]!r}")
+            if len(old_body) < old_len and i >= n:
+                # Old side short AND nothing follows: indistinguishable
+                # from a diff cut off mid-hunk, and merging that prefix
+                # would silently under-deliver. Refuse so the round
+                # regenerates the complete diff.
+                raise HarnessError(
+                    f"hunk at line {old_start} is truncated: expected -{old_len}/+{new_len}, "
+                    f"got -{len(old_body)}/{len(new_body)}")
+            if old_body == new_body:
+                # A recovered hunk that describes no change (pure
+                # context, or nothing at all) cannot be merged honestly.
+                raise HarnessError(
+                    f"hunk at line {old_start} miscounts its header and its "
+                    f"body describes no change; regenerate the diff with "
+                    f"correct @@ counts")
+            # Complete body vs disagreeing header: the body decides.
+            # It still faces the exact-source match below, so genuinely
+            # wrong content is refused exactly as before.
+            old_len, new_len = len(old_body), len(new_body)
         hunks.append((old_start, old_len, old_body, new_body))
     if not hunks:
         raise HarnessError("no unified-diff hunks found in model output")
-
     src = current.split("\n")
     out = []
     pos = 0
