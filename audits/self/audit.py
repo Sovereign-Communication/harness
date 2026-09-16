@@ -465,7 +465,8 @@ def r_ledger_dynamic():
         l3 = AutonomyLedger(path)
         evidence.append(f"quarantined={l3.quarantined}")
         # corrupt tail: rewrite e4's hash
-        lines = open(path, encoding="utf-8").read().splitlines()
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
         good = [ln for ln in lines if not ln.startswith('{"seq": 999')]
         e4 = json.loads(good[-1])
         e4["event"] = "tampered"
