@@ -750,6 +750,62 @@ class RankingsEndpointTests(ServerHarness):
         self.assertEqual(made, [], "endpoint attempted a write or generation")
 
 
+class ApplyDiffPreviewTests(ServerHarness):
+    """The apply lane's change preview end to end through the real server:
+    a dispatched apply whose runner returns the engine's terminal envelope
+    serves `diff` + `file` at /api/runs/{id}/result -- exactly what the UI's
+    resultSummary renders. No engine runs: the runner is stubbed with a
+    realistic preview envelope (verify_only previews never run a gate).
+    """
+
+    ENVELOPE = {
+        "status": "preview", "task_id": "ui/x", "rounds": [],
+        "cost": 0.0, "rotations": 0, "backend": "harness",
+        "verify_only": True, "changed": True,
+        "proposed_content": "b\n", "backup": None,
+        "file": "t.py", "diff": "--- a\n+++ b\n@@ -1 +1 @@\n-a\n+b\n",
+    }
+
+    def test_apply_result_serves_diff_to_the_ui(self):
+        seen = {}
+
+        def fake(task_id, args, cancel_check):
+            seen["task_id"] = task_id
+            seen["args"] = args
+            return dict(self.ENVELOPE, task_id=task_id)
+        target = os.path.join(tempfile.gettempdir(), "harness-diff-preview.py")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write("a\n")
+        self.addCleanup(lambda: os.path.exists(target)
+                        and os.remove(target))
+        with mock.patch.dict(ui_server.RUNNERS, {"apply": fake}):
+            conn = self._conn()
+            try:
+                status, run = _request(conn, "POST", "/api/runs",
+                                       body={"kind": "apply", "args": {
+                                           "file": target,
+                                           "instruction": "change a to b",
+                                           "verify_only": True}})
+                self.assertEqual(status, 201)
+                for _ in range(100):
+                    _, full = _request(conn, "GET", f"/api/runs/{run['id']}/result")
+                    if full["status"] != "running":
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("apply run never settled")
+            finally:
+                conn.close()
+        self.assertEqual(full["status"], "preview")
+        result = full["result"]
+        # run_public passes the envelope verbatim; the stub's own `file`
+        # must survive untouched (the UI renders it as the target's name).
+        self.assertEqual(result["file"], self.ENVELOPE["file"])
+        self.assertIn("-a", result["diff"])
+        self.assertIn("+b", result["diff"])
+        self.assertTrue(result["verify_only"])
+
+
 class DesktopFallbackTests(unittest.TestCase):
     def test_open_window_falls_back_to_browser_without_pywebview(self):
         import sys

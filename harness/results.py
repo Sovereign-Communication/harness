@@ -10,6 +10,8 @@ land, and every consumer sees one consistent result contract. Names carry the
 package's internal-vocabulary underscore (like prompts._parse_ready): the
 consumers are all in-package.
 """
+import difflib
+
 from .continuation import gate_id
 from .prompts import MAX_FILE_LINES
 from .filesafety import file_content_hash
@@ -97,6 +99,20 @@ def _defer_result(*, task_id, file_path, category, reason, remaining_scope,
         verify_gate_id=continuation["verify_gate_id"],
         verification_required=continuation["verification_required"],
         continuation=continuation)
+
+
+def _content_diff(original, proposed):
+    """Unified diff (no header timestamps) of a proposed edit, or None when
+    the content is unchanged/unavailable. The UI's change-preview field:
+    computed from content the run already held in memory, so previewing
+    adds no filesystem reads and no new capability."""
+    if not isinstance(original, str) or not isinstance(proposed, str):
+        return None
+    if original == proposed:
+        return None
+    return "".join(difflib.unified_diff(
+        original.splitlines(keepends=True),
+        proposed.splitlines(keepends=True), fromfile="a", tofile="b"))
 
 
 def _http_error(status, resp):

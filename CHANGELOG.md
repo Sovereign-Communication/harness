@@ -10,6 +10,18 @@ break APIs between minor versions).
 ## [Unreleased]
 
 ### Added
+- **Apply change preview in the UI.** Every changed-terminal apply result
+  (preview, ok, gated ok, escalated ok) now carries a unified `diff` of the
+  touched file plus its `file` path, computed once where the run already
+  held both sides in memory (`results._content_diff` -- no filesystem reads,
+  no new capability). The web UI's result summary renders it as a
+  color-coded, escaped, 400-line-capped changes block -- the scoped-edit
+  trust surface, visible exactly where trust gates force preview-only --
+  with the raw-JSON toggle remaining for the full envelope. Proven end to
+  end: unit pins on every terminal shape, a server-level test that the
+  envelope reaches `/api/runs/{id}/result` unstripped, a live probe through
+  the real served server, and a render proof executing the actual
+  `resultSummary` against the live payload.
 - **Rankings surface (server + UI, strictly read-only).** `GET /api/rankings`
   serves the latest rankings report verbatim — the same data the weekly
   workflow files as its artifact (`window`, `top`, `climbers`,

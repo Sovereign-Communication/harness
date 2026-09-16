@@ -14,7 +14,7 @@ import unittest
 from harness.apply_gate import GatePolicy
 from harness.apply_state import ApplyRequest, AttemptOutcome, RunState
 from harness.errors import HarnessError, ToolCancelled
-from harness.results import _round_entry
+from harness.results import _content_diff, _round_entry
 
 
 class _Ledger:
@@ -231,6 +231,70 @@ class DataContractTests(unittest.TestCase):
                          changed=True, verify_passed=True)
         self.assertEqual(set(e), {"round", "model", "status", "cost",
                                   "verify_output", "changed", "verify_passed"})
+
+
+class DiffPreviewTests(unittest.TestCase):
+    """The UI's change-preview field: every changed-terminal apply result
+    carries a unified diff of the touched file, computed from content the
+    run already held in memory (no filesystem reads, no new capability).
+    ``file`` names the target so a preview can say what it is about.
+    """
+
+    def _run(self, verify_only, proposed="b\n", original="a\n"):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "t.py")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(original)
+            req = _request(target, verify_only=verify_only,
+                           original=original,
+                           runner=lambda cmd: (0, "ok"))
+            outcome = AttemptOutcome(model="m", model_used="m", cost=0.0)
+            return GatePolicy(_Ledger(), _Governor()).apply_candidate(
+                req, _state(original), outcome, proposed), target
+
+    def test_preview_result_carries_diff_and_file(self):
+        res, _ = self._run(verify_only=True)
+        self.assertEqual(res["status"], "preview")
+        self.assertEqual(res["file"], res.get("file"))  # present
+        self.assertIn("-a", res["diff"])
+        self.assertIn("+b", res["diff"])
+        self.assertTrue(res["diff"].startswith("--- a\n+++ b\n"))
+
+    def test_gated_ok_result_carries_diff_before_write(self):
+        """``state.current_content`` is the POST-write content by the time
+        the terminal builds; the diff must read req.original, not the
+        already-written value (ruff caught exactly that bug)."""
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "t.py")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("a\n")
+            req = _request(target, runner=lambda cmd: (0, "ok"),
+                           original="a\n")
+            outcome = AttemptOutcome(model="m", model_used="m", cost=0.0)
+            res = GatePolicy(_Ledger(), _Governor()).apply_candidate(
+                req, _state("a\n"), outcome, "b\n")
+            self.assertEqual(res["status"], "ok")
+            self.assertEqual(res["file"], target)
+            self.assertIn("-a", res["diff"])
+            self.assertIn("+b", res["diff"])
+            with open(target, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "b\n")  # real write still happened
+
+    def test_unchanged_proposal_diffs_to_none(self):
+        """One shape per status: ``diff`` stays present on the terminal
+        envelope and is None when nothing changed (nullable beats
+        sometimes-absent for consumers)."""
+        res, _ = self._run(verify_only=True, proposed="a\n")
+        self.assertIsNone(res["diff"])
+        self.assertFalse(res["changed"])
+
+    def test_content_diff_helper_contract(self):
+        self.assertIsNone(_content_diff("same", "same"))
+        self.assertIsNone(_content_diff(None, "x"))
+        d = _content_diff("a\nc\n", "a\nb\n")
+        self.assertIn("-c", d)
+        self.assertIn("+b", d)
+        self.assertNotIn("@@", d.split("@@")[0][:3])  # header has no timestamps
 
 
 class EscalationTests(unittest.TestCase):

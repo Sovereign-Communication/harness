@@ -246,6 +246,24 @@ function resultSummary(r) {
       (r.lint.issues || []).map((i) => i.claim_id || i.code || "?").join(", "))})`) : "");
   const synth = (r.judge_synthesis || "").trim();
   if (synth) html += `<div class="sum-row"><span class="k">synthesis</span><span>${esc(synth.slice(0, 400))}${synth.length > 400 ? "…" : ""}</span></div>`;
+  // Change preview for apply/continue results: what changed in the touched
+  // file, computed server-side from content the run already held (see
+  // results._content_diff). Read-only evidence, like every other row here.
+  if (r.diff) {
+    const body = r.diff.split("\n").slice(0, 400).map((line) => {
+      const cls = line.startsWith("+") ? "ln-add"
+        : line.startsWith("-") ? "ln-del"
+        : (line.startsWith("@@") ? "ln-meta" : "ln-ctx");
+      return `<div class="${cls}">${esc(line) || "&nbsp;"}</div>`;
+    }).join("");
+    const note = r.diff.split("\n").length > 400
+      ? `<div class="dim">… diff truncated at 400 lines (full diff in the raw JSON)</div>` : "";
+    html += `<div class="sum-row"><span class="k">changes</span></div>` +
+      (r.file ? `<div class="d-file dim mono">${esc(r.file)}</div>` : "") +
+      `<div class="diff-view mono">${body}</div>${note}`;
+  } else if (r.status === "ok" && r.changed === false) {
+    html += row("changes", "none (model proposal matched the current content)");
+  }
   const reasons = Array.isArray(verdict.reasons) ? verdict.reasons
     : Array.isArray(r.reasons) ? r.reasons : [];
   if (reasons.length) html += row("reasons", reasons.map((x) => esc(x)).join("; "));
