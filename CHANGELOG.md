@@ -9,6 +9,10 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.2] — 2026-09-16
+
 ### Added
 
 - Gate-waste-aware apply-lead selection: the ledger counts rounds-exhausted
