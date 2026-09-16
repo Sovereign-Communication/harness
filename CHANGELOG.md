@@ -99,6 +99,14 @@ break APIs between minor versions).
   (vacuity-proven) and the run-level pool/cancel-check merge is pinned with
   non-None values.
 
+- **The CLI parser surface has its own owner.** `harness/cli_parser.py`
+  (build_parser, flag builders) is pure argparse construction moved
+  verbatim from cli.py (912 → 683 lines): every subcommand and flag lives
+  in exactly one module, and a new surface test pins parser registration
+  against the dispatch table. All 12 help surfaces replayed byte-identical;
+  the self-audit's subcommand extraction follows the move with a live-parser
+  strictness assert (the D1 lesson mechanized for D2).
+
 ### Fixed
 - **The self-audit's MCP-tool extraction is blind no more.** The schema
   extraction moved the tool literals out of mcp.py, so the audit's source

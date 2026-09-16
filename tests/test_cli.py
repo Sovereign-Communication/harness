@@ -493,5 +493,27 @@ class CliResumeE2eTests(unittest.TestCase):
             self.assertEqual(result["task_id"], "orig-task")
 
 
+class CliParserSurfaceTests(unittest.TestCase):
+    """The parser owner registers every dispatchable command and no more;
+    handler aliases stay importable from cli (the established test seams)."""
+
+    def test_parser_registers_exactly_the_dispatchable_commands(self):
+        from harness.cli import _DISPATCH
+        from harness.cli_parser import build_parser
+
+        import argparse
+        sub_action = next(a for a in build_parser()._actions
+                          if isinstance(a, argparse._SubParsersAction))
+        registered = set(sub_action.choices)
+        self.assertEqual(registered, set(_DISPATCH) | {"serve", "desktop"})
+
+    def test_handler_seams_stay_importable_from_cli(self):
+        import harness.cli as cli
+
+        for name in ("_cmd_apply", "_cmd_verify", "_run_claims_verify",
+                     "_read_text", "_governor", "_session"):
+            self.assertTrue(hasattr(cli, name), name)
+
+
 if __name__ == "__main__":
     unittest.main()
