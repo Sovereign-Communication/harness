@@ -149,7 +149,8 @@ merge.
 | `harness/session.py` | composition owner: governor_for/ledger_for/router_for/engine_for + `apply_session` (pre-spend saturation look-ahead included) -- how ANY interface gets its dependencies; engine kwargs and tier policy change here exactly once |
 | `harness/service.py` | the ONE verify/claims run assembly (prompt, claims flags, resolved inputs, cancelled envelope, cost/meta) -- what `harness verify`, `harness serve`, and MCP all consume |
 | `harness/validation.py` | shared validation for untrusted CLI/MCP/batch/library inputs -- every safety-sensitive limit passes through here before any model call or file mutation |
-| `harness/cli.py` | interface + dispatch + presentation (handlers, report rendering, exit codes); session aliases (`_governor`/`_engine`/...) kept as test seams |
+| `harness/cli.py` | handlers + dispatch + CLI bootstrap (exit codes, color/events policy); presentation re-exports (`_emit`, `_emit_by_status`, `_print_capabilities_table`) kept as patch points; session aliases (`_governor`/`_engine`/...) kept as test seams |
+| `harness/cli_report.py` | the ONE result-rendering owner (`_emit`, `_emit_by_status`, `_print_capabilities_table`): --out files, machine JSON vs TTY pretty mode, exit-code surfacing -- moved verbatim from cli.py |
 | `harness/cli_parser.py` | the argparse surface as pure construction (`build_parser`, flag builders) — handlers live in cli.py, flags in exactly one owner |
 | `harness/consent.py` | the consent probe (sovereignty) |
 | `harness/ledger.py` | hash-chained JSONL autonomy ledger |
@@ -161,4 +162,15 @@ merge.
 | `harness/server.py` | `harness serve`: localhost web UI + JSON API -- the third face; dispatch calls the same engine entry points, no new policy |
 | `harness/render.py` | the ONE human-facing pretty-printer: TTY tables of result envelopes on stderr; read-only, machine JSON stays the stdout contract |
 | `harness/bench.py` | hermetic known-answer benchmarks |
+| `harness/chat.py` | the one chat-completion path and the one assessment of what a model actually produced |
+| `harness/claims.py` | structured-claims grounding: source_refs lint + claims curation from the ledger's own evidence |
+| `harness/continuation.py` | the resumable-task state contract and its verification identity |
+| `harness/convergence.py` | deterministic tally over panel votes + the rotating specialist lane |
+| `harness/errors.py` | shared exception types (`HarnessError`) |
+| `harness/filesafety.py` | file-safety primitives: every mutation of a real file goes through these |
+| `harness/output.py` | the ONE stderr owner for progress chatter and --quiet |
+| `harness/panel.py` | panel + judge verification: rotating independent takes, one synthesis |
+| `harness/prompts.py` | apply prompt contracts + response parsing (pure functions, no I/O) |
+| `harness/tokens.py` | token estimation shared by every cost preflight |
+| `harness/ui.py` | the pywebview desktop shell around the harness web UI |
 | `tests/` | one test module per product owner (test_spend, test_panel, test_convergence, test_specialist, test_chat, test_ledger, test_prompts, ...); shared fakes and the `_gov` helper live in `tests/_fake.py` |

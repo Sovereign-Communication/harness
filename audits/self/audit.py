@@ -888,9 +888,15 @@ def sd_contributing():
     real = set(modules()) | {"__init__", "core"}
     stale = [n for n in set(re.findall(r"`([a-z_]+)\.py`", text)) if n not in real]
     grounded = "layer" in text.lower() or "import" in text.lower()
-    return _pass(not stale and grounded,
-                 "CONTRIBUTING references only real modules; layering rules present",
-                 f"stale: {stale}")
+    # Module-map coverage (the D1/D2/D8 lesson, mechanized for D10): every
+    # public harness module needs a map row, or a new/extraction module can
+    # merge without its one-line owner entry. Private (_-prefixed) modules
+    # and the package __init__ sit outside the map by convention.
+    public = [m for m in modules() if not m.startswith("_")]
+    uncovered = [m for m in public if not re.search(rf"harness/{m}\.py`", text)]
+    return _pass(not stale and grounded and not uncovered,
+                 "CONTRIBUTING covers every public module; layering rules present",
+                 f"stale: {stale}" + (f"; uncovered: {uncovered}" if uncovered else ""))
 
 
 # ---------------------------------------------------------------- runner
