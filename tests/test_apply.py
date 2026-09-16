@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from harness.apply import ApplyEngine
+from harness.batch import BatchOptions
 from harness.errors import HarnessError
 from harness.filesafety import _atomic_write
 from harness.ledger import AutonomyLedger
@@ -400,9 +401,11 @@ class ApplyTests(ApplyFixture):
                               Router(["a"], JUDGE, APPLY),
                               default_require_consent=True, default_renew_consent=False)
         engine2.run_verify = lambda command: (0, "")
-        r2 = engine2.apply_batch([None], instruction=None,
-                                 continuation=r1["continuation"],
-                                 verify_cmd="check", require_consent=False)
+        r2 = engine2.apply_batch(
+            [None], options=BatchOptions(
+                instruction=None, verify_cmd="check",
+                require_consent=False,
+                continuation=r1["continuation"]))
         self.assertEqual(r2["status"], "ok")
         self.assertEqual(r2["task_id"], "orig-task")
 
@@ -493,8 +496,10 @@ class ApplyTests(ApplyFixture):
             f.write(ORIGINAL)
         _, _, _, engine = self.make_env(posts=[comp(CHANGED), comp(CHANGED)],
                                         run=scripted_run([(0, "")]))
-        result = engine.apply_batch([a, b], instruction="change",
-                                    verify_cmd="check", require_consent=False)
+        result = engine.apply_batch(
+            [a, b], options=BatchOptions(instruction="change",
+                                         verify_cmd="check",
+                                         require_consent=False))
         self.assertTrue(result["batch"])
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["statuses"], {"ok": 2})
@@ -509,9 +514,11 @@ class ApplyTests(ApplyFixture):
             f.write(ORIGINAL)
         _, gov, _, engine = self.make_env(posts=[comp(CHANGED)],
                                         run=scripted_run([(1, "boom")]))
-        result = engine.apply_batch([a, b], instruction="change",
-                                    verify_cmd="check", require_consent=False,
-                                    max_rounds=1)
+        result = engine.apply_batch(
+            [a, b], options=BatchOptions(instruction="change",
+                                         verify_cmd="check",
+                                         require_consent=False,
+                                         max_rounds=1))
         # The first file's gate failed; the batch stops and b is never touched.
         # A multi-file batch returns the ENVELOPE even when fail-fast kills it
         # on file 1 -- consumers keying on "results" must be able to tell a
@@ -536,9 +543,12 @@ class ApplyTests(ApplyFixture):
             f.write(ORIGINAL)
         _, _, _, engine = self.make_env(posts=[comp(CHANGED), comp(CHANGED)],
                                         run=scripted_run([(1, "boom"), (0, "")]))
-        result = engine.apply_batch([a, b], instruction="change",
-                                    verify_cmd="check", require_consent=False,
-                                    max_rounds=1, keep_going=True)
+        result = engine.apply_batch(
+            [a, b], options=BatchOptions(instruction="change",
+                                         verify_cmd="check",
+                                         require_consent=False,
+                                         max_rounds=1),
+            keep_going=True)
         self.assertTrue(result["batch"])
         self.assertEqual(result["status"], "verify_failed")
         self.assertEqual(result["statuses"], {"verify_failed": 1, "ok": 1})
@@ -564,9 +574,11 @@ class ApplyTests(ApplyFixture):
             f.write(ORIGINAL)
         _, _, _, engine = self.make_env(posts=[comp(CHANGED), comp(CHANGED)],
                                         run=scripted_run([(0, ""), (1, "boom")]))
-        result = engine.apply_batch([a, b], instruction="change",
-                                    verify_cmd="check", require_consent=False,
-                                    max_rounds=1)
+        result = engine.apply_batch(
+            [a, b], options=BatchOptions(instruction="change",
+                                         verify_cmd="check",
+                                         require_consent=False,
+                                         max_rounds=1))
         self.assertEqual(result["status"], "verify_failed")
         self.assertEqual(result["statuses"], {"ok": 1, "verify_failed": 1})
         self.assertEqual(result["verify"], {"command": "check", "passed": False})
@@ -575,9 +587,10 @@ class ApplyTests(ApplyFixture):
         p = self.make_file()
         _, _, _, engine = self.make_env(posts=[comp(CHANGED)],
                                         run=scripted_run([(0, "")]))
-        result = engine.apply_batch([p], instruction="change",
-                                    verify_cmd="check", require_consent=False,
-                                    task_id="same-task")
+        result = engine.apply_batch(
+            [p], task_id="same-task",
+            options=BatchOptions(instruction="change", verify_cmd="check",
+                                 require_consent=False))
         self.assertNotIn("batch", result)
         self.assertEqual(result["status"], "ok")
         # An explicit task id passes through unsuffixed: one file is not a batch.
@@ -591,8 +604,9 @@ class ApplyTests(ApplyFixture):
         _, _, _, engine = self.make_env(posts=[comp(CHANGED)],
                                         run=scripted_run([(0, "")]))
         before_pool = list(engine.router.apply_pool)
-        engine.apply_batch([p], instruction="change", verify_cmd="check",
-                           require_consent=False)
+        engine.apply_batch([p], options=BatchOptions(
+            instruction="change", verify_cmd="check",
+            require_consent=False))
         self.assertEqual(engine.router.apply_pool, before_pool)
 
     def test_malformed_diff_is_retried_with_feedback_not_fatal(self):
@@ -608,8 +622,11 @@ class ApplyTests(ApplyFixture):
                 "+def add(a, b):\n+    return a + b + 0\n")
         fake, _, _, engine = self.make_env(posts=[comp(bad), comp(good)],
                                            run=scripted_run([(0, "")]))
-        result = engine.apply_batch([p], instruction="add +0", verify_cmd="check",
-                                    require_consent=False, backend="diff")
+        result = engine.apply_batch(
+            [p], options=BatchOptions(instruction="add +0",
+                                      verify_cmd="check",
+                                      require_consent=False,
+                                      backend="diff"))
         self.assertEqual(result["status"], "ok")
         with open(p, encoding="utf-8") as f:
             self.assertEqual(f.read(), CHANGED)
@@ -629,8 +646,11 @@ class ApplyTests(ApplyFixture):
                "+def add(a, b):\n+    return a + b + 0\n")
         fake, _, _, engine = self.make_env(posts=[comp(bad), comp(bad), comp(bad)],
                                            run=scripted_run([(1, "unused")]))
-        result = engine.apply_batch([p], instruction="add +0", verify_cmd="check",
-                                    require_consent=False, backend="diff")
+        result = engine.apply_batch(
+            [p], options=BatchOptions(instruction="add +0",
+                                      verify_cmd="check",
+                                      require_consent=False,
+                                      backend="diff"))
         statuses = [r["status"] for r in result["rounds"]]
         self.assertNotIn("gate_broken", statuses)
         self.assertEqual(statuses.count("merge_failed"), 3)
@@ -645,8 +665,11 @@ class ApplyTests(ApplyFixture):
         fake, _, _, engine = self.make_env(posts=[comp(good), comp(good), comp(good)],
                                            run=scripted_run([(1, "E: gate failed"),
                                                              (1, "E: gate failed")]))
-        result = engine.apply_batch([p], instruction="add +0", verify_cmd="check",
-                                     require_consent=False, backend="diff")
+        result = engine.apply_batch(
+            [p], options=BatchOptions(instruction="add +0",
+                                      verify_cmd="check",
+                                      require_consent=False,
+                                      backend="diff"))
         self.assertEqual(result["status"], "verify_failed")
         with open(p, encoding="utf-8") as f:
             self.assertEqual(f.read(), ORIGINAL)
@@ -665,8 +688,11 @@ class ApplyTests(ApplyFixture):
         fake, _, _, engine = self.make_env(posts=[comp(good), comp(good), comp(good)],
                                            run=scripted_run([(1, "E: gate failed"),
                                                              (1, "E: gate failed")]))
-        result = engine.apply_batch([p], instruction="add +0", verify_cmd="check",
-                                    require_consent=False, backend="diff")
+        result = engine.apply_batch(
+            [p], options=BatchOptions(instruction="add +0",
+                                      verify_cmd="check",
+                                      require_consent=False,
+                                      backend="diff"))
         self.assertEqual(result["status"], "verify_failed")
         with open(p, "rb") as f:
             self.assertEqual(f.read(), crlf)
@@ -684,9 +710,11 @@ class ApplyTests(ApplyFixture):
                "-def wrong(a, b):\n-    return a + b\n"
                "+def add(a, b):\n+    return a + b + 0\n")
         fake, _, ledger, engine = self.make_env(posts=[comp(bad), comp(bad), comp(bad)])
-        result = engine.apply_batch([p], instruction="add +0",
-                                    verify_cmd="check", require_consent=False,
-                                    backend="diff", verify_only=True)
+        result = engine.apply_batch(
+            [p], options=BatchOptions(instruction="add +0",
+                                      verify_cmd="check",
+                                      require_consent=False,
+                                      backend="diff", verify_only=True))
         self.assertEqual(result["status"], "preview_exhausted")
         self.assertIsNone(result["verify"]["passed"])
         self.assertFalse(result["gate_ran"])
@@ -767,31 +795,8 @@ class ApplyTests(ApplyFixture):
 
 
 class BatchOptionsPinTests(ApplyFixture):
-    """The BatchOptions bundle contract: field defaults stay equal to
-    run_batch's legacy signature; run-level pool/cancel-check reach the
-    per-file payload through the options path."""
-
-    def test_bundle_defaults_match_run_batch_signature(self):
-        """A default edited on one side must fail here, not diverge."""
-        import dataclasses
-        import inspect
-        from harness.batch import BatchOptions, run_batch
-        sig_defaults = {name: p.default for name, p in
-                        inspect.signature(run_batch).parameters.items()
-                        if p.default is not inspect.Parameter.empty}
-        field_defaults = {f.name: f.default for f in
-                          dataclasses.fields(BatchOptions)}
-        self.assertEqual(set(field_defaults),
-                         {"instruction", "edit_snippet", "verify_cmd",
-                          "max_rounds", "require_consent", "model",
-                          "max_tokens", "task_max_cost", "allow_escalation",
-                          "reasoning_effort", "renew_consent",
-                          "max_rotations", "backend", "verify_only",
-                          "max_lines", "continuation"})
-        for name, default in field_defaults.items():
-            self.assertEqual(default, sig_defaults[name],
-                             f"BatchOptions.{name} diverged from "
-                             f"run_batch's kwarg default")
+    """The BatchOptions bundle contract: run-level pool/cancel-check and
+    continuation reach the per-file payload through the options path."""
 
     def test_bundle_path_merges_run_level_pool_and_cancel_check(self):
         """Run-level pool/cancel-check reach the per-file payload even
@@ -818,6 +823,32 @@ class BatchOptionsPinTests(ApplyFixture):
                 apply_pool=marker_pool, cancel_check=marker_cancel)
         self.assertEqual(seen["apply_pool"], marker_pool)
         self.assertEqual(seen["cancel_check"], marker_cancel)
+
+    def test_run_level_continuation_param_reaches_payload(self):
+        """The run-level continuation parameter is validated and delivered
+        to the per-file payload (the seam the dual-mode options path
+        silently dropped to None, breaking resume)."""
+        from harness.batch import run_batch
+        from harness.continuation import gate_id
+        seen = {}
+
+        class _StubEngine:
+            def apply_edit(self, **kw):
+                seen.update(kw)
+                return {"status": "ok"}
+
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        target = os.path.join(td.name, "resume.py")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write("x = 1\n")
+        cont = {"file_path": target, "task_id": "t9",
+                "verify_cmd": "check", "verify_gate_id": gate_id("check"),
+                "rounds": []}
+        run_batch(_StubEngine(), [None], options=BatchOptions(),
+                  task_id="t9", continuation=cont)
+        self.assertIs(seen["continuation"], cont)
+        self.assertEqual(seen["file_path"], target)
 
 
 if __name__ == "__main__":

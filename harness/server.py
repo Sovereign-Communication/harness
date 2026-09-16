@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from . import events as _events
+from .batch import BatchOptions
 from .config import HARD_TASK_MAX_COST, HARD_MAX_COST, load_settings
 from .errors import HarnessError, ToolCancelled
 from .session import (apply_session, governor_for, ledger_for, run_meta)
@@ -177,15 +178,17 @@ def run_apply_task(task_id, args, cancel_check):
     settings = load_settings()
     engine = apply_session(settings)
     result = engine.apply_batch(
-        [args["file"]], task_id=task_id, instruction=args["instruction"],
-        edit_snippet=args.get("edit_snippet"), verify_cmd=args.get("verify"),
-        max_rounds=args.get("max_rounds") or 3,
-        require_consent=args.get("require_consent"),
-        model=args.get("model"),
-        task_max_cost=args.get("task_max_cost"),
-        backend=args.get("backend") or "harness",
-        verify_only=bool(args.get("verify_only")),
-        cancel_check=cancel_check)
+        [args["file"]], task_id=task_id, cancel_check=cancel_check,
+        options=BatchOptions(
+            instruction=args["instruction"],
+            edit_snippet=args.get("edit_snippet"),
+            verify_cmd=args.get("verify"),
+            max_rounds=args.get("max_rounds") or 3,
+            require_consent=args.get("require_consent"),
+            model=args.get("model"),
+            task_max_cost=args.get("task_max_cost"),
+            backend=args.get("backend") or "harness",
+            verify_only=bool(args.get("verify_only"))))
     if isinstance(result, dict):
         result["meta"] = run_meta(settings, engine.governor)
     return result
@@ -226,11 +229,12 @@ def run_continue_task(task_id, args, cancel_check):
         continuation = validate_continuation(json.load(f))
     engine = apply_session(settings)
     return engine.apply_batch(
-        [None], task_id=task_id,
-        instruction=args.get("instruction"),
-        verify_cmd=args.get("verify"),
-        max_rounds=args.get("max_rounds") or 3,
-        cancel_check=cancel_check, continuation=continuation)
+        [None], task_id=task_id, cancel_check=cancel_check,
+        options=BatchOptions(
+            instruction=args.get("instruction"),
+            verify_cmd=args.get("verify"),
+            max_rounds=args.get("max_rounds") or 3,
+            continuation=continuation))
 
 
 def run_bench_task(task_id, args, cancel_check):

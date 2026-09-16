@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import __version__
 from . import events as _events
 from . import trust as trust_policy
+from .batch import BatchOptions
 from .consent import probe_consent
 from .continuation import validate_continuation
 from .errors import HarnessError, ToolCancelled
@@ -605,15 +606,19 @@ class McpServer:
             task_id_arg = (validate_mcp_task_id(args.get("task_id"))
                            if args.get("task_id") is not None else None)
             return self.engine.apply_batch(
-                files or [None], task_id=task_id_arg, instruction=instruction or "",
-                edit_snippet=edit_snippet, verify_cmd=effective_verify_cmd,
-                max_rounds=max_rounds, require_consent=apply_flags.get("require_consent"),
-                max_tokens=max_tokens, model=model_arg, task_max_cost=task_max_cost,
-                allow_escalation=apply_flags.get("allow_escalation"),
-                reasoning_effort=reasoning, renew_consent=apply_flags.get("renew_consent"),
-                max_rotations=max_rotations, backend=backend, verify_only=verify_only,
-                max_lines=max_lines, continuation=continuation,
-                cancel_check=cancel_check)
+                files or [None], task_id=task_id_arg, cancel_check=cancel_check,
+                options=BatchOptions(
+                    instruction=instruction or "", edit_snippet=edit_snippet,
+                    verify_cmd=effective_verify_cmd, max_rounds=max_rounds,
+                    require_consent=apply_flags.get("require_consent"),
+                    max_tokens=max_tokens, model=model_arg,
+                    task_max_cost=task_max_cost,
+                    allow_escalation=apply_flags.get("allow_escalation"),
+                    reasoning_effort=reasoning,
+                    renew_consent=apply_flags.get("renew_consent"),
+                    max_rotations=max_rotations, backend=backend,
+                    verify_only=verify_only, max_lines=max_lines,
+                    continuation=continuation))
 
         if name == "offer_work":
             task = validate_mcp_task(args.get("task"))

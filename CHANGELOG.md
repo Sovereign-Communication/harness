@@ -86,10 +86,11 @@ break APIs between minor versions).
 - **One per-file options owner for the batch CLI face.** `cli._cmd_apply`'s
   ~18 hand-threaded kwargs into `apply_batch` (re-packed into a dict by
   `run_batch`) collapsed into the immutable `BatchOptions` bundle: one
-  definition constructed in one place, consumed by the loop, legacy kwargs
-  still accepted unchanged. Run-level knobs (task_id, keep_going,
-  continuation routing, apply_pool, cancel_check) stay run_batch
-  parameters -- they describe the batch, not a file's session.
+  definition constructed in one place, consumed by the loop, and every
+  caller (CLI apply/continue/dogfood, MCP tools/call, both server task
+  runners) now passes it -- `run_batch` is single-mode. Run-level knobs
+  (task_id, keep_going, apply_pool, cancel_check, resume routing) stay
+  run_batch parameters -- they describe the batch, not a file's session.
   `_cmd_continue` now builds the same bundle through the same helper.
   `--keep-going`'s apply-parser-only scope is documented at the definition
   site as the deliberate divergence it is (the multi-file batch is the only
@@ -99,6 +100,13 @@ break APIs between minor versions).
   non-None values.
 
 ### Fixed
+- **Resume through a BatchOptions bundle delivers the saved state.** The
+  dual-mode options path silently dropped the run-level `continuation` to
+  None in the per-file payload (the merge covered only apply_pool and
+  cancel_check), so a CLI resume ran as a fresh apply; no test drove a
+  successful resume end to end. Single-mode run_batch now validates and
+  delivers the run-level parameter (or the bundle-carried one), pinned by
+  a regression test.
 - **Miscounted-diff hunk headers no longer waste the apply lane.** Dogfood
   evidence recorded 12/12 near-miss refusals of diffs whose body lines were
   correct but whose `@@` header miscounted ("truncated: expected -6/+24,

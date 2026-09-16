@@ -41,13 +41,9 @@ class BatchOptions:
     continuation: object = None
 
 
-def run_batch(engine, files, *, task_id=None, instruction=None, edit_snippet=None,
-              verify_cmd=None, max_rounds=MAX_APPLY_ROUNDS, require_consent=None,
-              model=None, max_tokens=None, task_max_cost=None,
-              allow_escalation=None, reasoning_effort=None, renew_consent=None,
-              max_rotations=None, backend="harness", verify_only=False,
-              max_lines=MAX_FILE_LINES, apply_pool=None, continuation=None,
-              cancel_check=None, keep_going=False, options=None):
+def run_batch(engine, files, *, task_id=None, apply_pool=None,
+              continuation=None, cancel_check=None, keep_going=False,
+              options=None):
     """Multi-file batch (#12): one governed session per file through this
     engine/router/gate, sharing the task budget. Fail-fast: the batch stops
     at the first file that does not succeed. A single-file batch returns
@@ -64,8 +60,12 @@ def run_batch(engine, files, *, task_id=None, instruction=None, edit_snippet=Non
     mixed batch can never read as success. Default remains fail-fast.
 
     ``options`` carries the per-file session options as one :class:`BatchOptions`
-    bundle (the CLI face constructs it once); when given, the individual
-    per-file keyword parameters are ignored."""
+    bundle (the CLI face constructs it once); its ``continuation`` field is
+    honored when the run-level parameter is unset."""
+    if continuation is None:
+        # A caller may carry the resume state in the bundle instead of the
+        # run-level parameter; the parameter wins when both are given.
+        continuation = options.continuation
     continuation = validate_continuation(continuation)
     if continuation:
         # Resuming: the saved state owns the target file AND the task
@@ -77,22 +77,10 @@ def run_batch(engine, files, *, task_id=None, instruction=None, edit_snippet=Non
         task_id = task_id or continuation.get("task_id")
     if not continuation:
         files = validate_batch_files(files)
-    if options is not None:
-        kw = asdict(options)
-        # Run-level knobs stay run_batch parameters; merge them into the
-        # per-file payload so a bundle caller can still supply them.
-        kw["apply_pool"] = apply_pool
-        kw["cancel_check"] = cancel_check
-    else:
-        kw = dict(instruction=instruction, edit_snippet=edit_snippet,
-                  verify_cmd=verify_cmd, max_rounds=max_rounds,
-                  require_consent=require_consent, model=model,
-                  max_tokens=max_tokens, task_max_cost=task_max_cost,
-                  allow_escalation=allow_escalation,
-                  reasoning_effort=reasoning_effort, renew_consent=renew_consent,
-                  max_rotations=max_rotations, continuation=continuation,
-                  backend=backend, verify_only=verify_only, max_lines=max_lines,
-                  apply_pool=apply_pool, cancel_check=cancel_check)
+    kw = asdict(options)
+    kw["apply_pool"] = apply_pool
+    kw["cancel_check"] = cancel_check
+    kw["continuation"] = continuation
     if len(files) == 1:
         # One file is not a batch: bare result, keyed off the INPUT --
         # a multi-file batch that dies on file 1 still gets the envelope.

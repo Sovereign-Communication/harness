@@ -325,14 +325,18 @@ def _cmd_dogfood(opts, settings):
     # ---- phase 3: gated self-apply ----------------------------------------
     engine = _session(settings)
     result = engine.apply_batch(
-        [opts.file], task_id=opts.task_id, instruction=opts.instruction,
-        verify_cmd=opts.verify, max_rounds=opts.max_rounds,
-        require_consent=opts.require_consent, model=opts.model,
-        max_tokens=opts.max_tokens, task_max_cost=opts.task_max_cost,
-        allow_escalation=opts.allow_escalation,
-        reasoning_effort=opts.reasoning_effort,
-        renew_consent=opts.renew_consent, max_rotations=opts.max_rotations,
-        backend=opts.backend, max_lines=opts.max_lines)
+        [opts.file], task_id=opts.task_id,
+        options=BatchOptions(
+            instruction=opts.instruction, verify_cmd=opts.verify,
+            max_rounds=opts.max_rounds,
+            require_consent=opts.require_consent, model=opts.model,
+            max_tokens=opts.max_tokens,
+            task_max_cost=opts.task_max_cost,
+            allow_escalation=opts.allow_escalation,
+            reasoning_effort=opts.reasoning_effort,
+            renew_consent=opts.renew_consent,
+            max_rotations=opts.max_rotations, backend=opts.backend,
+            max_lines=opts.max_lines))
     _phase("apply", {"status": result["status"], "cost": result.get("cost")})
     report["apply"] = result
     report["status"] = ("ok" if result["status"] == "ok"
@@ -365,7 +369,7 @@ def _cmd_lint_claims(opts, settings=None):
         sys.exit(2)
 
 
-def _batch_options(opts):
+def _batch_options(opts, continuation=None):
     """The per-file session options for apply and continue, built once."""
     return BatchOptions(
         instruction=opts.instruction, edit_snippet=opts.edit_snippet,
@@ -375,7 +379,8 @@ def _batch_options(opts):
         allow_escalation=opts.allow_escalation,
         reasoning_effort=opts.reasoning_effort, renew_consent=opts.renew_consent,
         max_rotations=opts.max_rotations, backend=opts.backend,
-        verify_only=opts.verify_only, max_lines=opts.max_lines)
+        verify_only=opts.verify_only, max_lines=opts.max_lines,
+        continuation=continuation)
 
 
 def _cmd_apply(opts, settings):
@@ -397,8 +402,9 @@ def _cmd_apply(opts, settings):
     # The engine owns the batch loop (and, on resume, replaces the file list
     # with the continuation's own target).
     result = engine.apply_batch(
-        files or [None], options=_batch_options(opts), task_id=opts.task_id,
-        keep_going=opts.keep_going, continuation=continuation)
+        files or [None], task_id=opts.task_id,
+        options=_batch_options(opts, continuation),
+        keep_going=opts.keep_going)
     result["meta"] = _run_meta(settings, engine.governor)
     _emit_by_status(result, opts.out)
 
@@ -411,8 +417,8 @@ def _cmd_continue(opts, settings):
         _read_json(opts.state, "--state continuation"))
     engine = _session(settings)
     result = engine.apply_batch(
-        [None], options=_batch_options(opts), task_id=opts.task_id,
-        continuation=continuation)
+        [None], task_id=opts.task_id,
+        options=_batch_options(opts, continuation))
     _emit_by_status(result, opts.out, continued=True)
 
 

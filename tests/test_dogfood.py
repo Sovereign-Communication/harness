@@ -81,8 +81,8 @@ class DogfoodPhaseGateTests(unittest.TestCase):
         captured = []
         engine = self._run(self._argv(), verify_result=verify, captured=captured)
         kwargs = engine.apply_batch.call_args.kwargs
-        self.assertEqual(kwargs["verify_cmd"], "python -m unittest")
-        self.assertEqual(kwargs["instruction"], "fix the ceiling")
+        self.assertEqual(kwargs["options"].verify_cmd, "python -m unittest")
+        self.assertEqual(kwargs["options"].instruction, "fix the ceiling")
         self.assertEqual(self._phases(captured), ["ground", "verify", "apply"])
 
     def test_deferred_apply_exits_3_with_full_evidence(self):
@@ -197,7 +197,7 @@ class FromLedgerWiringTests(unittest.TestCase):
         self.assertEqual(self._phases(captured), ["ground", "verify", "apply"])
         report = [p for p in captured if "phases" in p][-1]
         self.assertEqual(report["status"], "ok")
-        self.assertEqual(engine.apply_batch.call_args.kwargs["verify_cmd"],
+        self.assertEqual(engine.apply_batch.call_args.kwargs["options"].verify_cmd,
                          "python -m unittest")
         # The curated manifest persisted and re-validates.
         ctx, claims = load_claims_manifest(self.claims_out)
