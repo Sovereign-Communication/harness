@@ -149,7 +149,8 @@ merge.
 | `harness/session.py` | composition owner: governor_for/ledger_for/router_for/engine_for + `apply_session` (pre-spend saturation look-ahead included) -- how ANY interface gets its dependencies; engine kwargs and tier policy change here exactly once |
 | `harness/service.py` | the ONE verify/claims run assembly (prompt, claims flags, resolved inputs, cancelled envelope, cost/meta) -- what `harness verify`, `harness serve`, and MCP all consume |
 | `harness/validation.py` | shared validation for untrusted CLI/MCP/batch/library inputs -- every safety-sensitive limit passes through here before any model call or file mutation |
-| `harness/cli.py` | interface + claims-specific verify mapping (claims prompt, lint, polarity); session aliases (`_governor`/`_engine`/...) kept as test seams |
+| `harness/cli.py` | interface + dispatch + presentation (handlers, report rendering, exit codes); session aliases (`_governor`/`_engine`/...) kept as test seams |
+| `harness/cli_parser.py` | the argparse surface as pure construction (`build_parser`, flag builders) — handlers live in cli.py, flags in exactly one owner |
 | `harness/consent.py` | the consent probe (sovereignty) |
 | `harness/ledger.py` | hash-chained JSONL autonomy ledger |
 | `harness/trust.py` | bipolar trust (-11..+11) per host/model/author: levels AND gates -- thresholds unlock actions, safety signals drop trust fast |
