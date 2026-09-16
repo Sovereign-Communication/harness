@@ -391,7 +391,7 @@ def _cmd_apply(opts, settings):
         reasoning_effort=opts.reasoning_effort, renew_consent=opts.renew_consent,
         max_rotations=opts.max_rotations, backend=opts.backend,
         verify_only=opts.verify_only, max_lines=opts.max_lines,
-        continuation=continuation)
+        keep_going=opts.keep_going, continuation=continuation)
     result["meta"] = _run_meta(settings, engine.governor)
     _emit_by_status(result, opts.out)
 
@@ -736,6 +736,10 @@ def main(argv=None):
                     help="target file; repeat the flag for a multi-file batch (one session, shared gate)")
     pa.add_argument("--instruction", default=None)
     _add_engine_flags(pa, max_tokens_default=4096)
+    pa.add_argument("--keep-going", dest="keep_going", action="store_true", default=False,
+                    help="multi-file batch: continue past a failed file; per-file results "
+                         "are preserved and the batch still fails honestly (fail-fast "
+                         "remains the default)")
     pa.add_argument("--continue-from", default=None, help="resume a deferred task from state.json")
     _add_output_flags(pa)
 

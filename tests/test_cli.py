@@ -335,5 +335,79 @@ class SelfHostImportTests(unittest.TestCase):
             importlib.reload(cli_mod)
 
 
+class ApplyBatchKeepGoingCliTests(unittest.TestCase):
+    """Batch fail-soft through the REAL CLI entry point (parser -> dispatch
+    -> engine -> batch loop -> exit policy): --keep-going continues past a
+    failed file and the batch still exits honestly; the default (no flag)
+    stays fail-fast byte-for-byte."""
+
+    def _run(self, d, a, b, extra):
+        from harness.apply import ApplyEngine
+        from harness.ledger import AutonomyLedger
+        from harness.router import Router
+        from harness.spend import SpendGovernor
+        from tests._applyfixture import scripted_run
+        from tests._fake import FakeTransport, comp, m
+
+        CHANGED = "def add(a, b):\n    return a + b + 0\n"
+        fake = FakeTransport(models=[m("deepseek/deepseek-chat"),
+                                     m("inclusionai/ling-2.6-flash")],
+                             posts=[comp(CHANGED), comp(CHANGED)])
+        gov = SpendGovernor(fake, "sk-test")
+        gov.max_cost = 0.05
+        ledger = AutonomyLedger(os.path.join(d, "ledger.jsonl"))
+        router = Router(["a", "b"], "inclusionai/ling-2.6-flash",
+                        "deepseek/deepseek-chat")
+        engine = ApplyEngine(fake, "k", gov, ledger, router,
+                             default_require_consent=False,
+                             default_renew_consent=False)
+        engine.run_verify = scripted_run([(1, "boom"), (0, "")])
+        out_path = os.path.join(d, "result.json")
+        argv = ["apply", "--file", a, "--file", b, "--instruction", "change",
+                "--verify", "check", "--max-rounds", "1",
+                "--out", out_path] + extra
+        with mock.patch.object(cli, "_session", return_value=engine), \
+             mock.patch.object(session, "governor_for", return_value=("k", gov)), \
+             contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(argv)
+        with open(out_path, encoding="utf-8") as f:
+            return ctx.exception.code, json.load(f)
+
+    def test_keep_going_runs_remaining_files_and_exits_honestly(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = os.path.join(d, "a.py")
+            b = os.path.join(d, "b.py")
+            for p in (a, b):
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write("def add(a, b):\n    return a + b\n")
+            code, result = self._run(d, a, b, ["--keep-going"])
+            # Honest exit: a mixed batch is still a failure.
+            self.assertEqual(code, 2)
+            self.assertEqual(result["status"], "verify_failed")
+            self.assertEqual(result["statuses"],
+                             {"verify_failed": 1, "ok": 1})
+            self.assertEqual(len(result["results"]), 2)
+            self.assertFalse(result["verify"]["passed"])
+            with open(b, encoding="utf-8") as f:
+                self.assertEqual(f.read(),
+                                 "def add(a, b):\n    return a + b + 0\n")
+
+    def test_default_without_flag_stays_fail_fast(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = os.path.join(d, "a.py")
+            b = os.path.join(d, "b.py")
+            for p in (a, b):
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write("def add(a, b):\n    return a + b\n")
+            code, result = self._run(d, a, b, [])
+            self.assertEqual(code, 2)
+            self.assertEqual(result["status"], "verify_failed")
+            self.assertEqual(result["statuses"], {"verify_failed": 1})
+            self.assertEqual(len(result["results"]), 1)
+            with open(b, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "def add(a, b):\n    return a + b\n")
+
+
 if __name__ == "__main__":
     unittest.main()

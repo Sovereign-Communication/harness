@@ -10,6 +10,16 @@ break APIs between minor versions).
 ## [Unreleased]
 
 ### Added
+- **Batch fail-soft (`apply --keep-going`).** A multi-file batch can
+  continue past a failed file instead of aborting: every per-file result --
+  failures included -- stays in the batch envelope, the overall status
+  names the FIRST failure (a later success can never mask a mixed batch
+  into `ok`), and the shared-gate verdict reports not-passed. Fail-fast
+  remains the default and is byte-identical to prior behavior; the flag
+  lives on the apply parser only (continue/dogfood untouched); no retry
+  logic, no analytics. Proven through the real CLI entry point (mixed and
+  default runs via `cli.main` with the emitted `--out` JSON), plus loop
+  pins on the engine batch surface.
 - **Apply change preview in the UI.** Every changed-terminal apply result
   (preview, ok, gated ok, escalated ok) now carries a unified `diff` of the
   touched file plus its `file` path, computed once where the run already

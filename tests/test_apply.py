@@ -525,6 +525,35 @@ class ApplyTests(ApplyFixture):
         with open(b, encoding="utf-8") as f:
             self.assertEqual(f.read(), ORIGINAL)
 
+    def test_apply_batch_keep_going_preserves_failures(self):
+        """keep_going (fail-soft): the loop continues past file 1's gate
+        failure; every per-file result -- failures included -- stays in
+        the envelope, and the overall status names the FIRST failure (a
+        later success must never mask it into a mixed-batch 'ok')."""
+        a = self.make_file()
+        b = os.path.join(self.dir.name, "other.py")
+        with open(b, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        _, _, _, engine = self.make_env(posts=[comp(CHANGED), comp(CHANGED)],
+                                        run=scripted_run([(1, "boom"), (0, "")]))
+        result = engine.apply_batch([a, b], instruction="change",
+                                    verify_cmd="check", require_consent=False,
+                                    max_rounds=1, keep_going=True)
+        self.assertTrue(result["batch"])
+        self.assertEqual(result["status"], "verify_failed")
+        self.assertEqual(result["statuses"], {"verify_failed": 1, "ok": 1})
+        self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(result["results"][0]["status"], "verify_failed")
+        self.assertEqual(result["results"][1]["status"], "ok")
+        # The shared-gate verdict is honest for the mixed batch: not passed.
+        self.assertEqual(result["verify"], {"command": "check", "passed": False})
+        self.assertEqual(result["files"], [a, b])
+        # The failed run rewound its file; the successful one applied.
+        with open(a, encoding="utf-8") as f:
+            self.assertEqual(f.read(), ORIGINAL)
+        with open(b, encoding="utf-8") as f:
+            self.assertEqual(f.read(), CHANGED)
+
     def test_apply_batch_file2_death_reports_gate_not_passed(self):
         """The envelope's shared-gate verify block derives "passed" from the
         last file's actual verdict. The historical code hardcoded passed=True
