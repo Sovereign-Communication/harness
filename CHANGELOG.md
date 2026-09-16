@@ -524,6 +524,16 @@ break APIs between minor versions).
   as the continuation-gate leak); routing is resolved per request in the
   engine, and a regression test pins router immutability on both engines.
 ### Fixed
+- **Miscounted-diff hunk headers no longer waste the apply lane.** Dogfood
+  evidence recorded 12/12 near-miss refusals of diffs whose body lines were
+  correct but whose `@@` header miscounted ("truncated: expected -6/+24,
+  got -6/26"), each burning a full failed apply round; the worst variant
+  merged while silently dropping the body's tail. Hunk bodies now parse to
+  their natural end (next `@@`, junk line, or EOF) and the body decides; a
+  recovered hunk must still describe a change, a short old-side at EOF is
+  still refused as truncation-ambiguous, junk after a miscounted body is
+  still refused, and the exact-source match still gates every line that
+  reaches disk -- the validation gate is unchanged.
 - **UI assets missing from the wheel.** `harness/ui/*` (index.html, app.js,
   app.css) now ship via `[tool.setuptools.package-data]`; previously an
   installed `harness serve` / `harness desktop` 500'd every static page.
