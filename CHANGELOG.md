@@ -100,6 +100,13 @@ break APIs between minor versions).
   non-None values.
 
 ### Fixed
+- **The self-audit's MCP-tool extraction is blind no more.** The schema
+  extraction moved the tool literals out of mcp.py, so the audit's source
+  grep returned an empty tool list — README parity then reported every
+  real tool stale while the missing-side check ran vacuous. The audit
+  now imports the names from mcp_schemas (the contract owner); CI's
+  audit job is back to a meaningful 10/10.
+
 - **Resume through a BatchOptions bundle delivers the saved state.** The
   dual-mode options path silently dropped the run-level `continuation` to
   None in the per-file payload (the merge covered only apply_pool and
@@ -108,6 +115,7 @@ break APIs between minor versions).
   delivers the run-level parameter (or the bundle-carried one), pinned by
   a regression test and proven end to end through the real CLI entry
   point on both resume faces (apply --continue-from, continue).
+
 - **Miscounted-diff hunk headers no longer waste the apply lane.** Dogfood
   evidence recorded 12/12 near-miss refusals of diffs whose body lines were
   correct but whose `@@` header miscounted ("truncated: expected -6/+24,

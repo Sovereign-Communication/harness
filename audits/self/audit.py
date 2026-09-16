@@ -105,8 +105,13 @@ def _cli_subcommands():
 
 
 def _mcp_tool_names():
-    text = _src("mcp")
-    return re.findall(r'"name":\s*"([a-z_]+)"', text)
+    """Tool names from the contract owner (mcp_schemas.py), not a source
+    grep: mcp.py stopped carrying the tool literals when the schemas were
+    extracted, which left this check blind (vacuous missing=[], every real
+    name flagged stale)."""
+    from harness.mcp_schemas import TOOL_SCHEMAS  # deferred: one broken import must fail one check, not the whole audit
+
+    return [schema["name"] for schema in TOOL_SCHEMAS]
 
 
 def _readme():
