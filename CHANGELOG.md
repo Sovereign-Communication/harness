@@ -106,7 +106,8 @@ break APIs between minor versions).
   cancel_check), so a CLI resume ran as a fresh apply; no test drove a
   successful resume end to end. Single-mode run_batch now validates and
   delivers the run-level parameter (or the bundle-carried one), pinned by
-  a regression test.
+  a regression test and proven end to end through the real CLI entry
+  point on both resume faces (apply --continue-from, continue).
 - **Miscounted-diff hunk headers no longer waste the apply lane.** Dogfood
   evidence recorded 12/12 near-miss refusals of diffs whose body lines were
   correct but whose `@@` header miscounted ("truncated: expected -6/+24,
