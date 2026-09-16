@@ -156,7 +156,11 @@ def gated_cancellation_server(*, gate_post, posts, tool_timeout=None,
         server.tool_timeout = tool_timeout
 
     def wait_gated():
-        if not transport.gated.wait(10):
+        # 60s: the bound is CI-runner tolerance for the worker's lazy
+        # apply-chain construction, not a behavior pin (the main thread
+        # must release the gate regardless, so a longer wait cannot mask
+        # a real stall -- it only stops punishing slow interpreters).
+        if not transport.gated.wait(60):
             transport.release.set()
             raise AssertionError("gated POST never started")
 
