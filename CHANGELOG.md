@@ -83,6 +83,20 @@ break APIs between minor versions).
   pushes -- confirmed environmental, PR #8 merge-basis comment); a manual
   dispatch is the cheapest re-emit path once Actions minutes are restored.
   No job, matrix, or gate content changed.
+- **One per-file options owner for the batch CLI face.** `cli._cmd_apply`'s
+  ~18 hand-threaded kwargs into `apply_batch` (re-packed into a dict by
+  `run_batch`) collapsed into the immutable `BatchOptions` bundle: one
+  definition constructed in one place, consumed by the loop, legacy kwargs
+  still accepted unchanged. Run-level knobs (task_id, keep_going,
+  continuation routing, apply_pool, cancel_check) stay run_batch
+  parameters -- they describe the batch, not a file's session.
+  `_cmd_continue` now builds the same bundle through the same helper.
+  `--keep-going`'s apply-parser-only scope is documented at the definition
+  site as the deliberate divergence it is (the multi-file batch is the only
+  multi-file surface). Behavior byte-identical: full battery green; the
+  bundle's field defaults are pinned equal to run_batch's legacy signature
+  (vacuity-proven) and the run-level pool/cancel-check merge is pinned with
+  non-None values.
 
 ### Fixed
 - **Miscounted-diff hunk headers no longer waste the apply lane.** Dogfood
@@ -415,19 +429,6 @@ break APIs between minor versions).
   built once and read by `pre_run_warning` and the `panel_judge` call;
   fallback order preserved exactly, public signature unchanged, behavior
   proven byte-identical by a nine-scenario resolved-inputs oracle.
-
-- **One per-file options owner for the batch CLI face.** `cli._cmd_apply`'s
-  ~18 hand-threaded kwargs into `apply_batch` (re-packed into a dict by
-  `run_batch`) collapsed into the immutable `BatchOptions` bundle: one
-  definition constructed in one place, consumed by the loop, legacy kwargs
-  still accepted unchanged. Run-level knobs (task_id, keep_going,
-  continuation routing, apply_pool, cancel_check) stay run_batch
-  parameters -- they describe the batch, not a file's session.
-  `_cmd_continue` now builds the same bundle through the same helper.
-  `--keep-going`'s apply-parser-only scope is documented at the definition
-  site as the deliberate divergence it is (the multi-file batch is the only
-  multi-file surface). Behavior byte-identical: full battery green with
-  zero test edits.
 
 - **MCP verify lane unified onto the service layer.** `panel_verify` no
   longer imports `panel_judge` or self-assembles convergence/router kwargs:

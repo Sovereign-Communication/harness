@@ -766,5 +766,68 @@ class ApplyTests(ApplyFixture):
         self.assertIn("broken", result["rounds"][-1]["reason"])
 
 
+class BatchOptionsPinTests(ApplyFixture):
+    """Pins the BatchOptions bundle contract where the refactor left it
+    unmechanized: defaults can't silently diverge from run_batch's legacy
+    signature, and the run-level merge reaches the per-file payload."""
+
+    def test_bundle_defaults_match_run_batch_signature(self):
+        """BatchOptions field defaults must equal run_batch's 16 legacy
+        kwarg defaults -- the two definition sites stay in lockstep, or a
+        future default edit diverges the bundle path from the legacy path
+        (vacuity-proven by planting a divergent default)."""
+        import dataclasses
+        import inspect
+        from harness.batch import BatchOptions, run_batch
+        sig_defaults = {name: p.default for name, p in
+                        inspect.signature(run_batch).parameters.items()
+                        if p.default is not inspect.Parameter.empty}
+        field_defaults = {f.name: f.default for f in
+                          dataclasses.fields(BatchOptions)}
+        self.assertEqual(set(field_defaults),
+                         {"instruction", "edit_snippet", "verify_cmd",
+                          "max_rounds", "require_consent", "model",
+                          "max_tokens", "task_max_cost", "allow_escalation",
+                          "reasoning_effort", "renew_consent",
+                          "max_rotations", "backend", "verify_only",
+                          "max_lines", "continuation"})
+        for name, default in field_defaults.items():
+            self.assertEqual(default, sig_defaults[name],
+                             f"BatchOptions.{name} diverged from "
+                             f"run_batch's kwarg default")
+
+    def test_bundle_path_merges_run_level_pool_and_cancel_check(self):
+        """apply_pool/cancel_check stay run_batch parameters (run-level),
+        but a bundle caller must still get them into the per-file payload
+        -- pinned here with non-None values through the options path."""
+        from harness.batch import BatchOptions
+        import unittest.mock
+        seen = {}
+        real_prepare = ApplyEngine._prepare
+
+        def spying_prepare(self, kwargs):
+            seen.update(kwargs)
+            return real_prepare(self, kwargs)
+
+        a = self.make_file()
+        b = os.path.join(self.dir.name, "other.py")
+        with open(b, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        _, _, _, engine = self.make_env(posts=[comp(CHANGED), comp(CHANGED)],
+                                        run=scripted_run([(0, ""), (0, "")]))
+        marker_pool, marker_cancel = [CODER_A], (lambda *a, **k: False)
+        with unittest.mock.patch.object(ApplyEngine, "_prepare",
+                                        spying_prepare):
+            result = engine.apply_batch(
+                [a, b], options=BatchOptions(instruction="change",
+                                             verify_cmd="check",
+                                             require_consent=False),
+                apply_pool=marker_pool, cancel_check=marker_cancel)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(seen["apply_pool"], marker_pool)
+        self.assertEqual(seen["cancel_check"], marker_cancel)
+        self.assertEqual(seen["instruction"], "change")
+
+
 if __name__ == "__main__":
     unittest.main()
