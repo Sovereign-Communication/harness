@@ -9,8 +9,12 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
-Nothing yet.
-
+### Changed
+- **`ci.yml` gains a `workflow_dispatch` trigger.** CI never fired for the
+  branch's final heads (zero check-runs for `f187cb3`/`141d21a` across two
+  pushes -- confirmed environmental, PR #8 merge-basis comment); a manual
+  dispatch is the cheapest re-emit path once Actions minutes are restored.
+  No job, matrix, or gate content changed.
 ## [0.3.0] — 2026-09-15
 
 ### Added
