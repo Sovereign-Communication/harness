@@ -9,6 +9,10 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.1] — 2026-09-16
+
 ### Added
 - **Batch fail-soft (`apply --keep-going`).** A multi-file batch can
   continue past a failed file instead of aborting: every per-file result --
