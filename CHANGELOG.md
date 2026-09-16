@@ -18,6 +18,14 @@ break APIs between minor versions).
   and fail-open with no evidence. Closes the v0.3.1 dogfood finding (one
   free-tier model led 258 gate-wasted apply runs).
 
+### Changed
+
+- cli.py's presentation layer (`_emit`, `_emit_by_status`,
+  `_print_capabilities_table`) extracted to `harness/cli_report.py` verbatim:
+  cli.py now reads as handlers + dispatch, cli_report owns the report/exit-code
+  rendering contract. Byte-identical, proven by a 27-artifact stdout/stderr/
+  exit-code oracle replay across help, read-only, and both emit-code paths.
+
 ## [0.3.1] — 2026-09-16
 
 ### Added

@@ -51,7 +51,7 @@ class CapabilitiesTableTests(unittest.TestCase):
     def test_table_never_touches_stdout(self):
         """Stdout stays pure JSON for piping; the human table lives on
         stderr and vanishes under --quiet while the JSON still flows."""
-        from harness.cli import _print_capabilities_table
+        from harness.cli_report import _print_capabilities_table
         out = {"models": [{
             "model": "m", "context": 8192, "reasoning": False,
             "json_declared": 0.0, "json_reliable": 0.0, "capability": 0.1,
@@ -70,7 +70,7 @@ class CapabilitiesTableTests(unittest.TestCase):
         self.assertIn("m", err.getvalue())
 
     def test_table_silent_under_quiet(self):
-        from harness.cli import _print_capabilities_table
+        from harness.cli_report import _print_capabilities_table
         old = output.QUIET
         output.QUIET = True
         try:

@@ -515,5 +515,22 @@ class CliParserSurfaceTests(unittest.TestCase):
             self.assertTrue(hasattr(cli, name), name)
 
 
+class CliPresentationOwnerTests(unittest.TestCase):
+    """S6 mirror pin: presentation lives in cli_report (the ONE owner of
+    the report/exit-code rendering contract); cli.py re-exports the seams
+    so commands and tests keep their established patch points."""
+
+    def test_presentation_importable_from_owner_and_cli(self):
+        import harness.cli as cli
+        import harness.cli_report as owner
+
+        for name in ("_emit", "_emit_by_status", "_print_capabilities_table"):
+            fn = getattr(owner, name, None)
+            self.assertTrue(callable(fn), name)
+            # cli.py consumes the owner (one def site), and the cli seam
+            # stays the same object so patches keep working.
+            self.assertIs(getattr(cli, name), fn, name)
+
+
 if __name__ == "__main__":
     unittest.main()
