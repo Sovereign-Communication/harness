@@ -66,6 +66,7 @@ from .claims import (
 from .claims import parse_claims
 from .config import load_settings, shipped_model_ids
 from .cli_parser import build_parser
+from .cli_report import _emit, _emit_by_status, _print_capabilities_table
 
 
 def _split_opt_list(value):
@@ -91,48 +92,8 @@ def _read_json(path, what):
         raise HarnessError(f"{what} is not valid JSON: {path} ({e})") from e
 
 
-def _emit(result, out, force_json=False):
-    """The ONE result emitter: --out gets the JSON file; a piped stdout gets
-    machine JSON (the script contract, byte-compatible); a TTY gets the rich
-    rendering on stderr PLUS the same machine JSON on stdout -- pretty mode
-    adds, it never replaces, so scripts and humans read the same run."""
-    from . import render as _render
-    text = json.dumps(result, indent=2)
-    if out:
-        parent = os.path.dirname(os.path.abspath(out))
-        try:
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            with open(out, "w", encoding="utf-8") as f:
-                f.write(text)
-        except OSError as e:
-            raise HarnessError(f"cannot write --out {out}: {e}") from e
-        eprint(f"[OK] result written to {out}")
-    else:
-        _render.pretty_print(result, out, force_json)
-        print(text)
-
-
 # Composition lives in harness/session.py (the ONE owner); the aliases below
 # keep the historical cli seams for commands and tests that patch them.
-
-
-def _emit_by_status(result, out, *, continued=False):
-    """Apply results through the ONE exit-code policy (results.py); this
-    adds the resume hint a deferred run needs and the saturation advise."""
-    # Terminal honesty: a run that exhausted its rounds on 429s / reasoning-
-    # only responses says so plainly, with the real options (one policy
-    # owner, harness/saturation.py). The result's own rounds are the
-    # evidence -- a failed run always carries its api_error rounds there.
-    advise(engine_rounds=result.get("rounds"))
-    _emit(result, out)
-    code = terminal_exit_code(result["status"])
-    if code == 3:
-        eprint("[apply] task deferred; resume with: harness continue --state <out.json>"
-               if not continued else
-               "[apply] still deferred; resume again: harness continue --state <out.json>")
-    if code:
-        sys.exit(code)
 
 
 def _run_claims_verify(settings, *, prompt, task_id=None, max_tokens=None,
@@ -593,30 +554,6 @@ def _capabilities_payload(settings, gov, api_key=None, refresh=False,
         apply_pool=settings.apply_pool, judge=settings.judge,
         api_key=api_key, transport=HttpTransport(), refresh=refresh,
         bench=bench, all_models=all_models)
-
-
-def _print_capabilities_table(out):
-    """Human table on stderr: stdout stays pure JSON for piping, and --quiet
-    suppresses the table while the JSON report still flows."""
-    rows = out["models"]
-    if not rows:
-        eprint("(no models in pools with capability profiles)")
-        return
-    hdr = f"{'model':<42} {'ctx':>9} {'rsn':>3} {'jd':>4} {'jr':>4} {'cap':>5} {'f-str':>5} {'rel':>5}"
-    eprint(hdr)
-    eprint("-" * len(hdr))
-    for r in rows:
-        probe = r.get("probe")
-        probe_note = ""
-        if probe is not None and probe.get("calls"):
-            probe_note = (f"  probe: json={probe['json_ok_rate']} "
-                          f"correct={probe['correct_rate']} err={probe['errors']}")
-        jd = r["json_declared"]
-        jr = r["json_reliable"]
-        eprint(f"{r['model']:<42} {r['context']:>9,} {'Y' if r['reasoning'] else 'n':>3} "
-               f"{jd:>4.2f} {jr:>4.2f} "
-               f"{r['capability']:>5.2f} {r['fitness_structured']:>5.2f} "
-               f"{r['reliability_structured']:>5.2f}{probe_note}")
 
 
 # Command -> handler. `required=True` subparsers make an unknown command
