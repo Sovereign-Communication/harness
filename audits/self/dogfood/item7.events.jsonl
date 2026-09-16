@@ -1,0 +1,8 @@
+{"ts": 1789590062.9711056, "seq": 1, "type": "spend_check", "lane": "key", "limit": 0.75, "remaining": 0.75, "reset": "daily", "expect_label": false}
+{"ts": 1789590064.3983145, "seq": 2, "type": "attempt_start", "task_id": "apply", "model": "nvidia/nemotron-3-super-120b-a12b:free", "round": 1, "backend": "harness"}
+{"ts": 1789590064.8548899, "seq": 3, "type": "rotation", "model": "nvidia/nemotron-3-super-120b-a12b:free", "reason": "reasoning_param_rejected", "note": "provider retry without the reasoning parameter"}
+{"ts": 1789590068.7366571, "seq": 4, "type": "readiness", "task_id": "apply", "model": "nvidia/nemotron-3-super-120b-a12b:free", "round": 1, "decision": "confident"}
+{"ts": 1789590068.8008044, "seq": 5, "type": "gate_start", "task_id": "apply", "phase": "candidate_write", "round": 1, "changed": true}
+{"ts": 1789590068.8008745, "seq": 6, "type": "gate_start", "task_id": "apply", "round": 1, "command": "python -c \"import scratch_dogfood_target; assert scratch_dogfood_target.sub(10, 4) == 6\""}
+{"ts": 1789590068.8678172, "seq": 7, "type": "gate_end", "task_id": "apply", "round": 1, "passed": true, "rc": 0, "output_tail": ""}
+{"ts": 1789590068.9212694, "seq": 8, "type": "terminal", "task_id": "apply", "status": "ok", "cost": 0.0, "rounds": 1, "passed": true}
