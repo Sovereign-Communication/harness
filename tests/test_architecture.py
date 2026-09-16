@@ -203,5 +203,73 @@ class StructIdiomTests(unittest.TestCase):
                          + ", ".join(offenders))
 
 
+class SkipHygieneTests(unittest.TestCase):
+    """Skips are environment gates, never convenience: every skip reason in
+    the suite must name its category (platform, privilege, optional dep, or
+    live credential) so a reader can tell a legitimate environment gate from
+    a test someone did not want to fix. Unconditional disables are banned
+    outright -- a test that can never run is dead weight that lies.
+
+    Mechanized after the skip inventory was audited: on Windows the 10
+    skips are 7 symlink-privilege gates (WinError 1314 without Developer
+    Mode), 3 POSIX-mode-bit gates -- all security-relevant paths that CI's
+    Linux legs run for real; the optional-dep gates (numpy/onnx for
+    local_fit training, live API key for the catalog check) follow the
+    same classified pattern.
+    """
+
+    # A reason must name one of these to count as a categorized gate.
+    CATEGORIES = ("windows", "symlink", "posix", "mode bit", "platform",
+                  "api key", "deps", "numpy", "onnx", "train")
+
+    def _tests_dir(self):
+        return os.path.join(HERE, "tests")
+
+    def _skip_reasons(self):
+        tests_dir = self._tests_dir()
+        for fn in sorted(os.listdir(tests_dir)):
+            if not fn.endswith(".py") or fn == "__pycache__":
+                continue
+            path = os.path.join(tests_dir, fn)
+            with open(path, encoding="utf-8") as source:
+                tree = ast.parse(source.read(), path)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                fn_ref = node.func
+                name = (fn_ref.attr if isinstance(fn_ref, ast.Attribute)
+                        else fn_ref.id if isinstance(fn_ref, ast.Name) else None)
+                if name not in ("skipTest", "skipUnless", "skipIf", "skip"):
+                    continue
+                for arg in node.args:
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        yield fn, name, arg.value
+
+    def test_every_skip_reason_is_short_and_categorized(self):
+        offenders = []
+        seen = 0
+        for fn, _name, reason in self._skip_reasons():
+            seen += 1
+            lowered = reason.lower()
+            if not reason.strip() or len(reason) > 200:
+                offenders.append(f"{fn}: unexplained/oversized reason")
+            elif not any(cat in lowered for cat in self.CATEGORIES):
+                offenders.append(f"{fn}: {reason!r} names no category")
+        self.assertGreater(seen, 0, "skip inventory vanished -- update this guard")
+        self.assertEqual(offenders, [],
+                         "every skip must state its environment category "
+                         "(platform/privilege/optional-dep/live-key): "
+                         + "; ".join(offenders))
+
+    def test_no_unconditional_test_disables(self):
+        offenders = []
+        for fn, name, reason in self._skip_reasons():
+            if name == "skip":
+                offenders.append(f"{fn}: unconditional skip({reason!r})")
+        self.assertEqual(offenders, [],
+                         "@unittest.skip is a blunt disable -- gate it on the "
+                         "environment instead: " + ", ".join(offenders))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,17 @@ break APIs between minor versions).
   through the real stdio frame loop.
 
 ### Changed
+- **Skip hygiene is mechanized.** The suite's 10 skips (on Windows) are all
+  environment gates, not convenience: 7 symlink-privilege gates
+  (WinError 1314 without Developer Mode -- security-relevant symlink-escape
+  paths that CI's Linux legs run for real) and 3 POSIX-mode-bit gates; the
+  optional-dep gates (local_fit's numpy/onnx training deps, the live-key
+  catalog freshness check) follow the same classified pattern and are
+  already exercised wherever the environment provides them. A new
+  architecture-guard class (`SkipHygieneTests`) keeps it that way: every
+  skip reason must state its category (platform / privilege / optional dep
+  / live credential), and blunt unconditional `@unittest.skip` disables are
+  banned -- proven to fire on both violation shapes.
 - **`ci.yml` gains a `workflow_dispatch` trigger.** CI never fired for the
   branch's final heads (zero check-runs for `f187cb3`/`141d21a` across two
   pushes -- confirmed environmental, PR #8 merge-basis comment); a manual
