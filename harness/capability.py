@@ -642,8 +642,11 @@ def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=No
     # rotates (and the verification gate still guards what it produces).
     # Strike policy: demotion requires TWO unusable events. A single event can
     # be one flaky response from an otherwise good model; one strike must not
-    # flip live pool order. (429/401 tier faults and fail-closed verify runs
-    # are deliberately NOT demotion evidence -- see ledger.participation_report.)
+    # flip live pool order. 429/401 tier faults stay recoverable rotations,
+    # but fail-closed verify runs ARE demotion evidence since the v0.3.1
+    # dogfood finding (one free-tier model led 258 rounds-exhausted apply
+    # runs): the ledger counts them per model as gate_wasted_runs -- see
+    # ledger.participation_report.
     # Consent-unusable events (empty/reasoning-only/unparseable consent answers,
     # surfaced by the same report) join the same strike count: a judge the
     # sovereignty gate cannot parse is demoted like one whose apply output the
@@ -654,7 +657,8 @@ def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=No
         cal = (report or {}).get("calibration", {}).get(model, {})
         strikes = ((cal.get("unusable_outputs") or 0)
                    + (cal.get("consent_unusable") or 0)
-                   + (cal.get("minority_dissent") or 0))
+                   + (cal.get("minority_dissent") or 0)
+                   + (cal.get("gate_wasted_runs") or 0))
         return 1 if strikes >= UNUSABLE_DEMOTE_STRIKES else 0
     scored = []
     for m in pool:

@@ -362,6 +362,42 @@ class RoutingOrderTest(unittest.TestCase):
                              ledger=ledger, task="code", free_tier=True)
         self.assertEqual(ordered[0], "acme/good:free")
 
+    def test_gate_waste_demotes_repeat_gate_waster(self):
+        """The v0.3.1 dogfood finding, mechanized: a model the ledger shows
+        leading 2+ runs that died at the verification gate sorts below an
+        unproven peer. Demoted, not banned -- it still rotates last, and
+        the gate still guards what it produces."""
+        prof = {m: CapabilityProfile.from_model(sample_model(
+            {"id": m, "context_length": 256000,
+             "supported_parameters": ["max_tokens", "reasoning"]}))
+            for m in ("acme/good:free", "acme/waster:free")}
+        with tempfile.TemporaryDirectory() as d:
+            ledger = AutonomyLedger(os.path.join(d, "l.jsonl"))
+            ledger.append("abort", task_id="t1", model="acme/waster:free",
+                          reason="verify rounds exhausted", rotations=3)
+            ledger.append("abort", task_id="t2", model="acme/waster:free",
+                          reason="verify rounds exhausted", rotations=3)
+            report = ledger.participation_report()
+        ordered = order_pool(["acme/waster:free", "acme/good:free"], prof, report,
+                             ledger=ledger, task="code", free_tier=True)
+        self.assertEqual(ordered[0], "acme/good:free",
+                         "gate waste must demote below the unproven peer")
+        self.assertEqual(ordered[-1], "acme/waster:free")
+
+    def test_gate_waste_fail_open_with_no_evidence(self):
+        """Fail-open: a model with no rounds-exhausted aborts keeps its
+        evidence-driven rank even when the report lacks the field
+        entirely (older ledgers, hermetic reports)."""
+        prof = {m: CapabilityProfile.from_model(sample_model(
+            {"id": m, "context_length": 256000,
+             "supported_parameters": ["max_tokens", "reasoning"]}))
+            for m in ("acme/good:free", "acme/quiet:free")}
+        ordered = order_pool(["acme/good:free", "acme/quiet:free"], prof, None,
+                             ledger=None, task="code", free_tier=True)
+        # Identical profiles tie on every sort key, so the caller's input
+        # order survives untouched -- nothing is demoted without evidence.
+        self.assertEqual(ordered, ["acme/good:free", "acme/quiet:free"])
+
     def test_observed_evidence_demotes_overdeclared_and_raises_proven(self):
         """THE fix for commit 58ddd1f's inert loop: for the structured task,
         probe/ledger evidence must demote a declared-capable-but-failing model
