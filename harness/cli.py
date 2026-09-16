@@ -366,11 +366,7 @@ def _cmd_lint_claims(opts, settings=None):
 
 
 def _batch_options(opts):
-    """One definition of the per-file session options for the batch faces:
-    apply and continue build the same BatchOptions-shaped call from the
-    shared engine flags, replacing the kwargs threading both handlers used
-    to repeat. Run-level knobs (task_id, keep_going, resume routing) stay
-    run_batch parameters."""
+    """The per-file session options for apply and continue, built once."""
     return BatchOptions(
         instruction=opts.instruction, edit_snippet=opts.edit_snippet,
         verify_cmd=opts.verify, max_rounds=opts.max_rounds,
