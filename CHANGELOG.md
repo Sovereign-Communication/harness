@@ -9,6 +9,10 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] — 2026-09-15
+
 ### Added
 - **Explicit reasoning disable (the "off means OFF" fix).** `off`/`none`
   now send `reasoning:{"effort":"none"}` instead of omitting the key --
