@@ -15,6 +15,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from . import __version__
+from . import events as _events
 from . import trust as trust_policy
 from .consent import probe_consent
 from .continuation import validate_continuation
@@ -60,6 +61,29 @@ def _valid_rpc_id(value):
             or (isinstance(value, float) and math.isfinite(value)))
 
 
+def _valid_progress_token(value):
+    """MCP progress tokens are strings or integers (never bool)."""
+    return isinstance(value, str) or (isinstance(value, int)
+                                      and not isinstance(value, bool))
+
+
+def _progress_message(event):
+    """One human-readable progress line from a typed run event (the spec's
+    message SHOULD be human-readable; it never carries the key label)."""
+    etype = str(event.get("type") or "event")
+    bits = []
+    if event.get("model"):
+        bits.append(str(event["model"]))
+    if event.get("status"):
+        bits.append(str(event["status"]))
+    if event.get("reason"):
+        bits.append(str(event["reason"]))
+    cost = event.get("cost")
+    if isinstance(cost, (int, float)):
+        bits.append(f"${float(cost):.6f}")
+    return f"{etype}: {' — '.join(bits)}" if bits else etype
+
+
 def _reject_nonstandard_json(value):
     raise ValueError(f"non-standard JSON constant: {value}")
 
@@ -86,6 +110,10 @@ class McpServer:
         self._cancelled = set()
         self._inflight = set()
         self._starts = {}
+        # progressToken streaming: request id -> registered events sink,
+        # only while that request is in flight. A request whose client did
+        # not send params._meta.progressToken never appears here.
+        self._progress = {}
         self.tool_timeout = (MCP_TOOL_TIMEOUT_DEFAULT if tool_timeout is None
                              else tool_timeout)
         # Optional shared secret. When set, tools/call must present
@@ -224,6 +252,7 @@ class McpServer:
                 with self._cancel_lock:
                     self._inflight.discard(request_id)
                     self._cancelled.discard(request_id)
+                self._remove_progress(request_id)
             self._forget_start(request_id)
 
     @staticmethod
@@ -382,6 +411,16 @@ class McpServer:
             return {"jsonrpc": "2.0", "id": request_id,
                     "error": {"code": -32800,
                                "message": "Request cancelled before execution"}}
+        if "id" in msg:
+            # Opt-in live progress (MCP 2025-06-18 utilities/progress): a
+            # client that includes params._meta.progressToken receives one
+            # notifications/progress frame per typed run event until the
+            # response frame is written. Without the token, zero progress
+            # frames -- the historical behavior.
+            meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
+            token = meta.get("progressToken")
+            if _valid_progress_token(token):
+                self._register_progress(request_id, token)
         try:
             if "id" in msg:
                 self._note_start(request_id)
@@ -418,8 +457,10 @@ class McpServer:
                     }}
         finally:
             # Direct (non-worker) invocations never pass through
-            # _write_tool_response: never leak deadline clocks.
+            # _write_tool_response: never leak deadline clocks or progress
+            # sinks (progress MUST stop after completion).
             self._forget_start(request_id)
+            self._remove_progress(request_id)
 
     def _tools(self):
         return TOOL_SCHEMAS
@@ -613,6 +654,46 @@ class McpServer:
                 self.ledger.participation_report(), model=model_arg,
                 caller=self.caller)
         raise ValueError(f"unknown tool: {name}")
+
+    # ---------------- notifications/progress streaming ----------------
+    def _progress_sink(self, token):
+        """One events sink bound to a request's progressToken: each typed
+        run event (panel_call, gate_end, rotation, ...) becomes a
+        notifications/progress frame with a monotonically increasing
+        progress value. No total is sent (the lanes don't know one).
+        Events are connection-scoped; the token is what the host uses to
+        correlate them. A failing frame write is the events bus's problem
+        (broken sinks are dropped, never raised into the lane)."""
+        state = {"n": 0}
+
+        def sink(event):
+            state["n"] += 1
+            self._write({
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": {
+                    "progressToken": token,
+                    "progress": state["n"],
+                    "message": _progress_message(event),
+                },
+            })
+
+        return sink
+
+    def _register_progress(self, request_id, token):
+        """Opt-in: the client asked for progress on this request. Refused
+        registration (sink table full) simply means no progress for that
+        request -- the result envelope is unaffected."""
+        sink = _events.add_sink(self._progress_sink(token))
+        if sink is not None:
+            with self._cancel_lock:
+                self._progress[request_id] = sink
+
+    def _remove_progress(self, request_id):
+        with self._cancel_lock:
+            sink = self._progress.pop(request_id, None)
+        if sink is not None:
+            _events.remove_sink(sink)
 
     def _write(self, obj):
         with self._write_lock:

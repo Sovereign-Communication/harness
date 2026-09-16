@@ -849,6 +849,66 @@ class McpProtocolTests(unittest.TestCase):
         self.assertEqual(lines[1]["error"]["code"], -32601)
 
 
+    def test_progress_token_streams_typed_events_as_progress_frames(self):
+        """Opt-in MCP progress (2025-06-18 utilities/progress), end to end
+        through the real frame loop: a client that includes
+        params._meta.progressToken on a long panel_verify receives one
+        notifications/progress frame per typed run event before the final
+        result frame; each frame carries that token and a monotonically
+        increasing progress; notifications carry no id. A client that
+        sends no token gets zero progress frames (the historical
+        behavior). The delegated verify runs to completion, so no spend
+        assertion belongs here beyond the run's own result."""
+        import harness.events as events_module
+        baseline_sinks = events_module.sink_count()
+        posts = [comp("yes"), comp("mostly"), comp("verdict: sound")]
+        _, lines = run(
+            ('{"jsonrpc":"2.0","id":50,"method":"tools/call",'
+             '"params":{"name":"panel_verify","arguments":'
+             '{"prompt":"sound?"},"_meta":{"progressToken":"tok-50"}}}\n'),
+            posts=posts)
+        progress = [ln for ln in lines
+                    if ln.get("method") == "notifications/progress"]
+        self.assertTrue(progress, "no progress frames for a tokened request")
+        # Correlation + monotonicity + notification shape (no id).
+        for i, ln in enumerate(progress, 1):
+            self.assertEqual(ln["params"]["progressToken"], "tok-50")
+            self.assertEqual(ln["params"]["progress"], i)
+            self.assertNotIn("id", ln)
+            self.assertTrue(ln["params"].get("message"))
+        # Every frame predates the result: the final frame is id 50's reply.
+        self.assertEqual(lines[-1]["id"], 50)
+        self.assertFalse(lines[-1]["result"]["isError"])
+        self.assertEqual(len(lines[-1]["result"]["structuredContent"]
+                             ["panel_results"]), 2)
+        # The sink lifecycle: progress sinks are removed with the request,
+        # so this connection leaves the events bus with no net gain.
+        self.assertEqual(events_module.sink_count(), baseline_sinks)
+
+    def test_no_progress_token_means_no_progress_frames(self):
+        """The historical default: without params._meta.progressToken, zero
+        notifications/progress frames reach the stream, tokened or not."""
+        feed = (
+            '{"jsonrpc":"2.0","id":11,"method":"tools/call",'
+            '"params":{"name":"panel_verify","arguments":'
+            '{"prompt":"sound?"}}}\n'
+            '{"jsonrpc":"2.0","id":12,"method":"tools/call",'
+            '"params":{"name":"panel_verify","arguments":'
+            '{"prompt":"sound?"},"_meta":{"progressToken":true}}}\n')
+        _, lines = run(feed, posts=[comp("yes"), comp("mostly"),
+                                    comp("verdict: sound"),
+                                    comp("yes"), comp("mostly"),
+                                    comp("verdict: sound")])
+        self.assertFalse([ln for ln in lines
+                          if ln.get("method") == "notifications/progress"])
+        by_id = {ln.get("id"): ln for ln in lines}
+        self.assertFalse(by_id[11]["result"]["isError"])
+        # A non-string/non-int token (a client bug) is ignored -- _meta is
+        # advisory, so a malformed telemetry preference never fails the
+        # run: same result, still zero progress frames.
+        self.assertFalse(by_id[12]["result"]["isError"])
+
+
 class LaneSchedulingTests(unittest.TestCase):
     """The lane contract mcp.py's pool wiring depends on: LANES is the
     pool-creation order and lane_for routes every tool contract name.

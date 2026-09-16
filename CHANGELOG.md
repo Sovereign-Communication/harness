@@ -9,6 +9,21 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
+### Added
+- **MCP progress streaming (the one deferred UI-readiness item).** A client
+  that includes `params._meta.progressToken` on an identified `tools/call`
+  now receives one `notifications/progress` frame per typed run event
+  (`panel_call`, `gate_end`, `rotation`, ...) while the tool runs: same
+  token, monotonically increasing `progress`, human-readable `message`, no
+  `total` (the lanes don't know one). Frames stop at completion (the sink
+  is removed with the request -- success, error, or cancel); a request
+  without a token gets zero progress frames, exactly the historical
+  behavior, and a malformed token is ignored (`_meta` is advisory -- a
+  telemetry preference can never fail a run). Implemented as an events-bus
+  sink bound to the request, so panel/apply lanes stay telemetry-only and
+  the protocol adapter owns only the frame translation. Proven end to end
+  through the real stdio frame loop.
+
 ### Changed
 - **`ci.yml` gains a `workflow_dispatch` trigger.** CI never fired for the
   branch's final heads (zero check-runs for `f187cb3`/`141d21a` across two
