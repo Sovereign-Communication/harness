@@ -827,7 +827,10 @@ def sd_docs_current():
     stale core.py references anywhere."""
     docs = list((ROOT / "docs").glob("*.md")) + [ROOT / "THREAT_MODEL.md"]
     stale = []
-    real = set(modules()) | {"__init__"}
+    # Subpackage-aware: a reference resolves if it names a real file
+    # ANYWHERE under the package (e.g. local_fit/infer.py), not just a
+    # top-level module. Still fail-closed: invented names flag.
+    real = set(modules()) | {q.stem for q in PKG.rglob("*.py")} | {"__init__"}
     for d in docs:
         if not d.exists():
             continue
