@@ -342,21 +342,24 @@ class TestNoNetwork(unittest.TestCase):
 
     def test_extract_module_has_no_network_imports(self):
         import harness.local_fit.extract as e
-        source = open(e.__file__, encoding="utf-8").read().lower()
+        with open(e.__file__, encoding="utf-8") as f:
+            source = f.read().lower()
         banned = ["requests", "openai", "anthropic", "httpx", "aiohttp", "urllib.request", "websocket"]
         for b in banned:
             self.assertNotIn(b, source, f"extract.py should not reference {b}")
 
     def test_dispatch_module_has_no_network_imports(self):
         import harness.local_fit.dispatch as d
-        source = open(d.__file__, encoding="utf-8").read().lower()
+        with open(d.__file__, encoding="utf-8") as f:
+            source = f.read().lower()
         banned = ["requests", "openai", "anthropic", "httpx", "aiohttp", "urllib.request", "websocket"]
         for b in banned:
             self.assertNotIn(b, source, f"dispatch.py should not reference {b}")
 
     def test_infer_module_has_no_network_imports(self):
         import harness.local_fit.infer as m
-        source = open(m.__file__, encoding="utf-8").read().lower()
+        with open(m.__file__, encoding="utf-8") as f:
+            source = f.read().lower()
         banned = ["requests", "openai", "anthropic", "httpx", "aiohttp", "urllib.request", "websocket"]
         for b in banned:
             self.assertNotIn(b, source, f"infer.py should not reference {b}")

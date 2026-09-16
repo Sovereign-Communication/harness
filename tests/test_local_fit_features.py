@@ -189,7 +189,8 @@ class TestSharedMath(unittest.TestCase):
 class TestNoNetworkFeatures(unittest.TestCase):
     def test_features_module_has_no_network_imports(self):
         import harness.local_fit.features as f
-        source = open(f.__file__, encoding="utf-8").read().lower()
+        with open(f.__file__, encoding="utf-8") as f:
+            source = f.read().lower()
         banned = ["requests", "openai", "anthropic", "httpx", "aiohttp",
                   "urllib.request", "websocket", "socket"]
         for b in banned:
