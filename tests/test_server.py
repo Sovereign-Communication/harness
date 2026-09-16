@@ -630,6 +630,126 @@ class TtlCacheTests(unittest.TestCase):
         self.assertEqual(ui.cached("a", lambda: "other"), "A")
 
 
+class RankingsEndpointTests(ServerHarness):
+    """GET /api/rankings: the read-only mirror of the advisory rankings
+    report (the data the weekly workflow files as its artifact). The
+    endpoint reads the latest rankings/rankings-*.json verbatim; it never
+    generates, probes, or mutates config -- `harness rankings` stays the
+    one producer. Fixture reports ride the module's _rankings_reports
+    seam, so the tests stay hermetic and off the real checkout.
+    """
+
+    REPORT = {
+        "window": {"start": "2026-09-08", "end": "2026-09-14", "days": 7},
+        "top": [{"slug": "deepseek-v4.1-flash", "total_tokens": 123,
+                 "trend": "climbing"}],
+        "climbers": ["deepseek-v4.1-flash"],
+        "ranked_in_catalog": [
+            {"slug": "deepseek-v4.1-flash",
+             "model_id": "deepseek/deepseek-v4.1-flash",
+             "total_tokens": 123, "trend": "climbing"}],
+        "proposed_candidates": [
+            {"slug": "deepseek-v4.1-flash",
+             "model_id": "deepseek/deepseek-v4.1-flash",
+             "total_tokens": 123, "trend": "climbing"}],
+        "probed_candidates": [],
+    }
+
+    def serve_reports(self, mapping):
+        """``mapping``: filename -> parsed JSON (a value of None means the
+        file exists but is not valid JSON -- the corrupt-file case)."""
+        def fake_reports():
+            return [f"rankings/{name}" for name in sorted(mapping, reverse=True)]
+        reads = {name: (json.dumps(body).encode() if body is not None
+                        else b"{corrupt")
+                 for name, body in mapping.items()}
+
+        def fake_open(path, *args, **kwargs):
+            import io
+            name = os.path.basename(str(path))
+            if name not in reads:
+                raise OSError(f"no such fixture: {path}")
+            return io.BytesIO(reads[name])
+        return fake_reports, fake_open
+
+    def test_no_reports_is_available_false_with_note(self):
+        """The empty/stale state is normal (200, available: false, an
+        actionable note) -- never a 500 and never a silent fallback."""
+        with mock.patch.object(ui_server, "_rankings_reports", lambda: []):
+            conn = self._conn()
+            try:
+                status, data = _request(conn, "GET", "/api/rankings")
+            finally:
+                conn.close()
+        self.assertEqual(status, 200)
+        self.assertFalse(data["available"])
+        self.assertEqual(data["reports"], [])
+        self.assertIsNone(data["latest"])
+        self.assertIn("harness rankings", data["note"])
+
+    def test_latest_report_served_verbatim_newest_first(self):
+        """The newest report file is served verbatim; older ones only
+        widen the ``reports`` list. Byte-for-byte: the UI renders exactly
+        what the CLI emitted, no reshaping."""
+        old = dict(self.REPORT, top=[])
+        fake_reports, fake_open = self.serve_reports(
+            {"rankings-2026-09-08.json": old,
+             "rankings-2026-09-14.json": self.REPORT})
+        with mock.patch.object(ui_server, "_rankings_reports", fake_reports), \
+                mock.patch("builtins.open", fake_open):
+            conn = self._conn()
+            try:
+                status, data = _request(conn, "GET", "/api/rankings")
+            finally:
+                conn.close()
+        self.assertEqual(status, 200)
+        self.assertTrue(data["available"])
+        self.assertEqual(data["latest"], "rankings-2026-09-14.json")
+        self.assertEqual(data["reports"],
+                         ["rankings-2026-09-14.json",
+                          "rankings-2026-09-08.json"])
+        self.assertEqual(data["report"], self.REPORT)
+
+    def test_corrupt_latest_report_is_explicit_not_silent_fallback(self):
+        """A stale/unreadable latest report is surfaced (available: false
+        + error) rather than a quiet fallback to an older report."""
+        fake_reports, fake_open = self.serve_reports(
+            {"rankings-2026-09-14.json": None,
+             "rankings-2026-09-08.json": self.REPORT})
+        with mock.patch.object(ui_server, "_rankings_reports", fake_reports), \
+                mock.patch("builtins.open", fake_open):
+            conn = self._conn()
+            try:
+                status, data = _request(conn, "GET", "/api/rankings")
+            finally:
+                conn.close()
+        self.assertEqual(status, 200)
+        self.assertFalse(data["available"])
+        self.assertEqual(data["latest"], "rankings-2026-09-14.json")
+        self.assertIn("unreadable", data["error"])
+
+    def test_rankings_endpoint_is_strictly_read_only(self):
+        """The hard constraint, mechanized: a GET must not create the
+        rankings directory, write any file, or import the rankings
+        producer -- no refresh, no probe, no generation from the server."""
+        import harness.rankings as rankings_mod
+        made = []
+        with mock.patch.object(ui_server, "_rankings_reports", lambda: []), \
+                mock.patch.object(rankings_mod, "build_rankings_report",
+                                  side_effect=AssertionError("generated!")), \
+                mock.patch("builtins.open", side_effect=made.append), \
+                mock.patch("os.makedirs", side_effect=made.append), \
+                mock.patch("os.mkdir", side_effect=made.append):
+            conn = self._conn()
+            try:
+                status, data = _request(conn, "GET", "/api/rankings")
+            finally:
+                conn.close()
+        self.assertEqual(status, 200)
+        self.assertFalse(data["available"])
+        self.assertEqual(made, [], "endpoint attempted a write or generation")
+
+
 class DesktopFallbackTests(unittest.TestCase):
     def test_open_window_falls_back_to_browser_without_pywebview(self):
         import sys

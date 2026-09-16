@@ -10,6 +10,18 @@ break APIs between minor versions).
 ## [Unreleased]
 
 ### Added
+- **Rankings surface (server + UI, strictly read-only).** `GET /api/rankings`
+  serves the latest rankings report verbatim — the same data the weekly
+  workflow files as its artifact (`window`, `top`, `climbers`,
+  `ranked_in_catalog`, `proposed_candidates` with probe verdicts) — plus the
+  list of reports on disk, newest first. A missing or unreadable report is a
+  200 with `available: false` and an actionable note (the empty/stale state
+  is normal, never a silent fallback to an older file). A Rankings view in
+  the web UI renders it with the established enter-to-refresh contract. The
+  hard constraint holds: the endpoint and view never generate, probe, or
+  mutate configuration — `harness rankings` stays the one producer, so
+  nothing auto-mutates. Covered by endpoint tests through the real server
+  surface, including a mechanized read-only check.
 - **MCP progress streaming (the one deferred UI-readiness item).** A client
   that includes `params._meta.progressToken` on an identified `tools/call`
   now receives one `notifications/progress` frame per typed run event

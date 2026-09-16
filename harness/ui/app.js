@@ -410,6 +410,50 @@ async function loadCapabilities() {
 }
 $("#btn-capabilities").addEventListener("click", loadCapabilities);
 
+// ---- rankings (read-only mirror) ------------------------------------------
+async function loadRankings() {
+  try {
+    const r = await api("/api/rankings");
+    const out = $("#rankings-out");
+    if (!r.available) {
+      out.innerHTML = `<div class="dim">${esc(r.error || r.note)}</div>`;
+      return;
+    }
+    const rep = r.report;
+    const w = rep.window || {};
+    const head = `<div class="dim" style="margin:6px 0">report ${esc(r.latest)}` +
+      ` · window ${esc(w.start || "?")} → ${esc(w.end || "?")} (${esc(String(w.days ?? "?"))} days)` +
+      `${(r.reports || []).length > 1 ? ` · ${r.reports.length} report(s) on disk` : ""}</div>`;
+    const rows = (rep.top || []).map((t) =>
+      `<tr><td>${esc(t.slug)}</td><td class="mono">${esc(String(t.total_tokens ?? ""))}</td>` +
+      `<td>${esc(t.trend || "")}</td></tr>`).join("");
+    let html = head +
+      `<h2>Top by traffic</h2>` +
+      (rows ? `<table><tr><th>model</th><th>total tokens</th><th>trend</th></tr>${rows}</table>`
+            : `<div class="dim">No ranked models in this report.</div>`);
+    const ranked = rep.ranked_in_catalog || [];
+    if (ranked.length) {
+      html += `<h2>Ranked ∩ live catalog</h2><table><tr><th>slug</th><th>catalog id</th><th>tokens</th><th>trend</th></tr>` +
+        ranked.map((c) => `<tr><td>${esc(c.slug)}</td><td>${esc(c.model_id)}</td>` +
+          `<td class="mono">${esc(String(c.total_tokens ?? ""))}</td><td>${esc(c.trend || "")}</td></tr>`).join("") +
+        `</table>`;
+    }
+    const proposed = rep.proposed_candidates || [];
+    if (proposed.length) {
+      html += `<h2>Proposed candidates (advisory)</h2><table><tr><th>catalog id</th><th>tokens</th><th>probe</th></tr>` +
+        proposed.map((c) => {
+          const p = c.probe;
+          const verdict = p ? (p.ok ? `pass (${esc(p.detail)})` : `fail — ${esc(p.detail)}`) : "not probed";
+          return `<tr><td>${esc(c.model_id)}</td><td class="mono">${esc(String(c.total_tokens ?? ""))}</td>` +
+            `<td>${verdict}</td></tr>`;
+        }).join("") + `</table>`;
+    }
+    out.innerHTML = html;
+  } catch (e) {
+    $("#rankings-out").innerHTML = `<div class="dim">${esc(e.message)}</div>`;
+  }
+}
+
 api("/api/settings").then((r) => {
   $("#settings-out").textContent = JSON.stringify(r.settings, null, 2);
 }).catch((e) => { $("#settings-out").textContent = e.message; });
@@ -426,6 +470,7 @@ api("/api/status").then((r) => {
 const VIEW_REFRESH = {
   dashboard: refreshDashboard, runs: refreshRuns, ledger: refreshLedger,
   trust: refreshTrust, capabilities: loadCapabilities, models: loadModels,
+  rankings: loadRankings,
 };
 
 const FOOTER_NOTE = TOKEN
