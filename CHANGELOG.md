@@ -9,7 +9,14 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- Gate-waste-aware apply-lead selection: the ledger counts rounds-exhausted
+  apply runs per leading model (`gate_wasted_runs` in `participation_report`
+  calibration) and pool ordering folds it into the existing demotion strike,
+  so a repeat gate-waster sorts below unproven peers -- demoted, not banned,
+  and fail-open with no evidence. Closes the v0.3.1 dogfood finding (one
+  free-tier model led 258 gate-wasted apply runs).
 
 ## [0.3.1] — 2026-09-16
 
