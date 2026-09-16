@@ -92,8 +92,11 @@ def _uses_name(module, name):
 
 
 def _cli_subcommands():
-    """Extract the argparse subcommand names from cli.py source."""
-    text = _src("cli")
+    """Extract the argparse subcommand names from the parser owner's source.
+    Reads cli_parser.py (the construction owner since the parser extraction)
+    plus cli.py, so a handler-side reference to a subcommand cannot satisfy
+    the D2 docs check unless build_parser() actually registers it."""
+    text = _src("cli_parser") + "\n" + _src("cli")
     subs = set(re.findall(r'sub\.add_parser\(\s*"([^"]+)"', text))
     m = re.search(r'for _lc in \(([^)]*)\):', text)
     if m:
@@ -757,6 +760,12 @@ def sd_cli_surface():
                  "models", "bench", "lint-claims", "capabilities", "spend",
                  "dogfood"}
     subs = _cli_subcommands() & top_level
+    # Extraction strictness: the names D2 reads must be the names the live
+    # parser registers -- a stale grep must not certify docs (the D1 lesson).
+    _bp = __import__("harness.cli_parser", fromlist=["build_parser"]).build_parser()
+    registered = set(next(a.choices for a in _bp._actions
+                          if isinstance(a, argparse._SubParsersAction)))
+    assert subs <= registered, f"D2 extractor drifted from the live parser: {sorted(subs - registered)}"
     readme = _readme()
     missing = sorted(s for s in subs if not re.search(
         r"harness " + re.escape(s) + r"\b", readme))
@@ -836,8 +845,11 @@ def sd_shipped_freshness():
     catalog via a wired CLI guard, and pricing lookup hard-fatals on unknown
     ids. Live re-check runs with HARNESS_AUDIT_LIVE=1."""
     ids = _src("config")
+    # The flag literal lives in the parser owner, its handler wiring in cli.py:
+    # both halves must exist or the guard is unwired (same rule as D2's seam).
     wired = _defines("config", "shipped_model_ids") and \
-        "--check-shipped" in _src("cli") and "shipped_model_ids" in _src("cli")
+        "--check-shipped" in (_src("cli_parser") + _src("cli")) and \
+        "shipped_model_ids" in _src("cli")
     fatal = "not found in live OpenRouter model list" in _src("spend")
     ids = _src("config")
     pools = re.findall(r'"([a-z0-9./:_-]+)"', ids)
