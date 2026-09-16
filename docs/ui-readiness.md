@@ -25,12 +25,14 @@ what this document certifies. Hermetic tests pin each contract listed here
 | `panel_call` / `panel_vote` | panel | `model`, `cost`, `finish_reason`, `truncated` |
 | `judge_call` / `judge_result` / `judge_trim` | panel | `status`, `cost`, `dropped` |
 | `rotation` | panel, apply, consent, specialist, chat | `reason` (`http_error`, `rate_limited`, `paid_byok`, `reasoning_only`, `readiness_defer`, `consent_unusable`, `unparseable_json`, `reasoning_param_rejected`, `malformed_claims`, `unusable_output`) |
+| `pool_filtered` | panel | `lane`, `reason` (`learned_byok`\|`demotion_strike`), `models[]` -- the dispatch pool shrank and says so |
 | `readiness` | apply | `decision` (`confident`\|`defer`\|`missing`), `round` |
 | `consent_result` | consent | `decision`, `dispatched`, `fail_closed` |
 | `gate_start` / `gate_end` | apply gate | `command`, `passed`, `rc`, `output_tail` |
 | `escalation_rung` | escalation + gate | `rung`, `model` |
 | `spend_check` | spend + panel | key view (`limit`, `remaining`, no label) and run view (`spent`, `ceiling`) |
 | `bench_task` | bench | `phase` (start/end), `status` |
+| `rankings_probe` | rankings | `model`, `phase` (start/end), `ok`, `cost` |
 | `terminal` | apply gate | `status`, `cost`, `rounds`, `passed`, `gate_ran` |
 
 Sink policy: `--events FILE` (JSONL, lazy-open, per-line flush). In-process

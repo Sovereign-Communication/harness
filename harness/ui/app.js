@@ -30,8 +30,8 @@ $$("nav a").forEach((a) => a.addEventListener("click", () => {
   a.classList.add("active");
   $$(".view").forEach((v) => v.classList.remove("active"));
   $(`#view-${a.dataset.view}`).classList.add("active");
-  if (a.dataset.view === "runs") refreshRuns();
-  if (a.dataset.view === "ledger") refreshLedger();
+  const refresh = VIEW_REFRESH[a.dataset.view];
+  if (refresh) refresh();
 }));
 
 // ---- live events ---------------------------------------------------------
@@ -57,6 +57,10 @@ const EVENT_DETAIL = {
   run_accepted: (e) => `${e.kind} (${e.ui_run})`,
   run_finished: (e) => `${e.kind}: ${e.status}`,
   run_cancel_requested: (e) => `${e.ui_run}`,
+  pool_filtered: (e) => `${e.lane || ""}: ${e.reason} — ${(e.models || []).join(", ")}`,
+  rankings_probe: (e) => e.phase === "start"
+    ? `probing ${e.model}`
+    : `${e.model}: ${e.ok ? "PASS" : "FAIL"} ${fmtCost(e.cost)}`,
 };
 
 function renderEvent(e) {
@@ -133,6 +137,11 @@ function syncKindFields() {
   $("#f-instruction-label").hidden = dispatchKind === "verify";
   $("#f-prompt-label").hidden = dispatchKind !== "verify";
   $("#f-promptfile-label").hidden = dispatchKind !== "verify";
+  $("#f-claims-label").hidden = dispatchKind !== "verify";
+  $("#f-claims-row").hidden = dispatchKind !== "verify";
+  $("#f-source-row").hidden = dispatchKind !== "verify";
+  $("#f-defs-row").hidden = dispatchKind !== "verify";
+  $("#f-ctx-row").hidden = dispatchKind !== "verify";
   $("#f-meta-row").hidden = !isApplyLike;
   $("#confirm-box").hidden = true;
   $("#btn-dispatch").disabled = true;
@@ -153,11 +162,18 @@ $("#btn-review").addEventListener("click", () => {
     apply: "file", verify: "prompt", continue: "state", bench: "manifest",
   }[dispatchKind];
   const hasRequired = required === "prompt"
-    ? !!(args.prompt || args.prompt_file) : !!args[required];
+    ? !!(args.prompt || args.prompt_file || args.claims_file) : !!args[required];
   if (!hasRequired) {
     const out = $("#dispatch-result");
     out.hidden = false;
     out.textContent = `nothing to review: '${required}' is required`;
+    return;
+  }
+  // Claims mode additionally requires the source window it is grounded in.
+  if (dispatchKind === "verify" && args.claims_file && !args.source_file) {
+    const out = $("#dispatch-result");
+    out.hidden = false;
+    out.textContent = "nothing to review: 'source_file' is required with claims_file";
     return;
   }
   const summary = {
@@ -165,7 +181,10 @@ $("#btn-review").addEventListener("click", () => {
       `\nverify: ${args.verify || "(none — ungated)"}\nbackend: ${args.backend || "harness"}` +
       `${args.verify_only ? "\nverify-only preview: NO file write, NO gate" : ""}` +
       `${args.require_consent ? "\nconsent: required" : ""}`,
-    verify: () => `prompt: ${(args.prompt || args.prompt_file).slice(0, 200)}`,
+    verify: () => (args.claims_file
+      ? `claims: ${args.claims_file}\nsource: ${args.source_file}` +
+        `\ndefinitions: ${args.definitions_file || "(none)"}`
+      : `prompt: ${(args.prompt || args.prompt_file).slice(0, 200)}`),
     continue: () => `state: ${args.state}\ninstruction: ${args.instruction || "(from state)"}`,
     bench: () => `manifest: ${args.manifest}`,
   }[dispatchKind]();
@@ -201,6 +220,58 @@ $("#dispatch-form").addEventListener("submit", async (ev) => {
 });
 
 // ---- runs ----------------------------------------------------------------
+// Human verdict summary for a settled run: the fields a reader needs first,
+// with the full JSON envelope behind a toggle (raw dump stays reachable).
+function resultSummary(r) {
+  const votes = Array.isArray(r.panel_results) ? r.panel_results.length : null;
+  const failures = Array.isArray(r.panel_failures) ? r.panel_failures.length : 0;
+  const verdict = r.verdict && typeof r.verdict === "object"
+    ? r.verdict : {decision: r.verdict};
+  const status = r.judge_synthesis_status || r.status;
+  const cost = (typeof r.actual_cost === "number") ? fmtCost(r.actual_cost)
+    : "–";
+  const ceiling = r.max_cost_ceiling != null ? ` of ${fmtCost(r.max_cost_ceiling)} ceiling` : "";
+  const judge = (r.meta && r.meta.judge) || r.judge_model || "";
+  const row = (k, v, cls) =>
+    `<div class="sum-row"><span class="k">${esc(k)}</span>` +
+    `<span class="${cls || ""}">${v}</span></div>`;
+  let html =
+    row("verdict", esc(verdict.decision ?? "–"),
+      String(verdict.decision) === "yes" ? "sum-yes" : String(verdict.decision) === "no" ? "sum-no" : "") +
+    row("panel", votes == null ? "–" : `${votes} vote(s), ${failures} failure(s)`) +
+    row("judge", `${esc(judge)} · ${esc(status)}`) +
+    row("cost", `${esc(cost)}${ceiling}`) +
+    (verdict.confidence ? row("confidence", esc(verdict.confidence)) : "") +
+    (r.lint ? row("lint", r.lint.ok ? "ok" : `rejected (${esc(
+      (r.lint.issues || []).map((i) => i.claim_id || i.code || "?").join(", "))})`) : "");
+  const synth = (r.judge_synthesis || "").trim();
+  if (synth) html += `<div class="sum-row"><span class="k">synthesis</span><span>${esc(synth.slice(0, 400))}${synth.length > 400 ? "…" : ""}</span></div>`;
+  // Change preview for apply/continue results: what changed in the touched
+  // file, computed server-side from content the run already held (see
+  // results._content_diff). Read-only evidence, like every other row here.
+  if (r.diff) {
+    const body = r.diff.split("\n").slice(0, 400).map((line) => {
+      const cls = line.startsWith("+") ? "ln-add"
+        : line.startsWith("-") ? "ln-del"
+        : (line.startsWith("@@") ? "ln-meta" : "ln-ctx");
+      return `<div class="${cls}">${esc(line) || "&nbsp;"}</div>`;
+    }).join("");
+    const note = r.diff.split("\n").length > 400
+      ? `<div class="dim">… diff truncated at 400 lines (full diff in the raw JSON)</div>` : "";
+    html += `<div class="sum-row"><span class="k">changes</span></div>` +
+      (r.file ? `<div class="d-file dim mono">${esc(r.file)}</div>` : "") +
+      `<div class="diff-view mono">${body}</div>${note}`;
+  } else if (r.status === "ok" && r.changed === false) {
+    html += row("changes", "none (model proposal matched the current content)");
+  }
+  const reasons = Array.isArray(verdict.reasons) ? verdict.reasons
+    : Array.isArray(r.reasons) ? r.reasons : [];
+  if (reasons.length) html += row("reasons", reasons.map((x) => esc(x)).join("; "));
+  html += `<details class="sum-json"><summary>raw JSON</summary><pre class="mono dim">${
+    esc(JSON.stringify(r, null, 2).slice(0, 6000))}</pre></details>`;
+  return html;
+}
+
 async function refreshRuns() {
   try {
     const data = await api("/api/runs");
@@ -227,9 +298,8 @@ async function refreshRuns() {
         b.addEventListener("click", async () => {
           const full = await api(`/api/runs/${b.dataset.result}/result`);
           const det = panel.querySelector(".run-detail");
-          det.textContent = (full.result != null)
-            ? JSON.stringify(full.result, null, 2).slice(0, 6000)
-            : (full.error || "(no result)");
+          det.innerHTML = (full.result != null) ? resultSummary(full.result) : "";
+          if (full.result == null && full.error) det.textContent = full.error;
         }));
       list.appendChild(panel);
     }
@@ -296,8 +366,42 @@ $("#btn-ledger-verify").addEventListener("click", async () => {
   }
 });
 
+// ---- trust ----------------------------------------------------------------
+$("#btn-trust-refresh").addEventListener("click", refreshTrust);
+async function refreshTrust() {
+  try {
+    const caller = $("#trust-caller").value;
+    const r = await api("/api/trust" + (caller ? `?caller=${encodeURIComponent(caller)}` : ""));
+    const h = r.host || {};
+    const scale = r.scale || {};
+    $("#trust-host").textContent =
+      `host trust ${h.score ?? "–"} (${(h.reasons || []).join("; ") || "no reasons"}) · ` +
+      `scale ${scale.min}..${scale.max}, refuse ≤ ${scale.refuse_at_or_below}`;
+    const table = r.per_caller || {};
+    const rows = Object.entries(table).map(([caller, v]) =>
+      `<tr><td>${esc(caller)}</td><td>${esc(String(v.score ?? "–"))}</td>` +
+      `<td>${esc(String(v.completions ?? 0))}</td>` +
+      `<td>${esc(String(v.trust_gates ?? 0))}</td></tr>`).join("");
+    $("#trust-out").innerHTML = rows
+      ? `<table><tr><th>caller</th><th>trust</th><th>completions</th><th>strikes</th></tr>${rows}</table>`
+      : `<div class="dim">No caller history yet.</div>`;
+    // Keep the filter populated with every caller the ledger has seen.
+    for (const c of Object.keys(table)) {
+      if (![...$("#trust-caller").options].some((o) => o.value === c)) {
+        const opt = document.createElement("option");
+        opt.value = c; opt.textContent = c;
+        $("#trust-caller").appendChild(opt);
+      }
+    }
+  } catch (e) {
+    $("#trust-out").innerHTML = `<div class="dim">${esc(e.message)}</div>`;
+    $("#trust-host").textContent = "";
+  }
+}
+
 // ---- models / capabilities / settings ------------------------------------
-$("#btn-models-refresh").addEventListener("click", async () => {
+$("#trust-caller").addEventListener("change", refreshTrust);
+async function loadModels() {
   try {
     const r = await api("/api/models?limit=60");
     $("#models-out").innerHTML = `<table><tr><th>#</th><th>free model id</th></tr>` +
@@ -306,9 +410,10 @@ $("#btn-models-refresh").addEventListener("click", async () => {
   } catch (e) {
     $("#models-out").innerHTML = `<div class="dim">${esc(e.message)}</div>`;
   }
-});
+}
+$("#btn-models-refresh").addEventListener("click", loadModels);
 
-$("#btn-capabilities").addEventListener("click", async () => {
+async function loadCapabilities() {
   try {
     const r = await api("/api/capabilities");
     const rows = (r.models || []).map((m) =>
@@ -320,13 +425,72 @@ $("#btn-capabilities").addEventListener("click", async () => {
   } catch (e) {
     $("#capabilities-out").innerHTML = `<div class="dim">${esc(e.message)}</div>`;
   }
-});
+}
+$("#btn-capabilities").addEventListener("click", loadCapabilities);
+
+// ---- rankings (read-only mirror) ------------------------------------------
+async function loadRankings() {
+  try {
+    const r = await api("/api/rankings");
+    const out = $("#rankings-out");
+    if (!r.available) {
+      out.innerHTML = `<div class="dim">${esc(r.error || r.note)}</div>`;
+      return;
+    }
+    const rep = r.report;
+    const w = rep.window || {};
+    const head = `<div class="dim" style="margin:6px 0">report ${esc(r.latest)}` +
+      ` · window ${esc(w.start || "?")} → ${esc(w.end || "?")} (${esc(String(w.days ?? "?"))} days)` +
+      `${(r.reports || []).length > 1 ? ` · ${r.reports.length} report(s) on disk` : ""}</div>`;
+    const rows = (rep.top || []).map((t) =>
+      `<tr><td>${esc(t.slug)}</td><td class="mono">${esc(String(t.total_tokens ?? ""))}</td>` +
+      `<td>${esc(t.trend || "")}</td></tr>`).join("");
+    let html = head +
+      `<h2>Top by traffic</h2>` +
+      (rows ? `<table><tr><th>model</th><th>total tokens</th><th>trend</th></tr>${rows}</table>`
+            : `<div class="dim">No ranked models in this report.</div>`);
+    const ranked = rep.ranked_in_catalog || [];
+    if (ranked.length) {
+      html += `<h2>Ranked ∩ live catalog</h2><table><tr><th>slug</th><th>catalog id</th><th>tokens</th><th>trend</th></tr>` +
+        ranked.map((c) => `<tr><td>${esc(c.slug)}</td><td>${esc(c.model_id)}</td>` +
+          `<td class="mono">${esc(String(c.total_tokens ?? ""))}</td><td>${esc(c.trend || "")}</td></tr>`).join("") +
+        `</table>`;
+    }
+    const proposed = rep.proposed_candidates || [];
+    if (proposed.length) {
+      html += `<h2>Proposed candidates (advisory)</h2><table><tr><th>catalog id</th><th>tokens</th><th>probe</th></tr>` +
+        proposed.map((c) => {
+          const p = c.probe;
+          const verdict = p ? (p.ok ? `pass (${esc(p.detail)})` : `fail — ${esc(p.detail)}`) : "not probed";
+          return `<tr><td>${esc(c.model_id)}</td><td class="mono">${esc(String(c.total_tokens ?? ""))}</td>` +
+            `<td>${verdict}</td></tr>`;
+        }).join("") + `</table>`;
+    }
+    out.innerHTML = html;
+  } catch (e) {
+    $("#rankings-out").innerHTML = `<div class="dim">${esc(e.message)}</div>`;
+  }
+}
 
 api("/api/settings").then((r) => {
   $("#settings-out").textContent = JSON.stringify(r.settings, null, 2);
 }).catch((e) => { $("#settings-out").textContent = e.message; });
+api("/api/status").then((r) => {
+  $("#status-out").textContent =
+    `server up since ${new Date(r.started_at * 1000).toLocaleString()} · ` +
+    `${r.runs.length} run(s) · ${r.events_buffered} event(s) buffered · ` +
+    (r.auth_required ? "token required" : "no token set");
+}).catch((e) => { $("#status-out").textContent = e.message; });
 
 // ---- boot ----------------------------------------------------------------
+// Every view refreshes when entered (cheap operator fix: an operator watching
+// a run settle must not manually re-poll Ledger/Models for the new state).
+const VIEW_REFRESH = {
+  dashboard: refreshDashboard, runs: refreshRuns, ledger: refreshLedger,
+  trust: refreshTrust, capabilities: loadCapabilities, models: loadModels,
+  rankings: loadRankings,
+};
+
 const FOOTER_NOTE = TOKEN
   ? "token-protected session (desktop shell)" : "local session — add --auth-token to require a token";
 $("#footer-note").textContent = FOOTER_NOTE;
@@ -341,3 +505,4 @@ setInterval(() => {
   if (document.querySelector('nav a.active[data-view="runs"]') &&
       document.querySelector("#runs-list .s-running")) refreshRuns();
 }, 2000);
+

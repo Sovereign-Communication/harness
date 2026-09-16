@@ -146,12 +146,12 @@ rotation candidates evidence-driven instead of folklore-driven.
 
 ## 6. IMPLEMENTATION CHECKLIST
 
-- [ ] chat.py: map "off" -> explicit `{"effort": "none"}` (section 1) + unit tests incl. mandatory-route 400 retry path.
-- [ ] panel.py/spend.py: log learned-BYOK filtering and strike gating visibly (section 4).
-- [ ] Update DEFAULT_PANEL_PAID / heavy pools to the verified slates (section 3) — canonical ids validated against the 445-id cache 2026-09-13.
-- [ ] Vote lanes: max_tokens >= 4096; deep-think lanes: >= 8192 with `auto`/`medium`.
-- [ ] Weekly rankings-refresh job (section 5) with the one-vote probe as gate.
-- [ ] After chat.py patch: re-run the SCMessenger BoD panel with v4.1-flash restored to the vote pool (it is judge-only today purely because of the pre-patch behavior).
+- [x] chat.py: map "off" -> explicit `{"effort": "none"}` (section 1) + unit tests incl. mandatory-route 400 retry path. *(implemented 2026-09-14: `harness/chat.py` + `tests/test_reasoning_disable.py`)*
+- [x] panel.py/spend.py: log learned-BYOK filtering and strike gating visibly (section 4). *(implemented 2026-09-14: `pool_filtered` events + stderr notes; `tests/test_pool_visibility.py`)*
+- [x] Update DEFAULT_PANEL_PAID / heavy pools to the verified slates (section 3) — canonical ids validated against the 445-id cache 2026-09-13. *(implemented 2026-09-14: `harness/config.py`; policy pinned hermetically in `tests/test_model_slates.py`; live revalidation stays with `harness capabilities --check-shipped`)*
+- [x] Vote lanes: max_tokens >= 4096; deep-think lanes: >= 8192 with `auto`/`medium`. *(implemented 2026-09-14: `config.effective_lane_policy` -- ONE owner. Documented deviation: the convergence specialist resolves at the 4096 vote/JSON floor, not 8192, because a synthesis-sized budget defeats the window-aware vote trim on small-context specialists.)*
+- [x] Weekly rankings-refresh job (section 5) with the one-vote probe as gate. *(implemented 2026-09-14: `harness/rankings.py`, `harness rankings [--probe]`, `.github/workflows/rankings.yml` -- scheduled runs are read-only; probes are operator-gated.)*
+- [ ] After chat.py patch: re-run the SCMessenger BoD panel with v4.1-flash restored to the vote pool (it is judge-only today purely because of the pre-patch behavior). *(live acceptance run -- requires the operator key; see the acceptance checklist in the repo close-out notes.)*
 
 — Verified end-to-end this session in SCMessenger scripts/bod_governance.py:
 paid panel of 5 verified emitters, 5/5 parseable votes, APPROVED 5/5

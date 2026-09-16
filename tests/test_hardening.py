@@ -206,8 +206,12 @@ class ReadyParserSovereigntyTests(unittest.TestCase):
 
 
 class UnifiedDiffEngineTests(unittest.TestCase):
-    """Playtest pass: the #11 strict diff engine, driven exactly as models
-    feed it (prose-wrapped diffs, truncations, zero-context hunks)."""
+    """Playtest pass: the #11 diff engine, driven exactly as models
+    feed it (prose-wrapped diffs, truncations, zero-context hunks).
+    Header counts are claims, not law (dogfood 2026-09-13): a correct
+    body merges even when its @@ header miscounts; every refusal is a
+    genuine content problem, and the exact-source match still gates
+    everything that reaches disk."""
 
     SRC = "line1\nline2\nline3\nline4\nline5\n"
 
@@ -233,6 +237,50 @@ class UnifiedDiffEngineTests(unittest.TestCase):
     def test_zero_context_insertion(self):
         out = _apply_unified_diff(self.SRC, "@@ -0,0 +1,2 @@\n+new top\n+new top2\n")
         self.assertTrue(out.startswith("new top\nnew top2\n"))
+
+    def test_miscounted_header_correct_body_merges(self):
+        # The recorded dogfood class: old side complete, new-side header
+        # under-counts the adds. The body decides; the exact-source
+        # match below still gates the content.
+        src = "head\n" * 24 + "ctx0\nold tail\nrest\n"
+        diff = ("@@ -25,2 +25,5 @@\n ctx0\n-old tail\n"
+                "+new0\n+new1\n+new2\n+new3\n+new4\n+new5\n+new6\n")
+        out = _apply_unified_diff(src, diff)
+        self.assertIn("new6\n", out)
+        self.assertNotIn("old tail", out)
+        self.assertIn("rest\n", out)
+
+    def test_exact_fill_header_lie_no_silent_drop(self):
+        # The worst variant of the same lie: the miscounted window fills
+        # EXACTLY, which used to merge while silently dropping the
+        # body's tail. Every body line must land.
+        src = ("head\n" * 24 + "".join(f"ctx{i}\n" for i in range(5))
+               + "old tail\nrest\n")
+        body = ("".join(f" ctx{i}\n" for i in range(5)) + "-old tail\n"
+                + "".join(f"+new{i}\n" for i in range(26)))
+        out = _apply_unified_diff(src, "@@ -25,6 +25,24 @@\n" + body)
+        self.assertIn("new25\n", out)
+        self.assertNotIn("old tail", out)
+        self.assertIn("rest\n", out)
+
+    def test_zero_context_overcount_merges(self):
+        # A hungry window on an over-counted header used to swallow the
+        # trailing split artifact as a phantom context line and refuse.
+        out = _apply_unified_diff(self.SRC, "@@ -0,0 +1,9 @@\n+new top\n+new top2\n")
+        self.assertTrue(out.startswith("new top\nnew top2\n"))
+
+    def test_pure_context_miscount_refused(self):
+        # A recovered hunk must describe a change; a pure-context body
+        # cannot be anchored honestly.
+        with self.assertRaises(HarnessError):
+            _apply_unified_diff("a\nb\n", "@@ -1,2 +1,3 @@\n a\n b\n")
+
+    def test_junk_after_miscounted_body_refused(self):
+        # A miscounted header plus non-diff junk after the body leaves
+        # its completeness unknowable: refused, as the old parser
+        # refused in-window garbage.
+        with self.assertRaises(HarnessError):
+            _apply_unified_diff("a\nb\n", "@@ -1,1 +1,2 @@\n+a\nSome closing prose\n")
 
 
 class ApplyConsentOptionalTests(unittest.TestCase):
@@ -344,7 +392,7 @@ class BackupHijackTests(unittest.TestCase):
         except (OSError, NotImplementedError):
             self.skipTest("symlinks unavailable")
 
-    def test_planted_destination_link_refused(self):
+    def test_planted_destination_link_is_bypassed_not_followed(self):
         from harness.filesafety import backup_file
         with tempfile.TemporaryDirectory() as d:
             src = os.path.join(d, "f.txt")
@@ -356,12 +404,18 @@ class BackupHijackTests(unittest.TestCase):
             import harness.filesafety as fs
             with unittest.mock.patch.object(fs.tempfile, "gettempdir",
                                             return_value=d):
-                dest = os.path.join(
-                    d, "harness-backups", "t-r1-f.txt")
-                os.makedirs(os.path.join(d, "harness-backups"))
-                self._symlink_or_skip(victim, dest)
+                backup_dir = os.path.join(d, "harness-backups")
+                os.makedirs(backup_dir)
+                # Plant a symlink at the legacy predictable name; the unique
+                # O_EXCL destination must neither follow nor overwrite it.
+                plant = os.path.join(backup_dir, "t-r1-f.txt")
+                self._symlink_or_skip(victim, plant)
                 with contextlib.redirect_stderr(io.StringIO()):
-                    self.assertIsNone(backup_file(src, "t", 1))
+                    dest = backup_file(src, "t", 1)
+                self.assertIsNotNone(dest)
+                self.assertNotEqual(os.path.realpath(dest),
+                                    os.path.realpath(victim))
+                self.assertTrue(os.path.islink(plant))  # plant untouched
             with open(victim, encoding="utf-8") as f:
                 self.assertEqual(f.read(), "victim\n")
 

@@ -31,14 +31,35 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from . import events as _events
+from .batch import BatchOptions
 from .config import HARD_TASK_MAX_COST, HARD_MAX_COST, load_settings
 from .errors import HarnessError, ToolCancelled
 from .session import (apply_session, governor_for, ledger_for, run_meta)
 
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 MAX_EVENT_BUFFER = 4000
+
+# Rankings reports (advisory, read-only mirror): the `harness rankings`
+# output layout -- rankings/rankings-YYYY-MM-DD.json -- the same files the
+# weekly workflow uploads as its artifact. The UI renders the latest
+# report; it never generates one (refresh stays CLI-only, so nothing
+# auto-mutates).
+RANKINGS_REPORT_DIR = "rankings"
+RANKINGS_REPORT_RE = re.compile(r"^rankings-\d{4}-\d{2}-\d{2}.*\.json$")
 RUN_ID_RE = re.compile(r"^/api/runs/([A-Za-z0-9_-]{1,64})$")
 RUN_SUB_RE = re.compile(r"^/api/runs/([A-Za-z0-9_-]{1,64})/(result|events|cancel)$")
+
+
+def _rankings_reports():
+    """Available rankings reports, newest filename first. The test seam:
+    patch this to serve fixture reports without touching the filesystem."""
+    try:
+        names = os.listdir(RANKINGS_REPORT_DIR)
+    except OSError:
+        return []
+    return [os.path.join(RANKINGS_REPORT_DIR, n)
+            for n in sorted((n for n in names if RANKINGS_REPORT_RE.match(n)),
+                            reverse=True)]
 
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -111,10 +132,20 @@ def validate_dispatch(kind, args):
     elif kind == "verify":
         has_prompt = bool(_opt_str(args, "prompt"))
         pf = _opt_str(args, "prompt_file")
-        if not has_prompt and not pf:
-            raise HarnessError("verify requires 'prompt' or 'prompt_file'")
+        cf = _opt_str(args, "claims_file")
+        if not has_prompt and not pf and not cf:
+            raise HarnessError("verify requires 'prompt', 'prompt_file', "
+                               "or 'claims_file'")
         if pf and not os.path.isfile(pf):
             raise HarnessError(f"prompt_file does not exist: {pf}")
+        if cf:
+            sf = _opt_str(args, "source_file", required=True)
+            if not os.path.isfile(sf):
+                raise HarnessError(f"source_file does not exist: {sf}")
+            df = _opt_str(args, "definitions_file")
+            if df and not os.path.isfile(df):
+                raise HarnessError(f"definitions_file does not exist: {df}")
+        _opt_str(args, "claim_context")
         _opt_str(args, "judge")
         _opt_str(args, "panel")
         if args.get("max_cost") is not None:
@@ -147,49 +178,48 @@ def run_apply_task(task_id, args, cancel_check):
     settings = load_settings()
     engine = apply_session(settings)
     result = engine.apply_batch(
-        [args["file"]], task_id=task_id, instruction=args["instruction"],
-        edit_snippet=args.get("edit_snippet"), verify_cmd=args.get("verify"),
-        max_rounds=args.get("max_rounds") or 3,
-        require_consent=args.get("require_consent"),
-        model=args.get("model"),
-        task_max_cost=args.get("task_max_cost"),
-        backend=args.get("backend") or "harness",
-        verify_only=bool(args.get("verify_only")),
-        cancel_check=cancel_check)
+        [args["file"]], task_id=task_id, cancel_check=cancel_check,
+        options=BatchOptions(
+            instruction=args["instruction"],
+            edit_snippet=args.get("edit_snippet"),
+            verify_cmd=args.get("verify"),
+            max_rounds=args.get("max_rounds") or 3,
+            require_consent=args.get("require_consent"),
+            model=args.get("model"),
+            task_max_cost=args.get("task_max_cost"),
+            backend=args.get("backend") or "harness",
+            verify_only=bool(args.get("verify_only"))))
     if isinstance(result, dict):
         result["meta"] = run_meta(settings, engine.governor)
     return result
 
 
 def run_verify_task(task_id, args, cancel_check):
-    """The verify lane: same assembly as the CLI's _run_claims_verify, minus
-    the claims-manifest options (UI dispatch covers the prompt lane; the
-    structured-claims manifest remains a CLI/file workflow)."""
-    from .panel import panel_judge
-    from ._http import HttpTransport
-    from .saturation import pre_run_warning
+    """The verify lane via the canonical service layer (harness.service):
+    one assembly for the prompt lane and the structured-claims lane across
+    CLI and UI -- lint runs pre-network, an ungrounded claim set finishes
+    the run as ``rejected``, and a cooperative cancel returns the honest
+    spend envelope."""
+    from .service import build_verify_prompt, run_verify
     settings = load_settings()
-    if args.get("prompt_file"):
-        with open(args["prompt_file"], encoding="utf-8") as f:
-            prompt = f.read()
-    else:
-        prompt = args["prompt"]
-    api_key, gov = governor_for(settings, args.get("max_cost"))
-    ledger = ledger_for(settings)
-    pre_run_warning(governor=gov, ledger=ledger, use_free=settings.use_free)
-    result = panel_judge(
-        transport=HttpTransport(), api_key=api_key, governor=gov, prompt=prompt,
-        panel=list(settings.panel_pool), judge=args.get("judge") or settings.judge,
-        max_tokens=None,
-        reasoning_effort=args.get("reasoning_effort") or settings.reasoning_effort,
-        reasoning_token_budget=settings.reasoning_token_budget,
-        task_id=task_id, ledger=ledger,
-        max_panelists=settings.max_panelists,
-        free_tier=settings.use_free,
-        cancel_check=cancel_check)
-    result["cost_by_model"] = gov.cost_by_model()
-    result["meta"] = run_meta(settings, gov)
-    return result
+    try:
+        prompt, claims_lint = build_verify_prompt(
+            prompt=args.get("prompt"),
+            prompt_file=args.get("prompt_file"),
+            claims_file=args.get("claims_file"),
+            source_file=args.get("source_file"),
+            definitions_file=args.get("definitions_file"),
+            claim_context=args.get("claim_context"))
+    except ValueError as e:
+        raise HarnessError(str(e)) from None
+    if claims_lint is not None and not claims_lint["ok"]:
+        return {"status": "rejected", "lint": claims_lint, "verdict": None,
+                "actual_cost": 0.0}
+    return run_verify(settings, prompt=prompt, task_id=task_id,
+                      cancel_check=cancel_check,
+                      max_cost=args.get("max_cost"),
+                      judge=args.get("judge"),
+                      reasoning_effort=args.get("reasoning_effort"))
 
 
 def run_continue_task(task_id, args, cancel_check):
@@ -199,11 +229,12 @@ def run_continue_task(task_id, args, cancel_check):
         continuation = validate_continuation(json.load(f))
     engine = apply_session(settings)
     return engine.apply_batch(
-        [None], task_id=task_id,
-        instruction=args.get("instruction"),
-        verify_cmd=args.get("verify"),
-        max_rounds=args.get("max_rounds") or 3,
-        cancel_check=cancel_check, continuation=continuation)
+        [None], task_id=task_id, cancel_check=cancel_check,
+        options=BatchOptions(
+            instruction=args.get("instruction"),
+            verify_cmd=args.get("verify"),
+            max_rounds=args.get("max_rounds") or 3,
+            continuation=continuation))
 
 
 def run_bench_task(task_id, args, cancel_check):
@@ -307,6 +338,10 @@ class UiState:
                             cancel_flag.is_set)
             record["result"] = result
             record["status"] = str(result.get("status") or "done")
+            if record["status"] == "cancelled":
+                # The lane caught ToolCancelled to build an honest spend
+                # envelope; the run-level wording must still say who did it.
+                record["error"] = "cancelled by user"
         except HarnessError as e:
             record["error"] = str(e)
             record["status"] = "error"
@@ -403,6 +438,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         try:
             if path == "/api/status":
                 return self._api_status()
+            if path == "/api/trust":
+                return self._api_trust(q)
             if path == "/api/runs":
                 return self._api_runs()
             if path == "/api/events":
@@ -427,6 +464,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_capabilities()
             if path == "/api/models":
                 return self._api_models(q)
+            if path == "/api/rankings":
+                return self._api_rankings()
             return self._error(404, f"no such endpoint: {path}")
         except HarnessError as e:
             return self._error(400, str(e))
@@ -480,6 +519,20 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             "auth_required": bool(self.ui.auth_token),
             "events_buffered": len(self.ui.events), "runs": runs[:50],
         })
+
+    def _api_trust(self, q):
+        """Read-only trust snapshot (CLI `trust` parity): no key, no network,
+        no ledger writes. One owner for the policy: trust.trust_status."""
+        from . import trust as trust_policy
+        caller = (q.get("caller") or [None])[0]
+        try:
+            ledger = ledger_for(load_settings())
+            report = ledger.participation_report()
+            return self._send_json(
+                trust_policy.trust_status(report, caller=caller))
+        except Exception as e:
+            return self._send_json({"error": str(e), "host": {"score": None,
+                                   "reasons": [str(e)]}}, code=503)
 
     def _api_runs(self):
         with self.ui.lock:
@@ -601,6 +654,37 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                         prefer=settings.panel_pool, limit=limit)}
         payload = self.ui.cached("models", build)
         return self._send_json({"count": len(payload["models"]), **payload})
+
+    def _api_rankings(self):
+        """Read-only mirror of the rankings report (the data the weekly
+        workflow files as its artifact): latest report verbatim plus the
+        list of available ones. Strictly read-only -- no generation, no
+        probe, no config mutation; `harness rankings` stays the one
+        producer. A missing or unreadable report is a 200 with
+        ``available: false`` (the empty/stale state is normal, not an
+        error) and never falls back to an older file silently."""
+        reports = _rankings_reports()
+        if not reports:
+            return self._send_json({
+                "reports": [], "latest": None, "available": False,
+                "note": "no rankings report found; generate one with: "
+                        "harness rankings (or the weekly workflow artifact)",
+            })
+        latest = reports[0]
+        try:
+            with open(latest, encoding="utf-8") as f:
+                report = json.load(f)
+        except (OSError, ValueError) as e:
+            return self._send_json({
+                "reports": [os.path.basename(p) for p in reports],
+                "latest": os.path.basename(latest), "available": False,
+                "error": f"latest rankings report is unreadable: {e}",
+            })
+        return self._send_json({
+            "reports": [os.path.basename(p) for p in reports],
+            "latest": os.path.basename(latest),
+            "available": True, "report": report,
+        })
 
 
 def make_server(host="127.0.0.1", port=8765, auth_token=None):

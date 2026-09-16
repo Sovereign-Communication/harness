@@ -101,5 +101,17 @@ th { color: var(--dim); font-weight: 600; font-size: 11px; text-transform: upper
 tr:hover td { background: rgba(88, 166, 255, .05); }
 .s-ok { color: var(--green); } .s-deferred { color: var(--yellow); }
 .s-verify_failed, .s-error { color: var(--red); } .s-preview, .s-preview_exhausted { color: var(--cyan); }
+.sum-row { display: flex; gap: 12px; padding: 3px 0; font-size: 13px; }
+.sum-row .k { color: var(--dim); min-width: 90px; text-transform: uppercase; font-size: 11px; padding-top: 2px; }
+.sum-row .sum-yes { color: var(--green); font-weight: 600; }
+.sum-row .sum-no { color: var(--red); font-weight: 600; }
+.diff-view { font-size: 12px; line-height: 1.45; }
+.diff-view .d-file { color: var(--dim); margin: 8px 0 4px; }
+.diff-view .ln-del { background: rgba(248, 81, 73, .14); color: var(--red); }
+.diff-view .ln-add { background: rgba(63, 185, 80, .14); color: var(--green); }
+.diff-view .ln-meta { color: var(--dim); }
+.diff-view .ln-ctx { color: var(--dim); opacity: .75; }
+.sum-json summary { cursor: pointer; color: var(--dim); font-size: 12px; margin-top: 6px; }
+.sum-json pre { max-height: 320px; overflow: auto; }
 footer { padding: 10px 18px; border-top: 1px solid var(--line); }
 pre.mono { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; }

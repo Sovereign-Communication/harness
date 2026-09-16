@@ -135,14 +135,17 @@ def validate_mcp_limit(value, name="limit", default=20):
     return bounded_int(value, name, 1, 1000)
 
 
-def validate_mcp_max_tokens(value, default=2048):
+def validate_mcp_max_tokens(value):
     """Validate the optional MCP output token budget.
 
     Default matches the CLI verify lane so MCP hosts are not silently
-    truncated at a much smaller window.
+    truncated at a much smaller window. Imported lazily: config imports
+    this module at load time (finite_number), so a module-level import
+    would be circular.
     """
     if value is None:
-        value = default
+        from .config import DEFAULT_MAX_TOKENS
+        value = DEFAULT_MAX_TOKENS
     return bounded_int(value, "max_tokens", 1, MAX_TOKENS)
 
 

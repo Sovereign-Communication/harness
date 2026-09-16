@@ -17,6 +17,8 @@
   <a data-view="runs">Runs</a>
   <a data-view="ledger">Ledger</a>
   <a data-view="models">Models</a>
+  <a data-view="rankings">Rankings</a>
+  <a data-view="trust">Trust</a>
   <a data-view="capabilities">Capabilities</a>
   <a data-view="settings">Settings</a>
 </nav>
@@ -71,6 +73,17 @@
       <label id="f-promptfile-label" hidden>Prompt file
         <input name="prompt_file">
       </label>
+      <div id="f-claims-label" class="dim" hidden>Structured-claims verify: the panel reviews the source file against each claim in the manifest.</div>
+      <label id="f-claims-row" hidden>Claims file
+        <input name="claims_file">
+      </label>
+      <label id="f-source-row" hidden>Source file (verbatim code the panel reviews)
+        <input name="source_file">
+      </label>
+      <label id="f-defs-row" hidden>Definitions file (optional source index)
+        <input name="definitions_file">
+      </label>
+      <div id="f-ctx-row" class="dim" hidden>Claim context is read from the manifest unless you pass it on the CLI lane.</div>
       <div class="row" id="f-meta-row">
         <label>Max rounds <input name="max_rounds" type="number" min="1" max="8" value="3"></label>
         <label>Task max cost ($) <input name="task_max_cost" type="number" step="0.005" min="0" max="0.25" placeholder="0.05"></label>
@@ -121,7 +134,26 @@
     <div id="models-out"></div>
   </section>
 
+  <!-- ======================= RANKINGS ======================= -->
+  <section id="view-rankings" class="view">
+    <p class="dim">Read-only mirror of the advisory rankings report
+      (<code>harness rankings</code> / the weekly workflow artifact). The UI
+      never generates, probes, or refreshes — pools change only when an
+      operator edits configuration.</p>
+    <div id="rankings-out"></div>
+  </section>
+
   <!-- ======================= CAPABILITIES ======================= -->
+  <section id="view-trust" class="view">
+    <div class="row" style="justify-content:space-between">
+      <h2>TRUST</h2>
+      <div><select id="trust-caller" style="max-width:220px">
+          <option value="">(all callers)</option></select>
+        <button id="btn-trust-refresh">Refresh</button></div>
+    </div>
+    <div id="trust-host" class="dim" style="margin:6px 0"></div>
+    <div id="trust-out"></div>
+  </section>
   <section id="view-capabilities" class="view">
     <button id="btn-capabilities">Load capability & reliability table</button>
     <div id="capabilities-out"></div>
@@ -132,6 +164,8 @@
     <p class="dim">Read-only view (v1). Edit <code>~/.config/harness/config.json</code> or set
       <code>HARNESS_*</code> env vars; secrets show as presence only.</p>
     <pre id="settings-out" class="mono"></pre>
+    <h2>SERVER STATUS</h2>
+    <div id="status-out" class="mono dim">(not loaded)</div>
   </section>
 </main>
 

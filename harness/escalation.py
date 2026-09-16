@@ -13,6 +13,7 @@ plans from apply output (apply returns file content, not judge JSON).
 from . import events as _events
 from .chat import (_chat_reservation_slots, chat, extract_content_and_cost,
                    assess_output)
+from .config import effective_lane_policy
 from .errors import HarnessError
 from .output import eprint
 
@@ -22,7 +23,7 @@ class EscalationDriver:
 
     def __init__(self, router, transport, api_key, governor, ledger, task_id,
                  reasoning_token_budget=0.4, max_tokens=4096,
-                 task_start_spent=None, task_max_cost=None):
+                 task_start_spent=None, task_max_cost=None, reasoning_effort=None):
         self.router = router
         self.transport = transport
         self.api_key = api_key
@@ -31,6 +32,13 @@ class EscalationDriver:
         self.task_id = task_id
         self.reasoning_token_budget = reasoning_token_budget
         self.max_tokens = max_tokens
+        # Lane policy (ONE owner: config.effective_lane_policy): an escalation
+        # rung is deep adjudication ("bigger/better when hard") -- minimum
+        # 8192 output tokens with "auto" reasoning; an explicitly selected
+        # low/medium/high effort passes through.
+        self.max_tokens, self.reasoning_effort = effective_lane_policy(
+            "escalation", max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort)
         self.task_start_spent = task_start_spent
         self.task_max_cost = task_max_cost
         self.escalation_history = []
@@ -80,7 +88,7 @@ class EscalationDriver:
             rung_context = self._get_rung_context(state, rung, condensed)
             prompt = base_prompt_fn(state, rung_context)
 
-            slots = _chat_reservation_slots(model, "high", 0)
+            slots = _chat_reservation_slots(model, self.reasoning_effort, 0)
             calls = [(f"escalation rung {rung + 1}/{len(self.router.escalation_pool)}",
                       model, self.max_tokens, 0)
                      for _ in range(slots)]
@@ -92,7 +100,7 @@ class EscalationDriver:
 
             status, resp = chat(self.transport, self.api_key, model,
                                 [{"role": "user", "content": prompt}],
-                                self.max_tokens, "high",
+                                self.max_tokens, self.reasoning_effort,
                                 self.reasoning_token_budget, self.governor)
 
             if status != 200:

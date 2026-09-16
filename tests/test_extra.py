@@ -31,9 +31,11 @@ class ReasoningTests(unittest.TestCase):
         # auto: reasoning models get capped low, others omit
         self.assertEqual(_effort_to_send("auto", "x-r1"), "low")
         self.assertIsNone(_effort_to_send("auto", "cohere/north-mini-code:free"))
-        # off/none always omit
-        self.assertIsNone(_effort_to_send("none", "x-r1"))
-        self.assertIsNone(_effort_to_send("off", "x-r1"))
+        # off/none resolve to the EXPLICIT disable ("none"): omitting the
+        # reasoning key means the provider default (reasoning ON) for
+        # reasoning-native models. 2026-09-13 operator ruling 6 + handoff s1.
+        self.assertEqual(_effort_to_send("none", "x-r1"), "none")
+        self.assertEqual(_effort_to_send("off", "x-r1"), "none")
         # explicit efforts pass through
         self.assertEqual(_effort_to_send("medium", "cohere/x"), "medium")
         self.assertEqual(_effort_to_send("on", "cohere/x"), "high")
@@ -42,7 +44,12 @@ class ReasoningTests(unittest.TestCase):
         rp = _build_reasoning_param("x-r1", "low", 300, 0.4)
         self.assertEqual(rp, {"effort": "low", "max_tokens": 120})
         self.assertIsNone(_build_reasoning_param("cohere/x", "auto", 300, 0.4))
-        self.assertIsNone(_build_reasoning_param("x-r1", "off", 300, 0.4))
+        # The explicit disable sends {"effort": "none"} with NO max_tokens
+        # cap (a cap is meaningless when reasoning is off).
+        self.assertEqual(_build_reasoning_param("x-r1", "off", 300, 0.4),
+                         {"effort": "none"})
+        self.assertEqual(_build_reasoning_param("x-r1", "none", 300, 0.4),
+                         {"effort": "none"})
 
     def test_chat_sends_reasoning_only_when_requested(self):
         fake = FakeTransport(models=[], posts=[comp("ok")])

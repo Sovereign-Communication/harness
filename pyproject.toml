@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sovereign-harness"
-version = "0.2.0"
+version = "0.3.0"
 description = "Cost-bounded multi-model verification & coding harness with AI sovereignty — consent, continued consensus, and a verifiable participation ledger. Pure Python stdlib, zero dependencies."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -22,6 +22,12 @@ harness-desktop = "harness.ui:main"
 
 [tool.setuptools.packages.find]
 include = ["harness*"]
+
+# The web/desktop UI ships inside the package: `harness serve` / `harness
+# desktop` read these files at runtime (harness/ui/), so an installed wheel
+# must carry them or every static page 500s.
+[tool.setuptools.package-data]
+harness = ["ui/*.html", "ui/*.js", "ui/*.css"]
 [project.optional-dependencies]
 dev = ["ruff>=0.6", "build>=1.2", "twine>=5"]
 local-fit-train = ["numpy", "onnx", "onnxruntime"]
