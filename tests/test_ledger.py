@@ -205,6 +205,27 @@ class LedgerTests(unittest.TestCase):
         self.assertTrue(r["consent_looks_degenerate"])
         self.assertIn("theater", r["degenerate_note"])
 
+    def test_gate_wasted_runs_counts_rounds_exhausted_aborts(self):
+        """Gate-waste evidence (the v0.3.1 dogfood finding): the ledger
+        counts rounds-exhausted aborts per LEADING model -- the same
+        predicate the dogfood curator turns into its headline claim --
+        so pool ordering can demote demonstrated gate-wasters."""
+        led = self.ledger
+        led.append("abort", task_id="t1", model="acme/waster:free",
+                   reason="verify rounds exhausted", rotations=3)
+        led.append("abort", task_id="t2", model="acme/waster:free",
+                   reason="verify rounds exhausted", rotations=3)
+        led.append("abort", task_id="t3", model="acme/waster:free",
+                   reason="verify rounds exhausted", rotations=3)
+        # Same event, different reason -- not gate waste.
+        led.append("abort", task_id="t4", model="acme/waster:free",
+                   reason="operator cancelled")
+        # Same event, no model -- unattributable.
+        led.append("abort", task_id="t5", reason="verify rounds exhausted")
+        r = led.participation_report()
+        self.assertEqual(r["calibration"]["acme/waster:free"]["gate_wasted_runs"], 3)
+        self.assertNotIn("gate_wasted_runs", r["calibration"].get("acme/other:free", {}))
+
 
 class LedgerCallerTests(unittest.TestCase):
     def setUp(self):

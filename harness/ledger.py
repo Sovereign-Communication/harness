@@ -784,6 +784,7 @@ class AutonomyLedger:
         # success_rate = passes / (passes + fails) over every task a model ran,
         # using the verify_round outcome records (the same ground truth bench uses).
         task_outcome = defaultdict(lambda: {"pass": 0, "fail": 0})  # model -> code verify counts
+        gate_wasted = defaultdict(int)            # model -> runs it led to rounds-exhausted aborts
         structured_outcome = defaultdict(lambda: {"pass": 0, "fail": 0})
         json_events = defaultdict(int)  # model -> JSON-expected model_result count
         model_events = defaultdict(int)  # model -> all model_result sample count
@@ -792,6 +793,14 @@ class AutonomyLedger:
             m_ = e.get("model")
             if ev == "verify_round" and m_ is not None and "passed" in e:
                 task_outcome[m_]["pass" if e.get("passed") else "fail"] += 1
+            elif (ev == "abort" and m_ is not None
+                    and e.get("reason") == "verify rounds exhausted"):
+                # Gate-waste evidence: the model LED the run to its terminal
+                # fail-closed state (the gate rewinds what it wrote). The
+                # dogfood curator (claims.curate_claims_from_ledger) derives
+                # its headline claim from the same predicate -- one
+                # definition of the defect class.
+                gate_wasted[m_] += 1
             elif ev == "model_result" and m_ is not None:
                 model_events[m_] += 1
                 if e.get("json_expected"):
@@ -821,7 +830,7 @@ class AutonomyLedger:
         all_pass = all_fail = 0
         all_models = set(list(confident_readiness) + list(verify_hits) +
                          list(defer_count) + list(task_outcome) + list(model_events) +
-                         list(model_stats))
+                         list(gate_wasted) + list(model_stats))
         for m_ in all_models:
             passes = verify_hits[m_]["pass"]
             fails = verify_hits[m_]["fail"]
@@ -841,6 +850,7 @@ class AutonomyLedger:
                 "success_pass": to["pass"],
                 "success_fail": to["fail"],
                 "success_rate": round(to["pass"] / t_denom, 3) if t_denom else None,
+                "gate_wasted_runs": gate_wasted[m_],
                 "structured_pass": structured_outcome[m_]["pass"],
                 "structured_fail": structured_outcome[m_]["fail"],
                 "structured_success_rate": (
