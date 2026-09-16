@@ -59,6 +59,14 @@ break APIs between minor versions).
   through the real stdio frame loop.
 
 ### Changed
+- **The rankings envelope-to-UI field contract is mechanized.** A contract
+  pin derives every member read the real `loadRankings` makes from app.js
+  source (not a hand-list) and asserts each resolves on an envelope produced
+  by rankings.py's real builder through the real endpoint assembler,
+  including both `available: false` fallbacks; where a node runtime exists,
+  the real renderer is executed against the real envelope with per-row value
+  co-occurrence. Vacuity-proven: planted key renames on either side (UI or
+  server envelope) fail the battery instead of silently blanking the view.
 - **Skip hygiene is mechanized.** The suite's 10 skips (on Windows) are all
   environment gates, not convenience: 7 symlink-privilege gates
   (WinError 1314 without Developer Mode -- security-relevant symlink-escape
