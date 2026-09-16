@@ -572,7 +572,13 @@ def r_suite_green():
          "discover", "-s", "tests", "-q"],
         cwd=str(ROOT), capture_output=True, text=True, timeout=900)
     m = re.search(r"Ran (\d+) tests?[^\n]*\n\n(OK|FAILED)", r.stdout + r.stderr)
-    ok = m is not None and m.group(2) == "OK"
+    # Unraisable warnings (e.g. a leaked TextIOWrapper) print to the
+    # child's stderr at GC time without changing the OK|FAILED outcome
+    # -- the exact class that flaked the v0.3.2 release gate (PR #17).
+    # Classify deterministically: any signature fails the check.
+    leaked = ("ResourceWarning" in (r.stdout + r.stderr)
+              or "unclosed file" in (r.stdout + r.stderr))
+    ok = (m is not None and m.group(2) == "OK") and not leaked
     return _pass(ok, f"unittest: {m.group(0).strip() if m else r.stderr[-200:]}",
                  (r.stdout + r.stderr)[-2500:])
 
