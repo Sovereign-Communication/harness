@@ -77,16 +77,24 @@ def interpreters(full=False):
     """
     found = [(sys.executable, "local default")]
     if full:
-        out = capture(["uv", "python", "list", "--only-installed"])
-        for line in out.stdout.splitlines():
+        try:
+            out = capture(["uv", "python", "list", "--only-installed"])
+        except FileNotFoundError:
+            out = None
+        for line in (out.stdout.splitlines() if out is not None else []):
             m = re.match(r"cpython-(\d+)\.(\d+)\.\d+", line.strip())
             if m:
                 found.append((line.split()[-1],
                               "cpython " + m.group(1) + "." + m.group(2)))
         return found
     for ver in ("3.9", "3.11", "3.13"):
-        p = capture(["uv", "python", "find", ver])
-        path = p.stdout.strip() if p.returncode == 0 and p.stdout.strip() else None
+        try:
+            p = capture(["uv", "python", "find", ver])
+        except FileNotFoundError:
+            p = None  # uv not installed here: fall through to PATH, then the honest note
+        path = (p.stdout.strip()
+                if p is not None and p.returncode == 0 and p.stdout.strip()
+                else None)
         if path and Path(path).exists():
             found.append((path, "cpython " + ver + " (uv-managed)"))
         else:
