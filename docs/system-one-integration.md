@@ -68,17 +68,65 @@ We propose incorporating System One paradigms into Harness across three architec
 
 ---
 
-## 3. Implementation Roadmap
+## 3. Detailed Technical Specifications
 
-- [ ] **Phase 1: Architecture Spec & Docs** (Current PR)
-  - Publish `docs/system-one-integration.md` defining the decision contracts and confidence gating interfaces.
-- [ ] **Phase 2: Router Confidence Gating**
-  - Add confidence score parsing to model responses and consent checks.
-  - Implement configurable confidence thresholds for `HARNESS_DEFER`.
-- [ ] **Phase 3: Fast Jury Decision Protocol**
-  - Update multi-model panel protocols to support zero-token / enum-only decision verdicts.
-- [ ] **Phase 4: Optional Jev / System One Provider Integration**
-  - Add native support in OpenRouter / provider routing for Jev endpoints for pure triage tasks.
+### 3.1 Fast-Path Decision & Consent Schema Contract
+
+System One decision interfaces replace unstructured natural language reasoning with strict JSON schema definitions for decisions and calibrated confidence bounds:
+
+```json
+{
+  "decision": "accept" | "decline" | "defer" | "redirect",
+  "confidence": 0.85,
+  "reason": "Task matches AST scope and context window constraints.",
+  "redirect_model": null,
+  "scope_suggestion": null
+}
+```
+
+#### Field Specifications:
+- `decision` (string, required): One of `"accept"`, `"decline"`, `"defer"`, or `"redirect"`.
+- `confidence` (float, optional): A calibrated probability value \([0.0, 1.0]\) indicating the model's confidence in its ability to execute the task successfully.
+- `reason` (string, required): Brief concise rationale for the decision.
+- `redirect_model` (string or null, optional): An alternative model identifier if redirecting.
+- `scope_suggestion` (string or null, optional): A suggested narrower task scope if redirecting.
+
+### 3.2 Confidence Calibration & Deferral Gating
+
+Standard LLM confidence is notoriously poorly calibrated (often displaying overconfident hallucinations). Through **Reinforcement Learning for Calibrated Decisions (RLCD)**, System One models produce probabilities that correspond directly to observed accuracy rates.
+
+Harness integrates this via the following deferral rules:
+1. **Implicit Deferral on Low Confidence**: If a model returns `"decision": "accept"`, but its `confidence` score is below the configured threshold (e.g. `confidence < 0.70`), Harness intercepts the acceptance and treats it as an automatic `HARNESS_DEFER` handoff.
+2. **Autonomy Ledger Evidence**: The ledger records the self-assessed confidence, reason, and any automated threshold override in the hash-chained JSONL file, enabling longitudinal tracking of model calibration and under/overconfidence metrics.
+
+### 3.3 Fast Jury Panel Protocol (Enum-Constrained Consensus)
+
+For advisory panel verification (`--verify-only` or multi-model voting), generative text synthesis generates excess tokens. Under the System One protocol:
+- Panelists evaluate task claims or code diffs and emit single-token enum selections:
+  ```json
+  {
+    "verdict": "pass" | "fail" | "defer",
+    "confidence": 0.92,
+    "claim_id": "syntax_clean"
+  }
+  ```
+- The Harness `convergence` engine aggregates logits/choices without requiring multi-paragraph judge synthesis, reducing panel evaluation latency from ~10s to <1s.
+
+---
+
+## 4. Implementation Roadmap & Milestones
+
+- [x] **Milestone 1: Architectural Foundation & Decision Contracts**
+  - Publish `docs/system-one-integration.md` defining JSON decision schemas, calibration mechanics, and integration boundaries.
+  - Link architecture in repository `README.md`.
+- [ ] **Milestone 2: Confidence Extraction & Ledger Recording**
+  - Update `harness.consent.probe_consent` to parse optional calibrated `confidence` floats from model output.
+  - Record `confidence` into ledger consent events (`consent_accept`, `consent_defer`).
+- [ ] **Milestone 3: Automated Confidence-Gated Deferrals**
+  - Expose `HARNESS_MIN_CONFIDENCE` (defaulting to e.g. `0.60` or `None` if unconfigured).
+  - Automatically escalate/rotate to next tier model if reported confidence is below threshold.
+- [ ] **Milestone 4: Native Jev / System One Provider Endpoints**
+  - Add native provider adapter for Jev / TypeSafe endpoints when operating in pure triage or AST candidate filtering mode.
 
 ---
 
