@@ -7,79 +7,121 @@
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-<header>
-  <div class="brand">
-    <span class="logo">⌘</span> harness
-    <span class="tagline">autonomous software engineering</span>
-  </div>
-  <div class="header-controls">
-    <div class="spend-badge" id="spend-meter" title="Current session spend / ceiling">
-      <span class="dot"></span>
-      <span id="spend-val">$0.0000</span>
-      <span class="dim" id="spend-limit">/ $0.05</span>
+
+<!-- Left Sidebar -->
+<nav id="sidebar">
+  <div id="sidebar-top">
+    <div class="sidebar-brand">
+      <span class="logo">⌘</span> harness
     </div>
-    <button type="button" id="btn-mode-toggle" class="mode-badge" title="Click to toggle between autonomous execution and review-first preview">
-      <span id="mode-icon">⚡</span> <span id="mode-text">Auto</span>
+
+    <!-- New Chat -->
+    <button type="button" id="btn-new-chat" class="btn-new-chat" title="Start a fresh chat session">
+      <span>＋</span> New Chat
     </button>
-    <button type="button" id="btn-new-chat" class="btn-ghost" title="Start a fresh chat session">+ New</button>
-  </div>
-</header>
 
-<main id="chat-container">
-  <!-- Welcome Hero (shown when no messages exist) -->
-  <div id="welcome-hero" class="hero">
-    <div class="hero-icon">⌘</div>
-    <h1>What would you like to build or solve?</h1>
-    <p class="hero-sub">Describe a task, fix, or inquiry. Sovereign Harness automatically plans, condenses context, routes model tiers, and verifies all changes.</p>
-    <div class="starters">
-      <button class="starter-chip" data-prompt="Explain the architecture of the sliding-scale model router">
-        <span class="starter-title">Explain router architecture</span>
-        <span class="starter-desc">Analyze sliding_scale.py and tier routing</span>
+    <!-- Working Directory -->
+    <div class="workdir-section">
+      <label class="workdir-label" for="workdir-input">Working Directory</label>
+      <input
+        type="text"
+        id="workdir-input"
+        class="workdir-input"
+        placeholder="Default (server cwd)"
+        title="Set the working directory for file edits"
+        autocomplete="off"
+        spellcheck="false"
+      />
+    </div>
+
+    <div class="sidebar-divider"></div>
+    <div class="sidebar-section-label">Conversations</div>
+  </div>
+
+  <!-- Session List -->
+  <div id="session-list" class="session-list">
+    <div class="session-loading">Loading…</div>
+  </div>
+</nav>
+
+<!-- Main Panel -->
+<div id="main-panel">
+
+  <!-- Header -->
+  <header>
+    <div class="header-controls">
+      <div class="spend-badge" id="spend-meter" title="Current session spend / ceiling">
+        <span class="dot"></span>
+        <span id="spend-val">$0.0000</span>
+        <span class="dim" id="spend-limit">/ $0.05</span>
+      </div>
+      <button type="button" id="btn-mode-toggle" class="mode-badge" title="Click to toggle between autonomous execution and review-first preview">
+        <span id="mode-icon">⚡</span> <span id="mode-text">Auto</span>
       </button>
-      <button class="starter-chip" data-prompt="Check cryptographic ledger integrity and audit status">
-        <span class="starter-title">Verify ledger chain</span>
-        <span class="starter-desc">Cryptographic audit of all records</span>
-      </button>
-      <button class="starter-chip" data-prompt="Review harness/executor.py and add docstrings to helper functions">
-        <span class="starter-title">Document executor helpers</span>
-        <span class="starter-desc">Edit, verify with tests, and commit</span>
+      <button type="button" id="btn-web-toggle" class="mode-badge web-badge" title="Toggle live web search/fetch for chat (off: the agent states it has no web access)">
+        <span id="web-icon">🌐</span> <span id="web-text">Web off</span>
       </button>
     </div>
-  </div>
+  </header>
 
-  <!-- Conversational Feed -->
-  <div id="chat-feed" class="feed"></div>
-
-  <!-- Hidden elements for backward contract compatibility -->
-  <div id="view-dashboard" hidden></div>
-  <div id="view-dispatch" hidden></div>
-</main>
-
-<!-- Fixed Input Bar -->
-<footer id="input-footer">
-  <form id="chat-form" class="input-form">
-    <div class="input-wrapper">
-      <textarea
-        id="prompt-input"
-        rows="1"
-        placeholder="Ask a question or describe a task to plan, code, and verify... (Enter to send, Shift+Enter for newline)"
-        autofocus
-      ></textarea>
-      <div class="input-actions">
-        <button type="submit" id="btn-send" class="btn-action send" title="Send prompt">
-          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
-            <path d="M22 2L11 13M22 2L15 22L11 13L2 9L22 2Z" />
-          </svg>
+  <!-- Chat Area -->
+  <main id="chat-container">
+    <!-- Welcome Hero (shown when no messages exist) -->
+    <div id="welcome-hero" class="hero">
+      <div class="hero-icon">⌘</div>
+      <h1>What would you like to build or solve?</h1>
+      <p class="hero-sub">Describe a task, fix, or inquiry. Sovereign Harness automatically plans, condenses context, routes model tiers, and verifies all changes.</p>
+      <div class="starters">
+        <button class="starter-chip" data-prompt="Explain the architecture of the sliding-scale model router">
+          <span class="starter-title">Explain router architecture</span>
+          <span class="starter-desc">Analyze sliding_scale.py and tier routing</span>
         </button>
-        <button type="button" id="btn-stop" class="btn-action stop" title="Stop execution" hidden>
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-            <rect x="5" y="5" width="14" height="14" rx="2" />
-          </svg>
+        <button class="starter-chip" data-prompt="Check cryptographic ledger integrity and audit status">
+          <span class="starter-title">Verify ledger chain</span>
+          <span class="starter-desc">Cryptographic audit of all records</span>
+        </button>
+        <button class="starter-chip" data-prompt="Review harness/executor.py and add docstrings to helper functions">
+          <span class="starter-title">Document executor helpers</span>
+          <span class="starter-desc">Edit, verify with tests, and commit</span>
         </button>
       </div>
     </div>
-  </form>
-</footer>
+
+    <!-- Conversational Feed -->
+    <div id="chat-feed" class="feed"></div>
+
+    <!-- Hidden elements for backward contract compatibility -->
+    <div id="view-dashboard" hidden></div>
+    <div id="view-dispatch" hidden></div>
+  </main>
+
+  <!-- Fixed Input Bar -->
+  <footer id="input-footer">
+    <form id="chat-form" class="input-form">
+      <div class="input-wrapper">
+        <textarea
+          id="prompt-input"
+          rows="1"
+          placeholder="Ask a question or describe a task… (Enter to send, Shift+Enter for newline)"
+          autofocus
+        ></textarea>
+        <div class="input-actions">
+          <button type="submit" id="btn-send" class="btn-action send" title="Send prompt">
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+              <path d="M22 2L11 13M22 2L15 22L11 13L2 9L22 2Z" />
+            </svg>
+          </button>
+          <button type="button" id="btn-stop" class="btn-action stop" title="Stop execution" hidden>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+              <rect x="5" y="5" width="14" height="14" rx="2" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </form>
+  </footer>
+
+</div><!-- /main-panel -->
 
 <script src="/app.js"></script>
 </body>

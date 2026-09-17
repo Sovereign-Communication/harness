@@ -278,5 +278,116 @@ class TestAutonomousAgent(unittest.TestCase):
                 self.assertEqual(messages[3]["content"], "verify this")
 
 
+class TestWebCapabilityDisclosure(unittest.TestCase):
+    """The Riemann incident: the chat lane must never roleplay a search it
+    cannot perform. Web evidence is attached only when the run opts in, and
+    every source (or failure) is disclosed to the model and in provenance."""
+
+    def _agent(self, hdir):
+        return AutonomousAgent(history_dir=hdir)
+
+    @staticmethod
+    def _mock_resp(content="answer"):
+        return {"choices": [{"message": {"content": content}}],
+                "usage": {"cost": 0.0}}
+
+    def test_no_web_flag_discloses_no_web_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp))
+            with patch("harness.agent.chat", return_value=(200, self._mock_resp())) as m, \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())):
+                agent.run_prompt("can you search to verify?", session_id="w1")
+                sysmsg = m.call_args[1]["messages"][0]["content"]
+        self.assertIn("NO web tools", sysmsg)
+        self.assertIn("NO internet access", sysmsg)
+
+    def test_web_true_search_success_attaches_sources_and_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp))
+            fake_results = [{"title": "Bound moved", "url": "https://e.example/a",
+                             "snippet": "zero-free region extended"}]
+            with patch("harness.agent.search_web", return_value=fake_results) as ms, \
+                 patch("harness.agent.chat", return_value=(200, self._mock_resp())) as mc, \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())):
+                res = agent.run_prompt("search for the riemann bound", session_id="w2", web=True)
+                ms.assert_called_once()
+                sysmsg = mc.call_args[1]["messages"][0]["content"]
+                self.assertIn("Web tool results for this turn", sysmsg)
+                self.assertIn("zero-free region extended", sysmsg)
+                self.assertTrue(res["web_used"])
+                self.assertEqual(res["web_sources"][0]["url"], "https://e.example/a")
+
+    def test_web_true_url_prompt_fetches_allowlisted_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp))
+            page = {"url": "https://www.anthropic.com/r", "title": "T", "text": "page body"}
+            with patch("harness.agent.fetch_url", return_value=page) as mf, \
+                 patch("harness.agent.chat", return_value=(200, self._mock_resp())) as mc, \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())):
+                agent.run_prompt("https://www.anthropic.com/r", session_id="w3", web=True)
+                mf.assert_called_once()
+                sysmsg = mc.call_args[1]["messages"][0]["content"]
+        self.assertIn("page body", sysmsg)
+
+    def test_web_failure_is_disclosed_not_hidden(self):
+        from harness.errors import HarnessError as _HE
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp))
+            with patch("harness.agent.search_web", side_effect=_HE("web search failed: down")), \
+                 patch("harness.agent.chat", return_value=(200, self._mock_resp())) as mc, \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())):
+                res = agent.run_prompt("search the web", session_id="w4", web=True)
+                sysmsg = mc.call_args[1]["messages"][0]["content"]
+                self.assertIn("FAILED", sysmsg)
+                self.assertIn("web search failed: down", sysmsg)
+                self.assertFalse(res["web_used"])
+
+    def test_web_never_kills_the_chat_lane(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp))
+            with patch("harness.agent.search_web", side_effect=RuntimeError("boom")), \
+                 patch("harness.agent.chat", return_value=(200, self._mock_resp())) as mc, \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())):
+                res = agent.run_prompt("search the web", session_id="w5", web=True)
+        self.assertEqual(res["status"], "ok")
+        self.assertIn("web tools error", mc.call_args[1]["messages"][0]["content"])
+
+    def test_web_fetch_failure_is_disclosed(self):
+        # A URL prompt whose fetch is refused: the refusal lands in the model's
+        # context as a FAILED source -- never silently dropped.
+        from harness.errors import HarnessError as _HE
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp))
+            with patch("harness.agent.find_urls",
+                       return_value=["https://www.anthropic.com/x"]), \
+                 patch("harness.agent.fetch_url",
+                       side_effect=_HE("web fetch refused: host not allowed")), \
+                 patch("harness.agent.chat", return_value=(200, self._mock_resp())) as mc, \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())):
+                res = agent.run_prompt("https://www.anthropic.com/x",
+                                       session_id="w6", web=True)
+                sysmsg = mc.call_args[1]["messages"][0]["content"]
+        self.assertIn("FAILED", sysmsg)
+        self.assertIn("web fetch refused", sysmsg)
+        self.assertFalse(res["web_used"])
+
+    def test_cancel_during_web_gather_raises(self):
+        # Cancellation observed at the web-gather checkpoint specifically:
+        # the flag flips False -> True after the outer (force_conversation)
+        # checkpoint has already passed, so only the in-web branch fires.
+        calls = {"n": 0}
+
+        def flip_late():
+            calls["n"] += 1
+            return calls["n"] > 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp))
+            with patch("harness.agent.governor_for", return_value=(None, MagicMock())):
+                with self.assertRaises(ToolCancelled):
+                    agent.run_prompt("search stuff", session_id="w7", web=True,
+                                     cancel_check=flip_late)
+
+
 if __name__ == "__main__":
     unittest.main()

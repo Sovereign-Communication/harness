@@ -9,10 +9,12 @@ import http.client
 import io
 import json
 import os
+import shutil
 import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from harness import server as ui_server
@@ -906,6 +908,255 @@ class ChatEndpointTests(ServerHarness):
         h_post = DirectHandler(ui, "/api/chat", "POST", json.dumps({"prompt": "Hello"}).encode("utf-8"))
         h_post.do_POST()
         self.assertIn(b'"kind": "chat"', h_post.wfile.getvalue())
+
+
+class ChatSessionSurfaceTests(ServerHarness):
+    """The chat sidebar surface: session listing, deletion (with the traversal
+    guard), and root_dir validation -- the Antigravity UI's server side, now
+    pinned hermetically (the D12 changed-line gate failed on this code)."""
+
+    def setUp(self):
+        super().setUp()
+        self.hdir = tempfile.mkdtemp(prefix="harness_sessions_")
+        self.addCleanup(self._rm_hdir)
+        self._real = ui_server.get_default_history_dir
+        ui_server.get_default_history_dir = lambda: Path(self.hdir)
+        self.addCleanup(self._restore)
+
+    def _rm_hdir(self):
+        shutil.rmtree(self.hdir, ignore_errors=True)
+
+    def _restore(self):
+        ui_server.get_default_history_dir = self._real
+
+    @staticmethod
+    def _seed(hdir, name, mtime, prompts):
+        p = Path(hdir) / name
+        with open(p, "w", encoding="utf-8") as f:
+            for pr in prompts:
+                f.write(json.dumps({"prompt": pr, "response": "ok"}) + "\n")
+        os.utime(p, (mtime, mtime))
+
+    def test_sessions_empty_dir(self):
+        conn = self._conn()
+        try:
+            status, data = _request(conn, "GET", "/api/chat/sessions")
+            self.assertEqual(status, 200)
+            self.assertEqual(data["sessions"], [])
+        finally:
+            conn.close()
+
+    def test_sessions_newest_first_with_previews_and_empty_fallback(self):
+        now = time.time()
+        self._seed(self.hdir, "sess_a.jsonl", now - 100, ["alpha first prompt here", "second"])
+        self._seed(self.hdir, "sess_b.jsonl", now - 50, [])  # empty file
+        self._seed(self.hdir, "sess_c.jsonl", now - 9000, ["c older"])
+        conn = self._conn()
+        try:
+            status, data = _request(conn, "GET", "/api/chat/sessions")
+            self.assertEqual(status, 200)
+            ids = [s["id"] for s in data["sessions"]]
+            self.assertEqual(ids, ["sess_b", "sess_a", "sess_c"])
+            by_id = {s["id"]: s for s in data["sessions"]}
+            self.assertEqual(by_id["sess_a"]["preview"], "alpha first prompt here")
+            self.assertEqual(by_id["sess_b"]["preview"], "(empty)")
+        finally:
+            conn.close()
+
+    def test_delete_existing_missing_and_bad_prefix(self):
+        self._seed(self.hdir, "sess_gone.jsonl", time.time(), ["bye"])
+        conn = self._conn()
+        try:
+            status, data = _request(conn, "POST", "/api/chat/session/delete",
+                                    body={"session_id": "sess_gone"})
+            self.assertEqual(status, 200)
+            self.assertTrue(data["ok"])
+            self.assertFalse((Path(self.hdir) / "sess_gone.jsonl").exists())
+
+            status, data = _request(conn, "POST", "/api/chat/session/delete",
+                                    body={"session_id": "sess_gone"})
+            self.assertEqual(status, 200)
+            self.assertFalse(data["ok"])
+
+            status, data = _request(conn, "POST", "/api/chat/session/delete",
+                                    body={"session_id": "nope_123"})
+            self.assertEqual(status, 400)
+            self.assertIn("sess_", data["error"])
+        finally:
+            conn.close()
+
+    def test_delete_refuses_traversal_ids(self):
+        conn = self._conn()
+        try:
+            for sid in ("sess_../../victim", "sess_..\\evil", "sess_a/b"):
+                status, data = _request(conn, "POST", "/api/chat/session/delete",
+                                        body={"session_id": sid})
+                self.assertEqual(status, 400, sid)
+                self.assertIn("not allowed", data["error"])
+        finally:
+            conn.close()
+
+    def test_chat_rejects_nonexistent_root_dir_before_run_created(self):
+        conn = self._conn()
+        try:
+            status, data = _request(conn, "POST", "/api/runs",
+                                    body={"kind": "chat",
+                                          "args": {"prompt": "hi",
+                                                   "root_dir": "Z:/definitely/not/here"}})
+            self.assertEqual(status, 400)
+            self.assertIn("root_dir", data["error"])
+            self.assertEqual(self.httpd.ui.runs, {})
+        finally:
+            conn.close()
+
+    def test_chat_accepts_valid_root_dir_and_reaches_the_agent(self):
+        seen = {}
+
+        def fake(task_id, args, cancel_check):
+            seen["root_dir"] = args.get("root_dir")
+            seen["web"] = args.get("web")
+            return {"status": "ok", "task_id": task_id, "cost": 0.0}
+
+        with mock.patch.dict(ui_server.RUNNERS, {"chat": fake}):
+            conn = self._conn()
+            try:
+                workdir = tempfile.mkdtemp(prefix="harness_workdir_")
+                self.addCleanup(self._rm, workdir)
+                status, run = _request(conn, "POST", "/api/runs",
+                                       body={"kind": "chat",
+                                             "args": {"prompt": "hi",
+                                                      "root_dir": workdir,
+                                                      "web": True}})
+                self.assertEqual(status, 201)
+                self.assertTrue(seen["root_dir"].endswith("harness_workdir_")
+                                or Path(seen["root_dir"]).is_dir())
+                self.assertTrue(seen["web"])
+            finally:
+                conn.close()
+
+    @staticmethod
+    def _rm(p):
+        shutil.rmtree(p, ignore_errors=True)
+
+
+class SessionSurfaceUnitTests(unittest.TestCase):
+    """Direct, in-process (main-thread) pins of the same session surface the
+    HTTP tests exercise: the stdlib tracer used by the D12 changed-line gate
+    does not record worker-thread executions, so these unit tests are also
+    what keeps the audit honest."""
+
+    def setUp(self):
+        self.hdir = tempfile.mkdtemp(prefix="harness_sessunit_")
+        self.addCleanup(lambda: shutil.rmtree(self.hdir, ignore_errors=True))
+        real = ui_server.get_default_history_dir
+        ui_server.get_default_history_dir = lambda: Path(self.hdir)
+        self.addCleanup(lambda: setattr(ui_server, "get_default_history_dir", real))
+
+    def test_list_sessions_direct(self):
+        # Explicit, well-separated mtimes: coarse filesystem timestamp
+        # granularity makes two adjacent time.time() calls order-unstable.
+        now = time.time()
+        ChatSessionSurfaceTests._seed(self.hdir, "sess_a.jsonl", now - 100,
+                                      ["alpha first prompt"])
+        ChatSessionSurfaceTests._seed(self.hdir, "sess_b.jsonl", now, [])
+        # Blank line + malformed line at the head: both must be skipped and
+        # the first VALID turn still yields the preview.
+        p = Path(self.hdir) / "sess_c.jsonl"
+        p.write_text("\n{not json at all\n" + json.dumps({"prompt": "valid after junk"}) + "\n",
+                     encoding="utf-8")
+        os.utime(p, (now - 10, now - 10))
+        sessions = ui_server._list_chat_sessions()
+        self.assertEqual([s["id"] for s in sessions], ["sess_b", "sess_c", "sess_a"])
+        self.assertEqual(sessions[0]["preview"], "(empty)")
+        self.assertEqual(sessions[1]["preview"], "valid after junk")
+        self.assertEqual(sessions[2]["preview"], "alpha first prompt")
+
+    def test_list_sessions_unreadable_file_is_skipped(self):
+        # OSError branch: an unreadable (locked) file is skipped, not fatal.
+        p = Path(self.hdir) / "sess_z.jsonl"
+        p.write_text(json.dumps({"prompt": "x"}), encoding="utf-8")
+        def boom(*a, **k):
+            raise OSError("locked by another process")
+        with mock.patch("builtins.open", side_effect=boom):
+            sessions = ui_server._list_chat_sessions()
+        self.assertEqual(sessions, [])
+
+    def test_delete_direct(self):
+        p = Path(self.hdir) / "sess_gone.jsonl"
+        p.write_text(json.dumps({"prompt": "x", "response": "y"}), encoding="utf-8")
+        self.assertTrue(ui_server._delete_chat_session("sess_gone"))
+        self.assertFalse(p.exists())
+        self.assertFalse(ui_server._delete_chat_session("sess_gone"))
+        with self.assertRaises(HarnessError):
+            ui_server._delete_chat_session("nope_1")
+        for sid in ("sess_../../victim", "sess_..\\evil", "sess_a/b"):
+            with self.assertRaises(HarnessError):
+                ui_server._delete_chat_session(sid)
+
+    def test_chat_dispatch_rejects_bad_root_dir_direct(self):
+        with self.assertRaises(HarnessError) as ctx:
+            ui_server.validate_dispatch("chat", {"prompt": "hi",
+                                                 "root_dir": "Z:/definitely/not/here"})
+        self.assertIn("root_dir", str(ctx.exception))
+        workdir = tempfile.mkdtemp(prefix="harness_wd_")
+        self.addCleanup(lambda: shutil.rmtree(workdir, ignore_errors=True))
+        args = {"prompt": "hi", "root_dir": workdir}
+        ui_server.validate_dispatch("chat", args)  # valid dir passes
+        self.assertEqual(args["prompt"], "hi")
+
+    def test_sessions_endpoint_direct_handler(self):
+        # The request-handler lines execute inside server worker threads, so
+        # the HTTP tests never show up in the trace baseline; drive the
+        # handler directly (main thread) via the file's own DirectHandler.
+        ChatSessionSurfaceTests._seed(self.hdir, "sess_a.jsonl", time.time(),
+                                      ["hello from the endpoint"])
+        ui = ui_server.UiState()
+        h = self._direct(ui, "/api/chat/sessions", "GET")
+        h.do_GET()
+        self.assertIn(b'"sessions"', h.wfile.getvalue())
+        self.assertIn(b"hello from the endpoint", h.wfile.getvalue())
+
+    def test_session_delete_endpoint_direct_handler(self):
+        p = Path(self.hdir) / "sess_del.jsonl"
+        p.write_text(json.dumps({"prompt": "bye"}), encoding="utf-8")
+        ui = ui_server.UiState()
+        body = json.dumps({"session_id": "sess_del"}).encode("utf-8")
+        h = self._direct(ui, "/api/chat/session/delete", "POST", body)
+        h.do_POST()
+        out = h.wfile.getvalue()
+        self.assertIn(b'"ok": true', out)
+        self.assertFalse(p.exists())
+
+        # The 400 path: invalid id -> _api_session_delete -> _error
+        body_bad = json.dumps({"session_id": "nope_9"}).encode("utf-8")
+        h2 = self._direct(ui, "/api/chat/session/delete", "POST", body_bad)
+        h2.do_POST()
+        self.assertIn(b"must start with 'sess_'", h2.wfile.getvalue())
+
+    @staticmethod
+    def _direct(ui, path, method, body=None):
+        # Same shape as the module-bottom DirectHandler (defined inside that
+        # test method, so it is not importable from here).
+        body = body or b""
+        class DirectHandler(ui_server.UiRequestHandler):
+            def __init__(self, ui, path, method="GET", body=b""):
+                self.server = mock.MagicMock(ui=ui)
+                self.path = path
+                self.command = method
+                self.headers = {"Host": "127.0.0.1", "Content-Length": str(len(body))}
+                self.rfile = io.BytesIO(body)
+                self.wfile = io.BytesIO()
+
+            def send_response(self, code, message=None):
+                pass
+
+            def send_header(self, keyword, value):
+                pass
+
+            def end_headers(self):
+                pass
+
+        return DirectHandler(ui, path, method, body)
 
 
 if __name__ == "__main__":

@@ -17,12 +17,28 @@ from .events import emit
 from .executor import ConcurrentExecutor
 from .results import SUCCESS_STATUSES
 from .session import apply_session, governor_for, ledger_for
+from .web import DEFAULT_FETCH_HOSTS, extract_query, fetch_url, find_urls, search_web
 
 DEFAULT_CHAT_SYSTEM_PROMPT = (
     "You are Sovereign Harness, an autonomous, cost-bounded software engineering AI. "
     "Be concise, clear, and direct. When answering technical questions, explain precisely "
-    "and provide code snippets when helpful. Focus on correctness, zero bloat, and safety."
+    "and provide code snippets when helpful. Focus on correctness, zero bloat, and safety. "
+    "You have NO internet access: you cannot browse, search, or open links. Never claim "
+    "you searched, checked a source, or verified current information -- say plainly when "
+    "you cannot know something. URL-only prompts will be answered from training knowledge "
+    "unless web tools are enabled for the run."
 )
+
+# Appended to the system prompt when a run did NOT opt into web tools, so the
+# model cannot roleplay a lookup it never performed (the Riemann failure mode).
+_NO_WEB_DISCLOSURE = (
+    "[Capability note] This run has NO web tools: no search and no fetch are "
+    "attached. If the user asks you to search or verify online, say you cannot "
+    "in this run and answer from training knowledge, labeled as such."
+)
+
+_MAX_WEB_SOURCES = 3
+_MAX_WEB_CONTEXT_CHARS = 6000
 
 MUTATION_KEYWORDS = frozenset({
     "fix", "implement", "add", "refactor", "update", "change", "write",
@@ -168,6 +184,7 @@ class AutonomousAgent:
         session_id: Optional[str] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
         force_conversation: bool = False,
+        web: bool = False,
     ) -> Dict[str, Any]:
         # Process a natural language prompt from intent to verified conclusion.
         # When force_conversation=True (e.g. UI chat box), skip the intent
@@ -183,7 +200,7 @@ class AutonomousAgent:
             emit("intent_classified", intent="conversation", prompt=prompt)
             if cancel_check and cancel_check():
                 raise ToolCancelled("Prompt execution was cancelled by user")
-            return self._handle_conversation(prompt, sid, cancel_check)
+            return self._handle_conversation(prompt, sid, cancel_check, web=web)
 
         intent = classify_prompt_intent(prompt)
         emit("intent_classified", intent=intent, prompt=prompt)
@@ -192,23 +209,70 @@ class AutonomousAgent:
             raise ToolCancelled("Prompt execution was cancelled by user")
 
         if intent == "conversation":
-            return self._handle_conversation(prompt, sid, cancel_check)
+            return self._handle_conversation(prompt, sid, cancel_check, web=web)
         elif intent == "audit":
             return self._handle_audit(prompt, sid, cancel_check)
         else:
             return self._handle_edit(prompt, sid, auto_apply, cancel_check)
+
+    def _gather_web_context(self, prompt: str) -> List[Dict[str, Any]]:
+        # Evidence for one conversation turn: allowlist fetches for any URL in
+        # the prompt, one search otherwise. Every failure is recorded, never
+        # hidden -- the model sees exactly what did and did not come back.
+        sources: List[Dict[str, Any]] = []
+        urls = find_urls(prompt)[:_MAX_WEB_SOURCES]
+        if urls:
+            for u in urls:
+                try:
+                    page = fetch_url(u, allowed_hosts=DEFAULT_FETCH_HOSTS)
+                    sources.append({"kind": "fetch", "ok": True, "url": page["url"],
+                                    "title": page["title"], "text": page["text"]})
+                except HarnessError as e:
+                    sources.append({"kind": "fetch", "ok": False, "url": u,
+                                    "note": str(e)})
+            return sources
+        try:
+            results = search_web(extract_query(prompt))
+            for r in results[:_MAX_WEB_SOURCES]:
+                sources.append({"kind": "search", "ok": True, "url": r["url"],
+                                "title": r["title"], "text": r["snippet"]})
+        except HarnessError as e:
+            sources.append({"kind": "search", "ok": False, "note": str(e)})
+        return sources
 
     def _handle_conversation(
         self,
         prompt: str,
         session_id: str,
         cancel_check: Optional[Callable[[], bool]] = None,
+        web: bool = False,
     ) -> Dict[str, Any]:
         # Handle informational or technical questions with conversational routing
         model = getattr(self.settings, "tier1_model", None) or self.settings.judge or "inclusionai/ling-3.0-flash-fin:free"
         api_key, gov = governor_for(self.settings)
 
-        messages = [{"role": "system", "content": DEFAULT_CHAT_SYSTEM_PROMPT}]
+        system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
+        web_sources: List[Dict[str, Any]] = []
+        if web:
+            if cancel_check and cancel_check():
+                raise ToolCancelled("Prompt execution was cancelled by user")
+            try:
+                web_sources = self._gather_web_context(prompt)
+            except Exception as e:  # web tools must never kill the chat lane
+                web_sources = [{"kind": "web", "ok": False, "note": f"web tools error: {e}"}]
+            context_lines = []
+            for s in web_sources:
+                if s.get("ok"):
+                    body = (s.get("text") or "")[:_MAX_WEB_CONTEXT_CHARS]
+                    context_lines.append(f"SOURCE ({s['kind']}): {s.get('title') or ''} {s['url']}\n{body}")
+                else:
+                    context_lines.append(f"SOURCE ({s['kind']}) FAILED: {s.get('url') or ''} {s.get('note')}")
+            if context_lines:
+                system_prompt += "\n\n[Web tool results for this turn -- cite only these; do not invent others]\n" + "\n\n".join(context_lines)
+        else:
+            system_prompt += "\n\n" + _NO_WEB_DISCLOSURE
+
+        messages = [{"role": "system", "content": system_prompt}]
         past_turns = load_chat_history(session_id, self.history_dir)
         for turn in past_turns[-10:]:
             p_text = turn.get("prompt")
@@ -239,6 +303,12 @@ class AutonomousAgent:
             "response": response_text,
             "model": model,
             "cost": round(cost, 6),
+            # Honest provenance: did this turn actually retrieve web evidence?
+            "web_used": bool(web_sources and any(s.get("ok") for s in web_sources)),
+            "web_sources": [
+                {k: s[k] for k in ("kind", "ok", "url") if k in s}
+                for s in web_sources
+            ],
         }
 
         save_chat_turn(session_id, result, self.history_dir)

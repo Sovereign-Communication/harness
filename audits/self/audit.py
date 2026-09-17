@@ -1059,8 +1059,15 @@ def sd_coverage_changed():
                     and isinstance(node.value.value, str)):
                 continue  # docstrings never emit trace events
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                                  ast.ClassDef)):
-                stmts.add(node.body[0].lineno)
+                                 ast.ClassDef)):
+                # body[0] of a def/class whose first statement is a
+                # docstring does NOT emit a trace event (a docstring is a
+                # compile-time constant); counting it would fail every
+                # newly added def-with-docstring forever.
+                if not (node.body and isinstance(node.body[0], ast.Expr)
+                        and isinstance(node.body[0].value, ast.Constant)
+                        and isinstance(node.body[0].value.value, str)):
+                    stmts.add(node.body[0].lineno)
             else:
                 stmts.add(node.lineno)
         done = set(base.get(rel, []))

@@ -28,10 +28,11 @@ import time
 import uuid
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 from . import events as _events
-from .agent import AutonomousAgent, load_chat_history
+from .agent import AutonomousAgent, load_chat_history, get_default_history_dir
 from .batch import BatchOptions
 from .config import HARD_TASK_MAX_COST, HARD_MAX_COST, load_settings
 from .errors import HarnessError, ToolCancelled
@@ -119,6 +120,10 @@ def validate_dispatch(kind, args):
         _opt_str(args, "prompt", required=True)
         args["auto_apply"] = _opt_bool(args, "auto_apply") if "auto_apply" in args else True
         _opt_str(args, "session_id")
+        rd = _opt_str(args, "root_dir")
+        if rd and not os.path.isdir(rd):
+            raise HarnessError(f"root_dir does not exist or is not a directory: {rd}")
+        _opt_bool(args, "web")
     elif kind == "apply":
         f = _opt_str(args, "file", required=True)
         if not os.path.isfile(f):
@@ -256,15 +261,75 @@ def run_bench_task(task_id, args, cancel_check):
     return run_bench(engine, tasks)
 
 
+# Web access for chat is opt-in per run ("web": true) and host-restricted.
+# The allowlist lives in harness/web.py (ONE owner); the boundary consumes it.
+
+
+def _list_chat_sessions():
+    """Return all persisted sessions sorted newest-first with a preview title.
+
+    Each entry: {"id": str, "preview": str, "updated_at": float}
+    The preview is the first prompt from the session file (truncated to 60 chars).
+    """
+    hdir = get_default_history_dir()
+    sessions = []
+    for p in hdir.glob("sess_*.jsonl"):
+        try:
+            mtime = p.stat().st_mtime
+            preview = ""
+            with open(p, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        turn = json.loads(line)
+                        preview = (turn.get("prompt") or "")[:60]
+                        break
+                    except json.JSONDecodeError:
+                        continue
+            sessions.append({
+                "id": p.stem,
+                "preview": preview or "(empty)",
+                "updated_at": mtime,
+            })
+        except OSError:
+            continue
+    sessions.sort(key=lambda s: s["updated_at"], reverse=True)
+    return sessions
+
+
+def _delete_chat_session(session_id: str) -> bool:
+    """Delete a session JSONL file. Returns True if deleted, False if not found.
+
+    Only deletes files matching the sess_* pattern. The id must not contain
+    path separators or '..' (defense-in-depth: on some platforms Path
+    collapses traversal segments, but the boundary refuses them outright
+    instead of relying on resolution semantics)."""
+    if not session_id or not session_id.startswith("sess_"):
+        raise HarnessError("invalid session_id: must start with 'sess_'")
+    if ("/" in session_id or "\\" in session_id or ".." in session_id
+            or os.sep in session_id):
+        raise HarnessError("invalid session_id: path separators and '..' are not allowed")
+    hdir = get_default_history_dir()
+    target = hdir / f"{session_id}.jsonl"
+    if not target.exists():
+        return False
+    target.unlink()
+    return True
+
+
 def run_chat_task(task_id, args, cancel_check):
     # Autonomous chat runner driving prompt to conclusion with zero UI clutter.
     # force_conversation=True bypasses the intent classifier: every UI chat
     # prompt is conversational by definition and must load session history.
     settings = load_settings()
-    agent = AutonomousAgent(settings=settings)
+    root_dir = Path(args["root_dir"]) if args.get("root_dir") else None
+    agent = AutonomousAgent(settings=settings, root_dir=root_dir)
     return agent.run_prompt(
         prompt=args["prompt"],
         auto_apply=args.get("auto_apply", True),
+        web=bool(args.get("web", False)),
         session_id=args.get("session_id"),
         cancel_check=cancel_check,
         force_conversation=True,
@@ -490,6 +555,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/chat/history":
                 sid = (q.get("session_id") or ["default"])[0]
                 return self._send_json({"session_id": sid, "history": load_chat_history(sid)})
+            if path == "/api/chat/sessions":
+                return self._send_json({"sessions": _list_chat_sessions()})
             return self._error(404, f"no such endpoint: {path}")
         except HarnessError as e:
             return self._error(400, str(e))
@@ -510,6 +577,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/chat":
                 # Single chat box entry point: text in, text out
                 return self._api_dispatch({"kind": "chat", "args": body})
+            if parsed.path == "/api/chat/session/delete":
+                return self._api_session_delete(body)
             if parsed.path == "/api/runs":
                 return self._api_dispatch(body)
             m = RUN_SUB_RE.match(parsed.path)
@@ -612,6 +681,14 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         args = validate_dispatch(kind, body.get("args") or {})
         record = self.ui.create_run(kind, args)
         return self._send_json(self.ui.run_public(record), code=201)
+
+    def _api_session_delete(self, body):
+        sid = body.get("session_id", "")
+        try:
+            deleted = _delete_chat_session(sid)
+        except HarnessError as e:
+            return self._error(400, str(e))
+        return self._send_json({"ok": deleted, "session_id": sid})
 
     def _api_spend(self):
         def build():
