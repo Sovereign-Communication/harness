@@ -189,3 +189,19 @@ and commit the corpus change and manifest as one reviewable diff:
 Never hand-edit corpus_manifest.json. round2_scores.json is
 deliberately unpinned (rewritten by every audit run -- restore it from
 git after every local run); _runs/ is untracked scratch.
+
+## Coverage baseline
+
+The battery's reach is measured, not just counted. D12 compares harness
+lines changed since the coverage baseline's commit against
+audits/self/coverage_baseline.json (the line numbers the full battery
+executed under stdlib trace): changed executable lines that the traced
+suite never ran fail the audit below a 95% bar. Regenerate the baseline
+with the traced battery run and commit it with the code change it
+reflects:
+
+  python audits/self/refresh_coverage_baseline.py
+
+A traced run costs roughly a minute; do it when landing substantive
+harness changes, not per commit. Missing data is a visible SKIP, never
+a silent pass.

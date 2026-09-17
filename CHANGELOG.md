@@ -26,6 +26,14 @@ break APIs between minor versions).
   the planted shape -- so weakening the summary parse or the signature
   scan fails the audit deterministically instead of silently restoring
   the GC-timing blind spot PR #18 closed.
+- Coverage is now measured, not just counted: a stdlib-trace baseline
+  (`audits/self/coverage_baseline.json`, refreshed via
+  `refresh_coverage_baseline.py`) records every line the battery
+  executes, and D12 fails the audit when changed harness lines below a
+  95% bar were never executed by the traced suite (fail-open as a
+  visible SKIP when data is unavailable). Baseline at merge: 77% of
+  executable lines overall -- honest, unmoving legacy gaps included
+  (server.py 26%, mcp.py 62%); the 95% bar binds changed lines only.
 
 ## [0.3.2] — 2026-09-16
 
