@@ -129,6 +129,10 @@ python -W error::ResourceWarning -m unittest discover -s tests
 
 CI runs both on Python 3.9 / 3.11 / 3.13. A failing or skipped check blocks
 merge.
+The battery also runs locally on every CI interpreter: uv-managed CPython
+3.9 / 3.11 / 3.13 (via `uv python install X.Y`; find the interpreter with
+`uv python find X.Y`) plus the local default -- so a release battery
+statement covers the CI matrix by direct execution.
 
 ## Where things live
 
@@ -207,3 +211,29 @@ reflects:
 A traced run costs roughly a minute; do it when landing substantive
 harness changes, not per commit. Missing data is a visible SKIP, never
 a silent pass.
+
+## Release driver
+
+audits/self/release.py mechanizes docs/releasing.md's mechanical steps in
+order: state gate (clean tree, HEAD == origin/main, one non-polled CI
+look -- a queued run exits 3 with "still queued, re-run me"), the release
+edits (CHANGELOG flatten with a fresh "Nothing yet." [Unreleased], version
+bump in both single-source sites, editable reinstall with a metadata
+check), the release battery (ruff; compileall + the full unittest battery
+under -W error::ResourceWarning with the R13 leak-signature scan, per
+interpreter -- local default plus the uv-managed CI set; then the
+self-audit with a hard BAR MET gate and the round2_scores.json restore
+verified), and the publish mechanics (build, twine, outside-repo venv
+smoke with the direct site-packages/harness/ui probe).
+
+THE SPLIT: the script automates mechanics and gates each step on the
+previous one; a human still decides WHEN to release, reviews and merges
+the PR, and runs the tag/publish steps -- the script prints them, it does
+not decide them. The driver calls the repo's own checks (including the
+self-audit BAR MET gate); it never bypasses or reimplements an audit
+check. Rehearse without mutating anything:
+
+  python audits/self/release.py --dry-run
+
+The S6 pin lives in tests/test_release_driver.py (interpreter coverage,
+audit-invocation shape, and leak signatures identical to R13's owner).

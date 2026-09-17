@@ -40,6 +40,15 @@ break APIs between minor versions).
 
 ### Added
 
+- Scripted release driver (`audits/self/release.py`): mechanizes the
+  docs/releasing.md mechanical steps in order -- state gate, CHANGELOG
+  flatten + version bumps, the full release battery per interpreter
+  (with the self-audit BAR MET gate and leak scan), and the
+  build/twine/smoke mechanics -- with `--dry-run` rehearsal; humans
+  keep the timing, PR review, merge, tag, and publish decisions.
+- The release battery now covers the CI matrix by direct execution:
+  the full suite runs locally under uv-managed CPython 3.9 / 3.11 /
+  3.13 plus the local default (729 tests each, zero leak signatures).
 - Gate-waste-aware apply-lead selection: the ledger counts rounds-exhausted
   apply runs per leading model (`gate_wasted_runs` in `participation_report`
   calibration) and pool ordering folds it into the existing demotion strike,
