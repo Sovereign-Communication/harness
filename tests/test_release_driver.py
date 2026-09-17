@@ -48,8 +48,8 @@ class ReleaseDriverContractTests(unittest.TestCase):
         self.assertIn("AUDIT", src)
         self.assertEqual(release.LEAK_SIGNATURES,
                          ("ResourceWarning", "unclosed file"))
-        self.assertIn('if "bar met" not in verdict.lower():', src,
-                      "the BAR MET hard gate must stay")
+        self.assertIn('any(v < 9.5 for v in dims.values())', src,
+                      "the BAR MET hard gate must stay (per-dimension >= 9.5)")
 
     def test_leak_signatures_match_r13(self):
         import sys
