@@ -6,6 +6,7 @@ optional token), the static UI, dispatch validation, the run lifecycle with
 cooperative cancel, and the event-stream contract.
 """
 import http.client
+import io
 import json
 import os
 import tempfile
@@ -818,6 +819,93 @@ class DesktopFallbackTests(unittest.TestCase):
             mode = ui_mod._open_window("http://127.0.0.1:1/", "tok")
         self.assertEqual(mode, "browser")
         self.assertEqual(opened, ["http://127.0.0.1:1/#tok"])
+
+
+class ChatEndpointTests(ServerHarness):
+    def test_chat_post_and_history(self):
+        fake_chat_result = {
+            "status": "ok",
+            "intent": "conversation",
+            "prompt": "Hello",
+            "response": "Hello world!",
+            "cost": 0.0001,
+        }
+        with mock.patch("harness.server.AutonomousAgent") as mock_agent_cls:
+            mock_inst = mock_agent_cls.return_value
+            mock_inst.run_prompt.return_value = fake_chat_result
+
+            conn = self._conn()
+            try:
+                # 1. POST /api/chat
+                status, run = _request(conn, "POST", "/api/chat",
+                                       body={"prompt": "Hello", "session_id": "test-sid"})
+                self.assertEqual(status, 201)
+                self.assertEqual(run["kind"], "chat")
+
+                # Wait for settlement
+                for _ in range(50):
+                    _, full = _request(conn, "GET", f"/api/runs/{run['id']}/result")
+                    if full["status"] != "running":
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(full["status"], "ok")
+                self.assertEqual(full["result"]["response"], "Hello world!")
+
+                # 2. GET /api/chat/history
+                with mock.patch("harness.server.load_chat_history", return_value=[fake_chat_result]):
+                    status, hist_data = _request(conn, "GET", "/api/chat/history?session_id=test-sid")
+                    self.assertEqual(status, 200)
+                    self.assertEqual(hist_data["session_id"], "test-sid")
+                    self.assertEqual(len(hist_data["history"]), 1)
+            finally:
+                conn.close()
+
+    def test_chat_server_direct_synchronous_execution(self):
+        # Directly test validate_dispatch, run_chat_task, and handler endpoints in the main thread
+        # for stdlib trace coverage.
+        args1 = ui_server.validate_dispatch("chat", {"prompt": "Hello"})
+        self.assertEqual(args1["prompt"], "Hello")
+        self.assertTrue(args1["auto_apply"])
+
+        args2 = ui_server.validate_dispatch("chat", {"prompt": "Fix", "auto_apply": False, "session_id": "s123"})
+        self.assertEqual(args2["prompt"], "Fix")
+        self.assertFalse(args2["auto_apply"])
+        self.assertEqual(args2["session_id"], "s123")
+
+        # run_chat_task
+        with mock.patch("harness.server.AutonomousAgent") as mock_cls:
+            mock_cls.return_value.run_prompt.return_value = {"status": "ok"}
+            res = ui_server.run_chat_task("task-1", {"prompt": "Hello"}, lambda: False)
+            self.assertEqual(res, {"status": "ok"})
+
+        # Handler synchronous dispatch for /api/chat/history and /api/chat
+        class DirectHandler(ui_server.UiRequestHandler):
+            def __init__(self, ui, path, method="GET", body=b""):
+                self.server = mock.MagicMock(ui=ui)
+                self.path = path
+                self.command = method
+                self.headers = {"Host": "127.0.0.1", "Content-Length": str(len(body))}
+                self.rfile = io.BytesIO(body)
+                self.wfile = io.BytesIO()
+
+            def send_response(self, code, message=None):
+                pass
+
+            def send_header(self, keyword, value):
+                pass
+
+            def end_headers(self):
+                pass
+
+        ui = ui_server.UiState()
+        with mock.patch("harness.server.load_chat_history", return_value=[]):
+            h_get = DirectHandler(ui, "/api/chat/history?session_id=s1", "GET")
+            h_get.do_GET()
+            self.assertIn(b'"history"', h_get.wfile.getvalue())
+
+        h_post = DirectHandler(ui, "/api/chat", "POST", json.dumps({"prompt": "Hello"}).encode("utf-8"))
+        h_post.do_POST()
+        self.assertIn(b'"kind": "chat"', h_post.wfile.getvalue())
 
 
 if __name__ == "__main__":

@@ -8,168 +8,79 @@
 </head>
 <body>
 <header>
-  <div class="brand">⌘ harness <span class="sub">cost-bounded multi-model verification</span></div>
-  <div class="chips" id="header-chips"></div>
+  <div class="brand">
+    <span class="logo">⌘</span> harness
+    <span class="tagline">autonomous software engineering</span>
+  </div>
+  <div class="header-controls">
+    <div class="spend-badge" id="spend-meter" title="Current session spend / ceiling">
+      <span class="dot"></span>
+      <span id="spend-val">$0.0000</span>
+      <span class="dim" id="spend-limit">/ $0.05</span>
+    </div>
+    <button type="button" id="btn-mode-toggle" class="mode-badge" title="Click to toggle between autonomous execution and review-first preview">
+      <span id="mode-icon">⚡</span> <span id="mode-text">Auto</span>
+    </button>
+    <button type="button" id="btn-new-chat" class="btn-ghost" title="Start a fresh chat session">+ New</button>
+  </div>
 </header>
-<nav id="nav">
-  <a data-view="dashboard" class="active">Dashboard</a>
-  <a data-view="dispatch">Dispatch</a>
-  <a data-view="runs">Runs</a>
-  <a data-view="ledger">Ledger</a>
-  <a data-view="models">Models</a>
-  <a data-view="rankings">Rankings</a>
-  <a data-view="trust">Trust</a>
-  <a data-view="capabilities">Capabilities</a>
-  <a data-view="settings">Settings</a>
-</nav>
 
-<main>
-  <!-- ======================= DASHBOARD ======================= -->
-  <section id="view-dashboard" class="view active">
-    <div class="cards">
-      <div class="card"><h3>Session spend</h3><div class="big" id="d-spent">–</div>
-        <div class="dim" id="d-ceiling"></div><div class="bar"><div id="d-spend-bar"></div></div></div>
-      <div class="card"><h3>Key</h3><div class="big" id="d-key-limit">–</div>
-        <div class="dim" id="d-key-remaining"></div></div>
-      <div class="card"><h3>Chain integrity</h3><div class="big" id="d-chain">–</div>
-        <div class="dim" id="d-chain-detail"></div></div>
-      <div class="card"><h3>Runs</h3><div class="big" id="d-runs">–</div>
-        <div class="dim" id="d-runs-detail"></div></div>
+<main id="chat-container">
+  <!-- Welcome Hero (shown when no messages exist) -->
+  <div id="welcome-hero" class="hero">
+    <div class="hero-icon">⌘</div>
+    <h1>What would you like to build or solve?</h1>
+    <p class="hero-sub">Describe a task, fix, or inquiry. Sovereign Harness automatically plans, condenses context, routes model tiers, and verifies all changes.</p>
+    <div class="starters">
+      <button class="starter-chip" data-prompt="Explain the architecture of the sliding-scale model router">
+        <span class="starter-title">Explain router architecture</span>
+        <span class="starter-desc">Analyze sliding_scale.py and tier routing</span>
+      </button>
+      <button class="starter-chip" data-prompt="Check cryptographic ledger integrity and audit status">
+        <span class="starter-title">Verify ledger chain</span>
+        <span class="starter-desc">Cryptographic audit of all records</span>
+      </button>
+      <button class="starter-chip" data-prompt="Review harness/executor.py and add docstrings to helper functions">
+        <span class="starter-title">Document executor helpers</span>
+        <span class="starter-desc">Edit, verify with tests, and commit</span>
+      </button>
     </div>
-    <h2>Live activity</h2>
-    <div id="live-events" class="eventlog" aria-live="polite"></div>
-  </section>
+  </div>
 
-  <!-- ======================= DISPATCH ======================= -->
-  <section id="view-dispatch" class="view">
-    <div class="tabs">
-      <button data-kind="apply" class="tab active">Apply</button>
-      <button data-kind="verify" class="tab">Verify</button>
-      <button data-kind="continue" class="tab">Continue</button>
-      <button data-kind="bench" class="tab">Bench</button>
-    </div>
+  <!-- Conversational Feed -->
+  <div id="chat-feed" class="feed"></div>
 
-    <form id="dispatch-form" class="panel">
-      <!-- apply / continue -->
-      <label id="f-file-label">Target file
-        <input name="file" placeholder="core/src/store/outbox.rs">
-      </label>
-      <label id="f-state-label" hidden>Continuation state file
-        <input name="state" placeholder="state.json">
-      </label>
-      <label id="f-manifest-label" hidden>Bench manifest (dir or JSON)
-        <input name="manifest" placeholder="bench/tasks">
-      </label>
-      <label id="f-instruction-label">Instruction
-        <textarea name="instruction" rows="3"
-          placeholder="Verify flush_on_connect() persists all peers"></textarea>
-      </label>
-      <label id="f-verify-label">Verification gate (required for gated apply)
-        <input name="verify" placeholder="python -m unittest tests.test_x">
-      </label>
-      <label id="f-prompt-label" hidden>Prompt (or prompt file below)
-        <textarea name="prompt" rows="3"></textarea>
-      </label>
-      <label id="f-promptfile-label" hidden>Prompt file
-        <input name="prompt_file">
-      </label>
-      <div id="f-claims-label" class="dim" hidden>Structured-claims verify: the panel reviews the source file against each claim in the manifest.</div>
-      <label id="f-claims-row" hidden>Claims file
-        <input name="claims_file">
-      </label>
-      <label id="f-source-row" hidden>Source file (verbatim code the panel reviews)
-        <input name="source_file">
-      </label>
-      <label id="f-defs-row" hidden>Definitions file (optional source index)
-        <input name="definitions_file">
-      </label>
-      <div id="f-ctx-row" class="dim" hidden>Claim context is read from the manifest unless you pass it on the CLI lane.</div>
-      <div class="row" id="f-meta-row">
-        <label>Max rounds <input name="max_rounds" type="number" min="1" max="8" value="3"></label>
-        <label>Task max cost ($) <input name="task_max_cost" type="number" step="0.005" min="0" max="0.25" placeholder="0.05"></label>
-        <label>Backend
-          <select name="backend"><option>harness</option><option>diff</option><option>morph</option></select>
-        </label>
-      </div>
-      <div class="row checks">
-        <label><input type="checkbox" name="verify_only"> Verify-only preview (no write, no gate)</label>
-        <label><input type="checkbox" name="require_consent"> Require model consent</label>
-      </div>
-      <div class="confirm-box" id="confirm-box" hidden>
-        <strong>This will dispatch real work.</strong>
-        <div id="confirm-summary" class="mono"></div>
-        <div class="dim">Consent, spend preflight and the verification gate still apply —
-        this confirmation is in addition to them, never instead.</div>
-      </div>
-      <div class="row">
-        <button type="button" id="btn-review">Review dispatch</button>
-        <button type="submit" id="btn-dispatch" class="primary" disabled>Dispatch</button>
-      </div>
-    </form>
-    <div id="dispatch-result" class="panel mono" hidden></div>
-  </section>
-
-  <!-- ======================= RUNS ======================= -->
-  <section id="view-runs" class="view">
-    <div id="runs-list"></div>
-  </section>
-
-  <!-- ======================= LEDGER ======================= -->
-  <section id="view-ledger" class="view">
-    <div class="row">
-      <button id="btn-ledger-verify">Verify chain</button>
-      <span id="ledger-verify-out" class="mono"></span>
-    </div>
-    <h2>Defer stats</h2>
-    <div id="ledger-defer"></div>
-    <h2>Participation & calibration</h2>
-    <div id="ledger-report"></div>
-    <h2>Tail</h2>
-    <div id="ledger-tail"></div>
-  </section>
-
-  <!-- ======================= MODELS ======================= -->
-  <section id="view-models" class="view">
-    <button id="btn-models-refresh">List live free models</button>
-    <div id="models-out"></div>
-  </section>
-
-  <!-- ======================= RANKINGS ======================= -->
-  <section id="view-rankings" class="view">
-    <p class="dim">Read-only mirror of the advisory rankings report
-      (<code>harness rankings</code> / the weekly workflow artifact). The UI
-      never generates, probes, or refreshes — pools change only when an
-      operator edits configuration.</p>
-    <div id="rankings-out"></div>
-  </section>
-
-  <!-- ======================= CAPABILITIES ======================= -->
-  <section id="view-trust" class="view">
-    <div class="row" style="justify-content:space-between">
-      <h2>TRUST</h2>
-      <div><select id="trust-caller" style="max-width:220px">
-          <option value="">(all callers)</option></select>
-        <button id="btn-trust-refresh">Refresh</button></div>
-    </div>
-    <div id="trust-host" class="dim" style="margin:6px 0"></div>
-    <div id="trust-out"></div>
-  </section>
-  <section id="view-capabilities" class="view">
-    <button id="btn-capabilities">Load capability & reliability table</button>
-    <div id="capabilities-out"></div>
-  </section>
-
-  <!-- ======================= SETTINGS ======================= -->
-  <section id="view-settings" class="view">
-    <p class="dim">Read-only view (v1). Edit <code>~/.config/harness/config.json</code> or set
-      <code>HARNESS_*</code> env vars; secrets show as presence only.</p>
-    <pre id="settings-out" class="mono"></pre>
-    <h2>SERVER STATUS</h2>
-    <div id="status-out" class="mono dim">(not loaded)</div>
-  </section>
+  <!-- Hidden elements for backward contract compatibility -->
+  <div id="view-dashboard" hidden></div>
+  <div id="view-dispatch" hidden></div>
 </main>
 
-<footer><span id="footer-note" class="dim"></span></footer>
+<!-- Fixed Input Bar -->
+<footer id="input-footer">
+  <form id="chat-form" class="input-form">
+    <div class="input-wrapper">
+      <textarea
+        id="prompt-input"
+        rows="1"
+        placeholder="Ask a question or describe a task to plan, code, and verify... (Enter to send, Shift+Enter for newline)"
+        autofocus
+      ></textarea>
+      <div class="input-actions">
+        <button type="submit" id="btn-send" class="btn-action send" title="Send prompt">
+          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+            <path d="M22 2L11 13M22 2L15 22L11 13L2 9L22 2Z" />
+          </svg>
+        </button>
+        <button type="button" id="btn-stop" class="btn-action stop" title="Stop execution" hidden>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+            <rect x="5" y="5" width="14" height="14" rx="2" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </form>
+</footer>
+
 <script src="/app.js"></script>
 </body>
 </html>

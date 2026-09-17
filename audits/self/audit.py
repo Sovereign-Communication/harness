@@ -980,7 +980,7 @@ def sd_corpus_integrity():
     pinned = json.loads(mf.read_text(encoding="utf-8"))["files"]
     tracked = subprocess.run(
         ["git", "ls-files", "audits/self"], cwd=str(ROOT),
-        capture_output=True, text=True).stdout.split()
+        capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split()
     corpus = {f for f in tracked
               if f.startswith("audits/self/dogfood/")
               or f in {"audits/self/audit_report.md",
@@ -1023,13 +1023,13 @@ def sd_coverage_changed():
         return 1.0, "SKIP (fail-open): baseline lacks a commit reference"
     d = subprocess.run(
         ["git", "diff", "--unified=0", ref, "--", "harness/"],
-        cwd=str(ROOT), capture_output=True, text=True)
+        cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8", errors="replace")
     if d.returncode != 0:
         return 1.0, "SKIP (fail-open): git diff against baseline unavailable"
     added = {}
     rel = None
     new_ln = 0
-    for ln in d.stdout.splitlines():
+    for ln in (d.stdout or "").splitlines():
         if ln.startswith("+++ b/"):
             rel = ln[6:]
         elif ln.startswith("@@") and ln.count("@@") >= 2:

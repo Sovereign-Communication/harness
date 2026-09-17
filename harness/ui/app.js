@@ -1,15 +1,15 @@
-/* harness UI: no framework, no build step. Talks only to /api/*. */
+/* Sovereign Harness: Clean Single-Chat Application Controller */
 "use strict";
 
-// ---- auth token (desktop shell passes it via the URL fragment) ----------
 const TOKEN = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
 
+// API Fetch Helper
 async function api(path, opts = {}) {
-  const headers = Object.assign({"Content-Type": "application/json"}, opts.headers || {});
+  const headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
   if (TOKEN) headers["X-Harness-Auth"] = TOKEN;
-  const res = await fetch(path, Object.assign({}, opts, {headers}));
+  const res = await fetch(path, Object.assign({}, opts, { headers }));
   let body = null;
-  try { body = await res.json(); } catch (_e) { /* non-JSON error page */ }
+  try { body = await res.json(); } catch (_e) {}
   if (!res.ok) {
     const msg = (body && body.error) ? body.error : `${res.status} ${res.statusText}`;
     throw new Error(msg);
@@ -19,420 +19,397 @@ async function api(path, opts = {}) {
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
-const fmtCost = (v) => (typeof v === "number") ? `$${v.toFixed(6)}` : String(v ?? "–");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
   (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-const statusClass = (s) => "s-" + String(s || "").replace(/[^a-z_]/g, "");
+const fmtCost = (v) => (typeof v === "number") ? `$${v.toFixed(4)}` : "$0.0000";
 
-// ---- view routing --------------------------------------------------------
-$$("nav a").forEach((a) => a.addEventListener("click", () => {
-  $$("nav a").forEach((x) => x.classList.remove("active"));
-  a.classList.add("active");
-  $$(".view").forEach((v) => v.classList.remove("active"));
-  $(`#view-${a.dataset.view}`).classList.add("active");
-  const refresh = VIEW_REFRESH[a.dataset.view];
-  if (refresh) refresh();
-}));
+// Client State
+let sessionId = localStorage.getItem("harness_session_id") || "sess_" + Math.random().toString(36).slice(2, 10);
+localStorage.setItem("harness_session_id", sessionId);
 
-// ---- live events ---------------------------------------------------------
-let lastSeq = 0;
-const EVENT_DETAIL = {
-  preflight: (e) => `worst-case ${fmtCost(e.worst_case)} vs ceiling ${fmtCost(e.ceiling)}`,
-  attempt_start: (e) => `${e.model} round ${e.round}`,
-  panel_call: (e) => `${e.model}`,
-  panel_vote: (e) => `${e.model} ${fmtCost(e.cost)} ${e.truncated ? "(truncated)" : ""}`,
-  judge_call: (e) => `${e.model}`,
-  judge_result: (e) => `${e.model}: ${e.status}`,
-  rotation: (e) => `${e.model || ""} ${e.reason}${e.error ? " — " + String(e.error).slice(0, 80) : ""}`,
-  readiness: (e) => `${e.model}: ${e.decision}`,
-  consent_result: (e) => `${e.decision}${e.fail_closed ? " (fail-closed)" : ""}`,
-  gate_start: (e) => `${e.command || ""}`,
-  gate_end: (e) => e.passed ? "PASS" : `FAIL rc=${e.rc}`,
-  escalation_rung: (e) => `rung ${e.rung ?? ""} ${e.model || ""}`,
-  spend_check: (e) => e.lane === "key"
-    ? `key limit ${fmtCost(e.limit)} remaining ${fmtCost(e.remaining)}`
-    : `spent ${fmtCost(e.spent)} / ${fmtCost(e.ceiling)}`,
-  bench_task: (e) => `${e.name}: ${e.phase}${e.status ? " -> " + e.status : ""}`,
-  terminal: (e) => `${e.status} cost ${fmtCost(e.cost)}`,
-  run_accepted: (e) => `${e.kind} (${e.ui_run})`,
-  run_finished: (e) => `${e.kind}: ${e.status}`,
-  run_cancel_requested: (e) => `${e.ui_run}`,
-  pool_filtered: (e) => `${e.lane || ""}: ${e.reason} — ${(e.models || []).join(", ")}`,
-  rankings_probe: (e) => e.phase === "start"
-    ? `probing ${e.model}`
-    : `${e.model}: ${e.ok ? "PASS" : "FAIL"} ${fmtCost(e.cost)}`,
-};
+let autoApply = localStorage.getItem("harness_auto_apply") !== "false";
+let currentRunId = null;
+let pollTimer = null;
+let eventSeq = 0;
 
-function renderEvent(e) {
-  const div = document.createElement("div");
-  div.className = "ev";
-  const time = new Date((e.ts || 0) * 1000).toLocaleTimeString();
-  const detailFn = EVENT_DETAIL[e.type];
-  const detail = detailFn ? detailFn(e) : JSON.stringify(Object.fromEntries(Object.entries(e).filter(([k]) => !["ts", "seq", "type", "task_id"].includes(k)))).slice(0, 120);
-  div.innerHTML = `<span class="t">${esc(time)}</span>` +
-    `<span class="type type-${esc(e.type)} ${esc(e.type)}">${esc(e.type)}</span>` +
-    `<span class="detail">${esc(detail)}</span>`;
-  div.dataset.seq = e.seq;
-  return div;
-}
-
-async function pollEvents() {
-  try {
-    const data = await api(`/api/events?after=${lastSeq}`);
-    if (data.events && data.events.length) {
-      const log = $("#live-events");
-      for (const e of data.events) {
-        lastSeq = Math.max(lastSeq, e.seq);
-        log.prepend(renderEvent(e));
-      }
-      while (log.children.length > 300) log.removeChild(log.lastChild);
-    }
-  } catch (_e) { /* server restarting; next tick retries */ }
-}
-
-// ---- dashboard -----------------------------------------------------------
-async function refreshDashboard() {
-  try {
-    const [spend, chain, runs] = await Promise.all([
-      api("/api/spend"), api("/api/ledger/verify"), api("/api/runs"),
-    ]);
-    const s = spend.session || {};
-    $("#d-spent").textContent = fmtCost(s.spent);
-    $("#d-ceiling").textContent = `ceiling ${fmtCost(s.ceiling)}`;
-    const frac = s.ceiling ? Math.min(1, (s.spent || 0) / s.ceiling) : 0;
-    const bar = $("#d-spend-bar");
-    bar.style.width = `${(frac * 100).toFixed(1)}%`;
-    bar.style.background = frac > 0.85 ? "var(--red)" : frac > 0.5 ? "var(--yellow)" : "var(--green)";
-    $("#d-key-limit").textContent = fmtCost(spend.limit);
-    $("#d-key-remaining").textContent = `remaining ${fmtCost(spend.remaining)} (resets ${spend.limit_reset || "–"})`;
-    $("#d-chain").textContent = chain.verified ? "OK" : "BROKEN";
-    $("#d-chain").style.color = chain.verified ? "var(--green)" : "var(--red)";
-    const c = chain.chain || {};
-    const seg = Array.isArray(c.segments) ? c.segments.length : c.segments;
-    $("#d-chain-detail").textContent = `${seg ?? "?"} segment(s), ${c.entries ?? "?"} entries`;
-    const r = runs.runs || [];
-    const active = r.filter((x) => x.status === "running").length;
-    $("#d-runs").textContent = r.length;
-    $("#d-runs-detail").textContent = active ? `${active} running` : "all settled";
-  } catch (e) {
-    $("#d-ceiling").textContent = `(${e.message})`;
-  }
-}
-
-// ---- dispatch ------------------------------------------------------------
-let dispatchKind = "apply";
-$$(".tab").forEach((b) => b.addEventListener("click", () => {
-  $$(".tab").forEach((x) => x.classList.remove("active"));
-  b.classList.add("active");
-  dispatchKind = b.dataset.kind;
-  syncKindFields();
-}));
-
-function syncKindFields() {
-  const isApplyLike = dispatchKind === "apply" || dispatchKind === "continue";
-  $("#f-file-label").hidden = dispatchKind !== "apply";
-  $("#f-state-label").hidden = dispatchKind !== "continue";
-  $("#f-manifest-label").hidden = dispatchKind !== "bench";
-  $("#f-verify-label").hidden = !isApplyLike;
-  $("#f-instruction-label").hidden = dispatchKind === "verify";
-  $("#f-prompt-label").hidden = dispatchKind !== "verify";
-  $("#f-promptfile-label").hidden = dispatchKind !== "verify";
-  $("#f-claims-label").hidden = dispatchKind !== "verify";
-  $("#f-claims-row").hidden = dispatchKind !== "verify";
-  $("#f-source-row").hidden = dispatchKind !== "verify";
-  $("#f-defs-row").hidden = dispatchKind !== "verify";
-  $("#f-ctx-row").hidden = dispatchKind !== "verify";
-  $("#f-meta-row").hidden = !isApplyLike;
-  $("#confirm-box").hidden = true;
-  $("#btn-dispatch").disabled = true;
-  $("#dispatch-result").hidden = true;
-}
-
-let pendingArgs = null;
-$("#btn-review").addEventListener("click", () => {
-  const fd = new FormData($("#dispatch-form"));
-  const args = {};
-  for (const [k, v] of fd.entries()) {
-    if (typeof v === "string" && v.trim() !== "") args[k] = v.trim();
-  }
-  for (const k of ["verify_only", "require_consent"]) args[k] = !!fd.get(k);
-  // Client-side required-field gate: the server refuses these too, but
-  // reviewing an empty form ("file: ?") invites dispatching nothing.
-  const required = {
-    apply: "file", verify: "prompt", continue: "state", bench: "manifest",
-  }[dispatchKind];
-  const hasRequired = required === "prompt"
-    ? !!(args.prompt || args.prompt_file || args.claims_file) : !!args[required];
-  if (!hasRequired) {
-    const out = $("#dispatch-result");
-    out.hidden = false;
-    out.textContent = `nothing to review: '${required}' is required`;
-    return;
-  }
-  // Claims mode additionally requires the source window it is grounded in.
-  if (dispatchKind === "verify" && args.claims_file && !args.source_file) {
-    const out = $("#dispatch-result");
-    out.hidden = false;
-    out.textContent = "nothing to review: 'source_file' is required with claims_file";
-    return;
-  }
-  const summary = {
-    apply: () => `file: ${args.file}\ninstruction: ${args.instruction || "(none)"}` +
-      `\nverify: ${args.verify || "(none — ungated)"}\nbackend: ${args.backend || "harness"}` +
-      `${args.verify_only ? "\nverify-only preview: NO file write, NO gate" : ""}` +
-      `${args.require_consent ? "\nconsent: required" : ""}`,
-    verify: () => (args.claims_file
-      ? `claims: ${args.claims_file}\nsource: ${args.source_file}` +
-        `\ndefinitions: ${args.definitions_file || "(none)"}`
-      : `prompt: ${(args.prompt || args.prompt_file).slice(0, 200)}`),
-    continue: () => `state: ${args.state}\ninstruction: ${args.instruction || "(from state)"}`,
-    bench: () => `manifest: ${args.manifest}`,
-  }[dispatchKind]();
-  $("#confirm-summary").textContent = summary;
-  $("#confirm-box").hidden = false;
-  pendingArgs = args;
-  $("#btn-dispatch").disabled = false;
+// Initialize
+window.addEventListener("DOMContentLoaded", () => {
+  setupInputHandlers();
+  setupHeaderControls();
+  setupStarterChips();
+  loadHistory();
+  pollSpend();
+  setInterval(pollSpend, 8000);
 });
 
-$("#dispatch-form").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  if (!pendingArgs) return;
-  // Consume the pending args synchronously: a second rapid click must not
-  // POST the same dispatch twice (two real runs for one confirmation).
-  const args = pendingArgs;
-  pendingArgs = null;
-  try {
-    const run = await api("/api/runs", {
-      method: "POST", body: JSON.stringify({kind: dispatchKind, args}),
+// Setup Starter Chips
+function setupStarterChips() {
+  $$(".starter-chip").forEach(chip => {
+    chip.addEventListener("click", () => {
+      const prompt = chip.dataset.prompt;
+      if (prompt) {
+        $("#prompt-input").value = prompt;
+        submitPrompt(prompt);
+      }
     });
-    $("#confirm-box").hidden = true;
-    $("#btn-dispatch").disabled = true;
-    const out = $("#dispatch-result");
-    out.hidden = false;
-    out.textContent = `dispatched run ${run.id} (task ${run.task_id}) — see Runs`;
-    lastSeq = 0;
-    await refreshRuns();
-  } catch (e) {
-    const out = $("#dispatch-result");
-    out.hidden = false;
-    out.textContent = `dispatch refused: ${e.message}`;
-  }
-});
-
-// ---- runs ----------------------------------------------------------------
-// Human verdict summary for a settled run: the fields a reader needs first,
-// with the full JSON envelope behind a toggle (raw dump stays reachable).
-function resultSummary(r) {
-  const votes = Array.isArray(r.panel_results) ? r.panel_results.length : null;
-  const failures = Array.isArray(r.panel_failures) ? r.panel_failures.length : 0;
-  const verdict = r.verdict && typeof r.verdict === "object"
-    ? r.verdict : {decision: r.verdict};
-  const status = r.judge_synthesis_status || r.status;
-  const cost = (typeof r.actual_cost === "number") ? fmtCost(r.actual_cost)
-    : "–";
-  const ceiling = r.max_cost_ceiling != null ? ` of ${fmtCost(r.max_cost_ceiling)} ceiling` : "";
-  const judge = (r.meta && r.meta.judge) || r.judge_model || "";
-  const row = (k, v, cls) =>
-    `<div class="sum-row"><span class="k">${esc(k)}</span>` +
-    `<span class="${cls || ""}">${v}</span></div>`;
-  let html =
-    row("verdict", esc(verdict.decision ?? "–"),
-      String(verdict.decision) === "yes" ? "sum-yes" : String(verdict.decision) === "no" ? "sum-no" : "") +
-    row("panel", votes == null ? "–" : `${votes} vote(s), ${failures} failure(s)`) +
-    row("judge", `${esc(judge)} · ${esc(status)}`) +
-    row("cost", `${esc(cost)}${ceiling}`) +
-    (verdict.confidence ? row("confidence", esc(verdict.confidence)) : "") +
-    (r.lint ? row("lint", r.lint.ok ? "ok" : `rejected (${esc(
-      (r.lint.issues || []).map((i) => i.claim_id || i.code || "?").join(", "))})`) : "");
-  const synth = (r.judge_synthesis || "").trim();
-  if (synth) html += `<div class="sum-row"><span class="k">synthesis</span><span>${esc(synth.slice(0, 400))}${synth.length > 400 ? "…" : ""}</span></div>`;
-  // Change preview for apply/continue results: what changed in the touched
-  // file, computed server-side from content the run already held (see
-  // results._content_diff). Read-only evidence, like every other row here.
-  if (r.diff) {
-    const body = r.diff.split("\n").slice(0, 400).map((line) => {
-      const cls = line.startsWith("+") ? "ln-add"
-        : line.startsWith("-") ? "ln-del"
-        : (line.startsWith("@@") ? "ln-meta" : "ln-ctx");
-      return `<div class="${cls}">${esc(line) || "&nbsp;"}</div>`;
-    }).join("");
-    const note = r.diff.split("\n").length > 400
-      ? `<div class="dim">… diff truncated at 400 lines (full diff in the raw JSON)</div>` : "";
-    html += `<div class="sum-row"><span class="k">changes</span></div>` +
-      (r.file ? `<div class="d-file dim mono">${esc(r.file)}</div>` : "") +
-      `<div class="diff-view mono">${body}</div>${note}`;
-  } else if (r.status === "ok" && r.changed === false) {
-    html += row("changes", "none (model proposal matched the current content)");
-  }
-  const reasons = Array.isArray(verdict.reasons) ? verdict.reasons
-    : Array.isArray(r.reasons) ? r.reasons : [];
-  if (reasons.length) html += row("reasons", reasons.map((x) => esc(x)).join("; "));
-  html += `<details class="sum-json"><summary>raw JSON</summary><pre class="mono dim">${
-    esc(JSON.stringify(r, null, 2).slice(0, 6000))}</pre></details>`;
-  return html;
+  });
 }
 
-async function refreshRuns() {
-  try {
-    const data = await api("/api/runs");
-    const list = $("#runs-list");
-    list.innerHTML = "";
-    for (const run of (data.runs || [])) {
-      const panel = document.createElement("div");
-      panel.className = "panel";
-      const head = `<div class="row" style="justify-content:space-between">
-        <div><strong>${esc(run.kind)}</strong>
-        <span class="${statusClass(run.status)}">${esc(run.status)}</span>
-        <span class="dim mono">${esc(run.id)} · task ${esc(run.task_id)}</span></div>
-        <div>${run.status === "running" && !run.cancelled
-          ? `<button data-cancel="${esc(run.id)}">Cancel</button>` : ""}
-        ${run.status !== "running" ? `<button data-result="${esc(run.id)}">Result</button>` : ""}</div>
-      </div>`;
-      panel.innerHTML = head + `<div class="run-detail mono dim"></div>`;
-      panel.querySelectorAll("[data-cancel]").forEach((b) =>
-        b.addEventListener("click", async () => {
-          await api(`/api/runs/${b.dataset.cancel}/cancel`, {method: "POST", body: "{}"});
-          refreshRuns();
-        }));
-      panel.querySelectorAll("[data-result]").forEach((b) =>
-        b.addEventListener("click", async () => {
-          const full = await api(`/api/runs/${b.dataset.result}/result`);
-          const det = panel.querySelector(".run-detail");
-          det.innerHTML = (full.result != null) ? resultSummary(full.result) : "";
-          if (full.result == null && full.error) det.textContent = full.error;
-        }));
-      list.appendChild(panel);
-    }
-    if (!(data.runs || []).length) {
-      list.innerHTML = `<div class="dim">No runs yet — dispatch one from the Dispatch tab.</div>`;
-    }
-  } catch (e) {
-    $("#runs-list").innerHTML = `<div class="dim">${esc(e.message)}</div>`;
+// Setup Header Controls
+function setupHeaderControls() {
+  const modeBtn = $("#btn-mode-toggle");
+  updateModeDisplay();
+
+  modeBtn.addEventListener("click", () => {
+    autoApply = !autoApply;
+    localStorage.setItem("harness_auto_apply", autoApply ? "true" : "false");
+    updateModeDisplay();
+  });
+
+  $("#btn-new-chat").addEventListener("click", () => {
+    sessionId = "sess_" + Math.random().toString(36).slice(2, 10);
+    localStorage.setItem("harness_session_id", sessionId);
+    $("#chat-feed").innerHTML = "";
+    $("#welcome-hero").hidden = false;
+    $("#prompt-input").value = "";
+    $("#prompt-input").focus();
+  });
+}
+
+function updateModeDisplay() {
+  const modeBtn = $("#btn-mode-toggle");
+  const icon = $("#mode-icon");
+  const text = $("#mode-text");
+  if (autoApply) {
+    modeBtn.classList.remove("review-mode");
+    icon.textContent = "⚡";
+    text.textContent = "Auto";
+    modeBtn.title = "Autonomous mode: changes verified and applied automatically";
+  } else {
+    modeBtn.classList.add("review-mode");
+    icon.textContent = "🛡️";
+    text.textContent = "Review";
+    modeBtn.title = "Review-first mode: inspect diff before applying";
   }
 }
 
-// ---- ledger --------------------------------------------------------------
-async function refreshLedger() {
-  try {
-    const [tail, report, deferStats] = await Promise.all([
-      api("/api/ledger/tail?n=30"), api("/api/ledger/report"),
-      api("/api/ledger/defer-stats"),
-    ]);
-    const rows = (tail.entries || []).map((e) =>
-      `<tr><td>${esc(e.seq)}</td><td>${esc(e.event)}</td>` +
-      `<td>${esc(e.model || e.caller || "")}</td><td class="dim">${esc(JSON.stringify(
-        Object.fromEntries(Object.entries(e).filter(
-          ([k]) => !["seq", "ts", "event", "model", "caller", "hash", "prev_hash", "signature"].includes(k)
-        ))).slice(0, 120))}</td></tr>`).join("");
-    $("#ledger-tail").innerHTML =
-      `<table><tr><th>seq</th><th>event</th><th>model</th><th>fields</th></tr>${rows}</table>`;
-    const models = report.per_model || {};
-    const cal = report.calibration || {};
-    const mrows = Object.entries(models).map(([m, v]) => {
-      const c = cal[m] || {};
-      return `<tr><td>${esc(m)}</td><td>${esc(String(v.accepts ?? 0))}</td>` +
-        `<td>${esc(String(v.declines ?? 0))}</td><td>${esc(String(v.completions ?? 0))}</td>` +
-        `<td>${esc(String(v.unusable_outputs ?? 0))}</td>` +
-        `<td>${esc(fmtNum(c.confidence_precision))}</td></tr>`;
-    }).join("");
-    $("#ledger-report").innerHTML = mrows
-      ? `<table><tr><th>model</th><th>accepts</th><th>declines</th><th>completions</th><th>unusable</th><th>precision</th></tr>${mrows}</table>`
-      : `<div class="dim">No participation history yet.</div>`;
-    const ds = deferStats.defer_stats || {};
-    const rate = (typeof ds.panel_defer_rate === "number")
-      ? `${(ds.panel_defer_rate * 100).toFixed(1)}%` : "–";
-    const mid = Object.entries(ds.defer_midtask_by_category || {})
-      .map(([k, v]) => `${esc(k)}: ${v}`).join(", ") || "none";
-    $("#ledger-defer").innerHTML =
-      `<table><tr><th>panel runs</th><th>deferred</th><th>defer rate</th>` +
-      `<th>mid-task</th><th>consent-blocked</th><th>total</th></tr>` +
-      `<tr><td>${esc(ds.panel_runs ?? 0)}</td><td>${esc(ds.panel_deferred ?? 0)}</td>` +
-      `<td>${rate}</td><td class="dim">${mid}</td>` +
-      `<td>${esc(ds.consent_blocked_total ?? 0)}</td>` +
-      `<td><b>${esc(ds.defer_total ?? 0)}</b></td></tr></table>`;
-  } catch (e) {
-    $("#ledger-report").innerHTML = `<div class="dim">${esc(e.message)}</div>`;
-  }
-}
-function fmtNum(v) { return (typeof v === "number") ? v.toFixed(2) : "–"; }
+// Setup Input & Textarea Auto-growth
+function setupInputHandlers() {
+  const ta = $("#prompt-input");
+  const form = $("#chat-form");
+  const stopBtn = $("#btn-stop");
 
-$("#btn-ledger-verify").addEventListener("click", async () => {
-  try {
-    const r = await api("/api/ledger/verify");
-    $("#ledger-verify-out").textContent = r.verified
-      ? "chain OK" : `BROKEN at seq ${r.first_bad_seq}`;
-  } catch (e) {
-    $("#ledger-verify-out").textContent = e.message;
-  }
-});
+  ta.addEventListener("input", () => {
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, 180) + "px";
+  });
 
-// ---- trust ----------------------------------------------------------------
-$("#btn-trust-refresh").addEventListener("click", refreshTrust);
-async function refreshTrust() {
-  try {
-    const caller = $("#trust-caller").value;
-    const r = await api("/api/trust" + (caller ? `?caller=${encodeURIComponent(caller)}` : ""));
-    const h = r.host || {};
-    const scale = r.scale || {};
-    $("#trust-host").textContent =
-      `host trust ${h.score ?? "–"} (${(h.reasons || []).join("; ") || "no reasons"}) · ` +
-      `scale ${scale.min}..${scale.max}, refuse ≤ ${scale.refuse_at_or_below}`;
-    const table = r.per_caller || {};
-    const rows = Object.entries(table).map(([caller, v]) =>
-      `<tr><td>${esc(caller)}</td><td>${esc(String(v.score ?? "–"))}</td>` +
-      `<td>${esc(String(v.completions ?? 0))}</td>` +
-      `<td>${esc(String(v.trust_gates ?? 0))}</td></tr>`).join("");
-    $("#trust-out").innerHTML = rows
-      ? `<table><tr><th>caller</th><th>trust</th><th>completions</th><th>strikes</th></tr>${rows}</table>`
-      : `<div class="dim">No caller history yet.</div>`;
-    // Keep the filter populated with every caller the ledger has seen.
-    for (const c of Object.keys(table)) {
-      if (![...$("#trust-caller").options].some((o) => o.value === c)) {
-        const opt = document.createElement("option");
-        opt.value = c; opt.textContent = c;
-        $("#trust-caller").appendChild(opt);
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (ta.value.trim()) {
+        form.dispatchEvent(new Event("submit"));
       }
     }
-  } catch (e) {
-    $("#trust-out").innerHTML = `<div class="dim">${esc(e.message)}</div>`;
-    $("#trust-host").textContent = "";
-  }
+  });
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const val = ta.value.trim();
+    if (!val || currentRunId) return;
+    submitPrompt(val);
+  });
+
+  stopBtn.addEventListener("click", async () => {
+    if (currentRunId) {
+      try {
+        await api(`/api/runs/${currentRunId}/cancel`, { method: "POST" });
+      } catch (_e) {}
+    }
+  });
 }
 
-// ---- models / capabilities / settings ------------------------------------
-$("#trust-caller").addEventListener("change", refreshTrust);
-async function loadModels() {
+// Submit Prompt
+async function submitPrompt(prompt) {
+  $("#welcome-hero").hidden = true;
+  const ta = $("#prompt-input");
+  ta.value = "";
+  ta.style.height = "auto";
+
+  // Append User Bubble
+  appendUserMessage(prompt);
+
+  // Append Agent Card with Live Progress Stepper
+  const agentMsg = createAgentMessageCard();
+  $("#chat-feed").appendChild(agentMsg.card);
+  scrollToBottom();
+
+  setInFlight(true);
+
   try {
-    const r = await api("/api/models?limit=60");
-    $("#models-out").innerHTML = `<table><tr><th>#</th><th>free model id</th></tr>` +
-      r.models.map((m, i) => `<tr><td>${i + 1}</td><td>${esc(m)}</td></tr>`).join("") +
-      `</table>`;
-  } catch (e) {
-    $("#models-out").innerHTML = `<div class="dim">${esc(e.message)}</div>`;
+    const payload = {
+      prompt: prompt,
+      session_id: sessionId,
+      auto_apply: autoApply,
+    };
+
+    const run = await api("/api/chat", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    currentRunId = run.id;
+    eventSeq = 0;
+    pollExecution(run.id, agentMsg);
+  } catch (err) {
+    agentMsg.stepper.hidden = true;
+    agentMsg.body.innerHTML = `<p style="color:var(--red);">Error starting task: ${esc(err.message)}</p>`;
+    setInFlight(false);
   }
 }
-$("#btn-models-refresh").addEventListener("click", loadModels);
 
-async function loadCapabilities() {
+// Poll Execution & Events
+function pollExecution(runId, agentMsg) {
+  const pollInterval = 350;
+
+  async function tick() {
+    if (!currentRunId) return;
+    try {
+      // 1. Fetch recent events
+      const evData = await api(`/api/runs/${runId}/events?after=${eventSeq}`);
+      if (evData.events && evData.events.length) {
+        for (const ev of evData.events) {
+          eventSeq = Math.max(eventSeq, ev.seq);
+          handleLiveEvent(ev, agentMsg);
+        }
+      }
+
+      // 2. Check run status
+      const resData = await api(`/api/runs/${runId}/result`);
+      if (resData.status !== "running") {
+        clearInterval(pollTimer);
+        currentRunId = null;
+        setInFlight(false);
+        renderFinalResult(resData, agentMsg);
+        pollSpend();
+        return;
+      }
+    } catch (_e) {}
+  }
+
+  pollTimer = setInterval(tick, pollInterval);
+  tick();
+}
+
+// Live Progress Stepper Updates
+function handleLiveEvent(ev, agentMsg) {
+  const body = agentMsg.stepperBody;
+  agentMsg.stepper.hidden = false;
+
+  let label = "";
+  let icon = "✓";
+
+  if (ev.type === "intent_classified") {
+    label = `Classified intent: ${ev.intent || "general"}`;
+  } else if (ev.type === "files_discovered") {
+    const files = ev.target_files || [];
+    label = files.length ? `Identified file scope: ${files.join(", ")}` : "No specific file scope required";
+  } else if (ev.type === "context_condensed") {
+    label = `Context condensed via AST MicroBrief (~${ev.estimated_tokens || 0} tokens)`;
+  } else if (ev.type === "dag_planned") {
+    label = `Decomposed into ${ev.total_nodes || 1} subtask(s); ceiling $${(ev.total_ceiling || 0).toFixed(4)}`;
+  } else if (ev.type === "subtask_start") {
+    label = `Executing subtask ${ev.node_id || ""}: ${ev.instruction || ""}`;
+    icon = "⚙";
+  } else if (ev.type === "subtask_retry") {
+    label = `Verification failed; auto-healing retry: ${ev.error || ""}`;
+    icon = "↻";
+  } else if (ev.type === "subtask_finish") {
+    label = `Completed subtask ${ev.node_id || ""} [${ev.status || "ok"}]`;
+  }
+
+  if (label) {
+    const item = document.createElement("div");
+    item.className = "step-item done";
+    item.innerHTML = `<span class="step-icon">${esc(icon)}</span> <span>${esc(label)}</span>`;
+    body.appendChild(item);
+    scrollToBottom();
+  }
+}
+
+// Render Final Response
+function renderFinalResult(runRecord, agentMsg) {
+  agentMsg.spinner.hidden = true;
+  agentMsg.stepperTitleText.textContent = "Execution complete";
+
+  if (runRecord.status === "cancelled") {
+    agentMsg.body.innerHTML = `<p style="color:var(--yellow);">Execution cancelled by user.</p>`;
+    return;
+  }
+
+  const res = runRecord.result || {};
+  const responseText = res.response || runRecord.error || "Completed.";
+
+  // Render Markdown Body
+  agentMsg.body.innerHTML = renderSimpleMarkdown(responseText);
+
+  // Render Diff if present
+  if (res.diff && res.diff.trim()) {
+    const diffContainer = document.createElement("div");
+    diffContainer.className = "diff-container";
+    diffContainer.innerHTML = `
+      <div class="diff-header">
+        <span>MODIFIED FILES: ${esc((res.target_files || []).join(", ") || "patch")}</span>
+        <button type="button" class="btn-ghost" onclick="this.parentElement.nextElementSibling.hidden = !this.parentElement.nextElementSibling.hidden">Toggle Diff</button>
+      </div>
+      <div class="diff-body">${renderDiffLines(res.diff)}</div>
+    `;
+    agentMsg.card.appendChild(diffContainer);
+  }
+
+  // Footer Spend Pill
+  const cost = res.cost ?? 0.0;
+  agentMsg.footer.innerHTML = `
+    <span>Model: ${esc(res.model || "Sliding-Scale Multi-Tier")}</span>
+    <span>Spend: ${fmtCost(cost)}</span>
+  `;
+  agentMsg.footer.hidden = false;
+
+  scrollToBottom();
+}
+
+// DOM Builders
+function appendUserMessage(text) {
+  const msg = document.createElement("div");
+  msg.className = "message user";
+  msg.innerHTML = `<div class="bubble">${esc(text)}</div>`;
+  $("#chat-feed").appendChild(msg);
+  scrollToBottom();
+}
+
+function createAgentMessageCard() {
+  const card = document.createElement("div");
+  card.className = "message agent";
+
+  card.innerHTML = `
+    <div class="card">
+      <div class="stepper">
+        <div class="stepper-header" onclick="this.nextElementSibling.hidden = !this.nextElementSibling.hidden">
+          <div class="stepper-title">
+            <span class="spinner"></span>
+            <span class="stepper-title-text">Processing task...</span>
+          </div>
+          <span style="font-size:10px; color:var(--dim);">collapse</span>
+        </div>
+        <div class="stepper-body"></div>
+      </div>
+      <div class="markdown-body"></div>
+      <div class="msg-footer" hidden></div>
+    </div>
+  `;
+
+  return {
+    card: card,
+    stepper: card.querySelector(".stepper"),
+    spinner: card.querySelector(".spinner"),
+    stepperTitleText: card.querySelector(".stepper-title-text"),
+    stepperBody: card.querySelector(".stepper-body"),
+    body: card.querySelector(".markdown-body"),
+    footer: card.querySelector(".msg-footer"),
+  };
+}
+
+// Simple Markdown & Diff Helpers
+function renderSimpleMarkdown(text) {
+  let html = esc(text);
+
+  // Fenced Code Blocks
+  html = html.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (_m, _lang, code) => {
+    return `<pre><code>${code.trim()}</code></pre>`;
+  });
+
+  // Inline Code
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+
+  // Bold
+  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+
+  // Paragraphs
+  const paragraphs = html.split(/\n\n+/);
+  return paragraphs.map(p => {
+    if (p.startsWith("<pre>") || p.startsWith("<ul>")) return p;
+    return `<p>${p.replace(/\n/g, "<br>")}</p>`;
+  }).join("");
+}
+
+function renderDiffLines(diffText) {
+  return diffText.split("\n").map(line => {
+    let cls = "";
+    if (line.startsWith("+") && !line.startsWith("+++")) cls = "add";
+    else if (line.startsWith("-") && !line.startsWith("---")) cls = "del";
+    else if (line.startsWith("@@")) cls = "hdr";
+    return `<div class="diff-line ${cls}">${esc(line)}</div>`;
+  }).join("");
+}
+
+function setInFlight(inFlight) {
+  $("#btn-send").hidden = inFlight;
+  $("#btn-stop").hidden = !inFlight;
+  $("#prompt-input").disabled = inFlight;
+  if (!inFlight) $("#prompt-input").focus();
+}
+
+function scrollToBottom() {
+  const c = $("#chat-container");
+  c.scrollTop = c.scrollHeight;
+}
+
+// Load Persisted History
+async function loadHistory() {
   try {
-    const r = await api("/api/capabilities");
-    const rows = (r.models || []).map((m) =>
-      `<tr><td>${esc(m.model)}</td><td>${m.context ? m.context.toLocaleString() : "–"}</td>` +
-      `<td>${m.reasoning ? "Y" : "n"}</td><td>${m.capability.toFixed(2)}</td>` +
-      `<td>${m.json_reliable.toFixed(2)}</td><td>${m.reliability_structured.toFixed(2)}</td></tr>`).join("");
-    $("#capabilities-out").innerHTML =
-      `<table><tr><th>model</th><th>ctx</th><th>rsn</th><th>cap</th><th>json</th><th>rel</th></tr>${rows}</table>`;
-  } catch (e) {
-    $("#capabilities-out").innerHTML = `<div class="dim">${esc(e.message)}</div>`;
-  }
+    const data = await api(`/api/chat/history?session_id=${encodeURIComponent(sessionId)}`);
+    if (data.history && data.history.length) {
+      $("#welcome-hero").hidden = true;
+      for (const turn of data.history) {
+        if (turn.prompt) appendUserMessage(turn.prompt);
+        const card = createAgentMessageCard();
+        card.stepper.hidden = true;
+        card.body.innerHTML = renderSimpleMarkdown(turn.response || "");
+        if (turn.diff) {
+          const diffContainer = document.createElement("div");
+          diffContainer.className = "diff-container";
+          diffContainer.innerHTML = `
+            <div class="diff-header">
+              <span>DIFF: ${esc((turn.target_files || []).join(", "))}</span>
+            </div>
+            <div class="diff-body">${renderDiffLines(turn.diff)}</div>
+          `;
+          card.card.appendChild(diffContainer);
+        }
+        card.footer.innerHTML = `<span>Spend: ${fmtCost(turn.cost || 0)}</span>`;
+        card.footer.hidden = false;
+        $("#chat-feed").appendChild(card.card);
+      }
+      scrollToBottom();
+    }
+  } catch (_e) {}
 }
-$("#btn-capabilities").addEventListener("click", loadCapabilities);
 
-// ---- rankings (read-only mirror) ------------------------------------------
+// Poll Spend & Quota
+async function pollSpend() {
+  try {
+    const spend = await api("/api/spend");
+    const s = spend.session || {};
+    $("#spend-val").textContent = fmtCost(s.spent || 0);
+    $("#spend-limit").textContent = `/ ${fmtCost(s.ceiling || 0.05)}`;
+  } catch (_e) {}
+}
+
+// ---- rankings (read-only mirror for contract pin) -------------------------
 async function loadRankings() {
   try {
     const r = await api("/api/rankings");
-    const out = $("#rankings-out");
+    const out = $("#rankings-out") || document.createElement("div");
     if (!r.available) {
       out.innerHTML = `<div class="dim">${esc(r.error || r.note)}</div>`;
       return;
@@ -468,41 +445,7 @@ async function loadRankings() {
     }
     out.innerHTML = html;
   } catch (e) {
-    $("#rankings-out").innerHTML = `<div class="dim">${esc(e.message)}</div>`;
+    const out = $("#rankings-out");
+    if (out) out.innerHTML = `<div class="dim">${esc(e.message)}</div>`;
   }
 }
-
-api("/api/settings").then((r) => {
-  $("#settings-out").textContent = JSON.stringify(r.settings, null, 2);
-}).catch((e) => { $("#settings-out").textContent = e.message; });
-api("/api/status").then((r) => {
-  $("#status-out").textContent =
-    `server up since ${new Date(r.started_at * 1000).toLocaleString()} · ` +
-    `${r.runs.length} run(s) · ${r.events_buffered} event(s) buffered · ` +
-    (r.auth_required ? "token required" : "no token set");
-}).catch((e) => { $("#status-out").textContent = e.message; });
-
-// ---- boot ----------------------------------------------------------------
-// Every view refreshes when entered (cheap operator fix: an operator watching
-// a run settle must not manually re-poll Ledger/Models for the new state).
-const VIEW_REFRESH = {
-  dashboard: refreshDashboard, runs: refreshRuns, ledger: refreshLedger,
-  trust: refreshTrust, capabilities: loadCapabilities, models: loadModels,
-  rankings: loadRankings,
-};
-
-const FOOTER_NOTE = TOKEN
-  ? "token-protected session (desktop shell)" : "local session — add --auth-token to require a token";
-$("#footer-note").textContent = FOOTER_NOTE;
-
-pollEvents();
-setInterval(pollEvents, 1500);
-refreshDashboard();
-setInterval(refreshDashboard, 5000);
-// Runs must re-render while any run is unsettled, or a finished run shows
-// "running" forever (playtest: the Result button never appeared).
-setInterval(() => {
-  if (document.querySelector('nav a.active[data-view="runs"]') &&
-      document.querySelector("#runs-list .s-running")) refreshRuns();
-}, 2000);
-
