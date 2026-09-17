@@ -9,6 +9,10 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.3] — 2026-09-16
+
 ### Fixed
 
 - The release driver's interpreter discovery crashed when
