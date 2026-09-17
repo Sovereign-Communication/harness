@@ -14,7 +14,7 @@ models are dispatched only when warranted and paired with dense micro-briefs.
 """
 from dataclasses import dataclass
 import re
-from typing import Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from .config import (
     DEFAULT_APPLY_POOL_PAID,
@@ -35,7 +35,7 @@ TIER_1_DISTILLER = 1
 TIER_2_FRONTIER = 2
 
 # Curated frontier aliases for operator and user convenience
-FRONTIER_ALIASES: dict[str, str] = {
+FRONTIER_ALIASES: Dict[str, str] = {
     "fable-5.1": "fable/fable-5.1",
     "fable/fable-5.1": "fable/fable-5.1",
     "gpt-6": "openai/gpt-6",
@@ -78,7 +78,7 @@ class TaskClassification:
 
     tier: int
     score: float
-    reasons: tuple[str, ...]
+    reasons: Tuple[str, ...]
     recommended_model: str
     estimated_cost_tier: str
 
@@ -88,11 +88,11 @@ class SlidingScaleRoute:
     """Full sliding-scale route including model ladder and cost ceiling."""
 
     classification: TaskClassification
-    ladder: tuple[str, ...]
+    ladder: Tuple[str, ...]
     cost_ceiling: float
 
 
-def resolve_frontier_model(custom_frontier: str | None = None, use_free: bool = False) -> str:
+def resolve_frontier_model(custom_frontier: Optional[str] = None, use_free: bool = False) -> str:
     """Resolve a user or config frontier model, mapping aliases when present."""
     if custom_frontier:
         stripped = custom_frontier.strip()
@@ -106,13 +106,13 @@ def resolve_frontier_model(custom_frontier: str | None = None, use_free: bool = 
 
 def classify_task_tier(
     instruction: str,
-    target_files: Sequence[str] | None = None,
-    diff_size: int | None = None,
+    target_files: Optional[Sequence[str]] = None,
+    diff_size: Optional[int] = None,
     dependency_depth: int = 0,
     is_leaf: bool = True,
     previous_failures: int = 0,
     use_free: bool = True,
-    custom_frontier: str | None = None,
+    custom_frontier: Optional[str] = None,
 ) -> TaskClassification:
     """Classify a task into Tier 0 (Scout), Tier 1 (Distiller), or Tier 2 (Frontier).
 
@@ -206,7 +206,7 @@ def classify_task_tier(
     )
 
 
-def resolve_tier_recommended_model(tier: int, use_free: bool = True, custom_frontier: str | None = None) -> str:
+def resolve_tier_recommended_model(tier: int, use_free: bool = True, custom_frontier: Optional[str] = None) -> str:
     """Return the primary recommended model for a given tier."""
     if use_free:
         if tier == TIER_0_SCOUT:
@@ -222,9 +222,9 @@ def resolve_tier_recommended_model(tier: int, use_free: bool = True, custom_fron
         return resolve_frontier_model(custom_frontier, use_free=False)
 
 
-def tier_model_ladder(tier: int, use_free: bool = True, custom_frontier: str | None = None) -> list[str]:
+def tier_model_ladder(tier: int, use_free: bool = True, custom_frontier: Optional[str] = None) -> List[str]:
     """Return an ordered candidate ladder for the given tier, cheapest first."""
-    out: list[str] = []
+    out: List[str] = []
     if use_free:
         if tier == TIER_0_SCOUT:
             for m in [FREE_PANEL_POOL[1], FREE_PANEL_POOL[2], FREE_PANEL_POOL[0], "openrouter/free"]:
@@ -272,13 +272,13 @@ def tier_cost_ceiling(tier: int, use_free: bool = True) -> float:
 
 def resolve_sliding_scale_route(
     instruction: str,
-    target_files: Sequence[str] | None = None,
-    diff_size: int | None = None,
+    target_files: Optional[Sequence[str]] = None,
+    diff_size: Optional[int] = None,
     dependency_depth: int = 0,
     is_leaf: bool = True,
     previous_failures: int = 0,
     use_free: bool = True,
-    custom_frontier: str | None = None,
+    custom_frontier: Optional[str] = None,
 ) -> SlidingScaleRoute:
     """Classify and resolve full routing ladder and budget ceiling in one call."""
     classification = classify_task_tier(
