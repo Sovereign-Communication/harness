@@ -39,11 +39,13 @@ class BatchOptions:
     verify_only: object = False
     max_lines: object = MAX_FILE_LINES
     continuation: object = None
+    parallel: object = False
+    max_workers: object = 4
 
 
 def run_batch(engine, files, *, task_id=None, apply_pool=None,
               continuation=None, cancel_check=None, keep_going=False,
-              options=None):
+              parallel=False, max_workers=4, options=None):
     """Multi-file batch (#12): one governed session per file through this
     engine/router/gate, sharing the task budget. Fail-fast: the batch stops
     at the first file that does not succeed. A single-file batch returns
@@ -59,6 +61,9 @@ def run_batch(engine, files, *, task_id=None, apply_pool=None,
     envelope and the overall status still names the FIRST failure, so a
     mixed batch can never read as success. Default remains fail-fast.
 
+    ``parallel`` executes independent files concurrently using ConcurrentExecutor
+    (PR-2). File locks ensure mutual exclusion.
+
     ``options`` carries the per-file session options as one :class:`BatchOptions`
     bundle (the CLI face constructs it once); its ``continuation`` field is
     honored when the run-level parameter is unset."""
@@ -68,37 +73,41 @@ def run_batch(engine, files, *, task_id=None, apply_pool=None,
         continuation = options.continuation
     continuation = validate_continuation(continuation)
     if continuation:
-        # Resuming: the saved state owns the target file AND the task
-        # identity -- a resume is the same task, not a new one, so its
-        # ledger events stay attributable to the original run (the CLI
-        # continue path leaves task_id unset for exactly this reason).
-        # An explicit --task-id override still wins.
         files = [continuation.get("file_path")]
         task_id = task_id or continuation.get("task_id")
     if not continuation:
         files = validate_batch_files(files)
     kw = asdict(options)
+    is_parallel = parallel or bool(kw.pop("parallel", False))
+    resolved_workers = int(kw.pop("max_workers", max_workers) or 4)
     kw["apply_pool"] = apply_pool
     kw["cancel_check"] = cancel_check
     kw["continuation"] = continuation
     if len(files) == 1:
-        # One file is not a batch: bare result, keyed off the INPUT --
-        # a multi-file batch that dies on file 1 still gets the envelope.
         return engine.apply_edit(task_id=task_id or "apply",
                                  file_path=files[0], **kw)
-    results = []
+
+    def _worker(i, fp):
+        return engine.apply_edit(task_id=(task_id or "apply") + f"-{i + 1}",
+                                 file_path=fp, **kw)
+
+    if is_parallel:
+        from .executor import ConcurrentExecutor
+        executor = ConcurrentExecutor(max_workers=resolved_workers)
+        results = executor.execute_files(files, _worker, keep_going=keep_going)
+    else:
+        results = []
+        for i, fp in enumerate(files):
+            r = _worker(i, fp)
+            results.append(r)
+            if r.get("status") not in SUCCESS_STATUSES and not keep_going:
+                break  # fail fast: stop the batch at the first non-success
+
     shared_gate = None
     first_failure = None
-    for i, fp in enumerate(files):
-        r = engine.apply_edit(task_id=(task_id or "apply") + f"-{i + 1}",
-                              file_path=fp, **kw)
-        results.append(r)
-        if r.get("status") not in SUCCESS_STATUSES:
-            # Name the FIRST failure: under keep_going a later success must
-            # never mask it (a mixed batch is not a success).
-            first_failure = r if first_failure is None else first_failure
-            if not keep_going:
-                break  # fail fast: stop the batch at the first non-success
+    for r in results:
+        if r.get("status") not in SUCCESS_STATUSES and first_failure is None:
+            first_failure = r
         shared_gate = r.get("verify", {}).get("command") \
             if isinstance(r.get("verify"), dict) else shared_gate
     statuses = dict(Counter(r.get("status") for r in results))
