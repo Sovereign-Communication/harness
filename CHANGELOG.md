@@ -11,6 +11,19 @@ break APIs between minor versions).
 
 ### Added
 
+- **Plan execution now routes per node.** `harness plan --execute`, MCP
+  `plan_and_execute`, and the agent lane discarded the per-node
+  sliding-scale intelligence at dispatch: every node ran on the settings'
+  apply pool regardless of its computed tier. A new pure mapping
+  (`dag.node_apply_kwargs`) threads each node's tier ladder into
+  `apply_edit` as the per-request `apply_pool` (the engine orders it at
+  the routing boundary, rotation included) and binds the tier cost
+  ceiling as the per-task ceiling on paid tiers. A $0 free-tier ceiling
+  is deliberately not passed -- a zero task budget would refuse the
+  escalation ladder for hard nodes; the governor owns free-tier cost.
+  An explicit `--model` still pins routing outright, and an explicit
+  `--task-max-cost` keeps its exact value (tier policy never tightens an
+  explicit operator bound).
 - **Chat web tools, opt-in per run.** The conversation lane can now attach
   real evidence instead of fabricating it: with `web: true` on the run (UI
   toggle), a URL prompt fetches the page and a plain question runs one web
@@ -30,6 +43,11 @@ break APIs between minor versions).
 
 ### Fixed
 
+- **Leaked redirect response tripped the audit's R13 leak scan** (local
+  CPython 3.14+; summary still said OK, so the battery looked green while
+  an unraisable `ResourceWarning: Implicitly cleaning up <HTTPError 302>`
+  printed at GC time). The redirect-refusal test now closes the raised
+  HTTPError, which owns the loopback response.
 - **UI overlap at wide viewports.** The sidebar redesign was prepended to
   `app.css` while the entire superseded legacy stylesheet remained below it;
   the legacy `header`/`#input-footer` `position: fixed; left: 0; right: 0`

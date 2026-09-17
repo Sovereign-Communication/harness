@@ -122,6 +122,9 @@ class HttpGetLiveLoopbackTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             web._http_get(f"http://127.0.0.1:{self.port}/redirect", timeout=5)
         self.assertEqual(ctx.exception.code, 302)
+        # The refused redirect's HTTPError owns the (already-consumed) loopback
+        # response; unclosed, it warns at GC time and trips the R13 leak scan.
+        ctx.exception.close()
 
 
 class FetchUrlTests(unittest.TestCase):

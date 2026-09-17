@@ -414,3 +414,44 @@ def plan_task(
         "dag": enriched_dag.to_dict(),
     }
 
+
+def node_apply_kwargs(
+    node_detail: Optional[Dict[str, Any]] = None,
+    explicit_model: Optional[str] = None,
+    explicit_task_max_cost: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Per-request apply kwargs for executing one planned DAG node.
+
+    Threads a node's sliding-scale route (from :func:`plan_task`'s
+    ``nodes`` entries) into :meth:`harness.apply.ApplyEngine.apply_edit`:
+    the tier ladder becomes the request's ``apply_pool`` -- the engine
+    orders it at the routing boundary via ``capability.ordered_pool``
+    (interfaces never pre-order a pool) and rotation stays inside the
+    tier-appropriate models. The tier cost ceiling becomes the per-task
+    ceiling only when it is a real bound (paid tiers): a $0 free-tier
+    ceiling is deliberately NOT passed, because a zero task budget would
+    refuse the escalation ladder before it could rescue a hard node
+    (``spent - start < 0.0`` is never true); free-tier cost discipline is
+    the governor's job (every attempted model bills $0.0).
+
+    An explicit model pin wins outright (manual routing, no pool override);
+    an explicit ``task_max_cost`` pin suppresses only the ceiling.
+    Unknown or missing route detail degrades to today's defaults ({}).
+    """
+    if explicit_model is not None:
+        return {}
+    detail = node_detail or {}
+    route = detail.get("route") or {}
+    kwargs = {}
+    ladder = [str(m).strip() for m in (route.get("ladder") or []) if str(m).strip()]
+    if ladder:
+        kwargs["apply_pool"] = ladder
+    if explicit_task_max_cost is None:
+        try:
+            ceiling = float(route.get("cost_ceiling"))
+        except (TypeError, ValueError):
+            ceiling = 0.0
+        if ceiling > 0.0:
+            kwargs["task_max_cost"] = ceiling
+    return kwargs
+

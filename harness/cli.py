@@ -38,7 +38,7 @@ from .service import run_verify as _service_verify
 from .service import read_text_file as _service_read_text
 from .rankings import build_rankings_report as _rankings_report
 from .capability import capabilities_payload as _capability_payload_owner
-from .dag import TaskDAG, plan_task
+from .dag import TaskDAG, node_apply_kwargs, plan_task
 from .executor import ConcurrentExecutor
 from .results import SUCCESS_STATUSES, terminal_exit_code
 from .saturation import advise
@@ -574,12 +574,23 @@ def _cmd_plan(opts, settings):
 
     engine = _session(settings, max_cost=getattr(opts, "max_cost", None))
     dag = TaskDAG.from_dict(plan_result["dag"])
+    node_routes = {n.get("node_id"): n for n in plan_result["nodes"]}
     is_parallel = getattr(opts, "parallel", False)
     workers = getattr(opts, "max_workers", 4) if is_parallel else 1
     executor = ConcurrentExecutor(max_workers=workers)
 
     def run_node(node):
         target = node.target_files[0] if node.target_files else None
+        task_max = getattr(opts, "task_max_cost", None)
+        route_kwargs = node_apply_kwargs(
+            node_routes.get(node.node_id),
+            explicit_model=getattr(opts, "model", None),
+            explicit_task_max_cost=task_max,
+        )
+        # The tier ceiling replaces the unset explicit value (never an
+        # operator pin: node_apply_kwargs suppresses it when one is set).
+        if "task_max_cost" in route_kwargs:
+            task_max = route_kwargs.pop("task_max_cost")
         return engine.apply_edit(
             file_path=target,
             instruction=node.instruction,
@@ -588,11 +599,12 @@ def _cmd_plan(opts, settings):
             require_consent=False,
             model=getattr(opts, "model", None),
             max_tokens=getattr(opts, "max_tokens", None),
-            task_max_cost=getattr(opts, "task_max_cost", None),
+            task_max_cost=task_max,
             allow_escalation=getattr(opts, "allow_escalation", False),
             reasoning_effort=getattr(opts, "reasoning_effort", None),
             renew_consent=False,
             max_rotations=getattr(opts, "max_rotations", 3),
+            **route_kwargs,
         )
 
     all_results = executor.execute_dag(dag, run_node, keep_going=getattr(opts, "keep_going", False))

@@ -213,6 +213,7 @@ harness dogfood --from-ledger --claims-out curated.json \
 
 # Autonomous DAG planning and sliding-scale execution
 harness plan --goal "Refactor engine and verify" --execute --parallel
+# Each node runs its own tier ladder + cost ceiling (explicit --model pins it)
 
 # Autonomy ledger, live free models, key status, trust standing
 harness ledger report          # includes chain status (segments, pruned cut)

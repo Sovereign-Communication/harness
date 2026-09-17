@@ -20,7 +20,7 @@ from . import trust as trust_policy
 from .batch import BatchOptions
 from .consent import probe_consent
 from .continuation import validate_continuation
-from .dag import TaskDAG, plan_task
+from .dag import TaskDAG, node_apply_kwargs, plan_task
 from .errors import HarnessError, ToolCancelled
 from .executor import ConcurrentExecutor
 from .mcp_lanes import LANES, lane_for
@@ -688,16 +688,19 @@ class McpServer:
                 return plan_result
 
             dag = TaskDAG.from_dict(plan_result["dag"])
+            node_routes = {n.get("node_id"): n for n in plan_result["nodes"]}
             executor = ConcurrentExecutor(max_workers=max_workers if parallel else 1)
 
             def run_node(node):
                 target = node.target_files[0] if node.target_files else None
+                route_kwargs = node_apply_kwargs(node_routes.get(node.node_id))
                 return self.engine.apply_edit(
                     file_path=target,
                     instruction=node.instruction,
                     verify_cmd=node.local_gate,
                     allow_verify=self.allow_verify,
                     require_consent=False,
+                    **route_kwargs,
                 )
 
             all_results = executor.execute_dag(dag, run_node)

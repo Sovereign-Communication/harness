@@ -11,7 +11,7 @@ from ._http import HttpTransport
 from .chat import chat, extract_content_and_cost
 from .condenser import distill_context, condense_error_log
 from .config import Settings, load_settings
-from .dag import TaskDAG, DAGNode, plan_task
+from .dag import TaskDAG, DAGNode, node_apply_kwargs, plan_task
 from .errors import HarnessError, ToolCancelled
 from .events import emit
 from .executor import ConcurrentExecutor
@@ -405,6 +405,7 @@ class AutonomousAgent:
         # Autonomous execution mode
         engine = apply_session(self.settings)
         dag = TaskDAG.from_dict(plan["dag"])
+        node_routes = {n.get("node_id"): n for n in plan["nodes"]}
         executor = ConcurrentExecutor(max_workers=1)
 
         def run_node(node: DAGNode) -> Dict[str, Any]:
@@ -412,6 +413,7 @@ class AutonomousAgent:
                 raise ToolCancelled("Subtask cancelled by user")
             target = node.target_files[0] if node.target_files else (target_files[0] if target_files else None)
             gate = node.local_gate or verification_gate
+            route_kwargs = node_apply_kwargs(node_routes.get(node.node_id))
             emit("subtask_start", node_id=node.node_id, instruction=node.instruction, target=target)
 
             res = engine.apply_edit(
@@ -420,6 +422,7 @@ class AutonomousAgent:
                 verify_cmd=gate,
                 allow_verify=True,
                 require_consent=False,
+                **route_kwargs,
             )
 
             # Self-healing retry on verification failure
@@ -435,6 +438,7 @@ class AutonomousAgent:
                     verify_cmd=gate,
                     allow_verify=True,
                     require_consent=False,
+                    **route_kwargs,
                 )
                 if isinstance(res, dict):
                     res["cost"] = round(prior_cost + float(res.get("cost", 0.0) or 0.0), 6)
