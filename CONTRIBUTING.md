@@ -149,6 +149,7 @@ statement covers the CI matrix by direct execution.
 | `harness/batch.py` | multi-file batch orchestration: one governed session per file, shared task budget, fail-fast -- owns the LOOP, the engine owns the per-file apply |
 | `harness/dag.py` | task decomposition & dependency DAG: TaskDAG, DAGNode, topological batching |
 | `harness/executor.py` | concurrent multi-threaded batch dispatch & file mutex manager |
+| `harness/condenser.py` | context distillation & micro-brief pipeline: AST signature extraction, error pruning |
 | `harness/apply_gate.py` | one candidate-to-gate transaction: write, verify, preview, rewind, and terminal gate results |
 | `harness/apply_state.py` | apply request data and mutable per-run state |
 | `harness/results.py` | the apply result vocabulary (round entries, terminal/deferred results, HTTP error rendering) -- one def site per result shape, plus the status-meaning policy: `SUCCESS_STATUSES` and `terminal_exit_code` (interfaces never re-derive what a status means) |
