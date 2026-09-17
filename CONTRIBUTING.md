@@ -174,3 +174,18 @@ merge.
 | `harness/tokens.py` | token estimation shared by every cost preflight |
 | `harness/ui.py` | the pywebview desktop shell around the harness web UI |
 | `tests/` | one test module per product owner (test_spend, test_panel, test_convergence, test_specialist, test_chat, test_ledger, test_prompts, ...); shared fakes and the `_gov` helper live in `tests/_fake.py` |
+
+## Audit corpus integrity
+
+The self-audit (audits/self/audit.py) reads a pinned evidence corpus --
+the dogfood artifacts and audit reports under audits/self/. D11 verifies
+every pinned file's SHA-256 against audits/self/corpus_manifest.json
+before the evidence is trusted: a silent edit fails the audit
+deterministically. To change corpus content, run the scripted refresh
+and commit the corpus change and manifest as one reviewable diff:
+
+  python audits/self/refresh_corpus_manifest.py
+
+Never hand-edit corpus_manifest.json. round2_scores.json is
+deliberately unpinned (rewritten by every audit run -- restore it from
+git after every local run); _runs/ is untracked scratch.

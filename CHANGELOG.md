@@ -15,6 +15,11 @@ break APIs between minor versions).
   the suite's captured output carries unraisable-warning signatures
   (`ResourceWarning`, `unclosed file`), closing the GC-timing blind
   spot that flaked the v0.3.2 release gate (PR #17).
+- The self-audit reads a hash-pinned evidence corpus: D11 verifies every
+  tracked dogfood artifact and audit report against
+  `audits/self/corpus_manifest.json` (refreshed only via
+  `refresh_corpus_manifest.py`, documented in CONTRIBUTING), so a silent
+  edit to audit evidence fails the audit deterministically.
 
 ## [0.3.2] — 2026-09-16
 

@@ -17,6 +17,7 @@ Usage:
 """
 import argparse
 import ast
+import hashlib
 import json
 import os
 import re
@@ -911,6 +912,48 @@ def sd_contributing():
 
 # ---------------------------------------------------------------- runner
 
+def sd_corpus_integrity():
+    """The audit evidence corpus is hash-pinned: every tracked dogfood
+    artifact and audit report must match audits/self/corpus_manifest.json.
+    A silent edit (or an unmanifested corpus addition) fails here; the
+    only honest path is the scripted refresh (refresh_corpus_manifest.py)
+    committed as a reviewable diff."""
+    mf = HERE / "corpus_manifest.json"
+    if not mf.exists():
+        return 0.0, ("corpus_manifest.json missing -- run "
+                     "refresh_corpus_manifest.py")
+    pinned = json.loads(mf.read_text(encoding="utf-8"))["files"]
+    tracked = subprocess.run(
+        ["git", "ls-files", "audits/self"], cwd=str(ROOT),
+        capture_output=True, text=True).stdout.split()
+    corpus = {f for f in tracked
+              if f.startswith("audits/self/dogfood/")
+              or f in {"audits/self/audit_report.md",
+                       "audits/self/round2_report.md",
+                       "audits/self/round2_rubric.md"}}
+    bad, missing = [], []
+    for rel, want in sorted(pinned.items()):
+        fp = ROOT / rel
+        if not fp.exists():
+            missing.append(rel)
+        elif (hashlib.sha256(
+                fp.read_bytes().replace(bytes([13, 10]), bytes([10])))
+                .hexdigest() != want):
+            bad.append(rel)
+    unlisted = sorted(corpus - set(pinned))
+    ok = not bad and not missing and not unlisted
+    detail = (f"{len(pinned)} files pinned"
+              + (f"; tampered: {bad}" if bad else "")
+              + (f"; missing: {missing}" if missing else "")
+              + (f"; unmanifested: {unlisted}" if unlisted else ""))
+    return _pass(ok, "evidence corpus matches its SHA-256 manifest",
+                 detail)
+
+
+
+
+
+
 CHECKS = {
     "A": [("A1", "no-tools payload guard at the one chat seam", a_no_tools_guard),
           ("A2", "preflight covers reasoning/429 retry slots", a_preflight_covers_retries),
@@ -955,7 +998,9 @@ CHECKS = {
            ("D7", "docs reference only real modules", sd_docs_current),
            ("D8", "shipped model freshness guard (live: opt-in)", sd_shipped_freshness),
            ("D9", "dogfood loop documented + wired", sd_dogfood_loop),
-           ("D10", "CONTRIBUTING current", sd_contributing)],
+           ("D10", "CONTRIBUTING current", sd_contributing),
+           ("D11", "corpus integrity (SHA-256 pinned)",
+            sd_corpus_integrity)],
 }
 
 DIM_NAMES = {"A": "Security", "R": "Reliability",
