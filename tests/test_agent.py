@@ -234,6 +234,22 @@ class TestAutonomousAgent(unittest.TestCase):
                 self.assertEqual(res["status"], "audit_failed")
                 self.assertIn("failed at record sequence 42", res["response"])
 
+    def test_conversation_multi_turn_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            save_chat_turn("sess_1", {"prompt": "what is 2+2?", "response": "2+2 is 4"}, history_dir=tmp_path)
+            agent = AutonomousAgent(history_dir=tmp_path)
+            with patch("harness.agent.chat") as mock_chat:
+                mock_chat.return_value = (200, {"choices": [{"message": {"content": "It is 4"}}], "usage": {"cost": 0.0}})
+                res = agent.run_prompt("and what is that plus 2?", session_id="sess_1")
+                self.assertEqual(res["status"], "ok")
+                chat_args = mock_chat.call_args[1]
+                messages = chat_args["messages"]
+                self.assertEqual(len(messages), 4)
+                self.assertEqual(messages[1]["content"], "what is 2+2?")
+                self.assertEqual(messages[2]["content"], "2+2 is 4")
+                self.assertEqual(messages[3]["content"], "and what is that plus 2?")
+
 
 if __name__ == "__main__":
     unittest.main()

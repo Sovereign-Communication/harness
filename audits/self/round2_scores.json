@@ -11,7 +11,7 @@
         "id": "A1",
         "label": "no-tools payload guard at the one chat seam",
         "score": 1.0,
-        "evidence": "spend.assert_no_tools exists; chat() guards every payload; all 5 billable lanes (apply/panel/consent/capability/convergence) dispatch through chat()"
+        "evidence": "spend.assert_no_tools exists; chat() guards every payload; all 4 billable lanes (apply/panel/consent/capability/convergence) dispatch through chat()"
       },
       {
         "id": "A2",
@@ -163,7 +163,13 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 682 tests in 20.735s\n\nOK"
+        "evidence": "unittest: Ran 809 tests in 24.678s\n\nOK"
+      },
+      {
+        "id": "R14",
+        "label": "R13 classifier self-verifies its contract",
+        "score": 1.0,
+        "evidence": "R13 classifier: clean->PASS, planted->FAIL, each signature load-bearing, old-rule diverges"
       }
     ],
     "SM": [
@@ -201,7 +207,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "36/36 modules imported by tests"
+        "evidence": "47/47 modules imported by tests"
       },
       {
         "id": "S7",
@@ -239,13 +245,13 @@
         "id": "D4",
         "label": "config table keys real",
         "score": 1.0,
-        "evidence": "13 README config keys all resolve to real settings (29 configurable)"
+        "evidence": "13 README config keys all resolve to real settings (30 configurable)"
       },
       {
         "id": "D5",
         "label": "version single-sourced",
         "score": 1.0,
-        "evidence": "pyproject=0.2.0 __version__=0.2.0 (one source)"
+        "evidence": "pyproject=0.3.3 __version__=0.3.3 (one source)"
       },
       {
         "id": "D6",
@@ -257,7 +263,7 @@
         "id": "D7",
         "label": "docs reference only real modules",
         "score": 1.0,
-        "evidence": "all module references across 10 docs resolve to real files"
+        "evidence": "all module references across 11 docs resolve to real files"
       },
       {
         "id": "D8",
@@ -275,7 +281,19 @@
         "id": "D10",
         "label": "CONTRIBUTING current",
         "score": 1.0,
-        "evidence": "CONTRIBUTING references only real modules; layering rules present"
+        "evidence": "CONTRIBUTING covers every public module; layering rules present"
+      },
+      {
+        "id": "D11",
+        "label": "corpus integrity (SHA-256 pinned)",
+        "score": 1.0,
+        "evidence": "evidence corpus matches its SHA-256 manifest"
+      },
+      {
+        "id": "D12",
+        "label": "changed lines suite-executed (coverage)",
+        "score": 1.0,
+        "evidence": "changed harness lines are suite-executed"
       }
     ]
   }

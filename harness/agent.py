@@ -196,10 +196,16 @@ class AutonomousAgent:
         model = getattr(self.settings, "tier1_model", None) or self.settings.judge or "inclusionai/ling-3.0-flash-fin:free"
         api_key, gov = governor_for(self.settings)
 
-        messages = [
-            {"role": "system", "content": DEFAULT_CHAT_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ]
+        messages = [{"role": "system", "content": DEFAULT_CHAT_SYSTEM_PROMPT}]
+        past_turns = load_chat_history(session_id, self.history_dir)
+        for turn in past_turns[-10:]:
+            p_text = turn.get("prompt")
+            r_text = turn.get("response")
+            if p_text:
+                messages.append({"role": "user", "content": p_text})
+            if r_text:
+                messages.append({"role": "assistant", "content": r_text})
+        messages.append({"role": "user", "content": prompt})
 
         status, resp = chat(
             transport=self.transport,
