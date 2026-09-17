@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from . import events as _events
+from .agent import AutonomousAgent, load_chat_history
 from .batch import BatchOptions
 from .config import HARD_TASK_MAX_COST, HARD_MAX_COST, load_settings
 from .errors import HarnessError, ToolCancelled
@@ -111,10 +112,14 @@ def _opt_bool(args, key):
 def validate_dispatch(kind, args):
     """CLI-boundary validation for UI dispatch. Same discipline as the CLI
     parsers: untrusted input is range-checked before anything runs."""
-    if kind not in ("apply", "verify", "continue", "bench"):
+    if kind not in ("apply", "verify", "continue", "bench", "chat"):
         raise HarnessError(f"unknown dispatch kind '{kind}'")
     args = dict(args or {})
-    if kind == "apply":
+    if kind == "chat":
+        _opt_str(args, "prompt", required=True)
+        args["auto_apply"] = _opt_bool(args, "auto_apply") if "auto_apply" in args else True
+        _opt_str(args, "session_id")
+    elif kind == "apply":
         f = _opt_str(args, "file", required=True)
         if not os.path.isfile(f):
             raise HarnessError(f"--file target does not exist: {f}")
@@ -251,11 +256,24 @@ def run_bench_task(task_id, args, cancel_check):
     return run_bench(engine, tasks)
 
 
+def run_chat_task(task_id, args, cancel_check):
+    # Autonomous chat runner driving prompt to conclusion with zero UI clutter
+    settings = load_settings()
+    agent = AutonomousAgent(settings=settings)
+    return agent.run_prompt(
+        prompt=args["prompt"],
+        auto_apply=args.get("auto_apply", True),
+        session_id=args.get("session_id"),
+        cancel_check=cancel_check,
+    )
+
+
 RUNNERS = {
     "apply": run_apply_task,
     "verify": run_verify_task,
     "continue": run_continue_task,
     "bench": run_bench_task,
+    "chat": run_chat_task,
 }
 
 
@@ -466,6 +484,9 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_models(q)
             if path == "/api/rankings":
                 return self._api_rankings()
+            if path == "/api/chat/history":
+                sid = (q.get("session_id") or ["default"])[0]
+                return self._send_json({"session_id": sid, "history": load_chat_history(sid)})
             return self._error(404, f"no such endpoint: {path}")
         except HarnessError as e:
             return self._error(400, str(e))
@@ -483,6 +504,9 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         except ValueError:
             return self._error(400, "request body is not valid JSON")
         try:
+            if parsed.path == "/api/chat":
+                # Single chat box entry point: text in, text out
+                return self._api_dispatch({"kind": "chat", "args": body})
             if parsed.path == "/api/runs":
                 return self._api_dispatch(body)
             m = RUN_SUB_RE.match(parsed.path)
