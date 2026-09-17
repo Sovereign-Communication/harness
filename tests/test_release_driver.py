@@ -60,5 +60,40 @@ class ReleaseDriverContractTests(unittest.TestCase):
                          "driver leak signatures must match R13's owner")
 
 
+
+
+class VenvLayoutTests(unittest.TestCase):
+    """Cross-platform smoke-venv resolution: the audit named the Windows-only
+    Scripts/python hardcode as a correctness residual; POSIX validation is
+    by this unit exercise (the real venv creation is exercised on Windows).
+    """
+
+    def _fake_venv(self, root, layout):
+        import os
+        d = os.path.join(str(root), layout)
+        os.makedirs(d)
+        exe = os.path.join(d, "python.exe" if layout == "Scripts" else "python")
+        open(exe, "wb").close()
+        return str(root)
+
+    def test_windows_layout_resolves(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            venv = self._fake_venv(td, "Scripts")
+            self.assertIn("Scripts", release.venv_python(venv))
+
+    def test_posix_layout_resolves(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            venv = self._fake_venv(td, "bin")
+            self.assertIn("bin", release.venv_python(venv))
+
+    def test_missing_layout_fails_loudly(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(SystemExit):
+                release.venv_python(td)
+
+
 if __name__ == "__main__":
     unittest.main()
