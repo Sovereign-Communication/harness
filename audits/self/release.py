@@ -68,6 +68,18 @@ def capture(cmd, cwd=ROOT):
                           encoding="utf-8", errors="replace")
 
 
+def venv_python(venv):
+    """The smoke venv's interpreter: Scripts/python.exe on Windows,
+    bin/python on POSIX. Resolved by existence, not sys.platform, so the
+    smoke step works on any release machine."""
+    for cand in (os.path.join(venv, "Scripts", "python.exe"),
+                 os.path.join(venv, "bin", "python")):
+        if os.path.exists(cand):
+            return cand
+    fail("publish", "no python executable in the smoke venv at "
+         + repr((venv, "Scripts/python.exe", "bin/python")))
+
+
 def interpreters(full=False):
     """Battery matrix: local default + uv-managed CI interpreters.
 
@@ -258,15 +270,23 @@ def step_publish(dry, version):
         print("[release]   gh release create v" + version
               + " dist/* with notes extracted from the tagged changelog")
         return
+    # stale artifacts would poison twine/smoke selection; dist/ is a
+    # gitignored build dir, regenerated wholesale here
+    shutil.rmtree(ROOT / "dist", ignore_errors=True)
     run([sys.executable, "-m", "build"])
-    run([sys.executable, "-m", "twine", "check", "dist/*"])
-    wheels = sorted((ROOT / "dist").glob("*.whl"))
+    # no shell: glob here so twine gets real paths on every platform
+    dist_files = sorted(str(p) for p in (ROOT / "dist").glob("*"))
+    if not dist_files:
+        fail("publish", "dist/ is empty after build")
+    run([sys.executable, "-m", "twine", "check"] + dist_files)
+    wheels = [w for w in sorted((ROOT / "dist").glob("*.whl"))
+           if version in w.name]
     if not wheels:
-        fail("publish", "no wheel in dist/ after build")
+        fail("publish", "no wheel for version " + version + " in dist/")
     with tempfile.TemporaryDirectory() as td:
         venv = os.path.join(td, "venv")
         run([sys.executable, "-m", "venv", venv])
-        vpy = os.path.join(venv, "Scripts", "python")
+        vpy = venv_python(venv)
         run([vpy, "-m", "pip", "install", "--no-index", str(wheels[0])])
         got = capture([vpy, "-c", "from importlib import metadata as m; "
                        "print(m.version('" + DIST_NAME + "'))"])
