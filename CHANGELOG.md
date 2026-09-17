@@ -9,7 +9,12 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- The self-audit's suite check (R13) now fails deterministically when
+  the suite's captured output carries unraisable-warning signatures
+  (`ResourceWarning`, `unclosed file`), closing the GC-timing blind
+  spot that flaked the v0.3.2 release gate (PR #17).
 
 ## [0.3.2] — 2026-09-16
 
