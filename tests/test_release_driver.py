@@ -60,6 +60,66 @@ class ReleaseDriverContractTests(unittest.TestCase):
                          "driver leak signatures must match R13's owner")
 
 
+class StepEditsFlattenTests(unittest.TestCase):
+    """step_edits' real path on a temp-repo fixture: the flatten must
+    preserve the changelog header above [Unreleased] (the first real
+    run dropped it -- caught by the D6 gate) and splice the release
+    section in place. pip/metadata subprocesses are stubbed; every
+    file mutation is real."""
+
+    def _make_repo(self, root):
+        NL = release.NL
+        root = Path(root)
+        (root / "harness").mkdir()
+        header = "# Changelog" + NL + NL + "Format is Keep a Changelog." + NL + NL
+        unreleased = ("## [Unreleased]" + NL + NL + "- Added: the sixth" + NL
+                      + "- Fixed: the seventh" + NL + NL)
+        released = "## [0.3.2] - 2026-09-10" + NL + NL + "- old entry" + NL
+        (root / "CHANGELOG.md").write_bytes(
+            (header + unreleased + released).encode("utf-8"))
+        (root / "pyproject.toml").write_bytes(
+            ('name = "harness"' + NL + 'version = "0.3.2"' + NL).encode("utf-8"))
+        (root / "harness" / "__init__.py").write_bytes(
+            ('__version__ = "0.3.2"' + NL).encode("utf-8"))
+
+    def test_flatten_preserves_header_and_bumps_versions(self):
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as td:
+            self._make_repo(Path(td))
+            calls = []
+            class _Out:
+                stdout = "0.3.3" + release.NL
+                returncode = 0
+            ctx = [mock.patch.object(release, "ROOT", Path(td)),
+                   mock.patch.object(release, "run", side_effect=calls.append),
+                   mock.patch.object(release, "capture", return_value=_Out())]
+            for c in ctx:
+                c.start()
+            try:
+                release.step_edits(False, "0.3.3")
+            finally:
+                for c in ctx:
+                    c.stop()
+            out = (Path(td) / "CHANGELOG.md").read_bytes().decode("utf-8")
+            self.assertTrue(out.startswith("# Changelog"),
+                            "header above [Unreleased] must survive")
+            self.assertIn("## [Unreleased]" + release.NL + release.NL
+                          + "Nothing yet.", out)
+            today = release.date.today().isoformat()
+            self.assertIn("## [0.3.3] " + chr(0x2014) + " " + today, out)
+            self.assertIn("- Added: the sixth", out)
+            self.assertIn("## [0.3.2] - 2026-09-10", out)
+            self.assertIn('version = "0.3.3"',
+                          (Path(td) / "pyproject.toml")
+                          .read_text(encoding="utf-8"))
+            self.assertIn('__version__ = "0.3.3"',
+                          (Path(td) / "harness" / "__init__.py")
+                          .read_text(encoding="utf-8"))
+            self.assertTrue(any("pip" in " ".join(c) for c in calls),
+                            "editable reinstall must be invoked")
+
+
 
 
 class VenvLayoutTests(unittest.TestCase):
