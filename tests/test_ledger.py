@@ -543,3 +543,21 @@ class LedgerLockTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LedgerOwnershipTests(unittest.TestCase):
+    """S6/DESIGN mirror pin: the analytics are OWNED by ledger_analytics,
+    not merely re-exported -- a moved definition must fail this pin (the
+    D1/D2/D8 lesson: audit extractors follow the owner)."""
+
+    def test_analytics_owner_and_inheritance(self):
+        import harness.ledger_analytics as la
+        self.assertTrue(hasattr(la, "LedgerAnalytics"))
+        self.assertIs(AutonomyLedger.participation_report,
+                      la.LedgerAnalytics.participation_report)
+        self.assertTrue(issubclass(AutonomyLedger, la.LedgerAnalytics))
+
+    def test_lifecycle_owner(self):
+        self.assertEqual(AutonomyLedger.append.__module__, "harness.ledger")
+        self.assertEqual(AutonomyLedger.verify.__module__, "harness.ledger")
+        self.assertEqual(AutonomyLedger.repair.__module__, "harness.ledger")

@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from harness.apply import _apply_unified_diff, _parse_ready
+from harness.prompts import _apply_unified_diff, _parse_ready
 from harness.prompts import READY_MARKER
 from harness.config import load_settings, DEFAULT_MAX_TOKENS
 from harness.capability import (

@@ -11,6 +11,7 @@ break APIs between minor versions).
 
 ### Changed
 
+- Split the two largest engine modules into one-owner-per-concern pairs, code moved verbatim as mixins so every call site and test keeps its shape: `ledger.py` (876 lines) keeps the storage/integrity lifecycle while `ledger_analytics.py` owns the read-only analytics (`participation_report` calibration incl. `gate_wasted_runs`, `defer_stats`); `apply.py` (866 lines) keeps the engine lifecycle (`apply_edit`, `_prepare`, `apply_batch`) while `apply_policy.py` owns the per-round machinery (billing, edit loop, consent, rotation, deferrals, escalation). Byte-identity proven by replaying real ledger + real-engine surfaces (report, tail, verify, chain, repair, happy path, gate-fail rotation, escalation lane) pre/post; ownership mirror pins added; coverage baseline regenerated as one diff per CONTRIBUTING.
 - The self-audit's suite check (R13) now fails deterministically when
   the suite's captured output carries unraisable-warning signatures
   (`ResourceWarning`, `unclosed file`), closing the GC-timing blind
