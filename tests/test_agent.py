@@ -1,4 +1,5 @@
 """Hermetic unit tests for AutonomousAgent and conversational orchestration (#PR-Chat-1)."""
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +10,7 @@ from harness.agent import (
     classify_prompt_intent,
     discover_target_files,
     discover_verification_gate,
+    get_default_history_dir,
     load_chat_history,
     save_chat_turn,
 )
@@ -201,6 +203,36 @@ class TestAutonomousAgent(unittest.TestCase):
                 self.assertEqual(res["status"], "ok")
                 self.assertEqual(mock_engine.apply_edit.call_count, 2)
                 self.assertAlmostEqual(res["cost"], 0.002)
+
+    def test_edge_cases_and_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            with patch.dict(os.environ, {"HARNESS_CONFIG_DIR": str(tmp_path)}):
+                d = get_default_history_dir()
+                self.assertTrue(d.exists())
+
+            # discover_verification_gate with unknown file returns None
+            self.assertIsNone(discover_verification_gate("unknown_file.xyz", root_dir=tmp_path))
+
+            # classify_prompt_intent fallback to conversation
+            intent = classify_prompt_intent("simple statement without punctuation")
+            self.assertEqual(intent, "conversation")
+
+            # corrupt line in chat history JSONL
+            hist_file = tmp_path / "corrupt-test.jsonl"
+            hist_file.write_text('{"prompt": "valid"}\ncorrupt json line\n', encoding="utf-8")
+            loaded = load_chat_history("corrupt-test", history_dir=tmp_path)
+            self.assertEqual(len(loaded), 1)
+
+            # audit failure path
+            agent = AutonomousAgent(history_dir=tmp_path)
+            mock_ledger = MagicMock()
+            mock_ledger.verify.return_value = (False, 42)
+            mock_ledger.chain_status.return_value = {"latest_seq": 41}
+            with patch("harness.agent.ledger_for", return_value=mock_ledger):
+                res = agent.run_prompt("audit ledger status")
+                self.assertEqual(res["status"], "audit_failed")
+                self.assertIn("failed at record sequence 42", res["response"])
 
 
 if __name__ == "__main__":
