@@ -1004,6 +1004,91 @@ def sd_corpus_integrity():
                  detail)
 
 
+def sd_coverage_changed():
+    """Changed harness lines must be executed by the traced suite:
+    since the coverage baseline's own commit, added lines in
+    harness/ that the traced battery never ran fail this check
+    below a 95% executed bar. The baseline is generated only by
+    refresh_coverage_baseline.py (a traced full battery run) and
+    committed with the code change it reflects. Missing data fails
+    open with an honest SKIP, never a silent pass."""
+    mf = HERE / "coverage_baseline.json"
+    if not mf.exists():
+        return 1.0, ("SKIP (fail-open): coverage_baseline.json missing -- "
+                     "run refresh_coverage_baseline.py")
+    doc = json.loads(mf.read_text(encoding="utf-8"))
+    ref = doc.get("commit", "")
+    if len(ref) != 40:
+        return 1.0, "SKIP (fail-open): baseline lacks a commit reference"
+    d = subprocess.run(
+        ["git", "diff", "--unified=0", ref, "--", "harness/"],
+        cwd=str(ROOT), capture_output=True, text=True)
+    if d.returncode != 0:
+        return 1.0, "SKIP (fail-open): git diff against baseline unavailable"
+    added = {}
+    rel = None
+    new_ln = 0
+    for ln in d.stdout.splitlines():
+        if ln.startswith("+++ b/"):
+            rel = ln[6:]
+        elif ln.startswith("@@") and ln.count("@@") >= 2:
+            parts = ln.split()
+            if len(parts) < 3 or not parts[2].startswith("+"):
+                continue
+            new_ln = int(parts[2][1:].split(",")[0])
+        elif rel is not None and ln.startswith("+") and not ln.startswith("+++"):
+            added.setdefault(rel, set()).add(new_ln)
+            new_ln += 1
+        elif rel is not None and ln.startswith(" "):
+            new_ln += 1
+    base = doc.get("modules", {})
+    checked = executed = 0
+    gaps = {}
+    for rel in sorted(added):
+        try:
+            tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        stmts = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.stmt):
+                continue
+            if (isinstance(node, ast.Expr)
+                    and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)):
+                continue  # docstrings never emit trace events
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.ClassDef)):
+                stmts.add(node.body[0].lineno)
+            else:
+                stmts.add(node.lineno)
+        done = set(base.get(rel, []))
+        for ln in sorted(added[rel]):
+            if ln not in stmts:
+                continue
+            checked += 1
+            if ln in done:
+                executed += 1
+            else:
+                gaps.setdefault(rel, []).append(ln)
+    if not checked:
+        return 1.0, ("no executable harness changes since the coverage "
+                     "baseline " + ref[:10])
+    ratio = executed / checked
+    ok = ratio >= 0.95
+    detail = (f"changed-line coverage {executed}/{checked} = "
+              f"{ratio:.0%} (bar 95%) vs baseline {ref[:10]}")
+    if gaps:
+        items = "; ".join(
+            r.split("harness/")[-1] + ":"
+            + ",".join(str(x) for x in gaps[r][:8])
+            + ("..." if len(gaps[r]) > 8 else "")
+            for r in sorted(gaps))
+        detail += "; untested: " + items
+    return _pass(ok, "changed harness lines are suite-executed", detail)
+
+
+
 CHECKS = {
     "A": [("A1", "no-tools payload guard at the one chat seam", a_no_tools_guard),
           ("A2", "preflight covers reasoning/429 retry slots", a_preflight_covers_retries),
@@ -1051,7 +1136,9 @@ CHECKS = {
            ("D9", "dogfood loop documented + wired", sd_dogfood_loop),
            ("D10", "CONTRIBUTING current", sd_contributing),
            ("D11", "corpus integrity (SHA-256 pinned)",
-            sd_corpus_integrity)],
+            sd_corpus_integrity),
+           ("D12", "changed lines suite-executed (coverage)",
+            sd_coverage_changed)],
 }
 
 DIM_NAMES = {"A": "Security", "R": "Reliability",
