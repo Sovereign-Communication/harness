@@ -37,6 +37,9 @@ and deferring instead of failing. On top of FusionLite's engine it adds:
    `"gate_ran": false` (the gate never ran in preview mode), while a gated
    run reports `verify_failed` with the gate's real output and `"gate_ran":
    true`.
+5. **System One & Calibrated Decision Support** — Fast-path pre-flight triage,
+   calibrated confidence thresholds for pre-gate deferral, and sub-second machine-native
+   jury panels (see [docs/system-one-integration.md](docs/system-one-integration.md)).
 
    Multi-file edits (`--file` × N) always return the **batch envelope**:
    `"batch": true` with a `results` list (one result per file, task-suffixed
