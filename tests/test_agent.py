@@ -241,7 +241,8 @@ class TestAutonomousAgent(unittest.TestCase):
             tmp_path = Path(tmp)
             save_chat_turn("sess_1", {"prompt": "what is 2+2?", "response": "2+2 is 4"}, history_dir=tmp_path)
             agent = AutonomousAgent(history_dir=tmp_path)
-            with patch("harness.agent.chat") as mock_chat:
+            with patch("harness.agent.chat") as mock_chat, \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())):
                 mock_chat.return_value = (200, {"choices": [{"message": {"content": "It is 4"}}], "usage": {"cost": 0.0}})
                 res = agent.run_prompt("and what is that plus 2?", session_id="sess_1")
                 self.assertEqual(res["status"], "ok")
@@ -260,7 +261,8 @@ class TestAutonomousAgent(unittest.TestCase):
             tmp_path = Path(tmp)
             save_chat_turn("ui_sess", {"prompt": "what is 2+2?", "response": "4"}, history_dir=tmp_path)
             agent = AutonomousAgent(history_dir=tmp_path)
-            with patch("harness.agent.chat") as mock_chat:
+            with patch("harness.agent.chat") as mock_chat, \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())):
                 mock_chat.return_value = (200, {
                     "choices": [{"message": {"content": "Verified: still 4"}}],
                     "usage": {"cost": 0.0},
