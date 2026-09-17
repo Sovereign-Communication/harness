@@ -130,4 +130,25 @@ TOOL_SCHEMAS = [
             "model": {"type": "string", "description": "Model id to score (defaults to none: host only)"},
         }},
     },
+    {
+        "name": "plan_and_execute",
+        "title": "Autonomous DAG task planning and sliding-scale execution",
+        "description": "Decompose a high-level goal into an executable Directed Acyclic Graph (DAG), "
+                       "classify subtask complexity into sliding-scale model tiers (Scout/Distiller/Frontier), "
+                       "and optionally execute independent subtasks concurrently with file mutual exclusion.",
+        "inputSchema": {"type": "object", "properties": {
+            "goal": {"type": "string", "description": "High-level goal or instruction to plan and accomplish"},
+            "execute": {"type": "boolean", "default": False, "description": "Execute the DAG if true; preview/plan only if false"},
+            "parallel": {"type": "boolean", "default": False, "description": "Execute independent subtasks concurrently in parallel"},
+            "max_workers": {"type": "integer", "default": 4, "minimum": 1, "maximum": 16},
+            "frontier_model": {"type": "string", "description": "Frontier model or alias for Tier 2 nodes (e.g. fable-5.1, gpt-6)"},
+            "file": {"anyOf": [
+                         {"type": "string"},
+                         {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                     ],
+                     "description": "Optional allowed file paths"},
+            "max_cost": {"type": "number", "minimum": 0, "maximum": 0.25},
+            "allow_write": {"type": "boolean", "description": "Confirm permission to write files when execute=true"},
+        }, "required": ["goal"]},
+    },
 ]

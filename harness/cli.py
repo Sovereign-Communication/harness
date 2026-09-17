@@ -38,7 +38,9 @@ from .service import run_verify as _service_verify
 from .service import read_text_file as _service_read_text
 from .rankings import build_rankings_report as _rankings_report
 from .capability import capabilities_payload as _capability_payload_owner
-from .results import terminal_exit_code
+from .dag import TaskDAG, plan_task
+from .executor import ConcurrentExecutor
+from .results import SUCCESS_STATUSES, terminal_exit_code
 from .saturation import advise
 import sys
 import uuid
@@ -556,6 +558,58 @@ def _capabilities_payload(settings, gov, api_key=None, refresh=False,
         bench=bench, all_models=all_models)
 
 
+def _cmd_plan(opts, settings):
+    # Decompose a high-level goal into an executable TaskDAG and optionally execute
+    candidate_files = getattr(opts, "file", None)
+    frontier_model = getattr(opts, "frontier_model", None) or getattr(settings, "frontier_model", None)
+    plan_result = plan_task(
+        goal=opts.goal,
+        candidate_files=candidate_files,
+        custom_frontier=frontier_model,
+        use_free=settings.use_free,
+    )
+    if not getattr(opts, "execute", False):
+        _emit(plan_result, opts.out)
+        return
+
+    engine = _session(settings, max_cost=getattr(opts, "max_cost", None))
+    dag = TaskDAG.from_dict(plan_result["dag"])
+    is_parallel = getattr(opts, "parallel", False)
+    workers = getattr(opts, "max_workers", 4) if is_parallel else 1
+    executor = ConcurrentExecutor(max_workers=workers)
+
+    def run_node(node):
+        target = node.target_files[0] if node.target_files else None
+        return engine.apply_edit(
+            file_path=target,
+            instruction=node.instruction,
+            verify_cmd=node.local_gate,
+            allow_verify=True,
+            require_consent=False,
+            model=getattr(opts, "model", None),
+            max_tokens=getattr(opts, "max_tokens", None),
+            task_max_cost=getattr(opts, "task_max_cost", None),
+            allow_escalation=getattr(opts, "allow_escalation", False),
+            reasoning_effort=getattr(opts, "reasoning_effort", None),
+            renew_consent=False,
+            max_rotations=getattr(opts, "max_rotations", 3),
+        )
+
+    all_results = executor.execute_dag(dag, run_node, keep_going=getattr(opts, "keep_going", False))
+    all_ok = all(res.get("status") in SUCCESS_STATUSES for res in all_results.values())
+    total_cost = sum(float(res.get("cost", 0.0) or 0.0) for res in all_results.values())
+
+    output = {
+        "status": "ok" if all_ok else "failed",
+        "goal": opts.goal,
+        "total_nodes": len(dag.nodes),
+        "completed_nodes": sum(1 for res in all_results.values() if res.get("status") in SUCCESS_STATUSES),
+        "results": list(all_results.values()),
+        "cost": round(total_cost, 6),
+    }
+    _emit_by_status(output, opts.out)
+
+
 # Command -> handler. `required=True` subparsers make an unknown command
 # unreachable here, so the table has no default arm; every handler takes
 # (opts, settings), so a signature drift fails loudly at dispatch instead of
@@ -564,6 +618,7 @@ _DISPATCH = {
     "verify": _cmd_verify,
     "lint-claims": _cmd_lint_claims,
     "apply": _cmd_apply,
+    "plan": _cmd_plan,
     "dogfood": _cmd_dogfood,
     "continue": _cmd_continue,
     "offer": _cmd_offer,

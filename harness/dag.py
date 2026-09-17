@@ -13,6 +13,7 @@ import re
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from .errors import HarnessError
+from .sliding_scale import resolve_sliding_scale_route
 
 
 @dataclass(frozen=True)
@@ -274,3 +275,142 @@ def parse_decomposition_response(response_text: str) -> TaskDAG:
         raise HarnessError(f"failed to parse JSON from decomposition response: {exc}") from exc
 
     return TaskDAG.from_dict(data)
+
+
+def heuristic_decompose_goal(goal: str, candidate_files: Optional[Sequence[str]] = None) -> TaskDAG:
+    # Deterministic heuristic decomposition into a TaskDAG
+    if not goal or not goal.strip():
+        raise HarnessError("goal cannot be empty")
+
+    files = [f.strip() for f in (candidate_files or []) if str(f).strip()]
+    nodes: Dict[str, DAGNode] = {}
+
+    # Check for numbered or bulleted steps in goal
+    steps = [s.strip() for s in re.split(r"(?:^|\n)\s*(?:\d+[\.\)]|[-*])\s+", goal.strip()) if s.strip()]
+
+    if len(steps) > 1:
+        # Multi-step goal
+        prev_id = None
+        for i, step in enumerate(steps, 1):
+            node_id = f"task_{i}"
+            deps = (prev_id,) if prev_id else ()
+            target = (files[i - 1],) if i - 1 < len(files) else ()
+            nodes[node_id] = DAGNode(
+                node_id=node_id,
+                instruction=step,
+                target_files=target,
+                dependencies=deps,
+                complexity_tier=1,
+            )
+            prev_id = node_id
+    elif len(files) > 1:
+        # Multi-file goal: one subtask per file
+        test_files = [f for f in files if "test" in f.lower()]
+        impl_files = [f for f in files if f not in test_files]
+
+        impl_ids = []
+        for i, f in enumerate(impl_files, 1):
+            node_id = f"task_{i}"
+            impl_ids.append(node_id)
+            nodes[node_id] = DAGNode(
+                node_id=node_id,
+                instruction=f"{goal.strip()} for {f}",
+                target_files=(f,),
+                dependencies=(),
+                complexity_tier=1,
+            )
+
+        start_test_idx = len(impl_files) + 1
+        for j, f in enumerate(test_files, start_test_idx):
+            node_id = f"task_{j}"
+            nodes[node_id] = DAGNode(
+                node_id=node_id,
+                instruction=f"Update tests in {f} for {goal.strip()}",
+                target_files=(f,),
+                dependencies=tuple(impl_ids),
+                complexity_tier=1,
+            )
+    else:
+        # Single node goal
+        nodes["task_1"] = DAGNode(
+            node_id="task_1",
+            instruction=goal.strip(),
+            target_files=tuple(files),
+            dependencies=(),
+            complexity_tier=1,
+        )
+
+    return TaskDAG(nodes=nodes)
+
+
+def plan_task(
+    goal: str,
+    candidate_files: Optional[Sequence[str]] = None,
+    repo_context: Optional[str] = None,
+    custom_frontier: Optional[str] = None,
+    use_free: bool = True,
+) -> Dict[str, Any]:
+    # Formulate a TaskDAG and classify sliding-scale tiers for each node
+    dag = heuristic_decompose_goal(goal, candidate_files)
+    node_details: List[Dict[str, Any]] = []
+    total_ceiling = 0.0
+
+    classified_nodes: Dict[str, DAGNode] = {}
+    batches = dag.topological_batches()
+    depth_map: Dict[str, int] = {}
+    for depth, batch in enumerate(batches):
+        for n in batch:
+            depth_map[n.node_id] = depth
+
+    for node_id, node in dag.nodes.items():
+        is_leaf = len(node.dependencies) == 0
+        depth = depth_map.get(node_id, 0)
+        route = resolve_sliding_scale_route(
+            instruction=node.instruction,
+            target_files=node.target_files,
+            dependency_depth=depth,
+            is_leaf=is_leaf,
+            use_free=use_free,
+            custom_frontier=custom_frontier,
+        )
+        total_ceiling += route.cost_ceiling
+        classified_nodes[node_id] = DAGNode(
+            node_id=node.node_id,
+            instruction=node.instruction,
+            target_files=node.target_files,
+            dependencies=node.dependencies,
+            local_gate=node.local_gate,
+            complexity_tier=route.classification.tier,
+        )
+        node_details.append({
+            "node_id": node.node_id,
+            "instruction": node.instruction,
+            "target_files": list(node.target_files),
+            "dependencies": list(node.dependencies),
+            "local_gate": node.local_gate,
+            "complexity_tier": route.classification.tier,
+            "recommended_model": route.classification.recommended_model,
+            "cost_ceiling": route.cost_ceiling,
+            "classification": {
+                "tier": route.classification.tier,
+                "score": route.classification.score,
+                "reasons": list(route.classification.reasons),
+                "estimated_cost_tier": route.classification.estimated_cost_tier,
+            },
+            "route": {
+                "ladder": list(route.ladder),
+                "cost_ceiling": route.cost_ceiling,
+            },
+        })
+
+    enriched_dag = TaskDAG(nodes=classified_nodes)
+    return {
+        "status": "planned",
+        "goal": goal.strip(),
+        "total_nodes": len(enriched_dag.nodes),
+        "batches": [[n.node_id for n in b] for b in enriched_dag.topological_batches()],
+        "nodes": node_details,
+        "total_cost_ceiling": round(total_ceiling, 4),
+        "dag": enriched_dag.to_dict(),
+    }
+

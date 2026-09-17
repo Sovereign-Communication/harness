@@ -113,6 +113,17 @@ def build_parser():
     pa.add_argument("--continue-from", default=None, help="resume a deferred task from state.json")
     _add_output_flags(pa)
 
+    pp = sub.add_parser("plan", help="Decompose a goal into an executable DAG with sliding-scale tier routing")
+    pp.add_argument("--goal", required=True, help="high-level goal or instruction to decompose and execute")
+    pp.add_argument("--execute", action="store_true", default=False, help="execute the planned DAG instead of previewing")
+    pp.add_argument("--parallel", action="store_true", default=False, help="execute independent subtasks concurrently")
+    pp.add_argument("--max-workers", type=int, default=4, help="thread pool worker count for parallel execution")
+    pp.add_argument("--frontier-model", default=None, help="frontier model or alias for Tier 2 nodes (e.g. fable-5.1, gpt-6)")
+    pp.add_argument("--file", action="append", default=None, help="constrain candidate target files")
+    pp.add_argument("--keep-going", dest="keep_going", action="store_true", default=False, help="continue past a failed subtask")
+    _add_engine_flags(pp, max_tokens_default=4096)
+    _add_output_flags(pp)
+
     pc = sub.add_parser("continue", help="Continue a deferred/incomplete apply task")
     pc.add_argument("--state", required=True, help="JSON state file from a deferred/verify_failed apply")
     pc.add_argument("--file", default=None)
