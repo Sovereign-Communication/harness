@@ -174,6 +174,7 @@ statement covers the CI matrix by direct execution.
 | `harness/render.py` | the ONE human-facing pretty-printer: TTY tables of result envelopes on stderr; read-only, machine JSON stays the stdout contract |
 | `harness/bench.py` | hermetic known-answer benchmarks |
 | `harness/chat.py` | the one chat-completion path and the one assessment of what a model actually produced |
+| `harness/web.py` | deliberate web access for the chat lane: allowlist-only fetch (https, redirects refused) + one operator-configured search endpoint; opt-in per run, honest failures, never an SSRF surface |
 | `harness/claims.py` | structured-claims grounding: source_refs lint + claims curation from the ledger's own evidence |
 | `harness/continuation.py` | the resumable-task state contract and its verification identity |
 | `harness/convergence.py` | deterministic tally over panel votes + the rotating specialist lane |

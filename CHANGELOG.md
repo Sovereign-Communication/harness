@@ -9,7 +9,37 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Chat web tools, opt-in per run.** The conversation lane can now attach
+  real evidence instead of fabricating it: with `web: true` on the run (UI
+  toggle), a URL prompt fetches the page and a plain question runs one web
+  search, and the retrieved sources (or their honest failures) are placed in
+  the model's context with a cite-only-these contract; the persisted turn
+  records `web_used` provenance. Fetch is allowlist-only (`https`, one host
+  set owned by `harness/web.py`, redirects refused) and search targets one
+  operator-configured endpoint (`HARNESS_WEB_SEARCH_URL`), so neither is an
+  SSRF surface. With web tools OFF, the system prompt states the no-internet
+  boundary plainly -- the model can no longer roleplay an arXiv/Lean sweep it
+  never ran (the Riemann incident, `sess_tk4073vs`).
+- **The chat sidebar is live.** `app.js` now renders `/api/chat/sessions`
+  (newest first, active highlighted), click-to-load switches sessions,
+  per-session delete hits `/api/chat/session/delete`, the working-directory
+  field sends `root_dir` with chat prompts, and a Web badge toggles the new
+  web tools; the list refreshes after each run completes.
+
+### Fixed
+
+- **UI overlap at wide viewports.** The sidebar redesign was prepended to
+  `app.css` while the entire superseded legacy stylesheet remained below it;
+  the legacy `header`/`#input-footer` `position: fixed; left: 0; right: 0`
+  rules won the cascade, so the header and input bar escaped the main panel
+  and rendered across the (opaque, z-60) sidebar. The stale block is deleted;
+  the layout is now fixed-sidebar + normal-flow main panel with a single
+  `position: fixed` rule in the file.
+- `_delete_chat_session` refuses ids containing path separators or `..`
+  (defense-in-depth: delete targets can no longer lean on `Path` collapsing
+  traversal segments), pinned by endpoint tests.
 
 ## [0.3.3] — 2026-09-16
 

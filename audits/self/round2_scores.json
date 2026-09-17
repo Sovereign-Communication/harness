@@ -163,7 +163,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 809 tests in 24.678s\n\nOK"
+        "evidence": "unittest: Ran 848 tests in 28.231s\n\nOK"
       },
       {
         "id": "R14",
@@ -207,7 +207,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "47/47 modules imported by tests"
+        "evidence": "48/48 modules imported by tests"
       },
       {
         "id": "S7",

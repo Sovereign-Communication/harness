@@ -28,6 +28,8 @@ let sessionId = localStorage.getItem("harness_session_id") || "sess_" + Math.ran
 localStorage.setItem("harness_session_id", sessionId);
 
 let autoApply = localStorage.getItem("harness_auto_apply") !== "false";
+let webEnabled = localStorage.getItem("harness_web_enabled") === "true";
+let workDir = localStorage.getItem("harness_workdir") || "";
 let currentRunId = null;
 let pollTimer = null;
 let eventSeq = 0;
@@ -36,11 +38,81 @@ let eventSeq = 0;
 window.addEventListener("DOMContentLoaded", () => {
   setupInputHandlers();
   setupHeaderControls();
+  setupSidebar();
   setupStarterChips();
   loadHistory();
   pollSpend();
   setInterval(pollSpend, 8000);
 });
+
+// Setup Sidebar (session list, workdir)
+function setupSidebar() {
+  const workdirInput = $("#workdir-input");
+  if (workdirInput) {
+    workdirInput.value = workDir;
+    workdirInput.addEventListener("change", () => {
+      workDir = workdirInput.value.trim();
+      localStorage.setItem("harness_workdir", workDir);
+    });
+  }
+  refreshSessionList();
+}
+
+// Session list: fetch + render
+async function refreshSessionList() {
+  const list = $("#session-list");
+  if (!list) return;
+  try {
+    const data = await api("/api/chat/sessions");
+    const sessions = data.sessions || [];
+    list.innerHTML = "";
+    if (!sessions.length) {
+      list.innerHTML = `<div class="session-empty">No conversations yet</div>`;
+      return;
+    }
+    for (const s of sessions) {
+      const item = document.createElement("div");
+      item.className = "session-item" + (s.id === sessionId ? " active" : "");
+      const when = new Date(s.updated_at * 1000).toLocaleString();
+      item.innerHTML = `
+        <span class="session-preview" title="${esc(s.preview)} · ${esc(when)}">${esc(s.preview)}</span>
+        <button type="button" class="session-delete" title="Delete conversation">✕</button>
+      `;
+      item.querySelector(".session-delete").addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteSession(s.id);
+      });
+      item.addEventListener("click", () => switchSession(s.id));
+      list.appendChild(item);
+    }
+  } catch (_e) {
+    list.innerHTML = `<div class="session-empty">Session list unavailable</div>`;
+  }
+}
+
+async function switchSession(id) {
+  if (id === sessionId) return;
+  sessionId = id;
+  localStorage.setItem("harness_session_id", sessionId);
+  $("#chat-feed").innerHTML = "";
+  $("#welcome-hero").hidden = false;
+  await loadHistory();
+  refreshSessionList();
+}
+
+async function deleteSession(id) {
+  if (!confirm("Delete this conversation?")) return;
+  try {
+    await api("/api/chat/session/delete", { method: "POST", body: JSON.stringify({ session_id: id }) });
+    if (id === sessionId) {
+      sessionId = "sess_" + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem("harness_session_id", sessionId);
+      $("#chat-feed").innerHTML = "";
+      $("#welcome-hero").hidden = false;
+    }
+    refreshSessionList();
+  } catch (_e) {}
+}
 
 // Setup Starter Chips
 function setupStarterChips() {
@@ -73,7 +145,36 @@ function setupHeaderControls() {
     $("#welcome-hero").hidden = false;
     $("#prompt-input").value = "";
     $("#prompt-input").focus();
+    refreshSessionList();
   });
+
+  const webBtn = $("#btn-web-toggle");
+  if (webBtn) {
+    updateWebDisplay();
+    webBtn.addEventListener("click", () => {
+      webEnabled = !webEnabled;
+      localStorage.setItem("harness_web_enabled", webEnabled ? "true" : "false");
+      updateWebDisplay();
+    });
+  }
+}
+
+function updateWebDisplay() {
+  const btn = $("#btn-web-toggle");
+  if (!btn) return;
+  const icon = $("#web-icon");
+  const text = $("#web-text");
+  if (webEnabled) {
+    btn.classList.remove("web-off");
+    icon.textContent = "🌐";
+    text.textContent = "Web on";
+    btn.title = "Web tools ON: chat may search and fetch allowlisted pages for this run";
+  } else {
+    btn.classList.add("web-off");
+    icon.textContent = "🌐";
+    text.textContent = "Web off";
+    btn.title = "Web tools OFF: the agent has no internet access and will say so";
+  }
 }
 
 function updateModeDisplay() {
@@ -151,22 +252,22 @@ async function submitPrompt(prompt) {
       prompt: prompt,
       session_id: sessionId,
       auto_apply: autoApply,
+      web: webEnabled,
     };
+    if (workDir) payload.root_dir = workDir;
 
     const run = await api("/api/chat", {
       method: "POST",
       body: JSON.stringify(payload),
-    });
-
-    currentRunId = run.id;
-    eventSeq = 0;
-    pollExecution(run.id, agentMsg);
-  } catch (err) {
-    agentMsg.stepper.hidden = true;
-    agentMsg.body.innerHTML = `<p style="color:var(--red);">Error starting task: ${esc(err.message)}</p>`;
-    setInFlight(false);
-  }
-}
+    });        currentRunId = run.id;
+        eventSeq = 0;
+        pollExecution(run.id, agentMsg);
+      } catch (err) {
+        agentMsg.stepper.hidden = true;
+        agentMsg.body.innerHTML = `<p style="color:var(--red);">Error starting task: ${esc(err.message)}</p>`;
+        setInFlight(false);
+      }
+    }
 
 // Poll Execution & Events
 function pollExecution(runId, agentMsg) {
@@ -192,6 +293,9 @@ function pollExecution(runId, agentMsg) {
         setInFlight(false);
         renderFinalResult(resData, agentMsg);
         pollSpend();
+        // The session file is persisted at turn end; refresh so the new
+        // conversation appears in the sidebar with its preview.
+        refreshSessionList();
         return;
       }
     } catch (_e) {}
@@ -271,6 +375,7 @@ function renderFinalResult(runRecord, agentMsg) {
   const cost = res.cost ?? 0.0;
   agentMsg.footer.innerHTML = `
     <span>Model: ${esc(res.model || "Sliding-Scale Multi-Tier")}</span>
+    ${res.web_used ? `<span title="Live web evidence was retrieved for this answer">🌐 web</span>` : ``}
     <span>Spend: ${fmtCost(cost)}</span>
   `;
   agentMsg.footer.hidden = false;
