@@ -73,7 +73,9 @@ def router_for(settings):
                   panel_pool=settings.panel_pool, apply_pool=settings.apply_pool,
                   specialist_pool=settings.specialist_pool,
                   convergence_model=settings.convergence_model or judge,
-                  escalation_pool=ladder)
+                  escalation_pool=ladder,
+                  frontier_model=getattr(settings, "frontier_model", None),
+                  use_free=settings.use_free)
 
 
 def engine_for(settings, api_key, gov, ledger, router):

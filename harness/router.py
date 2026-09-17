@@ -13,6 +13,14 @@ back to the last tier that needed escalation (judge-gated, data-driven).
 """
 
 
+from .sliding_scale import (
+    classify_task_tier,
+    resolve_frontier_model,
+    tier_cost_ceiling,
+    tier_model_ladder,
+)
+
+
 def dedup(seq):
     out = []
     for x in seq:
@@ -25,7 +33,7 @@ class Router:
     def __init__(self, panel, judge, apply_model, escalation_model=None,
                  allow_escalation=False, panel_pool=None, apply_pool=None,
                  specialist_pool=None, convergence_model=None,
-                 escalation_pool=None):
+                 escalation_pool=None, frontier_model=None, use_free=True):
         self.panel = list(panel)
         self.judge = judge
         self.apply_model = apply_model
@@ -42,6 +50,38 @@ class Router:
         # mode replaces single escalation_model when present.
         self.escalation_pool = list(escalation_pool or [])
         self._escalation_rung = 0  # current rung index during auto-escalation
+        self.use_free = use_free
+        self.frontier_model = resolve_frontier_model(frontier_model, use_free=use_free)
+
+    def route_tier(self, tier: int):
+        # Return the spec for an upfront sliding-scale complexity tier.
+        ladder = tier_model_ladder(tier, use_free=self.use_free, custom_frontier=self.frontier_model)
+        primary = ladder[0] if ladder else self.apply_model
+        ceiling = tier_cost_ceiling(tier, use_free=self.use_free)
+        return {
+            "tier": tier,
+            "primary_model": primary,
+            "pool": ladder,
+            "cost_ceiling": ceiling,
+        }
+
+    def classify_and_route(self, instruction, target_files=None,
+                           diff_size=None, dependency_depth=0, is_leaf=True,
+                           previous_failures=0):
+        # Classify task complexity and produce a routed execution spec.
+        classification = classify_task_tier(
+            instruction=instruction,
+            target_files=target_files,
+            diff_size=diff_size,
+            dependency_depth=dependency_depth,
+            is_leaf=is_leaf,
+            previous_failures=previous_failures,
+            use_free=self.use_free,
+            custom_frontier=self.frontier_model,
+        )
+        spec = self.route_tier(classification.tier)
+        spec["classification"] = classification
+        return spec
 
     def route(self, task_type):
         """Return the spec for a task type: cheap lane first."""

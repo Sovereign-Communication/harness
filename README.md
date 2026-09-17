@@ -37,6 +37,9 @@ and deferring instead of failing. On top of FusionLite's engine it adds:
    `"gate_ran": false` (the gate never ran in preview mode), while a gated
    run reports `verify_failed` with the gate's real output and `"gate_ran":
    true`.
+5. **System One & Calibrated Decision Support** — Fast-path pre-flight triage,
+   calibrated confidence thresholds for pre-gate deferral, and sub-second machine-native
+   jury panels (see [docs/system-one-integration.md](docs/system-one-integration.md)).
 
    Multi-file edits (`--file` × N) always return the **batch envelope**:
    `"batch": true` with a `results` list (one result per file, task-suffixed
@@ -208,6 +211,9 @@ harness dogfood --from-ledger --claims-out curated.json \
 harness dogfood --from-ledger --claims-out curated.json \
   --file harness/spend.py --instruction x --verify "python -m py_compile harness/spend.py"
 
+# Autonomous DAG planning and sliding-scale execution
+harness plan --goal "Refactor engine and verify" --execute --parallel
+
 # Autonomy ledger, live free models, key status, trust standing
 harness ledger report          # includes chain status (segments, pruned cut)
 harness ledger verify          # chain integrity + retention shape
@@ -267,7 +273,7 @@ Wire into any MCP host (Claude Code, Cursor, your own agents):
 { "mcpServers": { "harness": { "command": "harness-mcp" } } }
 ```
 
-Tools: `panel_verify`, `apply_edit`, `offer_work`, `defer_work`,
+Tools: `panel_verify`, `apply_edit`, `plan_and_execute`, `offer_work`, `defer_work`,
 `ledger_status`, `participation_report`, `spend_status`, `trust_status`.
 `trust_status` reports bipolar trust (-11..+11) for the host and a model,
 plus the correctness level that rations spend ceilings (read-only).

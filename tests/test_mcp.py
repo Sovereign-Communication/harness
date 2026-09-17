@@ -929,6 +929,7 @@ class LaneSchedulingTests(unittest.TestCase):
             {name: lane_for(name) for name in
              (t["name"] for t in TOOL_SCHEMAS)},
             {"apply_edit": "mutation",
+             "plan_and_execute": "mutation",
              "panel_verify": "spendy",
              "offer_work": "spendy",
              "ledger_status": "observe",
