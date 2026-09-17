@@ -170,17 +170,10 @@ class ConcurrentExecutor:
             if not executable_nodes:
                 continue
 
-            # Run executable nodes in parallel
-            with ThreadPoolExecutor(max_workers=min(self.max_workers, len(executable_nodes))) as pool:
-                future_to_node = {
-                    pool.submit(self._run_node_with_locks, node, worker_fn): node
-                    for node in executable_nodes
-                }
-
-                for future in as_completed(future_to_node):
-                    node = future_to_node[future]
+            if self.max_workers == 1:
+                for node in executable_nodes:
                     try:
-                        res = future.result()
+                        res = self._run_node_with_locks(node, worker_fn)
                     except Exception as exc:
                         res = {"status": "fatal", "error": str(exc), "node_id": node.node_id}
 
@@ -188,8 +181,28 @@ class ConcurrentExecutor:
                     if res.get("status") not in SUCCESS_STATUSES:
                         failed_nodes.add(node.node_id)
                         if not keep_going:
-                            for f in future_to_node:
-                                f.cancel()
+                            break
+            else:
+                # Run executable nodes in parallel
+                with ThreadPoolExecutor(max_workers=min(self.max_workers, len(executable_nodes))) as pool:
+                    future_to_node = {
+                        pool.submit(self._run_node_with_locks, node, worker_fn): node
+                        for node in executable_nodes
+                    }
+
+                    for future in as_completed(future_to_node):
+                        node = future_to_node[future]
+                        try:
+                            res = future.result()
+                        except Exception as exc:
+                            res = {"status": "fatal", "error": str(exc), "node_id": node.node_id}
+
+                        all_results[node.node_id] = res
+                        if res.get("status") not in SUCCESS_STATUSES:
+                            failed_nodes.add(node.node_id)
+                            if not keep_going:
+                                for f in future_to_node:
+                                    f.cancel()
 
             if failed_nodes and not keep_going:
                 break

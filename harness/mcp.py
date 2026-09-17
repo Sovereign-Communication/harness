@@ -20,9 +20,12 @@ from . import trust as trust_policy
 from .batch import BatchOptions
 from .consent import probe_consent
 from .continuation import validate_continuation
+from .dag import TaskDAG, plan_task
 from .errors import HarnessError, ToolCancelled
+from .executor import ConcurrentExecutor
 from .mcp_lanes import LANES, lane_for
 from .mcp_schemas import TOOL_SCHEMAS
+from .results import SUCCESS_STATUSES
 from .service import run_verify as _service_run_verify
 from .validation import (
     MAX_LINES,
@@ -658,6 +661,57 @@ class McpServer:
             return trust_policy.trust_status(
                 self.ledger.participation_report(), model=model_arg,
                 caller=self.caller)
+        if name == "plan_and_execute":
+            goal = validate_text(args.get("goal"), "goal", 20000, required=True)
+            execute = validate_mcp_bool(args.get("execute", False), "execute")
+            parallel = validate_mcp_bool(args.get("parallel", False), "parallel")
+            allow_write = validate_mcp_bool(args.get("allow_write", False), "allow_write")
+            max_workers = int(args.get("max_workers", 4) or 4)
+            frontier_model = validate_mcp_model(args.get("frontier_model"), "frontier_model")
+            raw_files = args.get("file")
+            candidate_files = validate_mcp_files(raw_files) if raw_files is not None else []
+
+            if execute and not (self.allow_write or allow_write):
+                self._refuse(
+                    "mcp file write without allow_write",
+                    "plan_and_execute file writes are disabled for this session; "
+                    "re-send with allow_write=true or configure allow_write=True explicitly",
+                    model=frontier_model)
+
+            plan_result = plan_task(
+                goal=goal,
+                candidate_files=candidate_files,
+                custom_frontier=frontier_model,
+                use_free=self.use_free,
+            )
+            if not execute:
+                return plan_result
+
+            dag = TaskDAG.from_dict(plan_result["dag"])
+            executor = ConcurrentExecutor(max_workers=max_workers if parallel else 1)
+
+            def run_node(node):
+                target = node.target_files[0] if node.target_files else None
+                return self.engine.apply_edit(
+                    file_path=target,
+                    instruction=node.instruction,
+                    verify_cmd=node.local_gate,
+                    allow_verify=self.allow_verify,
+                    require_consent=False,
+                )
+
+            all_results = executor.execute_dag(dag, run_node)
+            all_ok = all(res.get("status") in SUCCESS_STATUSES for res in all_results.values())
+            total_cost = sum(float(res.get("cost", 0.0) or 0.0) for res in all_results.values())
+            return {
+                "status": "ok" if all_ok else "failed",
+                "goal": goal,
+                "total_nodes": len(dag.nodes),
+                "completed_nodes": sum(1 for res in all_results.values() if res.get("status") in SUCCESS_STATUSES),
+                "results": list(all_results.values()),
+                "cost": round(total_cost, 6),
+                "dag": plan_result["dag"],
+            }
         raise ValueError(f"unknown tool: {name}")
 
     # ---------------- notifications/progress streaming ----------------
