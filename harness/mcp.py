@@ -20,7 +20,8 @@ from . import trust as trust_policy
 from .batch import BatchOptions
 from .consent import probe_consent
 from .continuation import validate_continuation
-from .dag import TaskDAG, node_apply_kwargs, plan_task
+from .dag import TaskDAG, node_apply_kwargs
+from .waist import compose_plan
 from .errors import HarnessError, ToolCancelled
 from .executor import ConcurrentExecutor
 from .mcp_lanes import LANES, lane_for
@@ -666,6 +667,8 @@ class McpServer:
             execute = validate_mcp_bool(args.get("execute", False), "execute")
             parallel = validate_mcp_bool(args.get("parallel", False), "parallel")
             allow_write = validate_mcp_bool(args.get("allow_write", False), "allow_write")
+            decompose_llm = validate_mcp_bool(args.get("decompose_llm", False), "decompose_llm")
+            confirm = validate_mcp_bool(args.get("confirm", False), "confirm")
             max_workers = int(args.get("max_workers", 4) or 4)
             frontier_model = validate_mcp_model(args.get("frontier_model"), "frontier_model")
             raw_files = args.get("file")
@@ -678,12 +681,15 @@ class McpServer:
                     "re-send with allow_write=true or configure allow_write=True explicitly",
                     model=frontier_model)
 
-            plan_result = plan_task(
-                goal=goal,
-                candidate_files=candidate_files,
-                custom_frontier=frontier_model,
-                use_free=self.use_free,
-            )
+            plan_result = compose_plan(
+                transport=self.transport, api_key=self.api_key,
+                governor=self.governor, ledger=self.ledger, opts_goal=goal,
+                candidate_files=candidate_files, frontier_model=frontier_model,
+                use_free=self.use_free, decompose_llm=decompose_llm,
+                confirm=confirm, execute=execute)
+            if plan_result.get("status") == "refused":
+                # Waist refusal is terminal evidence: the plan never executes.
+                return plan_result
             if not execute:
                 return plan_result
 

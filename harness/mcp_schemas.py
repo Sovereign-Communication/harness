@@ -142,6 +142,8 @@ TOOL_SCHEMAS = [
             "parallel": {"type": "boolean", "default": False, "description": "Execute independent subtasks concurrently in parallel"},
             "max_workers": {"type": "integer", "default": 4, "minimum": 1, "maximum": 16},
             "frontier_model": {"type": "string", "description": "Frontier model or alias for Tier 2 nodes (e.g. fable-5.1, gpt-6)"},
+            "decompose_llm": {"type": "boolean", "default": False, "description": "Author the DAG with the cheapest tier-appropriate model (schema-validated; heuristic fallback when execute=true)"},
+            "confirm": {"type": "boolean", "default": False, "description": "Confirm the plan at the frontier waist before execution (brief + bounded file-window rounds; approve/amend/refuse verdict; a refused plan never executes)"},
             "file": {"anyOf": [
                          {"type": "string"},
                          {"type": "array", "items": {"type": "string"}, "minItems": 1},

@@ -11,6 +11,28 @@ break APIs between minor versions).
 
 ### Added
 
+- **The waist is live: `harness plan --confirm` (M2).** Before execution
+  spend, the plan is confirmed by the frontier model (`--frontier-model` /
+  `HARNESS_FRONTIER_MODEL`) through a condensed brief -- file-signature
+  MicroBrief plus bounded file windows -- as its ONLY repo access. The
+  verdict contract is strict JSON (`approve` / `amend` with a full
+  replacement node set / `refuse` with reason + cited brief evidence /
+  `request_windows` for bounded round-trips, capped at 2). Amended plans
+  re-classify through the same sliding scale; a refusal is terminal,
+  ledgered (`plan_verdict`, with rounds + cost), and the plan never
+  executes; window requests past the round budget fail closed. The
+  confirmation shares the run's ONE governor ceiling with execution.
+- **LLM decomposition: `harness plan --decompose-llm` (M1).** The cheapest
+  tier-appropriate model (the tier-0 ladder head from the same
+  sliding-scale policy -- no new routing policy) authors the DAG via the
+  schema-validated decomposition contract that had been built but unwired;
+  `dag.plan_task` accepts a `decomposed_dag` and classifies it identically.
+  On `--execute` a decomposition failure falls back to the heuristic with
+  a loud note; a plan-only preview fails loudly instead of silently
+  downgrading. `chat.governed_text` is the new one owner of the
+  single-shot governed call (preflight -> chat -> bill -> extract); MCP
+  `plan_and_execute` gains `decompose_llm`/`confirm` params with the same
+  semantics; a refused plan is a fail-closed envelope on every surface.
 - **Plan execution now routes per node.** `harness plan --execute`, MCP
   `plan_and_execute`, and the agent lane discarded the per-node
   sliding-scale intelligence at dispatch: every node ran on the settings'

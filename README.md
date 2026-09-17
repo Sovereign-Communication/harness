@@ -214,6 +214,10 @@ harness dogfood --from-ledger --claims-out curated.json \
 # Autonomous DAG planning and sliding-scale execution
 harness plan --goal "Refactor engine and verify" --execute --parallel
 # Each node runs its own tier ladder + cost ceiling (explicit --model pins it)
+# LLM-authored decomposition (cheap model, schema-validated) + frontier waist:
+harness plan --goal "..." --decompose-llm --confirm --frontier-model fable-5.1 --execute
+# --confirm sends a condensed brief (signatures + bounded windows; no open-ended
+# reading) for an approve/amend/refuse verdict; a refused plan never executes.
 
 # Autonomy ledger, live free models, key status, trust standing
 harness ledger report          # includes chain status (segments, pruned cut)

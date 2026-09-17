@@ -310,3 +310,44 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
             return _account(retry_status,
                             _merge_retry_cost(retry_resp, prior_cost))
     return _account(status, resp)
+
+
+def governed_text(transport, api_key, governor, model, prompt, max_tokens,
+                  label="ask", reasoning_effort="auto",
+                  reasoning_token_budget=0.4):
+    """Single-shot governed text call: preflight -> chat -> bill -> extract.
+
+    ONE owner of the request-lane mechanics the panel/judge paths inline
+    for their own shapes; plan-lane calls (LLM decomposition, waist
+    confirmation) share this instead of re-deriving preflight/billing.
+    Returns ``(content, cost)``; content is the raw body (a reasoning-only
+    trace still returns, prefixed with REASONING_FALLBACK_PREFIX -- the
+    CALLER decides whether a trace satisfies its contract). Raises
+    HarnessError on HTTP failure, BYOK routing (recorded, spend invisible),
+    or an empty body.
+    """
+    if governor is None:
+        from .errors import HarnessError
+        raise HarnessError("governed_text requires a SpendGovernor")
+    from .errors import HarnessError
+    governor.check_byok(model)
+    governor.preflight(prompt, [(label, model, max_tokens, 0)])
+    status, resp = chat(transport, api_key, model,
+                        [{"role": "user", "content": prompt}],
+                        max_tokens, reasoning_effort=reasoning_effort,
+                        reasoning_token_budget=reasoning_token_budget,
+                        governor=governor)
+    if status != 200:
+        from .results import _http_error
+        raise HarnessError(_http_error(status, resp))
+    content, _, cost, is_byok = extract_content_and_cost(resp)
+    if is_byok:
+        governor.record_byok(model)
+        raise HarnessError(
+            f"response for {model} was BYOK-routed; spend is not tracked on "
+            "this key, so the call is refused")
+    if cost:
+        governor.record_actual(cost, model)
+    if not content or not content.strip():
+        raise HarnessError(f"empty response body from {model}")
+    return content, cost

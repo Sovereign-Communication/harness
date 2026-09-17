@@ -290,3 +290,48 @@ class TestPlanningSurface(unittest.TestCase):
         self.assertEqual(kwargs["task_max_cost"], route["cost_ceiling"])
         # Explicit pins stay absent when unset.
         self.assertEqual(kwargs["model"], None)
+
+    def test_cli_plan_confirm_refusal_fails_closed(self):
+        import json as _json
+        import os as _os
+        import shutil as _shutil
+        import tempfile as _tempfile
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from harness.cli import _cmd_plan
+        from harness.spend import SpendGovernor
+        from tests._fake import FakeTransport, m
+
+        refuse = {"choices": [{"message": {"content": _json.dumps({
+            "verdict": "refuse", "reason": "tier mismatch",
+            "evidence": "brief: task_1 needs frontier"})},
+            "finish_reason": "stop"}],
+            "usage": {"cost": 0.0001, "is_byok": False}}
+        fake = FakeTransport(models=[m("front/x")], posts=[refuse])
+        gov = SpendGovernor(fake, "sk-test")
+        ledger_dir = _tempfile.mkdtemp()
+        self.addCleanup(_shutil.rmtree, ledger_dir, ignore_errors=True)
+        opts = SimpleNamespace(
+            goal="Refactor concurrency architecture", file=["harness/sync.py"],
+            frontier_model="front/x", execute=True, parallel=False,
+            max_workers=1, max_cost=1.0, keep_going=False, out=None,
+            model=None, max_tokens=None, task_max_cost=None,
+            allow_escalation=False, reasoning_effort=None, max_rotations=3,
+            decompose_llm=False, confirm=True)
+        settings = SimpleNamespace(use_free=False, frontier_model=None,
+                                   ledger_path=_os.path.join(ledger_dir, "l.jsonl"))
+
+        mock_engine = MagicMock()
+        mock_engine.governor = gov
+        mock_engine.transport = fake
+        mock_engine.api_key = "k"
+        with patch("harness.cli._governor", return_value=("k", gov)), \
+             patch("harness.cli.HttpTransport", return_value=fake), \
+             patch("harness.cli._session", return_value=mock_engine):
+            with self.assertRaises(SystemExit) as ctx:
+                _cmd_plan(opts, settings)
+        # Fail-closed: exit 2, and despite --execute the DAG never dispatches
+        # (the engine builds first to share its ceiling; the gate is the waist).
+        self.assertEqual(ctx.exception.code, 2)
+        mock_engine.apply_edit.assert_not_called()

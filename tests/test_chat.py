@@ -1,7 +1,7 @@
 """Response extraction: content/cost pulls and the reasoning-only fallback."""
 import unittest
 
-from harness.chat import chat, extract_content_and_cost
+from harness.chat import chat, extract_content_and_cost, governed_text
 from harness.errors import HarnessError
 from harness.spend import SpendGovernor
 from tests._fake import FakeTransport, comp, m
@@ -77,6 +77,45 @@ class CostAccountingTests(unittest.TestCase):
         with self.assertRaisesRegex(HarnessError, "omitted usage accounting"):
             chat(fake, "k", "paid/x", [{"role": "user", "content": "hi"}],
                  64, governor=gov)
+
+
+class GovernedTextTests(unittest.TestCase):
+    """The single-shot governed call: preflight, billing, and fail-closed
+    error paths (HTTP failure, BYOK routing, empty body, no governor)."""
+
+    def setUp(self):
+        self.fake = FakeTransport(models=[m("cheap/x")])
+        self.gov = SpendGovernor(self.fake, "sk-test")
+
+    def test_returns_content_and_bills(self):
+        self.fake.posts = [comp("hello plan", cost=0.002)]
+        content, cost = governed_text(self.fake, "k", self.gov, "cheap/x", "p", 64)
+        self.assertEqual(content, "hello plan")
+        self.assertEqual(cost, 0.002)
+        self.assertEqual(self.gov.spent, 0.002)
+
+    def test_requires_governor(self):
+        with self.assertRaises(HarnessError):
+            governed_text(self.fake, "k", None, "cheap/x", "p", 64)
+
+    def test_http_failure_fails_closed(self):
+        self.fake.posts = [(500, {"error": {"message": "boom"}})]
+        with self.assertRaises(HarnessError) as ctx:
+            governed_text(self.fake, "k", self.gov, "cheap/x", "p", 64)
+        self.assertIn("HTTP 500", str(ctx.exception))
+
+    def test_byok_response_refused_and_recorded(self):
+        body = comp("hello")
+        body["usage"]["is_byok"] = True
+        self.fake.posts = [body]
+        with self.assertRaises(HarnessError) as ctx:
+            governed_text(self.fake, "k", self.gov, "cheap/x", "p", 64)
+        self.assertIn("BYOK", str(ctx.exception))
+
+    def test_empty_body_refused(self):
+        self.fake.posts = [comp("  ")]
+        with self.assertRaises(HarnessError):
+            governed_text(self.fake, "k", self.gov, "cheap/x", "p", 64)
 
 
 if __name__ == "__main__":

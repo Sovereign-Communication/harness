@@ -120,6 +120,15 @@ def build_parser():
     pp.add_argument("--max-workers", type=int, default=4, help="thread pool worker count for parallel execution")
     pp.add_argument("--frontier-model", default=None, help="frontier model or alias for Tier 2 nodes (e.g. fable-5.1, gpt-6)")
     pp.add_argument("--file", action="append", default=None, help="constrain candidate target files")
+    pp.add_argument("--decompose-llm", dest="decompose_llm", action="store_true", default=False,
+                    help="author the DAG with the cheapest tier-appropriate model "
+                         "(schema-validated; on --execute a failure falls back to the "
+                         "heuristic with a loud note, a plan-only preview fails loudly)")
+    pp.add_argument("--confirm", action="store_true", default=False,
+                    help="confirm the plan at the frontier waist before execution: "
+                         "condensed brief + bounded file-window round-trips; "
+                         "approve/amend/refuse verdict (spends against the run's ceiling; "
+                         "a refused plan never executes)")
     pp.add_argument("--keep-going", dest="keep_going", action="store_true", default=False, help="continue past a failed subtask")
     _add_engine_flags(pp, max_tokens_default=4096)
     _add_output_flags(pp)

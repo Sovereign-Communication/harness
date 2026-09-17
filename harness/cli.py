@@ -37,8 +37,9 @@ from .service import prepare_verify as _prepare_verify
 from .service import run_verify as _service_verify
 from .service import read_text_file as _service_read_text
 from .rankings import build_rankings_report as _rankings_report
+from .waist import compose_plan as _compose_plan
 from .capability import capabilities_payload as _capability_payload_owner
-from .dag import TaskDAG, node_apply_kwargs, plan_task
+from .dag import TaskDAG, node_apply_kwargs
 from .executor import ConcurrentExecutor
 from .results import SUCCESS_STATUSES, terminal_exit_code
 from .saturation import advise
@@ -558,21 +559,55 @@ def _capabilities_payload(settings, gov, api_key=None, refresh=False,
         bench=bench, all_models=all_models)
 
 
+def _plan_compose(settings, opts, gov, transport, api_key, *,
+                  candidate_files, frontier_model, execute):
+    """Plan-lane flow via the ONE owner (harness/waist.py): heuristic or
+    cheap-LLM decomposition, then optional waist confirmation."""
+    confirm = getattr(opts, "confirm", False)
+    return _compose_plan(
+        transport=transport, api_key=api_key, governor=gov,
+        ledger=_ledger(settings) if confirm else None, opts_goal=opts.goal,
+        candidate_files=candidate_files, frontier_model=frontier_model,
+        use_free=settings.use_free,
+        decompose_llm=getattr(opts, "decompose_llm", False),
+        confirm=confirm,
+        execute=execute)
+
+
 def _cmd_plan(opts, settings):
     # Decompose a high-level goal into an executable TaskDAG and optionally execute
     candidate_files = getattr(opts, "file", None)
     frontier_model = getattr(opts, "frontier_model", None) or getattr(settings, "frontier_model", None)
-    plan_result = plan_task(
-        goal=opts.goal,
-        candidate_files=candidate_files,
-        custom_frontier=frontier_model,
-        use_free=settings.use_free,
-    )
-    if not getattr(opts, "execute", False):
+    execute = getattr(opts, "execute", False)
+    decompose_llm = getattr(opts, "decompose_llm", False)
+    confirm = getattr(opts, "confirm", False)
+
+    # ONE governor for the whole run when it spends: decomposition,
+    # confirmation, and node execution share a single ceiling (the engine's
+    # when executing; a verified standalone governor for a plan-only LLM run).
+    engine = None
+    if execute:
+        engine = _session(settings, max_cost=getattr(opts, "max_cost", None))
+        gov, transport, api_key = engine.governor, engine.transport, engine.api_key
+    elif decompose_llm or confirm:
+        api_key, gov = _governor(settings, getattr(opts, "max_cost", None))
+        transport = HttpTransport()
+    else:
+        gov, transport, api_key = None, None, None
+
+    plan_result = _plan_compose(
+        settings, opts, gov, transport, api_key,
+        candidate_files=candidate_files, frontier_model=frontier_model,
+        execute=execute)
+    if plan_result.get("status") == "refused":
+        # The waist refused; execution must not start (fail-closed), and the
+        # refusal's reason + evidence ride the envelope (exit code 2).
+        _emit_by_status(plan_result, opts.out)
+        return
+    if not execute:
         _emit(plan_result, opts.out)
         return
 
-    engine = _session(settings, max_cost=getattr(opts, "max_cost", None))
     dag = TaskDAG.from_dict(plan_result["dag"])
     node_routes = {n.get("node_id"): n for n in plan_result["nodes"]}
     is_parallel = getattr(opts, "parallel", False)

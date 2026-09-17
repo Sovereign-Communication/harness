@@ -913,6 +913,42 @@ class McpProtocolTests(unittest.TestCase):
         self.assertFalse(by_id[12]["result"]["isError"])
 
 
+class PlanWaistTests(unittest.TestCase):
+    """plan_and_execute's waist params: confirm rides the canned frontier
+    verdict; a refusal is terminal and never reaches execution."""
+
+    def _call(self, arguments, posts=None):
+        feed = ('{"jsonrpc":"2.0","id":77,"method":"tools/call","params":'
+                '{"name":"plan_and_execute","arguments":' +
+                json.dumps(arguments) + '}}\n')
+        return run(feed, posts=posts)
+
+    def test_confirm_preview_rides_approval(self):
+        verdict = json.dumps({"verdict": "approve"})
+        _, frames = self._call(
+            {"goal": "Split the work", "confirm": True, "frontier_model": JUDGE},
+            posts=[{"choices": [{"message": {"content": verdict},
+                                 "finish_reason": "stop"}],
+                    "usage": {"cost": 0.0001, "is_byok": False}}])
+        result = frames[0]["result"]["content"][0]["text"]
+        plan = json.loads(result) if result.startswith("{") else result
+        self.assertEqual(plan["confirmation"]["verdict"], "approved")
+        self.assertEqual(plan["status"], "planned")
+
+    def test_refusal_is_terminal(self):
+        verdict = json.dumps({"verdict": "refuse", "reason": "tier mismatch",
+                              "evidence": "brief: task_2 is concurrency"})
+        _, frames = self._call(
+            {"goal": "Split the work", "confirm": True, "frontier_model": JUDGE},
+            posts=[{"choices": [{"message": {"content": verdict},
+                                 "finish_reason": "stop"}],
+                    "usage": {"cost": 0.0001, "is_byok": False}}])
+        result = frames[0]["result"]["content"][0]["text"]
+        plan = json.loads(result) if result.startswith("{") else result
+        self.assertEqual(plan["status"], "refused")
+        self.assertEqual(plan["confirmation"]["evidence"], "brief: task_2 is concurrency")
+
+
 class LaneSchedulingTests(unittest.TestCase):
     """The lane contract mcp.py's pool wiring depends on: LANES is the
     pool-creation order and lane_for routes every tool contract name.

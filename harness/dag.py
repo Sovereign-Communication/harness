@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from .errors import HarnessError
 from .sliding_scale import resolve_sliding_scale_route
+from .validation import MAX_INSTRUCTION_CHARS
 
 
 @dataclass(frozen=True)
@@ -250,10 +251,12 @@ def build_decomposition_prompt(
     return "\n".join(lines)
 
 
-def parse_decomposition_response(response_text: str) -> TaskDAG:
-    """Extract and parse a TaskDAG from an LLM's response text."""
+def _parse_json_object(response_text: str, what: str) -> Dict[str, Any]:
+    """Extract a JSON object from an LLM response: markdown fenced block
+    first, then the outermost brace span, else the raw text. ONE owner of
+    that extraction (decomposition and waist verdicts share it)."""
     if not response_text or not response_text.strip():
-        raise HarnessError("empty response for task decomposition")
+        raise HarnessError(f"empty response for {what}")
 
     text = response_text.strip()
     # 1. Try markdown fenced code block: ```json ... ``` or ``` ... ```
@@ -272,8 +275,15 @@ def parse_decomposition_response(response_text: str) -> TaskDAG:
     try:
         data = json.loads(candidate)
     except json.JSONDecodeError as exc:
-        raise HarnessError(f"failed to parse JSON from decomposition response: {exc}") from exc
+        raise HarnessError(f"failed to parse JSON from {what}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise HarnessError(f"{what} must be a JSON object")
+    return data
 
+
+def parse_decomposition_response(response_text: str) -> TaskDAG:
+    """Extract and parse a TaskDAG from an LLM's response text."""
+    data = _parse_json_object(response_text, "task decomposition")
     return TaskDAG.from_dict(data)
 
 
@@ -343,15 +353,48 @@ def heuristic_decompose_goal(goal: str, candidate_files: Optional[Sequence[str]]
     return TaskDAG(nodes=nodes)
 
 
+def decompose_via_llm(
+    chat_fn,
+    goal: str,
+    candidate_files: Optional[Sequence[str]] = None,
+    repo_context: Optional[str] = None,
+) -> TaskDAG:
+    """M1 seam: a cheap model authors the DAG; strict schema validation.
+
+    ``chat_fn(prompt) -> response text`` is injected (governed upstream via
+    ``chat.governed_text``), so this stays pure and hermetically testable.
+    Raises HarnessError on empty/invalid responses, an empty node set, or
+    nodes that would fail apply-time validation (instruction length). The
+    heuristic decomposition stays the caller's fallback: planning may
+    degrade loudly, spending may not degrade silently.
+    """
+    prompt = build_decomposition_prompt(
+        goal, repo_context=repo_context, candidate_files=candidate_files)
+    dag = parse_decomposition_response(chat_fn(prompt))
+    if not dag.nodes:
+        raise HarnessError("LLM decomposition returned no nodes")
+    for node in dag.nodes.values():
+        if len(node.instruction) > MAX_INSTRUCTION_CHARS:
+            raise HarnessError(
+                f"LLM decomposition node {node.node_id!r} instruction exceeds "
+                f"{MAX_INSTRUCTION_CHARS} chars (would fail apply validation)")
+    return dag
+
+
 def plan_task(
     goal: str,
     candidate_files: Optional[Sequence[str]] = None,
     repo_context: Optional[str] = None,
     custom_frontier: Optional[str] = None,
     use_free: bool = True,
+    decomposed_dag: Optional[TaskDAG] = None,
 ) -> Dict[str, Any]:
-    # Formulate a TaskDAG and classify sliding-scale tiers for each node
-    dag = heuristic_decompose_goal(goal, candidate_files)
+    # Formulate a TaskDAG and classify sliding-scale tiers for each node.
+    # decomposed_dag: a pre-built DAG (LLM-authored via decompose_via_llm or
+    # waist-amended) replacing the heuristic decomposition; tier
+    # classification and ceiling math are identical for either origin.
+    dag = (decomposed_dag if decomposed_dag is not None
+           else heuristic_decompose_goal(goal, candidate_files))
     node_details: List[Dict[str, Any]] = []
     total_ceiling = 0.0
 
@@ -455,3 +498,140 @@ def node_apply_kwargs(
             kwargs["task_max_cost"] = ceiling
     return kwargs
 
+
+
+def build_waist_prompt(
+    plan_result: Dict[str, Any],
+    brief_context: str = "",
+    window_context: str = "",
+) -> str:
+    """Build the frontier waist-confirmation prompt (M2).
+
+    The brief (file signatures + bounded windows + failure evidence) is the
+    confirming model's ONLY repo access: bounded file-window round-trips
+    replace open-ended reading. The verdict contract is strict JSON, one of::
+
+        {"verdict": "approve"}
+        {"verdict": "amend", "nodes": [ ...same node schema as decomposition... ]}
+        {"verdict": "refuse", "reason": "...", "evidence": "cited brief section"}
+        {"verdict": "request_windows",
+         "file_window_requests": [{"path": "p/x.py", "start_line": 1, "end_line": 80}]}
+
+    ``amend`` replaces the whole node set (subdividing a node is just an
+    amend), and the replacement re-validates through the same schema as the
+    original plan. A refusal must cite the brief section that fails --
+    honest evidence, not vibes.
+    """
+    nodes = [
+        {k: n[k] for k in ("node_id", "instruction", "target_files",
+                           "dependencies", "local_gate", "complexity_tier")
+         if k in n}
+        for n in plan_result.get("nodes", [])
+    ]
+    lines = [
+        "You are the plan-confirmation gate for an autonomous coding harness.",
+        "A cheaper model decomposed the goal below into an executable DAG.",
+        "Confirm the plan BEFORE execution spend: check decomposition quality,",
+        "tier assignments (0=scout/simple, 1=standard, 2=deep/frontier),",
+        "dependency ordering, and target-file scoping.",
+        "",
+        "GOAL:",
+        plan_result.get("goal", "").strip(),
+        "",
+        "PLANNED DAG (JSON):",
+        json.dumps({"nodes": nodes}, indent=2),
+        "",
+    ]
+    if brief_context:
+        lines.extend(["REPOSITORY BRIEF (signatures; your only repo access):",
+                      brief_context.strip(), ""])
+    if window_context:
+        lines.extend(["REQUESTED FILE WINDOWS (attached this round):",
+                      window_context.strip(), ""])
+    lines.extend([
+        "VERDICT CONTRACT -- respond with ONLY one JSON object:",
+        '  {"verdict": "approve"}                                   plan is sound as routed',
+        '  {"verdict": "amend", "nodes": [...]}                     full replacement node set,',
+        '                                                           same schema, re-validated;',
+        '                                                           subdividing a node is an amend',
+        '  {"verdict": "refuse", "reason": "...", "evidence": "..."}  cite the brief section',
+        '                                                           that fails; evidence required',
+        '  {"verdict": "request_windows", "file_window_requests": [...]}  need bounded source',
+        '                                                           windows before deciding',
+        '                                                            ({"path", "start_line",',
+        '                                                              "end_line"}; 1-based,',
+        '                                                              end inclusive)',
+        "Rules: the DAG must stay acyclic; node instructions must be precise and",
+        "scoped (they are executed verbatim by cheaper models); do not request",
+        "more windows than you need -- round-trips are budgeted.",
+    ])
+    return "\n".join(lines)
+
+
+def _waist_window_request(raw) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise HarnessError("waist file_window_requests entries must be objects")
+    path = str(raw.get("path") or "").strip()
+    if not path:
+        raise HarnessError("waist file_window_request missing 'path'")
+    request: Dict[str, Any] = {"path": path}
+    for key in ("start_line", "end_line"):
+        value = raw.get(key)
+        if value is None:
+            continue
+        try:
+            line = int(value)
+        except (TypeError, ValueError):
+            raise HarnessError(
+                f"waist file_window_request {key} must be an integer") from None
+        if line < 1:
+            raise HarnessError(f"waist file_window_request {key} must be >= 1")
+        request[key] = line
+    if ("start_line" in request or "end_line" in request) and \
+            request.get("start_line", 1) > request.get("end_line", 1 << 30):
+        raise HarnessError("waist file_window_request start_line exceeds end_line")
+    return request
+
+
+def parse_waist_verdict(response_text: str) -> Dict[str, Any]:
+    """Parse and validate a waist verdict (strict; fail-closed).
+
+    Returns one of ``{"verdict": "approve"}``, ``{"verdict": "amend",
+    "dag": TaskDAG}`` (the replacement node set, re-validated for unique
+    ids, unknown dependencies, cycles, and apply-time instruction
+    length), ``{"verdict": "refuse", "reason", "evidence"}``, or
+    ``{"verdict": "request_windows", "file_window_requests": [...]}``.
+    """
+    data = _parse_json_object(response_text, "waist plan verdict")
+    verdict = str(data.get("verdict") or "").strip()
+    if verdict == "approve":
+        return {"verdict": "approve"}
+    if verdict == "amend":
+        nodes = data.get("nodes")
+        if not isinstance(nodes, list) or not nodes:
+            raise HarnessError(
+                "waist amend verdict requires a non-empty 'nodes' list")
+        amended = TaskDAG.from_dict({"nodes": nodes})
+        for node in amended.nodes.values():
+            if len(node.instruction) > MAX_INSTRUCTION_CHARS:
+                raise HarnessError(
+                    f"amended node {node.node_id!r} instruction exceeds "
+                    f"{MAX_INSTRUCTION_CHARS} chars (would fail apply validation)")
+        return {"verdict": "amend", "dag": amended}
+    if verdict == "refuse":
+        reason = str(data.get("reason") or "").strip()
+        evidence = str(data.get("evidence") or "").strip()
+        if not reason or not evidence:
+            raise HarnessError(
+                "waist refuse verdict requires non-empty 'reason' and "
+                "'evidence' (cite the brief section that fails)")
+        return {"verdict": "refuse", "reason": reason, "evidence": evidence}
+    if verdict == "request_windows":
+        requests = data.get("file_window_requests")
+        if not isinstance(requests, list) or not requests:
+            raise HarnessError(
+                "waist request_windows verdict requires a non-empty "
+                "'file_window_requests' list")
+        return {"verdict": "request_windows",
+                "file_window_requests": [_waist_window_request(r) for r in requests]}
+    raise HarnessError(f"unknown waist verdict {verdict!r}")
