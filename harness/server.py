@@ -257,7 +257,9 @@ def run_bench_task(task_id, args, cancel_check):
 
 
 def run_chat_task(task_id, args, cancel_check):
-    # Autonomous chat runner driving prompt to conclusion with zero UI clutter
+    # Autonomous chat runner driving prompt to conclusion with zero UI clutter.
+    # force_conversation=True bypasses the intent classifier: every UI chat
+    # prompt is conversational by definition and must load session history.
     settings = load_settings()
     agent = AutonomousAgent(settings=settings)
     return agent.run_prompt(
@@ -265,6 +267,7 @@ def run_chat_task(task_id, args, cancel_check):
         auto_apply=args.get("auto_apply", True),
         session_id=args.get("session_id"),
         cancel_check=cancel_check,
+        force_conversation=True,
     )
 
 

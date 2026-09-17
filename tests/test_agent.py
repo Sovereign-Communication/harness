@@ -23,8 +23,10 @@ class TestAgentClassificationAndDiscovery(unittest.TestCase):
         self.assertEqual(classify_prompt_intent("How does the router work?"), "conversation")
         self.assertEqual(classify_prompt_intent("What models are available in Tier 0"), "conversation")
         self.assertEqual(classify_prompt_intent("Explain the difference between Scout and Distiller"), "conversation")
+        self.assertEqual(classify_prompt_intent("verify the claim about the riemann"), "conversation")
 
         # Edit / Mutation
+        self.assertEqual(classify_prompt_intent("How can I refactor executor.py?"), "edit")
         self.assertEqual(classify_prompt_intent("Fix the bug in executor.py"), "edit")
         self.assertEqual(classify_prompt_intent("Implement rate limiting in session.py"), "edit")
         self.assertEqual(classify_prompt_intent("Refactor concurrency architecture"), "edit")
@@ -249,6 +251,31 @@ class TestAutonomousAgent(unittest.TestCase):
                 self.assertEqual(messages[1]["content"], "what is 2+2?")
                 self.assertEqual(messages[2]["content"], "2+2 is 4")
                 self.assertEqual(messages[3]["content"], "and what is that plus 2?")
+
+    def test_force_conversation_bypasses_classifier(self):
+        """UI chat path: force_conversation=True always routes to _handle_conversation,
+        even for prompts that look like edit requests (e.g. contain 'fix', 'verify'),
+        ensuring session history is always loaded."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            save_chat_turn("ui_sess", {"prompt": "what is 2+2?", "response": "4"}, history_dir=tmp_path)
+            agent = AutonomousAgent(history_dir=tmp_path)
+            with patch("harness.agent.chat") as mock_chat:
+                mock_chat.return_value = (200, {
+                    "choices": [{"message": {"content": "Verified: still 4"}}],
+                    "usage": {"cost": 0.0},
+                })
+                # "verify this" would normally classify as 'edit' — but force_conversation overrides
+                res = agent.run_prompt("verify this", session_id="ui_sess", force_conversation=True)
+                self.assertEqual(res["status"], "ok")
+                self.assertEqual(res["intent"], "conversation")
+                chat_args = mock_chat.call_args[1]
+                messages = chat_args["messages"]
+                # system + prior user + prior assistant + current user = 4
+                self.assertEqual(len(messages), 4)
+                self.assertEqual(messages[1]["content"], "what is 2+2?")
+                self.assertEqual(messages[2]["content"], "4")
+                self.assertEqual(messages[3]["content"], "verify this")
 
 
 if __name__ == "__main__":

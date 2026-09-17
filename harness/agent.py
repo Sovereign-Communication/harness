@@ -45,16 +45,18 @@ def classify_prompt_intent(prompt: str) -> str:
     if any(w in cleaned for w in ("verify chain", "audit ledger", "ledger status", "check ledger")):
         return "audit"
 
-    # Check for file extension occurrences
+    # Check for explicit file extension occurrences
     has_file_ext = bool(re.search(r"\b[a-zA-Z0-9_\-./]+\.(?:py|rs|go|ts|js|md|json|toml|yaml|yml|c|cpp|h)\b", prompt))
+
+    # Prompts asking conversational questions (or ending with ?) take precedence unless explicit files/paths are given
+    if first_word in CONVERSATION_STARTERS or cleaned.endswith("?"):
+        if not has_file_ext and not any(w in cleaned for w in ("refactor ", "implement ", "fix bug ", "add test")):
+            return "conversation"
 
     has_mutation_verb = any(w in MUTATION_KEYWORDS for w in words)
 
     if has_mutation_verb or has_file_ext:
         return "edit"
-
-    if first_word in CONVERSATION_STARTERS or cleaned.endswith("?"):
-        return "conversation"
 
     return "conversation"
 
@@ -165,13 +167,23 @@ class AutonomousAgent:
         auto_apply: bool = True,
         session_id: Optional[str] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
+        force_conversation: bool = False,
     ) -> Dict[str, Any]:
-        # Process a natural language prompt from intent to verified conclusion
+        # Process a natural language prompt from intent to verified conclusion.
+        # When force_conversation=True (e.g. UI chat box), skip the intent
+        # classifier entirely and route straight to conversational handling so
+        # that session history is always loaded and submitted to the model.
         if not prompt or not prompt.strip():
             raise HarnessError("Prompt cannot be empty")
 
         sid = session_id or "default"
         emit("chat_turn_start", prompt=prompt, session_id=sid)
+
+        if force_conversation:
+            emit("intent_classified", intent="conversation", prompt=prompt)
+            if cancel_check and cancel_check():
+                raise ToolCancelled("Prompt execution was cancelled by user")
+            return self._handle_conversation(prompt, sid, cancel_check)
 
         intent = classify_prompt_intent(prompt)
         emit("intent_classified", intent=intent, prompt=prompt)
