@@ -206,8 +206,8 @@ class AutonomousAgent:
             api_key=api_key,
             model=model,
             messages=messages,
-            max_tokens=2048,
-            reasoning_effort=self.settings.reasoning_effort,
+            max_tokens=4096,
+            reasoning_effort="off",
             governor=gov,
         )
 
