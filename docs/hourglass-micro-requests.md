@@ -274,3 +274,10 @@ tmp driver ONLY, repo code untouched).
   tier 2) bounds any misclassification's downside to one wasted cheap
   attempt. 2-1 on verdict, mechanism verified in `sliding_scale.py`.
 - Remaining MRs (1-2, 4-8) still open for their consensus pair runs.
+- **M1 + M2 shipped same day** (commit `5cc9067`): `--decompose-llm` and
+  `--confirm` are live on CLI and MCP, per the MR-3 verdict's conditions.
+  The remaining MRs now gate the NEXT phase, not this one: MR-4's contract
+  is implemented in reduced form (split folded into amend), MR-5 (isolation
+  partition) and MR-6 (composed ceiling reservations) are the open
+  decisions blocking M3 (worktree/PR isolation) and pyramid-level ceiling
+  composition. Run them before building M3+.

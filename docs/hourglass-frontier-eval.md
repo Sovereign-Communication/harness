@@ -248,10 +248,16 @@ composed ceiling for the whole pyramid run; consent is taken per dispatch
 2. **Decomposition is heuristic-only in the live path.** Numbered-steps or
    per-file splitting; the LLM decomposition contract exists but no lane
    calls it. There is no "cheap model decomposes, schema-validated" step.
+   **[RESOLVED 2026-09-17: `harness plan --decompose-llm` wires the contract
+   via `dag.decompose_via_llm` + `chat.governed_text`; tier-0-ladder-head
+   model; heuristic fallback on `--execute`, loud failure on preview.]**
 3. **No waist.** Nothing assembles a frontier brief (MicroBrief + grounded
    claims + failure evidence + coverage contract) for plan *confirmation*;
    no structured plan-verdict contract; no bounded file-request round-trip.
    Escalation today is per-apply-run file completion, not plan adjudication.
+   **[RESOLVED 2026-09-17: `harness plan --confirm` (harness/waist.py) —
+   approve/amend/refuse/request_windows verdict contract, ≤2 window rounds,
+   ledgered `plan_verdict` events, refusals fail closed on every surface.]**
 4. **No plan-consensus step.** Panels verify results; nothing asks a second
    (or the) model "is this decomposition sound?" before spending execution
    budget — the cheapest place to catch a bad plan is before stage 0.
