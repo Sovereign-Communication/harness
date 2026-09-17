@@ -140,7 +140,8 @@ merge.
 | `harness/capability.py` | model capability profiles + observed evidence |
 | `harness/saturation.py` | one free-tier saturation policy: per-attempt evidence -> the plain-language verdict terminal surfaces print when the tier fail-closes |
 | `harness/rankings.py` | rankings-driven pool-candidate refresh: OpenRouter daily-traffic evidence -> candidate report (evidence-driven, not folklore-driven) |
-| `harness/apply.py` | request preparation, model dispatch/rotation, and round orchestration |
+| `harness/apply.py` | apply engine lifecycle: construction, the public `apply_edit` entry, and batch dispatch; per-round machinery mixed in from apply_policy |
+| `harness/apply_policy.py` | the apply engine's per-round machinery (billing, edit loop, consent, rotation, deferrals, escalation) -- mixed into `ApplyEngine` verbatim |
 | `harness/batch.py` | multi-file batch orchestration: one governed session per file, shared task budget, fail-fast -- owns the LOOP, the engine owns the per-file apply |
 | `harness/apply_gate.py` | one candidate-to-gate transaction: write, verify, preview, rewind, and terminal gate results |
 | `harness/apply_state.py` | apply request data and mutable per-run state |
@@ -153,7 +154,8 @@ merge.
 | `harness/cli_report.py` | the ONE result-rendering owner (`_emit`, `_emit_by_status`, `_print_capabilities_table`): --out files, machine JSON vs TTY pretty mode, exit-code surfacing -- moved verbatim from cli.py |
 | `harness/cli_parser.py` | the argparse surface as pure construction (`build_parser`, flag builders) — handlers live in cli.py, flags in exactly one owner |
 | `harness/consent.py` | the consent probe (sovereignty) |
-| `harness/ledger.py` | hash-chained JSONL autonomy ledger |
+| `harness/ledger.py` | autonomy ledger storage/integrity lifecycle: append, hash chain, rotation, repair, verify |
+| `harness/ledger_analytics.py` | read-only ledger analytics (participation_report, defer_stats calibration) -- mixed into `AutonomyLedger` verbatim |
 | `harness/trust.py` | bipolar trust (-11..+11) per host/model/author: levels AND gates -- thresholds unlock actions, safety signals drop trust fast |
 | `harness/events.py` | typed progress event stream: the ONE owner of live run telemetry (structured JSON to sinks; advisory, never control flow) |
 | `harness/mcp.py` | MCP framing, boundary normalization, engine dispatch, cooperative cancellation + per-tool deadlines (the frame loop owns the cancellation lifecycle), and response lifecycle; composes dependencies from session.py |

@@ -853,3 +853,21 @@ class BatchOptionsPinTests(ApplyFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ApplyOwnershipTests(unittest.TestCase):
+    """S6/DESIGN mirror pin: the per-round machinery is OWNED by
+    apply_policy, not merely re-exported -- a moved definition must fail
+    this pin (the D1/D2/D8 lesson: audit extractors follow the owner)."""
+
+    def test_policy_owner_and_inheritance(self):
+        import harness.apply_policy as ap
+        self.assertTrue(hasattr(ap, "ApplyEngineMixin"))
+        self.assertIs(ApplyEngine._attempt_round, ap.ApplyEngineMixin._attempt_round)
+        self.assertIs(ApplyEngine._escalate, ap.ApplyEngineMixin._escalate)
+        self.assertTrue(issubclass(ApplyEngine, ap.ApplyEngineMixin))
+
+    def test_lifecycle_owner(self):
+        self.assertEqual(ApplyEngine.apply_edit.__module__, "harness.apply")
+        self.assertEqual(ApplyEngine._prepare.__module__, "harness.apply")
+        self.assertEqual(ApplyEngine.apply_batch.__module__, "harness.apply")

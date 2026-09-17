@@ -156,7 +156,8 @@ def a_preflight_covers_retries():
     approximate."""
     ok = _defines("chat", "_chat_reservation_slots") and \
         _has_call("panel", "_chat_reservation_slots")
-    apply_pf = _has_call("apply", "preflight", None) or "preflight(" in _src("apply")
+    apply_pf = (_has_call("apply", "preflight", None)
+                   or "preflight(" in _src("apply_policy"))  # per-round owner
     conv_pf = "preflight(" in _src("convergence")
     consent_pf = "preflight(" in _src("consent")
     return _pass(ok and apply_pf and conv_pf and consent_pf,
@@ -395,7 +396,7 @@ def r_apply_rotation():
     """Apply rotates across the pool on error / BYOK / reasoning-only /
     readiness-defer, and a full-ladder readiness decline produces an honest
     deferral with continuation state (not a fake success)."""
-    body = _src("apply")
+    body = _src("apply_policy")  # rotation/deferral owner (split pass)
     ok = ("readiness" in body and "_readiness_deferral" in body
           and "unusable" in body.lower() or "reasoning-only" in body)
     defer = "category=\"readiness\"" in body or "category='readiness'" in body
@@ -408,7 +409,7 @@ def r_apply_rotation():
 def r_broken_gate_detector():
     """The broken-gate stop fires only on IDENTICAL REAL gate outputs: it
     reads verify_failed rounds, never api_error or absent gates."""
-    body = _src("apply")
+    body = _src("apply_policy")  # broken-gate detector owner (split pass)
     ok = 'status"' in body and '"verify_failed"' in body and "gate_broken" in body
     m = re.search(r'verify_failed', body)
     return _pass(bool(ok), "broken-gate detector filters to real verify_failed "
