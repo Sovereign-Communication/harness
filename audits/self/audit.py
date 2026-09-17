@@ -565,6 +565,25 @@ def r_continuation_contract():
                  str(checks))
 
 
+# R13's contract, factored for self-verification: the suite child is
+# healthy iff the summary says OK AND no unraisable-warning signature
+# appears anywhere (the leak class that flaked the v0.3.2 release gate,
+# PR #17, prints to stderr without changing the summary).
+# Unraisable warnings (e.g. a leaked TextIOWrapper) print to the
+# child's stderr at GC time without changing the OK|FAILED outcome
+_SUITE_SUMMARY = re.compile(r"Ran (\d+) tests?[^\n]*\n\n(OK|FAILED)")
+_SUITE_LEAK_SIGNATURES = ("ResourceWarning", "unclosed file")
+
+
+def _classify_suite_output(text):
+    """Pure classification of captured suite output (drives R13 and
+    its self-test). Returns (summary_ok, leaked, matched_summary)."""
+    m = _SUITE_SUMMARY.search(text)
+    leaked = any(s in text for s in _SUITE_LEAK_SIGNATURES)
+    return (m is not None and m.group(2) == "OK", leaked,
+            m.group(0).strip() if m else None)
+
+
 def r_suite_green():
     """The full unit suite is green hermetically (with ResourceWarnings as
     errors)."""
@@ -572,16 +591,51 @@ def r_suite_green():
         [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest",
          "discover", "-s", "tests", "-q"],
         cwd=str(ROOT), capture_output=True, text=True, timeout=900)
-    m = re.search(r"Ran (\d+) tests?[^\n]*\n\n(OK|FAILED)", r.stdout + r.stderr)
-    # Unraisable warnings (e.g. a leaked TextIOWrapper) print to the
-    # child's stderr at GC time without changing the OK|FAILED outcome
-    # -- the exact class that flaked the v0.3.2 release gate (PR #17).
-    # Classify deterministically: any signature fails the check.
-    leaked = ("ResourceWarning" in (r.stdout + r.stderr)
-              or "unclosed file" in (r.stdout + r.stderr))
-    ok = (m is not None and m.group(2) == "OK") and not leaked
-    return _pass(ok, f"unittest: {m.group(0).strip() if m else r.stderr[-200:]}",
+    summary_ok, leaked, summary = _classify_suite_output(r.stdout + r.stderr)
+    ok = summary_ok and not leaked
+    return _pass(ok, f"unittest: {summary if summary is not None else r.stderr[-200:]}",
                  (r.stdout + r.stderr)[-2500:])
+
+
+def r_suite_selftest():
+    """R13's classifier proves its own contract on synthetic output:
+    clean OK passes; planted-leak OK (the blind-spot shape captured in
+    the PR #18 necessity proof) fails; EACH signature alone is
+    load-bearing (a variant carrying only one still fails, so
+    narrowing the signature list cannot silently restore the blind
+    spot); and the old parse-only rule passes the planted output
+    while the full rule fails it. Hermetic: strings, no subprocess."""
+    nl = chr(10)
+    clean = "Ran 725 tests in 1.000s" + nl + nl + "OK"
+    planted = ("Ran 726 tests in 1.000s" + nl + nl + "OK" + nl +
+               "Exception ignored while finalizing file <_io.TextIOWrapper>:" + nl +
+               "ResourceWarning: unclosed file <_io.TextIOWrapper name='x'>")
+    rw_only = ("Ran 726 tests in 1.000s" + nl + nl + "OK" + nl +
+               "ResourceWarning: leaked file handle at GC")
+    unclosed_only = ("Ran 726 tests in 1.000s" + nl + nl + "OK" + nl +
+                     "Exception ignored: unclosed file <_io.TextIOWrapper>")
+    ok_clean, leak_clean, _ = _classify_suite_output(clean)
+    ok_planted, leak_planted, _ = _classify_suite_output(planted)
+    ok_rw, leak_rw, _ = _classify_suite_output(rw_only)
+    ok_unc, leak_unc, _ = _classify_suite_output(unclosed_only)
+    m = _SUITE_SUMMARY.search(planted)
+    old_rule = m is not None and m.group(2) == "OK"
+    final_clean = ok_clean and not leak_clean
+    final_planted = ok_planted and not leak_planted
+    ok = (final_clean and not final_planted
+          and leak_planted and old_rule
+          and not (ok_rw and not leak_rw)
+          and not (ok_unc and not leak_unc))
+    detail = (f"clean: final_pass={final_clean}; "
+              f"planted: final_pass={final_planted} "
+              f"(summary_ok={ok_planted}, leak={leak_planted}); "
+              f"rw-only detected={leak_rw}; "
+              f"unclosed-only detected={leak_unc}; "
+              f"old-rule-passes-planted={old_rule} (divergence proves "
+              f"the signature scan is load-bearing)")
+    return _pass(ok, "R13 classifier: clean->PASS, planted->FAIL, "
+                     "each signature load-bearing, old-rule diverges",
+                 detail)
 
 
 # ============== SM — STRUCTURE ==============
@@ -950,10 +1004,6 @@ def sd_corpus_integrity():
                  detail)
 
 
-
-
-
-
 CHECKS = {
     "A": [("A1", "no-tools payload guard at the one chat seam", a_no_tools_guard),
           ("A2", "preflight covers reasoning/429 retry slots", a_preflight_covers_retries),
@@ -980,7 +1030,8 @@ CHECKS = {
           ("R10", "spend ceiling under concurrency (dynamic)", r_spend_concurrency),
           ("R11", "config validation ranges + unknown-key warning", r_config_validation),
           ("R12", "continuation contract refuses all tamper classes (dynamic)", r_continuation_contract),
-          ("R13", "full suite green hermetically", r_suite_green)],
+          ("R13", "full suite green hermetically", r_suite_green),
+          ("R14", "R13 classifier self-verifies its contract", r_suite_selftest)],
     "SM": [("S1", "import direction (interfaces on top)", sm_layering),
            ("S2", "no re-export facades", sm_no_facades),
            ("S3", "result vocabulary one def site", sm_vocabulary_one_site),

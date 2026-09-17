@@ -20,6 +20,12 @@ break APIs between minor versions).
   `audits/self/corpus_manifest.json` (refreshed only via
   `refresh_corpus_manifest.py`, documented in CONTRIBUTING), so a silent
   edit to audit evidence fails the audit deterministically.
+- The suite check's classifier now self-verifies its contract inside the
+  audit (R14): clean output passes, planted-leak output (each signature
+  load-bearing) fails, and the old parse-only rule provably diverges on
+  the planted shape -- so weakening the summary parse or the signature
+  scan fails the audit deterministically instead of silently restoring
+  the GC-timing blind spot PR #18 closed.
 
 ## [0.3.2] — 2026-09-16
 
