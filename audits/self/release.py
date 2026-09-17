@@ -180,10 +180,14 @@ def step_edits(dry, version):
               + " in pyproject.toml and harness/__init__.py")
         print("[release] dry-run: would run: python -m pip install -e . --no-deps")
         return
+    # preserve the file header (Keep a Changelog / semver statements,
+    # everything above [Unreleased]) -- D6 checks it; only the section
+    # region is rewritten
+    section = (body[len("## [Unreleased]"):]).strip()
     new_head = ("## [Unreleased]" + NL + NL + "Nothing yet." + NL + NL
-                + "## [" + version + "] -- " + today + NL
-                + body[len("## [Unreleased]"):].rstrip() + NL + NL)
-    chg.write_bytes((new_head + src[j:]).encode("utf-8"))
+                + "## [" + version + "] " + chr(0x2014) + " " + today + NL + NL
+                + section + NL + NL)
+    chg.write_bytes((src[:i] + new_head + src[j:]).encode("utf-8"))
     print("[release] CHANGELOG flattened to [" + version + "] " + today)
     for site in ("pyproject.toml", "harness/__init__.py"):
         p = ROOT / site
