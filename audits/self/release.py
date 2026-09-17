@@ -245,10 +245,12 @@ def step_battery(dry, full=False):
     shutil.copyfile(scores, backup)
     try:
         run([sys.executable, str(AUDIT)])
-        verdict = json.loads(scores.read_text(encoding="utf-8")).get("verdict", "")
-        if "bar met" not in verdict.lower():
-            fail("battery", "self-audit verdict not BAR MET: " + verdict)
-        print("[release] self-audit: BAR MET")
+        # the machine-readable verdict: every dimension score >= 9.5
+        summary = json.loads(scores.read_text(encoding="utf-8"))
+        dims = summary.get("scores", {})
+        if not dims or any(v < 9.5 for v in dims.values()):
+            fail("battery", "self-audit not BAR MET: " + repr(dims))
+        print("[release] self-audit: BAR MET " + repr(dims))
     finally:
         shutil.copyfile(backup, scores)
         os.unlink(backup)
