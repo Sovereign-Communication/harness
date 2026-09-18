@@ -724,8 +724,15 @@ class AutonomousAgent:
             route_kwargs = node_apply_kwargs(node_routes.get(node.node_id))
             emit("subtask_start", node_id=node.node_id, instruction=node.instruction, target=target)
 
+            # The engine resolves paths against process CWD (the server's
+            # directory, not the agent's chosen root): hand it the absolute
+            # target so GUI runs with a workDir land in the right tree.
+            engine_target = target
+            if target and not Path(target).is_absolute():
+                engine_target = str(self.root_dir / target)
+
             res = engine.apply_edit(
-                file_path=target,
+                file_path=engine_target,
                 instruction=node.instruction,
                 verify_cmd=gate,
                 allow_verify=True,
@@ -741,7 +748,7 @@ class AutonomousAgent:
                 # Attempt retry with healing instruction
                 healing_inst = f"{node.instruction}\nPREVIOUS TEST FAILURE:\n{condensed_err}"
                 res = engine.apply_edit(
-                    file_path=target,
+                    file_path=engine_target,
                     instruction=healing_inst,
                     verify_cmd=gate,
                     allow_verify=True,

@@ -1198,6 +1198,30 @@ class TestOrchestratorWiring(unittest.TestCase):
             h.assert_called_once()
         self.assertEqual(res["intent"], "conversation")
 
+    def test_node_targets_resolve_against_agent_root_not_cwd(self):
+        # The engine resolves file_path against process CWD: the orchestrator
+        # must hand it the absolute target under the agent's root, or GUI
+        # runs with a chosen workDir edit the wrong tree.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "util.py").write_text("x = 1\n", encoding="utf-8")
+            agent = self._agent(root)
+            engine = MagicMock()
+            engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
+            seen = {}
+            def capture(**kwargs):
+                seen.update(kwargs)
+                return {"status": "ok", "cost": 0.001}
+            engine.apply_edit.side_effect = capture
+            with patch("harness.agent.apply_session", return_value=engine), \
+                 TestOrchestratorDrive._scripted_seam(
+                     [{"complete": True, "remaining": "", "reason": "done"}]):
+                res = agent.run_prompt("Update util.py", auto_apply=True)
+        self.assertEqual(res["status"], "ok")
+        self.assertTrue(Path(seen["file_path"]).is_absolute())
+        self.assertEqual(Path(seen["file_path"]).name, "util.py")
+        self.assertEqual(Path(seen["file_path"]).parent, root)
+
     def test_judge_down_with_failed_nodes_reports_honest_scope(self):
         # Judge dies AND nodes fail: the loop must not fake a completion --
         # the remaining scope names the judge outage, per-node failures shown.
