@@ -182,7 +182,12 @@ break APIs between minor versions).
   a `model_result` `status=deferred` `category=capability` entry lands in
   the ledger (feeding `defer-stats`), the turn persists like any completed
   turn, and the UI renders a visible "Deferred" banner with the reason and
-  the resume path instead of hiding the handoff.
+  the resume path instead of hiding the handoff. Because free models defer
+  in prose far more often than in the marker contract, a refusal-shaped
+  answer ("I can't do that...") with no successful tool evidence is treated
+  as the deferral it is -- the model's own refusal sentence becomes the
+  reason -- while a limitation caveat inside a turn that did retrieve
+  evidence stays a normal answer.
 - **One transient fetch failure left a web-on URL turn with no evidence.**
   The allowlisted fetch of anthropic.com/research/riemann-zeta
   intermittently hits an upstream blip (challenge/5xx/timeout); the lane

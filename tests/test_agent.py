@@ -653,6 +653,52 @@ class TestChatDeferral(unittest.TestCase):
         self.assertIn("HARNESS_DEFER:", sysmsg)
         self.assertIn("first-class", sysmsg)
 
+    def test_prose_refusal_without_evidence_becomes_deferral(self):
+        # Free models usually defer in prose: "I can't do that." With no
+        # successful tool evidence, that IS a deferral -- wrap it in the
+        # honest envelope with the model's own words as the reason.
+        refuse = {"choices": [{"message": {"content":
+            "I can't do that. That task requires repository access and a "
+            "compute cluster that this conversation does not have."}}],
+            "usage": {"cost": 0.0}}
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=load_settings(),
+                                    history_dir=Path(tmp))
+            fake_ledger = MagicMock()
+            with patch("harness.agent.chat", return_value=(200, refuse)), \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch("harness.agent.ledger_for", return_value=fake_ledger):
+                res = agent.run_prompt("do the impossible", session_id="d4",
+                                       force_conversation=True)
+        self.assertEqual(res["status"], "deferred")
+        self.assertTrue(res["defer_reason"].lower().startswith("i can't"))
+        self.assertIn("reframe within this lane", res["next_step"])
+        fake_ledger.append.assert_called_once()
+
+    def test_refusal_caveat_inside_successful_web_turn_stays_ok(self):
+        # A turn that DID retrieve evidence is not a deferral even when its
+        # prose contains a limitation caveat.
+        caveat = {"choices": [{"message": {"content":
+            "I cannot verify the live page right now, but the search results "
+            "show the bound moved to 67.2%."}}],
+            "usage": {"cost": 0.0}}
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=load_settings(),
+                                    history_dir=Path(tmp))
+            fake_ledger = MagicMock()
+            with patch("harness.agent.chat", return_value=(200, caveat)), \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch("harness.agent.ledger_for", return_value=fake_ledger), \
+                 patch("harness.agent.search_web",
+                       return_value=[{"url": "https://www.anthropic.com/rz",
+                                      "title": "Riemann", "snippet": "67.2%"}]):
+                res = agent.run_prompt("verify the claim", session_id="d5",
+                                       web=True, force_conversation=True)
+        self.assertEqual(res["status"], "ok")
+        fake_ledger.append.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -283,6 +283,23 @@ class AutonomousAgent:
                     models.append(m)
         return models
 
+    # Free models defer in prose ("I can't do that") far more often than in
+    # the marker contract. A refusal-shaped answer with no successful tool
+    # evidence IS a deferral: the model handed the work back. The model's own
+    # refusal sentence becomes the reason; a caveat inside a turn that DID
+    # retrieve evidence is not a deferral.
+    _REFUSAL_RE = re.compile(
+        r"\b(?:i can(?:'t|not)|i'?m unable|unable to|i have no access|"
+        r"i (?:do not|don't) have (?:access|tools|internet|a browser|file|compute))\b",
+        re.IGNORECASE)
+
+    @classmethod
+    def _refusal_reason(cls, response_text: str) -> Optional[str]:
+        for sentence in re.split(r"(?<=[.!?])\s+", response_text.strip()):
+            if cls._REFUSAL_RE.search(sentence):
+                return " ".join(sentence.split())[:200]
+        return None
+
     def _handle_conversation(
         self,
         prompt: str,
@@ -384,15 +401,29 @@ class AutonomousAgent:
 
         # The chat lane honors the same deferral contract as apply: a
         # HARNESS_DEFER marker is the model handing the decision back instead
-        # of guessing. The prose before the marker stays as the answer; the
-        # reason becomes the deferral and the operator gets the resume path.
+        # of guessing. Free models usually defer in prose instead, so a
+        # refusal-shaped answer with no successful tool evidence is treated
+        # as the deferral it is; the model's own words become the reason.
         defer_reason = None
-        if CAPABILITY_MARKER in response_text:
+        marker_defer = CAPABILITY_MARKER in response_text
+        if marker_defer:
             head, _, tail = response_text.partition(CAPABILITY_MARKER)
             first_line = tail.strip().splitlines()[0].strip() if tail.strip() else ""
             defer_reason = " ".join(first_line.split())[:200] \
                 or "request exceeds the conversation lane's capability"
             response_text = head.strip()
+        else:
+            did_work = bool(web_sources and any(s.get("ok") for s in web_sources))
+            if not did_work:
+                defer_reason = self._refusal_reason(response_text)
+        if defer_reason is not None:
+            next_step = ('route to the plan lane: harness plan --goal "..." '
+                         "--execute (or the MCP plan_and_execute tool)")
+            if not marker_defer:
+                next_step = ('reframe within this lane (Q&A, small lookups), '
+                             "enable web or adjust the fetch allowlist for "
+                             "live data, or route real work to the plan lane: "
+                             'harness plan --goal "..." --execute')
             ledger_for(self.settings).append(
                 "model_result", task_id=session_id or "(chat)",
                 event_note="chat", status="deferred", category="capability",
@@ -407,9 +438,8 @@ class AutonomousAgent:
             "cost": round(cost, 6),
             **({"defer_reason": defer_reason,
                 # The resume hint a deferral owes the operator (render.py's
-                # contract): the plan lane is where hard multi-step work runs.
-                "next_step": 'route to the plan lane: harness plan --goal "..." '
-                             "--execute (or the MCP plan_and_execute tool)"}
+                # contract): what to do instead of this lane's refusal.
+                "next_step": next_step}
                if defer_reason else {}),
             # Honest provenance: did this turn actually retrieve web evidence?
             "web_used": bool(web_sources and any(s.get("ok") for s in web_sources)),
