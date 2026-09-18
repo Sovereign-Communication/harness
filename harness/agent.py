@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from ._http import HttpTransport
-from .chat import assess_output, chat, extract_content_and_cost
+from .chat import assess_output, chat, extract_content_and_cost, looks_truncated
 from .condenser import distill_context, condense_error_log
 from .config import Settings, load_settings
 from .dag import TaskDAG, DAGNode, node_apply_kwargs, plan_task
@@ -32,7 +32,10 @@ DEFAULT_CHAT_SYSTEM_PROMPT = (
     "work, long autonomous tasks, anything needing tools this lane does not have), do "
     "NOT pretend, guess, or merely say 'I can't' -- end with a single line beginning "
     "exactly 'HARNESS_DEFER: ' followed by a short reason. Handing the decision back "
-    "with a reason is the correct, respected move; overpromising is not."
+    "with a reason is the correct, respected move; overpromising is not. You have no "
+    "tool-call syntax in this lane: never emit <tool_call>, <tool>, or function-call "
+    "markup -- web evidence is pre-gathered into this prompt by the runtime; if you "
+    "need a tool you do not have, defer."
 )
 
 # Appended to the system prompt when a run did NOT opt into web tools, so the
@@ -351,6 +354,9 @@ class AutonomousAgent:
         # emitted as a rotation, and an all-rungs failure raises honestly.
         answered = None
         attempts: List[str] = []
+        # Longest cut-off body seen while every rung was failing: the raw
+        # material for the honest truncation deferral.
+        best_truncated: Optional[tuple] = None
         for model in self._chat_ladder(self.settings):
             if cancel_check and cancel_check():
                 raise ToolCancelled("Prompt execution was cancelled by user")
@@ -386,40 +392,65 @@ class AutonomousAgent:
                         if cost:
                             gov.record_actual(cost, model)
                         usable, why = assess_output(content, finish_reason)
+                        if usable and looks_truncated(content):
+                            # Providers do not always report finish_reason
+                            # "length" honestly; an unbalanced fence/bracket
+                            # body is cut regardless of what they claim.
+                            usable, why = False, ("response cut off mid-body "
+                                                  "(unbalanced code fence "
+                                                  "or brackets)")
                         if not usable:
                             note = why
+                            if (content or "").strip() and (
+                                    best_truncated is None
+                                    or len(content) > len(best_truncated[1])):
+                                best_truncated = (model, content, cost)
             if note is None:
                 answered = (model, content or "", cost)
                 break
             attempts.append(f"{model}: {note}")
             emit("rotation", model=model, reason="chat_ladder_advance",
                  note=note)
-        if answered is None:
+        if answered is None and best_truncated is not None:
+            # Every rung failed, but one produced substantive cut-off
+            # content: defer honestly, keeping the content. Rotating more
+            # cannot finish a body that exceeds the output cap.
+            model, response_text, cost = best_truncated
+            defer_reason = ("response truncated at the token cap on every "
+                            "ladder model (max_tokens=4096)")
+            marker_defer = False
+        elif answered is None:
             raise HarnessError(
                 "chat failed on every ladder model: " + "; ".join(attempts))
-        model, response_text, cost = answered
+        else:
+            model, response_text, cost = answered
+            defer_reason = None
+            marker_defer = CAPABILITY_MARKER in response_text
 
         # The chat lane honors the same deferral contract as apply: a
         # HARNESS_DEFER marker is the model handing the decision back instead
         # of guessing. Free models usually defer in prose instead, so a
         # refusal-shaped answer with no successful tool evidence is treated
         # as the deferral it is; the model's own words become the reason.
-        defer_reason = None
-        marker_defer = CAPABILITY_MARKER in response_text
         if marker_defer:
             head, _, tail = response_text.partition(CAPABILITY_MARKER)
             first_line = tail.strip().splitlines()[0].strip() if tail.strip() else ""
             defer_reason = " ".join(first_line.split())[:200] \
                 or "request exceeds the conversation lane's capability"
             response_text = head.strip()
-        else:
+        elif defer_reason is None:
             did_work = bool(web_sources and any(s.get("ok") for s in web_sources))
             if not did_work:
                 defer_reason = self._refusal_reason(response_text)
         if defer_reason is not None:
             next_step = ('route to the plan lane: harness plan --goal "..." '
                          "--execute (or the MCP plan_and_execute tool)")
-            if not marker_defer:
+            if best_truncated is not None and answered is None:
+                next_step = ('say "continue" to keep this going in the chat '
+                             "lane, or route long-generation work to the plan "
+                             'lane: harness plan --goal "..." --execute '
+                             "(it has multi-round continuation)")
+            elif not marker_defer:
                 next_step = ('reframe within this lane (Q&A, small lookups), '
                              "enable web or adjust the fetch allowlist for "
                              "live data, or route real work to the plan lane: "

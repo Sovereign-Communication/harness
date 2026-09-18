@@ -700,5 +700,99 @@ class TestChatDeferral(unittest.TestCase):
         fake_ledger.append.assert_not_called()
 
 
+class TestChatTruncation(unittest.TestCase):
+    """The "hitting a limit" incident: long-generation turns came back cut
+    mid-body (providers do not always report finish_reason "length"), were
+    saved as status=ok, and neither rotated nor deferred -- the user hit the
+    cap every turn with no escalation and no honest handoff."""
+
+    def _truncated(self, content):
+        return {"choices": [{"message": {"content": content},
+                             "finish_reason": None}],
+                "usage": {"cost": 0.0}}
+
+    _COMPLETE = {"choices": [{"message": {"content": "concise full answer"},
+                              "finish_reason": "stop"}],
+                 "usage": {"cost": 0.0}}
+
+    def test_cut_body_rotates_even_when_provider_hides_length(self):
+        # Rung 1 returns a body with an unbalanced code fence (cut mid-file)
+        # and finish_reason=null; the walk must treat it as unusable and
+        # rotate to rung 2.
+        cut = "```lean\ndef S_alpha (x : Real) : Real :="
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=load_settings(),
+                                    history_dir=Path(tmp))
+            with patch("harness.agent.chat",
+                       side_effect=[(200, self._truncated(cut)),
+                                    (200, self._COMPLETE)]) as mc, \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())):
+                res = agent.run_prompt("write the file", session_id="t1",
+                                       force_conversation=True)
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["response"], "concise full answer")
+        self.assertEqual(mc.call_count, 2)
+
+    def test_every_rung_truncated_defers_with_content_kept(self):
+        # All rungs cut: an honest deferral that KEEPS the longest cut-off
+        # body, records the ledger entry, and hands back a continuation path
+        # -- never a mangled status=ok turn and never a bare error.
+        cut1 = "```lean\ndef a := 1"
+        cut2 = "```lean\ndef a := 1\ndef b := 2"
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=load_settings(),
+                                    history_dir=Path(tmp))
+            fake_ledger = MagicMock()
+            with patch("harness.agent.chat",
+                       side_effect=[(200, self._truncated(cut1))]
+                                   + [(200, self._truncated(cut2))] * 20), \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch("harness.agent.ledger_for", return_value=fake_ledger):
+                res = agent.run_prompt("continue until complete",
+                                       session_id="t2",
+                                       force_conversation=True)
+        self.assertEqual(res["status"], "deferred")
+        self.assertIn("token cap", res["defer_reason"])
+        self.assertEqual(res["response"], cut2)
+        self.assertIn("continue", res["next_step"])
+        self.assertIn("plan lane", res["next_step"])
+        fake_ledger.append.assert_called_once()
+        kwargs = fake_ledger.append.call_args[1]
+        self.assertEqual(kwargs["status"], "deferred")
+
+    def test_truncation_defer_persists_the_turn(self):
+        cut = "```lean\ndef a := 1"
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=load_settings(),
+                                    history_dir=Path(tmp))
+            with patch("harness.agent.chat",
+                       return_value=(200, self._truncated(cut))), \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch("harness.agent.ledger_for", return_value=MagicMock()):
+                agent.run_prompt("continue", session_id="t3",
+                                 force_conversation=True)
+            turns = load_chat_history("t3", Path(tmp))
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["status"], "deferred")
+
+    def test_system_prompt_bans_tool_call_markup(self):
+        # The fake "<tool_call>web_search" incident: the model roleplayed a
+        # tool syntax it does not have and the raw markup reached the chat.
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=load_settings(),
+                                    history_dir=Path(tmp))
+            with patch("harness.agent.chat",
+                       side_effect=HarnessError("stop at the prompt")) as mc, \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())):
+                with self.assertRaises(HarnessError):
+                    agent.run_prompt("hello", session_id="t4")
+                sysmsg = mc.call_args[1]["messages"][0]["content"]
+        self.assertIn("never emit <tool_call>", sysmsg)
+
+
 if __name__ == "__main__":
     unittest.main()

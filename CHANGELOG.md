@@ -167,6 +167,21 @@ break APIs between minor versions).
 
 ### Fixed
 
+- **"Hitting a limit": truncated chat turns were saved as `status: ok` --
+  no rotation, no escalation, no defer.** The long-formalization session
+  (Lean 4 dumps cut mid-line turn after turn) exposed three gaps. (1)
+  Providers do not always report `finish_reason: "length"` honestly, and
+  the chat lane trusted it: a body cut mid-code-block passed
+  `assess_output`. The lane now also runs `looks_truncated` (unbalanced
+  code fence / brackets) and treats a cut body as unusable -- which
+  rotates to the next ladder rung, paid rungs included. (2) When every
+  rung is cut, the walk no longer raises a bare error: it defers with the
+  longest cut-off body kept as the response, `defer_reason` "truncated at
+  the token cap on every ladder model", a ledger `deferred` entry, and a
+  `next_step` of `say "continue"` or the plan lane (which has multi-round
+  continuation). (3) The system prompt now bans tool-call markup
+  outright ("<tool_call>...") after a session showed the model roleplaying
+  a `web_search` tool call it does not have.
 - **The chat lane had no deferral contract -- hard asks got a prose "I
   can't" instead of an honest defer.** Every other lane treats "this is
   beyond me" as a first-class outcome (apply's `HARNESS_DEFER:` capability
