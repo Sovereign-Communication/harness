@@ -317,3 +317,12 @@ tmp driver ONLY, repo code untouched).
   a separate paid-fallback policy — warranted only if free-tier nodes
   should ever invoke paid models by intent. No code change; the knob idea
   stays open as the R1 follow-up in docs/hourglass-frontier-eval.md.
+- **MR-7 / MR-8: NOT RUN — budget + free-tier availability.** The $0.25
+  cumulative cap has ~$0.015 headroom left after MR-1/MR-2; the three
+  frontier red-team tracks need ~$0.06-0.08, so they await an operator cap
+  decision. A $0 free-tier first pass (deepseek-v4-flash / glm-5.2 / 
+  qwen3.8-27b, 2026-09-18) failed the actionability gate — unrelated
+  content twice, reasoning-only responses twice, 429s on glm/qwen — all
+  outputs discarded per the gate rule. (Unverified, discarded-answer lean
+  only: deepseek's MR-8 reasoning leaned "freshness/date anchoring — a
+  repo-snapshot `last verified` line." Not a result.)
