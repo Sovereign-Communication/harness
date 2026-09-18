@@ -62,6 +62,18 @@ break APIs between minor versions).
   per-session delete hits `/api/chat/session/delete`, the working-directory
   field sends `root_dir` with chat prompts, and a Web badge toggles the new
   web tools; the list refreshes after each run completes.
+- **Pre-publication review record.** Before flipping this repository public,
+  a full audit checked the tree and all 186 commits for secrets (clean),
+  commit identity (noreply-only), and `.gitignore` drift. The
+  tracked-but-ignored `audits/scmessenger/_runs/` artifacts and
+  `.freebuff/project-id` were untracked (`git rm --cached` only; working
+  copies stay on disk and remain ignored). `audits/scmessenger/` ships
+  deliberately: it records an AI-assisted, read-only security triage of the
+  author's companion project (SCMessenger) run through this engine, with its
+  caveats intact (`audits/scmessenger/CTO_REVIEW.md`). Dogfood evidence in
+  `audits/self/` keeps its original local-machine paths on purpose: those
+  files are SHA-256-pinned by `corpus_manifest.json`, and cosmetic rewrites
+  would break the integrity check.
 
 ### Fixed
 
@@ -1009,6 +1021,11 @@ break APIs between minor versions).
 
 Initial public development release. Development continued on the 0.1.0 line
 through 2026-09-05; the highlights below span that whole window.
+
+A 2026-09-18 pre-publication review verified no secrets in the tree or full
+history and noreply-only commit identity; the `audits/scmessenger/` record
+ships intentionally as AI-assisted audit evidence (caveats in its
+`CTO_REVIEW.md`).
 
 ### Added
 - **Cost-bounded multi-model verification core** (`harness.core`): rotating
