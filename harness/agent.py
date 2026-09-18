@@ -167,11 +167,14 @@ def discover_verification_gate(target_files: Sequence[str], root_dir: Optional[P
         mod_name = Path(primary).stem
         test_path = root / "tests" / f"test_{mod_name}.py"
         if test_path.exists():
-            return f"python -m unittest tests/test_{mod_name}.py"
+            # Absolute: the gate runner's CWD is the server's, not the
+            # agent's chosen root -- a relative path compiles/tests the
+            # wrong tree (or nothing) for GUI runs with a workDir.
+            return f"python -m unittest {test_path}"
 
     # Generic check: syntax compile
     if primary.endswith(".py") and (root / primary).exists():
-        return f"python -m py_compile {primary}"
+        return f"python -m py_compile \"{root / primary}\""
 
     return None
 

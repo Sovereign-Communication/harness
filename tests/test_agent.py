@@ -67,13 +67,18 @@ class TestAgentClassificationAndDiscovery(unittest.TestCase):
             (root / "tests" / "test_mod_a.py").write_text("# test a", encoding="utf-8")
             (root / "harness" / "mod_b.py").write_text("# b", encoding="utf-8")
 
-            # Test file exists
+            # Test file exists -- absolute path: the gate runner's CWD is
+            # the server's, not the agent's chosen root.
             gate_a = discover_verification_gate(["harness/mod_a.py"], root_dir=root)
-            self.assertEqual(gate_a, "python -m unittest tests/test_mod_a.py")
+            self.assertEqual(
+                gate_a,
+                f"python -m unittest {root / 'tests' / 'test_mod_a.py'}")
 
-            # Test file does not exist -> fallback to py_compile
+            # Test file does not exist -> fallback to py_compile (absolute)
             gate_b = discover_verification_gate(["harness/mod_b.py"], root_dir=root)
-            self.assertEqual(gate_b, "python -m py_compile harness/mod_b.py")
+            self.assertEqual(
+                gate_b,
+                f"python -m py_compile \"{root / 'harness' / 'mod_b.py'}\"")
 
             # No targets
             self.assertIsNone(discover_verification_gate([], root_dir=root))

@@ -120,6 +120,32 @@ class ApplyEngine(ApplyEngineMixin):
             f"file_path outside allowed_roots: {file_path} "
             f"(configured roots: {', '.join(self.allowed_roots)})")
 
+    def _step_primary_for_trust(self, report, allow_escalation,
+                                verify_only, task_id):
+        """Front-loaded escalation on a trust deny: the cheapest escalation
+        rung whose own trust band allows the mutation becomes the primary.
+        Returns (model, ordered, decision) or None when escalation cannot
+        unlock the write -- disarmed, no rungs, or no rung scores allow.
+        Pure trust arithmetic: no network, no spend (model_trust reads the
+        participation report, not the wire)."""
+        allowed = (self.router.allow_escalation if allow_escalation is None
+                   else allow_escalation)
+        if verify_only or not allowed or not self.router.escalation_pool:
+            return None
+        caller = getattr(self.ledger, "caller", None)
+        host_score, host_reasons = trust_policy.host_trust(report, caller=caller)
+        for rung in self.router.escalation_pool:
+            m_score, m_reasons = trust_policy.model_trust(rung, report)
+            combined = trust_policy.combined_trust(host_score, m_score)
+            if trust_policy.gate_for_write_exec(combined) != "allow":
+                continue
+            correctness = trust_policy.correctness_level(rung, report)
+            self.ledger.append(
+                "trust_gate", task_id=task_id, model=rung,
+                reason="primary stepped up: primary model trust denied",
+                combined=combined, correctness=correctness)
+            return rung, {"combined": combined, "correctness": correctness}
+
     def _route_pool(self, apply_pool=None):
         """Capability-ordered apply pool for THIS request, or (None, None) to
         fall back to the configured pool and model. Per-request: nothing here
@@ -299,13 +325,30 @@ class ApplyEngine(ApplyEngineMixin):
         # The model is known and no file has been read yet: deny before
         # any mutation surface is touched. Denials ledger a trust_gate
         # event (the evidence loop) and raise with the score + guidance.
-        _trust_decision = trust_policy.check_apply(
-            ledger=self.ledger,
-            report=self.ledger.participation_report(),
-            model=model, resumed=resumed, verify_only=verify_only,
-            verify_cmd=verify_cmd, task_max_cost=task_max_cost,
-            task_id=task_id, hard_task_cap=HARD_TASK_MAX_COST,
-            caller=getattr(self.ledger, "caller", None))
+        _report = self.ledger.participation_report()
+        try:
+            _trust_decision = trust_policy.check_apply(
+                ledger=self.ledger,
+                report=_report,
+                model=model, resumed=resumed, verify_only=verify_only,
+                verify_cmd=verify_cmd, task_max_cost=task_max_cost,
+                task_id=task_id, hard_task_cap=HARD_TASK_MAX_COST,
+                caller=getattr(self.ledger, "caller", None))
+        except HarnessError:
+            # The primary's trust band denies mutation (a fresh ledger plus
+            # a free model scores preview-only). Auto-escalation's front
+            # door: the cheapest escalation rung whose OWN trust allows the
+            # write becomes the primary -- the lowest paid rung is the
+            # default writer when the cheap tier cannot write at all.
+            # Disarmed or no qualifying rung: the original deny stands.
+            stepped = self._step_primary_for_trust(
+                _report, allow_escalation=kwargs.get("allow_escalation"),
+                verify_only=verify_only, task_id=task_id)
+            if stepped is None:
+                raise
+            model, _trust_decision = stepped
+            # The stepped rung leads; the original ordering rotates behind.
+            ordered = [model] + [m_ for m_ in (ordered or []) if m_ != model]
 
         with open(file_path, encoding="utf-8") as f:
             original = f.read()

@@ -483,6 +483,99 @@ class ApplyLadderE2ETests(unittest.TestCase):
             self.assertIn(failed["status"],
                           ("failed", "verify_failed", "consent_blocked"))
 
+    def test_trust_deny_steps_primary_to_lowest_paid_rung(self):
+        # A trust deny on the primary (fresh ledger + a free model scores
+        # preview-only) must not kill the node: the cheapest escalation
+        # rung whose OWN trust allows the write becomes the primary --
+        # the paid rung is the default writer when the cheap tier cannot
+        # write at all. Disarmed: the deny stands and propagates.
+        from harness.apply import ApplyEngine
+        from harness.errors import HarnessError
+        from harness.filesafety import _atomic_write
+
+        class Gov:
+            spent = 0.0
+            max_cost = 1.0
+
+            def preflight(self, *a, **k):
+                return None
+
+            def record_actual(self, cost, model):
+                self.spent += float(cost or 0)
+
+            def record_byok(self, model):
+                pass
+
+            def is_free(self, model):
+                return str(model).endswith(":free")
+
+            def check_byok(self, model):
+                return None
+
+            def fetch_pricing(self, models):
+                return None
+
+            def fetch_models(self):
+                return []
+
+            def learned_blocked(self, model):
+                return False
+
+        class Led:
+            def append(self, *a, **k):
+                return None
+
+            def participation_report(self, *a, **k):
+                return {}
+
+        attempted = []
+
+        def paid_only_chat(transport, api_key, model, messages, max_tokens,
+                           effort, budget, governor):
+            attempted.append(model)
+            return 200, {"choices": [{"message": {"content": "x = 2\n"},
+                                      "finish_reason": "stop"}],
+                         "usage": {"cost": 0.0}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "t.py")
+            _atomic_write(target, "x = 1\n")
+            router = Router(panel=["p"], judge="j", apply_model="free/a:free",
+                            allow_escalation=True,
+                            escalation_pool=["paid/strong"])
+            engine = ApplyEngine(transport=None, api_key="k", governor=Gov(),
+                                 ledger=Led(), router=router,
+                                 default_require_consent=False)
+            with mock.patch("harness.trust.check_apply",
+                            side_effect=HarnessError("denied")), \
+                 mock.patch("harness.apply_policy.chat",
+                            side_effect=paid_only_chat), \
+                 mock.patch("harness.escalation.chat",
+                            side_effect=paid_only_chat), \
+                 mock.patch("harness.apply_policy.consent_renew",
+                            return_value={"decision": "accept"}):
+                result = engine.apply_edit(
+                    file_path=target, instruction="fix",
+                    verify_cmd="python -c \"pass\"", allow_verify=True,
+                    require_consent=False)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(attempted[:1], ["paid/strong"])
+            self.assertNotIn("free/a:free", attempted)
+
+            # Disarmed ladder: the trust deny propagates -- no silent write.
+            router2 = Router(panel=["p"], judge="j", apply_model="free/a:free",
+                             allow_escalation=False, escalation_pool=[])
+            engine2 = ApplyEngine(transport=None, api_key="k", governor=Gov(),
+                                  ledger=Led(), router=router2,
+                                  default_require_consent=False)
+            with mock.patch("harness.trust.check_apply",
+                            side_effect=HarnessError("denied")):
+                with self.assertRaises(HarnessError):
+                    engine2.apply_edit(
+                        file_path=target, instruction="fix",
+                        verify_cmd="python -c \"pass\"", allow_verify=True,
+                        require_consent=False)
+
 
 if __name__ == "__main__":
     unittest.main()
