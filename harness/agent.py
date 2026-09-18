@@ -437,7 +437,9 @@ class AutonomousAgent:
             first_line = tail.strip().splitlines()[0].strip() if tail.strip() else ""
             defer_reason = " ".join(first_line.split())[:200] \
                 or "request exceeds the conversation lane's capability"
-            response_text = head.strip()
+            # A bare marker (no prose before it) still owes the user visible
+            # text in the saved turn; the UI banner carries the same reason.
+            response_text = head.strip() or f"Deferred: {defer_reason}"
         elif defer_reason is None:
             did_work = bool(web_sources and any(s.get("ok") for s in web_sources))
             if not did_work:

@@ -638,6 +638,10 @@ class TestChatDeferral(unittest.TestCase):
         self.assertEqual(res["status"], "deferred")
         self.assertEqual(res["defer_reason"],
                          "request exceeds the conversation lane's capability")
+        # a bare marker still saves visible text in the turn
+        self.assertEqual(res["response"],
+                         "Deferred: request exceeds the conversation "
+                         "lane's capability")
 
     def test_system_prompt_teaches_the_deferral_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
