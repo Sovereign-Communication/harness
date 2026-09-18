@@ -39,6 +39,14 @@ break APIs between minor versions).
   passthrough without merge, `merge_conflict`), the CLI `--isolate` /
   `--stage-gate` surface, the MCP parallel lane, and the reservation
   error paths.
+- **Malformed route data degrades, never fails open (MR-1).** A frontier
+  review of the shipped per-node routing diff (run through Harness itself)
+  found `node_apply_kwargs` violating its own degradation contract on
+  malformed input: truthy non-mapping detail/route crashed, a string
+  ladder silently became per-character "model ids", a non-iterable ladder
+  raised, and an `inf` ceiling passed through as an unbounded task budget.
+  All shapes now degrade to `{}` (previous behavior — the governor's
+  key-level ceiling still binds), pinned hermetically.
 - **The waist is live: `harness plan --confirm` (M2).** Before execution
   spend, the plan is confirmed by the frontier model (`--frontier-model` /
   `HARNESS_FRONTIER_MODEL`) through a condensed brief -- file-signature

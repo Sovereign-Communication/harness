@@ -273,7 +273,8 @@ tmp driver ONLY, repo code untouched).
   insight: the failure-escalation ladder (+0.30/failure, 2 failures ->
   tier 2) bounds any misclassification's downside to one wasted cheap
   attempt. 2-1 on verdict, mechanism verified in `sliding_scale.py`.
-- Remaining MRs (1-2, 4-8) still open for their consensus pair runs.
+- Remaining MRs (4-8) still open for their runs (MR-1 and MR-2 resolved
+  below, 2026-09-18).
 - **M1 + M2 shipped same day** (commit `5cc9067`): `--decompose-llm` and
   `--confirm` are live on CLI and MCP, per the MR-3 verdict's conditions.
 - **MR-5 + MR-6 consensus obtained and implemented (M3).** Both questions
@@ -294,3 +295,25 @@ tmp driver ONLY, repo code untouched).
   outstanding never exceeds the ceiling. MR-5's stage-gate recommendation
   shipped as `--stage-gate <cmd>` (composed-tree gate after each parallel
   stage; failure stops before dependents).
+- **MR-1 (shipped routing diff vs the invariants): VIOLATION, fixed same
+  day.** Astra (run 2026-09-18, $0.0225) named invariant (4) broken for
+  malformed route data: truthy non-mapping detail/route crash on `.get()`,
+  a string ladder silently becomes per-character "model ids", a
+  non-iterable ladder raises, and an `inf` ceiling passes through as an
+  unbounded task budget. All four confirmed by a $0 hermetic probe against
+  the shipped code (unreachable through the plan lanes — routes are
+  repo-built and amend re-classifies — but the public seam broke its own
+  docstring contract). `node_apply_kwargs` now degrades every malformed
+  shape to `{}` (previous behavior; the governor's key-level ceiling still
+  binds), pinned by
+  `test_node_apply_kwargs_malformed_route_degrades_never_fails_open`. A
+  second frontier opinion was skipped per the $0.25 cumulative cap: for a
+  mechanically checkable claim the hermetic probe is the stronger check.
+- **MR-2 (free-tier ceiling policy): consensus — "omit is correct."**
+  Grok ($0.0076) and Astra ($0.0152), independent families, agreeing: a
+  $0.0 per-task ceiling would block the escalation ladder without adding
+  protection (every free-tier attempt is preflighted and billed $0.0
+  against the governor's key-level ceiling), and a paid-escalation knob is
+  a separate paid-fallback policy — warranted only if free-tier nodes
+  should ever invoke paid models by intent. No code change; the knob idea
+  stays open as the R1 follow-up in docs/hourglass-frontier-eval.md.

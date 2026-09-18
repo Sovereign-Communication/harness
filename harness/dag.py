@@ -9,6 +9,7 @@ subtask leaves into parallelizable stages).
 """
 from dataclasses import dataclass
 import json
+import math
 import re
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -479,22 +480,30 @@ def node_apply_kwargs(
 
     An explicit model pin wins outright (manual routing, no pool override);
     an explicit ``task_max_cost`` pin suppresses only the ceiling.
-    Unknown or missing route detail degrades to today's defaults ({}).
+    Unknown, missing, or MALFORMED route detail degrades to today's
+    defaults ({}): non-mapping detail/route, a non-sequence ladder (a
+    string would otherwise become per-character "model ids"), and
+    non-finite ceilings are all refused silently -- the governor's
+    key-level ceiling still binds, so degradation never fails open.
     """
     if explicit_model is not None:
         return {}
-    detail = node_detail or {}
-    route = detail.get("route") or {}
+    detail = node_detail if isinstance(node_detail, dict) else {}
+    route = detail.get("route")
+    if not isinstance(route, dict):
+        route = {}
     kwargs = {}
-    ladder = [str(m).strip() for m in (route.get("ladder") or []) if str(m).strip()]
-    if ladder:
-        kwargs["apply_pool"] = ladder
+    raw_ladder = route.get("ladder")
+    if isinstance(raw_ladder, (list, tuple)):
+        ladder = [str(m).strip() for m in raw_ladder if str(m).strip()]
+        if ladder:
+            kwargs["apply_pool"] = ladder
     if explicit_task_max_cost is None:
         try:
             ceiling = float(route.get("cost_ceiling"))
         except (TypeError, ValueError):
             ceiling = 0.0
-        if ceiling > 0.0:
+        if ceiling > 0.0 and math.isfinite(ceiling):
             kwargs["task_max_cost"] = ceiling
     return kwargs
 

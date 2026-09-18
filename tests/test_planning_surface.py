@@ -251,6 +251,30 @@ class TestPlanningSurface(unittest.TestCase):
         self.assertEqual(
             node_apply_kwargs({"route": {"ladder": [], "cost_ceiling": None}}), {})
 
+    def test_node_apply_kwargs_malformed_route_degrades_never_fails_open(self):
+        """MR-1 frontier finding, confirmed hermetically: malformed route
+        data must degrade to previous behavior ({}), never crash and never
+        poison routing."""
+        from harness.dag import node_apply_kwargs
+
+        # Truthy non-mapping detail/route used to raise AttributeError.
+        for bad_detail in ("x", 42, ["a"], ("a",)):
+            self.assertEqual(node_apply_kwargs(bad_detail), {})
+        self.assertEqual(node_apply_kwargs({"route": "x"}), {})
+        self.assertEqual(node_apply_kwargs({"route": 42}), {})
+        # A string ladder used to become per-character "model ids".
+        self.assertEqual(node_apply_kwargs({"route": {"ladder": "gpt-6"}}), {})
+        # A non-iterable ladder used to raise TypeError.
+        self.assertEqual(node_apply_kwargs({"route": {"ladder": 7}}), {})
+        # An inf ceiling used to pass through as an unbounded task budget.
+        self.assertEqual(
+            node_apply_kwargs({"route": {"cost_ceiling": float("inf")}}), {})
+        # Well-formed routes are untouched.
+        self.assertEqual(
+            node_apply_kwargs({"route": {"ladder": ["a/b", "c/d"],
+                                         "cost_ceiling": 0.04}}),
+            {"apply_pool": ["a/b", "c/d"], "task_max_cost": 0.04})
+
     def test_cli_cmd_plan_execute_threads_node_route(self):
         from types import SimpleNamespace
         from unittest.mock import MagicMock, patch
