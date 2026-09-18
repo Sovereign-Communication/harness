@@ -167,6 +167,19 @@ break APIs between minor versions).
 
 ### Fixed
 
+- **Capability defers auto-escalate into the hourglass.** With the
+  escalation gate armed and a paid key resolved, a chat defer no longer
+  stops at a "route to the plan lane" note: the request routes itself into
+  the plan lane in the same turn (`_handle_edit` auto-applied) --
+  file discovery, frontier-planned DAG, governed apply with the paid
+  escalation rungs, verify gates on every node. The returned result is
+  stamped `escalated_from_defer` with the defer reason, the response
+  carries a visible "Auto-escalated to the plan lane (hourglass)" line,
+  and the turn persists with both facts. If the handoff fails (no
+  routable target files, plan refusal), the honest defer stands with the
+  failure recorded in the response. Truncation defers do not
+  auto-escalate -- their content already exists and needs `continue`, not
+  a new plan.
 - **"Hitting a limit": truncated chat turns were saved as `status: ok` --
   no rotation, no escalation, no defer.** The long-formalization session
   (Lean 4 dumps cut mid-line turn after turn) exposed three gaps. (1)

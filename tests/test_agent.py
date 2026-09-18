@@ -601,7 +601,9 @@ class TestChatDeferral(unittest.TestCase):
             with patch("harness.agent.chat", return_value=(200, self._DEFER)), \
                  patch("harness.agent.governor_for",
                        return_value=(None, MagicMock())), \
-                 patch("harness.agent.ledger_for", return_value=fake_ledger):
+                 patch("harness.agent.ledger_for", return_value=fake_ledger), \
+                 patch.object(AutonomousAgent, "_auto_escalation_armed",
+                              return_value=False):
                 res = agent.run_prompt("refactor the whole engine",
                                        session_id="d1",
                                        force_conversation=True)
@@ -632,7 +634,9 @@ class TestChatDeferral(unittest.TestCase):
             with patch("harness.agent.chat", return_value=(200, bare)), \
                  patch("harness.agent.governor_for",
                        return_value=(None, MagicMock())), \
-                 patch("harness.agent.ledger_for", return_value=MagicMock()):
+                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                 patch.object(AutonomousAgent, "_auto_escalation_armed",
+                              return_value=False):
                 res = agent.run_prompt("do everything", session_id="d2",
                                        force_conversation=True)
         self.assertEqual(res["status"], "deferred")
@@ -672,7 +676,9 @@ class TestChatDeferral(unittest.TestCase):
             with patch("harness.agent.chat", return_value=(200, refuse)), \
                  patch("harness.agent.governor_for",
                        return_value=(None, MagicMock())), \
-                 patch("harness.agent.ledger_for", return_value=fake_ledger):
+                 patch("harness.agent.ledger_for", return_value=fake_ledger), \
+                 patch.object(AutonomousAgent, "_auto_escalation_armed",
+                              return_value=False):
                 res = agent.run_prompt("do the impossible", session_id="d4",
                                        force_conversation=True)
         self.assertEqual(res["status"], "deferred")
@@ -796,6 +802,135 @@ class TestChatTruncation(unittest.TestCase):
                     agent.run_prompt("hello", session_id="t4")
                 sysmsg = mc.call_args[1]["messages"][0]["content"]
         self.assertIn("never emit <tool_call>", sysmsg)
+
+
+class TestChatAutoEscalation(unittest.TestCase):
+    """A capability defer with the paid key armed does not stop at a handoff
+    note: the request routes itself into the hourglass plan lane
+    (frontier-planned DAG, governed apply with paid escalation rungs)."""
+
+    _DEFER = {"choices": [{"message": {"content":
+        "Too big for this lane.\n\nHARNESS_DEFER: exceeds the lane"}}],
+        "usage": {"cost": 0.0}}
+
+    def _defer_agent(self, tmp):
+        agent = AutonomousAgent(settings=load_settings(),
+                                history_dir=Path(tmp))
+        return agent
+
+    def test_capability_defer_auto_escalates_into_plan_lane(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._defer_agent(tmp)
+            plan_result = {"status": "ok", "intent": "edit",
+                           "response": "done", "cost": 0.01}
+            with patch("harness.agent.chat", return_value=(200, self._DEFER)), \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                 patch.object(AutonomousAgent, "_auto_escalation_armed",
+                              return_value=True), \
+                 patch.object(AutonomousAgent, "_handle_edit",
+                              return_value=plan_result) as he:
+                res = agent.run_prompt("refactor the whole engine",
+                                       session_id="e1",
+                                       force_conversation=True)
+        self.assertEqual(res, plan_result)
+        kwargs = he.call_args[1]
+        self.assertTrue(kwargs["auto_apply"])
+        self.assertEqual(kwargs["escalation_note"], "exceeds the lane")
+
+    def test_handle_edit_escalation_note_reaches_result_and_history(self):
+        # The real _handle_edit contract: the escalation note is stamped on
+        # the result and into the persisted turn (not just the call args).
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=load_settings(),
+                                    history_dir=Path(tmp), root_dir=Path(tmp))
+            with patch("harness.agent.discover_target_files",
+                       return_value=["util.py"]), \
+                 patch("harness.agent.plan_task",
+                       return_value={"dag": {"nodes": []}, "nodes": [],
+                                     "total_nodes": 0,
+                                     "total_cost_ceiling": 0.0}), \
+                 patch("harness.agent.discover_verification_gate",
+                       return_value="echo ok"):
+                res = agent._handle_edit("refactor util.py", "e5", True,
+                                         escalation_note="exceeds the lane")
+            turns = load_chat_history("e5", Path(tmp))
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["escalated_from_defer"], "exceeds the lane")
+        self.assertIn("Auto-escalated to the plan lane (hourglass)",
+                      res["response"])
+        self.assertEqual(turns[0]["escalated_from_defer"],
+                         "exceeds the lane")
+
+    def test_escalation_failure_falls_back_to_honest_defer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._defer_agent(tmp)
+            with patch("harness.agent.chat", return_value=(200, self._DEFER)), \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                 patch.object(AutonomousAgent, "_auto_escalation_armed",
+                              return_value=True), \
+                 patch.object(AutonomousAgent, "_handle_edit",
+                              side_effect=HarnessError("no target files")):
+                res = agent.run_prompt("refactor the whole engine",
+                                       session_id="e2",
+                                       force_conversation=True)
+        self.assertEqual(res["status"], "deferred")
+        self.assertIn("auto-escalation to the plan lane failed: no target files",
+                      res["response"])
+
+    def test_truncation_defer_does_not_auto_escalate(self):
+        cut = "```lean\ndef a := 1"
+        truncated = {"choices": [{"message": {"content": cut},
+                                  "finish_reason": None}],
+                     "usage": {"cost": 0.0}}
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._defer_agent(tmp)
+            with patch("harness.agent.chat",
+                       return_value=(200, truncated)), \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                 patch.object(AutonomousAgent, "_auto_escalation_armed",
+                              return_value=True), \
+                 patch.object(AutonomousAgent, "_handle_edit") as he:
+                res = agent.run_prompt("continue", session_id="e3",
+                                       force_conversation=True)
+        self.assertEqual(res["status"], "deferred")
+        he.assert_not_called()
+
+    def test_disarmed_defer_stays_deferred(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._defer_agent(tmp)
+            with patch("harness.agent.chat", return_value=(200, self._DEFER)), \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                 patch.object(AutonomousAgent, "_auto_escalation_armed",
+                              return_value=False), \
+                 patch.object(AutonomousAgent, "_handle_edit") as he:
+                res = agent.run_prompt("refactor the whole engine",
+                                       session_id="e4",
+                                       force_conversation=True)
+        self.assertEqual(res["status"], "deferred")
+        he.assert_not_called()
+
+    def test_auto_escalation_armed_requires_gate_and_key(self):
+        # The real arming logic: escalation gate AND a resolved paid key.
+        with tempfile.TemporaryDirectory() as tmp:
+            gated_off = AutonomousAgent(
+                settings=load_settings({"allow_escalation": False}),
+                history_dir=Path(tmp))
+            gated_on = AutonomousAgent(settings=load_settings(
+                {"allow_escalation": True}), history_dir=Path(tmp))
+            with patch("harness.agent.resolve_api_key", return_value=None):
+                self.assertFalse(gated_on._auto_escalation_armed())
+            with patch("harness.agent.resolve_api_key",
+                       return_value="sk-test"):
+                self.assertFalse(gated_off._auto_escalation_armed())
+                self.assertTrue(gated_on._auto_escalation_armed())
 
 
 if __name__ == "__main__":

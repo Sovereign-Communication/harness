@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from ._http import HttpTransport
 from .chat import assess_output, chat, extract_content_and_cost, looks_truncated
 from .condenser import distill_context, condense_error_log
-from .config import Settings, load_settings
+from .config import Settings, load_settings, resolve_api_key
 from .dag import TaskDAG, DAGNode, node_apply_kwargs, plan_task
 from .errors import HarnessError, ToolCancelled
 from .events import emit
@@ -303,6 +303,15 @@ class AutonomousAgent:
                 return " ".join(sentence.split())[:200]
         return None
 
+    def _auto_escalation_armed(self) -> bool:
+        # Auto-escalation routes a chat defer into paid-capable plan
+        # execution: it requires the operator's escalation gate AND a
+        # resolved paid key. No key, no auto-escalation -- the honest defer
+        # with the manual resume path stands.
+        if not self.settings.allow_escalation:
+            return False
+        return bool(resolve_api_key())
+
     def _handle_conversation(
         self,
         prompt: str,
@@ -419,6 +428,7 @@ class AutonomousAgent:
             defer_reason = ("response truncated at the token cap on every "
                             "ladder model (max_tokens=4096)")
             marker_defer = False
+            truncation_defer = True
         elif answered is None:
             raise HarnessError(
                 "chat failed on every ladder model: " + "; ".join(attempts))
@@ -426,6 +436,7 @@ class AutonomousAgent:
             model, response_text, cost = answered
             defer_reason = None
             marker_defer = CAPABILITY_MARKER in response_text
+            truncation_defer = False
 
         # The chat lane honors the same deferral contract as apply: a
         # HARNESS_DEFER marker is the model handing the decision back instead
@@ -461,6 +472,24 @@ class AutonomousAgent:
                 "model_result", task_id=session_id or "(chat)",
                 event_note="chat", status="deferred", category="capability",
                 model=model, reason=defer_reason, cost=round(cost, 6))
+            # AUTO-ESCALATION: a capability defer with the paid key armed does
+            # not stop at a handoff note -- the request routes itself into the
+            # hourglass plan lane (frontier-planned DAG, governed apply with
+            # paid escalation rungs). Truncation defers keep their "continue"
+            # resume instead: the content already exists, it needs more room.
+            if not truncation_defer and self._auto_escalation_armed():
+                emit("chat_escalated", reason=defer_reason, target="plan_lane")
+                try:
+                    return self._handle_edit(
+                        prompt, session_id, auto_apply=True,
+                        cancel_check=cancel_check,
+                        escalation_note=defer_reason)
+                except HarnessError as e:
+                    # The handoff failed (no routable target files, plan
+                    # refusal, ...): the honest defer stands with the failure
+                    # recorded -- never a silent swallow.
+                    response_text += (f"\n\n[auto-escalation to the plan lane "
+                                      f"failed: {e}]")
 
         result = {
             "status": "deferred" if defer_reason else "ok",
@@ -521,6 +550,7 @@ class AutonomousAgent:
         session_id: str,
         auto_apply: bool,
         cancel_check: Optional[Callable[[], bool]] = None,
+        escalation_note: Optional[str] = None,
     ) -> Dict[str, Any]:
         # Handle code edit/refactor requests: autonomous discovery, DAG, execute, verify
         target_files = discover_target_files(prompt, self.root_dir)
@@ -650,9 +680,13 @@ class AutonomousAgent:
             )
         else:
             response_msg = "Task encountered a verification failure during execution. Check diff and error details."
+        if escalation_note:
+            response_msg += (f"\n\n**Auto-escalated to the plan lane (hourglass)** "
+                             f"after a capability defer: {escalation_note}")
 
         result = {
             "status": "ok" if all_ok else "failed",
+            **({"escalated_from_defer": escalation_note} if escalation_note else {}),
             "intent": "edit",
             "prompt": prompt,
             "response": response_msg,
