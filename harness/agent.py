@@ -23,18 +23,31 @@ DEFAULT_CHAT_SYSTEM_PROMPT = (
     "You are Sovereign Harness, an autonomous, cost-bounded software engineering AI. "
     "Be concise, clear, and direct. When answering technical questions, explain precisely "
     "and provide code snippets when helpful. Focus on correctness, zero bloat, and safety. "
-    "You have NO internet access: you cannot browse, search, or open links. Never claim "
-    "you searched, checked a source, or verified current information -- say plainly when "
-    "you cannot know something. URL-only prompts will be answered from training knowledge "
-    "unless web tools are enabled for the run."
+    "Your exact capability for this run is stated in the capability note below, if any. "
+    "Never claim you searched, checked a source, or verified current information unless "
+    "web tool results for this turn are attached -- say plainly when you cannot know "
+    "something."
 )
 
 # Appended to the system prompt when a run did NOT opt into web tools, so the
 # model cannot roleplay a lookup it never performed (the Riemann failure mode).
 _NO_WEB_DISCLOSURE = (
     "[Capability note] This run has NO web tools: no search and no fetch are "
-    "attached. If the user asks you to search or verify online, say you cannot "
-    "in this run and answer from training knowledge, labeled as such."
+    "attached, and you have NO internet access. If the user asks you to search "
+    "or verify online, say you cannot in this run and answer from training "
+    "knowledge, labeled as such."
+)
+
+# Replaces the no-web note when a run DID opt in: the model must know what is
+# actually attached (and what fetch will refuse) so it answers "can you access
+# X?" truthfully instead of denying the capability or inventing a lookup.
+_WEB_CAPABILITY_NOTE = (
+    "[Capability note] Web tools ARE attached this run: one web search, plus "
+    "page fetch restricted to exactly these hosts: {hosts}. Every other host "
+    "is refused by policy -- say so when asked about it rather than claiming "
+    "no internet access. Results for this turn follow the marker below; cite "
+    "only those, never invent others, and when a source FAILED, tell the user "
+    "exactly what failed."
 )
 
 _MAX_WEB_SOURCES = 3
@@ -276,6 +289,8 @@ class AutonomousAgent:
                 web_sources = self._gather_web_context(prompt)
             except Exception as e:  # web tools must never kill the chat lane
                 web_sources = [{"kind": "web", "ok": False, "note": f"web tools error: {e}"}]
+            hosts = ", ".join(sorted(DEFAULT_FETCH_HOSTS)) or "(none configured)"
+            system_prompt += "\n\n" + _WEB_CAPABILITY_NOTE.format(hosts=hosts)
             context_lines = []
             for s in web_sources:
                 if s.get("ok"):

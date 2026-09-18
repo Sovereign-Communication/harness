@@ -303,6 +303,26 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         self.assertIn("NO web tools", sysmsg)
         self.assertIn("NO internet access", sysmsg)
 
+    def test_web_on_system_prompt_states_capability_not_denial(self):
+        # The "it says web is on..." incident: the base prompt claimed
+        # "You have NO internet access" even on web-enabled runs, so the
+        # model denied the attached tools. Web-on prompts must state what
+        # is attached (search + allowlist hosts) and never deny access.
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp))
+            with patch("harness.agent.search_web", return_value=[]), \
+                 patch("harness.agent.chat",
+                       side_effect=HarnessError("stop at the system prompt")) as mc, \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())):
+                with self.assertRaises(HarnessError):
+                    agent.run_prompt("can you access google.com?",
+                                     session_id="w1b", web=True)
+                sysmsg = mc.call_args[1]["messages"][0]["content"]
+        self.assertNotIn("NO internet access", sysmsg)
+        self.assertIn("Web tools ARE attached", sysmsg)
+        self.assertIn("www.anthropic.com", sysmsg)
+
     def test_web_true_search_success_attaches_sources_and_provenance(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))

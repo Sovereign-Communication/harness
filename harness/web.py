@@ -24,6 +24,8 @@ are refused rather than followed, so a allowlisted URL cannot bounce the
 fetcher onto an intranet address. All network seams are patchable module
 functions, so every behavior here is pinned hermetically.
 """
+import base64
+import binascii
 import html as _html
 import os
 import re
@@ -36,7 +38,11 @@ from .events import emit
 
 # The one search endpoint. Operator-configurable via env because the choice
 # of search provider is policy, not code. Only the query varies per call.
-DEFAULT_SEARCH_URL = "https://html.duckduckgo.com/html/?q={query}"
+# DuckDuckGo's html/lite endpoints answer datacenter IPs with an HTTP-202
+# JS challenge (the Sep-2026 "web is on but nothing searches" incident), so
+# the default is Bing, which serves real result HTML keylessly. The parser
+# understands both shapes.
+DEFAULT_SEARCH_URL = "https://www.bing.com/search?q={query}"
 SEARCH_URL = os.environ.get("HARNESS_WEB_SEARCH_URL", DEFAULT_SEARCH_URL)
 
 # Fetch allowlist placeholder: hosts the UI may fetch pages from. Extend
@@ -88,8 +94,9 @@ def _clean_text(s):
 def _resolve_result_href(href):
     """Turn a search-result href into a plain https URL.
 
-    Handles the result-redirect form (…/l/?uddg=<encoded>) and
-    scheme-relative //host/... links; returns None for junk.
+    Handles the result-redirect forms (.../l/?uddg=<encoded> for DuckDuckGo,
+    /ck/a?...&u=a1<base64url> for Bing) and scheme-relative //host/... links;
+    returns None for junk.
     """
     if not href:
         return None
@@ -109,11 +116,54 @@ def _resolve_result_href(href):
         if target.scheme not in ("http", "https"):
             return None
         return urllib.parse.urlunsplit(target)
+    bing_u = qs.get("u", [None])[0]
+    if bing_u and bing_u.startswith("a1"):
+        blob = bing_u[2:]
+        blob += "=" * (-len(blob) % 4)
+        try:
+            target_url = base64.urlsafe_b64decode(blob).decode("utf-8", "replace")
+        except (ValueError, binascii.Error):
+            return None
+        target = urllib.parse.urlsplit(target_url)
+        if target.scheme in ("http", "https"):
+            return urllib.parse.urlunsplit(target)
+        return None
     return urllib.parse.urlunsplit(parsed)
 
 
+def _parse_bing_results(page_html, max_results):
+    """Bing's <li class="b_algo"><h2><a href>... blocks."""
+    results = []
+    for block in re.finditer(
+            r"<li class=\"b_algo\".*?</li>", page_html,
+            re.IGNORECASE | re.DOTALL):
+        m = re.search(
+            r"<h2[^>]*><a[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>",
+            block.group(0), re.IGNORECASE | re.DOTALL)
+        if not m:
+            continue
+        url = _resolve_result_href(m.group(1))
+        title = _clean_text(m.group(2))
+        if not url or not title:
+            continue
+        sm = re.search(r"<p[^>]*>(.*?)</p>", block.group(0),
+                       re.IGNORECASE | re.DOTALL)
+        snippet = _clean_text(sm.group(1)) if sm else ""
+        results.append({"title": title[:200], "url": url,
+                        "snippet": snippet[:400]})
+        if len(results) >= max_results:
+            break
+    return results
+
+
 def _parse_results(page_html, max_results):
-    """Extract (title, url, snippet) triples from the search result page."""
+    """Extract (title, url, snippet) triples from the search result page.
+
+    Shape is chosen by the page itself, not by which endpoint sent it:
+    Bing b_algo blocks when present, else DuckDuckGo's result__a markup.
+    """
+    if re.search(r"<li class=\"b_algo\"", page_html, re.IGNORECASE):
+        return _parse_bing_results(page_html, max_results)
     items = re.finditer(
         r"<a[^>]+class=\"[^\"]*result__a[^\"]*\"[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>",
         page_html, re.IGNORECASE | re.DOTALL)

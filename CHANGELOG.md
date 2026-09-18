@@ -167,6 +167,21 @@ break APIs between minor versions).
 
 ### Fixed
 
+- **"Web on" searched nothing and the model denied having web access.**
+  Two stacked causes. (1) The DuckDuckGo html/lite endpoints answer
+  datacenter IPs with an HTTP-202 JS challenge, so every non-URL web-on
+  turn produced only a FAILED source; the default search endpoint is now
+  Bing (keyless, serves real result HTML), with its `/ck/a` base64
+  redirect links resolved to plain target URLs, its edge paths parsed
+  (no-heading blocks skipped, no-snippet blocks -> "", scheme-confusion
+  `u=` payloads dropped), and the DDG parser kept for the
+  `HARNESS_WEB_SEARCH_URL` override. (2) The base chat system prompt said
+  "You have NO internet access" even on web-enabled runs, so the model
+  denied the attached tools instead of using them; the claim now lives
+  only in the no-web disclosure, and web-on runs get a capability note
+  stating that search is attached and fetch is restricted to exactly the
+  allowlisted hosts -- so "can you access X?" gets a truthful answer about
+  what will and will not be fetched.
 - **The UI chat lane swallowed provider failures as a fake apology.** The
   429 incident: the conversation lane pinned one free model
   (`google/gemma-4-31b-it:free`), ignored the HTTP status from `chat`, and

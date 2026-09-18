@@ -28,6 +28,68 @@ class SearchWebTests(unittest.TestCase):
         with self.assertRaises(HarnessError):
             web.search_web("   ")
 
+    def test_default_search_endpoint_is_bing(self):
+        # The Sep-2026 incident: DDG's html/lite endpoints answer datacenter
+        # IPs with an HTTP-202 JS challenge, so "web on" searched nothing.
+        # The default must stay on the keyless endpoint that answers.
+        self.assertIn("bing.com", web.DEFAULT_SEARCH_URL)
+
+    def test_bing_markup_parsed_with_ck_redirect_resolved(self):
+        # Bing wraps result links in /ck/a?...&u=a1<base64url>; the parser
+        # must resolve them to the plain target URL.
+        import base64 as _b64
+        target = "https://www.anthropic.com/research/riemann-zeta"
+        u_param = "a1" + _b64.urlsafe_b64encode(target.encode()).decode().rstrip("=")
+        page = (
+            '<li class="b_algo"><h2><a href="https://www.bing.com/ck/a?!&p=x'
+            f'&u={u_param}&ntb=1">Riemann Bound Moved</a></h2>'
+            "<p>zero-free region extended</p></li>"
+            '<li class="b_algo"><h2><a href="https://www.example.com/plain">'
+            "Plain Link</a></h2><p>also fine</p></li>"
+        ).encode()
+        with mock.patch.object(web, "_http_get",
+                               return_value=(200, page, "https://www.bing.com/search?q=x")):
+            results = web.search_web("riemann bound")
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]["title"], "Riemann Bound Moved")
+        self.assertEqual(results[0]["url"], target)
+        self.assertEqual(results[0]["snippet"], "zero-free region extended")
+        self.assertEqual(results[1]["url"], "https://www.example.com/plain")
+
+    def test_bing_ck_link_with_unusable_target_is_dropped(self):
+        # A u= param that does not decode to http(s) must not yield a result
+        # pointing at the search engine's own redirect URL.
+        page = (
+            '<li class="b_algo"><h2><a href="https://www.bing.com/ck/a?u=a1'
+            '!!!notbase64!!!">Junk</a></h2><p>s</p></li>'
+        ).encode()
+        with mock.patch.object(web, "_http_get",
+                               return_value=(200, page, "https://www.bing.com/search?q=x")):
+            with self.assertRaises(HarnessError):
+                web.search_web("q")
+
+    def test_bing_parser_edge_paths(self):
+        # Blocks without an h2>a are skipped; a u= param decoding to a
+        # non-http scheme is dropped (no scheme confusion); a block with no
+        # <p> gets an empty snippet; max_results stops the walk.
+        ftp_blob = "a1" + __import__("base64").urlsafe_b64encode(
+            b"ftp://bad.example/x").decode().rstrip("=")
+        page = (
+            '<li class="b_algo"><div>no heading at all</div></li>'
+            '<li class="b_algo"><h2><a href="https://www.bing.com/ck/a?'
+            f'u={ftp_blob}">Scheme Confusion</a></h2><p>s</p></li>'
+            '<li class="b_algo"><h2><a href="https://www.example.com/nosnip">'
+            "No Snippet</a></h2><div>no paragraph</div></li>"
+            '<li class="b_algo"><h2><a href="https://www.example.com/never">'
+            "Never Reached</a></h2><p>s</p></li>"
+        ).encode()
+        with mock.patch.object(web, "_http_get",
+                               return_value=(200, page, "https://www.bing.com/search?q=x")):
+            results = web.search_web("q", max_results=1)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["title"], "No Snippet")
+        self.assertEqual(results[0]["snippet"], "")
+
     def test_results_parsed_with_redirect_form_resolved(self):
         page = (
             '<a class="result__a" href="//www.anthropic.com/l/?uddg=https%3A%2F%2Fnews.ycombinator.com%2Fitem%3Fid%3D1">'
