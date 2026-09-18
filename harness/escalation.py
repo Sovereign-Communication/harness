@@ -121,7 +121,12 @@ class EscalationDriver:
                     "cost": error_cost, "content": "",
                 })
                 self._ledger(model, rung, "error", error_cost, reason=error)
-                # Fail closed: stop the ladder on transport/auth failure.
+                # Saturation is not impossibility: a rate-limited (429) or
+                # overloaded (503) rung rotates to the next, more capable
+                # rung -- that is the ladder's whole point. Anything else
+                # (auth, transport, provider 4xx) fails closed: stop here.
+                if status in (429, 503):
+                    continue
                 break
 
             content, finish, cost, is_byok = extract_content_and_cost(resp)

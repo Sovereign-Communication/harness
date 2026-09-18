@@ -522,6 +522,13 @@ def load_settings(overrides=None):
         return cfg.get(key, default)
 
     use_free = _as_bool(get("use_free", True))
+    # Auto-escalation defaults ON when a paid key is connected: when the
+    # cheap tier saturates (429 across the pool) or exhausts its verify
+    # budget, the judge walks the escalation ladder into the lowest paid
+    # rung instead of failing the task. An explicit allow_escalation=false
+    # (config/env/overrides) still disarms it, and with no paid key there
+    # is nothing to walk into -- the default stays off.
+    paid_key = resolve_api_key()
     if use_free:
         default_panel = FREE_PANEL_POOL
         default_judge = FREE_JUDGE
@@ -529,6 +536,11 @@ def load_settings(overrides=None):
         default_apply_pool = FREE_APPLY_POOL
         default_specialist_pool = SPECIALIST_POOL_FREE
         default_escalation_pool = ESCALATION_POOL_FREE
+        # Saturation ladder: free rungs first (they cost nothing), then the
+        # paid ladder cheapest-first -- a busy free rung rotates onward.
+        if paid_key:
+            default_escalation_pool = (ESCALATION_POOL_FREE
+                                       + ESCALATION_POOL_PAID)
     else:
         default_panel = DEFAULT_PANEL_PAID
         default_judge = DEFAULT_JUDGE_PAID
@@ -598,7 +610,7 @@ def load_settings(overrides=None):
         ledger_path=str(get("ledger_path", os.path.join(CONFIG_DIR, "ledger.jsonl"))),
         expect_key_label=get("expect_key_label", os.environ.get("FUSIONLITE_EXPECT_KEY_LABEL")),
         default_require_consent=_as_bool(get("default_require_consent", True)),
-        allow_escalation=_as_bool(get("allow_escalation", False)),
+        allow_escalation=_as_bool(get("allow_escalation", bool(paid_key))),
         mcp_allow_write=_as_bool(get("mcp_allow_write", False)),
         mcp_allow_verify=_as_bool(get("mcp_allow_verify", False)),
         mcp_allowed_roots=_split_list(str(get("mcp_allowed_roots", ""))),

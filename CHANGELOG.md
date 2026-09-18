@@ -11,6 +11,15 @@ break APIs between minor versions).
 
 ### Added
 
+- **Free-tier saturation auto-escalates into the lowest paid rung.** With
+  a paid key connected, `allow_escalation` now defaults ON and the
+  escalation ladder appends the paid rungs (cheapest first) after the
+  free ones. Two defects made that ladder unreachable exactly when it
+  mattered: a 429 on an escalation rung failed the whole ladder closed
+  (saturation is "busy", not "impossible" -- the walk now continues),
+  and an exhausted apply pool raised past the ladder entirely (it now
+  breaks into the escalation-or-honest-terminal tail). An explicit
+  `allow_escalation: false` still disarms it; no paid key, no ladder.
 - **The autonomous orchestrator drives complex edits to completion.**
   Any deferral into Auto mode now routes through an orchestrator loop in
   the edit lane: a repo-wide relevance triage (LLM file-triage over the

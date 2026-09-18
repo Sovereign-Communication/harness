@@ -150,6 +150,65 @@ class EscalationDriverTests(unittest.TestCase):
             lambda m, c, cost: {"status": "ok"})
         self.assertIsNone(result)
 
+    def test_driver_saturation_rotates_to_next_rung(self):
+        # A 429 on a rung is "busy", not "impossible": the ladder walks on
+        # to the next, more capable rung -- this is the free-tier-saturation
+        # path into the lowest paid rung.
+        from harness.escalation import EscalationDriver
+        from harness.apply_state import RunState
+
+        router = Router(panel=["a"], judge="j", apply_model="a",
+                        allow_escalation=True,
+                        escalation_pool=["free/a:free", "paid/b"])
+        gov = FakeGov()
+        state = RunState(rounds=[], history=[], current_content="x")
+        attempted = []
+
+        def fake_chat(transport, api_key, model, messages, max_tokens,
+                      effort, budget, governor):
+            attempted.append(model)
+            if model == "free/a:free":
+                return 429, "rate limited"
+            return 200, {"choices": [{"message": {"content": "c"},
+                                      "finish_reason": "stop"}],
+                         "usage": {"cost": 0.0}}
+
+        driver = EscalationDriver(router, transport=None, api_key="k",
+                                  governor=gov, ledger=None, task_id="t")
+        req = SimpleNamespace(allow_escalation=True)
+        with mock.patch("harness.escalation.chat", side_effect=fake_chat):
+            result = driver.run_with_escalation(
+                req, state, lambda s, c: "p",
+                lambda m, c, cost: {"status": "ok", "model": m})
+        self.assertEqual(result["model"], "paid/b")
+        self.assertEqual(attempted, ["free/a:free", "paid/b"])
+
+    def test_driver_auth_failure_still_fails_closed(self):
+        # Auth/transport failures stop the ladder: retrying into the next
+        # rung cannot fix a dead key.
+        from harness.escalation import EscalationDriver
+        from harness.apply_state import RunState
+
+        router = Router(panel=["a"], judge="j", apply_model="a",
+                        allow_escalation=True,
+                        escalation_pool=["free/a:free", "paid/b"])
+        attempted = []
+
+        def fake_chat(transport, api_key, model, messages, max_tokens,
+                      effort, budget, governor):
+            attempted.append(model)
+            return 401, "bad key"
+
+        driver = EscalationDriver(router, transport=None, api_key="k",
+                                  governor=FakeGov(), ledger=None, task_id="t")
+        req = SimpleNamespace(allow_escalation=True)
+        with mock.patch("harness.escalation.chat", side_effect=fake_chat):
+            result = driver.run_with_escalation(
+                req, RunState(rounds=[], history=[], current_content="x"),
+                lambda s, c: "p", lambda m, c, cost: {"status": "ok"})
+        self.assertIsNone(result)
+        self.assertEqual(attempted, ["free/a:free"])
+
 
 class SettingsEscalationTests(unittest.TestCase):
     def test_load_settings_ships_escalation_pool_and_judge_top(self):
@@ -161,6 +220,37 @@ class SettingsEscalationTests(unittest.TestCase):
         self.assertTrue(s2.escalation_pool)
         self.assertTrue(any(not x.endswith(":free") for x in s2.escalation_pool),
                         f"paid escalation pool should include non-free models: {s2.escalation_pool}")
+
+    def test_paid_key_defaults_escalation_on_with_saturation_ladder(self):
+        # The saturation ladder is the default when a paid key is connected:
+        # free rungs first, then the paid ladder cheapest-first, escalation
+        # armed. Without a key: free-only ladder, escalation disarmed.
+        # Hermetic: CONFIG_DIR stays patched for every scenario so the
+        # machine's config.json (which may pin its own escalation_pool /
+        # allow_escalation) never leaks into the assertions.
+        from harness.config import (ESCALATION_POOL_FREE, ESCALATION_POOL_PAID,
+                                    load_settings)
+        with tempfile.TemporaryDirectory() as cfg, \
+                mock.patch("harness.config.CONFIG_DIR", cfg):
+            with mock.patch("harness.config.resolve_api_key",
+                            return_value="k"):
+                armed = load_settings({"use_free": True})
+            self.assertTrue(armed.allow_escalation)
+            self.assertEqual(armed.escalation_pool,
+                             ESCALATION_POOL_FREE + ESCALATION_POOL_PAID)
+
+            with mock.patch("harness.config.resolve_api_key",
+                            return_value=None):
+                free_only = load_settings({"use_free": True})
+            self.assertFalse(free_only.allow_escalation)
+            self.assertEqual(free_only.escalation_pool, ESCALATION_POOL_FREE)
+
+            # An explicit false still disarms it even with a key connected.
+            with mock.patch("harness.config.resolve_api_key",
+                            return_value="k"):
+                disarmed = load_settings({"use_free": True,
+                                          "allow_escalation": False})
+            self.assertFalse(disarmed.allow_escalation)
 
 
 class ApplyLadderE2ETests(unittest.TestCase):
@@ -270,6 +360,128 @@ class ApplyLadderE2ETests(unittest.TestCase):
             self.assertIsNotNone(result)
             self.assertEqual(result["status"], "ok")
             self.assertEqual(len(prompts), 2)
+
+
+    def test_pool_exhaustion_escalates_to_paid_rung_instead_of_dying(self):
+        # THE saturation contract: the cheap tier 429s across its whole pool.
+        # The lane must walk the escalation ladder into the lowest paid rung
+        # (which answers) -- never raise "pool exhausted" past the ladder,
+        # which is what let a saturated free tier kill orchestrator nodes
+        # while the paid key sat unused. With escalation disarmed, the same
+        # saturation lands in the honest terminal failure (still no raise).
+        from harness.apply import ApplyEngine
+        from harness.filesafety import _atomic_write
+
+        class Gov:
+            spent = 0.0
+            max_cost = 1.0
+
+            def preflight(self, *a, **k):
+                return None
+
+            def record_actual(self, cost, model):
+                self.spent += float(cost or 0)
+
+            def record_byok(self, model):
+                pass
+
+            def is_free(self, model):
+                return str(model).endswith(":free")
+
+            def check_byok(self, model):
+                return None
+
+            def fetch_pricing(self, models):
+                return None
+
+            def fetch_models(self):
+                return []
+
+            def learned_blocked(self, model):
+                return False
+
+        class Led:
+            def append(self, *a, **k):
+                return None
+
+            def participation_report(self, *a, **k):
+                return {}
+
+        def build_engine(escalation_pool, allow_escalation):
+            router = Router(
+                panel=["p"], judge="j", apply_model="free/a:free",
+                allow_escalation=allow_escalation,
+                escalation_pool=escalation_pool,
+            )
+            return ApplyEngine(
+                transport=None, api_key="k", governor=Gov(), ledger=Led(),
+                router=router, default_require_consent=False,
+            )
+
+        def saturated_chat(transport, api_key, model, messages, max_tokens,
+                           effort, budget, governor):
+            if str(model).endswith(":free"):
+                return 429, "rate limited"
+            return 200, {
+                "choices": [{"message": {"content": "x = 2\n"},
+                             "finish_reason": "stop"}],
+                "usage": {"cost": 0.0},
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "t.py")
+            _atomic_write(target, "x = 1\n")
+            from harness.apply_state import ApplyRequest
+
+            def make_req():
+                return ApplyRequest(
+                    task_id="t", file_path=target, instruction="fix",
+                    edit_snippet=None, verify_cmd="python -c \"pass\"",
+                    backend="harness", verify_only=False, max_lines=500,
+                    max_rounds=3, max_tokens=256, task_max_cost=0.05,
+                    max_rot=0, reasoning="off", renew=False,
+                    allow_escalation=None, model="free/a:free",
+                    ordered=["free/a:free"], profiles=None,
+                    want_consent=False, original="x = 1\n",
+                    task_start_spent=0.0, continuation={},
+                    continuation_gate=None, task_runner=None,
+                    cancel_check=None,
+                )
+
+            # Armed ladder: saturation rotates into the paid rung, which
+            # answers, and the gate finishes it ok.
+            engine = build_engine(["paid/strong"], True)
+            with mock.patch("harness.apply_policy.chat",
+                            side_effect=saturated_chat), \
+                 mock.patch("harness.escalation.chat",
+                            side_effect=saturated_chat), \
+                 mock.patch("harness.apply_policy.consent_renew",
+                            return_value={"decision": "accept"}):
+                result = engine.apply_edit(
+                    file_path=target, instruction="fix",
+                    verify_cmd="python -c \"pass\"", allow_verify=True,
+                    require_consent=False)
+            self.assertEqual(result["status"], "ok")
+            self.assertTrue(result.get("escalated"))
+            with open(target, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "x = 2\n")
+
+            # Disarmed: the same saturation lands in an honest structured
+            # terminal failure -- never an escaped exception.
+            engine2 = build_engine([], False)
+            with mock.patch("harness.apply_policy.chat",
+                            side_effect=saturated_chat), \
+                 mock.patch("harness.escalation.chat",
+                            side_effect=saturated_chat), \
+                 mock.patch("harness.apply_policy.consent_renew",
+                            return_value={"decision": "accept"}):
+                failed = engine2.apply_edit(
+                    file_path=target, instruction="fix",
+                    verify_cmd="python -c \"pass\"", allow_verify=True,
+                    require_consent=False)
+            self.assertNotEqual(failed["status"], "ok")
+            self.assertIn(failed["status"],
+                          ("failed", "verify_failed", "consent_blocked"))
 
 
 if __name__ == "__main__":

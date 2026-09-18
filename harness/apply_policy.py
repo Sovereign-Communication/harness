@@ -107,7 +107,12 @@ class ApplyEngineMixin:
             attempt_model = next(
                 (m_ for m_ in state.candidates if m_ not in state.failed_models), None)
             if attempt_model is None:
-                raise HarnessError("no available apply model (pool exhausted).")
+                # Pool exhausted (e.g. the cheap tier saturated with 429s):
+                # the escalation ladder may still have rungs -- walk it or
+                # land the honest terminal failure. Never a bare raise here:
+                # that would bypass the ladder entirely and kill the task
+                # while the lowest paid rung was still untried.
+                break
 
             outcome = self._attempt_round(req, state, attempt_model)
             if outcome.model_used is None:
