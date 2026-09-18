@@ -120,7 +120,10 @@ def build_parser():
     pp = sub.add_parser("plan", help="Decompose a goal into an executable DAG with sliding-scale tier routing")
     pp.add_argument("--goal", required=True, help="high-level goal or instruction to decompose and execute")
     pp.add_argument("--execute", action="store_true", default=False, help="execute the planned DAG instead of previewing")
-    pp.add_argument("--parallel", action="store_true", default=False, help="execute independent subtasks concurrently")
+    pp.add_argument("--parallel", dest="parallel", action="store_true", default=None,
+                    help="execute independent subtasks concurrently (default: on)")
+    pp.add_argument("--no-parallel", dest="parallel", action="store_false",
+                    help="execute stages serially (shared-tree mutex)")
     pp.add_argument("--max-workers", type=int, default=4, help="thread pool worker count for parallel execution")
     pp.add_argument("--frontier-model", default=None, help="frontier model or alias for Tier 2 nodes (e.g. fable-5.1, gpt-6)")
     pp.add_argument("--file", action="append", default=None, help="constrain candidate target files")
@@ -128,16 +131,25 @@ def build_parser():
                     help="author the DAG with the cheapest tier-appropriate model "
                          "(schema-validated; on --execute a failure falls back to the "
                          "heuristic with a loud note, a plan-only preview fails loudly)")
-    pp.add_argument("--confirm", action="store_true", default=False,
+    pp.add_argument("--confirm", dest="confirm", action="store_true", default=None,
                     help="confirm the plan at the frontier waist before execution: "
                          "condensed brief + bounded file-window round-trips; "
-                         "approve/amend/refuse verdict (spends against the run's ceiling; "
-                         "a refused plan never executes)")
-    pp.add_argument("--isolate", action="store_true", default=False,
+                         "approve/amend/split/refuse verdict (default: on; spends "
+                         "against the run's ceiling; a refused plan never executes)")
+    pp.add_argument("--no-confirm", dest="confirm", action="store_false",
+                    help="skip the frontier waist confirmation")
+    pp.add_argument("--isolate", dest="isolate", action="store_true", default=None,
                     help="isolate parallel-stage nodes in git worktrees + local branches "
-                         "(audited against declared target files, merged in topological "
-                         "order; merge conflicts fail the node, never force-merge; "
-                         "unavailable git degrades to shared-tree mutex execution)")
+                         "(default: on; audited against declared target files, merged in "
+                         "topological order; merge conflicts fail the node, never "
+                         "force-merge; unavailable git degrades to shared-tree mutex execution)")
+    pp.add_argument("--no-isolate", dest="isolate", action="store_false",
+                    help="execute parallel stages in the shared tree (mutex only)")
+    pp.add_argument("--no-attestation", dest="require_diff_authorization",
+                    action="store_false", default=None,
+                    help="skip diff-bound write attestation on node writes "
+                         "(--require-attestation, the default, asks an independent "
+                         "verifier model to allow the exact resulting content first)")
     pp.add_argument("--stage-gate", dest="stage_gate", default=None,
                     help="command to run after each parallel stage completes (e.g. the "
                          "full test suite); a failing gate stops the run before "

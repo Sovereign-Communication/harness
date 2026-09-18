@@ -342,6 +342,10 @@ _ENV_NAMES = {
     "mcp_tool_timeout": "HARNESS_MCP_TOOL_TIMEOUT",
     "mcp_auth_token": "HARNESS_MCP_AUTH_TOKEN",
     "frontier_model": "HARNESS_FRONTIER_MODEL",
+    "hourglass_confirm": "HARNESS_HOURGLASS_CONFIRM",
+    "hourglass_isolate": "HARNESS_HOURGLASS_ISOLATE",
+    "hourglass_parallel": "HARNESS_HOURGLASS_PARALLEL",
+    "hourglass_require_attestation": "HARNESS_HOURGLASS_REQUIRE_ATTESTATION",
 }
 
 
@@ -431,7 +435,9 @@ class Settings:
                  max_panelists, max_rotations, renew_consent, ledger_path,
                   expect_key_label, default_require_consent, allow_escalation,
                   mcp_allow_write=False, mcp_allow_verify=False, mcp_allowed_roots=None,
-                  mcp_tool_timeout=1800, mcp_auth_token=None, frontier_model=None):
+                  mcp_tool_timeout=1800, mcp_auth_token=None, frontier_model=None,
+                  hourglass_confirm=True, hourglass_isolate=True,
+                  hourglass_parallel=True, hourglass_require_attestation=True):
         self.use_free = use_free
         self.panel = list(panel)
         self.panel_pool = list(panel_pool)
@@ -472,6 +478,14 @@ class Settings:
         # every tools/call must present matching params._meta.harness_token.
         self.mcp_auth_token = mcp_auth_token or None
         self.frontier_model = frontier_model
+        # Auto-scaling hourglass defaults (CLI plan lane + MCP/GUI
+        # plan_and_execute): waist confirmation, parallel stages, worktree
+        # isolation, and diff-bound write attestation are ON by default;
+        # each is opt-out via its flag (--no-*) or this settings file.
+        self.hourglass_confirm = hourglass_confirm
+        self.hourglass_isolate = hourglass_isolate
+        self.hourglass_parallel = hourglass_parallel
+        self.hourglass_require_attestation = hourglass_require_attestation
 
     def to_dict(self):
         return {k: getattr(self, k) for k in (
@@ -483,7 +497,9 @@ class Settings:
             "max_rotations", "renew_consent", "ledger_path", "expect_key_label",
             "default_require_consent", "allow_escalation", "mcp_allow_write",
             "mcp_allow_verify", "mcp_allowed_roots", "mcp_tool_timeout",
-            "mcp_auth_token", "frontier_model")}
+            "mcp_auth_token", "frontier_model", "hourglass_confirm",
+            "hourglass_isolate", "hourglass_parallel",
+            "hourglass_require_attestation")}
 
 
 def load_settings(overrides=None):
@@ -589,4 +605,9 @@ def load_settings(overrides=None):
         mcp_tool_timeout=mcp_tool_timeout,
         mcp_auth_token=get("mcp_auth_token", None) or None,
         frontier_model=get("frontier_model", None),
+        hourglass_confirm=_as_bool(get("hourglass_confirm", True)),
+        hourglass_isolate=_as_bool(get("hourglass_isolate", True)),
+        hourglass_parallel=_as_bool(get("hourglass_parallel", True)),
+        hourglass_require_attestation=_as_bool(
+            get("hourglass_require_attestation", True)),
     )

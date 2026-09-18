@@ -580,10 +580,12 @@ def _capabilities_payload(settings, gov, api_key=None, refresh=False,
 
 
 def _plan_compose(settings, opts, gov, transport, api_key, *,
-                  candidate_files, frontier_model, execute):
+                  candidate_files, frontier_model, execute, confirm=None):
     """Plan-lane flow via the ONE owner (harness/waist.py): heuristic or
-    cheap-LLM decomposition, then optional waist confirmation."""
-    confirm = getattr(opts, "confirm", False)
+    cheap-LLM decomposition, then (hourglass default: on) waist
+    confirmation."""
+    if confirm is None:
+        confirm = getattr(settings, "hourglass_confirm", True)
     return _compose_plan(
         transport=transport, api_key=api_key, governor=gov,
         ledger=_ledger(settings) if confirm else None, opts_goal=opts.goal,
@@ -594,13 +596,30 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
         execute=execute)
 
 
+def _resolve_hourglass(opts, settings):
+    """Tri-state plan flags -> effective values: an explicit flag wins,
+    otherwise the settings-file default (auto-scaling hourglass: all on)."""
+    def resolve(flag, key):
+        value = getattr(opts, flag, None)
+        return (getattr(settings, key, True)
+                if value is None else value)
+    return {
+        "confirm": resolve("confirm", "hourglass_confirm"),
+        "parallel": resolve("parallel", "hourglass_parallel"),
+        "isolate": resolve("isolate", "hourglass_isolate"),
+        "require_diff_authorization": resolve(
+            "require_diff_authorization", "hourglass_require_attestation"),
+    }
+
+
 def _cmd_plan(opts, settings):
     # Decompose a high-level goal into an executable TaskDAG and optionally execute
     candidate_files = getattr(opts, "file", None)
     frontier_model = getattr(opts, "frontier_model", None) or getattr(settings, "frontier_model", None)
     execute = getattr(opts, "execute", False)
     decompose_llm = getattr(opts, "decompose_llm", False)
-    confirm = getattr(opts, "confirm", False)
+    hourglass = _resolve_hourglass(opts, settings)
+    confirm = hourglass["confirm"]
 
     # ONE governor for the whole run when it spends: decomposition,
     # confirmation, and node execution share a single ceiling (the engine's
@@ -618,7 +637,7 @@ def _cmd_plan(opts, settings):
     plan_result = _plan_compose(
         settings, opts, gov, transport, api_key,
         candidate_files=candidate_files, frontier_model=frontier_model,
-        execute=execute)
+        execute=execute, confirm=confirm)
     if plan_result.get("status") == "refused":
         # The waist refused; execution must not start (fail-closed), and the
         # refusal's reason + evidence ride the envelope (exit code 2).
@@ -630,15 +649,15 @@ def _cmd_plan(opts, settings):
 
     dag = TaskDAG.from_dict(plan_result["dag"])
     node_routes = {n.get("node_id"): n for n in plan_result["nodes"]}
-    is_parallel = getattr(opts, "parallel", False)
+    is_parallel = hourglass["parallel"]
     workers = getattr(opts, "max_workers", 4) if is_parallel else 1
     executor = ConcurrentExecutor(max_workers=workers)
 
-    # MR-5 partition rule: concurrent nodes execute in isolated git
-    # worktrees; serial nodes share the tree under the per-path mutex.
-    # Unavailable git degrades loudly to shared-tree execution.
+    # MR-5 partition rule (hourglass default: on): concurrent nodes
+    # execute in isolated git worktrees; serial nodes share the tree
+    # under the per-path mutex. Unavailable git degrades loudly.
     isolator = None
-    if is_parallel and getattr(opts, "isolate", False):
+    if is_parallel and hourglass["isolate"]:
         iso = WorktreeIsolation()
         if iso.available():
             isolator = iso
@@ -675,6 +694,7 @@ def _cmd_plan(opts, settings):
             verify_cmd=node.local_gate,
             allow_verify=True,
             require_consent=False,
+            require_diff_authorization=hourglass["require_diff_authorization"],
             model=getattr(opts, "model", None),
             max_tokens=getattr(opts, "max_tokens", None),
             task_max_cost=task_max,

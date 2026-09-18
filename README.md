@@ -122,6 +122,10 @@ with `HARNESS_*` env overrides:
 | `renew_consent` | `true` | Re-check consent before each apply round |
 | `default_require_consent` | `true` | Ask before dispatching work |
 | `allow_escalation` | `false` | Gate for escalating to a paid/frontier model |
+| `hourglass_confirm` | `true` | `plan` confirms at the frontier waist before executing (`--no-confirm` opts out per request) |
+| `hourglass_parallel` | `true` | `plan --execute` runs independent stages concurrently (`--no-parallel` opts out) |
+| `hourglass_isolate` | `true` | parallel-stage nodes run in isolated git worktrees (`--no-isolate` opts out) |
+| `hourglass_require_attestation` | `true` | every node write is attested against its exact diff by an independent verifier (`--no-attestation` opts out) |
 
 `harness models` lists the current live free models (refreshed from
 OpenRouter). Hardcoded slugs go stale — the curated pools are validated live

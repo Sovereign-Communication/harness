@@ -102,7 +102,8 @@ class McpServer:
     def __init__(self, *, transport, api_key, governor, ledger, router, engine,
                  max_panelists=3, use_free=True, stdin=None, stdout=None,
                  allow_verify=False, allow_write=False, allowed_roots=None,
-                 tool_timeout=None, caller=None, auth_token=None):
+                 tool_timeout=None, caller=None, auth_token=None,
+                 hourglass=None):
         self.transport = transport
         self.api_key = api_key
         self.governor = governor
@@ -128,6 +129,15 @@ class McpServer:
         # params._meta.harness_token (or params.harness_token) matching.
         # Empty = inherited stdio authority (documented trust model).
         self.auth_token = auth_token or None
+        # Auto-scaling hourglass defaults for plan_and_execute (waist
+        # confirmation, parallel stages, worktree isolation, diff-bound
+        # write attestation). All on unless the settings file turns one
+        # off; a per-request argument still wins.
+        self.hourglass = {
+            "confirm": True, "isolate": True, "parallel": True,
+            "require_diff_authorization": True,
+        }
+        self.hourglass.update(hourglass or {})
         # Session authorship for the evidence loop: the stdio peer (captured
         # from initialize clientInfo) or the embedding host. Ledger events
         # created on this connection carry it; trust scores break out
@@ -671,10 +681,16 @@ class McpServer:
         if name == "plan_and_execute":
             goal = validate_text(args.get("goal"), "goal", 20000, required=True)
             execute = validate_mcp_bool(args.get("execute", False), "execute")
-            parallel = validate_mcp_bool(args.get("parallel", False), "parallel")
+            parallel = validate_mcp_bool(
+                args.get("parallel", self.hourglass["parallel"]), "parallel")
             allow_write = validate_mcp_bool(args.get("allow_write", False), "allow_write")
             decompose_llm = validate_mcp_bool(args.get("decompose_llm", False), "decompose_llm")
-            confirm = validate_mcp_bool(args.get("confirm", False), "confirm")
+            confirm = validate_mcp_bool(
+                args.get("confirm", self.hourglass["confirm"]), "confirm")
+            require_auth = validate_mcp_bool(
+                args.get("require_diff_authorization",
+                         self.hourglass["require_diff_authorization"]),
+                "require_diff_authorization")
             max_workers = int(args.get("max_workers", 4) or 4)
             frontier_model = validate_mcp_model(args.get("frontier_model"), "frontier_model")
             raw_files = args.get("file")
@@ -707,7 +723,7 @@ class McpServer:
                 self.engine.default_task_max_cost,
                 route_kwargs_fn=node_apply_kwargs)
             isolator = None
-            if parallel:
+            if parallel and self.hourglass["isolate"]:
                 iso = WorktreeIsolation()
                 if iso.available():
                     isolator = iso
@@ -727,6 +743,7 @@ class McpServer:
                     verify_cmd=node.local_gate,
                     allow_verify=self.allow_verify,
                     require_consent=False,
+                    require_diff_authorization=require_auth,
                     **({"task_runner": task_runner} if task_runner else {}),
                     **route_kwargs,
                 )
@@ -812,6 +829,12 @@ def main(argv=None):  # pragma: no cover - thin wiring
         allowed_roots=settings.mcp_allowed_roots,
         tool_timeout=settings.mcp_tool_timeout,
         auth_token=settings.mcp_auth_token,
+        hourglass={
+            "confirm": settings.hourglass_confirm,
+            "isolate": settings.hourglass_isolate,
+            "parallel": settings.hourglass_parallel,
+            "require_diff_authorization": settings.hourglass_require_attestation,
+        },
     ).serve_forever()
 
 

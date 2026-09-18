@@ -11,6 +11,17 @@ break APIs between minor versions).
 
 ### Added
 
+- **The hourglass is the default (M4).** The plan lane now runs the full
+  hourglass unprompted -- frontier-waist confirmation, parallel stages,
+  worktree isolation, and diff-bound write attestation are all ON for
+  `harness plan` and MCP `plan_and_execute` alike. Every stage stays
+  opt-out-able: per request via `--no-confirm` / `--no-parallel` /
+  `--no-isolate` / `--no-attestation`, or permanently via four new
+  settings (`hourglass_confirm`, `hourglass_parallel`,
+  `hourglass_isolate`, `hourglass_require_attestation`; env
+  `HARNESS_HOURGLASS_*`). Explicit flags beat settings; settings beat
+  the built-in default; the MCP schema carries the same knobs with
+  `default: true` so GUI callers get identical behavior.
 - **Parallel-stage isolation + cost reservations (M3).** Two frontier
   verdicts obtained through Harness itself (consensus across independent
   model families; see docs/hourglass-micro-requests.md) drove the design:

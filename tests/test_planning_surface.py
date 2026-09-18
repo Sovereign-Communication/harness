@@ -1,4 +1,6 @@
 """Hermetic unit tests for the high-level planning surface (CLI & MCP)."""
+import os
+import tempfile as _tempfile
 import unittest
 from unittest.mock import MagicMock
 
@@ -96,8 +98,10 @@ class TestPlanningSurface(unittest.TestCase):
             allow_verify=True,
         )
 
-        # 1. Preview mode (execute=False)
-        preview_res = server._invoke("plan_and_execute", {"goal": "1. Step A\n2. Step B", "execute": False})
+        # 1. Preview mode (execute=False); the hourglass defaults are ON,
+        # so a preview with confirm would attempt a frontier call -- the
+        # host opts out per request (this test targets the planner only).
+        preview_res = server._invoke("plan_and_execute", {"goal": "1. Step A\n2. Step B", "execute": False, "confirm": False})
         self.assertEqual(preview_res["status"], "planned")
         self.assertEqual(preview_res["total_nodes"], 2)
 
@@ -108,7 +112,7 @@ class TestPlanningSurface(unittest.TestCase):
 
         # 3. Execution mode with allow_write succeeds and exercises target_files
         server.allow_write = True
-        exec_res = server._invoke("plan_and_execute", {"goal": "Step A", "file": ["foo.py"], "execute": True})
+        exec_res = server._invoke("plan_and_execute", {"goal": "Step A", "file": ["foo.py"], "execute": True, "confirm": False, "require_diff_authorization": False})
         self.assertEqual(exec_res["status"], "ok")
         self.assertEqual(exec_res["completed_nodes"], 1)
         mock_engine.apply_edit.assert_called()
@@ -128,7 +132,8 @@ class TestPlanningSurface(unittest.TestCase):
             execute=False,
             out=None,
         )
-        settings = SimpleNamespace(use_free=True, frontier_model=None)
+        settings = SimpleNamespace(use_free=True, frontier_model=None,
+                                   hourglass_confirm=False)
 
         with patch("harness.cli._emit") as mock_emit:
             _cmd_plan(opts, settings)
@@ -163,7 +168,10 @@ class TestPlanningSurface(unittest.TestCase):
             reasoning_effort=None,
             max_rotations=3,
         )
-        settings = SimpleNamespace(use_free=False, frontier_model=None)
+        settings = SimpleNamespace(use_free=False, frontier_model=None,
+                                   hourglass_confirm=False,
+                                   hourglass_isolate=False,
+                                   hourglass_require_attestation=False)
 
         with patch("harness.cli._session", return_value=mock_engine), patch("harness.cli._emit_by_status") as mock_emit:
             _cmd_plan(opts_seq, settings)
@@ -301,7 +309,10 @@ class TestPlanningSurface(unittest.TestCase):
             reasoning_effort=None,
             max_rotations=3,
         )
-        settings = SimpleNamespace(use_free=False, frontier_model=None)
+        settings = SimpleNamespace(use_free=False, frontier_model=None,
+                                   hourglass_confirm=False,
+                                   hourglass_isolate=False,
+                                   hourglass_require_attestation=False)
 
         with patch("harness.cli._session", return_value=mock_engine), \
              patch("harness.cli._emit_by_status") as mock_emit:
@@ -315,15 +326,71 @@ class TestPlanningSurface(unittest.TestCase):
         # Explicit pins stay absent when unset.
         self.assertEqual(kwargs["model"], None)
 
-    def test_plan_isolation_flags_default_off(self):
+    def test_plan_hourglass_flags_resolve_to_settings_defaults(self):
+        """Auto-scaling hourglass: with no flags given, the plan lane
+        confirms at the waist, runs stages in parallel, isolates them in
+        git worktrees, and attests every node write -- each opt-out-able
+        by flag or settings file."""
+        from types import SimpleNamespace
+
+        from harness.cli import _resolve_hourglass
+
+        parser = build_parser()
+        settings = SimpleNamespace(
+            hourglass_confirm=True, hourglass_isolate=True,
+            hourglass_parallel=True, hourglass_require_attestation=True)
+        defaults = parser.parse_args(["plan", "--goal", "g"])
+        self.assertIsNone(defaults.confirm)
+        self.assertIsNone(defaults.isolate)
+        self.assertIsNone(defaults.parallel)
+        self.assertIsNone(defaults.require_diff_authorization)
+        resolved = _resolve_hourglass(defaults, settings)
+        self.assertEqual(resolved, {"confirm": True, "isolate": True,
+                                    "parallel": True,
+                                    "require_diff_authorization": True})
+        # Explicit flags win over settings; opt-outs honored.
+        off = parser.parse_args(["plan", "--goal", "g", "--no-confirm",
+                                 "--no-isolate", "--no-parallel",
+                                 "--no-attestation"])
+        self.assertEqual(_resolve_hourglass(off, settings), {
+            "confirm": False, "isolate": False, "parallel": False,
+            "require_diff_authorization": False})
+        settings_off = SimpleNamespace(
+            hourglass_confirm=False, hourglass_isolate=False,
+            hourglass_parallel=False, hourglass_require_attestation=False)
+        self.assertEqual(_resolve_hourglass(defaults, settings_off), {
+            "confirm": False, "isolate": False, "parallel": False,
+            "require_diff_authorization": False})
+        mixed = parser.parse_args(["plan", "--goal", "g", "--no-confirm"])
+        self.assertIs(_resolve_hourglass(mixed, settings)["confirm"], False)
+        self.assertIs(_resolve_hourglass(mixed, settings)["isolate"], True)
+
+    def test_plan_isolation_flags_parse(self):
         parser = build_parser()
         opts = parser.parse_args(["plan", "--goal", "g", "--isolate",
                                   "--stage-gate", "python -m py_compile x.py"])
         self.assertTrue(opts.isolate)
         self.assertEqual(opts.stage_gate, "python -m py_compile x.py")
-        defaults = parser.parse_args(["plan", "--goal", "g"])
-        self.assertFalse(defaults.isolate)
-        self.assertIsNone(defaults.stage_gate)
+
+    @staticmethod
+    def _canned_plan(*args, **kwargs):
+        """compose_plan stand-in for execute-lane tests: the hourglass
+        defaults are resolved UPSTREAM of this owner, so the lane tests
+        only need a valid planned DAG."""
+        return {
+            "status": "planned",
+            "goal": kwargs.get("opts_goal", ""),
+            "dag": {"nodes": [
+                {"node_id": "task_1", "instruction": "do a",
+                 "target_files": ["iso_a.py"], "dependencies": []},
+                {"node_id": "task_2", "instruction": "do b",
+                 "target_files": ["iso_b.py"], "dependencies": []},
+            ]},
+            "nodes": [
+                {"node_id": "task_1", "route": {"ladder": ["m/a"], "cost_ceiling": 0.04}},
+                {"node_id": "task_2", "route": {"ladder": ["m/b"], "cost_ceiling": 0.04}},
+            ],
+        }
 
     def test_cli_cmd_plan_execute_isolated_parallel_with_stage_gate(self):
         from types import SimpleNamespace
@@ -358,14 +425,21 @@ class TestPlanningSurface(unittest.TestCase):
             isolate=True,
             stage_gate="git rev-parse HEAD",
         )
-        settings = SimpleNamespace(use_free=False, frontier_model=None)
+        settings = SimpleNamespace(use_free=False, frontier_model=None,
+                                   hourglass_confirm=True,
+                                   hourglass_require_attestation=False,
+                                   ledger_path=os.path.join(
+                                       _tempfile.mkdtemp(), 'l.jsonl'))
 
         with patch("harness.cli._session", return_value=mock_engine), \
+             patch("harness.cli._compose_plan", side_effect=self._canned_plan) as cp, \
              patch("harness.cli._emit_by_status") as mock_emit:
             _cmd_plan(opts, settings)
         res = mock_emit.call_args[0][0]
         self.assertEqual(res["status"], "ok")
         self.assertEqual(res["completed_nodes"], 2)
+        # The hourglass default reached the waist: confirm resolved on.
+        self.assertTrue(cp.call_args[1]["confirm"])
         # The isolated lane hands apply_edit a worktree-scoped runner.
         for call in mock_engine.apply_edit.call_args_list:
             self.assertIn("task_runner", call[1])
@@ -397,9 +471,14 @@ class TestPlanningSurface(unittest.TestCase):
             isolate=True,
             stage_gate=None,
         )
-        settings = SimpleNamespace(use_free=False, frontier_model=None)
+        settings = SimpleNamespace(use_free=False, frontier_model=None,
+                                   hourglass_confirm=True,
+                                   hourglass_require_attestation=False,
+                                   ledger_path=os.path.join(
+                                       _tempfile.mkdtemp(), 'l.jsonl'))
 
         with patch("harness.cli._session", return_value=mock_engine), \
+             patch("harness.cli._compose_plan", side_effect=self._canned_plan), \
              patch("harness.cli.WorktreeIsolation") as mock_iso_cls, \
              patch("harness.cli.eprint") as mock_eprint, \
              patch("harness.cli._emit_by_status") as mock_emit:
@@ -438,13 +517,103 @@ class TestPlanningSurface(unittest.TestCase):
             isolate=False,
             stage_gate="git rev-parse --verify refs/heads/no-such-ref",
         )
-        settings = SimpleNamespace(use_free=False, frontier_model=None)
+        settings = SimpleNamespace(use_free=False, frontier_model=None,
+                                   hourglass_confirm=True,
+                                   hourglass_require_attestation=False,
+                                   ledger_path=os.path.join(
+                                       _tempfile.mkdtemp(), 'l.jsonl'))
 
-        with patch("harness.cli._session", return_value=mock_engine):
+        with patch("harness.cli._session", return_value=mock_engine), \
+             patch("harness.cli._compose_plan", side_effect=self._canned_plan):
             with self.assertRaises(HarnessError) as ctx:
                 _cmd_plan(opts, settings)
         # Fail-closed: a red composed tree stops dependent stages.
         self.assertIn("stage gate failed", str(ctx.exception))
+
+    def test_mcp_plan_and_execute_defaults_to_full_hourglass(self):
+        """GUI default request: no per-request args needed -- parallel +
+        isolation + waist confirmation + write attestation all engage from
+        the server's hourglass defaults."""
+        from unittest.mock import patch
+
+        from harness.mcp import McpServer
+
+        mock_engine = MagicMock()
+        mock_engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
+        mock_gov = MagicMock()
+        mock_gov.spent = 0.0
+        mock_gov.max_cost = 1.0
+        mock_ledger = MagicMock()
+        mock_ledger.participation_report.return_value = {}
+        mock_router = MagicMock()
+        mock_router.judge = "judge-model"
+        mock_router.panel_pool = ["m1"]
+
+        server = McpServer(
+            transport=MagicMock(),
+            api_key="key",
+            governor=mock_gov,
+            ledger=mock_ledger,
+            router=mock_router,
+            engine=mock_engine,
+            allow_write=True,
+            allow_verify=True,
+        )
+        canned = {
+            "status": "planned", "goal": "Refactor auth system",
+            "dag": {"nodes": [
+                {"node_id": "task_1", "instruction": "Refactor auth system",
+                 "target_files": ["iso_e.py"], "dependencies": []}]},
+            "nodes": [{"node_id": "task_1",
+                       "route": {"ladder": ["m/a"], "cost_ceiling": 0.04}}],
+        }
+        with patch("harness.mcp.compose_plan", return_value=canned) as cp:
+            plan_res = server._invoke("plan_and_execute", {
+                "goal": "Refactor auth system", "file": ["iso_e.py"],
+                "execute": True, "allow_write": True,
+            })
+        self.assertEqual(plan_res["status"], "ok")
+        # The waist-confirmation default reached the ONE owner.
+        self.assertTrue(cp.call_args[1]["confirm"])
+        # The write-attestation default reached every node write.
+        call = mock_engine.apply_edit.call_args
+        self.assertTrue(call[1]["require_diff_authorization"])
+
+    def test_mcp_plan_and_execute_per_request_opt_out_wins(self):
+        """A host can still run a bare lane: per-request args override the
+        hourglass defaults."""
+        from unittest.mock import patch
+
+        from harness.mcp import McpServer
+
+        mock_engine = MagicMock()
+        mock_engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
+        server = McpServer(
+            transport=MagicMock(), api_key="key",
+            governor=MagicMock(), ledger=MagicMock(),
+            router=MagicMock(), engine=mock_engine,
+            allow_write=True, allow_verify=True,
+        )
+        canned = {
+            "status": "planned", "goal": "g",
+            "dag": {"nodes": [
+                {"node_id": "task_1", "instruction": "do a",
+                 "target_files": ["iso_e.py"], "dependencies": []}]},
+            "nodes": [{"node_id": "task_1",
+                       "route": {"ladder": ["m/a"], "cost_ceiling": 0.04}}],
+        }
+        with patch("harness.mcp.compose_plan", return_value=canned) as cp:
+            server._invoke("plan_and_execute", {
+                "goal": "g", "file": ["iso_e.py"],
+                "execute": True, "allow_write": True,
+                "confirm": False, "parallel": False,
+                "require_diff_authorization": False,
+            })
+        self.assertFalse(cp.call_args[1]["confirm"])
+        call = mock_engine.apply_edit.call_args
+        self.assertFalse(call[1]["require_diff_authorization"])
+        # No isolation attempted with parallel off.
+        self.assertNotIn("task_runner", call[1])
 
     def test_mcp_plan_and_execute_parallel_isolated(self):
         from harness.mcp import McpServer
@@ -482,6 +651,7 @@ class TestPlanningSurface(unittest.TestCase):
             "goal": "Update the modules",
             "file": ["iso_c.py", "iso_d.py"],
             "execute": True, "allow_write": True, "parallel": True,
+            "confirm": False,
         })
         self.assertEqual(exec_res["status"], "ok")
         self.assertEqual(exec_res["completed_nodes"], 2)
