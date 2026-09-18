@@ -14,6 +14,7 @@ from harness.agent import (
     load_chat_history,
     save_chat_turn,
 )
+from harness.config import load_settings
 from harness.errors import HarnessError, ToolCancelled
 
 
@@ -579,6 +580,78 @@ class TestChatLadderRotation(unittest.TestCase):
                 with self.assertRaises(ToolCancelled):
                     agent.run_prompt("hello", session_id="r7",
                                      cancel_check=flip_after_first)
+
+
+class TestChatDeferral(unittest.TestCase):
+    """The chat lane honors the same deferral contract as apply: a
+    HARNESS_DEFER marker is the model handing the decision back with a reason
+    instead of guessing -- recorded in the ledger, returned as a deferred
+    result with the plan-lane resume path, never a bare "I can't"."""
+
+    _DEFER = {"choices": [{"message": {"content":
+        "That is a multi-step repo refactor, larger than this lane can "
+        "honestly do.\n\nHARNESS_DEFER: multi-step repo work exceeds the "
+        "conversation lane"}}], "usage": {"cost": 0.0}}
+
+    def test_defer_marker_becomes_deferred_result_with_resume_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=load_settings(),
+                                    history_dir=Path(tmp))
+            fake_ledger = MagicMock()
+            with patch("harness.agent.chat", return_value=(200, self._DEFER)), \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch("harness.agent.ledger_for", return_value=fake_ledger):
+                res = agent.run_prompt("refactor the whole engine",
+                                       session_id="d1",
+                                       force_conversation=True)
+            # the deferred turn is persisted like any completed turn (read
+            # while the temp history dir still exists)
+            turns = load_chat_history("d1", Path(tmp))
+        self.assertEqual(res["status"], "deferred")
+        self.assertEqual(res["defer_reason"],
+                         "multi-step repo work exceeds the conversation lane")
+        self.assertIn("plan lane", res["next_step"])
+        # the prose before the marker is kept; the marker line is stripped
+        self.assertIn("multi-step repo refactor", res["response"])
+        self.assertNotIn("HARNESS_DEFER:", res["response"])
+        fake_ledger.append.assert_called_once()
+        args, kwargs = fake_ledger.append.call_args
+        self.assertEqual(args[0], "model_result")
+        self.assertEqual(kwargs["status"], "deferred")
+        self.assertEqual(kwargs["category"], "capability")
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["status"], "deferred")
+
+    def test_bare_marker_defers_with_default_reason(self):
+        bare = {"choices": [{"message": {"content": "HARNESS_DEFER:"}}],
+                "usage": {"cost": 0.0}}
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=load_settings(),
+                                    history_dir=Path(tmp))
+            with patch("harness.agent.chat", return_value=(200, bare)), \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch("harness.agent.ledger_for", return_value=MagicMock()):
+                res = agent.run_prompt("do everything", session_id="d2",
+                                       force_conversation=True)
+        self.assertEqual(res["status"], "deferred")
+        self.assertEqual(res["defer_reason"],
+                         "request exceeds the conversation lane's capability")
+
+    def test_system_prompt_teaches_the_deferral_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=load_settings(),
+                                    history_dir=Path(tmp))
+            with patch("harness.agent.chat",
+                       side_effect=HarnessError("stop at the prompt")) as mc, \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())):
+                with self.assertRaises(HarnessError):
+                    agent.run_prompt("hello", session_id="d3")
+                sysmsg = mc.call_args[1]["messages"][0]["content"]
+        self.assertIn("HARNESS_DEFER:", sysmsg)
+        self.assertIn("first-class", sysmsg)
 
 
 if __name__ == "__main__":

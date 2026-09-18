@@ -357,6 +357,19 @@ function renderFinalResult(runRecord, agentMsg) {
   // Render Markdown Body
   agentMsg.body.innerHTML = renderSimpleMarkdown(responseText);
 
+  // An honest deferral is an outcome, not an error: show the reason and the
+  // resume path the lane owes the operator.
+  if (res.status === "deferred") {
+    const deferNote = document.createElement("div");
+    deferNote.className = "deferred-note";
+    deferNote.innerHTML = `
+      <p style="color:var(--yellow); margin:8px 0 0;">
+        <strong>Deferred</strong>${res.defer_reason ? ` — ${esc(res.defer_reason)}` : ""}<br>
+        <span style="color:var(--fg); opacity:0.8;">${esc(res.next_step || "resume via the plan lane")}</span>
+      </p>`;
+    agentMsg.body.appendChild(deferNote);
+  }
+
   // Render Diff if present
   if (res.diff && res.diff.trim()) {
     const diffContainer = document.createElement("div");

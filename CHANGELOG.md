@@ -167,6 +167,22 @@ break APIs between minor versions).
 
 ### Fixed
 
+- **The chat lane had no deferral contract -- hard asks got a prose "I
+  can't" instead of an honest defer.** Every other lane treats "this is
+  beyond me" as a first-class outcome (apply's `HARNESS_DEFER:` capability
+  marker, consent's accept/decline/defer/redirect, `_defer_result` with a
+  continuation state), but the conversation lane had none of it: asked to
+  do something way too hard, the model could only say it can't, and the
+  deferral left no trace. The chat system prompt now teaches the contract
+  (defer with `HARNESS_DEFER: <reason>` instead of guessing or
+  overpromising), and the lane parses the marker the same way
+  `apply_policy` does: the prose before it stays as the answer, the reason
+  becomes a `deferred` result with `defer_reason` + the plan-lane resume
+  path (`harness plan --goal "..." --execute` / MCP `plan_and_execute`),
+  a `model_result` `status=deferred` `category=capability` entry lands in
+  the ledger (feeding `defer-stats`), the turn persists like any completed
+  turn, and the UI renders a visible "Deferred" banner with the reason and
+  the resume path instead of hiding the handoff.
 - **One transient fetch failure left a web-on URL turn with no evidence.**
   The allowlisted fetch of anthropic.com/research/riemann-zeta
   intermittently hits an upstream blip (challenge/5xx/timeout); the lane

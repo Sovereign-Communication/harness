@@ -14,6 +14,7 @@ from .config import Settings, load_settings
 from .dag import TaskDAG, DAGNode, node_apply_kwargs, plan_task
 from .errors import HarnessError, ToolCancelled
 from .events import emit
+from .prompts import CAPABILITY_MARKER
 from .executor import ConcurrentExecutor
 from .results import SUCCESS_STATUSES, _http_error
 from .session import apply_session, governor_for, ledger_for
@@ -26,7 +27,12 @@ DEFAULT_CHAT_SYSTEM_PROMPT = (
     "Your exact capability for this run is stated in the capability note below, if any. "
     "Never claim you searched, checked a source, or verified current information unless "
     "web tool results for this turn are attached -- say plainly when you cannot know "
-    "something."
+    "something. Deferral is a first-class outcome in this system: when a request exceeds "
+    "what you can honestly do in this conversation lane (large or multi-step repository "
+    "work, long autonomous tasks, anything needing tools this lane does not have), do "
+    "NOT pretend, guess, or merely say 'I can't' -- end with a single line beginning "
+    "exactly 'HARNESS_DEFER: ' followed by a short reason. Handing the decision back "
+    "with a reason is the correct, respected move; overpromising is not."
 )
 
 # Appended to the system prompt when a run did NOT opt into web tools, so the
@@ -376,13 +382,35 @@ class AutonomousAgent:
                 "chat failed on every ladder model: " + "; ".join(attempts))
         model, response_text, cost = answered
 
+        # The chat lane honors the same deferral contract as apply: a
+        # HARNESS_DEFER marker is the model handing the decision back instead
+        # of guessing. The prose before the marker stays as the answer; the
+        # reason becomes the deferral and the operator gets the resume path.
+        defer_reason = None
+        if CAPABILITY_MARKER in response_text:
+            head, _, tail = response_text.partition(CAPABILITY_MARKER)
+            first_line = tail.strip().splitlines()[0].strip() if tail.strip() else ""
+            defer_reason = " ".join(first_line.split())[:200] \
+                or "request exceeds the conversation lane's capability"
+            response_text = head.strip()
+            ledger_for(self.settings).append(
+                "model_result", task_id=session_id or "(chat)",
+                event_note="chat", status="deferred", category="capability",
+                model=model, reason=defer_reason, cost=round(cost, 6))
+
         result = {
-            "status": "ok",
+            "status": "deferred" if defer_reason else "ok",
             "intent": "conversation",
             "prompt": prompt,
             "response": response_text,
             "model": model,
             "cost": round(cost, 6),
+            **({"defer_reason": defer_reason,
+                # The resume hint a deferral owes the operator (render.py's
+                # contract): the plan lane is where hard multi-step work runs.
+                "next_step": 'route to the plan lane: harness plan --goal "..." '
+                             "--execute (or the MCP plan_and_execute tool)"}
+               if defer_reason else {}),
             # Honest provenance: did this turn actually retrieve web evidence?
             "web_used": bool(web_sources and any(s.get("ok") for s in web_sources)),
             "web_sources": [
