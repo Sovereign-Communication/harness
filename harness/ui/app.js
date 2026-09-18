@@ -322,14 +322,24 @@ function handleLiveEvent(ev, agentMsg) {
     label = `Context condensed via AST MicroBrief (~${ev.estimated_tokens || 0} tokens)`;
   } else if (ev.type === "dag_planned") {
     label = `Decomposed into ${ev.total_nodes || 1} subtask(s); ceiling $${(ev.total_ceiling || 0).toFixed(4)}`;
+    agentMsg.stepperTitleText.textContent = `Executing ${ev.total_nodes || 1} subtask(s)...`;
   } else if (ev.type === "subtask_start") {
     label = `Executing subtask ${ev.node_id || ""}: ${ev.instruction || ""}`;
     icon = "⚙";
+    agentMsg.stepperTitleText.textContent = `Executing subtask ${ev.node_id || ""}...`;
   } else if (ev.type === "subtask_retry") {
     label = `Verification failed; auto-healing retry: ${ev.error || ""}`;
     icon = "↻";
   } else if (ev.type === "subtask_finish") {
     label = `Completed subtask ${ev.node_id || ""} [${ev.status || "ok"}]`;
+  } else if (ev.type === "orchestration_round") {
+    const goalExcerpt = String(ev.goal || "").slice(0, 80);
+    label = `Orchestrator round ${ev.round || "?"}: re-planning remaining scope${goalExcerpt ? `: ${goalExcerpt}` : ""}`;
+    icon = "↻";
+    agentMsg.stepperTitleText.textContent = `Orchestrator round ${ev.round || "?"}: driving remaining scope...`;
+  } else if (ev.type === "orchestration_note") {
+    label = ev.note || "";
+    icon = "ℹ";
   }
 
   if (label) {

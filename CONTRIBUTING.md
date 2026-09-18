@@ -148,6 +148,7 @@ statement covers the CI matrix by direct execution.
 | `harness/apply_policy.py` | the apply engine's per-round machinery (billing, edit loop, consent, rotation, deferrals, escalation) -- mixed into `ApplyEngine` verbatim |
 | `harness/batch.py` | multi-file batch orchestration: one governed session per file, shared task budget, fail-fast -- owns the LOOP, the engine owns the per-file apply |
 | `harness/dag.py` | task decomposition & dependency DAG: TaskDAG, DAGNode, topological batching |
+| `harness/orchestrator.py` | the autonomous driver's judgment calls: completion judge (`assess_completion`) and repo-wide file triage (`triage_files`, keyword fallback) -- chat_fn injected, strict-JSON, degrades without inventing verdicts |
 | `harness/executor.py` | concurrent multi-threaded batch dispatch & file mutex manager |
 | `harness/condenser.py` | context distillation & micro-brief pipeline: AST signature extraction, error pruning |
 | `harness/sliding_scale.py` | dynamic sliding-scale tier classification (Tiers 0, 1, 2) & frontier model routing ladder |

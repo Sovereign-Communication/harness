@@ -11,6 +11,21 @@ break APIs between minor versions).
 
 ### Added
 
+- **The autonomous orchestrator drives complex edits to completion.**
+  Any deferral into Auto mode now routes through an orchestrator loop in
+  the edit lane: a repo-wide relevance triage (LLM file-triage over the
+  bounded listing, validated against the real files, keyword fallback)
+  picks the context; a smarter model on the orchestration ladder
+  decomposes the goal into bite-sized subtasks; cheap models execute
+  every node with self-healing retry (failures become state, not aborts);
+  and a completion judge issues one strict-JSON verdict per round --
+  incomplete scope is re-planned and re-executed, up to three rounds,
+  instead of stopping at the first partial result. New
+  `harness/orchestrator.py` owns the judge and triage decisions
+  (`assess_completion`, `triage_files`); new telemetry
+  (`orchestration_round`, `orchestration_note`) streams round-by-round
+  status into the GUI's "Processing task" stepper, whose title now tracks
+  the live phase (planning / executing subtask N / orchestrator round N).
 - **The hourglass is the default (M4).** The plan lane now runs the full
   hourglass unprompted -- frontier-waist confirmation, parallel stages,
   worktree isolation, and diff-bound write attestation are all ON for
