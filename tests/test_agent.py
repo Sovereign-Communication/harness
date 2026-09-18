@@ -303,6 +303,32 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         self.assertIn("NO web tools", sysmsg)
         self.assertIn("NO internet access", sysmsg)
 
+    def test_all_fetches_failed_falls_back_to_search(self):
+        # The fetch-failed incident: a URL-prompt turn where the fetch died
+        # left the model with ONLY the failure note. Now a search follows so
+        # the turn still carries evidence, with the FAILED fetch kept honest.
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp))
+            with patch("harness.agent.fetch_url",
+                       side_effect=HarnessError("web fetch HTTP 503")), \
+                 patch("harness.agent.search_web",
+                       return_value=[{"url": "https://www.anthropic.com/rz",
+                                      "title": "Riemann",
+                                      "snippet": "bound moved to 67.2%"}]), \
+                 patch("harness.agent.chat",
+                       return_value=(200, self._mock_resp())) as m, \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())):
+                res = agent.run_prompt(
+                    "https://www.anthropic.com/research/riemann-zeta",
+                    session_id="w2", web=True)
+                sysmsg = m.call_args[1]["messages"][0]["content"]
+        self.assertEqual(res["status"], "ok")
+        self.assertIn("SOURCE (fetch) FAILED", sysmsg)
+        self.assertIn("web fetch HTTP 503", sysmsg)
+        self.assertIn("SOURCE (search): Riemann", sysmsg)
+        self.assertIn("bound moved to 67.2%", sysmsg)
+
     def test_web_on_system_prompt_states_capability_not_denial(self):
         # The "it says web is on..." incident: the base prompt claimed
         # "You have NO internet access" even on web-enabled runs, so the
@@ -375,8 +401,9 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         self.assertIn("web tools error", mc.call_args[1]["messages"][0]["content"])
 
     def test_web_fetch_failure_is_disclosed(self):
-        # A URL prompt whose fetch is refused: the refusal lands in the model's
-        # context as a FAILED source -- never silently dropped.
+        # A URL prompt whose fetch is refused: the refusal lands in the
+        # model's context as a FAILED source -- never silently dropped, and
+        # still there alongside the fallback search results.
         from harness.errors import HarnessError as _HE
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
@@ -384,6 +411,9 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
                        return_value=["https://www.anthropic.com/x"]), \
                  patch("harness.agent.fetch_url",
                        side_effect=_HE("web fetch refused: host not allowed")), \
+                 patch("harness.agent.search_web",
+                       return_value=[{"url": "https://www.anthropic.com/x",
+                                      "title": "X", "snippet": "s"}]), \
                  patch("harness.agent.chat", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.agent.governor_for", return_value=(None, MagicMock())):
                 res = agent.run_prompt("https://www.anthropic.com/x",
@@ -391,7 +421,8 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
                 sysmsg = mc.call_args[1]["messages"][0]["content"]
         self.assertIn("FAILED", sysmsg)
         self.assertIn("web fetch refused", sysmsg)
-        self.assertFalse(res["web_used"])
+        self.assertIn("SOURCE (search): X", sysmsg)
+        self.assertTrue(res["web_used"])
 
     def test_cancel_during_web_gather_raises(self):
         # Cancellation observed at the web-gather checkpoint specifically:

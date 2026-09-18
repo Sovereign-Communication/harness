@@ -167,6 +167,17 @@ break APIs between minor versions).
 
 ### Fixed
 
+- **One transient fetch failure left a web-on URL turn with no evidence.**
+  The allowlisted fetch of anthropic.com/research/riemann-zeta
+  intermittently hits an upstream blip (challenge/5xx/timeout); the lane
+  recorded the FAILED source and stopped, so the model answered from
+  history and the user saw "the fetch attempt failed". `fetch_url` now
+  retries exactly once on transient failures (network errors, HTTP
+  429/5xx -- never on policy refusals or deterministic statuses), and when
+  every fetch in a turn fails, `_gather_web_context` runs one search as
+  fallback evidence with the FAILED notes kept intact. The web-on
+  capability note also tells the model the sources were gathered by the
+  runtime -- no more narrated fake "[Tool call: fetch]" theater.
 - **"Web on" searched nothing and the model denied having web access.**
   Two stacked causes. (1) The DuckDuckGo html/lite endpoints answer
   datacenter IPs with an HTTP-202 JS challenge, so every non-URL web-on

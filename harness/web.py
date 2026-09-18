@@ -29,6 +29,7 @@ import binascii
 import html as _html
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -235,7 +236,9 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000):
     """Fetch ONE allowlisted https URL and return {url, title, text}.
 
     Refusals are HarnessErrors with machine-readable messages:
-    scheme, allowlist, redirect, network, and no-readable-text.
+    scheme, allowlist, redirect, network, and no-readable-text. A transient
+    failure (timeout/network error, HTTP 429 or 5xx) is retried once after a
+    short backoff; policy refusals and other statuses are not.
     """
     if not url or not url.strip():
         raise HarnessError("web fetch: empty url")
@@ -249,24 +252,35 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000):
         raise HarnessError(
             f"web fetch refused: host '{host or '?'}' is not on the fetch allowlist")
     emit("web_fetch", phase="start", url=u)
-    try:
-        status, raw, final_url = _http_get(u, timeout=timeout)
-        if status != 200:
-            raise HarnessError(f"web fetch HTTP {status}")
-        final_host = (urllib.parse.urlsplit(final_url).hostname or "").lower()
-        if final_host != host:
-            raise HarnessError(
-                f"web fetch refused: redirect to non-allowlisted host '{final_host}'")
-        text = _extract_text(raw.decode("utf-8-sig", "replace"))[:max_chars]
-        if not text:
-            raise HarnessError("web fetch returned no readable text")
-    except HarnessError:
+    raw = final_url = None
+    error_note = None
+    for attempt in (1, 2):
+        try:
+            status, raw, final_url = _http_get(u, timeout=timeout)
+            if status == 200:
+                error_note = None
+                break
+            error_note = f"web fetch HTTP {status}"
+            if status not in (429, 500, 502, 503, 504):
+                break  # deterministic status: a retry cannot change it
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError,
+                ValueError) as e:
+            error_note = f"web fetch failed: {e}"
+        if attempt == 1:
+            emit("web_fetch", phase="retry", url=u)
+            time.sleep(1.5)
+    if error_note is not None or raw is None:
         emit("web_fetch", phase="end", ok=False, url=u)
-        raise
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError,
-            ValueError) as e:
+        raise HarnessError(error_note or "web fetch failed: empty response")
+    final_host = (urllib.parse.urlsplit(final_url).hostname or "").lower()
+    if final_host != host:
         emit("web_fetch", phase="end", ok=False, url=u)
-        raise HarnessError(f"web fetch failed: {e}") from e
+        raise HarnessError(
+            f"web fetch refused: redirect to non-allowlisted host '{final_host}'")
+    text = _extract_text(raw.decode("utf-8-sig", "replace"))[:max_chars]
+    if not text:
+        emit("web_fetch", phase="end", ok=False, url=u)
+        raise HarnessError("web fetch returned no readable text")
     emit("web_fetch", phase="end", ok=True, url=final_url, chars=len(text))
     return {"url": final_url, "title": _page_title(raw.decode("utf-8-sig", "replace")),
             "text": text}

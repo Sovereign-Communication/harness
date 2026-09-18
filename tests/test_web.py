@@ -242,6 +242,27 @@ class FetchUrlTests(unittest.TestCase):
                 web.fetch_url(url, allowed_hosts=["www.anthropic.com"])
         self.assertIn("no readable text", str(ctx.exception))
 
+    def test_transient_failure_retried_once_then_ok(self):
+        # The fetch-failed incident: an upstream blip (challenge / 5xx /
+        # timeout) killed the turn's only evidence. Transient statuses and
+        # network errors get exactly one retry.
+        url = "https://www.anthropic.com/research/riemann-zeta"
+        body = b"<html><body><p>Zero-free region.</p></body></html>"
+        getter = mock.MagicMock(side_effect=[(503, b"", url), (200, body, url)])
+        with mock.patch.object(web, "_http_get", getter):
+            page = web.fetch_url(url, allowed_hosts=["www.anthropic.com"])
+        self.assertEqual(getter.call_count, 2)
+        self.assertIn("Zero-free region.", page["text"])
+
+    def test_permanent_status_not_retried(self):
+        url = "https://www.anthropic.com/x"
+        getter = mock.MagicMock(return_value=(404, b"", url))
+        with mock.patch.object(web, "_http_get", getter):
+            with self.assertRaises(HarnessError) as ctx:
+                web.fetch_url(url, allowed_hosts=["www.anthropic.com"])
+        self.assertEqual(getter.call_count, 1)
+        self.assertIn("HTTP 404", str(ctx.exception))
+
 
 class ExtractionHelpersTests(unittest.TestCase):
     def test_find_urls_finds_and_stops_at_paren(self):

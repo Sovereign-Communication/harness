@@ -47,7 +47,9 @@ _WEB_CAPABILITY_NOTE = (
     "is refused by policy -- say so when asked about it rather than claiming "
     "no internet access. Results for this turn follow the marker below; cite "
     "only those, never invent others, and when a source FAILED, tell the user "
-    "exactly what failed."
+    "exactly what failed. These sources were gathered by the runtime before "
+    "this turn -- do not narrate tool calls or describe fetching as your own "
+    "action."
 )
 
 _MAX_WEB_SOURCES = 3
@@ -243,7 +245,12 @@ class AutonomousAgent:
                 except HarnessError as e:
                     sources.append({"kind": "fetch", "ok": False, "url": u,
                                     "note": str(e)})
-            return sources
+            if any(s["ok"] for s in sources):
+                return sources
+            # Every fetch failed (transient challenge, timeout, upstream 5xx).
+            # Fall through to one search so the turn still carries evidence;
+            # the FAILED fetch notes stay -- nothing is hidden.
+
         try:
             results = search_web(extract_query(prompt))
             for r in results[:_MAX_WEB_SOURCES]:
