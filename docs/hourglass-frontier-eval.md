@@ -432,6 +432,40 @@ and two questions got sharper:
   sinks, or ledger rotation leave nondeterministic teardown evidence that a
   stricter CI interpreter (3.14) will surface as a flaky gate?
 
+### 6.2 Addendum 2026-09-18 — MR-7/MR-8 outcomes (run through Harness itself)
+
+- **R1 RESOLVED (MR-2 consensus): "omit is correct."** Grok + Astra,
+  independent families: a $0.0 per-task ceiling would block the escalation
+  ladder without adding protection (free-tier attempts are preflighted and
+  billed $0.0 against the governor's key-level ceiling); a paid-escalation
+  knob is a separate paid-fallback policy, warranted only if free-tier
+  nodes should ever invoke paid models by intent. No code change.
+- **MR-7a (ceilings/BYOK): the named attack — concurrent preflights each
+  passing against the full remaining ceiling — is exactly what M3's
+  reservations close** (`SpendGovernor.reserve`/`reconcile`/`outstanding`,
+  pinned by `test_concurrent_dispatch_cannot_overcommit_ceiling`). The
+  attack validated that the pre-M3 guarantee set was insufficient; the
+  fix shipped in the same cycle.
+- **NEW MILESTONE CANDIDATE (M4) — diff-bound independent authorization
+  before write.** MR-7b and MR-7c converged independently on the same
+  control: consent today is intent-level (the sovereign accepts path +
+  instruction + content-so-far; renewal re-probes BEFORE the round's
+  model call, so the final bytes are never sovereign-seen), and brief
+  poisoning defeats any brief-only review via semantic laundering (a
+  poisoned input becomes a cheap model's "established requirement"
+  summary, cited while the contradicting contract sits outside the
+  window). The control that survives both attacks: a verifier OUTSIDE
+  the brief pipeline authorizes the exact proposed diff, fail-closed,
+  with the attestation bound to the diff hash; missing evidence =
+  rejection. Contract drafting is MR-9 (see
+  docs/hourglass-micro-requests.md).
+- **MR-8 RESOLVED — grounding rules for the pack's own claims.** Minimal
+  shape for any generated brief: a required `grounding` object —
+  `sources: [{id, path, sha, span|quote}]`, `claims: [{text,
+  source_ids}]`, `unknowns: [str]`; uncited assertions are invalid (drop
+  or list as unknowns); models may use only cited windows. This is the
+  spec seed for the `harness brief` builder and the R1–R3 grounding lint.
+
 ---
 
 *Context pack prepared 2026-09-17 from the working tree at commit `8221bfc`

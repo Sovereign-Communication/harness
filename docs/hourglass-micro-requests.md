@@ -27,6 +27,7 @@ is self-contained). Answer contracts cap output; context caps input.
 | MR-6 | Governor reservation semantics under parallel workers | frontier once | 2K / 200 |
 | MR-7 | Red-team, one guarantee per session (ceilings/BYOK; consent+ledger; brief poisoning) | frontier once each | 1.5K / 100 ×3 |
 | MR-8 | What is missing to make this file a reusable `harness brief`? | cheap once | 1K / 80 |
+| MR-9 | Draft the contract for diff-bound independent authorization before write (M4) | frontier once | 2.5K / 500 |
 
 ---
 
@@ -240,6 +241,32 @@ shape?
 
 ---
 
+## MR-9 — diff-bound independent authorization before write (paste-ready)
+
+You are drafting ONE verdict contract for a coding harness. Answer with the
+contract ONLY: strict JSON schema (field names, types, required/optional,
+one-line semantics each) + the 3 binding rules that make it fail-closed. No
+prose around it. <=500 words.
+
+Context: two independent red-team tracks converged on the same missing
+control. Today a "sovereign" consent probe accepts INTENT (path,
+instruction, content-so-far) before each round, but the bytes actually
+written are whatever the apply model produces — the final content is never
+sovereign-seen — and a poisoned "brief" can launder a harmful requirement
+into the plan the frontier model approves. The control that survives both
+attacks: a verifier OUTSIDE the brief pipeline authorizes the EXACT
+proposed diff, fail-closed, attestation bound to the diff hash; missing
+evidence = rejection.
+
+Question: draft that contract. It must cover: who may attest (independent
+of the brief pipeline and of the apply model), what is attested (the exact
+diff hash — never a summary), when the attestation is checked (before
+write, every round), and what happens on missing/malformed/stale
+attestation. Keep the schema small enough to validate with the repo's
+existing strict-JSON parsers.
+
+---
+
 *Answers flow back into `docs/hourglass-frontier-eval.md` §5's output
 format; the operator integrates; local execution (MR-0 and any code change)
 stays in this repo per its own gates (hermetic tests, ruff, audit).*
@@ -273,8 +300,8 @@ tmp driver ONLY, repo code untouched).
   insight: the failure-escalation ladder (+0.30/failure, 2 failures ->
   tier 2) bounds any misclassification's downside to one wasted cheap
   attempt. 2-1 on verdict, mechanism verified in `sliding_scale.py`.
-- Remaining MRs (4-8) still open for their runs (MR-1 and MR-2 resolved
-  below, 2026-09-18).
+- Remaining MRs: all of MR-0 through MR-8 have run; results below. MR-9
+  (M4 contract draft) is the only open paste-ready block.
 - **M1 + M2 shipped same day** (commit `5cc9067`): `--decompose-llm` and
   `--confirm` are live on CLI and MCP, per the MR-3 verdict's conditions.
 - **MR-5 + MR-6 consensus obtained and implemented (M3).** Both questions
@@ -317,12 +344,48 @@ tmp driver ONLY, repo code untouched).
   a separate paid-fallback policy — warranted only if free-tier nodes
   should ever invoke paid models by intent. No code change; the knob idea
   stays open as the R1 follow-up in docs/hourglass-frontier-eval.md.
-- **MR-7 / MR-8: NOT RUN — budget + free-tier availability.** The $0.25
-  cumulative cap has ~$0.015 headroom left after MR-1/MR-2; the three
-  frontier red-team tracks need ~$0.06-0.08, so they await an operator cap
-  decision. A $0 free-tier first pass (deepseek-v4-flash / glm-5.2 / 
-  qwen3.8-27b, 2026-09-18) failed the actionability gate — unrelated
-  content twice, reasoning-only responses twice, 429s on glm/qwen — all
-  outputs discarded per the gate rule. (Unverified, discarded-answer lean
-  only: deepseek's MR-8 reasoning leaned "freshness/date anchoring — a
-  repo-snapshot `last verified` line." Not a result.)
+- **MR-7 / MR-8: run 2026-09-18 after the operator raised the spend cap**
+  (the earlier free-tier first pass had failed the actionability gate —
+  unrelated content, reasoning-only responses, 429s — and was discarded).
+  One frontier call per track, driver governor intact, every response
+  `byok=False` verified: MR-7a Astra $0.0243, MR-7b Grok $0.0116, MR-7c
+  Astra $0.0155, MR-8 Grok $0.0385 — **$0.0900 total**.
+- **MR-7a (ceilings/BYOK): attack already closed by M3.** Astra named the
+  parallel preflight race — two concurrent nodes each pass a preflight
+  against the full remaining ceiling before either charge posts. That is
+  exactly the MR-6 interleaving: `SpendGovernor.reserve` now holds each
+  node's worst case before dispatch, every preflight counts outstanding
+  liability, and `test_concurrent_dispatch_cannot_overcommit_ceiling`
+  pins spent + outstanding ≤ ceiling. The attack text confirmed the
+  pre-M3 guarantee set was insufficient; the shipped M3 synchronization
+  is the named fix.
+- **MR-7b (consent+ledger): REAL gap — consent is intent-level, not
+  payload-level.** Grok's bait-and-switch: the sovereign accepts (path,
+  instruction, content-so-far) but the written bytes are whatever the
+  apply model later produces; renewal re-probes BEFORE each round's
+  model call, so final content is never sovereign-seen. The ledger
+  truthfully records accepts of intent — it "lies about what was
+  approved" without any tampering. Also noted: the hash-chained ledger
+  is tamper-EVIDENT only against an external snapshot (already
+  documented as a deliberate scope line).
+- **MR-7c (brief poisoning): control named independently — and it
+  CONVERGES with MR-7b.** Astra: the one control that matters is
+  fail-closed, independent authorization of the exact proposed diff
+  (not the brief): a verifier outside the brief pipeline inspects the
+  real affected code, approval is attested and bound to the diff hash,
+  missing evidence = rejection. Poisoning mechanism named: semantic
+  laundering — a poisoned input becomes a cheap model's "established
+  requirement" summary, cited while the contradicting contract sits
+  outside the window; no provenance delimiter defeats it. Two
+  independent tracks naming the same control ⇒ the next design
+  milestone is **diff-bound independent authorization before write**
+  (consent/review v2); contract drafting is MR-9 work, not improvised.
+- **MR-8 (`harness brief` gap check): missing section = grounding rules
+  for the pack's own claims.** Grok: without them an auto-generated
+  brief injects unsourced narrator facts; size budget and prose
+  contracts already exist, ledger dates do not bind claims. Minimal
+  shape: a required `grounding` object — `sources: [{id, path, sha,
+  span|quote}]`, `claims: [{text, source_ids}]`, `unknowns: [str]`;
+  uncited assertions are invalid (drop or list as unknowns); models may
+  use only cited windows. This is the spec seed for the `harness brief`
+  builder.
