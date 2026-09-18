@@ -21,7 +21,10 @@ from .batch import BatchOptions
 from .consent import probe_consent
 from .continuation import validate_continuation
 from .dag import TaskDAG, node_apply_kwargs
+from .filesafety import VERIFY_TIMEOUT, default_run_verify
+from .spend import NodeReserver
 from .waist import compose_plan
+from .worktree import WorktreeIsolation
 from .errors import HarnessError, ToolCancelled
 from .executor import ConcurrentExecutor
 from .mcp_lanes import LANES, lane_for
@@ -696,20 +699,37 @@ class McpServer:
             dag = TaskDAG.from_dict(plan_result["dag"])
             node_routes = {n.get("node_id"): n for n in plan_result["nodes"]}
             executor = ConcurrentExecutor(max_workers=max_workers if parallel else 1)
+            reserver = NodeReserver(
+                self.engine.governor, node_routes,
+                self.engine.default_task_max_cost,
+                route_kwargs_fn=node_apply_kwargs)
+            isolator = None
+            if parallel:
+                iso = WorktreeIsolation()
+                if iso.available():
+                    isolator = iso
 
-            def run_node(node):
+            def run_node(node, gate_cwd=None):
                 target = node.target_files[0] if node.target_files else None
+                if target and gate_cwd:
+                    target = os.path.join(gate_cwd, target)
                 route_kwargs = node_apply_kwargs(node_routes.get(node.node_id))
+                task_runner = None
+                if gate_cwd:
+                    def task_runner(command, timeout=VERIFY_TIMEOUT):
+                        return default_run_verify(command, timeout=timeout, cwd=gate_cwd)
                 return self.engine.apply_edit(
                     file_path=target,
                     instruction=node.instruction,
                     verify_cmd=node.local_gate,
                     allow_verify=self.allow_verify,
                     require_consent=False,
+                    **({"task_runner": task_runner} if task_runner else {}),
                     **route_kwargs,
                 )
 
-            all_results = executor.execute_dag(dag, run_node)
+            all_results = executor.execute_dag(dag, run_node, reserver=reserver,
+                                               isolator=isolator)
             all_ok = all(res.get("status") in SUCCESS_STATUSES for res in all_results.values())
             total_cost = sum(float(res.get("cost", 0.0) or 0.0) for res in all_results.values())
             return {

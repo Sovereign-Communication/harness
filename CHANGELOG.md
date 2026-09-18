@@ -11,6 +11,34 @@ break APIs between minor versions).
 
 ### Added
 
+- **Parallel-stage isolation + cost reservations (M3).** Two frontier
+  verdicts obtained through Harness itself (consensus across independent
+  model families; see docs/hourglass-micro-requests.md) drove the design:
+  (1) **Isolation** — `harness plan --isolate` runs concurrent nodes of a
+  stage in isolated `git worktree`s + local branches; the worker's gate
+  and targets resolve inside its worktree; branches merge back in stage
+  order, and a merge conflict fails the node (`merge_conflict`) instead of
+  force-merging. Before accepting, the node's committed diff against its
+  branch point plus uncommitted leftovers is audited against its declared
+  target files — undeclared writes reject the node and nothing lands in
+  the repo. Opt-in (git worktrees are host tooling; the default stays
+  shared-tree mutex execution). (2) **Reservations** — parallel dispatch
+  now reserves each node's worst-case cost before dispatch and reconciles
+  the billed actual after (`SpendGovernor.reserve`/`reconcile`, `outstanding`
+  liability counted by every preflight), closing the overspend interleaving
+  where W concurrent preflights each pass against the full remaining
+  ceiling before any of them records. `--stage-gate <cmd>` runs the
+  composed tree's gate after each parallel stage; a failing gate stops the
+  run before dependent stages start.
+- **Coverage ritual is thread-honest.** The coverage baseline traced only
+  the main thread (`trace.runfunc` installs `sys.settrace` alone), so
+  suite-executed lines inside executor worker threads were invisible --
+  D12 would report phantom gaps for exactly the parallel paths M3 adds.
+  `refresh_coverage_baseline.py` now installs the tracer for threads too,
+  and new tests pin the settle paths (audit failure → `fatal`, failed-node
+  passthrough without merge, `merge_conflict`), the CLI `--isolate` /
+  `--stage-gate` surface, the MCP parallel lane, and the reservation
+  error paths.
 - **The waist is live: `harness plan --confirm` (M2).** Before execution
   spend, the plan is confirmed by the frontier model (`--frontier-model` /
   `HARNESS_FRONTIER_MODEL`) through a condensed brief -- file-signature

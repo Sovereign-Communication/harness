@@ -129,6 +129,15 @@ def build_parser():
                          "condensed brief + bounded file-window round-trips; "
                          "approve/amend/refuse verdict (spends against the run's ceiling; "
                          "a refused plan never executes)")
+    pp.add_argument("--isolate", action="store_true", default=False,
+                    help="isolate parallel-stage nodes in git worktrees + local branches "
+                         "(audited against declared target files, merged in topological "
+                         "order; merge conflicts fail the node, never force-merge; "
+                         "unavailable git degrades to shared-tree mutex execution)")
+    pp.add_argument("--stage-gate", dest="stage_gate", default=None,
+                    help="command to run after each parallel stage completes (e.g. the "
+                         "full test suite); a failing gate stops the run before "
+                         "dependent stages start")
     pp.add_argument("--keep-going", dest="keep_going", action="store_true", default=False, help="continue past a failed subtask")
     _add_engine_flags(pp, max_tokens_default=4096)
     _add_output_flags(pp)

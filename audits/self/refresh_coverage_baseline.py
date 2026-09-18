@@ -20,6 +20,7 @@ import io
 import json
 import subprocess
 import sys
+import threading
 import time
 import trace
 import unittest
@@ -45,7 +46,14 @@ def main():
     tr = trace.Trace(count=1, trace=0,
                      ignoredirs=[sys.prefix, sys.exec_prefix])
     t0 = time.time()
-    ok = tr.runfunc(run_battery)
+    # trace.runfunc installs only sys.settrace; worker threads (the
+    # executor's parallel dispatch) would run untraced and D12 would
+    # report phantom coverage gaps for thread-executed lines.
+    threading.settrace(tr.globaltrace)
+    try:
+        ok = tr.runfunc(run_battery)
+    finally:
+        threading.settrace(None)
     dt = time.time() - t0
     if not ok:
         print("ABORTED: battery failed under trace; no baseline written")

@@ -276,8 +276,21 @@ tmp driver ONLY, repo code untouched).
 - Remaining MRs (1-2, 4-8) still open for their consensus pair runs.
 - **M1 + M2 shipped same day** (commit `5cc9067`): `--decompose-llm` and
   `--confirm` are live on CLI and MCP, per the MR-3 verdict's conditions.
-  The remaining MRs now gate the NEXT phase, not this one: MR-4's contract
-  is implemented in reduced form (split folded into amend), MR-5 (isolation
-  partition) and MR-6 (composed ceiling reservations) are the open
-  decisions blocking M3 (worktree/PR isolation) and pyramid-level ceiling
-  composition. Run them before building M3+.
+- **MR-5 + MR-6 consensus obtained and implemented (M3).** Both questions
+  ran through Harness as consensus pairs (Astra + Grok, independent
+  families, ~$0.05/call): **MR-5** converged on isolation-by-default for
+  concurrent nodes (worktree+branch each; serial nodes share the tree;
+  topological-order merges with a stable tiebreak; undeclared-write audit;
+  conflict → discard, never force-merge) — implemented as **opt-in**
+  `--isolate` (a deliberate deviation: real git subprocesses are not
+  hermetic, so the default stays shared-tree mutex execution; the rule is
+  fully live when enabled). **MR-6** converged unanimously on
+  stage-start/real reservations ("stage-start slots required", same
+  overspend interleaving named by both) — implemented as
+  `SpendGovernor.reserve`/`reconcile` with the outstanding liability
+  counted by every preflight, wired into parallel `execute_dag` via
+  `NodeReserver`; the proof-obligation test
+  (`test_concurrent_dispatch_cannot_overcommit_ceiling`) pins that spent +
+  outstanding never exceeds the ceiling. MR-5's stage-gate recommendation
+  shipped as `--stage-gate <cmd>` (composed-tree gate after each parallel
+  stage; failure stops before dependents).

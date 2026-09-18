@@ -96,5 +96,138 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(len(fake.chat_posts()), 2)
 
 
+class ReservationTests(unittest.TestCase):
+    """MR-6 verdict pins: reservations are real liabilities; concurrent
+    dispatch can never push spent + outstanding over the ceiling."""
+
+    def setUp(self):
+        self.fake = FakeTransport(models=[m("cheap/x")])
+        self.gov = _gov(self.fake, max_cost=0.01)
+
+    def test_reserve_and_reconcile(self):
+        token = self.gov.reserve(0.004, "task_1")
+        self.assertEqual(self.gov.outstanding, 0.004)
+        self.gov.reconcile(token, 0.002)
+        self.assertEqual(self.gov.outstanding, 0.0)
+        self.assertEqual(self.gov.spent, 0.002)
+
+    def test_reservation_refused_over_ceiling(self):
+        with self.assertRaises(HarnessError):
+            self.gov.reserve(0.02, "task_1")
+
+    def test_reconcile_unknown_token_raises(self):
+        with self.assertRaises(HarnessError):
+            self.gov.reconcile(("ghost", 0.004), 0.0)
+
+    def test_reconcile_invalid_actual_raises(self):
+        token = self.gov.reserve(0.004, "task_1")
+        with self.assertRaises(HarnessError):
+            self.gov.reconcile(token, "not-a-number")
+
+    def test_reconcile_over_ceiling_actual_raises_and_releases(self):
+        token = self.gov.reserve(0.004, "task_1")
+        with self.assertRaises(HarnessError):
+            self.gov.reconcile(token, 0.02)
+        # The liability is released even when the actual is refused.
+        self.assertEqual(self.gov.outstanding, 0.0)
+        self.assertEqual(self.gov.spent, 0.0)
+
+    def test_reconcile_locked_recheck_raises_under_race(self):
+        """The lock-guarded re-check is the last line of defense: another
+        thread can land an actual between the unlocked check and the
+        locked commit -- that interleaving must still fail closed."""
+        gov = _gov(self.fake, max_cost=0.01)
+        token = gov.reserve(0.004, "task_1")
+
+        class RacyLock:
+            enters = 0
+
+            def __enter__(self):
+                RacyLock.enters += 1
+                if RacyLock.enters == 2:  # second entry: the commit block
+                    gov.spent = 0.009     # a concurrent winner landed
+            def __exit__(self, *exc):
+                return False
+
+        gov._spend_lock = RacyLock()
+        with self.assertRaises(HarnessError):
+            gov.reconcile(token, 0.005)
+        # The racing actual was never committed.
+        self.assertEqual(gov.spent, 0.009)
+
+    def test_node_reserver_uses_route_tier_ceiling(self):
+        from harness.dag import DAGNode
+        from harness.spend import NodeReserver
+
+        gov = _gov(self.fake, max_cost=0.01)
+        routes = {"task_1": {"task_max_cost": 0.004}, "task_2": None}
+        reserver = NodeReserver(gov, routes, 0.006,
+                                route_kwargs_fn=lambda d: dict(d or {}))
+        n1 = DAGNode(node_id="task_1", instruction="x")
+        n2 = DAGNode(node_id="task_2", instruction="y")
+        n3 = DAGNode(node_id="task_9", instruction="z")  # absent from routes
+        t1 = reserver.reserve(n1)
+        self.assertEqual(gov.outstanding, 0.004)
+        t2 = reserver.reserve(n2)
+        self.assertEqual(gov.outstanding, 0.010)
+        with self.assertRaises(HarnessError):
+            reserver.reserve(n3)  # default worst case would breach
+        reserver.reconcile(t1, 0.001)
+        self.assertEqual(gov.spent, 0.001)
+        self.assertEqual(gov.outstanding, 0.006)
+        reserver.reconcile(t2, 0.002)
+        self.assertEqual(gov.spent, 0.003)
+
+    def test_outstanding_blocks_preflight(self):
+        self.gov.reserve(0.0095, "task_1")
+        # Remaining headroom is 0.0005 minus the outstanding liability: a
+        # preflight worst case above that must refuse even though raw spent
+        # is still ~0.
+        with self.assertRaises(HarnessError):
+            self.gov.preflight("p", [("ask", "cheap/x", 40000, 0)])
+
+    def test_concurrent_dispatch_cannot_overcommit_ceiling(self):
+        """The MR-6 proof obligation: W barrier-synced workers reserving
+        per-call worst cases never overspend; without reservations the
+        same interleaving would bill 2x the ceiling."""
+        import threading
+
+        gov = _gov(self.fake, max_cost=0.01)
+        barrier = threading.Barrier(2)
+        overspends = []
+
+        def worker():
+            barrier.wait()
+            try:
+                token = gov.reserve(0.006, "w")
+                gov.reconcile(token, 0.006)
+            except HarnessError as exc:
+                overspends.append(str(exc))
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        # spent + outstanding <= ceiling at every point: the second worker's
+        # reserve is refused (0.006 outstanding + 0.006 > 0.01), so the
+        # billed total can never reach 0.012.
+        self.assertEqual(len(overspends), 1)
+        self.assertLessEqual(gov.spent + gov.outstanding, 0.01 + 1e-9)
+
+    def test_unreserved_inflight_overspend_documented(self):
+        """Documents WHY per-call preflight alone is insufficient (MR-6):
+        two check-only preflights against the full remaining ceiling both
+        pass before either records; only the SECOND actual trips the guard
+        -- by then both calls are already dispatched and billed."""
+        gov = _gov(self.fake, max_cost=0.01)
+        gov.preflight("p", [("a", "cheap/x", 100, 0)])
+        gov.preflight("p", [("b", "cheap/x", 100, 0)])   # also passes
+        gov.record_actual(0.009, "a")                    # first actual fits
+        with self.assertRaises(HarnessError):
+            gov.record_actual(0.009, "b")                # too late: both ran
+        self.assertLessEqual(gov.spent, 0.01)
+
+
 if __name__ == "__main__":
     unittest.main()

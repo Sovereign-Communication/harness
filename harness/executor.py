@@ -144,8 +144,28 @@ class ConcurrentExecutor:
         worker_fn: Callable[[DAGNode], Dict[str, Any]],
         *,
         keep_going: bool = False,
+        reserver=None,
+        isolator=None,
+        on_stage_done=None,
     ) -> Dict[str, Any]:
         """Execute a TaskDAG stage-by-stage (batch by batch) concurrently.
+
+        reserver: optional cost-liability seam (MR-6) with
+            ``reserve(node) -> token|None`` and ``reconcile(token, actual)``.
+            Per-call preflight alone cannot bound concurrent dispatch (W
+            workers preflight against the full remaining ceiling before any
+            records); with a reserver, ``spent + outstanding`` never exceeds
+            the ceiling and each node's worst case is reserved before
+            dispatch, then settled against the billed actual.
+        isolator: optional git-worktree seam (MR-5) with ``create(node_id)
+            -> handle``, ``audit(handle, declared) -> undeclared``,
+            ``merge(handle)``, ``discard(handle)``. Engaged ONLY for stages
+            that actually run in parallel (the partition rule: concurrent
+            nodes are isolated; serial nodes share the tree under the
+            mutex). Isolated workers are called with ``gate_cwd=<worktree
+            path>`` (gates + target paths resolve inside the worktree).
+            Undeclared writes reject the node; merge conflicts become
+            ``merge_conflict`` results (never force-merged).
 
         Returns {node_id: result_dict}.
         """
@@ -183,26 +203,42 @@ class ConcurrentExecutor:
                         if not keep_going:
                             break
             else:
-                # Run executable nodes in parallel
-                with ThreadPoolExecutor(max_workers=min(self.max_workers, len(executable_nodes))) as pool:
-                    future_to_node = {
-                        pool.submit(self._run_node_with_locks, node, worker_fn): node
-                        for node in executable_nodes
-                    }
+                parallel = len(executable_nodes) > 1
+                handles: Dict[DAGNode, Any] = {}
+                if isolator is not None and parallel:
+                    for node in executable_nodes:
+                        handles[node] = isolator.create(node.node_id)
+                try:
+                    # Run executable nodes in parallel
+                    with ThreadPoolExecutor(max_workers=min(self.max_workers, len(executable_nodes))) as pool:
+                        future_to_node = {
+                            pool.submit(self._run_node_reserved, node, worker_fn,
+                                        reserver,
+                                        (handles.get(node) or {}).get("path")): node
+                            for node in executable_nodes
+                        }
 
-                    for future in as_completed(future_to_node):
-                        node = future_to_node[future]
-                        try:
-                            res = future.result()
-                        except Exception as exc:
-                            res = {"status": "fatal", "error": str(exc), "node_id": node.node_id}
+                        for future in as_completed(future_to_node):
+                            node = future_to_node[future]
+                            try:
+                                res = future.result()
+                            except Exception as exc:
+                                res = {"status": "fatal", "error": str(exc), "node_id": node.node_id}
 
-                        all_results[node.node_id] = res
-                        if res.get("status") not in SUCCESS_STATUSES:
-                            failed_nodes.add(node.node_id)
-                            if not keep_going:
-                                for f in future_to_node:
-                                    f.cancel()
+                            if node in handles:
+                                res = self._settle_isolated(node, res, handles[node], isolator)
+                            all_results[node.node_id] = res
+                            if res.get("status") not in SUCCESS_STATUSES:
+                                failed_nodes.add(node.node_id)
+                                if not keep_going:
+                                    for f in future_to_node:
+                                        f.cancel()
+                finally:
+                    for handle in handles.values():
+                        isolator.discard(handle)
+
+            if on_stage_done is not None:
+                on_stage_done(executable_nodes, all_results)
 
             if failed_nodes and not keep_going:
                 break
@@ -216,3 +252,47 @@ class ConcurrentExecutor:
     ) -> Dict[str, Any]:
         with self.file_locks.acquire_all(node.target_files):
             return worker_fn(node)
+
+    def _run_node_reserved(
+        self,
+        node: DAGNode,
+        worker_fn: Callable[[DAGNode], Dict[str, Any]],
+        reserver,
+        gate_cwd=None,
+    ) -> Dict[str, Any]:
+        token = reserver.reserve(node) if reserver is not None else None
+        try:
+            with self.file_locks.acquire_all(node.target_files):
+                # Worker contract: when isolation is engaged the worker is
+                # called as ``worker_fn(node, gate_cwd=<worktree path>)``;
+                # otherwise the historical single-argument shape is kept
+                # (DAGNode is frozen -- state rides the call, not the node).
+                if gate_cwd is not None:
+                    res = worker_fn(node, gate_cwd=gate_cwd)
+                else:
+                    res = worker_fn(node)
+        except Exception:
+            if token is not None:
+                reserver.reconcile(token, 0.0)
+            raise
+        if token is not None:
+            reserver.reconcile(token, res.get("cost") or 0.0)
+        return res
+
+    def _settle_isolated(self, node, res, handle, isolator):
+        """Audit undeclared writes, merge on success, discard always."""
+        try:
+            undeclared = isolator.audit(handle, node.target_files)
+        except HarnessError as exc:
+            return {"status": "fatal", "error": str(exc), "node_id": node.node_id}
+        if res.get("status") not in SUCCESS_STATUSES:
+            return res
+        if undeclared:
+            return {"status": "fatal", "node_id": node.node_id,
+                    "error": f"undeclared writes outside target_files: {undeclared}"}
+        try:
+            isolator.merge(handle)
+        except HarnessError as exc:
+            return {"status": "merge_conflict", "node_id": node.node_id,
+                    "error": str(exc)}
+        return res

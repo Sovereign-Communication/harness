@@ -23,13 +23,17 @@ Exit codes: 0 success, 1 fatal refusal/error, 2 verification failed,
 """
 import json
 import os
+import subprocess
 import tempfile
 import time
 from .consent import probe_consent
 from .errors import HarnessError
 from .spend import discover_free_models
-from .filesafety import validate_target_file, validate_verify_command
+from .filesafety import (VERIFY_TIMEOUT, default_run_verify,
+                         validate_target_file, validate_verify_command)
 from .output import eprint
+from .spend import NodeReserver
+from .worktree import WorktreeIsolation
 from .session import (apply_session as _session, governor_for as _governor,
                       ledger_for as _ledger,
                       run_meta as _session_run_meta)
@@ -614,8 +618,27 @@ def _cmd_plan(opts, settings):
     workers = getattr(opts, "max_workers", 4) if is_parallel else 1
     executor = ConcurrentExecutor(max_workers=workers)
 
-    def run_node(node):
+    # MR-5 partition rule: concurrent nodes execute in isolated git
+    # worktrees; serial nodes share the tree under the per-path mutex.
+    # Unavailable git degrades loudly to shared-tree execution.
+    isolator = None
+    if is_parallel and getattr(opts, "isolate", False):
+        iso = WorktreeIsolation()
+        if iso.available():
+            isolator = iso
+        else:
+            eprint("[plan] git worktree isolation unavailable; "
+                   "falling back to shared-tree mutex execution")
+    reserver = NodeReserver(
+        engine.governor, node_routes,
+        getattr(opts, "task_max_cost", None) or engine.default_task_max_cost,
+        route_kwargs_fn=node_apply_kwargs)
+    stage_gate = getattr(opts, "stage_gate", None)
+
+    def run_node(node, gate_cwd=None):
         target = node.target_files[0] if node.target_files else None
+        if target and gate_cwd:
+            target = os.path.join(gate_cwd, target)
         task_max = getattr(opts, "task_max_cost", None)
         route_kwargs = node_apply_kwargs(
             node_routes.get(node.node_id),
@@ -626,6 +649,10 @@ def _cmd_plan(opts, settings):
         # operator pin: node_apply_kwargs suppresses it when one is set).
         if "task_max_cost" in route_kwargs:
             task_max = route_kwargs.pop("task_max_cost")
+        task_runner = None
+        if gate_cwd:
+            def task_runner(command, timeout=VERIFY_TIMEOUT):
+                return default_run_verify(command, timeout=timeout, cwd=gate_cwd)
         return engine.apply_edit(
             file_path=target,
             instruction=node.instruction,
@@ -639,10 +666,25 @@ def _cmd_plan(opts, settings):
             reasoning_effort=getattr(opts, "reasoning_effort", None),
             renew_consent=False,
             max_rotations=getattr(opts, "max_rotations", 3),
+            **({"task_runner": task_runner} if task_runner else {}),
             **route_kwargs,
         )
 
-    all_results = executor.execute_dag(dag, run_node, keep_going=getattr(opts, "keep_going", False))
+    def on_stage_done(executable_nodes, _results):
+        # Optional full-suite stage gate (MR-5): the composed tree must be
+        # green before dependent stages start; failure aborts the run.
+        if not stage_gate:
+            return
+        proc = subprocess.run(stage_gate, shell=True, capture_output=True,
+                              text=True, timeout=VERIFY_TIMEOUT * 6)
+        if proc.returncode != 0:
+            raise HarnessError(
+                f"stage gate failed after a parallel stage completed; "
+                f"stopping before dependent stages (gate: {stage_gate})")
+
+    all_results = executor.execute_dag(
+        dag, run_node, keep_going=getattr(opts, "keep_going", False),
+        reserver=reserver, isolator=isolator, on_stage_done=on_stage_done)
     all_ok = all(res.get("status") in SUCCESS_STATUSES for res in all_results.values())
     total_cost = sum(float(res.get("cost", 0.0) or 0.0) for res in all_results.values())
 

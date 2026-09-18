@@ -291,6 +291,180 @@ class TestPlanningSurface(unittest.TestCase):
         # Explicit pins stay absent when unset.
         self.assertEqual(kwargs["model"], None)
 
+    def test_plan_isolation_flags_default_off(self):
+        parser = build_parser()
+        opts = parser.parse_args(["plan", "--goal", "g", "--isolate",
+                                  "--stage-gate", "python -m py_compile x.py"])
+        self.assertTrue(opts.isolate)
+        self.assertEqual(opts.stage_gate, "python -m py_compile x.py")
+        defaults = parser.parse_args(["plan", "--goal", "g"])
+        self.assertFalse(defaults.isolate)
+        self.assertIsNone(defaults.stage_gate)
+
+    def test_cli_cmd_plan_execute_isolated_parallel_with_stage_gate(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from harness.cli import _cmd_plan
+
+        def fake_apply(**kwargs):
+            runner = kwargs.get("task_runner")
+            if runner is not None:
+                runner("git status --porcelain")
+            return {"status": "ok", "cost": 0.001}
+
+        mock_engine = MagicMock()
+        mock_engine.apply_edit.side_effect = fake_apply
+        opts = SimpleNamespace(
+            goal="Update the modules",
+            file=["iso_a.py", "iso_b.py"],
+            frontier_model=None,
+            execute=True,
+            parallel=True,
+            max_workers=2,
+            max_cost=1.0,
+            keep_going=False,
+            out=None,
+            model=None,
+            max_tokens=None,
+            task_max_cost=None,
+            allow_escalation=False,
+            reasoning_effort=None,
+            max_rotations=3,
+            isolate=True,
+            stage_gate="git rev-parse HEAD",
+        )
+        settings = SimpleNamespace(use_free=False, frontier_model=None)
+
+        with patch("harness.cli._session", return_value=mock_engine), \
+             patch("harness.cli._emit_by_status") as mock_emit:
+            _cmd_plan(opts, settings)
+        res = mock_emit.call_args[0][0]
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["completed_nodes"], 2)
+        # The isolated lane hands apply_edit a worktree-scoped runner.
+        for call in mock_engine.apply_edit.call_args_list:
+            self.assertIn("task_runner", call[1])
+
+    def test_cli_cmd_plan_isolate_unavailable_degrades_loudly(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from harness.cli import _cmd_plan
+
+        mock_engine = MagicMock()
+        mock_engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
+        opts = SimpleNamespace(
+            goal="Update the modules",
+            file=["iso_a.py", "iso_b.py"],
+            frontier_model=None,
+            execute=True,
+            parallel=True,
+            max_workers=2,
+            max_cost=1.0,
+            keep_going=False,
+            out=None,
+            model=None,
+            max_tokens=None,
+            task_max_cost=None,
+            allow_escalation=False,
+            reasoning_effort=None,
+            max_rotations=3,
+            isolate=True,
+            stage_gate=None,
+        )
+        settings = SimpleNamespace(use_free=False, frontier_model=None)
+
+        with patch("harness.cli._session", return_value=mock_engine), \
+             patch("harness.cli.WorktreeIsolation") as mock_iso_cls, \
+             patch("harness.cli.eprint") as mock_eprint, \
+             patch("harness.cli._emit_by_status") as mock_emit:
+            mock_iso_cls.return_value.available.return_value = False
+            _cmd_plan(opts, settings)
+        res = mock_emit.call_args[0][0]
+        # Degraded but usable: shared-tree mutex execution still runs.
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["completed_nodes"], 2)
+        self.assertIn("unavailable", str(mock_eprint.call_args))
+
+    def test_cli_cmd_plan_stage_gate_failure_aborts(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        from harness.cli import _cmd_plan
+
+        mock_engine = MagicMock()
+        mock_engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
+        opts = SimpleNamespace(
+            goal="Refactor auth system",
+            file=["iso_a.py"],
+            frontier_model=None,
+            execute=True,
+            parallel=False,
+            max_workers=1,
+            max_cost=1.0,
+            keep_going=False,
+            out=None,
+            model=None,
+            max_tokens=None,
+            task_max_cost=None,
+            allow_escalation=False,
+            reasoning_effort=None,
+            max_rotations=3,
+            isolate=False,
+            stage_gate="git rev-parse --verify refs/heads/no-such-ref",
+        )
+        settings = SimpleNamespace(use_free=False, frontier_model=None)
+
+        with patch("harness.cli._session", return_value=mock_engine):
+            with self.assertRaises(HarnessError) as ctx:
+                _cmd_plan(opts, settings)
+        # Fail-closed: a red composed tree stops dependent stages.
+        self.assertIn("stage gate failed", str(ctx.exception))
+
+    def test_mcp_plan_and_execute_parallel_isolated(self):
+        from harness.mcp import McpServer
+
+        def fake_apply(**kwargs):
+            runner = kwargs.get("task_runner")
+            if runner is not None:
+                runner("git status --porcelain")
+            return {"status": "ok", "cost": 0.001}
+
+        mock_gov = MagicMock()
+        mock_gov.spent = 0.0
+        mock_gov.max_cost = 1.0
+        mock_ledger = MagicMock()
+        mock_ledger.participation_report.return_value = {}
+        mock_router = MagicMock()
+        mock_router.judge = "judge-model"
+        mock_router.panel_pool = ["m1"]
+        mock_engine = MagicMock()
+        mock_engine.reasoning_token_budget = 0.4
+        mock_engine.reasoning_effort = "auto"
+        mock_engine.apply_edit.side_effect = fake_apply
+
+        server = McpServer(
+            transport=MagicMock(),
+            api_key="key",
+            governor=mock_gov,
+            ledger=mock_ledger,
+            router=mock_router,
+            engine=mock_engine,
+            allow_write=True,
+            allow_verify=True,
+        )
+        exec_res = server._invoke("plan_and_execute", {
+            "goal": "Update the modules",
+            "file": ["iso_c.py", "iso_d.py"],
+            "execute": True, "allow_write": True, "parallel": True,
+        })
+        self.assertEqual(exec_res["status"], "ok")
+        self.assertEqual(exec_res["completed_nodes"], 2)
+        # MCP parity with the CLI isolate lane: worktree-scoped runners.
+        for call in mock_engine.apply_edit.call_args_list:
+            self.assertIn("task_runner", call[1])
+
     def test_cli_plan_confirm_refusal_fails_closed(self):
         import json as _json
         import os as _os

@@ -218,6 +218,10 @@ harness plan --goal "Refactor engine and verify" --execute --parallel
 harness plan --goal "..." --decompose-llm --confirm --frontier-model fable-5.1 --execute
 # --confirm sends a condensed brief (signatures + bounded windows; no open-ended
 # reading) for an approve/amend/refuse verdict; a refused plan never executes.
+# Parallel stages: --isolate runs concurrent nodes in git worktrees (audited
+# against declared files, merged in order; conflicts fail the node), and every
+# node's worst-case cost is reserved before dispatch. --stage-gate runs the
+# composed tree's gate after each stage; failure stops before dependents.
 
 # Autonomy ledger, live free models, key status, trust standing
 harness ledger report          # includes chain status (segments, pruned cut)

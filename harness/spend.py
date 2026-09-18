@@ -29,6 +29,8 @@ class SpendGovernor:
         self.expect_key_label = expect_key_label
         self.max_cost = finite_number(max_cost, "max_cost", 0.0)
         self.spent = 0.0
+        self._outstanding = 0.0
+        self._reservations = []
         self._cost_by_model = {}
         # Fan-out safety (#10): spend mutations happen from panel threads.
         self._spend_lock = threading.RLock()
@@ -180,11 +182,69 @@ class SpendGovernor:
             cost = (prompt_tokens + extra) * pp + max_tokens * cp
             breakdown.append((label, model, cost))
             total += cost
-        if self.spent + total > self.max_cost:
+        if self.spent + self._outstanding + total > self.max_cost:
             raise HarnessError(
-                f"worst-case estimate ${self.spent + total:.6f} exceeds remaining ceiling "
-                f"${self.max_cost:.6f}. Refusing.")
+                f"worst-case estimate ${self.spent + self._outstanding + total:.6f} "
+                f"exceeds remaining ceiling ${self.max_cost:.6f} "
+                f"(outstanding reservations: ${self._outstanding:.6f}). Refusing.")
         return total, breakdown
+
+    # 4b
+    def reserve(self, amount, label):
+        """Atomically reserve worst-case spend for an in-flight call.
+
+        Parallel dispatch (the DAG executor) cannot rely on per-call
+        preflight alone: W workers can each preflight against the full
+        remaining ceiling before any of them records, and the billed sum
+        overspends. A reservation is real liability: ``spent +
+        outstanding + new`` must stay under the ceiling or the reserve is
+        refused, and every preflight sees outstanding reservations.
+        Returns a reservation token for :meth:`reconcile`.
+        """
+        amount = finite_number(amount or 0.0, "reservation", 0.0)
+        with self._spend_lock:
+            if self.spent + self._outstanding + amount > self.max_cost:
+                raise HarnessError(
+                    f"reservation ${amount:.6f} would put spent+outstanding at "
+                    f"${self.spent + self._outstanding + amount:.6f}, over ceiling "
+                    f"${self.max_cost:.6f}. Refusing.")
+            self._outstanding += amount
+            token = (label, amount)
+            self._reservations.append(token)
+            return token
+
+    def reconcile(self, token, actual):
+        """Settle a reservation: release the worst-case liability, record
+        the billed actual. The reservation is released even when ``actual``
+        would fail the ceiling check (the liability was already counted)."""
+        with self._spend_lock:
+            try:
+                self._reservations.remove(token)
+            except ValueError:
+                raise HarnessError(
+                    "reconcile of an unknown reservation token") from None
+            self._outstanding = max(0.0, self._outstanding - token[1])
+        label = token[0]
+        try:
+            actual_f = finite_number(actual or 0.0, "reported cost", 0.0)
+        except HarnessError:
+            raise HarnessError(f"invalid reported cost {actual!r} (after '{label}').") from None
+        if self.spent + actual_f > self.max_cost:
+            raise HarnessError(
+                f"actual running cost ${self.spent + actual_f:.6f} would exceed ceiling "
+                f"${self.max_cost:.6f} (after '{label}'). Aborting.")
+        with self._spend_lock:
+            if self.spent + actual_f > self.max_cost:
+                raise HarnessError(
+                    f"actual running cost ${self.spent + actual_f:.6f} would exceed ceiling "
+                    f"${self.max_cost:.6f} (after '{label}'). Aborting.")
+            self.spent += actual_f
+            self._cost_by_model[label] = (self._cost_by_model.get(label, 0.0) + actual_f)
+
+    @property
+    def outstanding(self):
+        """Worst-case liability currently reserved by in-flight calls."""
+        return self._outstanding
 
     # 5
     def record_actual(self, cost, label):
@@ -193,12 +253,13 @@ class SpendGovernor:
             actual = finite_number(cost or 0.0, "reported cost", 0.0)
         except HarnessError:
             raise HarnessError(f"invalid reported cost {cost!r} (after '{label}').") from None
-        if self.spent + actual > self.max_cost:
+        if self.spent + self._outstanding + actual > self.max_cost:
             raise HarnessError(
-                f"actual running cost ${self.spent + actual:.6f} would exceed ceiling "
-                f"${self.max_cost:.6f} (after '{label}'). Aborting.")
+                f"actual running cost ${self.spent + self._outstanding + actual:.6f} would "
+                f"exceed ceiling ${self.max_cost:.6f} "
+                f"(outstanding reservations: ${self._outstanding:.6f}; after '{label}'). Aborting.")
         with self._spend_lock:
-            if self.spent + actual > self.max_cost:
+            if self.spent + self._outstanding + actual > self.max_cost:
                 raise HarnessError(
                     f"actual running cost ${self.spent + actual:.6f} would exceed ceiling "
                     f"${self.max_cost:.6f} (after '{label}'). Aborting.")
@@ -207,6 +268,30 @@ class SpendGovernor:
 
 
 # ------------------------- live discovery -------------------------
+
+class NodeReserver:
+    """Cost-liability seam for parallel DAG dispatch (MR-6 verdict): each
+    node's worst case (tier ceiling or the engine default) is reserved
+    before dispatch and reconciled against the billed actual, so W
+    concurrent preflights can never overspend the shared ceiling."""
+
+    def __init__(self, governor, node_routes, default_amount,
+                 route_kwargs_fn=None):
+        self.governor = governor
+        self.node_routes = node_routes or {}
+        self.default_amount = default_amount
+        self._route_kwargs_fn = route_kwargs_fn
+
+    def reserve(self, node):
+        amount = self.default_amount
+        if self._route_kwargs_fn is not None:
+            kwargs = self._route_kwargs_fn(self.node_routes.get(node.node_id))
+            amount = kwargs.get("task_max_cost") or self.default_amount
+        return self.governor.reserve(amount, node.node_id)
+
+    def reconcile(self, token, actual):
+        self.governor.reconcile(token, actual)
+
 
 def _is_free_model(m):
     mid = m.get("id", "")
