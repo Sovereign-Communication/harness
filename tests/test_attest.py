@@ -5,19 +5,36 @@ mismatched/expired/replayed evidence is rejected, and rejection is the
 only fallback -- nothing here can ever return "proceed".
 """
 import json
+import os
 import unittest
 
 from harness.attest import (DIFF_ATTESTATION_VERSION,
                             canonical_attestation_payload,
                             compute_diff_sha256, parse_attestation,
                             require_attestation)
+from harness.apply_gate import GatePolicy
+from harness.apply_state import ApplyRequest, RunState
 from harness.errors import HarnessError
+from harness.spend import SpendGovernor
+from tests._fake import FakeTransport, comp, m
 
 DIFF = "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-ok\n+ok\n"
 DIFF_SHA = compute_diff_sha256(DIFF)
 BASE_SHA = "b" * 64
 NONCE = "c" * 64
 NOW = 1_000_000
+
+
+def _gov(fake):
+    return SpendGovernor(fake, "sk-test")
+
+
+class _Ledger:
+    def __init__(self):
+        self.events = []
+
+    def append(self, event, **fields):
+        self.events.append((event, fields))
 
 
 def _attestation(**overrides):
@@ -166,6 +183,134 @@ class ParseAttestationTests(unittest.TestCase):
                 parse_attestation(
                     raw, diff_sha256=DIFF_SHA, base_sha256=BASE_SHA,
                     round_nonce=NONCE, now=NOW, verify_signature=_verify)
+
+
+class AuthorizeDiffTests(unittest.TestCase):
+    """The LLM second-verifier lane: every unusable answer refuses the
+    write; only a parsed allow returns, bound to the exact bytes."""
+
+    def _run(self, posts, ledger=None):
+        from harness.attest import authorize_diff
+
+        fake = FakeTransport(models=[m("verifier/v1")], posts=list(posts))
+        gov = _gov(fake)
+        record = authorize_diff(
+            fake, "k", gov, ledger, task_id="t", model="verifier/v1",
+            file_path="x.py", instruction="make it better",
+            current_content="old\n", new_content="new\n", round_no=2)
+        return fake, gov, record
+
+    def test_allow_returns_record_bound_to_exact_bytes(self):
+        from harness.attest import compute_diff_sha256
+
+        ledger = _Ledger()
+        fake, gov, record = self._run(
+            [comp(json.dumps({"verdict": "allow", "reason": "fine"}))],
+            ledger=ledger)
+        self.assertEqual(record["verdict"], "allow")
+        self.assertEqual(record["diff_sha256"], compute_diff_sha256("new\n"))
+        self.assertEqual(record["base_sha256"], compute_diff_sha256("old\n"))
+        self.assertEqual(record["round"], 2)
+        # The verifier saw the EXACT bytes (hash in the prompt), not a summary.
+        user_msg = fake.payloads()[0]["messages"][1]["content"]
+        self.assertIn(compute_diff_sha256("new\n"), user_msg)
+        self.assertIn("new\n", user_msg)
+        # Ledgered as its own event, tamper-evidently.
+        self.assertEqual(ledger.events[0][0], "diff_attestation")
+        self.assertEqual(ledger.events[0][1]["diff_sha256"],
+                         compute_diff_sha256("new\n"))
+
+    def test_deny_raises_with_reason(self):
+        with self.assertRaises(HarnessError) as ctx:
+            self._run([comp(json.dumps(
+                {"verdict": "deny", "reason": "deletes tests"}))])
+        self.assertIn("deletes tests", str(ctx.exception))
+
+    def test_unparseable_fails_closed(self):
+        with self.assertRaises(HarnessError):
+            self._run([comp("looks fine to me!")])
+
+    def test_http_error_fails_closed(self):
+        with self.assertRaises(HarnessError):
+            self._run([(500, {"error": {"message": "down"}})])
+
+    def test_reasoning_only_fails_closed(self):
+        with self.assertRaises(HarnessError):
+            self._run([comp(None, reasoning="hmm, let me check")])
+
+
+class WriteCandidateAttestationTests(unittest.TestCase):
+    """The enforcement seam: write_candidate consults the verifier BEFORE
+    any bytes land, only when the request opted in."""
+
+    def setUp(self):
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target = os.path.join(self._tmp.name, "t.py")
+        with open(self.target, "w", encoding="utf-8", newline="") as f:
+            f.write("original\n")
+        self.ledger = _Ledger()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _request(self, require_auth):
+        req = ApplyRequest(
+            task_id="t", file_path=self.target, instruction="do the thing",
+            edit_snippet=None, verify_cmd="true", backend="harness",
+            verify_only=False, max_lines=500, max_rounds=3, max_tokens=512,
+            task_max_cost=0.1, max_rot=3, reasoning="auto", renew=True,
+            allow_escalation=None, model="m", ordered=None, profiles=None,
+            want_consent=False, original="original\n", task_start_spent=0.0,
+            continuation={}, continuation_gate=None,
+            task_runner=lambda cmd: (0, "ok"), cancel_check=None,
+            require_diff_authorization=require_auth, attest_model="verifier/v1")
+        return req
+
+    def _gate(self, transport):
+        return GatePolicy(self.ledger, _gov(transport), transport, "k")
+
+    def _state(self):
+        return RunState(rounds=[], history=[], current_content="original\n")
+
+    def test_opt_in_default_off_never_calls_verifier(self):
+        fake = FakeTransport()  # no canned responses: any call would raise
+        gate = self._gate(fake)
+        gate.write_candidate(self._request(require_auth=False),
+                             self._state(), "new\n")
+        self.assertEqual(fake.calls, [])
+
+    def test_allow_writes(self):
+        fake = FakeTransport(models=[m("verifier/v1")], posts=[
+            comp(json.dumps({"verdict": "allow", "reason": "ok"}))])
+        gate = self._gate(fake)
+        state = self._state()
+        gate.write_candidate(self._request(require_auth=True),
+                             state, "new\n")
+        with open(self.target, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "new\n")
+        self.assertEqual(state.current_content, "new\n")
+
+    def test_deny_refuses_the_write(self):
+        fake = FakeTransport(models=[m("verifier/v1")], posts=[
+            comp(json.dumps({"verdict": "deny", "reason": "no"}))])
+        gate = self._gate(fake)
+        with self.assertRaises(HarnessError):
+            gate.write_candidate(self._request(require_auth=True),
+                                 self._state(), "new\n")
+        with open(self.target, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "original\n")
+
+    def test_verifier_down_refuses_the_write(self):
+        fake = FakeTransport(models=[m("verifier/v1")], posts=[
+            (500, {"error": {"message": "down"}})])
+        gate = self._gate(fake)
+        with self.assertRaises(HarnessError):
+            gate.write_candidate(self._request(require_auth=True),
+                                 self._state(), "new\n")
+        with open(self.target, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "original\n")
 
 
 class RequireAttestationTests(unittest.TestCase):

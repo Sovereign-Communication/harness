@@ -162,7 +162,8 @@ def gated_cancellation_server(*, gate_post, posts, tool_timeout=None,
         # a real stall -- it only stops punishing slow interpreters).
         if not transport.gated.wait(60):
             transport.release.set()
-            raise AssertionError("gated POST never started")
+            raise AssertionError(
+                f"gated POST never started (posts seen: {transport._count})")
 
     def deadline_expired(request_id):
         wait_gated()
@@ -371,7 +372,7 @@ class McpProtocolTests(unittest.TestCase):
         poll trips the expired deadline, so the service builds the honest
         cancelled envelope and MCP answers -32800 without hiding spend."""
         h = gated_cancellation_server(gate_post=2, posts=[comp("yes"), comp("yes")],
-                                      tool_timeout=0.05)  # seat 1 is far faster
+                                      tool_timeout=1.5)  # seat 1 is far faster
         lines = h.drive(PANEL_REQUEST_42,
                         gate_wait=lambda: h.deadline_expired(42))
         # Seat 1 billed; seat 2's POST was in flight past its poll point and
@@ -392,7 +393,7 @@ class McpProtocolTests(unittest.TestCase):
         loop, proven by default in the shared drive."""
         h = gated_cancellation_server(
             gate_post=1, posts=[comp("")],  # empty content -> no-usable-output rotation
-            tool_timeout=0.05, apply_pool=[APPLY, P1])
+            tool_timeout=1.5, apply_pool=[APPLY, P1])
         # Two-model apply pool; the gated attempt returns empty content -- the
         # rotating, billable no-usable-output error path -- so rotation
         # must reach the NEXT attempt-top poll (a single-model pool would

@@ -8,6 +8,7 @@ state records and returns the shared result shapes.
 import os
 
 from . import events as _events
+from . import attest as attest_policy
 from . import trust as trust_policy
 from .continuation import bound_gate, gate_id
 from .errors import ToolCancelled
@@ -19,9 +20,14 @@ from .results import _content_diff, _round_entry, _terminal_result
 class GatePolicy:
     """Own the candidate-to-gate transaction without owning run state."""
 
-    def __init__(self, ledger, governor):
+    def __init__(self, ledger, governor, transport=None, api_key=None):
         self.ledger = ledger
         self.governor = governor
+        # The LLM diff verifier (M4 phase 2) calls the provider directly,
+        # so the gate needs the session credentials when the opt-in
+        # require_diff_authorization flag is set.
+        self.transport = transport
+        self.api_key = api_key
 
     def runner(self, req):
         return bound_gate(req.continuation_gate, req.verify_cmd,
@@ -36,6 +42,17 @@ class GatePolicy:
             ledger=self.ledger, combined=getattr(req, "trust_combined", 0),
             verify_cmd=req.verify_cmd, task_id=req.task_id,
             model=getattr(req, "model", None))
+        # Diff-bound independent authorization (M4 phase 2, opt-in): the
+        # verifier model sees the EXACT bytes about to be written and must
+        # allow them. Deny, unparseable verdict, and transport error all
+        # refuse the write -- intent approval is never a fallback.
+        if getattr(req, "require_diff_authorization", False):
+            attest_policy.authorize_diff(
+                self.transport, self.api_key, self.governor, self.ledger,
+                task_id=req.task_id, model=req.attest_model,
+                file_path=req.file_path, instruction=req.instruction,
+                current_content=state.current_content, new_content=content,
+                round_no=state.round_no, max_tokens=req.max_tokens)
         if state.backup is None:
             state.backup = backup_file(req.file_path, req.task_id,
                                        marker or state.round_no)

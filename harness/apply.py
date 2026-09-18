@@ -73,7 +73,9 @@ class ApplyEngine(ApplyEngineMixin):
                  default_renew_consent=True, reasoning_effort="auto",
                  reasoning_token_budget=0.4, default_max_rotations=3,
                  default_task_max_cost=0.05, use_free=False,
-                 allowed_roots=None):
+                 allowed_roots=None,
+                 default_require_diff_authorization=False,
+                 default_attest_model=None):
         self.transport = transport
         self.api_key = api_key
         self.governor = governor
@@ -86,6 +88,14 @@ class ApplyEngine(ApplyEngineMixin):
         self.reasoning_token_budget = reasoning_token_budget
         self.default_max_rotations = default_max_rotations
         self.default_task_max_cost = default_task_max_cost
+        # Diff-bound independent authorization (M4 phase 2): when enabled,
+        # every candidate write needs the verifier model's allow FIRST.
+        self.default_require_diff_authorization = \
+            bool(default_require_diff_authorization)
+        # None = the router's judge model verifies (it is already the
+        # independent second voice; independence from the apply model is
+        # the caller's responsibility when overriding).
+        self.default_attest_model = default_attest_model
         # Free-tier flag for capability-aware pool ordering (cheap-first on
         # the paid tier, reliability-first when every model costs $0).
         self.use_free = bool(use_free)
@@ -96,7 +106,7 @@ class ApplyEngine(ApplyEngineMixin):
             for r in (allowed_roots or [])
             if r
         ]
-        self.gate = GatePolicy(ledger, governor)
+        self.gate = GatePolicy(ledger, governor, transport, api_key)
 
     def _enforce_roots(self, file_path):
         """Refuse targets outside configured allowed_roots (realpath)."""
@@ -278,6 +288,12 @@ class ApplyEngine(ApplyEngineMixin):
         want_consent = (self.default_require_consent
                         if kwargs.get("require_consent") is None
                         else kwargs.get("require_consent"))
+        require_auth = (self.default_require_diff_authorization
+                        if kwargs.get("require_diff_authorization") is None
+                        else kwargs.get("require_diff_authorization"))
+        attest_model = (kwargs.get("attest_model")
+                        or self.default_attest_model
+                        or getattr(self.router, "judge", None))
 
         # ---- trust gates (bipolar -11..+11, hard) ----
         # The model is known and no file has been read yet: deny before
@@ -309,7 +325,9 @@ class ApplyEngine(ApplyEngineMixin):
             task_runner=(kwargs.get("task_runner") or self.run_verify),
             cancel_check=kwargs.get("cancel_check"),
             trust_combined=_trust_decision["combined"],
-            trust_correctness=_trust_decision["correctness"])
+            trust_correctness=_trust_decision["correctness"],
+            require_diff_authorization=require_auth,
+            attest_model=attest_model)
 
     def apply_batch(self, files, **kwargs):
         """Run the shared multi-file policy over this engine."""

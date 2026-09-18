@@ -41,6 +41,8 @@ class BatchOptions:
     continuation: object = None
     parallel: object = False
     max_workers: object = 4
+    require_diff_authorization: object = None
+    attest_model: object = None
 
 
 def run_batch(engine, files, *, task_id=None, apply_pool=None,

@@ -465,6 +465,20 @@ and two questions got sharper:
   source_ids}]`, `unknowns: [str]`; uncited assertions are invalid (drop
   or list as unknowns); models may use only cited windows. This is the
   spec seed for the `harness brief` builder and the R1–R3 grounding lint.
+- **R3 partially resolved (2026-09-18): one real flake caught and
+  defused.** The battery flaked once (failure did not reproduce); a
+  focused soak of `tests/test_mcp` reproduced it on the first try:
+  `test_tool_deadline_stops_mutation_lane...` failed with "gated POST
+  never started" — the 0.05s `tool_timeout` raced the worker's lazy
+  apply-chain construction, so under load the deadline could expire
+  before the first POST and the test's 60s gate wait starved. The
+  product's behavior is honest (an overdue run stops at whatever poll
+  sees it first); the test window was too tight. Both deadline tests now
+  use 1.5s (30x margin; every asserted behavior unchanged) and
+  `wait_gated` names the post count it saw on failure. Four consecutive
+  clean module soaks after the fix. The broader R3 question (other
+  nondeterministic teardown evidence on stricter interpreters) stays
+  open.
 
 ---
 

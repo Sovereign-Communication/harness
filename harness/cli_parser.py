@@ -20,6 +20,10 @@ def _add_engine_flags(p, *, max_tokens_default, verify_required=False):
     p.add_argument("--max-rounds", type=int, default=3)
     p.add_argument("--require-consent", dest="require_consent", action="store_true", default=None)
     p.add_argument("--no-consent", dest="require_consent", action="store_false")
+    p.add_argument("--require-attestation", dest="require_diff_authorization",
+                   action="store_true", default=None,
+                   help="an independent verifier model must allow the exact "
+                        "resulting content before every write (fail-closed)")
     p.add_argument("--renew-consent", dest="renew_consent", action="store_true", default=None)
     p.add_argument("--no-renew-consent", dest="renew_consent", action="store_false")
     p.add_argument("--max-tokens", type=int, default=max_tokens_default)
@@ -202,6 +206,16 @@ def build_parser():
     plint.add_argument("--claim-context", default=None)
     plint.add_argument("--show-prompt", action="store_true")
     _add_output_flags(plint)
+
+    pbr = sub.add_parser("brief",
+                         help="Build a grounded context pack for a goal "
+                              "(hermetic: no network; MR-8 grounding spec)")
+    pbr.add_argument("goal")
+    pbr.add_argument("--file", dest="files", action="append", default=[],
+                     help="source file to cite as a window (repeatable)")
+    pbr.add_argument("--validate", action="store_true",
+                     help="run the grounding lint over the built pack")
+    _add_output_flags(pbr)
 
     pcap = sub.add_parser("capabilities", help="Model capability profiles + reliability "
                                                 "(hypothesis from /models, corrected by observed evidence)")

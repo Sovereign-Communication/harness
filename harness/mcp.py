@@ -593,7 +593,8 @@ class McpServer:
             if not files and not continuation:
                 raise HarnessError("apply_edit requires 'file' (or a continuation)")
             apply_flags = {}
-            for key in ("require_consent", "renew_consent", "allow_escalation"):
+            for key in ("require_consent", "renew_consent", "allow_escalation",
+                        "require_diff_authorization"):
                 if key in args:
                     apply_flags[key] = validate_mcp_bool(args[key], key)
             instruction = args.get("instruction")
@@ -623,6 +624,8 @@ class McpServer:
                     allow_escalation=apply_flags.get("allow_escalation"),
                     reasoning_effort=reasoning,
                     renew_consent=apply_flags.get("renew_consent"),
+                    require_diff_authorization=apply_flags.get(
+                        "require_diff_authorization"),
                     max_rotations=max_rotations, backend=backend,
                     verify_only=verify_only, max_lines=max_lines,
                     continuation=continuation))

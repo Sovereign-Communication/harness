@@ -56,6 +56,7 @@ TOOL_SCHEMAS = [
                             "description": "Maximum output tokens per model call"},
             "require_consent": {"type": "boolean", "description": "Ask the model if it accepts the work first"},
             "renew_consent": {"type": "boolean", "description": "Re-check consent before each round (continued consensus)"},
+            "require_diff_authorization": {"type": "boolean", "description": "An independent verifier model must allow the EXACT resulting content before every write (diff-bound attestation, fail-closed)"},
             "max_rotations": {"type": "integer", "minimum": 0, "maximum": 20,
                                "description": "How many model rotations to allow on error"},
             "allow_escalation": {"type": "boolean", "description": "Permit escalation to the configured stronger model"},

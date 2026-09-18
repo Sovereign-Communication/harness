@@ -300,10 +300,18 @@ tmp driver ONLY, repo code untouched).
   insight: the failure-escalation ladder (+0.30/failure, 2 failures ->
   tier 2) bounds any misclassification's downside to one wasted cheap
   attempt. 2-1 on verdict, mechanism verified in `sliding_scale.py`.
-- Remaining MRs: all of MR-0 through MR-9 have run; results below. The
-  only follow-on work is M4 phase 2 (wiring `attest.py` into the apply
-  loop as an enforcement gate) and the `harness brief` builder (MR-8
-  spec).
+- Remaining MRs: all of MR-0 through MR-9 have run; results below.
+  Follow-on work shipped same day (operator approved): **M4 phase 2** —
+  the LLM second-verifier lane is wired into `write_candidate` as an
+  opt-in gate (`--require-attestation` / `require_diff_authorization`);
+  one extra verifier call per write, every failure path refusing the
+  write. **`harness brief`** — the MR-8 grounding spec shipped as
+  `harness/brief.py` (`build_brief` emits only cited, hash-pinned
+  windows; `validate_brief` is the grounding lint; hermetic CLI
+  `harness brief <goal> --file ... --validate`). **R3**: the battery
+  flake was caught and defused — a 0.05s `tool_timeout` raced the
+  worker's lazy startup in two MCP deadline tests; both now use 1.5s and
+  `wait_gated` self-names its diagnostics (four clean soaks after).
 - **M1 + M2 shipped same day** (commit `5cc9067`): `--decompose-llm` and
   `--confirm` are live on CLI and MCP, per the MR-3 verdict's conditions.
 - **MR-5 + MR-6 consensus obtained and implemented (M3).** Both questions

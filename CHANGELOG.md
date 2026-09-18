@@ -63,6 +63,33 @@ break APIs between minor versions).
   fallback). `require_attestation` is the one-call gate the phase-2
   apply-loop enforcement will consult before every write; an attestation
   bound to the real diff never validates against a summarized one.
+- **The second verifier is wired in (M4 phase 2).** With
+  `--require-attestation` (CLI apply/continue/dogfood) or
+  `require_diff_authorization` (MCP apply_edit), every candidate write
+  first shows the EXACT resulting content — plus both content hashes —
+  to an independent verifier model (default: the router's judge), and
+  writes only on a parsed `allow`. Deny, unparseable output, and
+  transport errors all refuse the write fail-closed; the attestation
+  (hash-bound to those exact bytes, `response_sha256` recording what the
+  verifier actually said — a ledger digest, not a signature) lands in the
+  tamper-evident ledger. One extra verifier call per write, per the
+  operator's cost-acceptable call.
+- **`harness brief`: grounded context packs (MR-8).** A hermetic builder
+  that generates the reusable pack for a goal/model pair: cited file
+  windows pinned to per-source content hashes, honest truncation labels,
+  and no claims of its own — `grounding.claims`/`unknowns` start empty
+  for the frontier consumer to fill under the same rule.
+  `validate_brief` is the grounding lint (drifted sources, non-span
+  windows, unknown citations, and uncited claims are all rejected);
+  `harness brief <goal> --file ... --validate` builds and lints in one
+  step.
+- **Test determinism: the R3 flake caught and defused.** The battery
+  flaked once under load; a focused MCP soak reproduced it on the first
+  try — a 0.05s `tool_timeout` could expire during the worker's lazy
+  apply-chain construction, so the deadline tripped before the first
+  POST and the test's 60s gate wait starved. Both deadline tests now
+  give the startup a 30x-wider window (1.5s; every asserted behavior
+  unchanged) and the gate wait names the post count it saw on failure.
 - **The waist is live: `harness plan --confirm` (M2).** Before execution
   spend, the plan is confirmed by the frontier model (`--frontier-model` /
   `HARNESS_FRONTIER_MODEL`) through a condensed brief -- file-signature

@@ -36,6 +36,8 @@ class ApplyRequest:
     cancel_check: object
     trust_combined: int = 0
     trust_correctness: int = 0
+    require_diff_authorization: bool = False
+    attest_model: object = None
 
 
 @dataclass

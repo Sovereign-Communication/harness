@@ -43,6 +43,7 @@ from .service import read_text_file as _service_read_text
 from .rankings import build_rankings_report as _rankings_report
 from .waist import compose_plan as _compose_plan
 from .capability import capabilities_payload as _capability_payload_owner
+from .brief import build_brief, validate_brief
 from .dag import TaskDAG, node_apply_kwargs
 from .executor import ConcurrentExecutor
 from .results import SUCCESS_STATUSES, terminal_exit_code
@@ -303,6 +304,8 @@ def _cmd_dogfood(opts, settings):
             allow_escalation=opts.allow_escalation,
             reasoning_effort=opts.reasoning_effort,
             renew_consent=opts.renew_consent,
+            require_diff_authorization=getattr(
+                opts, "require_diff_authorization", None),
             max_rotations=opts.max_rotations, backend=opts.backend,
             max_lines=opts.max_lines))
     _phase("apply", {"status": result["status"], "cost": result.get("cost")})
@@ -314,6 +317,17 @@ def _cmd_dogfood(opts, settings):
     code = terminal_exit_code(result["status"])
     if code:
         sys.exit(code)
+
+
+def _cmd_brief(opts, settings=None):
+    """Build the grounded context pack (MR-8 spec). Hermetic: no key, no
+    network; the pack asserts nothing beyond the goal."""
+    pack = build_brief(opts.goal, opts.files)
+    out = {"brief": pack}
+    if opts.validate:
+        out["grounding_issues"] = validate_brief(pack)
+        out["ok"] = not out["grounding_issues"]
+    _emit_by_status(out, opts.out)
 
 
 def _cmd_lint_claims(opts, settings=None):
@@ -346,6 +360,8 @@ def _batch_options(opts, continuation=None):
         max_tokens=opts.max_tokens, task_max_cost=opts.task_max_cost,
         allow_escalation=opts.allow_escalation,
         reasoning_effort=opts.reasoning_effort, renew_consent=opts.renew_consent,
+        require_diff_authorization=getattr(
+            opts, "require_diff_authorization", None),
         max_rotations=opts.max_rotations, backend=opts.backend,
         verify_only=opts.verify_only, max_lines=opts.max_lines,
         continuation=continuation)
@@ -706,6 +722,7 @@ def _cmd_plan(opts, settings):
 _DISPATCH = {
     "verify": _cmd_verify,
     "lint-claims": _cmd_lint_claims,
+    "brief": _cmd_brief,
     "apply": _cmd_apply,
     "plan": _cmd_plan,
     "dogfood": _cmd_dogfood,
