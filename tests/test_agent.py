@@ -613,7 +613,7 @@ class TestChatDeferral(unittest.TestCase):
                  patch.object(AutonomousAgent, "_auto_escalation_armed",
                               return_value=False):
                 res = agent.run_prompt("refactor the whole engine",
-                                       session_id="d1",
+                                       session_id="d1", auto_apply=False,
                                        force_conversation=True)
             # the deferred turn is persisted like any completed turn (read
             # while the temp history dir still exists)
@@ -747,6 +747,7 @@ class TestChatTruncation(unittest.TestCase):
                  patch("harness.agent.governor_for",
                        return_value=(None, MagicMock())):
                 res = agent.run_prompt("write the file", session_id="t1",
+                                       auto_apply=False,
                                        force_conversation=True)
         self.assertEqual(res["status"], "ok")
         self.assertEqual(res["response"], "concise full answer")
@@ -840,7 +841,7 @@ class TestChatAutoEscalation(unittest.TestCase):
                  patch.object(AutonomousAgent, "_handle_edit",
                               return_value=plan_result) as he:
                 res = agent.run_prompt("refactor the whole engine",
-                                       session_id="e1",
+                                       session_id="e1", auto_apply=False,
                                        force_conversation=True)
         self.assertEqual(res, plan_result)
         kwargs = he.call_args[1]
@@ -889,7 +890,7 @@ class TestChatAutoEscalation(unittest.TestCase):
                  patch.object(AutonomousAgent, "_handle_edit",
                               side_effect=HarnessError("no target files")):
                 res = agent.run_prompt("refactor the whole engine",
-                                       session_id="e2",
+                                       session_id="e2", auto_apply=False,
                                        force_conversation=True)
         self.assertEqual(res["status"], "deferred")
         self.assertIn("auto-escalation to the plan lane failed: no target files",
@@ -926,7 +927,7 @@ class TestChatAutoEscalation(unittest.TestCase):
                               return_value=False), \
                  patch.object(AutonomousAgent, "_handle_edit") as he:
                 res = agent.run_prompt("refactor the whole engine",
-                                       session_id="e4",
+                                       session_id="e4", auto_apply=False,
                                        force_conversation=True)
         self.assertEqual(res["status"], "deferred")
         he.assert_not_called()
@@ -1166,6 +1167,36 @@ class TestOrchestratorWiring(unittest.TestCase):
                 with self.assertRaises(ToolCancelled):
                     agent.run_prompt("Update util.py", auto_apply=True,
                                      cancel_check=lambda: state["judged"])
+
+    def test_force_conversation_edit_intent_routes_to_orchestrator(self):
+        # The GUI forces the conversation lane -- but an edit-intent prompt
+        # in Auto mode is repo work: it drives the orchestrator loop rather
+        # than the chat model narrating code it will never write.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "util.py").write_text("x = 1\n", encoding="utf-8")
+            agent = self._agent(root)
+            engine = MagicMock()
+            engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
+            with patch("harness.agent.apply_session", return_value=engine), \
+                 TestOrchestratorDrive._scripted_seam(
+                     [{"complete": True, "remaining": "", "reason": "done"}]):
+                res = agent.run_prompt("Update util.py", auto_apply=True,
+                                       force_conversation=True)
+        self.assertEqual(res["intent"], "edit")
+        self.assertEqual(res["status"], "ok")
+
+    def test_force_conversation_question_stays_conversational(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp))
+            with patch.object(AutonomousAgent, "_handle_conversation",
+                              return_value={"status": "ok",
+                                            "intent": "conversation"}) as h:
+                res = agent.run_prompt("How does the router work?",
+                                       auto_apply=True,
+                                       force_conversation=True)
+            h.assert_called_once()
+        self.assertEqual(res["intent"], "conversation")
 
     def test_judge_down_with_failed_nodes_reports_honest_scope(self):
         # Judge dies AND nodes fail: the loop must not fake a completion --

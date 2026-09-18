@@ -245,9 +245,20 @@ class AutonomousAgent:
         emit("chat_turn_start", prompt=prompt, session_id=sid)
 
         if force_conversation:
-            emit("intent_classified", intent="conversation", prompt=prompt)
+            # UI chat is conversational by default -- but an edit-intent
+            # prompt (mutation verbs / explicit files) in Auto mode is repo
+            # work: it drives the orchestrator loop instead of the chat model
+            # narrating code it will never write. Everything else keeps the
+            # conversation lane (session history still loads); audit keywords
+            # stay here too -- the classifier sees the same text.
+            intent = classify_prompt_intent(prompt)
+            emit("intent_classified", intent=intent, prompt=prompt)
             if cancel_check and cancel_check():
                 raise ToolCancelled("Prompt execution was cancelled by user")
+            if intent == "edit" and auto_apply:
+                emit("chat_escalated", reason="edit-intent in auto mode",
+                     target="plan_lane")
+                return self._handle_edit(prompt, sid, auto_apply, cancel_check)
             return self._handle_conversation(prompt, sid, cancel_check, web=web)
 
         intent = classify_prompt_intent(prompt)

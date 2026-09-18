@@ -26,6 +26,10 @@ break APIs between minor versions).
   (`orchestration_round`, `orchestration_note`) streams round-by-round
   status into the GUI's "Processing task" stepper, whose title now tracks
   the live phase (planning / executing subtask N / orchestrator round N).
+  The GUI used to force every chat-box prompt down the conversation lane,
+  where a model could narrate code it would never write; an edit-intent
+  prompt in Auto mode now drives the orchestrator directly (questions and
+  Auto-off runs keep the conversational lane).
 - **The hourglass is the default (M4).** The plan lane now runs the full
   hourglass unprompted -- frontier-waist confirmation, parallel stages,
   worktree isolation, and diff-bound write attestation are all ON for
