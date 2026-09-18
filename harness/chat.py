@@ -126,7 +126,7 @@ def assess_output(content, finish_reason=None, allow_truncated=False):
     the prose panel warns on truncation, while structured lanes (claims votes,
     specialist, consent) rotate instead of mining a cut-off body.
     """
-    if not content:
+    if not (content or "").strip():
         return False, "empty response"
     if content.startswith(REASONING_FALLBACK_PREFIX):
         return False, "reasoning-only output (no visible content)"

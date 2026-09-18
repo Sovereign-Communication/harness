@@ -8,14 +8,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from ._http import HttpTransport
-from .chat import chat, extract_content_and_cost
+from .chat import assess_output, chat, extract_content_and_cost
 from .condenser import distill_context, condense_error_log
 from .config import Settings, load_settings
 from .dag import TaskDAG, DAGNode, node_apply_kwargs, plan_task
 from .errors import HarnessError, ToolCancelled
 from .events import emit
 from .executor import ConcurrentExecutor
-from .results import SUCCESS_STATUSES
+from .results import SUCCESS_STATUSES, _http_error
 from .session import apply_session, governor_for, ledger_for
 from .web import DEFAULT_FETCH_HOSTS, extract_query, fetch_url, find_urls, search_web
 
@@ -240,6 +240,23 @@ class AutonomousAgent:
             sources.append({"kind": "search", "ok": False, "note": str(e)})
         return sources
 
+    @staticmethod
+    def _chat_ladder(settings: Settings) -> List[str]:
+        # The chat lane's rotation ladder: tier-1 head, then the free panel
+        # pool (different providers, so upstream rate limits rarely line up),
+        # then -- only when escalation is allowed -- the paid rungs. The same
+        # settings-owned ladders every other lane walks; no new policy.
+        models = [getattr(settings, "tier1_model", None)
+                  or settings.judge or "inclusionai/ling-3.0-flash-fin:free"]
+        for m in list(settings.panel_pool or []):
+            if m not in models:
+                models.append(m)
+        if settings.allow_escalation and settings.escalation_pool:
+            for m in settings.escalation_pool:
+                if m not in models:
+                    models.append(m)
+        return models
+
     def _handle_conversation(
         self,
         prompt: str,
@@ -248,7 +265,6 @@ class AutonomousAgent:
         web: bool = False,
     ) -> Dict[str, Any]:
         # Handle informational or technical questions with conversational routing
-        model = getattr(self.settings, "tier1_model", None) or self.settings.judge or "inclusionai/ling-3.0-flash-fin:free"
         api_key, gov = governor_for(self.settings)
 
         system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
@@ -283,18 +299,60 @@ class AutonomousAgent:
                 messages.append({"role": "assistant", "content": r_text})
         messages.append({"role": "user", "content": prompt})
 
-        status, resp = chat(
-            transport=self.transport,
-            api_key=api_key,
-            model=model,
-            messages=messages,
-            max_tokens=4096,
-            reasoning_effort="off",
-            governor=gov,
-        )
-
-        content, _, cost, _ = extract_content_and_cost(resp)
-        response_text = content or "I was unable to formulate a response."
+        # One governed attempt per ladder rung (preflight -> chat -> bill, the
+        # governed_text contract), advancing on HTTP failure or an unusable
+        # body. The old code pinned one free model, ignored the status, and
+        # rendered a fake apology on a 429; now every failure is recorded,
+        # emitted as a rotation, and an all-rungs failure raises honestly.
+        answered = None
+        attempts: List[str] = []
+        for model in self._chat_ladder(self.settings):
+            if cancel_check and cancel_check():
+                raise ToolCancelled("Prompt execution was cancelled by user")
+            note = None
+            content, cost = None, 0.0
+            try:
+                gov.preflight(prompt, [("chat", model, 4096, 0)])
+                status, resp = chat(
+                    transport=self.transport,
+                    api_key=api_key,
+                    model=model,
+                    messages=messages,
+                    max_tokens=4096,
+                    reasoning_effort="off",
+                    governor=gov,
+                )
+            except HarnessError as e:
+                note = str(e)
+            else:
+                if status != 200:
+                    note = _http_error(status, resp)
+                else:
+                    content, finish_reason, cost, is_byok = \
+                        extract_content_and_cost(resp)
+                    if is_byok:
+                        gov.record_byok(model)
+                        note = (f"response for {model} was BYOK-routed; "
+                                "spend is not tracked on this key")
+                    else:
+                        # A billable-but-unusable completion is still billed
+                        # (the provider charged for it); only usable content
+                        # ends the walk.
+                        if cost:
+                            gov.record_actual(cost, model)
+                        usable, why = assess_output(content, finish_reason)
+                        if not usable:
+                            note = why
+            if note is None:
+                answered = (model, content or "", cost)
+                break
+            attempts.append(f"{model}: {note}")
+            emit("rotation", model=model, reason="chat_ladder_advance",
+                 note=note)
+        if answered is None:
+            raise HarnessError(
+                "chat failed on every ladder model: " + "; ".join(attempts))
+        model, response_text, cost = answered
 
         result = {
             "status": "ok",

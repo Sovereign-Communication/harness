@@ -167,6 +167,23 @@ break APIs between minor versions).
 
 ### Fixed
 
+- **The UI chat lane swallowed provider failures as a fake apology.** The
+  429 incident: the conversation lane pinned one free model
+  (`google/gemma-4-31b-it:free`), ignored the HTTP status from `chat`, and
+  rendered "I was unable to formulate a response." with `status: "ok"` and
+  $0.00 spend when the upstream shared pool rate-limited it -- the
+  provider's actual error (with its remedy hint) was thrown away. The lane
+  now walks the settings-owned ladder -- tier-1 head, free panel pool
+  (different upstream providers), then the paid escalation rungs when
+  `allow_escalation` is set -- one governed attempt per rung
+  (preflight -> chat -> bill, the `governed_text` contract), emits a
+  rotation per advance, refuses BYOK-routed responses as untrackable
+  spend, and raises an honest `HarnessError` carrying every rung's failure
+  when all rungs fail (the run record shows the real HTTP error; no fake
+  turn is persisted). `assess_output` also stopped calling whitespace-only
+  bodies usable. Verified live: a rate-limited head model rotates to
+  `ling-3.0-flash-fin:free` and answers with the fetched
+  anthropic.com/research page attached as evidence.
 - **Leaked redirect response tripped the audit's R13 leak scan** (local
   CPython 3.14+; summary still said OK, so the battery looked green while
   an unraisable `ResourceWarning: Implicitly cleaning up <HTTPError 302>`

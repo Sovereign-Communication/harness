@@ -391,5 +391,144 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
                                      cancel_check=flip_late)
 
 
+class TestChatLadderRotation(unittest.TestCase):
+    """The 429 incident: the chat lane pinned one free model, ignored the
+    provider status, and rendered a fake "I was unable to formulate a
+    response." It must rotate (free panel, then paid rungs when escalation
+    is allowed), bill through the governor per attempt, and raise honestly
+    when every rung fails."""
+
+    _OK = {"choices": [{"message": {"content": "fallback answer"}}],
+           "usage": {"cost": 0.0}}
+    _429 = {"error": {"message": "rate-limited upstream", "code": 429}}
+
+    def _agent(self, hdir, **overrides):
+        from harness.config import load_settings
+        return AutonomousAgent(settings=load_settings(overrides),
+                               history_dir=hdir)
+
+    def test_rotates_to_next_pool_model_on_429(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp), judge="m1:free",
+                                panel_pool="m2:free,m3:free",
+                                allow_escalation=False)
+            with patch("harness.agent.chat",
+                       side_effect=[(429, self._429), (200, self._OK)]) as mc, \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())):
+                res = agent.run_prompt("hello", session_id="r1")
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["model"], "m2:free")
+        self.assertEqual(res["response"], "fallback answer")
+        self.assertEqual(mc.call_args[1]["model"], "m2:free")
+
+    def test_escalates_to_paid_rung_when_free_exhausted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp), judge="m1:free",
+                                panel_pool="m2:free",
+                                allow_escalation=True,
+                                escalation_pool="paid-1,paid-2")
+            paid = {"choices": [{"message": {"content": "paid answer"}}],
+                    "usage": {"cost": 0.01}}
+            with patch("harness.agent.chat",
+                       side_effect=[(429, self._429), (429, self._429),
+                                    (200, paid)]), \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())) as mg:
+                res = agent.run_prompt("hello", session_id="r2")
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["model"], "paid-1")
+        self.assertEqual(res["response"], "paid answer")
+        gov = mg.return_value[1]
+        gov.record_actual.assert_called_once_with(0.01, "paid-1")
+
+    def test_raises_honestly_when_every_rung_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp), judge="m1:free",
+                                panel_pool="m2:free", allow_escalation=True,
+                                escalation_pool="paid-1")
+            with patch("harness.agent.chat",
+                       return_value=(429, self._429)), \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())):
+                with self.assertRaises(HarnessError) as ctx:
+                    agent.run_prompt("hello", session_id="r3")
+        self.assertIn("HTTP 429", str(ctx.exception))
+        self.assertIn("m1:free", str(ctx.exception))
+        # no fake apology turn is persisted for the failed walk
+        self.assertEqual(load_chat_history("r3", Path(tmp)), [])
+
+    def test_empty_body_rotates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp), judge="m1:free",
+                                panel_pool="m2:free", allow_escalation=False)
+            empty = {"choices": [{"message": {"content": "   "}}],
+                     "usage": {"cost": 0.0}}
+            with patch("harness.agent.chat",
+                       side_effect=[(200, empty), (200, self._OK)]) as mc, \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())):
+                res = agent.run_prompt("hello", session_id="r4")
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["model"], "m2:free")
+        self.assertEqual(mc.call_count, 2)
+
+    def test_preflight_refusal_rotates(self):
+        # A governor refusal on one rung (ceiling/saturation) is an attempt
+        # failure, not a lane crash: the walk advances and records the note.
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp), judge="m1:free",
+                                panel_pool="m2:free", allow_escalation=False)
+            gov = MagicMock()
+            gov.preflight.side_effect = [HarnessError("ceiling refused"),
+                                         (0.0, [])]
+            with patch("harness.agent.chat",
+                       return_value=(200, self._OK)) as mc, \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, gov)):
+                res = agent.run_prompt("hello", session_id="r5")
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["model"], "m2:free")
+        self.assertEqual(mc.call_count, 1)
+
+    def test_byok_routed_response_rotates(self):
+        # A BYOK-routed response carries untracked spend: refused as an
+        # answer source, recorded, and the walk advances.
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp), judge="m1:free",
+                                panel_pool="m2:free", allow_escalation=False)
+            byok = {"choices": [{"message": {"content": "off-the-books"}}],
+                    "usage": {"cost": 0.0, "is_byok": True}}
+            with patch("harness.agent.chat",
+                       side_effect=[(200, byok), (200, self._OK)]), \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())) as mg:
+                res = agent.run_prompt("hello", session_id="r6")
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["model"], "m2:free")
+        self.assertNotEqual(res["response"], "off-the-books")
+        mg.return_value[1].record_byok.assert_called_once_with("m1:free")
+
+    def test_mid_walk_cancellation_raises(self):
+        # The cancellation checkpoint inside the ladder walk: the flag flips
+        # after the first rung's attempt, before the second rung starts.
+        calls = {"n": 0}
+
+        def flip_after_first():
+            calls["n"] += 1
+            return calls["n"] > 2
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp), judge="m1:free",
+                                panel_pool="m2:free", allow_escalation=False)
+            with patch("harness.agent.chat",
+                       side_effect=[(429, self._429), (200, self._OK)]), \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())):
+                with self.assertRaises(ToolCancelled):
+                    agent.run_prompt("hello", session_id="r7",
+                                     cancel_check=flip_after_first)
+
+
 if __name__ == "__main__":
     unittest.main()
