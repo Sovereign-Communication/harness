@@ -161,16 +161,17 @@ def confirm_plan(*, transport, api_key, governor, ledger, plan_result,
                               model=model, rounds=round_no, cost=cost,
                               reason=verdict["reason"])
             return refused
-        if kind == "amend":
+        if kind in ("amend", "split"):
             amended = plan_task(
                 plan_result.get("goal", ""),
                 custom_frontier=custom_frontier, use_free=use_free,
                 decomposed_dag=verdict["dag"])
+            confirmed_kind = "amended" if kind == "amend" else "split"
             amended["confirmation"] = {
-                "verdict": "amended", "model": model, "rounds": round_no,
+                "verdict": confirmed_kind, "model": model, "rounds": round_no,
                 "cost": cost}
             if ledger is not None:
-                ledger.append("plan_verdict", task_id=task_id, verdict="amended",
+                ledger.append("plan_verdict", task_id=task_id, verdict=confirmed_kind,
                               model=model, rounds=round_no, cost=cost)
             return amended
 

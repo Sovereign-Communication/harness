@@ -608,25 +608,28 @@ def parse_waist_verdict(response_text: str) -> Dict[str, Any]:
     Returns one of ``{"verdict": "approve"}``, ``{"verdict": "amend",
     "dag": TaskDAG}`` (the replacement node set, re-validated for unique
     ids, unknown dependencies, cycles, and apply-time instruction
-    length), ``{"verdict": "refuse", "reason", "evidence"}``, or
+    length), ``{"verdict": "split", "dag": TaskDAG}`` (same shape and
+    re-validation as amend; recorded distinctly so a planner that
+    subdivides a node gets its own ledgered kind -- MR-4's four-way
+    enum), ``{"verdict": "refuse", "reason", "evidence"}``, or
     ``{"verdict": "request_windows", "file_window_requests": [...]}``.
     """
     data = _parse_json_object(response_text, "waist plan verdict")
     verdict = str(data.get("verdict") or "").strip()
     if verdict == "approve":
         return {"verdict": "approve"}
-    if verdict == "amend":
+    if verdict in ("amend", "split"):
         nodes = data.get("nodes")
         if not isinstance(nodes, list) or not nodes:
             raise HarnessError(
-                "waist amend verdict requires a non-empty 'nodes' list")
+                f"waist {verdict} verdict requires a non-empty 'nodes' list")
         amended = TaskDAG.from_dict({"nodes": nodes})
         for node in amended.nodes.values():
             if len(node.instruction) > MAX_INSTRUCTION_CHARS:
                 raise HarnessError(
                     f"amended node {node.node_id!r} instruction exceeds "
                     f"{MAX_INSTRUCTION_CHARS} chars (would fail apply validation)")
-        return {"verdict": "amend", "dag": amended}
+        return {"verdict": verdict, "dag": amended}
     if verdict == "refuse":
         reason = str(data.get("reason") or "").strip()
         evidence = str(data.get("evidence") or "").strip()

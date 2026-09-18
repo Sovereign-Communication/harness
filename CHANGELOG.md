@@ -47,6 +47,22 @@ break APIs between minor versions).
   raised, and an `inf` ceiling passed through as an unbounded task budget.
   All shapes now degrade to `{}` (previous behavior — the governor's
   key-level ceiling still binds), pinned hermetically.
+- **`split` is a first-class waist verdict (MR-4).** A frontier review of
+  the shipped verdict contract against its requirement found the
+  four-way enum (approve | amend | split | refuse) broken: a planner
+  emitting `verdict:"split"` fail-closed. `split` now parses and
+  re-validates exactly like amend (full node-set replacement through the
+  same schema as the original) and gets its own ledgered
+  `plan_verdict` kind and confirmation verdict.
+- **`harness/attest.py`: diff-bound independent authorization, phase 1
+  (MR-9 / M4).** The sovereign-diff-v1 contract drafted through Harness
+  itself: canonical signing payload, strict JSON parse (duplicate keys
+  rejected), exact-field schema, allow-only verdicts, diff/base/nonce
+  binding, exclusive expiry, and a pinned-verifier signature seam — no
+  verifier configured means refuse (intent approval is never a
+  fallback). `require_attestation` is the one-call gate the phase-2
+  apply-loop enforcement will consult before every write; an attestation
+  bound to the real diff never validates against a summarized one.
 - **The waist is live: `harness plan --confirm` (M2).** Before execution
   spend, the plan is confirmed by the frontier model (`--frontier-model` /
   `HARNESS_FRONTIER_MODEL`) through a condensed brief -- file-signature

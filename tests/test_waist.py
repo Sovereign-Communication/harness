@@ -94,6 +94,27 @@ class ParseWaistVerdictTests(unittest.TestCase):
         with self.assertRaises(HarnessError):
             parse_waist_verdict('{"verdict": "amend"}')
 
+    def test_split_returns_validated_dag(self):
+        verdict = parse_waist_verdict(json.dumps({
+            "verdict": "split", "nodes": [
+                {"node_id": "task_1a", "instruction": "part one",
+                 "dependencies": []},
+                {"node_id": "task_1b", "instruction": "part two",
+                 "dependencies": ["task_1a"]}]}))
+        self.assertEqual(verdict["verdict"], "split")
+        self.assertEqual(set(verdict["dag"].nodes), {"task_1a", "task_1b"})
+
+    def test_split_requires_nodes(self):
+        with self.assertRaises(HarnessError):
+            parse_waist_verdict('{"verdict": "split"}')
+
+    def test_split_rejects_cycles(self):
+        with self.assertRaises(HarnessError):
+            parse_waist_verdict(json.dumps({
+                "verdict": "split", "nodes": [
+                    {"node_id": "a", "instruction": "x", "dependencies": ["b"]},
+                    {"node_id": "b", "instruction": "y", "dependencies": ["a"]}]}))
+
     def test_refuse_requires_evidence(self):
         with self.assertRaises(HarnessError):
             parse_waist_verdict('{"verdict": "refuse", "reason": "bad plan"}')
@@ -258,6 +279,20 @@ class ConfirmPlanTests(_WaistFixture):
         self.assertEqual(amended["confirmation"]["verdict"], "amended")
         self.assertEqual([n["node_id"] for n in amended["nodes"]], ["solo"])
         self.assertTrue(amended["nodes"][0]["route"]["ladder"])
+
+    def test_split_ledgered_as_its_own_kind(self):
+        split = confirm_plan(
+            transport=None, api_key="k", governor=self.gov, ledger=self.ledger,
+            plan_result=self.plan(), model="m/front",
+            chat_fn=lambda p: (json.dumps({
+                "verdict": "split", "nodes": [
+                    {"node_id": "part_a", "instruction": "Refactor concurrency architecture",
+                     "target_files": ["harness/sync.py"], "dependencies": []},
+                    {"node_id": "part_b", "instruction": "Add regression tests",
+                     "target_files": ["tests/test_sync.py"], "dependencies": ["part_a"]}]}), 0.01))
+        self.assertEqual(split["confirmation"]["verdict"], "split")
+        self.assertEqual([n["node_id"] for n in split["nodes"]], ["part_a", "part_b"])
+        self.assertEqual(self.events()[-1]["verdict"], "split")
 
     def test_window_round_trip_then_approve(self):
         prompts = []

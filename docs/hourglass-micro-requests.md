@@ -300,8 +300,10 @@ tmp driver ONLY, repo code untouched).
   insight: the failure-escalation ladder (+0.30/failure, 2 failures ->
   tier 2) bounds any misclassification's downside to one wasted cheap
   attempt. 2-1 on verdict, mechanism verified in `sliding_scale.py`.
-- Remaining MRs: all of MR-0 through MR-8 have run; results below. MR-9
-  (M4 contract draft) is the only open paste-ready block.
+- Remaining MRs: all of MR-0 through MR-9 have run; results below. The
+  only follow-on work is M4 phase 2 (wiring `attest.py` into the apply
+  loop as an enforcement gate) and the `harness brief` builder (MR-8
+  spec).
 - **M1 + M2 shipped same day** (commit `5cc9067`): `--decompose-llm` and
   `--confirm` are live on CLI and MCP, per the MR-3 verdict's conditions.
 - **MR-5 + MR-6 consensus obtained and implemented (M3).** Both questions
@@ -389,3 +391,29 @@ tmp driver ONLY, repo code untouched).
   uncited assertions are invalid (drop or list as unknowns); models may
   use only cited windows. This is the spec seed for the `harness brief`
   builder.
+- **MR-4 (waist verdict contract): GAPS named, fixed same day.** The
+  shipped contract was reviewed against the requirement (Grok, $0.0080):
+  a planner emitting `verdict:"split"` fail-closed on the shipped
+  three-way parser, so the four-way enum (approve | amend | split |
+  refuse) was broken at exactly the kind a subdividing planner emits.
+  `split` is now a first-class verdict — same node-set shape and
+  re-validation as amend (unique ids, unknown deps, cycles, instruction
+  length), its own `plan_verdict` ledger kind and confirmation verdict.
+  Documented deviation: amend/split REPLACE the node set (full
+  re-validation through the same schema as the original — stronger than
+  per-field delta merging); refuse evidence must cite the failing brief
+  section (prompt-level contract; parser enforces non-empty
+  reason+evidence). K=2 window rounds matched the shipped
+  `MAX_WAIST_ROUNDS = 2`.
+- **MR-9 (M4 contract draft): sovereign-diff-v1 shipped as
+  `harness/attest.py`.** Astra ($0.0571, 1600-token budget) drafted the
+  attestation contract; phase 1 implements it verbatim:
+  `canonical_attestation_payload` (version-prefixed newline-joined
+  canonical bytes, frozen), `compute_diff_sha256`, `parse_attestation`
+  (strict JSON with duplicate-key rejection, exact-field schema,
+  allow-only, diff/base/nonce binding, exclusive expiry, pinned-verifier
+  signature seam — no verifier configured = refuse), and
+  `require_attestation` (the one-call gate for the phase-2 enforcement
+  seam: hash the FROZEN diff bytes, then validate). Fail-closed rule
+  tested end to end: an attestation bound to the real diff never
+  validates against a summarized one.
