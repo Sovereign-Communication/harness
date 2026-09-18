@@ -724,6 +724,12 @@ class AutonomousAgent:
                 raise ToolCancelled("Subtask cancelled by user")
             target = node.target_files[0] if node.target_files else (target_files[0] if target_files else None)
             gate = node.local_gate or gate_round
+            if gate is None and target and target.endswith(".py"):
+                # A .py node is always verifiable after its file exists --
+                # including a file this node CREATES. Gateless nodes are
+                # refused at mutation time (unknown trust writes nothing
+                # unreviewed), which would kill new-file subtasks outright.
+                gate = f'python -m py_compile "{self.root_dir / target}"'
             route_kwargs = node_apply_kwargs(node_routes.get(node.node_id))
             emit("subtask_start", node_id=node.node_id, instruction=node.instruction, target=target)
 

@@ -1226,6 +1226,37 @@ class TestOrchestratorWiring(unittest.TestCase):
         self.assertTrue(Path(seen["file_path"]).is_absolute())
         self.assertEqual(Path(seen["file_path"]).name, "util.py")
         self.assertEqual(Path(seen["file_path"]).parent, root)
+        # An existing .py target is gated by the round discovery.
+        self.assertIn("py_compile", seen["verify_cmd"])
+
+    def test_new_file_node_gets_a_compile_gate(self):
+        # A node that CREATES its target has no discovery gate (the file
+        # does not exist yet, so the round gate is None too) -- but a .py
+        # node is always verifiable after the write: the orchestrator
+        # assigns a compile gate, because a gateless node is refused at
+        # mutation time by trust policy. Hermetic: an empty sandbox, so
+        # the seam's triage pick validates down to nothing.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = self._agent(root)
+            engine = MagicMock()
+            seen = {}
+            def capture(**kwargs):
+                seen.update(kwargs)
+                return {"status": "ok", "cost": 0.001}
+            engine.apply_edit.side_effect = capture
+            verdict = [{"complete": True, "remaining": "", "reason": "done"}]
+            with patch("harness.agent.apply_session", return_value=engine), \
+                 patch.object(TestOrchestratorDrive, "_DECOMPOSE_JSON",
+                              ('{"nodes": [{"node_id": "n1", "instruction": '
+                               '"write it", "target_files": ["new_mod.py"], '
+                               '"dependencies": []}]}')), \
+                 TestOrchestratorDrive._scripted_seam(verdict):
+                res = agent.run_prompt("Create new_mod.py", auto_apply=True)
+        self.assertEqual(res["status"], "ok")
+        self.assertIn("py_compile", str(seen.get("verify_cmd")))
+        self.assertEqual(Path(str(seen["verify_cmd"]).split('"')[1]).parent,
+                         root)
 
     def test_judge_down_with_failed_nodes_reports_honest_scope(self):
         # Judge dies AND nodes fail: the loop must not fake a completion --
