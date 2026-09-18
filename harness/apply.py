@@ -72,7 +72,7 @@ class ApplyEngine(ApplyEngineMixin):
                  default_require_consent=True, run_verify=None,
                  default_renew_consent=True, reasoning_effort="auto",
                  reasoning_token_budget=0.4, default_max_rotations=3,
-                 default_task_max_cost=0.05, use_free=False,
+                 default_task_max_cost=0.10, use_free=False,
                  allowed_roots=None,
                  default_require_diff_authorization=False,
                  default_attest_model=None):
@@ -140,8 +140,11 @@ class ApplyEngine(ApplyEngineMixin):
             if trust_policy.gate_for_write_exec(combined) != "allow":
                 continue
             correctness = trust_policy.correctness_level(rung, report)
+            # An ESCALATION, not a denial: ledger it as its own event type
+            # so the analytics never count it as a trust strike against the
+            # rung being promoted (that poisoned every rescue rung).
             self.ledger.append(
-                "trust_gate", task_id=task_id, model=rung,
+                "trust_escalation", task_id=task_id, model=rung,
                 reason="primary stepped up: primary model trust denied",
                 combined=combined, correctness=correctness)
             return rung, {"combined": combined, "correctness": correctness}

@@ -56,6 +56,11 @@ class LedgerAnalytics:
             if ev in counts:
                 counts[ev] += 1
             if ev == "trust_gate":
+                # A step-up is an escalation, not a refusal: historical
+                # events carried the trust_gate type with this reason --
+                # they are neither a host denial nor a model strike.
+                if str(e.get("reason") or "").startswith("primary stepped up"):
+                    continue
                 trust_gates += 1
                 if e.get("severity") == "hostile":
                     trust_hostile += 1

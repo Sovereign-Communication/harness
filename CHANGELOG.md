@@ -195,6 +195,27 @@ break APIs between minor versions).
 
 ### Fixed
 
+- **Trust recovers: the saturation spiral can no longer lock the operator
+  out.** Three compounding calibration bugs turned a saturated free tier
+  into a permanent mutation ban. (1) Host trust: guidance-denial strikes
+  were permanent while the level reward capped at +11, so ~23 soft denials
+  (many from the system's own refusal loop during the 429 outage) floored
+  the score at -11 with no earn-back despite the error text promising one;
+  surplus clean work now forgives soft strikes at the same 3-per-strike
+  rate levels accrue (hostile strikes stay permanent). (2) Model
+  attribution: a check_apply denial struck the primary model even when the
+  model's own band allowed the write -- host-driven and budget-driven
+  refusals no longer name a model, so a saturated tier stops poisoning
+  every model the rotation touches. (3) The trust step-up ledgered its
+  own escalation as a soft denial against the rung being promoted
+  (now its own `trust_escalation` event type, excluded from denial
+  counts). Alongside these, the unknown-correctness task ceiling rose
+  from 0.2 to 0.4 of the $0.25 hard cap (`DEFAULT_TASK_MAX_COST` $0.05 →
+  $0.10): a fresh-ledger paid rescue rung must afford one worst-case call
+  (~$0.084) or the ladder starves the rung it just stepped up to. Free
+  saturation now verifiably escalates into the lowest paid rung and
+  applies (dogfooded: slugify written for $0.00035 after the free
+  primary 429'd).
 - **Capability defers auto-escalate into the hourglass.** With the
   escalation gate armed and a paid key resolved, a chat defer no longer
   stops at a "route to the plan lane" note: the request routes itself into

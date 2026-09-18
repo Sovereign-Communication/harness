@@ -112,6 +112,20 @@ class LedgerTests(unittest.TestCase):
         ok, bad = AutonomyLedger(self.path).verify()
         self.assertTrue(ok)
 
+    def test_participation_report_step_up_is_not_a_denial(self):
+        # The trust step-up's own event is an escalation, not a refusal:
+        # neither the host gate counts nor the per-model denial count may
+        # treat it as a strike (that poisoned every rescue rung).
+        led = self.ledger
+        led.append("trust_gate", task_id="t1", model="rung",
+                   reason="preview-band", severity="soft")
+        led.append("trust_gate", task_id="t1", model="rung",
+                   reason="primary stepped up: primary model trust denied",
+                   severity="soft")
+        r = led.participation_report()
+        self.assertEqual(r["trust_gates"], 1)
+        self.assertEqual(r["per_model"]["rung"]["trust_denials"], 1)
+
     def test_participation_report_counts(self):
         led = self.ledger
         led.append("offer", task_id="t1", model="judge", required=True)

@@ -46,7 +46,11 @@ HARD_MAX_COST = 0.10        # per-call ceiling can never be raised past this
 # docs/MODEL_SELECTION_HANDOFF_2026-09-13.md). HARD_MAX_COST is unchanged.
 DEFAULT_MAX_COST = 0.05
 HARD_TASK_MAX_COST = 0.25   # per-task (multi-round apply) hard ceiling
-DEFAULT_TASK_MAX_COST = 0.05
+# Raised from $0.05 with default-on paid escalation: the unknown-correctness
+# ration (0.4 of the hard cap) must fund one worst-case paid rescue call
+# (~$0.084 on the cheapest paid rung) or the saturation ladder starves the
+# rung it just stepped up to. Still 2.5x under the hard ceiling.
+DEFAULT_TASK_MAX_COST = 0.10
 # Verify token budget. On the free tier cost is $0 regardless, so this is
 # intentionally generous -- it is NOT a cost cap. It exists so long audit/
 # analysis prompts get a full answer instead of truncating (a 300-token default

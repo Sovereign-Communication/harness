@@ -145,6 +145,26 @@ def _counts(source, completions_key="completions", gates_key="trust_gates",
     return _int(completions_key), hostile, max(0, total - hostile)
 
 
+def _host_score(completions, hostile, soft):
+    """Shared host arithmetic: (score, forgiveness_note).
+
+    Guidance denials are friction, not malice -- often the system's own
+    refusal loop (a saturated tier denying every retry) -- so soft strikes
+    are forgivable: completions beyond those spent on the level cap pay
+    CLEAN_PER_LEVEL apiece to erase one soft strike, keeping the promised
+    "earn trust with preview-only runs" recovery real instead of a lie the
+    level cap silently breaks. Hostile strikes are malice-grade evidence
+    and stay permanent.
+    """
+    levels = min(MAX_TRUST, completions // CLEAN_PER_LEVEL)
+    surplus = max(0, completions - MAX_TRUST * CLEAN_PER_LEVEL)
+    forgiven = min(soft, surplus // CLEAN_PER_LEVEL)
+    strikes = hostile * STRIKE_HOSTILE + (soft - forgiven) * STRIKE_SOFT
+    note = (f"{forgiven} guidance strikes forgiven by surplus clean work"
+            if forgiven else "")
+    return _clamp(levels - strikes), note
+
+
 def host_trust(report, caller=None):
     """Trust earned by the calling host/session: (score, reasons).
 
@@ -159,21 +179,22 @@ def host_trust(report, caller=None):
         if entry is None:
             return 0, [f"no history for caller {caller}: unknown"]
         completions, hostile, soft = _counts(entry)
-        levels = min(MAX_TRUST, completions // CLEAN_PER_LEVEL)
-        strikes = hostile * STRIKE_HOSTILE + soft * STRIKE_SOFT
-        score = _clamp(levels - strikes)
+        score, forgive_note = _host_score(completions, hostile, soft)
         reasons = [f"caller {caller}: {completions} completions "
-                   f"({levels} levels)",
+                   f"({min(MAX_TRUST, completions // CLEAN_PER_LEVEL)} levels)",
                    f"{hostile} hostile + {soft} guidance denials"]
+        if forgive_note:
+            reasons.append(forgive_note)
         if not completions and not (hostile + soft):
             return 0, [f"no history for caller {caller}: unknown"]
         return score, reasons
     completions, hostile, soft = _counts(report)
-    levels = min(MAX_TRUST, completions // CLEAN_PER_LEVEL)
-    strikes = hostile * STRIKE_HOSTILE + soft * STRIKE_SOFT
-    score = _clamp(levels - strikes)
-    reasons = [f"{completions} completions ({levels} levels)",
+    score, forgive_note = _host_score(completions, hostile, soft)
+    reasons = [f"{completions} completions "
+               f"({min(MAX_TRUST, completions // CLEAN_PER_LEVEL)} levels)",
                f"{hostile} hostile + {soft} guidance denials"]
+    if forgive_note:
+        reasons.append(forgive_note)
     if not completions and not (hostile + soft):
         return 0, ["no host history: unknown"]
     return score, reasons
@@ -229,13 +250,16 @@ def correctness_level(model, report):
 def ceiling_fraction(correctness):
     """Fraction of a HARD_* cap unlocked by a correctness level.
 
-    Unknown (0) lands exactly on today's defaults: 0.2 of the 10c session
-    cap is 2c (DEFAULT_MAX_COST) and 0.2 of the 25c task cap is 5c
-    (DEFAULT_TASK_MAX_COST). Proven correctness expands toward the hard
-    cap; negative correctness tightens below the defaults.
+    Unknown (0) lands exactly on the defaults: 0.4 of the 25c task cap is
+    10c (DEFAULT_TASK_MAX_COST) -- raised from 0.2/5c when paid escalation
+    became the default, because a fresh-ledger rescue rung must afford one
+    worst-case paid call (~8.4c) or the ladder starves the rung it stepped
+    up to. Proven correctness expands toward the hard cap; negative
+    correctness (a model that failed when it ran) tightens to 0.1: the
+    probe ration, unchanged.
     """
     if correctness <= 0:
-        return 0.2 if correctness == 0 else 0.1
+        return 0.4 if correctness == 0 else 0.1
     if correctness < EXPANDED_FROM:
         return 0.5
     return 1.0
@@ -289,8 +313,14 @@ def check_apply(*, ledger, report, model, resumed, verify_only,
     wants_exec = bool(verify_cmd) and not verify_only
 
     def _deny(reason, guidance, severity="soft"):
+        # Attribute the denial to the model only when the model's OWN band
+        # refuses: a host-driven or budget-driven refusal names no model --
+        # striking the model for a denial it did not cause poisons its
+        # calibration (a saturated tier would then stay untrusted even
+        # after the host recovers). Host evidence still counts host-side.
+        blame = model if gate_for_write_exec(model_score) != "allow" else None
         try:
-            ledger.append("trust_gate", task_id=task_id, model=model,
+            ledger.append("trust_gate", task_id=task_id, model=blame,
                           reason=reason, severity=severity,
                           combined=combined, correctness=correctness)
         except Exception:

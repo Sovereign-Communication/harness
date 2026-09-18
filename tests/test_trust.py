@@ -55,7 +55,7 @@ class ScaleTests(unittest.TestCase):
         self.assertEqual(trust.host_trust(report)[0], 0)
         self.assertEqual(trust.author_trust()[0], 0)
         self.assertEqual(trust.correctness_level("ghost/model", report), 0)
-        self.assertEqual(trust.ceiling_fraction(0), 0.2)
+        self.assertEqual(trust.ceiling_fraction(0), 0.4)
 
     def test_unknown_reasons_say_unknown(self):
         _, reasons = trust.model_trust("ghost/model", _report())
@@ -104,6 +104,50 @@ class DistrustFastTests(unittest.TestCase):
                                                  hostile=1))
         # 3 levels - 4 = -1 (preview-only)
         self.assertEqual(score, -1)
+
+
+class ForgivenessTests(unittest.TestCase):
+    """Sustained clean work forgives guidance strikes (friction, not
+    malice): the promised preview-only recovery path must stay real even
+    after the level cap -- a saturated-tier refusal loop that ledgered a
+    denial per retry must not permanently lock the caller out."""
+
+    def test_low_history_still_locked_out(self):
+        # Below the level cap there is no surplus: strikes bite fully.
+        score, _ = trust.host_trust(_host_report(completions=33, gates=23))
+        self.assertLessEqual(score, trust.REFUSE_AT_OR_BELOW)
+
+    def test_surplus_clean_work_forgives_soft_strikes(self):
+        # 42 completions: 33 cap the levels, 9 surplus forgive 3 soft
+        # strikes -> 11 - 7 = 4 (standard band, partially recovered).
+        score, reasons = trust.host_trust(_host_report(completions=42,
+                                                       gates=10))
+        self.assertEqual(score, 4)
+        self.assertIn("forgiven", "; ".join(reasons))
+
+    def test_the_saturation_spiral_recovers(self):
+        # The live failure shape: 135 clean completions vs 23 guidance
+        # denials from a 429 refusal loop. Old arithmetic: 11 - 23 = -11
+        # floor, permanent. With forgiveness: surplus 102 erases all 23.
+        score, _ = trust.host_trust(_host_report(completions=135, gates=23))
+        self.assertEqual(score, 11)
+
+    def test_hostile_strikes_are_never_forgiven(self):
+        # Malice-grade evidence (retarget, root escape) is permanent:
+        # surplus clean work cannot launder it away.
+        score, reasons = trust.host_trust(_host_report(completions=300,
+                                                       gates=3, hostile=3))
+        self.assertEqual(score, -1)
+        self.assertNotIn("forgiven", "; ".join(reasons))
+
+    def test_per_caller_path_forgives_the_same_way(self):
+        report = {"completions": 0, "trust_gates": 0, "trust_hostile": 0,
+                  "calibration": {},
+                  "per_caller": {"mcp:steady/1.0": {
+                      "completions": 135, "trust_gates": 23,
+                      "trust_hostile": 0}}}
+        score, _ = trust.host_trust(report, caller="mcp:steady/1.0")
+        self.assertEqual(score, 11)
 
     def test_two_hostile_denials_refuse(self):
         score, _ = trust.host_trust(_host_report(completions=6, gates=2,
@@ -161,18 +205,17 @@ class CombinedTests(unittest.TestCase):
 class CorrectnessRationsCeilingTests(unittest.TestCase):
     def test_fractions(self):
         self.assertEqual(trust.ceiling_fraction(-4), 0.1)
-        self.assertEqual(trust.ceiling_fraction(0), 0.2)
+        self.assertEqual(trust.ceiling_fraction(0), 0.4)
         self.assertEqual(trust.ceiling_fraction(3), 0.5)
         self.assertEqual(trust.ceiling_fraction(8), 1.0)
         self.assertEqual(trust.ceiling_fraction(11), 1.0)
 
     def test_unknown_unlocks_exactly_todays_defaults(self):
-        # 0.2 of the 10c session cap == DEFAULT_MAX_COST (2c);
-        # 0.2 of the 25c task cap == DEFAULT_TASK_MAX_COST (5c).
+        # 0.4 of the 25c task cap == DEFAULT_TASK_MAX_COST (10c): with
+        # paid escalation default-ON, a fresh-ledger rescue rung must
+        # afford one worst-case paid call (~8.4c) -- 5c starved it.
         self.assertAlmostEqual(
-            trust.rationed_session_ceiling(0.10, 0, 0.10), 0.02)
-        self.assertAlmostEqual(
-            trust.rationed_task_ceiling(0.25, 0, 0.25), 0.05)
+            trust.rationed_task_ceiling(0.25, 0, 0.25), 0.10)
 
     def test_fails_push_correctness_negative(self):
         report = _report({"m": _entry(success_fail=9)})
@@ -246,11 +289,39 @@ class CheckApplyTests(unittest.TestCase):
 
     def test_over_allowance_ceiling_denied_with_number(self):
         led = StubLedger()
-        with self.assertRaisesRegex(HarnessError, r"\$0\.05"):
+        with self.assertRaisesRegex(HarnessError, r"\$0\.10"):
             trust.check_apply(
                 ledger=led, report=_report(), model="m", resumed=False,
                 verify_only=False, verify_cmd="check", task_max_cost=0.25,
                 task_id="t", hard_task_cap=0.25)
+
+    def test_host_driven_deny_does_not_strike_the_model(self):
+        # A model whose OWN band allows the write must not be struck for a
+        # denial the host leg (or the budget ration) caused: saturated-tier
+        # refusals would otherwise poison every model the rotation touches.
+        led = StubLedger()
+        report = _host_report(completions=3, gates=3, hostile=2)
+        report["calibration"] = {"m": _entry(success_pass=30)}
+        with self.assertRaises(HarnessError):
+            trust.check_apply(
+                ledger=led, report=report, model="m", resumed=False,
+                verify_only=False, verify_cmd="check", task_max_cost=0.05,
+                task_id="t", hard_task_cap=0.25)
+        struck = [e for e in led.events if e.get("model") == "m"]
+        self.assertEqual(struck, [])
+
+    def test_model_band_deny_strikes_the_model(self):
+        # When the model's own trust band refuses, the denial IS model
+        # evidence and keeps its attribution.
+        led = StubLedger()
+        report = _report({"m": _entry(trust_denials=30)})
+        with self.assertRaises(HarnessError):
+            trust.check_apply(
+                ledger=led, report=report, model="m", resumed=False,
+                verify_only=False, verify_cmd="check", task_max_cost=0.05,
+                task_id="t", hard_task_cap=0.25)
+        struck = [e for e in led.events if e.get("model") == "m"]
+        self.assertEqual(len(struck), 1)
 
     def test_proven_correctness_unlocks_full_cap(self):
         led = StubLedger()
