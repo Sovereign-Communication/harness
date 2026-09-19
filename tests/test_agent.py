@@ -896,7 +896,10 @@ class TestChatAutoEscalation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp), root_dir=Path(tmp))
-            with patch("harness.agent.discover_target_files",
+            mock_engine = MagicMock()
+            mock_engine.apply_edit.return_value = {"status": "ok", "cost": 0.0}
+            with patch("harness.agent.apply_session", return_value=mock_engine), \
+                 patch("harness.agent.discover_target_files",
                        return_value=["util.py"]), \
                  patch("harness.waist.plan_task",
                        return_value={"dag": {"nodes": []}, "nodes": [],

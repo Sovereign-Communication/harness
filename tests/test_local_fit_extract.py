@@ -93,6 +93,9 @@ class TestLabelRules(unittest.TestCase):
             self.L["truncated"])
 
 
+@unittest.skipUnless(
+    os.path.isdir(os.path.join("audits", "scmessenger", "_runs", "v4")),
+    "optional deps/audit corpus fixture absent (environment)")
 class TestExtractionBasics(unittest.TestCase):
     def test_extract_v4_produces_nonzero_rows(self):
         from harness.local_fit.extract import extract
@@ -138,6 +141,9 @@ class TestFeatureSchema(unittest.TestCase):
         self.assertEqual(LABEL_ORDER, ["unusable", "truncated", "usable_stop"])
 
 
+@unittest.skipUnless(
+    os.path.isdir(os.path.join("audits", "scmessenger", "_runs", "v4")),
+    "optional deps/audit corpus fixture absent (environment)")
 class TestAllAuditsExtraction(unittest.TestCase):
     def test_all_run_files_finds_v4_only(self):
         """Currently the clone only has scmessenger/v4 *_runs/ data."""
