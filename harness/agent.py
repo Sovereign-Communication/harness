@@ -835,9 +835,42 @@ class AutonomousAgent:
             })
 
             # The completion judge: one governed verdict on the round's state.
+            # Artifact truth first: the judge sees node statuses, never the
+            # repo -- a node that "succeeded" on the wrong scope would read
+            # as completion. Name the real state of every file the goal
+            # mentions (bounded), then let the judge weigh it.
+            artifact_notes = []
+            seen_paths = set()
+
+            def _note_artifact(rel):
+                rel = rel.replace("\\", "/").strip("`'\" .")
+                if (not rel or rel in seen_paths
+                        or len(seen_paths) >= 8 or ".." in rel):
+                    return
+                seen_paths.add(rel)
+                fp = self.root_dir / rel
+                if fp.is_file():
+                    try:
+                        nlines = len(fp.read_text(
+                            encoding="utf-8",
+                            errors="replace").splitlines())
+                    except OSError:
+                        nlines = 0
+                    artifact_notes.append(
+                        f"artifact truth: {rel} present ({nlines} lines)")
+                else:
+                    artifact_notes.append(
+                        f"artifact truth: {rel} MISSING from the repository")
+
+            for tf in target_files:
+                _note_artifact(tf)
+            for m in re.finditer(r"\b[\w-]+\.(?:py|js|ts|tsx|jsx|md|json|toml|yaml|yml)\b",
+                                 prompt):
+                _note_artifact(m.group(0))
             summary = build_state_summary(
                 current_goal, list(round_results.values()),
-                extra_notes=[f"orchestrator round {round_no} of {MAX_ORCH_ROUNDS}"])
+                extra_notes=[f"orchestrator round {round_no} of {MAX_ORCH_ROUNDS}"]
+                + artifact_notes)
             verdict = None
             try:
                 verdict = assess_completion(prompt, summary,
@@ -852,6 +885,16 @@ class AutonomousAgent:
                     remaining_scope = ("completion judge unavailable; "
                                        "see per-node failures")
                 break
+            missing = [n for n in artifact_notes if "MISSING" in n]
+            if verdict["complete"] and missing:
+                # Structural guard: a judge verdict cannot make a missing
+                # artifact exist. The loop continues on the real remainder.
+                emit("orchestration_note",
+                     note=f"judge said complete but {len(missing)} named "
+                          f"artifact(s) missing; overriding to incomplete")
+                verdict = {"complete": False,
+                           "remaining": "; ".join(missing),
+                           "reason": "named artifacts missing despite verdict"}
             if verdict["complete"]:
                 final_all_ok = True
                 break

@@ -1243,6 +1243,9 @@ class TestOrchestratorWiring(unittest.TestCase):
             seen = {}
             def capture(**kwargs):
                 seen.update(kwargs)
+                fp = Path(str(kwargs["file_path"]))
+                fp.parent.mkdir(parents=True, exist_ok=True)
+                fp.write_text("", encoding="utf-8")
                 return {"status": "ok", "cost": 0.001}
             engine.apply_edit.side_effect = capture
             verdict = [{"complete": True, "remaining": "", "reason": "done"}]
@@ -1279,6 +1282,37 @@ class TestOrchestratorWiring(unittest.TestCase):
                 res = agent.run_prompt("Update util.py", auto_apply=True)
         self.assertEqual(res["status"], "ok")
         self.assertEqual(seen.get("backend"), "diff")
+
+    def test_complete_verdict_overridden_while_named_artifact_missing(self):
+        # A judge verdict cannot make a missing artifact exist: with the
+        # prompt naming test_util.py and only util.py on disk, a lazy
+        # "complete" is overridden and the remaining scope names the truth.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "util.py").write_text("def slugify(t):\n    return t\n",
+                                          encoding="utf-8")
+            agent = self._agent(root)
+            engine = MagicMock()
+            engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
+            rounds = {"n": 0}
+
+            def lazy_judge(gov):
+                def chat_fn(prompt_text):
+                    if "completion judge" in prompt_text:
+                        rounds["n"] += 1
+                        return ('{"complete": true, "remaining": "",'
+                                ' "reason": "looks done"}')
+                    return TestOrchestratorDrive._DECOMPOSE_JSON
+                return chat_fn
+            with patch("harness.agent.apply_session", return_value=engine), \
+                 patch.object(AutonomousAgent, "_orchestrator_chat_fn",
+                              side_effect=lazy_judge):
+                res = agent.run_prompt(
+                    "Update util.py and create test_util.py",
+                    auto_apply=True)
+        self.assertEqual(res["status"], "failed")
+        self.assertIn("test_util.py", res["remaining_scope"])
+        self.assertEqual(rounds["n"], 3)
 
     def test_judge_down_with_failed_nodes_reports_honest_scope(self):
         # Judge dies AND nodes fail: the loop must not fake a completion --
