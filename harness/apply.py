@@ -45,7 +45,7 @@ from .prompts import (
     MAX_FILE_LINES, MAX_APPLY_ROUNDS,
 )
 from .filesafety import (_line_count, default_run_verify, validate_target_file,
-                          validate_verify_command)
+                          validate_verify_command, VERIFY_TIMEOUT)
 
 from . import trust as trust_policy
 from .capability import ordered_pool
@@ -356,6 +356,15 @@ class ApplyEngine(ApplyEngineMixin):
         with open(file_path, encoding="utf-8") as f:
             original = f.read()
 
+        # The file's verification gate runs in the FILE's directory: a gate
+        # the plan author wrote for this file's project (`import util`,
+        # `python -m unittest test_util`) resolves against the file's own
+        # tree, not the server process's CWD (a GUI workDir is not the CWD).
+        file_dir = os.path.dirname(file_path) or None
+
+        def _gated_runner(command, timeout=VERIFY_TIMEOUT):
+            return self.run_verify(command, timeout=timeout, cwd=file_dir)
+
         return ApplyRequest(
             task_id=task_id, file_path=file_path, instruction=instruction,
             edit_snippet=edit_snippet, verify_cmd=verify_cmd, backend=backend,
@@ -368,7 +377,7 @@ class ApplyEngine(ApplyEngineMixin):
             original=original, task_start_spent=task_start_spent,
             continuation=continuation,
             continuation_gate=continuation_gate,
-            task_runner=(kwargs.get("task_runner") or self.run_verify),
+            task_runner=(kwargs.get("task_runner") or _gated_runner),
             cancel_check=kwargs.get("cancel_check"),
             trust_combined=_trust_decision["combined"],
             trust_correctness=_trust_decision["correctness"],

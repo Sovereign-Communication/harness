@@ -312,7 +312,7 @@ class ApplyConsentOptionalTests(unittest.TestCase):
             # Unknown trust requires gateless writes to carry a gate; the
             # stub runner keeps this hermetic (the no-consent renewal path
             # under test is unchanged).
-            engine.run_verify = lambda cmd: (0, "")
+            engine.run_verify = lambda cmd, timeout=None, cwd=None: (0, "")
             r = engine.apply_edit(task_id="t", file_path=fp, instruction="bump",
                                   backend="diff", require_consent=False,
                                   verify_cmd="check")

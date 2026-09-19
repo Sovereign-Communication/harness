@@ -371,7 +371,8 @@ class ApplyTests(ApplyFixture):
         engine2 = ApplyEngine(fake2, "k", gov2, ledger2, router2,
                               default_require_consent=True, default_renew_consent=False)
         verify_calls = []
-        engine2.run_verify = lambda command: (verify_calls.append(command) or (0, ""))
+        engine2.run_verify = lambda command, timeout=None, cwd=None: (
+            verify_calls.append(command) or (0, ""))
         r2 = engine2.apply_edit(continuation=state, require_consent=False)
         self.assertEqual(r2["status"], "ok")
         self.assertEqual(r2["task_id"], r1["task_id"])
@@ -400,7 +401,7 @@ class ApplyTests(ApplyFixture):
         engine2 = ApplyEngine(fake2, "k", gov2, ledger2,
                               Router(["a"], JUDGE, APPLY),
                               default_require_consent=True, default_renew_consent=False)
-        engine2.run_verify = lambda command: (0, "")
+        engine2.run_verify = lambda command, timeout=None, cwd=None: (0, "")
         r2 = engine2.apply_batch(
             [None], options=BatchOptions(
                 instruction=None, verify_cmd="check",
@@ -772,7 +773,7 @@ class ApplyTests(ApplyFixture):
         with open(target, "w", encoding="utf-8") as f:
             f.write("x = 0\n")
         calls = {"n": 0}
-        def runner(cmd):
+        def runner(cmd, timeout=None, cwd=None):
             calls["n"] += 1
             return 1, "FileNotFoundError: nope"
         fake = FakeTransport(models=[m(CODER_A)],

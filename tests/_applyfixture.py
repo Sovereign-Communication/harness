@@ -26,7 +26,7 @@ PARTIAL = "def add(a, b):\n    return a + b  # WIP\n"
 def scripted_run(results):
     state = {"n": 0}
 
-    def runner(cmd):
+    def runner(cmd, timeout=None, cwd=None):
         rc, out = results[min(state["n"], len(results) - 1)]
         state["n"] += 1
         return rc, out
