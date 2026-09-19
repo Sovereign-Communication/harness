@@ -1,27 +1,44 @@
 # Autonomous agent orchestrator (#PR-Chat-1)
 # Drives natural language prompts to conclusion automatically with zero UI clutter.
 import difflib
-import json
-import os
 import re
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional
 
 from ._http import HttpTransport
 from .chat import assess_output, chat, extract_content_and_cost, governed_text, looks_truncated
 from .condenser import distill_context, condense_error_log
-from .config import Settings, load_settings, resolve_api_key
-from .dag import TaskDAG, DAGNode, decompose_via_llm, node_apply_kwargs, plan_task
+from .config import Settings, load_settings, resolve_api_key, resolve_hourglass
+from .dag import TaskDAG, DAGNode, node_apply_kwargs
 from .prompts import MAX_FILE_LINES
 from .errors import HarnessError, ToolCancelled
 from .events import emit
-from .orchestrator import assess_completion, build_state_summary, keyword_fallback, triage_files
+from .orchestrator import drive, keyword_fallback, triage_files
 from .prompts import CAPABILITY_MARKER
-from .executor import ConcurrentExecutor
+from .escalation import escalation_evidence, escalation_evidence_fields
+from .executor import PlanExecutor
+from .history import load_chat_history, save_chat_turn
+from .repo_scope import discover_target_files, discover_verification_gate, enumerate_repo_files
 from .results import SUCCESS_STATUSES, _http_error
-from .session import apply_session, governor_for, ledger_for
-from .waist import resolve_scout_ladder
-from .web import DEFAULT_FETCH_HOSTS, extract_query, fetch_url, find_urls, search_web
+from .session import apply_session, attest_model_for, governor_for, ledger_for
+from .waist import compose_plan, resolve_scout_ladder
+from .web import DEFAULT_FETCH_HOSTS, gather_web_context
+
+# The history and repository-scope helpers remain imported at their owning
+# modules; this file keeps only the agent-facing compatibility names still
+# used by callers and tests.
+__all__ = [
+    "AutonomousAgent",
+    "CONVERSATION_STARTERS",
+    "DEFAULT_CHAT_SYSTEM_PROMPT",
+    "MUTATION_KEYWORDS",
+    "classify_prompt_intent",
+    "discover_target_files",
+    "discover_verification_gate",
+    "enumerate_repo_files",
+    "load_chat_history",
+    "save_chat_turn",
+]
 
 DEFAULT_CHAT_SYSTEM_PROMPT = (
     "You are Sovereign Harness, an autonomous, cost-bounded software engineering AI. "
@@ -104,115 +121,6 @@ def classify_prompt_intent(prompt: str) -> str:
     return "conversation"
 
 
-def discover_target_files(prompt: str, root_dir: Optional[Path] = None) -> List[str]:
-    # Autonomously identify candidate target files from prompt or repository
-    root = root_dir or Path.cwd()
-    candidates: List[str] = []
-
-    # 1. Regex search for explicit filenames in prompt
-    matches = re.findall(r"\b[a-zA-Z0-9_./-]+\.(?:py|rs|go|ts|js|md|json|toml|yaml|yml|c|cpp|h)\b", prompt)
-    for m in matches:
-        clean_path = m.strip("`'\" \t\r\n")
-        full_path = root / clean_path
-        if full_path.exists() and clean_path not in candidates:
-            candidates.append(clean_path.replace("\\", "/"))
-
-    if candidates:
-        return candidates
-
-    # 2. Heuristic search: check if prompt mentions existing python module names
-    words = set(re.findall(r"\b[a-zA-Z_0-9-]+\b", prompt.lower()))
-    harness_dir = root / "harness"
-    if harness_dir.is_dir():
-        for p in sorted(harness_dir.glob("*.py")):
-            stem = p.stem.lower()
-            if stem in words and stem != "__init__":
-                rel = p.relative_to(root).as_posix()
-                if rel not in candidates:
-                    candidates.append(rel)
-
-    return candidates
-
-
-_REPO_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv",
-                   "dist", "build", "audits", ".ruff_cache", "chat_history"}
-_REPO_SKIP_SUFFIXES = {".pyc", ".pyo", ".log", ".lock", ".jsonl"}
-
-
-def enumerate_repo_files(root_dir: Optional[Path] = None, limit: int = 300) -> List[str]:
-    """The whole-repo listing for the relevance first pass (bounded, junk-free)."""
-    root = (root_dir or Path.cwd()).resolve()
-    files: List[str] = []
-    for p in sorted(root.rglob("*")):
-        if not p.is_file():
-            continue
-        if any(part in _REPO_SKIP_DIRS for part in p.parts):
-            continue
-        if p.suffix in _REPO_SKIP_SUFFIXES:
-            continue
-        files.append(p.relative_to(root).as_posix())
-        if len(files) >= limit:
-            break
-    return files
-
-
-def discover_verification_gate(target_files: Sequence[str], root_dir: Optional[Path] = None) -> Optional[str]:
-    # Autonomously resolve a verification gate command for targeted files
-    root = root_dir or Path.cwd()
-    if not target_files:
-        return None
-
-    # Check primary target file
-    primary = target_files[0].replace("\\", "/")
-    if primary.startswith("harness/") and primary.endswith(".py"):
-        mod_name = Path(primary).stem
-        test_path = root / "tests" / f"test_{mod_name}.py"
-        if test_path.exists():
-            # Absolute: the gate runner's CWD is the server's, not the
-            # agent's chosen root -- a relative path compiles/tests the
-            # wrong tree (or nothing) for GUI runs with a workDir.
-            return f"python -m unittest {test_path}"
-
-    # Generic check: syntax compile
-    if primary.endswith(".py") and (root / primary).exists():
-        return f"python -m py_compile \"{root / primary}\""
-
-    return None
-
-
-def get_default_history_dir() -> Path:
-    # Resolve directory for persisted conversation histories
-    base = Path(os.environ.get("HARNESS_CONFIG_DIR", Path.home() / ".config" / "harness"))
-    history_dir = base / "chat_history"
-    history_dir.mkdir(parents=True, exist_ok=True)
-    return history_dir
-
-
-def save_chat_turn(session_id: str, turn: Dict[str, Any], history_dir: Optional[Path] = None) -> Path:
-    # Append a chat turn to the persisted JSONL history file
-    hdir = history_dir or get_default_history_dir()
-    file_path = hdir / f"{session_id}.jsonl"
-    with open(file_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(turn, ensure_ascii=False) + "\n")
-    return file_path
-
-
-def load_chat_history(session_id: str, history_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
-    # Load past turns for a session
-    hdir = history_dir or get_default_history_dir()
-    file_path = hdir / f"{session_id}.jsonl"
-    if not file_path.exists():
-        return []
-    history: List[Dict[str, Any]] = []
-    with open(file_path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    history.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    return history
 
 
 class AutonomousAgent:
@@ -279,51 +187,21 @@ class AutonomousAgent:
             return self._handle_edit(prompt, sid, auto_apply, cancel_check)
 
     def _gather_web_context(self, prompt: str) -> List[Dict[str, Any]]:
-        # Evidence for one conversation turn: allowlist fetches for any URL in
-        # the prompt, one search otherwise. Every failure is recorded, never
-        # hidden -- the model sees exactly what did and did not come back.
-        sources: List[Dict[str, Any]] = []
-        urls = find_urls(prompt)[:_MAX_WEB_SOURCES]
-        if urls:
-            for u in urls:
-                try:
-                    page = fetch_url(u, allowed_hosts=DEFAULT_FETCH_HOSTS)
-                    sources.append({"kind": "fetch", "ok": True, "url": page["url"],
-                                    "title": page["title"], "text": page["text"]})
-                except HarnessError as e:
-                    sources.append({"kind": "fetch", "ok": False, "url": u,
-                                    "note": str(e)})
-            if any(s["ok"] for s in sources):
-                return sources
-            # Every fetch failed (transient challenge, timeout, upstream 5xx).
-            # Fall through to one search so the turn still carries evidence;
-            # the FAILED fetch notes stay -- nothing is hidden.
-
-        try:
-            results = search_web(extract_query(prompt))
-            for r in results[:_MAX_WEB_SOURCES]:
-                sources.append({"kind": "search", "ok": True, "url": r["url"],
-                                "title": r["title"], "text": r["snippet"]})
-        except HarnessError as e:
-            sources.append({"kind": "search", "ok": False, "note": str(e)})
-        return sources
+        # Web policy and transport belong to harness.web; this agent only
+        # supplies the request and renders the returned evidence.
+        return gather_web_context(
+            prompt,
+            allowed_hosts=DEFAULT_FETCH_HOSTS,
+            max_sources=_MAX_WEB_SOURCES,
+        )
 
     @staticmethod
     def _chat_ladder(settings: Settings) -> List[str]:
-        # The chat lane's rotation ladder: tier-1 head, then the free panel
-        # pool (different providers, so upstream rate limits rarely line up),
-        # then -- only when escalation is allowed -- the paid rungs. The same
-        # settings-owned ladders every other lane walks; no new policy.
-        models = [getattr(settings, "tier1_model", None)
-                  or settings.judge or "inclusionai/ling-3.0-flash-fin:free"]
-        for m in list(settings.panel_pool or []):
-            if m not in models:
-                models.append(m)
-        if settings.allow_escalation and settings.escalation_pool:
-            for m in settings.escalation_pool:
-                if m not in models:
-                    models.append(m)
-        return models
+        # Single-owner ladder: delegate to router's chat-ladder helper
+        # (harness/chat.py: chat_ladder) so panel/escalation policy isn't
+        # duplicated between the agent and the router.
+        from .chat import chat_ladder as _chat_ladder
+        return _chat_ladder(settings)
 
     # Free models defer in prose ("I can't do that") far more often than in
     # the marker contract. A refusal-shaped answer with no successful tool
@@ -608,28 +486,56 @@ class AutonomousAgent:
 
         return chat_fn
 
-    def _plan_round(self, goal, candidate_files, gov):
-        """One planning pass: LLM decomposition when the orchestration ladder
-        answers (the smarter model breaks the goal into realistic, bite-sized
-        steps), the heuristic decomposition as the loud fallback."""
-        repo_context = None
-        decomposed = None
-        decomposition = "heuristic"
-        if candidate_files:
-            repo_context = "repository files:\n" + "\n".join(candidate_files[:200])
-        try:
-            decomposed = decompose_via_llm(
-                self._orchestrator_chat_fn(gov), goal,
-                candidate_files=candidate_files, repo_context=repo_context)
-            decomposition = "llm:orchestrator"
-        except HarnessError as e:
-            emit("orchestration_note", note=f"LLM decomposition failed: {e}")
-        plan = plan_task(goal=goal, candidate_files=candidate_files,
-                         custom_frontier=self.settings.frontier_model,
-                         use_free=self.settings.use_free,
-                         decomposed_dag=decomposed)
-        plan["decomposition"] = decomposition
+    def _plan_round(self, goal, candidate_files, gov, confirm=None):
+        """One planning pass through the ONE plan composer
+        (harness/waist.py:compose_plan): cheap-LLM decomposition when the
+        orchestration ladder answers, tier classification, then (hourglass)
+        waist confirmation against the resolved frontier rung.
+
+        The GUI lane plans with the same composer the CLI and MCP lanes use,
+        so there is no second plan lane to keep in sync. A confirmation
+        failure raises (fail-closed): an unconfirmed plan never executes.
+        """
+        plan = compose_plan(
+            transport=self.transport, api_key=resolve_api_key(),
+            governor=gov, ledger=ledger_for(self.settings),
+            opts_goal=goal, candidate_files=candidate_files,
+            frontier_model=self.settings.frontier_model,
+            use_free=self.settings.use_free,
+            decompose_llm=True, confirm=bool(confirm),
+            # The lane's tree: a node's target size is measured against the
+            # files this run actually edits, not the server's CWD.
+            root=str(self.root_dir),
+            chat_fn=lambda prompt_text: (
+                self._orchestrator_chat_fn(gov)(prompt_text), 0.0),
+            execute=True)
+        if plan.get("decomposition") == "heuristic":
+            # compose_plan degrades to the heuristic only after the LLM
+            # decomposition failed (execute=True); the GUI needs that on the
+            # event stream, not just on stderr.
+            emit("orchestration_note",
+                 note="LLM decomposition unavailable; heuristic plan in use")
         return plan
+
+    def _refused_edit(self, plan, prompt, target_files, session_id):
+        """Terminal envelope for a waist refusal: nothing dispatched."""
+        confirmation = plan.get("confirmation") or {}
+        result = {
+            "status": "refused",
+            "intent": "edit",
+            "prompt": prompt,
+            "response": (
+                "The waist confirmation gate refused this plan, so nothing "
+                "was executed. Reason: "
+                f"{confirmation.get('reason') or 'unspecified'}"),
+            "target_files": target_files,
+            "dag": plan.get("dag"),
+            "confirmation": confirmation,
+            "cost": float(confirmation.get("cost") or 0.0),
+        }
+        save_chat_turn(session_id, result, self.history_dir)
+        emit("chat_response", intent="edit", status="refused")
+        return result
 
     def _triage_scope(self, prompt):
         """The relevance first pass over the whole repo: explicit prompt
@@ -663,9 +569,12 @@ class AutonomousAgent:
     ) -> Dict[str, Any]:
         # Handle code edit/refactor requests: the orchestrator drives the
         # hourglass -- relevance triage over the whole repo, DAG decomposition
-        # (LLM-authored when the ladder answers), governed execution, then a
-        # completion judge round that re-plans remaining scope until the goal
-        # is met or the round budget is spent.
+        # and waist confirmation (the same composer the CLI/MCP lanes use),
+        # governed execution through the shared PlanExecutor (parallel
+        # workers, per-node cost reservations, worktree isolation, diff
+        # attestation), then a completion judge round that re-plans remaining
+        # scope until the goal is met or the round budget is spent.
+        hourglass = resolve_hourglass(self.settings)
         target_files = self._triage_scope(prompt)
         emit("files_discovered", target_files=target_files)
 
@@ -688,7 +597,10 @@ class AutonomousAgent:
         # Formulate the FIRST-round DAG plan (LLM decomposition when the
         # orchestration ladder answers; heuristic fallback) and gate.
         _, gov = governor_for(self.settings)
-        plan = self._plan_round(prompt, target_files, gov)
+        plan = self._plan_round(prompt, target_files, gov,
+                                confirm=hourglass["confirm"])
+        if plan.get("status") == "refused":
+            return self._refused_edit(plan, prompt, target_files, session_id)
         emit("dag_planned", total_nodes=plan["total_nodes"],
              total_ceiling=plan["total_cost_ceiling"],
              nodes=[{"node_id": n["node_id"], "instruction": n["instruction"],
@@ -722,28 +634,27 @@ class AutonomousAgent:
         # judge, not abort) -> completion judge -> re-plan remaining scope --
         # until the judge calls it complete or the round budget is spent.
         engine = apply_session(self.settings)
-        executor = ConcurrentExecutor(max_workers=1)
 
-        def run_node(node: DAGNode, gate_round) -> Dict[str, Any]:
+        def apply_node(target, node: DAGNode, route_kwargs, task_runner):
+            """One node's engine call for the agent lane: the absolute target
+            (the engine resolves paths against process CWD, the server's
+            directory, not the agent's chosen root), the gate fallback, the
+            MAX_FILE_LINES -> diff-backend switch, and the self-healing
+            retry. How the round runs -- worker count, reservations, worktree
+            isolation, attestation -- is the shared PlanExecutor's."""
             if cancel_check and cancel_check():
                 raise ToolCancelled("Subtask cancelled by user")
-            target = node.target_files[0] if node.target_files else (target_files[0] if target_files else None)
-            gate = node.local_gate or gate_round
-            if gate is None and target and target.endswith(".py"):
-                # A .py node is always verifiable after its file exists --
-                # including a file this node CREATES. Gateless nodes are
-                # refused at mutation time (unknown trust writes nothing
-                # unreviewed), which would kill new-file subtasks outright.
-                gate = f'python -m py_compile "{self.root_dir / target}"'
-            route_kwargs = node_apply_kwargs(node_routes.get(node.node_id))
-            emit("subtask_start", node_id=node.node_id, instruction=node.instruction, target=target)
-
-            # The engine resolves paths against process CWD (the server's
-            # directory, not the agent's chosen root): hand it the absolute
-            # target so GUI runs with a workDir land in the right tree.
+            if target is None and target_files:
+                target = target_files[0]
+            # Isolated nodes arrive absolute, inside their own worktree.
             engine_target = target
             if target and not Path(target).is_absolute():
                 engine_target = str(self.root_dir / target)
+            # The planner owns gate derivation. This lane deliberately does
+            # not repair or invent a gate: a missing plan-time gate remains a
+            # fail-closed trust refusal rather than becoming an ungated ok.
+            gate = node.local_gate
+            emit("subtask_start", node_id=node.node_id, instruction=node.instruction, target=target)
 
             # Whole-file rewrites cap at MAX_FILE_LINES by engine policy;
             # large-file nodes go straight to the diff backend (touched
@@ -757,13 +668,17 @@ class AutonomousAgent:
                 if line_count > MAX_FILE_LINES:
                     route_kwargs.setdefault("backend", "diff")
 
+            apply_kwargs = dict(route_kwargs)
+            if task_runner is not None:
+                apply_kwargs["task_runner"] = task_runner
             res = engine.apply_edit(
                 file_path=engine_target,
                 instruction=node.instruction,
                 verify_cmd=gate,
                 allow_verify=True,
                 require_consent=False,
-                **route_kwargs,
+                require_diff_authorization=hourglass["require_diff_authorization"],
+                **apply_kwargs,
             )
 
             # Self-healing retry on verification failure
@@ -779,7 +694,8 @@ class AutonomousAgent:
                     verify_cmd=gate,
                     allow_verify=True,
                     require_consent=False,
-                    **route_kwargs,
+                    require_diff_authorization=hourglass["require_diff_authorization"],
+                    **apply_kwargs,
                 )
                 if isinstance(res, dict):
                     res["cost"] = round(prior_cost + float(res.get("cost", 0.0) or 0.0), 6)
@@ -787,119 +703,51 @@ class AutonomousAgent:
             emit("subtask_finish", node_id=node.node_id, status=res.get("status"))
             return res
 
-        MAX_ORCH_ROUNDS = 3
-        all_results: Dict[str, Dict[str, Any]] = {}
-        total_cost = 0.0
-        rounds_history: List[Dict[str, Any]] = []
-        final_all_ok = False
-        remaining_scope = ""
-        current_goal = prompt
-        for round_no in range(1, MAX_ORCH_ROUNDS + 1):
-            if cancel_check and cancel_check():
-                raise ToolCancelled("Prompt execution was cancelled by user")
-            if round_no > 1:
-                emit("orchestration_round", round=round_no, goal=current_goal)
-                plan = self._plan_round(current_goal, target_files, gov)
-                emit("dag_planned", total_nodes=plan["total_nodes"],
-                     total_ceiling=plan["total_cost_ceiling"],
-                     nodes=[{"node_id": n["node_id"],
-                             "instruction": n["instruction"],
-                             "target": (n.get("target_files") or [""])[0]}
-                            for n in plan.get("nodes", [])])
-                verification_gate = discover_verification_gate(
-                    target_files, self.root_dir)
-            dag = TaskDAG.from_dict(plan["dag"])
-            if not dag.nodes:
-                # The planner had nothing executable: honest stop, not a
-                # fake completion.
-                remaining_scope = ("planner produced no executable nodes "
-                                   f"for: {current_goal[:150]}")
-                break
-            node_routes = {n.get("node_id"): n for n in plan["nodes"]}
-            round_results = executor.execute_dag(
-                dag, lambda n, g=verification_gate: run_node(n, g),
-                keep_going=True)
-            for nid, r in round_results.items():
-                if isinstance(r, dict):
-                    r.setdefault("node_id", nid)
-            all_results.update(round_results)
-            round_cost = sum(float(r.get("cost", 0.0) or 0.0)
-                             for r in round_results.values())
-            total_cost = round(total_cost + round_cost, 6)
-            round_ok = all(r.get("status") in SUCCESS_STATUSES
-                           for r in round_results.values())
-            rounds_history.append({
-                "round": round_no, "goal": current_goal[:200],
-                "nodes": len(dag.nodes), "all_nodes_ok": round_ok,
-                "cost": round(round_cost, 6),
-            })
+        def execute_plan(plan_to_run):
+            dag = TaskDAG.from_dict(plan_to_run["dag"])
+            node_routes = {n.get("node_id"): n for n in plan_to_run["nodes"]}
+            plan_exec = PlanExecutor(
+                engine, node_routes,
+                parallel=hourglass["parallel"], isolate=hourglass["isolate"],
+                keep_going=True,
+                require_diff_authorization=hourglass["require_diff_authorization"],
+                route_kwargs_fn=lambda route: node_apply_kwargs(
+                    route,
+                    allow_escalation=self.settings.allow_escalation,
+                    attest_model=attest_model_for(self.settings)),
+                repo=str(self.root_dir), run_ceiling=gov.max_cost,
+                apply=apply_node)
+            return plan_exec.execute(dag)
 
-            # The completion judge: one governed verdict on the round's state.
-            # Artifact truth first: the judge sees node statuses, never the
-            # repo -- a node that "succeeded" on the wrong scope would read
-            # as completion. Name the real state of every file the goal
-            # mentions (bounded), then let the judge weigh it.
-            artifact_notes = []
-            seen_paths = set()
+        driven = drive(
+            goal=prompt, target_files=target_files, initial_plan=plan,
+            root_dir=self.root_dir, plan_round=lambda next_goal: self._plan_round(
+                next_goal, target_files, gov, confirm=hourglass["confirm"]),
+            execute_plan=execute_plan,
+            completion_chat=lambda prompt_text: self._orchestrator_chat_fn(gov)(prompt_text), emit=emit,
+            cancel_check=cancel_check,
+            refused=lambda refused_plan: self._refused_edit(
+                refused_plan, prompt, target_files, session_id))
+        if driven.get("status") == "refused":
+            return driven
+        all_results = driven["all_results"]
+        total_cost = driven["total_cost"]
+        rounds_history = driven["rounds_history"]
+        final_all_ok = driven["final_all_ok"]
+        remaining_scope = driven["remaining_scope"]
+        plan = driven["plan"]
 
-            def _note_artifact(rel):
-                rel = rel.replace("\\", "/").strip("`'\" .")
-                if (not rel or rel in seen_paths
-                        or len(seen_paths) >= 8 or ".." in rel):
-                    return
-                seen_paths.add(rel)
-                fp = self.root_dir / rel
-                if fp.is_file():
-                    try:
-                        nlines = len(fp.read_text(
-                            encoding="utf-8",
-                            errors="replace").splitlines())
-                    except OSError:
-                        nlines = 0
-                    artifact_notes.append(
-                        f"artifact truth: {rel} present ({nlines} lines)")
-                else:
-                    artifact_notes.append(
-                        f"artifact truth: {rel} MISSING from the repository")
-
-            for tf in target_files:
-                _note_artifact(tf)
-            for m in re.finditer(r"\b[\w-]+\.(?:py|js|ts|tsx|jsx|md|json|toml|yaml|yml)\b",
-                                 prompt):
-                _note_artifact(m.group(0))
-            summary = build_state_summary(
-                current_goal, list(round_results.values()),
-                extra_notes=[f"orchestrator round {round_no} of {MAX_ORCH_ROUNDS}"]
-                + artifact_notes)
-            verdict = None
-            try:
-                verdict = assess_completion(prompt, summary,
-                                            self._orchestrator_chat_fn(gov))
-            except HarnessError as e:
-                emit("orchestration_note", note=f"completion judge failed: {e}")
-            if verdict is None:
-                # Judge unavailable/unusable: degrade to node statuses --
-                # honest about what we know, no invented completion.
-                final_all_ok = round_ok and len(rounds_history) > 0
-                if not final_all_ok:
-                    remaining_scope = ("completion judge unavailable; "
-                                       "see per-node failures")
+        # Evidence-bound escalation. The deferral note is a HANDOFF, not proof
+        # that a rung ran: a run that planned, handoff-routed, and executed
+        # every node on the free lane used to report itself as "escalated".
+        # Only a gate-passed escalation whose family differs from the primary
+        # it replaced may carry the label (escalation.escalation_evidence is
+        # the ONE definition of that evidence).
+        escalation_ev = None
+        for _node_result in all_results.values():
+            escalation_ev = escalation_evidence(_node_result)
+            if escalation_ev is not None:
                 break
-            missing = [n for n in artifact_notes if "MISSING" in n]
-            if verdict["complete"] and missing:
-                # Structural guard: a judge verdict cannot make a missing
-                # artifact exist. The loop continues on the real remainder.
-                emit("orchestration_note",
-                     note=f"judge said complete but {len(missing)} named "
-                          f"artifact(s) missing; overriding to incomplete")
-                verdict = {"complete": False,
-                           "remaining": "; ".join(missing),
-                           "reason": "named artifacts missing despite verdict"}
-            if verdict["complete"]:
-                final_all_ok = True
-                break
-            remaining_scope = verdict["remaining"] or verdict["reason"]
-            current_goal = remaining_scope or prompt
 
         # Generate unified diffs
         diffs: List[str] = []
@@ -936,18 +784,34 @@ class AutonomousAgent:
         else:
             response_msg = "Task encountered a verification failure during execution. Check diff and error details."
         if escalation_note:
-            response_msg += (f"\n\n**Auto-escalated to the plan lane (hourglass)** "
-                             f"after a capability defer: {escalation_note}")
+            if escalation_ev is not None:
+                response_msg += (
+                    f"\n\n**Auto-escalated to the plan lane (hourglass)** after "
+                    f"a capability defer: {escalation_note} -- escalation rung "
+                    f"ran: {escalation_ev['from_family']} -> "
+                    f"{escalation_ev['family']} on {escalation_ev['model']}.")
+            else:
+                response_msg += (
+                    f"\n\n**Auto-escalation handoff ran, but no escalation rung "
+                    f"actually ran** (capability defer: {escalation_note}): every "
+                    f"node stayed on its configured lane, so this run is not "
+                    f"escalated.")
 
         result = {
             "status": "ok" if final_all_ok else "failed",
-            **({"escalated_from_defer": escalation_note} if escalation_note else {}),
+            **({"escalated_from_defer": escalation_note}
+               if (escalation_note and escalation_ev is not None) else {}),
+            **escalation_evidence_fields(escalation_ev),
             "intent": "edit",
             "prompt": prompt,
             "response": response_msg,
             "target_files": target_files,
             "diff": unified_diff_str,
             "verification_gate": verification_gate,
+            # The waist gate's own verdict rides the envelope, so a reader
+            # can see what confirmed this plan (and on which model).
+            **({"confirmation": plan["confirmation"]}
+               if plan.get("confirmation") else {}),
             "cost": round(total_cost, 6),
             "results": list(all_results.values()),
             "orchestrator_rounds": len(rounds_history),

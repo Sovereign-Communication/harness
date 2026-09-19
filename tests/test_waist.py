@@ -11,14 +11,18 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from harness.dag import (build_waist_prompt, decompose_via_llm,
-                         parse_waist_verdict, plan_task)
+from harness.dag import (DAGNode, TaskDAG, build_waist_prompt,
+                         decompose_via_llm, parse_waist_verdict, plan_task)
 from harness.errors import HarnessError
 from harness.ledger import AutonomyLedger
+from harness.sliding_scale import resolve_frontier_model
 from harness.spend import SpendGovernor
-from harness.waist import (compose_plan, confirm_plan,
-                           plan_task_id, read_window)
+from harness.capability import source_budget_for
+from harness.validation import MAX_INSTRUCTION_CHARS
+from harness.waist import (chunk_oversized_nodes, compose_plan, confirm_plan,
+                           node_apply_kwargs, plan_task_id, read_window)
 
 from tests._fake import FakeTransport
 
@@ -339,7 +343,157 @@ class ConfirmPlanTests(_WaistFixture):
                          ledger=self.ledger, plan_result=self.plan(), model=None)
 
 
+class ChunkOversizedNodesTests(unittest.TestCase):
+    """The chunking policy (ONE owner: waist.chunk_oversized_nodes).
+
+    A node that cannot fit one model pass is split into ordered chunks that
+    each fit; everything else is untouched.
+    """
+
+    def test_oversized_instruction_becomes_ordered_in_budget_chunks(self):
+        text = "Refactor the scheduling core so the queue drains in order. " * 60
+        self.assertGreater(len(text), MAX_INSTRUCTION_CHARS)
+        dag = TaskDAG(nodes={"task_1": DAGNode(
+            node_id="task_1", instruction=text, target_files=("missing.py",))})
+        fitted = chunk_oversized_nodes(dag)
+        self.assertGreater(len(fitted.nodes), 1)
+        ids = list(fitted.nodes)
+        # ordered and acyclic: pass i waits for pass i-1
+        self.assertEqual([fitted.nodes[i].dependencies for i in ids[1:]],
+                         [(previous,) for previous in ids[:-1]])
+        self.assertEqual(fitted.nodes[ids[0]].dependencies, ())
+        for node in fitted.nodes.values():
+            self.assertLessEqual(len(node.instruction), MAX_INSTRUCTION_CHARS)
+            self.assertIn("pass ", node.instruction)
+        # nothing lost: the instruction text survives the split verbatim
+        bodies = " ".join(n.instruction.split("\n\n[pass")[0]
+                          for n in fitted.nodes.values())
+        self.assertEqual(" ".join(bodies.split()), " ".join(text.split()))
+
+    def test_normal_instruction_is_unchanged(self):
+        dag = TaskDAG(nodes={"task_1": DAGNode(
+            node_id="task_1", instruction="Add a docstring to tokens.py",
+            target_files=("does/not/exist.py",))})
+        # Same object: ordinary plans never detour through the chunk policy.
+        self.assertIs(chunk_oversized_nodes(dag), dag)
+
+    @staticmethod
+    def _large_file_repo(tmp):
+        root = os.path.join(tmp, "repo")
+        os.makedirs(root)
+        with open(os.path.join(root, "big.py"), "w", encoding="utf-8") as f:
+            f.write("".join(f"line_{i} = {i}\n" for i in range(1300)))
+        with open(os.path.join(root, "small.py"), "w", encoding="utf-8") as f:
+            f.write("x = 1\n")
+        return root
+
+    def test_large_target_is_one_node_with_the_diff_hint(self):
+        """Past the rewrite cap is NOT a reason to split: the engine's own
+        large-file path is bounded hunks, so a small edit stays one call."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._large_file_repo(tmp)
+            dag = TaskDAG(nodes={
+                "task_1": DAGNode(node_id="task_1",
+                                  instruction="Rename the helper",
+                                  target_files=("big.py",)),
+                "task_2": DAGNode(node_id="task_2", instruction="Add tests",
+                                  target_files=("small.py",),
+                                  dependencies=("task_1",)),
+            })
+            fitted = chunk_oversized_nodes(dag, root=root)
+        self.assertEqual(list(fitted.nodes), ["task_1", "task_2"])
+        self.assertEqual(fitted.nodes["task_1"].backend, "diff")
+        self.assertEqual(fitted.nodes["task_1"].instruction, "Rename the helper")
+        # no split, so dependents keep referring to the original node
+        self.assertEqual(fitted.nodes["task_2"].dependencies, ("task_1",))
+        self.assertEqual(fitted.nodes["task_2"].backend, None)
+
+    def test_target_splits_by_range_only_when_one_pass_cannot_read_it(self):
+        """The file axis fires on a MEASURED read budget (the rung's declared
+        context), not on the file merely being big."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._large_file_repo(tmp)
+            dag = TaskDAG(nodes={
+                "task_1": DAGNode(node_id="task_1",
+                                  instruction="Rename the helper",
+                                  target_files=("big.py",)),
+                "task_2": DAGNode(node_id="task_2", instruction="Add tests",
+                                  target_files=("small.py",),
+                                  dependencies=("task_1",)),
+            })
+            # A rung whose declared context cannot hold the file in one pass.
+            fitted = chunk_oversized_nodes(
+                dag, root=root, source_tokens={"task_1": 1000, "task_2": 0})
+            # A real rung (256k-token context): the same file fits one pass.
+            roomy = chunk_oversized_nodes(
+                dag, root=root,
+                source_tokens={"task_1": source_budget_for(262144)})
+        chunks = [nid for nid in fitted.nodes if nid.startswith("task_1.")]
+        self.assertGreater(len(chunks), 1)
+        for node_id in chunks:
+            node = fitted.nodes[node_id]
+            self.assertEqual(node.backend, "diff")
+            self.assertIn("apply ONLY big.py lines", node.instruction)
+        # the dependent now waits for the LAST chunk, not the original id
+        self.assertEqual(fitted.nodes["task_2"].dependencies, (chunks[-1],))
+        self.assertNotIn("task_1", fitted.nodes)
+        self.assertEqual(list(roomy.nodes), ["task_1", "task_2"])
+
+    def test_plan_lane_hints_large_targets_and_chunks_long_goals(self):
+        """compose_plan is the single owner's call site: a big target comes
+        back as one diff-hinted node, while a goal too long to send at all
+        comes back chunked (and marked)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._large_file_repo(tmp)
+            small_edit = compose_plan(
+                transport=None, api_key=None, governor=None, ledger=None,
+                opts_goal="Add a docstring", candidate_files=["big.py"],
+                root=root)
+            long_goal = compose_plan(
+                transport=None, api_key=None, governor=None, ledger=None,
+                opts_goal="Refactor the scheduler. " * 90,
+                candidate_files=["small.py"], root=root)
+        self.assertEqual(small_edit["total_nodes"], 1)
+        self.assertNotIn("chunking", small_edit)
+        self.assertEqual(small_edit["nodes"][0]["backend"], "diff")
+        # the route detail carries the hint into execution kwargs
+        self.assertEqual(
+            node_apply_kwargs(small_edit["nodes"][0]).get("backend"), "diff")
+        self.assertTrue(long_goal["chunking"]["required"])
+        self.assertGreater(long_goal["total_nodes"], 1)
+        for detail in long_goal["nodes"]:
+            self.assertLessEqual(len(detail["instruction"]),
+                                 MAX_INSTRUCTION_CHARS)
+
+
 class ComposePlanTests(_WaistFixture):
+    def test_waist_gate_resolves_its_own_frontier_rung(self):
+        """Two truths the default-ON hourglass depends on: (1) an unset
+        --frontier-model resolves through the same owner the Router binds
+        its frontier from instead of killing every default-settings plan
+        run; (2) the decomposition seam is not the gate's seam -- the cheap
+        decomposer never answers (or is credited with) the frontier
+        verdict."""
+        seen = {}
+
+        def fake_governed(transport, api_key, governor, model, prompt, tokens,
+                          label=None):
+            seen["model"] = model
+            seen["label"] = label
+            return '{"verdict": "approve"}', 0.0
+
+        with patch("harness.waist.governed_text", side_effect=fake_governed):
+            plan = compose_plan(
+                transport=None, api_key="k", governor=self.gov, ledger=None,
+                opts_goal="Split the work", candidate_files=["harness/sync.py"],
+                decompose_llm=True, confirm=True, execute=True,
+                chat_fn=lambda p: (DECOMP_JSON, 0.005))
+        expected = resolve_frontier_model(None, use_free=True)
+        self.assertEqual(seen["model"], expected)
+        self.assertEqual(seen["label"], "waist")
+        self.assertEqual(plan["confirmation"]["model"], expected)
+        self.assertEqual(plan["confirmation"]["verdict"], "approved")
+
     def test_plan_only_llm_failure_fails_loudly(self):
         def broken(prompt):
             raise HarnessError("HTTP 429: rate limited")

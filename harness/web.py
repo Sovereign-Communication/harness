@@ -286,6 +286,41 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000):
             "text": text}
 
 
+def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, fetch_url_fn=None, search_web_fn=None, find_urls_fn=None, extract_query_fn=None, max_sources=3):
+    """Single-owner web evidence gathering for one chat turn.
+
+    Fetches allowlisted URLs in the prompt (one per URL, up to max_sources);
+    if none succeed, falls back to one search. Every failure is recorded,
+    never hidden — the model sees exactly what did and did not come back.
+    Injectable fetch/search/find/extract seams keep tests hermetic:
+    callers pass their own (possibly patched) functions; otherwise the
+    module's own implementations are used.
+    """
+    from typing import Dict, List, Any  # local to avoid header churn
+    fetch_fn = fetch_url_fn if fetch_url_fn is not None else fetch_url
+    search_fn = search_web_fn if search_web_fn is not None else search_web
+    find_fn = find_urls_fn if find_urls_fn is not None else find_urls
+    extract_fn = extract_query_fn if extract_query_fn is not None else extract_query
+    sources: List[Dict[str, Any]] = []
+    urls = find_fn(prompt)[:max_sources]
+    if urls:
+        for u in urls:
+            try:
+                page = fetch_fn(u, allowed_hosts=allowed_hosts)
+                sources.append({"kind": "fetch", "ok": True, "url": page["url"], "title": page["title"], "text": page["text"]})
+            except HarnessError as e:
+                sources.append({"kind": "fetch", "ok": False, "url": u, "note": str(e)})
+        if any(s["ok"] for s in sources):
+            return sources
+    try:
+        results = search_fn(extract_fn(prompt))
+        for r in results[:max_sources]:
+            sources.append({"kind": "search", "ok": True, "url": r["url"], "title": r["title"], "text": r["snippet"]})
+    except HarnessError as e:
+        sources.append({"kind": "search", "ok": False, "note": str(e)})
+    return sources
+
+
 # ---- prompt-side helpers (query + URL extraction) --------------------------
 
 _URL_RE = re.compile(r"https?://[^\s)>\]'\"]+")

@@ -11,12 +11,44 @@ from harness.agent import (
     discover_target_files,
     discover_verification_gate,
     enumerate_repo_files,
-    get_default_history_dir,
     load_chat_history,
     save_chat_turn,
 )
+from harness.history import get_default_history_dir
 from harness.config import load_settings
 from harness.errors import HarnessError, ToolCancelled
+from tests._fake import FakeTransport, _gov
+
+
+# The agent suite must remain hermetic on CI: production governor_for correctly
+# refuses without a real key, while these tests replace the transport boundary.
+_TEST_GOVERNOR = _gov(FakeTransport(), max_cost=0.05)
+_TEST_GOVERNOR_PATCH = patch("harness.agent.governor_for",
+                            return_value=(None, _TEST_GOVERNOR))
+_TEST_GOVERNOR_PATCH.start()
+
+
+def tearDownModule():
+    _TEST_GOVERNOR_PATCH.stop()
+
+
+def _lane_settings(**overrides):
+    """Agent-lane settings with the hourglass DISARMED explicitly.
+
+    These tests pin lane mechanics (round drive, healing retry, artifact
+    truth, escalation evidence) that are independent of the plan gate, and
+    the hourglass switch must come from the test -- never from whatever
+    config file happens to be on the machine running the suite. The armed
+    lane is covered by TestHourglassLane, which scripts the waist verdict.
+    """
+    settings = load_settings()
+    settings.hourglass_confirm = False
+    settings.hourglass_isolate = False
+    settings.hourglass_parallel = False
+    settings.hourglass_require_attestation = False
+    for key, value in overrides.items():
+        setattr(settings, key, value)
+    return settings
 
 
 class TestAgentClassificationAndDiscovery(unittest.TestCase):
@@ -156,7 +188,8 @@ class TestAutonomousAgent(unittest.TestCase):
             (root / "harness").mkdir()
             (root / "harness" / "calc.py").write_text("def add(a, b): return a + b\n", encoding="utf-8")
 
-            agent = AutonomousAgent(root_dir=root, history_dir=root)
+            agent = AutonomousAgent(settings=_lane_settings(), root_dir=root,
+                                    history_dir=root)
             with patch.object(AutonomousAgent, "_orchestrator_chat_fn",
                               side_effect=HarnessError("hermetic test")):
                 res = agent.run_prompt("Refactor harness/calc.py to add typing", auto_apply=False)
@@ -173,7 +206,8 @@ class TestAutonomousAgent(unittest.TestCase):
             calc_file = root / "harness" / "calc.py"
             calc_file.write_text("def add(a, b): return a + b\n", encoding="utf-8")
 
-            agent = AutonomousAgent(root_dir=root, history_dir=root)
+            agent = AutonomousAgent(settings=_lane_settings(), root_dir=root,
+                                    history_dir=root)
 
             def fake_apply_edit(file_path, instruction, **kwargs):
                 # Simulate modifying file
@@ -202,7 +236,8 @@ class TestAutonomousAgent(unittest.TestCase):
             calc_file = root / "harness" / "calc.py"
             calc_file.write_text("def add(a, b): return a + b\n", encoding="utf-8")
 
-            agent = AutonomousAgent(root_dir=root, history_dir=root)
+            agent = AutonomousAgent(settings=_lane_settings(), root_dir=root,
+                                    history_dir=root)
 
             # First attempt fails verification gate, second attempt succeeds
             attempts = [
@@ -323,9 +358,9 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         # the turn still carries evidence, with the FAILED fetch kept honest.
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
-            with patch("harness.agent.fetch_url",
+            with patch("harness.web.fetch_url",
                        side_effect=HarnessError("web fetch HTTP 503")), \
-                 patch("harness.agent.search_web",
+                 patch("harness.web.search_web",
                        return_value=[{"url": "https://www.anthropic.com/rz",
                                       "title": "Riemann",
                                       "snippet": "bound moved to 67.2%"}]), \
@@ -350,7 +385,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         # is attached (search + allowlist hosts) and never deny access.
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
-            with patch("harness.agent.search_web", return_value=[]), \
+            with patch("harness.web.search_web", return_value=[]), \
                  patch("harness.agent.chat",
                        side_effect=HarnessError("stop at the system prompt")) as mc, \
                  patch("harness.agent.governor_for",
@@ -368,7 +403,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
             agent = self._agent(Path(tmp))
             fake_results = [{"title": "Bound moved", "url": "https://e.example/a",
                              "snippet": "zero-free region extended"}]
-            with patch("harness.agent.search_web", return_value=fake_results) as ms, \
+            with patch("harness.web.search_web", return_value=fake_results) as ms, \
                  patch("harness.agent.chat", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.agent.governor_for", return_value=(None, MagicMock())):
                 res = agent.run_prompt("search for the riemann bound", session_id="w2", web=True)
@@ -383,7 +418,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
             page = {"url": "https://www.anthropic.com/r", "title": "T", "text": "page body"}
-            with patch("harness.agent.fetch_url", return_value=page) as mf, \
+            with patch("harness.web.fetch_url", return_value=page) as mf, \
                  patch("harness.agent.chat", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.agent.governor_for", return_value=(None, MagicMock())):
                 agent.run_prompt("https://www.anthropic.com/r", session_id="w3", web=True)
@@ -395,7 +430,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         from harness.errors import HarnessError as _HE
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
-            with patch("harness.agent.search_web", side_effect=_HE("web search failed: down")), \
+            with patch("harness.web.search_web", side_effect=_HE("web search failed: down")), \
                  patch("harness.agent.chat", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.agent.governor_for", return_value=(None, MagicMock())):
                 res = agent.run_prompt("search the web", session_id="w4", web=True)
@@ -407,7 +442,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
     def test_web_never_kills_the_chat_lane(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
-            with patch("harness.agent.search_web", side_effect=RuntimeError("boom")), \
+            with patch("harness.web.search_web", side_effect=RuntimeError("boom")), \
                  patch("harness.agent.chat", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.agent.governor_for", return_value=(None, MagicMock())):
                 res = agent.run_prompt("search the web", session_id="w5", web=True)
@@ -421,11 +456,11 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         from harness.errors import HarnessError as _HE
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
-            with patch("harness.agent.find_urls",
+            with patch("harness.web.find_urls",
                        return_value=["https://www.anthropic.com/x"]), \
-                 patch("harness.agent.fetch_url",
+                 patch("harness.web.fetch_url",
                        side_effect=_HE("web fetch refused: host not allowed")), \
-                 patch("harness.agent.search_web",
+                 patch("harness.web.search_web",
                        return_value=[{"url": "https://www.anthropic.com/x",
                                       "title": "X", "snippet": "s"}]), \
                  patch("harness.agent.chat", return_value=(200, self._mock_resp())) as mc, \
@@ -608,7 +643,7 @@ class TestChatDeferral(unittest.TestCase):
 
     def test_defer_marker_becomes_deferred_result_with_resume_path(self):
         with tempfile.TemporaryDirectory() as tmp:
-            agent = AutonomousAgent(settings=load_settings(),
+            agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
             fake_ledger = MagicMock()
             with patch("harness.agent.chat", return_value=(200, self._DEFER)), \
@@ -642,7 +677,7 @@ class TestChatDeferral(unittest.TestCase):
         bare = {"choices": [{"message": {"content": "HARNESS_DEFER:"}}],
                 "usage": {"cost": 0.0}}
         with tempfile.TemporaryDirectory() as tmp:
-            agent = AutonomousAgent(settings=load_settings(),
+            agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
             with patch("harness.agent.chat", return_value=(200, bare)), \
                  patch("harness.agent.governor_for",
@@ -662,7 +697,7 @@ class TestChatDeferral(unittest.TestCase):
 
     def test_system_prompt_teaches_the_deferral_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
-            agent = AutonomousAgent(settings=load_settings(),
+            agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
             with patch("harness.agent.chat",
                        side_effect=HarnessError("stop at the prompt")) as mc, \
@@ -683,7 +718,7 @@ class TestChatDeferral(unittest.TestCase):
             "compute cluster that this conversation does not have."}}],
             "usage": {"cost": 0.0}}
         with tempfile.TemporaryDirectory() as tmp:
-            agent = AutonomousAgent(settings=load_settings(),
+            agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
             fake_ledger = MagicMock()
             with patch("harness.agent.chat", return_value=(200, refuse)), \
@@ -707,14 +742,14 @@ class TestChatDeferral(unittest.TestCase):
             "show the bound moved to 67.2%."}}],
             "usage": {"cost": 0.0}}
         with tempfile.TemporaryDirectory() as tmp:
-            agent = AutonomousAgent(settings=load_settings(),
+            agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
             fake_ledger = MagicMock()
             with patch("harness.agent.chat", return_value=(200, caveat)), \
                  patch("harness.agent.governor_for",
                        return_value=(None, MagicMock())), \
                  patch("harness.agent.ledger_for", return_value=fake_ledger), \
-                 patch("harness.agent.search_web",
+                 patch("harness.web.search_web",
                        return_value=[{"url": "https://www.anthropic.com/rz",
                                       "title": "Riemann", "snippet": "67.2%"}]):
                 res = agent.run_prompt("verify the claim", session_id="d5",
@@ -744,7 +779,7 @@ class TestChatTruncation(unittest.TestCase):
         # rotate to rung 2.
         cut = "```lean\ndef S_alpha (x : Real) : Real :="
         with tempfile.TemporaryDirectory() as tmp:
-            agent = AutonomousAgent(settings=load_settings(),
+            agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
             with patch("harness.agent.chat",
                        side_effect=[(200, self._truncated(cut)),
@@ -765,7 +800,7 @@ class TestChatTruncation(unittest.TestCase):
         cut1 = "```lean\ndef a := 1"
         cut2 = "```lean\ndef a := 1\ndef b := 2"
         with tempfile.TemporaryDirectory() as tmp:
-            agent = AutonomousAgent(settings=load_settings(),
+            agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
             fake_ledger = MagicMock()
             with patch("harness.agent.chat",
@@ -789,7 +824,7 @@ class TestChatTruncation(unittest.TestCase):
     def test_truncation_defer_persists_the_turn(self):
         cut = "```lean\ndef a := 1"
         with tempfile.TemporaryDirectory() as tmp:
-            agent = AutonomousAgent(settings=load_settings(),
+            agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
             with patch("harness.agent.chat",
                        return_value=(200, self._truncated(cut))), \
@@ -806,7 +841,7 @@ class TestChatTruncation(unittest.TestCase):
         # The fake "<tool_call>web_search" incident: the model roleplayed a
         # tool syntax it does not have and the raw markup reached the chat.
         with tempfile.TemporaryDirectory() as tmp:
-            agent = AutonomousAgent(settings=load_settings(),
+            agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
             with patch("harness.agent.chat",
                        side_effect=HarnessError("stop at the prompt")) as mc, \
@@ -828,7 +863,7 @@ class TestChatAutoEscalation(unittest.TestCase):
         "usage": {"cost": 0.0}}
 
     def _defer_agent(self, tmp):
-        agent = AutonomousAgent(settings=load_settings(),
+        agent = AutonomousAgent(settings=_lane_settings(),
                                 history_dir=Path(tmp))
         return agent
 
@@ -853,15 +888,17 @@ class TestChatAutoEscalation(unittest.TestCase):
         self.assertTrue(kwargs["auto_apply"])
         self.assertEqual(kwargs["escalation_note"], "exceeds the lane")
 
-    def test_handle_edit_escalation_note_reaches_result_and_history(self):
-        # The real _handle_edit contract: the escalation note is stamped on
-        # the result and into the persisted turn (not just the call args).
+    def test_escalation_note_without_a_rung_walk_is_never_stamped(self):
+        # A handoff note is NOT evidence. The stubbed plan has no executable
+        # nodes and no escalation rung can have run, so the old label
+        # ("escalated" on a run that touched no rung) must not appear -- in
+        # the result, the response, or the persisted turn.
         with tempfile.TemporaryDirectory() as tmp:
-            agent = AutonomousAgent(settings=load_settings(),
+            agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp), root_dir=Path(tmp))
             with patch("harness.agent.discover_target_files",
                        return_value=["util.py"]), \
-                 patch("harness.agent.plan_task",
+                 patch("harness.waist.plan_task",
                        return_value={"dag": {"nodes": []}, "nodes": [],
                                      "total_nodes": 0,
                                      "total_cost_ceiling": 0.0}), \
@@ -877,11 +914,109 @@ class TestChatAutoEscalation(unittest.TestCase):
         self.assertEqual(res["status"], "failed")
         self.assertIn("planner produced no executable nodes",
                       res["remaining_scope"])
+        self.assertNotIn("escalated_from_defer", res)
+        self.assertNotIn("escalated_model", res)
+        self.assertIn("no escalation rung actually ran", res["response"])
+        self.assertNotIn("escalated_from_defer", turns[0])
+
+    def _escalation_agent(self, root):
+        (root / "harness").mkdir(exist_ok=True)
+        (root / "harness" / "calc.py").write_text(
+            "def add(a, b): return a + b\n", encoding="utf-8")
+        return AutonomousAgent(settings=_lane_settings(), root_dir=root,
+                               history_dir=root)
+
+    def _run_escalated_node(self, node_result, session_id):
+        """Drive one node whose engine result claims the given escalation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = self._escalation_agent(root)
+
+            def fake_apply_edit(file_path, instruction, **kwargs):
+                (root / file_path).write_text(
+                    "def add(a: int, b: int) -> int: return a + b\n",
+                    encoding="utf-8")
+                return dict(node_result)
+
+            mock_engine = MagicMock()
+            mock_engine.apply_edit.side_effect = fake_apply_edit
+            with patch("harness.agent.apply_session",
+                       return_value=mock_engine), \
+                 patch.object(AutonomousAgent, "_orchestrator_chat_fn",
+                              side_effect=HarnessError("hermetic test")):
+                res = agent._handle_edit(
+                    "Update harness/calc.py with type annotations",
+                    session_id, True, escalation_note="exceeds the lane")
+            turns = load_chat_history(session_id, root)
+        return res, turns
+
+    def test_node_apply_kwargs_carry_escalation_and_verifier(self):
+        # Requirement: an agent-lane node must carry the escalation arming and
+        # the verifier identity explicitly (not inherit them silently), so its
+        # escalation path is auditable from the lane. session.attest_model_for
+        # is the ONE owner of the verifier identity, shared with the Router.
+        from harness.session import attest_model_for
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = self._escalation_agent(root)
+            seen = {}
+
+            def fake_apply_edit(file_path, instruction, **kwargs):
+                seen.update(kwargs)
+                return {"status": "ok", "cost": 0.0}
+
+            mock_engine = MagicMock()
+            mock_engine.apply_edit.side_effect = fake_apply_edit
+            with patch("harness.agent.apply_session",
+                       return_value=mock_engine), \
+                 patch.object(AutonomousAgent, "_orchestrator_chat_fn",
+                              side_effect=HarnessError("hermetic test")):
+                agent._handle_edit(
+                    "Update harness/calc.py with type annotations",
+                    "kw1", True)
+        self.assertEqual(seen.get("allow_escalation"),
+                         agent.settings.allow_escalation)
+        self.assertEqual(seen.get("attest_model"),
+                         attest_model_for(agent.settings))
+
+    def test_escalation_stamp_requires_a_cross_family_rung_walk(self):
+        # The label may only appear when a gate-passed escalation actually ran
+        # a rung in a DIFFERENT family -- and the envelope must carry the model
+        # id and pool family so a reader can verify the claim.
+        res, turns = self._run_escalated_node({
+            "status": "ok", "cost": 0.002, "escalated": True,
+            "escalated_from": "ling-3.0-flash-fin:free",
+            "escalated_to": "z-ai/glm-5.3-flash",
+            "escalation_rungs": ["ling-3.0-flash-fin:free",
+                                 "z-ai/glm-5.3-flash"],
+        }, "esc1")
         self.assertEqual(res["escalated_from_defer"], "exceeds the lane")
-        self.assertIn("Auto-escalated to the plan lane (hourglass)",
-                      res["response"])
+        self.assertEqual(res["escalated_model"], "z-ai/glm-5.3-flash")
+        self.assertEqual(res["escalated_from_model"],
+                         "ling-3.0-flash-fin:free")
+        self.assertEqual(res["escalation_family"], "z-ai")
+        self.assertIn("escalation rung ran: free -> z-ai", res["response"])
         self.assertEqual(turns[0]["escalated_from_defer"],
                          "exceeds the lane")
+        self.assertEqual(turns[0]["escalation_family"], "z-ai")
+
+    def test_escalation_stamp_refused_when_the_rung_stays_free(self):
+        # A free rung rotated to another free rung is a rung walk, but the
+        # family never changed: reporting it as escalated is the exact defect
+        # the operator hit ("said escalated, ran ling/gemma 100% of the time").
+        res, turns = self._run_escalated_node({
+            "status": "ok", "cost": 0.001, "escalated": True,
+            "escalated_from": "ling-3.0-flash-fin:free",
+            "escalated_to": "nvidia/nemotron-3-super-120b-a12b:free",
+            "escalation_rungs": ["ling-3.0-flash-fin:free",
+                                 "nvidia/nemotron-3-super-120b-a12b:free"],
+        }, "esc2")
+        self.assertNotIn("escalated_from_defer", res)
+        self.assertNotIn("escalated_model", res)
+        self.assertNotIn("escalation_family", res)
+        self.assertIn("no escalation rung actually ran", res["response"])
+        self.assertNotIn("escalated_from_defer", turns[0])
 
     def test_escalation_failure_falls_back_to_honest_defer(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -989,7 +1124,7 @@ class TestOrchestratorDrive(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "util.py").write_text("x = 1\n", encoding="utf-8")
-            agent = AutonomousAgent(settings=load_settings(), root_dir=root,
+            agent = AutonomousAgent(settings=_lane_settings(), root_dir=root,
                                     history_dir=root)
             engine = MagicMock()
             engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
@@ -1011,7 +1146,7 @@ class TestOrchestratorDrive(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "util.py").write_text("x = 1\n", encoding="utf-8")
-            agent = AutonomousAgent(settings=load_settings(), root_dir=root,
+            agent = AutonomousAgent(settings=_lane_settings(), root_dir=root,
                                     history_dir=root)
             engine = MagicMock()
             engine.apply_edit.return_value = {"status": "verify_failed",
@@ -1030,7 +1165,7 @@ class TestOrchestratorDrive(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "util.py").write_text("x = 1\n", encoding="utf-8")
-            agent = AutonomousAgent(settings=load_settings(), root_dir=root,
+            agent = AutonomousAgent(settings=_lane_settings(), root_dir=root,
                                     history_dir=root)
             engine = MagicMock()
             engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
@@ -1080,7 +1215,7 @@ class TestOrchestratorWiring(unittest.TestCase):
         self.assertEqual(len(limited), 1)
 
     def _agent(self, root):
-        return AutonomousAgent(settings=load_settings(), root_dir=root,
+        return AutonomousAgent(settings=_lane_settings(), root_dir=root,
                                history_dir=root)
 
     def test_orchestration_chat_fn_walks_the_ladder(self):
@@ -1336,6 +1471,256 @@ class TestOrchestratorWiring(unittest.TestCase):
                 res = agent.run_prompt("Update util.py", auto_apply=True)
         self.assertEqual(res["status"], "failed")
         self.assertIn("completion judge unavailable", res["remaining_scope"])
+
+
+class TestHourglassLane(unittest.TestCase):
+    """The lane the GUI actually drives (server.run_chat_task ->
+    AutonomousAgent._handle_edit) must run the SAME hourglass the CLI/MCP
+    lanes run: waist confirmation through the ONE plan composer, then the
+    shared execution assembly (parallel workers, per-node reservations,
+    worktree isolation, write attestation) resolved from the settings file.
+
+    The orchestration seam scripts decomposition/triage/judge; the waist
+    gate is scripted where it really runs (harness.waist.governed_text), so
+    these tests exercise the armed path without a network call.
+    """
+
+    _DAG_JSON = ('{"nodes": [{"node_id": "n1", "instruction": "do the chunk", '
+                 '"target_files": ["util.py"], "dependencies": []}]}')
+
+    @staticmethod
+    def _armed(**overrides):
+        settings = load_settings()
+        settings.hourglass_confirm = True
+        settings.hourglass_isolate = True
+        settings.hourglass_parallel = True
+        settings.hourglass_require_attestation = True
+        for key, value in overrides.items():
+            setattr(settings, key, value)
+        return settings
+
+    @staticmethod
+    def _decompose_seam():
+        """Decomposition answers with a DAG; nothing else is scripted."""
+        def fake_chat_fn(gov):
+            def chat_fn(_prompt_text):
+                return TestHourglassLane._DAG_JSON
+            return chat_fn
+        return patch.object(AutonomousAgent, "_orchestrator_chat_fn",
+                            side_effect=fake_chat_fn)
+
+    @staticmethod
+    def _waist_seam(verdict):
+        return patch("harness.waist.governed_text",
+                     return_value=(verdict, 0.0))
+
+    def _lane(self, root):
+        (root / "util.py").write_text("x = 1\n", encoding="utf-8")
+        agent = AutonomousAgent(settings=self._armed(), root_dir=root,
+                                history_dir=root)
+        engine = MagicMock()
+        engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
+        return agent, engine
+
+    def test_armed_lane_confirms_then_runs_the_shared_assembly(self):
+        import harness.executor as executor_module
+
+        captured = {}
+
+        def spy(engine_arg, routes, **kwargs):
+            captured.update(kwargs)
+            captured["plan_exec"] = executor_module.PlanExecutor(
+                engine_arg, routes, **kwargs)
+            return captured["plan_exec"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent, engine = self._lane(root)
+            with patch("harness.agent.apply_session", return_value=engine), \
+                 patch("harness.agent.PlanExecutor", side_effect=spy), \
+                 self._decompose_seam(), \
+                 self._waist_seam('{"verdict": "approve"}'):
+                res = agent._handle_edit("Update util.py", "hg1", True)
+
+        # 1. the waist gate ran, and its verdict rides the envelope
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["confirmation"]["verdict"], "approved")
+        # 2. the shared assembly, armed from the settings file, rooted at
+        # the lane's own tree (never the process CWD)
+        self.assertTrue(captured["parallel"])
+        self.assertTrue(captured["isolate"])
+        self.assertTrue(captured["require_diff_authorization"])
+        self.assertEqual(captured["repo"], str(root))
+        # keep_going: node failures are state for the judge, not aborts
+        self.assertTrue(captured["keep_going"])
+        self.assertEqual(captured["plan_exec"].workers, 4)
+        self.assertIsNotNone(captured["plan_exec"].reserver)
+        # 2b. the lane passes the budget it is really running under, so a
+        # node reservation is bounded by that and not by a nominal default
+        self.assertEqual(captured["run_ceiling"], agent.settings.max_cost)
+        self.assertEqual(captured["plan_exec"].reserver.run_ceiling,
+                         agent.settings.max_cost)
+        # 3. the write attestation the hourglass armed reached the node write
+        self.assertTrue(
+            engine.apply_edit.call_args[1]["require_diff_authorization"])
+
+    def test_armed_lane_dispatches_a_free_node_under_the_default_ceiling(self):
+        """The reported defect, at the lane that had it. A free-tier node
+        declares a $0.00 route ceiling; the request drops that $0 (a zero
+        task budget would refuse the escalation ladder), so the reserver read
+        "no ceiling" and reserved the engine's nominal $0.10 default -- over
+        the default $0.05 run ceiling, which refused EVERY node before any
+        work. The armed GUI lane must dispatch the node and spend $0.00."""
+        from tests._fake import FakeTransport, _gov
+
+        class _StubEngine:
+            def __init__(self, governor):
+                self.governor = governor
+                self.default_task_max_cost = 0.10
+                self.calls = []
+
+            def apply_edit(self, **kwargs):
+                self.calls.append(kwargs)
+                return {"status": "ok", "cost": 0.0, "changed": True}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "util.py").write_text("x = 1\n", encoding="utf-8")
+            agent = AutonomousAgent(settings=self._armed(), root_dir=root,
+                                    history_dir=root)
+            gov = _gov(FakeTransport(), max_cost=0.05)
+            self.assertEqual(agent.settings.max_cost, 0.05)
+            engine = _StubEngine(gov)
+            with patch("harness.agent.apply_session", return_value=engine), \
+                 self._decompose_seam(), \
+                 self._waist_seam('{"verdict": "approve"}'):
+                res = agent._handle_edit("Update util.py", "hg4", True)
+
+        self.assertEqual(res["status"], "ok")
+        self.assertTrue(engine.calls, "the node never reached the engine")
+        self.assertEqual([r.get("status") for r in res["results"]], ["ok"])
+        # Nothing was reserved for a free node, and the run's ceiling is
+        # untouched -- the free tier bills $0.00 on every rung.
+        self.assertEqual(gov.outstanding, 0.0)
+        self.assertEqual(gov.spent, 0.0)
+        self.assertEqual(gov.remaining(), 0.05)
+
+    def test_each_node_gates_the_file_it_edits(self):
+        """The run-level gate is discovered from the ORIGINAL prompt files, so
+        a later round's node targeting another file used to run a gate about
+        the first file: it proved nothing about that node's write and made
+        two concurrent nodes compile the same path (an intermittent
+        verify_failed that also cost the node its merge). Every node must
+        gate its own declared target."""
+        two_nodes = ('{"nodes": [{"node_id": "n1", "instruction": "add a '
+                     'docstring to b.py", "target_files": ["b.py"], '
+                     '"dependencies": []}, {"node_id": "n2", "instruction": '
+                     '"add a docstring to c.py", "target_files": ["c.py"], '
+                     '"dependencies": []}]}')
+
+        def seam(_gov):
+            def chat_fn(_prompt_text):
+                return two_nodes
+            return chat_fn
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=self._armed(), root_dir=root,
+                                    history_dir=root)
+            for name in ("a.py", "b.py", "c.py"):
+                (root / name).write_text("x = 1\n", encoding="utf-8")
+            engine = MagicMock()
+            engine.apply_edit.return_value = {"status": "ok", "cost": 0.0}
+            with patch("harness.agent.apply_session", return_value=engine), \
+                 patch.object(AutonomousAgent, "_orchestrator_chat_fn",
+                              side_effect=seam), \
+                 self._waist_seam('{"verdict": "approve"}'):
+                res = agent._handle_edit("Update a.py", "hg5", True)
+
+        self.assertEqual(res["status"], "ok")
+        gates = [call[1]["verify_cmd"]
+                 for call in engine.apply_edit.call_args_list]
+        self.assertEqual(len(gates), 2)
+        self.assertTrue(any("b.py" in g for g in gates), gates)
+        self.assertTrue(any("c.py" in g for g in gates), gates)
+        # Nothing gated the file the prompt named while editing another.
+        self.assertEqual(sum("a.py" in g for g in gates), 0, gates)
+
+    def test_waist_refusal_dispatches_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent, engine = self._lane(Path(tmp))
+            with patch("harness.agent.apply_session", return_value=engine), \
+                 self._decompose_seam(), \
+                 self._waist_seam('{"verdict": "refuse", '
+                                  '"reason": "scope is too broad", '
+                                  '"evidence": "brief: util.py has no tests"}'):
+                res = agent._handle_edit("Update util.py", "hg2", True)
+        self.assertEqual(res["status"], "refused")
+        self.assertIn("scope is too broad", res["response"])
+        engine.apply_edit.assert_not_called()
+        self.assertEqual(res["cost"], 0.0)
+
+    def test_agent_lane_measures_its_own_root(self):
+        """The planning owner reads the LANE's tree: the target's size is
+        measured against the agent's root (the server's CWD has no big.py),
+        and a small edit to a large file stays ONE diff-hinted node."""
+        json_dag = ('{"nodes": [{"node_id": "n1", "instruction": "Add a '
+                    'module docstring", "target_files": ["big.py"], '
+                    '"dependencies": []}]}')
+
+        def seam(_gov):
+            def chat_fn(_prompt_text):
+                return json_dag
+            return chat_fn
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "big.py").write_text(
+                "".join(f"line_{i} = {i}\n" for i in range(1300)),
+                encoding="utf-8")
+            agent = AutonomousAgent(settings=self._armed(), root_dir=root,
+                                    history_dir=root)
+            with patch.object(AutonomousAgent, "_orchestrator_chat_fn",
+                              side_effect=seam):
+                plan = agent._plan_round("Add a module docstring", ["big.py"],
+                                         MagicMock(), confirm=False)
+        # Found in the agent's root at all -> the lane's tree is the one
+        # measured; and a small edit is one node with the bounded-hunk hint.
+        self.assertEqual(plan["total_nodes"], 1)
+        self.assertEqual(plan["nodes"][0]["backend"], "diff")
+        self.assertNotIn("chunking", plan)
+
+    def test_disarmed_lane_stays_serial_single_tree(self):
+        import harness.executor as executor_module
+
+        captured = {}
+
+        def spy(engine_arg, routes, **kwargs):
+            captured.update(kwargs)
+            captured["plan_exec"] = executor_module.PlanExecutor(
+                engine_arg, routes, **kwargs)
+            return captured["plan_exec"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "util.py").write_text("x = 1\n", encoding="utf-8")
+            agent = AutonomousAgent(settings=_lane_settings(), root_dir=root,
+                                    history_dir=root)
+            engine = MagicMock()
+            engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
+            with patch("harness.agent.apply_session", return_value=engine), \
+                 patch("harness.agent.PlanExecutor", side_effect=spy), \
+                 self._decompose_seam():
+                res = agent._handle_edit("Update util.py", "hg3", True)
+        # Disarmed: the historical lane -- one tree, one worker, no gate.
+        self.assertFalse(captured["parallel"])
+        self.assertFalse(captured["isolate"])
+        self.assertFalse(captured["require_diff_authorization"])
+        self.assertEqual(captured["plan_exec"].workers, 1)
+        self.assertIsNone(captured["plan_exec"].isolator)
+        self.assertNotIn("confirmation", res)
+        self.assertFalse(
+            engine.apply_edit.call_args[1]["require_diff_authorization"])
 
 
 if __name__ == "__main__":

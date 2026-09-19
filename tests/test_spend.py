@@ -178,6 +178,87 @@ class ReservationTests(unittest.TestCase):
         reserver.reconcile(t2, 0.002)
         self.assertEqual(gov.spent, 0.003)
 
+    def test_node_reserver_free_route_reserves_zero_under_small_ceiling(self):
+        """The GUI-lane defect: a FREE node declares a $0.00 route ceiling,
+        but ``node_apply_kwargs`` deliberately drops a $0 ceiling from the
+        request (a zero task budget would refuse the escalation ladder), so
+        the reserver used to read "no ceiling" and reserve the engine's
+        nominal $0.10 default. Against the default $0.05 run ceiling that
+        refused EVERY node before any work, so the lane completed nothing.
+        """
+        from harness.dag import DAGNode, plan_task
+        from harness.spend import NodeReserver
+
+        gov = _gov(self.fake, max_cost=0.05)
+        plan = plan_task(goal="Add a module docstring",
+                         candidate_files=["util.py"], use_free=True)
+        routes = {n["node_id"]: n for n in plan["nodes"]}
+        node_id = list(routes)[0]
+        reserver = NodeReserver(gov, routes, 0.10, run_ceiling=0.05)
+        self.assertEqual(float(routes[node_id]["route"]["cost_ceiling"]), 0.0)
+        # The nominal default is an unrelated number: capped by the run's own
+        # ceiling instead of trusted as a cost.
+        self.assertEqual(reserver.default_amount, 0.05)
+        token = reserver.reserve(DAGNode(node_id=node_id, instruction="x"))
+        self.assertEqual(token[1], 0.0)
+        self.assertEqual(gov.outstanding, 0.0)
+        self.assertEqual(gov.remaining(), 0.05)
+
+    def test_node_reserver_refuses_a_worst_case_that_cannot_fit(self):
+        """Fail-closed is preserved: an amount larger than what the run can
+        still afford refuses rather than being trimmed to fit (a trimmed
+        reservation would let a call that may bill its full ceiling dispatch
+        and only surface at reconcile time, after the money was spent)."""
+        from harness.dag import DAGNode
+        from harness.spend import NodeReserver
+
+        gov = _gov(self.fake, max_cost=0.05)
+        routes = {"task_1": {"route": {"ladder": ["m/p"],
+                                       "cost_ceiling": 0.10}}}
+        reserver = NodeReserver(gov, routes, 0.10, run_ceiling=0.05)
+        with self.assertRaises(HarnessError) as ctx:
+            reserver.reserve(DAGNode(node_id="task_1", instruction="x"))
+        self.assertIn("does not fit", str(ctx.exception))
+        self.assertEqual(gov.outstanding, 0.0)
+
+    def test_node_reserver_defaults_its_ceiling_to_the_governor(self):
+        """No explicit run ceiling: the governor's own max_cost IS the run
+        ceiling, so the fallback bound still cannot exceed it."""
+        from harness.dag import DAGNode
+        from harness.spend import NodeReserver
+
+        gov = _gov(self.fake, max_cost=0.02)
+        reserver = NodeReserver(gov, {}, 0.10)
+        self.assertEqual(reserver.run_ceiling, 0.02)
+        self.assertEqual(reserver.default_amount, 0.02)
+        reserver.reserve(DAGNode(node_id="unknown", instruction="x"))
+        self.assertEqual(gov.outstanding, 0.02)
+
+    def test_node_reserver_paid_ceiling_is_still_used_verbatim(self):
+        """A real (nonzero) tier ceiling is the node's worst case: reserving
+        it is what keeps W concurrent workers from overcommitting."""
+        from harness.dag import DAGNode
+        from harness.spend import NodeReserver
+
+        gov = _gov(self.fake, max_cost=0.05)
+        routes = {"task_1": {"route": {"ladder": ["m/p"],
+                                       "cost_ceiling": 0.02}}}
+        reserver = NodeReserver(gov, routes, 0.10, run_ceiling=0.05)
+        token = reserver.reserve(DAGNode(node_id="task_1", instruction="x"))
+        self.assertEqual(token[1], 0.02)
+        self.assertEqual(gov.outstanding, 0.02)
+
+    def test_remaining_counts_reservations_as_committed(self):
+        """``remaining`` is the one accessor for "what this run can still
+        commit": outstanding reservations are real liability, so they count
+        exactly like recorded spend."""
+        gov = _gov(self.fake, max_cost=0.01)
+        self.assertEqual(gov.remaining(), 0.01)
+        gov.reserve(0.004, "task_1")
+        self.assertAlmostEqual(gov.remaining(), 0.006, places=12)
+        gov.record_actual(0.002, "label")
+        self.assertAlmostEqual(gov.remaining(), 0.004, places=12)
+
     def test_outstanding_blocks_preflight(self):
         self.gov.reserve(0.0095, "task_1")
         # Remaining headroom is 0.0005 minus the outstanding liability: a

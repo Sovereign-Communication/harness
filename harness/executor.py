@@ -4,16 +4,30 @@ Provides:
 - FileLockManager: per-file mutual exclusion for concurrent workers.
 - ConcurrentExecutor: thread-pooled execution for independent batch files
   and topological DAG batches.
+- PlanExecutor: the plan lane's ONE execution assembly (worker count, cost
+  reservations, worktree isolation, per-node routing) shared by the CLI,
+  MCP, and the agent's edit lane.
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
+from dataclasses import replace
 import os
 import threading
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Set
 
 from .dag import DAGNode, TaskDAG
 from .errors import HarnessError
+from .filesafety import VERIFY_TIMEOUT, default_run_verify
+from .output import eprint
+from .repo_scope import _rebase_path, rebase_gate
 from .results import SUCCESS_STATUSES
+from .spend import NodeReserver
+from .waist import node_apply_kwargs
+from .worktree import WorktreeIsolation
+
+# Auto-scaling hourglass default for concurrent node dispatch (the CLI
+# parser, MCP schema, and the agent lane all mean this number).
+DEFAULT_PLAN_WORKERS = 4
 
 
 class FileLockManager:
@@ -205,11 +219,18 @@ class ConcurrentExecutor:
             else:
                 parallel = len(executable_nodes) > 1
                 handles: Dict[DAGNode, Any] = {}
-                if isolator is not None and parallel:
-                    for node in executable_nodes:
-                        handles[node] = isolator.create(node.node_id)
                 try:
-                    # Run executable nodes in parallel
+                    if isolator is not None and parallel:
+                        # Create all handles inside the cleanup boundary. If a
+                        # later worktree cannot be created, earlier handles
+                        # must not leak branches/directories.
+                        for node in executable_nodes:
+                            handles[node] = isolator.create(node.node_id)
+
+                    # Run executable nodes in parallel. Results are collected
+                    # as futures finish, but isolated branches are settled in
+                    # DAG batch order below so merge/conflict outcomes do not
+                    # depend on scheduler timing.
                     with ThreadPoolExecutor(max_workers=min(self.max_workers, len(executable_nodes))) as pool:
                         future_to_node = {
                             pool.submit(self._run_node_reserved, node, worker_fn,
@@ -217,25 +238,32 @@ class ConcurrentExecutor:
                                         (handles.get(node) or {}).get("path")): node
                             for node in executable_nodes
                         }
-
+                        stage_results: Dict[DAGNode, Dict[str, Any]] = {}
                         for future in as_completed(future_to_node):
                             node = future_to_node[future]
                             try:
-                                res = future.result()
+                                stage_results[node] = future.result()
                             except Exception as exc:
-                                res = {"status": "fatal", "error": str(exc), "node_id": node.node_id}
+                                stage_results[node] = {
+                                    "status": "fatal", "error": str(exc),
+                                    "node_id": node.node_id,
+                                }
+                            if (not keep_going and
+                                    stage_results[node].get("status") not in SUCCESS_STATUSES):
+                                for f in future_to_node:
+                                    f.cancel()
 
-                            if node in handles:
-                                res = self._settle_isolated(node, res, handles[node], isolator)
-                            all_results[node.node_id] = res
-                            if res.get("status") not in SUCCESS_STATUSES:
-                                failed_nodes.add(node.node_id)
-                                if not keep_going:
-                                    for f in future_to_node:
-                                        f.cancel()
+                    for node in executable_nodes:
+                        res = stage_results[node]
+                        if node in handles:
+                            res = self._settle_isolated(node, res, handles[node], isolator)
+                        all_results[node.node_id] = res
+                        if res.get("status") not in SUCCESS_STATUSES:
+                            failed_nodes.add(node.node_id)
                 finally:
-                    for handle in handles.values():
-                        isolator.discard(handle)
+                    if isolator is not None:
+                        for handle in handles.values():
+                            isolator.discard(handle)
 
             if on_stage_done is not None:
                 on_stage_done(executable_nodes, all_results)
@@ -275,6 +303,11 @@ class ConcurrentExecutor:
             if token is not None:
                 reserver.reconcile(token, 0.0)
             raise
+        if not isinstance(res, dict):
+            # A worker violating its result contract must become an explicit
+            # node failure, not an exception that skips liability settlement.
+            res = {"status": "fatal", "node_id": node.node_id,
+                   "error": "worker returned a non-mapping result"}
         if token is not None:
             reserver.reconcile(token, res.get("cost") or 0.0)
         return res
@@ -291,8 +324,144 @@ class ConcurrentExecutor:
             return {"status": "fatal", "node_id": node.node_id,
                     "error": f"undeclared writes outside target_files: {undeclared}"}
         try:
-            isolator.merge(handle)
+            # The node's declared work is committed before the branch merge:
+            # an uncommitted worktree merges as "Already up to date", so the
+            # edit would silently never land while the node reported ok.
+            isolator.merge(handle, node.target_files)
         except HarnessError as exc:
             return {"status": "merge_conflict", "node_id": node.node_id,
                     "error": str(exc)}
         return res
+
+
+class PlanExecutor:
+    """The plan lane's execution assembly -- ONE owner for CLI, MCP, and the
+    agent's edit lane: worker count, per-node cost reservations (MR-6),
+    git-worktree isolation (MR-5), per-node routing kwargs, and the caller's
+    apply callback.
+
+    It owns *how* a planned DAG runs and nothing about what a node does: the
+    lane supplies ``apply(target, node, route_kwargs, task_runner)`` (the
+    default calls ``engine.apply_edit``; the agent lane adds its healing
+    retry), so parallelism/isolation/reservation policy is derived once
+    instead of three times.
+
+    ``route_kwargs_fn(route) -> dict`` is the lane's per-node routing kwargs
+    (default :func:`harness.waist.node_apply_kwargs`); the same function
+    feeds the reserver, so a tier ceiling bounds both the request and the
+    pre-dispatch reservation.
+    """
+
+    def __init__(self, engine, node_routes, *, parallel=True, isolate=True,
+                 max_workers=DEFAULT_PLAN_WORKERS, keep_going=False,
+                 require_diff_authorization=False, route_kwargs_fn=None,
+                 base_apply_kwargs=None, apply=None, task_max_cost=None,
+                 run_ceiling=None, repo=None, on_stage_done=None):
+        self.engine = engine
+        # The tree the plan was made in: nodes' verification gates are rooted
+        # here (the planner derives them from the plan's own root), so a node
+        # running somewhere else can have them re-rooted truthfully.
+        self.repo = os.path.abspath(repo) if repo else os.getcwd()
+        self.node_routes = node_routes or {}
+        self.parallel = bool(parallel)
+        self.workers = max_workers if self.parallel else 1
+        self.keep_going = bool(keep_going)
+        self.require_diff_authorization = bool(require_diff_authorization)
+        self.route_kwargs_fn = route_kwargs_fn or node_apply_kwargs
+        self.base_apply_kwargs = dict(base_apply_kwargs or {})
+        self.apply = apply or self._apply_edit
+        self.executor = ConcurrentExecutor(max_workers=self.workers)
+
+        # MR-5 partition rule (hourglass default: on): concurrent nodes
+        # execute in isolated git worktrees; serial nodes share the tree
+        # under the per-path mutex. Unavailable git degrades loudly.
+        # ``repo`` is the tree being edited (the CLI edits its CWD; the
+        # agent lane edits its own root_dir), so isolation never branches a
+        # different repository than the one the node targets.
+        self.isolator = None
+        if self.parallel and isolate:
+            iso = WorktreeIsolation(repo=repo)
+            if iso.available():
+                self.isolator = iso
+            else:
+                eprint("[plan] git worktree isolation unavailable; "
+                       "falling back to shared-tree mutex execution")
+        # ``run_ceiling`` is the budget this lane is really running under
+        # (the session's ``max_cost``). The governor already holds it, so
+        # None means "ask the governor"; a lane that runs under a different
+        # ceiling passes it, and the reserver never invents a bound of its
+        # own -- an unrelated nominal fallback larger than the run ceiling
+        # used to refuse every node (free nodes included) before any work.
+        self.run_ceiling = run_ceiling
+        default_amount = task_max_cost
+        if default_amount is None:
+            default_amount = getattr(engine, "default_task_max_cost", None)
+        self.reserver = NodeReserver(
+            getattr(engine, "governor", None), self.node_routes, default_amount,
+            route_kwargs_fn=self.route_kwargs_fn, run_ceiling=run_ceiling)
+        self.on_stage_done = on_stage_done
+
+    def route_kwargs(self, node) -> Dict[str, Any]:
+        """This node's routing kwargs from the plan's own route detail."""
+        return self.route_kwargs_fn(self.node_routes.get(node.node_id))
+
+    def _apply_edit(self, target, node, route_kwargs, task_runner):
+        kwargs = dict(self.base_apply_kwargs)
+        # Route kwargs win: a tier ceiling bounds the request unless the
+        # lane pinned one (node_apply_kwargs suppresses it when pinned).
+        kwargs.update(route_kwargs)
+        # The attestation switch is this assembly's, so no lane can forget
+        # to thread it into the write it is gating.
+        kwargs["require_diff_authorization"] = self.require_diff_authorization
+        if task_runner is not None:
+            kwargs["task_runner"] = task_runner
+        return self.engine.apply_edit(
+            file_path=target, instruction=node.instruction,
+            verify_cmd=node.local_gate, **kwargs)
+
+    def run_node(self, node: DAGNode, gate_cwd: Optional[str] = None):
+        """Worker contract for :meth:`ConcurrentExecutor.execute_dag`.
+
+        Isolated nodes arrive with ``gate_cwd=<worktree path>``: the target
+        and every gate command resolve inside that worktree.
+
+        The node's gate was derived at PLAN time against the plan's own tree,
+        so it is re-rooted here into the checkout this node really runs in --
+        otherwise an isolated node's gate would compile the unedited copy in
+        the repo, which passes and proves nothing about the node's write.
+        """
+        target = node.target_files[0] if node.target_files else None
+        if target and gate_cwd:
+            # Planned nodes may carry either repo-relative or absolute paths;
+            # map both forms into the actual isolated checkout instead of
+            # blindly joining (which can duplicate an already absolute root).
+            target = _rebase_path(target, self.repo, gate_cwd)
+        gate = rebase_gate(node.local_gate, self.repo, gate_cwd or self.repo)
+        if gate != node.local_gate:
+            node = replace(node, local_gate=gate)
+        task_runner = None
+        if gate_cwd:
+            def task_runner(command, timeout=VERIFY_TIMEOUT):
+                return default_run_verify(command, timeout=timeout, cwd=gate_cwd)
+        return self.apply(target, node, self.route_kwargs(node), task_runner)
+
+    def execute(self, dag: TaskDAG) -> Dict[str, Any]:
+        return self.executor.execute_dag(
+            dag, self.run_node, keep_going=self.keep_going,
+            reserver=self.reserver, isolator=self.isolator,
+            on_stage_done=self.on_stage_done)
+
+    @staticmethod
+    def summarize(results: Dict[str, Any]) -> Dict[str, Any]:
+        """The completion/cost summary every plan-lane caller reports."""
+        values = list(results.values())
+        return {
+            # An empty DAG is not a successful execution. Treating all([]) as
+            # true makes an empty/invalid plan report a false ok envelope.
+            "all_ok": bool(values) and all(
+                res.get("status") in SUCCESS_STATUSES for res in values),
+            "completed": sum(1 for res in values
+                             if res.get("status") in SUCCESS_STATUSES),
+            "total_cost": round(sum(float(res.get("cost", 0.0) or 0.0)
+                                    for res in values), 6),
+        }

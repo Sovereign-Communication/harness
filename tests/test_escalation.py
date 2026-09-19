@@ -94,6 +94,77 @@ class FakeGov:
 
 
 class EscalationDriverTests(unittest.TestCase):
+    def _walk(self, *, primary, pool, finish_result):
+        """Run one driver walk and return the terminal result."""
+        from harness.apply_state import RunState
+        from harness.escalation import EscalationDriver
+
+        router = Router(panel=["a"], judge="j", apply_model="a",
+                        allow_escalation=True, escalation_pool=list(pool))
+        driver = EscalationDriver(router, transport=None, api_key="k",
+                                  governor=FakeGov(), ledger=None, task_id="t")
+        state = RunState(rounds=[], history=[], current_content="x")
+        req = SimpleNamespace(allow_escalation=True, model=primary)
+
+        def fake_chat(transport, api_key, model, messages, max_tokens,
+                      effort, budget, governor):
+            return 200, {
+                "choices": [{"message": {"content": f"content-from-{model}"},
+                             "finish_reason": "stop"}],
+                "usage": {"cost": 0.0},
+            }
+
+        with mock.patch("harness.escalation.chat", side_effect=fake_chat):
+            return driver.run_with_escalation(
+                req, state, lambda st, ctx: "prompt", finish_result)
+
+    def test_successful_walk_carries_family_evidence(self):
+        # THE evidence contract: the driver -- the ONE place that knows both
+        # the primary that failed and the rung that passed -- annotates the
+        # provenance, so "escalated" is checkable instead of a handoff claim.
+        from harness.escalation import escalation_evidence
+
+        result = self._walk(
+            primary="ling-3.0-flash-fin:free",
+            pool=["ling-3.0-flash-fin:free", "z-ai/glm-5.3-flash"],
+            finish_result=lambda model, content, cost: (
+                {"status": "ok", "model": model, "escalated": True}
+                if model.endswith("glm-5.3-flash") else None))
+        self.assertEqual(result["escalated_to"], "z-ai/glm-5.3-flash")
+        self.assertEqual(result["escalated_from"], "ling-3.0-flash-fin:free")
+        self.assertTrue(result["escalation_family_changed"])
+        evidence = escalation_evidence(result)
+        self.assertEqual(evidence["family"], "z-ai")
+        self.assertEqual(evidence["from_family"], "free")
+        self.assertEqual(evidence["rungs"], ["ling-3.0-flash-fin:free",
+                                            "z-ai/glm-5.3-flash"])
+
+    def test_walk_within_one_family_is_not_an_escalation(self):
+        # A free rung rotated to another free rung is a rung walk, but the
+        # family never changed -- it must not be reported as escalated.
+        from harness.escalation import escalation_evidence
+
+        result = self._walk(
+            primary="ling-3.0-flash-fin:free",
+            pool=["ling-3.0-flash-fin:free", "nvidia/nemotron:free"],
+            finish_result=lambda model, content, cost: (
+                {"status": "ok", "model": model, "escalated": True}
+                if model == "nvidia/nemotron:free" else None))
+        self.assertFalse(result["escalation_family_changed"])
+        self.assertIsNone(escalation_evidence(result))
+
+    def test_failed_walk_leaves_no_evidence(self):
+        # Every rung produced content but the gate never passed: the walk
+        # failed, so there is nothing to label as escalated.
+        from harness.escalation import escalation_evidence
+
+        result = self._walk(
+            primary="ling-3.0-flash-fin:free",
+            pool=["z-ai/glm-5.3-flash"],
+            finish_result=lambda model, content, cost: None)
+        self.assertIsNone(result)
+        self.assertIsNone(escalation_evidence({"status": "verify_failed"}))
+
     def test_driver_walks_rung_until_gate_passes(self):
         from harness.escalation import EscalationDriver
         from harness.apply_state import RunState
@@ -463,6 +534,18 @@ class ApplyLadderE2ETests(unittest.TestCase):
                     require_consent=False)
             self.assertEqual(result["status"], "ok")
             self.assertTrue(result.get("escalated"))
+            # The engine's real escalation result carries the walk provenance
+            # the label depends on: the primary that was saturated, the rung
+            # that passed, and the family change -- so the agent lane can
+            # verify an escalation instead of trusting a handoff note.
+            from harness.escalation import escalation_evidence
+            evidence = escalation_evidence(result)
+            self.assertIsNotNone(evidence)
+            self.assertEqual(result["escalated_to"], "paid/strong")
+            self.assertEqual(result["escalated_from"], "free/a:free")
+            self.assertEqual(evidence["family"], "paid")
+            self.assertEqual(evidence["from_family"], "free")
+            self.assertIn("paid/strong", evidence["rungs"])
             with open(target, encoding="utf-8") as f:
                 self.assertEqual(f.read(), "x = 2\n")
 
