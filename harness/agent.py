@@ -17,24 +17,16 @@ from .orchestrator import drive, keyword_fallback, triage_files
 from .prompts import CAPABILITY_MARKER
 from .escalation import escalation_evidence, escalation_evidence_fields
 from .executor import PlanExecutor
-from .history import get_default_history_dir, load_chat_history, save_chat_turn
-from .repo_scope import (
-    _REPO_SKIP_DIRS,
-    _REPO_SKIP_SUFFIXES,
-    discover_target_files,
-    discover_verification_gate,
-    enumerate_repo_files,
-)
+from .history import load_chat_history, save_chat_turn
+from .repo_scope import discover_target_files, discover_verification_gate, enumerate_repo_files
 from .results import SUCCESS_STATUSES, _http_error
 from .session import apply_session, attest_model_for, governor_for, ledger_for
 from .waist import compose_plan, resolve_scout_ladder
-from .web import DEFAULT_FETCH_HOSTS, extract_query, fetch_url, find_urls, gather_web_context, search_web
+from .web import DEFAULT_FETCH_HOSTS, gather_web_context
 
-# Deliberate compatibility re-exports, declared so the architecture guard
-# reads intent instead of a dead import. The web seams are imported so
-# hermetic tests can patch them at this module path, and the history /
-# repo_scope helpers were this module's public surface before the split. The
-# owners are harness.web, harness.history, and harness.repo_scope.
+# The history and repository-scope helpers remain imported at their owning
+# modules; this file keeps only the agent-facing compatibility names still
+# used by callers and tests.
 __all__ = [
     "AutonomousAgent",
     "CONVERSATION_STARTERS",
@@ -44,15 +36,8 @@ __all__ = [
     "discover_target_files",
     "discover_verification_gate",
     "enumerate_repo_files",
-    "extract_query",
-    "fetch_url",
-    "find_urls",
-    "get_default_history_dir",
     "load_chat_history",
     "save_chat_turn",
-    "search_web",
-    "_REPO_SKIP_DIRS",
-    "_REPO_SKIP_SUFFIXES",
 ]
 
 DEFAULT_CHAT_SYSTEM_PROMPT = (
@@ -202,29 +187,11 @@ class AutonomousAgent:
             return self._handle_edit(prompt, sid, auto_apply, cancel_check)
 
     def _gather_web_context(self, prompt: str) -> List[Dict[str, Any]]:
-        # Delegates to web.gather_web_context (single owner) with module seams
-        # so tests patching harness.agent.fetch_url/search_web keep working:
-        # we forward the currently-patched callables explicitly. Prefer any
-        # patch on harness.agent (legacy test seam) else harness.web.
-        import harness.web as _web
-        import sys as _sys
-        _agent_mod = _sys.modules.get(__name__)
-        def _pick(name):
-            # patched on agent wins; otherwise web's implementation
-            fn = getattr(_agent_mod, name, None)
-            # distinguish between our own shim (not patched) vs a MagicMock patch:
-            # if the attribute is exactly the web function object, it's unpatched -> use web
-            web_fn = getattr(_web, name)
-            if fn is None or fn is web_fn:
-                return web_fn
-            return fn
+        # Web policy and transport belong to harness.web; this agent only
+        # supplies the request and renders the returned evidence.
         return gather_web_context(
             prompt,
             allowed_hosts=DEFAULT_FETCH_HOSTS,
-            fetch_url_fn=_pick("fetch_url"),
-            search_web_fn=_pick("search_web"),
-            find_urls_fn=_pick("find_urls"),
-            extract_query_fn=_pick("extract_query"),
             max_sources=_MAX_WEB_SOURCES,
         )
 
