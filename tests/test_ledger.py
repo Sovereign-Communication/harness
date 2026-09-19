@@ -141,6 +141,10 @@ class LedgerTests(unittest.TestCase):
         r = led.participation_report()
         self.assertEqual(r["trust_gates"], 2)
         self.assertEqual(r["trust_hostile"], 1)
+        # Per-model attribution skips the refuse-band soft deny too
+        # (the over-ceiling soft deny and the hostile attempt still count).
+        self.assertEqual(r["per_model"]["m"]["trust_denials"], 2)
+        self.assertEqual(r["per_model"]["m"]["trust_hostile"], 1)
 
     def test_participation_report_counts(self):
         led = self.ledger

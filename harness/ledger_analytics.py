@@ -110,10 +110,18 @@ class LedgerAnalytics:
                 # Safety-denial evidence, attributed when the denial names
                 # a model (dispatch/mutation gates do; bare MCP boundary
                 # refusals may not -- those still count host-globally).
-                m_ = ms(e.get("model"))
-                m_["trust_denials"] = m_.get("trust_denials", 0) + 1
-                if e.get("severity") == "hostile":
-                    m_["trust_hostile"] = m_.get("trust_hostile", 0) + 1
+                # Same refuse-band soft skip as the host counts: the
+                # lockout loop is not evidence against the model either.
+                _combined = e.get("combined")
+                _refuse_band_soft = (
+                    e.get("severity") != "hostile"
+                    and isinstance(_combined, (int, float))
+                    and _combined <= REFUSE_AT_OR_BELOW)
+                if not _refuse_band_soft:
+                    m_ = ms(e.get("model"))
+                    m_["trust_denials"] = m_.get("trust_denials", 0) + 1
+                    if e.get("severity") == "hostile":
+                        m_["trust_hostile"] = m_.get("trust_hostile", 0) + 1
             elif ev == "verify_round":
                 rounds_per_task.setdefault(e.get("task_id"), []).append(e.get("round"))
             caller = e.get("caller")
