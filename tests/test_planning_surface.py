@@ -9,6 +9,7 @@ from harness.dag import TaskDAG, heuristic_decompose_goal, plan_task
 from harness.errors import HarnessError
 from harness.mcp_lanes import lane_for
 from harness.mcp_schemas import TOOL_SCHEMAS
+from harness.repo_scope import rebase_gate
 
 
 class TestPlanningSurface(unittest.TestCase):
@@ -55,6 +56,29 @@ class TestPlanningSurface(unittest.TestCase):
         self.assertEqual(node_info["complexity_tier"], 2)
         self.assertEqual(node_info["recommended_model"], "openai/gpt-6")
         self.assertGreater(node_info["cost_ceiling"], 0.0)
+
+    def test_plan_task_derives_gate_for_each_declared_target(self):
+        with _tempfile.TemporaryDirectory() as tmp:
+            root = os.path.abspath(tmp)
+            target = os.path.join(root, "module.py")
+            with open(target, "w", encoding="utf-8") as handle:
+                handle.write("value = 1\n")
+            plan = plan_task("Update module", candidate_files=[target], root=root)
+            node = plan["nodes"][0]
+            self.assertEqual(node["target_files"], [target])
+            self.assertEqual(
+                node["local_gate"],
+                f'python -m py_compile "{target}"')
+            self.assertEqual(plan["dag"]["nodes"][0]["local_gate"],
+                             node["local_gate"])
+
+    def test_rebase_gate_replaces_root_once(self):
+        gate = r'python -m py_compile "C:\repo\a.py"'
+        rebased = rebase_gate(gate, r"C:\repo", r"C:\repo\.harness\wt\n1")
+        self.assertEqual(
+            rebased,
+            r'python -m py_compile "C:\repo\.harness\wt\n1\a.py"')
+        self.assertNotIn(r".harness\wt\n1\.harness", rebased)
 
     def test_cli_parser_plan_subcommand(self):
         p = build_parser()
@@ -444,6 +468,74 @@ class TestPlanningSurface(unittest.TestCase):
         for call in mock_engine.apply_edit.call_args_list:
             self.assertIn("task_runner", call[1])
 
+    def test_cli_plan_lane_passes_its_run_ceiling_to_the_executor(self):
+        """The CLI lane tells the shared assembly the budget it is really
+        running under (the governor ceiling it built), so a node reservation
+        is bounded by that instead of by the engine's nominal default."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        import harness.executor as executor_module
+        from harness.cli import _cmd_plan
+        from tests._fake import FakeTransport, _gov
+
+        class _StubEngine:
+            def __init__(self, governor):
+                self.governor = governor
+                self.transport = None
+                self.api_key = None
+                self.default_task_max_cost = 0.10
+                self.calls = []
+
+            def apply_edit(self, **kwargs):
+                self.calls.append(kwargs)
+                return {"status": "ok", "cost": 0.0}
+
+        captured = {}
+
+        def spy(engine_arg, routes, **kwargs):
+            captured.update(kwargs)
+            captured["exec"] = executor_module.PlanExecutor(
+                engine_arg, routes, **kwargs)
+            return captured["exec"]
+
+        def single_node_plan(*args, **kwargs):
+            return {
+                "status": "planned", "goal": kwargs.get("opts_goal", ""),
+                "dag": {"nodes": [
+                    {"node_id": "task_1", "instruction": "do a",
+                     "target_files": ["iso_a.py"], "dependencies": []}]},
+                "nodes": [
+                    {"node_id": "task_1",
+                     "route": {"ladder": ["m/a"], "cost_ceiling": 0.04}}],
+            }
+
+        opts = SimpleNamespace(
+            goal="Update the module", file=["iso_a.py"],
+            frontier_model=None, execute=True, parallel=True, max_workers=2,
+            max_cost=None, keep_going=False, out=None, model=None,
+            max_tokens=None, task_max_cost=None, allow_escalation=False,
+            reasoning_effort=None, max_rotations=3, isolate=False,
+            stage_gate=None)
+        settings = SimpleNamespace(use_free=False, frontier_model=None,
+                                   hourglass_confirm=False,
+                                   hourglass_require_attestation=False)
+        gov = _gov(FakeTransport(), max_cost=0.05)
+        engine = _StubEngine(gov)
+
+        with patch("harness.cli._session", return_value=engine), \
+             patch("harness.cli._compose_plan", side_effect=single_node_plan), \
+             patch("harness.cli.PlanExecutor", side_effect=spy), \
+             patch("harness.cli._emit_by_status") as mock_emit:
+            _cmd_plan(opts, settings)
+        res = mock_emit.call_args[0][0]
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(captured["run_ceiling"], 0.05)
+        self.assertEqual(captured["exec"].reserver.run_ceiling, 0.05)
+        # The declared $0.04 tier ceiling was reserved, then reconciled.
+        self.assertEqual(gov.outstanding, 0.0)
+        self.assertEqual(gov.spent, 0.0)
+
     def test_cli_cmd_plan_isolate_unavailable_degrades_loudly(self):
         from types import SimpleNamespace
         from unittest.mock import patch
@@ -477,10 +569,12 @@ class TestPlanningSurface(unittest.TestCase):
                                    ledger_path=os.path.join(
                                        _tempfile.mkdtemp(), 'l.jsonl'))
 
+        # Isolation lives in the ONE assembly every lane builds
+        # (executor.PlanExecutor), so the seam is patched there.
         with patch("harness.cli._session", return_value=mock_engine), \
              patch("harness.cli._compose_plan", side_effect=self._canned_plan), \
-             patch("harness.cli.WorktreeIsolation") as mock_iso_cls, \
-             patch("harness.cli.eprint") as mock_eprint, \
+             patch("harness.executor.WorktreeIsolation") as mock_iso_cls, \
+             patch("harness.executor.eprint") as mock_eprint, \
              patch("harness.cli._emit_by_status") as mock_emit:
             mock_iso_cls.return_value.available.return_value = False
             _cmd_plan(opts, settings)
@@ -489,6 +583,29 @@ class TestPlanningSurface(unittest.TestCase):
         self.assertEqual(res["status"], "ok")
         self.assertEqual(res["completed_nodes"], 2)
         self.assertIn("unavailable", str(mock_eprint.call_args))
+
+    def test_hourglass_mapping_has_one_owner(self):
+        """The CLI flags, the MCP defaults, and the agent lane all resolve
+        the same switches from the same settings through config.
+        resolve_hourglass -- no lane re-derives the mapping."""
+        from types import SimpleNamespace
+
+        from harness.cli import _resolve_hourglass
+        from harness.config import resolve_hourglass
+
+        settings = SimpleNamespace(hourglass_confirm=True,
+                                   hourglass_parallel=True,
+                                   hourglass_isolate=True,
+                                   hourglass_require_attestation=True)
+        flags_off = SimpleNamespace(confirm=False, parallel=False, isolate=False,
+                                    require_diff_authorization=False)
+        self.assertEqual(_resolve_hourglass(flags_off, settings), {
+            "confirm": False, "parallel": False, "isolate": False,
+            "require_diff_authorization": False})
+        # An explicit flag wins; a missing/None flag inherits the settings
+        # file, which is exactly what the agent lane (opts=None) reads.
+        self.assertTrue(resolve_hourglass(settings, SimpleNamespace())['confirm'])
+        self.assertEqual(resolve_hourglass(settings), _resolve_hourglass(None, settings))
 
     def test_cli_cmd_plan_stage_gate_failure_aborts(self):
         from types import SimpleNamespace

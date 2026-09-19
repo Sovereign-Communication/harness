@@ -16,6 +16,73 @@ from .chat import (_chat_reservation_slots, chat, extract_content_and_cost,
 from .config import effective_lane_policy
 from .errors import HarnessError
 from .output import eprint
+from .sliding_scale import model_family
+
+
+def _annotate_escalation(result, *, from_model, to_model, rungs) -> None:
+    """Record the rung walk on a gate-passed escalation result.
+
+    Called from the ONE place that knows both which model failed and which
+    rung passed. The provenance is what makes the label checkable: without it
+    a caller can only see that escalation was ATTEMPTED, which is how a run
+    that never left the free lane reported itself as escalated.
+    """
+    if not isinstance(result, dict):
+        return
+    result.setdefault("escalated_to", to_model)
+    result.setdefault("escalated_from", from_model)
+    result.setdefault("escalation_rungs", list(rungs or []))
+    result.setdefault("escalation_family", model_family(to_model))
+    result.setdefault("escalated_from_family", model_family(from_model))
+    result.setdefault(
+        "escalation_family_changed",
+        bool(from_model) and model_family(from_model) != model_family(to_model))
+
+
+def escalation_evidence(result):
+    """The evidence contract for a REAL escalated rung walk.
+
+    Returns provenance only when the engine reports a gate-passed escalation
+    whose final model belongs to a different pool family than the primary it
+    replaced -- i.e. the escalation the operator was promised actually ran.
+    Returns ``None`` for: no escalation, an escalation whose attempt failed
+    (no gate pass), a walk that stayed inside one family (free rung to free
+    rung), or a result that predates the provenance fields. Callers must not
+    stamp an "escalated" label on anything this refuses.
+    """
+    if not isinstance(result, dict) or not result.get("escalated"):
+        return None
+    to_model = str(result.get("escalated_to") or "").strip()
+    from_model = str(result.get("escalated_from") or "").strip()
+    if not to_model or not from_model:
+        return None
+    to_family, from_family = model_family(to_model), model_family(from_model)
+    if to_family == from_family:
+        return None
+    return {
+        "model": to_model,
+        "family": to_family,
+        "from_model": from_model,
+        "from_family": from_family,
+        "rungs": [str(m) for m in (result.get("escalation_rungs") or [])],
+    }
+
+
+def escalation_evidence_fields(evidence):
+    """The envelope fields a reader verifies an escalation claim with.
+
+    Empty when there is no evidence, so an unescalated run carries no
+    escalated_* keys at all (a reader can never mistake an absent field for a
+    claim, and never mistake a present one for a handoff note).
+    """
+    if not evidence:
+        return {}
+    return {
+        "escalated_model": evidence["model"],
+        "escalated_from_model": evidence["from_model"],
+        "escalation_family": evidence["family"],
+        "escalation_rungs": list(evidence["rungs"]),
+    }
 
 
 class EscalationDriver:
@@ -166,6 +233,15 @@ class EscalationDriver:
 
             result = finish_fn(model, content, cost)
             if result and result.get("status") == "ok":
+                # The walk SUCCEEDED here: this is the only place that knows
+                # both the primary that failed (req.model) and the rung that
+                # passed the gate. Provenance lands here -- never at a
+                # caller's handoff, which cannot tell a rung walk from a
+                # request that simply got routed.
+                _annotate_escalation(
+                    result, from_model=getattr(req, "model", None),
+                    to_model=model,
+                    rungs=[h["model"] for h in self.escalation_history])
                 return result
             # Gate failed or capability-deferred: try the next (more capable) rung
             # unless finish_fn already produced a terminal deferral.

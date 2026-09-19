@@ -351,3 +351,15 @@ def governed_text(transport, api_key, governor, model, prompt, max_tokens,
     if not content or not content.strip():
         raise HarnessError(f"empty response body from {model}")
     return content, cost
+
+def chat_ladder(settings) -> list:
+    """Single-owner chat lane ladder: tier-1 head + free panel + paid escalation when allowed."""
+    models = [getattr(settings, "tier1_model", None) or getattr(settings, "judge", None) or "inclusionai/ling-3.0-flash-fin:free"]
+    for m in list(getattr(settings, "panel_pool", []) or []):
+        if m not in models:
+            models.append(m)
+    if getattr(settings, "allow_escalation", False) and getattr(settings, "escalation_pool", None):
+        for m in getattr(settings, "escalation_pool"):
+            if m not in models:
+                models.append(m)
+    return models

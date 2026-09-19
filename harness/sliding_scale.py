@@ -266,6 +266,25 @@ def tier_model_ladder(tier: int, use_free: bool = True, custom_frontier: Optiona
     return out
 
 
+def model_family(model_id) -> str:
+    """The pool family of a model id: ``"free"`` for a zero-cost route, else
+    its vendor namespace.
+
+    ONE definition of "same family" for every escalation decision: the walk
+    annotates the family change and the agent lane stamps
+    ``escalated_from_defer`` only on that evidence. A free route is its own
+    family, so a free rung rotated to another free rung is still a rung walk
+    but is NOT an escalation to a different family -- and reporting it as one
+    is exactly the "said escalated, ran ling 100%" defect.
+    """
+    mid = str(model_id or "").strip().lower()
+    if not mid:
+        return "unknown"
+    if mid == "openrouter/free" or mid.endswith(":free"):
+        return "free"
+    return mid.split("/", 1)[0] if "/" in mid else mid
+
+
 def tier_cost_ceiling(tier: int, use_free: bool = True) -> float:
     """Return the preflight spend ceiling for a given tier in USD."""
     if use_free:

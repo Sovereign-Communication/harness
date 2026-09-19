@@ -9,13 +9,9 @@ subtask leaves into parallelizable stages).
 """
 from dataclasses import dataclass
 import json
-import math
-import re
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .errors import HarnessError
-from .sliding_scale import resolve_sliding_scale_route
-from .validation import MAX_INSTRUCTION_CHARS
 
 
 @dataclass(frozen=True)
@@ -27,6 +23,10 @@ class DAGNode:
     dependencies: Tuple[str, ...] = ()
     local_gate: Optional[str] = None
     complexity_tier: int = 1
+    # Execution hint for a node whose pass cannot be a whole-file rewrite
+    # (the plan lane sets it when it chunks an oversized target): the engine
+    # accepts only its own backend vocabulary.
+    backend: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -36,6 +36,7 @@ class DAGNode:
             "dependencies": list(self.dependencies),
             "local_gate": self.local_gate,
             "complexity_tier": self.complexity_tier,
+            "backend": self.backend,
         }
 
     @classmethod
@@ -59,6 +60,9 @@ class DAGNode:
                 complexity_tier = 1
         except (TypeError, ValueError):
             complexity_tier = 1
+        backend = str(data.get("backend") or "").strip() or None
+        if backend not in ("harness", "morph", "diff"):
+            backend = None
 
         return cls(
             node_id=node_id,
@@ -67,6 +71,7 @@ class DAGNode:
             dependencies=dependencies,
             local_gate=local_gate_str,
             complexity_tier=complexity_tier,
+            backend=backend,
         )
 
 
@@ -196,464 +201,47 @@ class TaskDAG:
         return cls.from_dict(data)
 
 
-def build_decomposition_prompt(
-    goal: str,
-    repo_context: Optional[str] = None,
-    candidate_files: Optional[Sequence[str]] = None,
-) -> str:
-    """Build a prompt instructing a model to decompose a goal into a TaskDAG JSON."""
-    lines = [
-        "You are an expert software architect decomposing a development task into an atomic, dependency-ordered work graph.",
-        "",
-        "GOAL:",
-        goal.strip(),
-        "",
-    ]
-    if candidate_files:
-        lines.append("AVAILABLE / CANDIDATE FILES:")
-        for cf in sorted(candidate_files):
-            lines.append(f"  - {cf}")
-        lines.append("")
 
-    if repo_context:
-        lines.append("REPOSITORY CONTEXT:")
-        lines.append(repo_context.strip())
-        lines.append("")
+# --- Lazy re-exports of plan policy now owned by waist (single owner) ---
+# DAG remains pure data; policy lives in waist. Tests and callers that
+# import these names from harness.dag keep working via these shims.
 
-    lines.extend([
-        "INSTRUCTIONS:",
-        "1. Break the goal into small, focused, verifiable subtasks (DAG nodes).",
-        "2. EVERY node MUST end in a file being written or modified: each node",
-        "   is executed by a code-writing engine that receives the node's",
-        "   instruction and edits its target file. Do NOT create analysis,",
-        "   research, inspection, planning, or review nodes -- the planning",
-        "   pass already gathered that context. An instruction like 'inspect",
-        "   X' or 'determine what to test' is ALWAYS WRONG: fold whatever it",
-        "   was meant to learn into the writing node's instruction instead.",
-        "3. For each subtask, declare:",
-        "   - 'node_id': unique alphanumeric identifier (e.g. 'task_1', 'task_2').",
-        "   - 'instruction': the COMPLETE, self-contained change to make to the",
-        "     target file in this step (the executor sees no other context):",
-        "     what to write, with the exact behavior, signatures, and cases.",
-        "   - 'target_files': list of exact files modified by this subtask (at most 1-2 files per node).",
-        "   - 'dependencies': list of node_ids that MUST pass before this subtask can begin.",
-        "   - 'local_gate': automated verification command run in the target",
-        "     file's directory (e.g. 'python -m unittest test_types') or null.",
-        "   - 'complexity_tier': 0 (scout/simple fix), 1 (standard logic), 2 (deep architecture/frontier).",
-        "4. Ensure the graph is strictly ACYCLIC (no circular dependencies).",
-        "5. Independent tasks should have empty dependencies so they can run concurrently.",
-        "",
-        "Output ONLY valid JSON matching this schema:",
-        "```json",
-        "{",
-        '  "nodes": [',
-        '    {',
-        '      "node_id": "task_1",',
-        '      "instruction": "Create pkg/types.py defining the ShipmentsFilter dataclass with fields query (str), limit (int, default 20); include a __repr__.",',
-        '      "target_files": ["pkg/types.py"],',
-        '      "dependencies": [],',
-        '      "local_gate": "python -m unittest tests.test_types",',
-        '      "complexity_tier": 0',
-        '    }',
-        '  ]',
-        "}",
-        "```"
-    ])
-    return "\n".join(lines)
+def build_decomposition_prompt(*args, **kwargs):
+    from .waist import build_decomposition_prompt as _impl
+    return _impl(*args, **kwargs)
 
+def _parse_json_object(*args, **kwargs):
+    from .waist import _parse_json_object as _impl
+    return _impl(*args, **kwargs)
 
-def _parse_json_object(response_text: str, what: str) -> Dict[str, Any]:
-    """Extract a JSON object from an LLM response: markdown fenced block
-    first, then the outermost brace span, else the raw text. ONE owner of
-    that extraction (decomposition and waist verdicts share it)."""
-    if not response_text or not response_text.strip():
-        raise HarnessError(f"empty response for {what}")
+def parse_decomposition_response(*args, **kwargs):
+    from .waist import parse_decomposition_response as _impl
+    return _impl(*args, **kwargs)
 
-    text = response_text.strip()
-    # 1. Try markdown fenced code block: ```json ... ``` or ``` ... ```
-    m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
-    if m:
-        candidate = m.group(1).strip()
-    else:
-        # 2. Look for outermost '{' ... '}'
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            candidate = text[start:end + 1]
-        else:
-            candidate = text
+def heuristic_decompose_goal(*args, **kwargs):
+    from .waist import heuristic_decompose_goal as _impl
+    return _impl(*args, **kwargs)
 
-    try:
-        data = json.loads(candidate)
-    except json.JSONDecodeError as exc:
-        raise HarnessError(f"failed to parse JSON from {what}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise HarnessError(f"{what} must be a JSON object")
-    return data
+def decompose_via_llm(*args, **kwargs):
+    from .waist import decompose_via_llm as _impl
+    return _impl(*args, **kwargs)
 
+def plan_task(*args, **kwargs):
+    from .waist import plan_task as _impl
+    return _impl(*args, **kwargs)
 
-def parse_decomposition_response(response_text: str) -> TaskDAG:
-    """Extract and parse a TaskDAG from an LLM's response text."""
-    data = _parse_json_object(response_text, "task decomposition")
-    return TaskDAG.from_dict(data)
+def node_apply_kwargs(*args, **kwargs):
+    from .waist import node_apply_kwargs as _impl
+    return _impl(*args, **kwargs)
 
+def build_waist_prompt(*args, **kwargs):
+    from .waist import build_waist_prompt as _impl
+    return _impl(*args, **kwargs)
 
-def heuristic_decompose_goal(goal: str, candidate_files: Optional[Sequence[str]] = None) -> TaskDAG:
-    # Deterministic heuristic decomposition into a TaskDAG
-    if not goal or not goal.strip():
-        raise HarnessError("goal cannot be empty")
+def _waist_window_request(*args, **kwargs):
+    from .waist import _waist_window_request as _impl
+    return _impl(*args, **kwargs)
 
-    files = [f.strip() for f in (candidate_files or []) if str(f).strip()]
-    nodes: Dict[str, DAGNode] = {}
-
-    # Check for numbered or bulleted steps in goal
-    steps = [s.strip() for s in re.split(r"(?:^|\n)\s*(?:\d+[\.\)]|[-*])\s+", goal.strip()) if s.strip()]
-
-    if len(steps) > 1:
-        # Multi-step goal
-        prev_id = None
-        for i, step in enumerate(steps, 1):
-            node_id = f"task_{i}"
-            deps = (prev_id,) if prev_id else ()
-            target = (files[i - 1],) if i - 1 < len(files) else ()
-            nodes[node_id] = DAGNode(
-                node_id=node_id,
-                instruction=step,
-                target_files=target,
-                dependencies=deps,
-                complexity_tier=1,
-            )
-            prev_id = node_id
-    elif len(files) > 1:
-        # Multi-file goal: one subtask per file
-        test_files = [f for f in files if "test" in f.lower()]
-        impl_files = [f for f in files if f not in test_files]
-
-        impl_ids = []
-        for i, f in enumerate(impl_files, 1):
-            node_id = f"task_{i}"
-            impl_ids.append(node_id)
-            nodes[node_id] = DAGNode(
-                node_id=node_id,
-                instruction=f"{goal.strip()} for {f}",
-                target_files=(f,),
-                dependencies=(),
-                complexity_tier=1,
-            )
-
-        start_test_idx = len(impl_files) + 1
-        for j, f in enumerate(test_files, start_test_idx):
-            node_id = f"task_{j}"
-            nodes[node_id] = DAGNode(
-                node_id=node_id,
-                instruction=f"Update tests in {f} for {goal.strip()}",
-                target_files=(f,),
-                dependencies=tuple(impl_ids),
-                complexity_tier=1,
-            )
-    else:
-        # Single node goal
-        nodes["task_1"] = DAGNode(
-            node_id="task_1",
-            instruction=goal.strip(),
-            target_files=tuple(files),
-            dependencies=(),
-            complexity_tier=1,
-        )
-
-    return TaskDAG(nodes=nodes)
-
-
-def decompose_via_llm(
-    chat_fn,
-    goal: str,
-    candidate_files: Optional[Sequence[str]] = None,
-    repo_context: Optional[str] = None,
-) -> TaskDAG:
-    """M1 seam: a cheap model authors the DAG; strict schema validation.
-
-    ``chat_fn(prompt) -> response text`` is injected (governed upstream via
-    ``chat.governed_text``), so this stays pure and hermetically testable.
-    Raises HarnessError on empty/invalid responses, an empty node set, or
-    nodes that would fail apply-time validation (instruction length). The
-    heuristic decomposition stays the caller's fallback: planning may
-    degrade loudly, spending may not degrade silently.
-    """
-    prompt = build_decomposition_prompt(
-        goal, repo_context=repo_context, candidate_files=candidate_files)
-    dag = parse_decomposition_response(chat_fn(prompt))
-    if not dag.nodes:
-        raise HarnessError("LLM decomposition returned no nodes")
-    for node in dag.nodes.values():
-        if len(node.instruction) > MAX_INSTRUCTION_CHARS:
-            raise HarnessError(
-                f"LLM decomposition node {node.node_id!r} instruction exceeds "
-                f"{MAX_INSTRUCTION_CHARS} chars (would fail apply validation)")
-    return dag
-
-
-def plan_task(
-    goal: str,
-    candidate_files: Optional[Sequence[str]] = None,
-    repo_context: Optional[str] = None,
-    custom_frontier: Optional[str] = None,
-    use_free: bool = True,
-    decomposed_dag: Optional[TaskDAG] = None,
-) -> Dict[str, Any]:
-    # Formulate a TaskDAG and classify sliding-scale tiers for each node.
-    # decomposed_dag: a pre-built DAG (LLM-authored via decompose_via_llm or
-    # waist-amended) replacing the heuristic decomposition; tier
-    # classification and ceiling math are identical for either origin.
-    dag = (decomposed_dag if decomposed_dag is not None
-           else heuristic_decompose_goal(goal, candidate_files))
-    node_details: List[Dict[str, Any]] = []
-    total_ceiling = 0.0
-
-    classified_nodes: Dict[str, DAGNode] = {}
-    batches = dag.topological_batches()
-    depth_map: Dict[str, int] = {}
-    for depth, batch in enumerate(batches):
-        for n in batch:
-            depth_map[n.node_id] = depth
-
-    for node_id, node in dag.nodes.items():
-        is_leaf = len(node.dependencies) == 0
-        depth = depth_map.get(node_id, 0)
-        route = resolve_sliding_scale_route(
-            instruction=node.instruction,
-            target_files=node.target_files,
-            dependency_depth=depth,
-            is_leaf=is_leaf,
-            use_free=use_free,
-            custom_frontier=custom_frontier,
-        )
-        total_ceiling += route.cost_ceiling
-        classified_nodes[node_id] = DAGNode(
-            node_id=node.node_id,
-            instruction=node.instruction,
-            target_files=node.target_files,
-            dependencies=node.dependencies,
-            local_gate=node.local_gate,
-            complexity_tier=route.classification.tier,
-        )
-        node_details.append({
-            "node_id": node.node_id,
-            "instruction": node.instruction,
-            "target_files": list(node.target_files),
-            "dependencies": list(node.dependencies),
-            "local_gate": node.local_gate,
-            "complexity_tier": route.classification.tier,
-            "recommended_model": route.classification.recommended_model,
-            "cost_ceiling": route.cost_ceiling,
-            "classification": {
-                "tier": route.classification.tier,
-                "score": route.classification.score,
-                "reasons": list(route.classification.reasons),
-                "estimated_cost_tier": route.classification.estimated_cost_tier,
-            },
-            "route": {
-                "ladder": list(route.ladder),
-                "cost_ceiling": route.cost_ceiling,
-            },
-        })
-
-    enriched_dag = TaskDAG(nodes=classified_nodes)
-    return {
-        "status": "planned",
-        "goal": goal.strip(),
-        "total_nodes": len(enriched_dag.nodes),
-        "batches": [[n.node_id for n in b] for b in enriched_dag.topological_batches()],
-        "nodes": node_details,
-        "total_cost_ceiling": round(total_ceiling, 4),
-        "dag": enriched_dag.to_dict(),
-    }
-
-
-def node_apply_kwargs(
-    node_detail: Optional[Dict[str, Any]] = None,
-    explicit_model: Optional[str] = None,
-    explicit_task_max_cost: Optional[float] = None,
-) -> Dict[str, Any]:
-    """Per-request apply kwargs for executing one planned DAG node.
-
-    Threads a node's sliding-scale route (from :func:`plan_task`'s
-    ``nodes`` entries) into :meth:`harness.apply.ApplyEngine.apply_edit`:
-    the tier ladder becomes the request's ``apply_pool`` -- the engine
-    orders it at the routing boundary via ``capability.ordered_pool``
-    (interfaces never pre-order a pool) and rotation stays inside the
-    tier-appropriate models. The tier cost ceiling becomes the per-task
-    ceiling only when it is a real bound (paid tiers): a $0 free-tier
-    ceiling is deliberately NOT passed, because a zero task budget would
-    refuse the escalation ladder before it could rescue a hard node
-    (``spent - start < 0.0`` is never true); free-tier cost discipline is
-    the governor's job (every attempted model bills $0.0).
-
-    An explicit model pin wins outright (manual routing, no pool override);
-    an explicit ``task_max_cost`` pin suppresses only the ceiling.
-    Unknown, missing, or MALFORMED route detail degrades to today's
-    defaults ({}): non-mapping detail/route, a non-sequence ladder (a
-    string would otherwise become per-character "model ids"), and
-    non-finite ceilings are all refused silently -- the governor's
-    key-level ceiling still binds, so degradation never fails open.
-    """
-    if explicit_model is not None:
-        return {}
-    detail = node_detail if isinstance(node_detail, dict) else {}
-    route = detail.get("route")
-    if not isinstance(route, dict):
-        route = {}
-    kwargs = {}
-    raw_ladder = route.get("ladder")
-    if isinstance(raw_ladder, (list, tuple)):
-        ladder = [str(m).strip() for m in raw_ladder if str(m).strip()]
-        if ladder:
-            kwargs["apply_pool"] = ladder
-    if explicit_task_max_cost is None:
-        try:
-            ceiling = float(route.get("cost_ceiling"))
-        except (TypeError, ValueError):
-            ceiling = 0.0
-        if ceiling > 0.0 and math.isfinite(ceiling):
-            kwargs["task_max_cost"] = ceiling
-    return kwargs
-
-
-
-def build_waist_prompt(
-    plan_result: Dict[str, Any],
-    brief_context: str = "",
-    window_context: str = "",
-) -> str:
-    """Build the frontier waist-confirmation prompt (M2).
-
-    The brief (file signatures + bounded windows + failure evidence) is the
-    confirming model's ONLY repo access: bounded file-window round-trips
-    replace open-ended reading. The verdict contract is strict JSON, one of::
-
-        {"verdict": "approve"}
-        {"verdict": "amend", "nodes": [ ...same node schema as decomposition... ]}
-        {"verdict": "refuse", "reason": "...", "evidence": "cited brief section"}
-        {"verdict": "request_windows",
-         "file_window_requests": [{"path": "p/x.py", "start_line": 1, "end_line": 80}]}
-
-    ``amend`` replaces the whole node set (subdividing a node is just an
-    amend), and the replacement re-validates through the same schema as the
-    original plan. A refusal must cite the brief section that fails --
-    honest evidence, not vibes.
-    """
-    nodes = [
-        {k: n[k] for k in ("node_id", "instruction", "target_files",
-                           "dependencies", "local_gate", "complexity_tier")
-         if k in n}
-        for n in plan_result.get("nodes", [])
-    ]
-    lines = [
-        "You are the plan-confirmation gate for an autonomous coding harness.",
-        "A cheaper model decomposed the goal below into an executable DAG.",
-        "Confirm the plan BEFORE execution spend: check decomposition quality,",
-        "tier assignments (0=scout/simple, 1=standard, 2=deep/frontier),",
-        "dependency ordering, and target-file scoping.",
-        "",
-        "GOAL:",
-        plan_result.get("goal", "").strip(),
-        "",
-        "PLANNED DAG (JSON):",
-        json.dumps({"nodes": nodes}, indent=2),
-        "",
-    ]
-    if brief_context:
-        lines.extend(["REPOSITORY BRIEF (signatures; your only repo access):",
-                      brief_context.strip(), ""])
-    if window_context:
-        lines.extend(["REQUESTED FILE WINDOWS (attached this round):",
-                      window_context.strip(), ""])
-    lines.extend([
-        "VERDICT CONTRACT -- respond with ONLY one JSON object:",
-        '  {"verdict": "approve"}                                   plan is sound as routed',
-        '  {"verdict": "amend", "nodes": [...]}                     full replacement node set,',
-        '                                                           same schema, re-validated;',
-        '                                                           subdividing a node is an amend',
-        '  {"verdict": "refuse", "reason": "...", "evidence": "..."}  cite the brief section',
-        '                                                           that fails; evidence required',
-        '  {"verdict": "request_windows", "file_window_requests": [...]}  need bounded source',
-        '                                                           windows before deciding',
-        '                                                            ({"path", "start_line",',
-        '                                                              "end_line"}; 1-based,',
-        '                                                              end inclusive)',
-        "Rules: the DAG must stay acyclic; node instructions must be precise and",
-        "scoped (they are executed verbatim by cheaper models); do not request",
-        "more windows than you need -- round-trips are budgeted.",
-    ])
-    return "\n".join(lines)
-
-
-def _waist_window_request(raw) -> Dict[str, Any]:
-    if not isinstance(raw, dict):
-        raise HarnessError("waist file_window_requests entries must be objects")
-    path = str(raw.get("path") or "").strip()
-    if not path:
-        raise HarnessError("waist file_window_request missing 'path'")
-    request: Dict[str, Any] = {"path": path}
-    for key in ("start_line", "end_line"):
-        value = raw.get(key)
-        if value is None:
-            continue
-        try:
-            line = int(value)
-        except (TypeError, ValueError):
-            raise HarnessError(
-                f"waist file_window_request {key} must be an integer") from None
-        if line < 1:
-            raise HarnessError(f"waist file_window_request {key} must be >= 1")
-        request[key] = line
-    if ("start_line" in request or "end_line" in request) and \
-            request.get("start_line", 1) > request.get("end_line", 1 << 30):
-        raise HarnessError("waist file_window_request start_line exceeds end_line")
-    return request
-
-
-def parse_waist_verdict(response_text: str) -> Dict[str, Any]:
-    """Parse and validate a waist verdict (strict; fail-closed).
-
-    Returns one of ``{"verdict": "approve"}``, ``{"verdict": "amend",
-    "dag": TaskDAG}`` (the replacement node set, re-validated for unique
-    ids, unknown dependencies, cycles, and apply-time instruction
-    length), ``{"verdict": "split", "dag": TaskDAG}`` (same shape and
-    re-validation as amend; recorded distinctly so a planner that
-    subdivides a node gets its own ledgered kind -- MR-4's four-way
-    enum), ``{"verdict": "refuse", "reason", "evidence"}``, or
-    ``{"verdict": "request_windows", "file_window_requests": [...]}``.
-    """
-    data = _parse_json_object(response_text, "waist plan verdict")
-    verdict = str(data.get("verdict") or "").strip()
-    if verdict == "approve":
-        return {"verdict": "approve"}
-    if verdict in ("amend", "split"):
-        nodes = data.get("nodes")
-        if not isinstance(nodes, list) or not nodes:
-            raise HarnessError(
-                f"waist {verdict} verdict requires a non-empty 'nodes' list")
-        amended = TaskDAG.from_dict({"nodes": nodes})
-        for node in amended.nodes.values():
-            if len(node.instruction) > MAX_INSTRUCTION_CHARS:
-                raise HarnessError(
-                    f"amended node {node.node_id!r} instruction exceeds "
-                    f"{MAX_INSTRUCTION_CHARS} chars (would fail apply validation)")
-        return {"verdict": verdict, "dag": amended}
-    if verdict == "refuse":
-        reason = str(data.get("reason") or "").strip()
-        evidence = str(data.get("evidence") or "").strip()
-        if not reason or not evidence:
-            raise HarnessError(
-                "waist refuse verdict requires non-empty 'reason' and "
-                "'evidence' (cite the brief section that fails)")
-        return {"verdict": "refuse", "reason": reason, "evidence": evidence}
-    if verdict == "request_windows":
-        requests = data.get("file_window_requests")
-        if not isinstance(requests, list) or not requests:
-            raise HarnessError(
-                "waist request_windows verdict requires a non-empty "
-                "'file_window_requests' list")
-        return {"verdict": "request_windows",
-                "file_window_requests": [_waist_window_request(r) for r in requests]}
-    raise HarnessError(f"unknown waist verdict {verdict!r}")
+def parse_waist_verdict(*args, **kwargs):
+    from .waist import parse_waist_verdict as _impl
+    return _impl(*args, **kwargs)

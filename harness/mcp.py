@@ -20,16 +20,13 @@ from . import trust as trust_policy
 from .batch import BatchOptions
 from .consent import probe_consent
 from .continuation import validate_continuation
-from .dag import TaskDAG, node_apply_kwargs
-from .filesafety import VERIFY_TIMEOUT, default_run_verify
-from .spend import NodeReserver
+from .config import resolve_hourglass
+from .dag import TaskDAG
 from .waist import compose_plan
-from .worktree import WorktreeIsolation
 from .errors import HarnessError, ToolCancelled
-from .executor import ConcurrentExecutor
+from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
 from .mcp_lanes import LANES, lane_for
 from .mcp_schemas import TOOL_SCHEMAS
-from .results import SUCCESS_STATUSES
 from .service import run_verify as _service_run_verify
 from .validation import (
     MAX_LINES,
@@ -132,7 +129,8 @@ class McpServer:
         # Auto-scaling hourglass defaults for plan_and_execute (waist
         # confirmation, parallel stages, worktree isolation, diff-bound
         # write attestation). All on unless the settings file turns one
-        # off; a per-request argument still wins.
+        # off; a per-request argument still wins. main() seeds these from
+        # config.resolve_hourglass -- the ONE mapping every lane reads.
         self.hourglass = {
             "confirm": True, "isolate": True, "parallel": True,
             "require_diff_authorization": True,
@@ -691,7 +689,8 @@ class McpServer:
                 args.get("require_diff_authorization",
                          self.hourglass["require_diff_authorization"]),
                 "require_diff_authorization")
-            max_workers = int(args.get("max_workers", 4) or 4)
+            max_workers = int(args.get("max_workers", DEFAULT_PLAN_WORKERS)
+                              or DEFAULT_PLAN_WORKERS)
             frontier_model = validate_mcp_model(args.get("frontier_model"), "frontier_model")
             raw_files = args.get("file")
             candidate_files = validate_mcp_files(raw_files) if raw_files is not None else []
@@ -717,48 +716,33 @@ class McpServer:
 
             dag = TaskDAG.from_dict(plan_result["dag"])
             node_routes = {n.get("node_id"): n for n in plan_result["nodes"]}
-            executor = ConcurrentExecutor(max_workers=max_workers if parallel else 1)
-            reserver = NodeReserver(
-                self.engine.governor, node_routes,
-                self.engine.default_task_max_cost,
-                route_kwargs_fn=node_apply_kwargs)
-            isolator = None
-            if parallel and self.hourglass["isolate"]:
-                iso = WorktreeIsolation()
-                if iso.available():
-                    isolator = iso
-
-            def run_node(node, gate_cwd=None):
-                target = node.target_files[0] if node.target_files else None
-                if target and gate_cwd:
-                    target = os.path.join(gate_cwd, target)
-                route_kwargs = node_apply_kwargs(node_routes.get(node.node_id))
-                task_runner = None
-                if gate_cwd:
-                    def task_runner(command, timeout=VERIFY_TIMEOUT):
-                        return default_run_verify(command, timeout=timeout, cwd=gate_cwd)
-                return self.engine.apply_edit(
-                    file_path=target,
-                    instruction=node.instruction,
-                    verify_cmd=node.local_gate,
-                    allow_verify=self.allow_verify,
-                    require_consent=False,
-                    require_diff_authorization=require_auth,
-                    **({"task_runner": task_runner} if task_runner else {}),
-                    **route_kwargs,
-                )
-
-            all_results = executor.execute_dag(dag, run_node, reserver=reserver,
-                                               isolator=isolator)
-            all_ok = all(res.get("status") in SUCCESS_STATUSES for res in all_results.values())
-            total_cost = sum(float(res.get("cost", 0.0) or 0.0) for res in all_results.values())
+            # ONE execution assembly for every lane (executor.PlanExecutor):
+            # the same object the CLI plan lane and the agent's edit lane
+            # build, so parallelism/isolation/reservation policy is derived
+            # once.
+            plan_exec = PlanExecutor(
+                self.engine, node_routes,
+                parallel=parallel, isolate=self.hourglass["isolate"],
+                max_workers=max_workers,
+                # The write-attestation switch: this assembly threads it into
+                # every node write it dispatches.
+                require_diff_authorization=require_auth,
+                base_apply_kwargs={
+                    "allow_verify": self.allow_verify,
+                    "require_consent": False,
+                },
+                # This server's real budget, so a node reservation can never
+                # be bounded by an unrelated nominal default instead.
+                run_ceiling=self.governor.max_cost)
+            all_results = plan_exec.execute(dag)
+            summary = PlanExecutor.summarize(all_results)
             return {
-                "status": "ok" if all_ok else "failed",
+                "status": "ok" if summary["all_ok"] else "failed",
                 "goal": goal,
                 "total_nodes": len(dag.nodes),
-                "completed_nodes": sum(1 for res in all_results.values() if res.get("status") in SUCCESS_STATUSES),
+                "completed_nodes": summary["completed"],
                 "results": list(all_results.values()),
-                "cost": round(total_cost, 6),
+                "cost": summary["total_cost"],
                 "dag": plan_result["dag"],
             }
         raise ValueError(f"unknown tool: {name}")
@@ -829,12 +813,7 @@ def main(argv=None):  # pragma: no cover - thin wiring
         allowed_roots=settings.mcp_allowed_roots,
         tool_timeout=settings.mcp_tool_timeout,
         auth_token=settings.mcp_auth_token,
-        hourglass={
-            "confirm": settings.hourglass_confirm,
-            "isolate": settings.hourglass_isolate,
-            "parallel": settings.hourglass_parallel,
-            "require_diff_authorization": settings.hourglass_require_attestation,
-        },
+        hourglass=resolve_hourglass(settings),
     ).serve_forever()
 
 

@@ -207,7 +207,8 @@ class SpendGovernor:
                 raise HarnessError(
                     f"reservation ${amount:.6f} would put spent+outstanding at "
                     f"${self.spent + self._outstanding + amount:.6f}, over ceiling "
-                    f"${self.max_cost:.6f}. Refusing.")
+                    f"${self.max_cost:.6f} "
+                    f"(${self.remaining():.6f} still unreserved). Refusing.")
             self._outstanding += amount
             token = (label, amount)
             self._reservations.append(token)
@@ -246,6 +247,18 @@ class SpendGovernor:
         """Worst-case liability currently reserved by in-flight calls."""
         return self._outstanding
 
+    def remaining(self):
+        """The budget this run can still commit, in dollars.
+
+        ``spent`` and outstanding reservations both count, because a
+        reservation is real liability. This is the ONE accessor for "what
+        can this run still afford", so a lane that bounds a dispatch by the
+        remaining budget (the DAG reserver) does not re-derive the
+        arithmetic from three public fields.
+        """
+        with self._spend_lock:
+            return max(0.0, self.max_cost - (self.spent + self._outstanding))
+
     # 5
     def record_actual(self, cost, label):
         """Record a billable response without ever moving ``spent`` over the ceiling."""
@@ -271,26 +284,110 @@ class SpendGovernor:
 
 class NodeReserver:
     """Cost-liability seam for parallel DAG dispatch (MR-6 verdict): each
-    node's worst case (tier ceiling or the engine default) is reserved
-    before dispatch and reconciled against the billed actual, so W
-    concurrent preflights can never overspend the shared ceiling."""
+    node's worst case is reserved before dispatch and reconciled against the
+    billed actual, so W concurrent preflights can never overspend the shared
+    ceiling.
+
+    The amount is the node's OWN worst case, read from its plan route:
+
+    * a declared route ceiling is used verbatim -- including a $0.00
+      free-tier ceiling, which is a real ceiling (every rung on that ladder
+      bills $0.00). Passing $0.00 as a request's ``task_max_cost`` is
+      deliberately suppressed by :func:`harness.waist.node_apply_kwargs`
+      (a zero task budget would refuse the escalation ladder), so reading
+      the route's declared ceiling *here* is what keeps a free node
+      reserving $0.00 instead of the nominal default;
+    * a node with no declared ceiling falls back to ``default_amount``,
+      itself bounded by ``run_ceiling`` -- the budget the lane is really
+      running under. An unrelated default ($0.10) larger than the run
+      ceiling ($0.05) used to refuse every node before any work, free nodes
+      included: a fallback is only ever a bound, so it is capped by the
+      run's own ceiling rather than trusted as a cost.
+    * the reservation is never more than what the run can still afford, and
+      an amount larger than that remaining budget is REFUSED rather than
+      trimmed to fit: trimming would let a call that may bill its full
+      ceiling dispatch while only part of it is reserved, and the overspend
+      would surface at reconcile time -- after the money was spent.
+      Fail-closed means refuse before dispatch (MR-6).
+    """
 
     def __init__(self, governor, node_routes, default_amount,
-                 route_kwargs_fn=None):
+                 route_kwargs_fn=None, run_ceiling=None):
         self.governor = governor
         self.node_routes = node_routes or {}
-        self.default_amount = default_amount
         self._route_kwargs_fn = route_kwargs_fn
+        ceiling = run_ceiling
+        if ceiling is None:
+            ceiling = getattr(governor, "max_cost", None)
+        ceiling = _dollar_amount(ceiling)
+        fallback = _dollar_amount(default_amount)
+        if fallback is not None and ceiling is not None:
+            fallback = min(fallback, ceiling)
+        self.run_ceiling = ceiling
+        self.default_amount = fallback
+
+    def declared_ceiling(self, node):
+        """This node's own worst case from its plan route, or None.
+
+        A route's cost ceiling is the tier ceiling the planner computed, so
+        $0.00 is returned as $0.00 (free tier) and is NOT confused with
+        "unknown". Routes the plan never classified (or a lane running an
+        unplanned node) return None and fall back to ``default_amount``.
+        """
+        detail = self.node_routes.get(node.node_id)
+        route = detail.get("route") if isinstance(detail, dict) else None
+        if isinstance(route, dict):
+            declared = _dollar_amount(route.get("cost_ceiling"))
+            if declared is not None:
+                return declared
+        if self._route_kwargs_fn is not None:
+            kwargs = self._route_kwargs_fn(detail) or {}
+            if "task_max_cost" in kwargs:
+                return _dollar_amount(kwargs.get("task_max_cost"))
+        return None
 
     def reserve(self, node):
-        amount = self.default_amount
-        if self._route_kwargs_fn is not None:
-            kwargs = self._route_kwargs_fn(self.node_routes.get(node.node_id))
-            amount = kwargs.get("task_max_cost") or self.default_amount
+        amount = self.declared_ceiling(node)
+        reason = "planned route ceiling"
+        if amount is None:
+            amount = self.default_amount
+            reason = "fallback bound"
+        if amount is None:
+            # No route and no usable nominal bound (a test fake engine): the
+            # reservation is zero and the governor's own ceiling check at
+            # preflight/reconcile stays the gate.
+            amount = 0.0
+        remaining = _dollar_amount(self.remaining())
+        if remaining is not None and amount > remaining:
+            ceiling = "?" if self.run_ceiling is None else f"${self.run_ceiling:.6f}"
+            raise HarnessError(
+                f"node '{node.node_id}' worst case ${amount:.6f} ({reason}) does not "
+                f"fit the ${remaining:.6f} this run can still afford (ceiling "
+                f"{ceiling}). Refusing to dispatch it.")
         return self.governor.reserve(amount, node.node_id)
+
+    def remaining(self):
+        """What this run can still commit, or None if the governor cannot say."""
+        remaining = getattr(self.governor, "remaining", None)
+        if callable(remaining):
+            return remaining()
+        return None
 
     def reconcile(self, token, actual):
         self.governor.reconcile(token, actual)
+
+
+def _dollar_amount(value):
+    """``value`` as a non-negative finite dollar amount, or None.
+
+    Advisory boundary: a caller (or a test fake) may hand over something
+    that is not a number at all, which is "unknown", never "zero" and never
+    a crash -- the governor's ceiling check remains the gate either way.
+    """
+    try:
+        return finite_number(value, "amount", 0.0)
+    except HarnessError:
+        return None
 
 
 def _is_free_model(m):

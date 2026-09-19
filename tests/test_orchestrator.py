@@ -86,7 +86,7 @@ class KeywordFallbackTests(unittest.TestCase):
 class BuildStateSummaryTests(unittest.TestCase):
     def test_renders_node_statuses_and_notes_bounded(self):
         summary = orch.build_state_summary(
-            "goal", [{"node_id": "n1", "file_path": "a.py",
+            [{"node_id": "n1", "file_path": "a.py",
                       "status": "verify_failed", "error": "boom"}] * 200,
             extra_notes=["round 1"])
         self.assertIn("n1", summary)

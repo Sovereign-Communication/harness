@@ -21,19 +21,18 @@ Logs go to stderr; the JSON result goes to stdout (or --out <file>).
 Exit codes: 0 success, 1 fatal refusal/error, 2 verification failed,
 3 deferred (capability/consent) -- safe to continue.
 """
+import functools
 import json
 import os
 import subprocess
 import tempfile
 import time
 from .consent import probe_consent
+from .config import resolve_hourglass
 from .errors import HarnessError
 from .spend import discover_free_models
-from .filesafety import (VERIFY_TIMEOUT, default_run_verify,
-                         validate_target_file, validate_verify_command)
+from .filesafety import VERIFY_TIMEOUT, validate_target_file, validate_verify_command
 from .output import eprint
-from .spend import NodeReserver
-from .worktree import WorktreeIsolation
 from .session import (apply_session as _session, governor_for as _governor,
                       ledger_for as _ledger,
                       run_meta as _session_run_meta)
@@ -45,8 +44,8 @@ from .waist import compose_plan as _compose_plan
 from .capability import capabilities_payload as _capability_payload_owner
 from .brief import build_brief, validate_brief
 from .dag import TaskDAG, node_apply_kwargs
-from .executor import ConcurrentExecutor
-from .results import SUCCESS_STATUSES, terminal_exit_code
+from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
+from .results import terminal_exit_code
 from .saturation import advise
 import sys
 import uuid
@@ -593,23 +592,17 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
         use_free=settings.use_free,
         decompose_llm=getattr(opts, "decompose_llm", False),
         confirm=confirm,
-        execute=execute)
+        execute=execute,
+        # The same pinned output budget the nodes will run with, so the
+        # chunk policy measures each pass against the real one.
+        max_tokens=getattr(opts, "max_tokens", None))
 
 
 def _resolve_hourglass(opts, settings):
-    """Tri-state plan flags -> effective values: an explicit flag wins,
-    otherwise the settings-file default (auto-scaling hourglass: all on)."""
-    def resolve(flag, key):
-        value = getattr(opts, flag, None)
-        return (getattr(settings, key, True)
-                if value is None else value)
-    return {
-        "confirm": resolve("confirm", "hourglass_confirm"),
-        "parallel": resolve("parallel", "hourglass_parallel"),
-        "isolate": resolve("isolate", "hourglass_isolate"),
-        "require_diff_authorization": resolve(
-            "require_diff_authorization", "hourglass_require_attestation"),
-    }
+    """Tri-state plan flags -> effective values (ONE mapping, owned by
+    config.resolve_hourglass): an explicit flag wins, otherwise the
+    settings-file default (auto-scaling hourglass: all on)."""
+    return resolve_hourglass(settings, opts)
 
 
 def _cmd_plan(opts, settings):
@@ -649,62 +642,7 @@ def _cmd_plan(opts, settings):
 
     dag = TaskDAG.from_dict(plan_result["dag"])
     node_routes = {n.get("node_id"): n for n in plan_result["nodes"]}
-    is_parallel = hourglass["parallel"]
-    workers = getattr(opts, "max_workers", 4) if is_parallel else 1
-    executor = ConcurrentExecutor(max_workers=workers)
-
-    # MR-5 partition rule (hourglass default: on): concurrent nodes
-    # execute in isolated git worktrees; serial nodes share the tree
-    # under the per-path mutex. Unavailable git degrades loudly.
-    isolator = None
-    if is_parallel and hourglass["isolate"]:
-        iso = WorktreeIsolation()
-        if iso.available():
-            isolator = iso
-        else:
-            eprint("[plan] git worktree isolation unavailable; "
-                   "falling back to shared-tree mutex execution")
-    reserver = NodeReserver(
-        engine.governor, node_routes,
-        getattr(opts, "task_max_cost", None) or engine.default_task_max_cost,
-        route_kwargs_fn=node_apply_kwargs)
     stage_gate = getattr(opts, "stage_gate", None)
-
-    def run_node(node, gate_cwd=None):
-        target = node.target_files[0] if node.target_files else None
-        if target and gate_cwd:
-            target = os.path.join(gate_cwd, target)
-        task_max = getattr(opts, "task_max_cost", None)
-        route_kwargs = node_apply_kwargs(
-            node_routes.get(node.node_id),
-            explicit_model=getattr(opts, "model", None),
-            explicit_task_max_cost=task_max,
-        )
-        # The tier ceiling replaces the unset explicit value (never an
-        # operator pin: node_apply_kwargs suppresses it when one is set).
-        if "task_max_cost" in route_kwargs:
-            task_max = route_kwargs.pop("task_max_cost")
-        task_runner = None
-        if gate_cwd:
-            def task_runner(command, timeout=VERIFY_TIMEOUT):
-                return default_run_verify(command, timeout=timeout, cwd=gate_cwd)
-        return engine.apply_edit(
-            file_path=target,
-            instruction=node.instruction,
-            verify_cmd=node.local_gate,
-            allow_verify=True,
-            require_consent=False,
-            require_diff_authorization=hourglass["require_diff_authorization"],
-            model=getattr(opts, "model", None),
-            max_tokens=getattr(opts, "max_tokens", None),
-            task_max_cost=task_max,
-            allow_escalation=getattr(opts, "allow_escalation", False),
-            reasoning_effort=getattr(opts, "reasoning_effort", None),
-            renew_consent=False,
-            max_rotations=getattr(opts, "max_rotations", 3),
-            **({"task_runner": task_runner} if task_runner else {}),
-            **route_kwargs,
-        )
 
     def on_stage_done(executable_nodes, _results):
         # Optional full-suite stage gate (MR-5): the composed tree must be
@@ -718,19 +656,46 @@ def _cmd_plan(opts, settings):
                 f"stage gate failed after a parallel stage completed; "
                 f"stopping before dependent stages (gate: {stage_gate})")
 
-    all_results = executor.execute_dag(
-        dag, run_node, keep_going=getattr(opts, "keep_going", False),
-        reserver=reserver, isolator=isolator, on_stage_done=on_stage_done)
-    all_ok = all(res.get("status") in SUCCESS_STATUSES for res in all_results.values())
-    total_cost = sum(float(res.get("cost", 0.0) or 0.0) for res in all_results.values())
+    # ONE execution assembly for every lane (executor.PlanExecutor): worker
+    # count, reservations, worktree isolation, and per-node routing. The
+    # agent's edit lane builds the same object.
+    plan_exec = PlanExecutor(
+        engine, node_routes,
+        parallel=hourglass["parallel"], isolate=hourglass["isolate"],
+        max_workers=getattr(opts, "max_workers", DEFAULT_PLAN_WORKERS),
+        keep_going=getattr(opts, "keep_going", False),
+        require_diff_authorization=hourglass["require_diff_authorization"],
+        route_kwargs_fn=functools.partial(
+            node_apply_kwargs,
+            explicit_model=getattr(opts, "model", None),
+            explicit_task_max_cost=getattr(opts, "task_max_cost", None)),
+        base_apply_kwargs={
+            "allow_verify": True,
+            "require_consent": False,
+            "model": getattr(opts, "model", None),
+            "max_tokens": getattr(opts, "max_tokens", None),
+            "task_max_cost": getattr(opts, "task_max_cost", None),
+            "allow_escalation": getattr(opts, "allow_escalation", False),
+            "reasoning_effort": getattr(opts, "reasoning_effort", None),
+            "renew_consent": False,
+            "max_rotations": getattr(opts, "max_rotations", 3),
+        },
+        task_max_cost=getattr(opts, "task_max_cost", None),
+        # The budget this lane is really running under (the session ceiling
+        # this command resolved), so a node reservation is bounded by it
+        # instead of by an unrelated nominal default.
+        run_ceiling=getattr(gov, "max_cost", None),
+        on_stage_done=on_stage_done)
+    all_results = plan_exec.execute(dag)
+    summary = PlanExecutor.summarize(all_results)
 
     output = {
-        "status": "ok" if all_ok else "failed",
+        "status": "ok" if summary["all_ok"] else "failed",
         "goal": opts.goal,
         "total_nodes": len(dag.nodes),
-        "completed_nodes": sum(1 for res in all_results.values() if res.get("status") in SUCCESS_STATUSES),
+        "completed_nodes": summary["completed"],
         "results": list(all_results.values()),
-        "cost": round(total_cost, 6),
+        "cost": summary["total_cost"],
     }
     _emit_by_status(output, opts.out)
 
