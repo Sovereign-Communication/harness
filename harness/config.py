@@ -631,3 +631,27 @@ def load_settings(overrides=None):
         hourglass_require_attestation=_as_bool(
             get("hourglass_require_attestation", True)),
     )
+
+
+def resolve_hourglass(settings, opts=None):
+    """The effective hourglass switches -- ONE owner of this mapping.
+
+    An explicit per-request flag wins (tri-state: ``None`` means "no
+    opinion"), otherwise the settings-file default (the auto-scaling
+    hourglass is on by default). Interfaces (CLI/MCP) pass their parsed
+    ``opts``; a lane with no per-request knobs -- the agent's edit lane --
+    passes ``opts=None`` and inherits exactly what the same settings file
+    resolves to for the CLI and MCP lanes, so no lane re-derives the
+    switches or silently diverges from them.
+    """
+    def resolve(flag, key):
+        value = getattr(opts, flag, None) if opts is not None else None
+        return getattr(settings, key, True) if value is None else value
+
+    return {
+        "confirm": resolve("confirm", "hourglass_confirm"),
+        "parallel": resolve("parallel", "hourglass_parallel"),
+        "isolate": resolve("isolate", "hourglass_isolate"),
+        "require_diff_authorization": resolve(
+            "require_diff_authorization", "hourglass_require_attestation"),
+    }

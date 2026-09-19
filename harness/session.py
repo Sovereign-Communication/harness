@@ -55,6 +55,20 @@ def ledger_for(settings, caller="cli"):
     return AutonomyLedger(settings.ledger_path, caller=caller)
 
 
+def attest_model_for(settings):
+    """The verifier identity a run uses: the same judge seat the Router gets.
+
+    ONE owner for that choice: ``router_for`` builds the Router's judge from
+    this, and lanes that thread an explicit ``attest_model`` (so the node's
+    verifier is auditable rather than inherited) read it from here too -- an
+    explicitly passed verifier can therefore never disagree with the engine
+    default. Prefers the smartest per-tier judge only when escalation is
+    actually armed.
+    """
+    return (settings.judge_top or settings.judge) if settings.allow_escalation \
+        else settings.judge
+
+
 def router_for(settings):
     """The lane router from the settings' curated pools.
 
@@ -66,8 +80,7 @@ def router_for(settings):
     ladder = None if settings.escalation_model else settings.escalation_pool
     # Prefer the smartest per-tier judge only when escalation is actually
     # allowed; otherwise keep the configured settings.judge.
-    judge = (settings.judge_top or settings.judge) if settings.allow_escalation \
-        else settings.judge
+    judge = attest_model_for(settings)
     return Router(settings.panel, judge, settings.apply_model,
                   settings.escalation_model, settings.allow_escalation,
                   panel_pool=settings.panel_pool, apply_pool=settings.apply_pool,

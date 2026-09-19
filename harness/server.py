@@ -32,11 +32,44 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 from . import events as _events
-from .agent import AutonomousAgent, load_chat_history, get_default_history_dir
+from .agent import AutonomousAgent
+import harness.history as _history
 from .batch import BatchOptions
 from .config import HARD_TASK_MAX_COST, HARD_MAX_COST, load_settings
 from .errors import HarnessError, ToolCancelled
+from .history import delete_chat_session, list_chat_sessions, load_chat_history as _history_load_chat_history
 from .session import (apply_session, governor_for, ledger_for, run_meta)
+
+# Single-owner delegation with patch-propagation: tests patch server.get_default_history_dir,
+# so wrappers temporarily install that patched function into harness.history before delegating.
+_orig_get_default_history_dir = _history.get_default_history_dir
+def get_default_history_dir():
+    return _orig_get_default_history_dir()
+
+def _list_chat_sessions():
+    orig = _history.get_default_history_dir
+    try:
+        _history.get_default_history_dir = get_default_history_dir
+        return list_chat_sessions()
+    finally:
+        _history.get_default_history_dir = orig
+
+def _delete_chat_session(session_id: str) -> bool:
+    orig = _history.get_default_history_dir
+    try:
+        _history.get_default_history_dir = get_default_history_dir
+        return delete_chat_session(session_id)
+    finally:
+        _history.get_default_history_dir = orig
+
+def load_chat_history(session_id: str, history_dir=None):
+    orig = _history.get_default_history_dir
+    try:
+        _history.get_default_history_dir = get_default_history_dir
+        return _history_load_chat_history(session_id, history_dir)
+    finally:
+        _history.get_default_history_dir = orig
+
 
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 MAX_EVENT_BUFFER = 4000
@@ -265,58 +298,8 @@ def run_bench_task(task_id, args, cancel_check):
 # The allowlist lives in harness/web.py (ONE owner); the boundary consumes it.
 
 
-def _list_chat_sessions():
-    """Return all persisted sessions sorted newest-first with a preview title.
-
-    Each entry: {"id": str, "preview": str, "updated_at": float}
-    The preview is the first prompt from the session file (truncated to 60 chars).
-    """
-    hdir = get_default_history_dir()
-    sessions = []
-    for p in hdir.glob("sess_*.jsonl"):
-        try:
-            mtime = p.stat().st_mtime
-            preview = ""
-            with open(p, encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        turn = json.loads(line)
-                        preview = (turn.get("prompt") or "")[:60]
-                        break
-                    except json.JSONDecodeError:
-                        continue
-            sessions.append({
-                "id": p.stem,
-                "preview": preview or "(empty)",
-                "updated_at": mtime,
-            })
-        except OSError:
-            continue
-    sessions.sort(key=lambda s: s["updated_at"], reverse=True)
-    return sessions
 
 
-def _delete_chat_session(session_id: str) -> bool:
-    """Delete a session JSONL file. Returns True if deleted, False if not found.
-
-    Only deletes files matching the sess_* pattern. The id must not contain
-    path separators or '..' (defense-in-depth: on some platforms Path
-    collapses traversal segments, but the boundary refuses them outright
-    instead of relying on resolution semantics)."""
-    if not session_id or not session_id.startswith("sess_"):
-        raise HarnessError("invalid session_id: must start with 'sess_'")
-    if ("/" in session_id or "\\" in session_id or ".." in session_id
-            or os.sep in session_id):
-        raise HarnessError("invalid session_id: path separators and '..' are not allowed")
-    hdir = get_default_history_dir()
-    target = hdir / f"{session_id}.jsonl"
-    if not target.exists():
-        return False
-    target.unlink()
-    return True
 
 
 def run_chat_task(task_id, args, cancel_check):

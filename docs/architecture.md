@@ -11,6 +11,11 @@ Harness is a dependency-light Python package with three surfaces:
 - `config.py`: settings, model-pool defaults, and lane budgets
   (`effective_lane_policy` is the ONE owner of per-lane output budgets and
   reasoning modes; lanes resolve policy through it, never locally).
+  `resolve_hourglass(settings, opts)` is the ONE owner of the hourglass
+  switch mapping: a per-request flag wins, otherwise the settings file. The
+  CLI passes its parsed flags, MCP is seeded from it at startup, and the
+  agent's edit lane passes no flags -- every lane therefore runs the same
+  hourglass the settings file describes instead of re-deriving it.
 - `service.py`: canonical verify/claims request assembly shared by the CLI
   and web interfaces (prompt/claims reading, cancelled-run envelope,
   cost/meta attachment). Interfaces consume it; they do not re-derive the
@@ -43,6 +48,53 @@ Harness is a dependency-light Python package with three surfaces:
 - `rankings.py`: rankings-driven pool-candidate refresh (daily OpenRouter
   rankings -> catalog intersection -> one-vote probe gate). Advisory only:
   it never mutates configuration.
+- `dag.py`: DAG data only (`DAGNode`, `TaskDAG`, validation, topological
+  batches, serialization).
+- `waist.py`: the plan lane (M1/M2) -- decomposition prompt/parse, tier
+  classification (`plan_task`), single-pass fitting
+  (`chunk_oversized_nodes`: a target past the engine's rewrite cap or
+  output budget becomes ONE node with the `backend: "diff"` hint, while an
+  instruction past `MAX_INSTRUCTION_CHARS` or a target larger than the
+  rung's declared read budget -- `capability.source_budget_for` -- splits
+  into ordered chunks), per-node routing kwargs (`node_apply_kwargs`), the
+  confirmation gate (`confirm_plan`), and `compose_plan`. Callers plan by
+  calling `compose_plan`; the confirmation gate resolves its own frontier
+  rung (never a decomposition seam) and fail-closes on a refusal or an
+  unreachable rung.
+- `worktree.py`: `WorktreeIsolation` -- create/audit/**commit**/merge/discard
+  per-node worktrees. `merge(handle, paths)` commits the node's declared work
+  before merging the branch: a worker writes files but a branch carries only
+  what the worktree committed, so merging an uncommitted worktree is
+  "Already up to date" and the edit silently never lands while the node
+  reports ok. Declared targets may be repo-relative (agent lane) or absolute
+  (MCP lane); both are normalized to worktree-relative paths for the audit
+  and the commit.
+- `executor.py`: `FileLockManager`, `ConcurrentExecutor` (reserver/isolator
+  seams), and `PlanExecutor` -- the ONE plan-lane execution assembly: worker
+  count, per-node cost reservations, git-worktree isolation rooted at the
+  tree being edited, write attestation, and per-node routing kwargs. The
+  CLI, MCP, and the agent's edit lane all build this object, so how a plan
+  runs is derived once, and each passes `run_ceiling` (the session budget it
+  is really running under) so no lane bounds a reservation by a nominal
+  default. The reservation itself is `spend.NodeReserver`'s: a node's own
+  route ceiling (a free tier's $0.00 included) or a fallback capped by the
+  run ceiling, with `SpendGovernor.remaining()` as the single answer to
+  "what can this run still commit".
+- `orchestrator.py`: the autonomous edit driver. It owns bounded
+  plan -> execute -> completion-judge rounds, re-planning remaining scope,
+  artifact-truth checks, and round/result state. `assess_completion`,
+  `triage_files`, `keyword_fallback`, and `build_state_summary` are its
+  injectable decision helpers; execution is supplied through one
+  `execute_plan` callback backed by `executor.PlanExecutor`.
+- `repo_scope.py`: repo file discovery and verification-gate discovery.
+- `history.py`: chat-turn persistence and session listing (CLI/ui-server
+  seam included).
+- `web.py`: web context gathering for the chat lane.
+- `agent.py`: the chat/GUI lane's intent classifier and dispatch façade; its
+  edit path composes `repo_scope` -> `waist.compose_plan` ->
+  `orchestrator.drive` -> `executor.PlanExecutor` -> `history`. It owns only
+  lane-specific apply callbacks and presentation/event assembly, not round
+  progression, completion policy, or plan state.
 - `session.py`: dependency composition.
 - `mcp.py`: MCP JSON-RPC framing, request lifecycle, tool contracts, boundary validation, and engine dispatch.
 
@@ -62,5 +114,12 @@ CLI/MCP input -> validation.py -> session composition -> ApplyEngine/PanelEngine
                          +-> plain request data                         |
                                                           result dict <- results.py
 ```
+
+Plan-lane direction (one owner per stage): interfaces validate -> `waist.compose_plan`
+plans (decompose, classify, confirm) -> `executor.PlanExecutor` executes
+(parallel workers, reservations, isolation, attestation) -> `spend`/`ledger`
+record -> interfaces render. The agent's edit lane is a caller of that same
+chain, with `orchestrator.drive` owning its judge loop; the hourglass switches
+it reads come from `config.resolve_hourglass`, exactly as the CLI's do.
 
 `ApplyRequest` is an immutable value object for one apply, including its bound continuation gate. `RunState` is the sole mutable transaction record and is passed explicitly through orchestration and gate operations. `GatePolicy` owns only filesystem/gate effects and result events; `AutonomyLedger` owns persisted evidence; and `Router` owns configured pools but is never mutated per request. `McpServer` owns JSON-RPC framing, tool contracts, shared boundary validation, lane scheduling (one serial worker each for mutation / spendy / observe), cooperative cancellation and per-tool deadlines, engine dispatch, and response lifecycle. Identified MCP request IDs remain reserved through response serialization, while notifications never emit responses. Rendering and exit-code policy remain at the CLI/MCP boundary (`cli.py`, `mcp.py`, `output.py`).

@@ -138,6 +138,20 @@ _SHRINK = 2
 DEFAULT_TTL = 24 * 3600  # refresh /models capabilities at most once / TTL
 
 
+def source_budget_for(context_length=None):
+    """Tokens of quoted source ONE pass can hold.
+
+    The model's declared context when it is known, otherwise the harness's
+    conservative usable floor (``_CTX_FLOOR`` -- the context length that
+    already scores 0 on the capability scale). ONE definition of that math:
+    :attr:`CapabilityProfile.max_source_tokens` applies it per model, and
+    the plan lane applies it to decide whether a target can be read in a
+    single pass at all, so the gate and the planner cannot disagree.
+    """
+    return int((int(context_length) if context_length else _CTX_FLOOR)
+               * CONTEXT_WINDOW_FRACTION)
+
+
 @dataclass(frozen=True)
 class CapabilityProfile:
     """Declared capability of a single model, derived from a /models entry."""
@@ -196,7 +210,7 @@ class CapabilityProfile:
     @property
     def max_source_tokens(self):
         """Hard gate: how much quoted source this model can realistically hold."""
-        return int(self.context_length * CONTEXT_WINDOW_FRACTION)
+        return source_budget_for(self.context_length)
 
     def to_dict(self):
         return {

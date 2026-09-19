@@ -27,6 +27,32 @@ from .errors import HarnessError
 GIT_TIMEOUT = 30
 
 
+def _declared_relpaths(declared, *roots):
+    """Declared targets as paths relative to the worktree.
+
+    Lanes differ: the agent's plan carries repo-relative targets while the
+    MCP lane's planned nodes carry ABSOLUTE ones. Either form has to become a
+    worktree-relative pathspec, or git rejects it as "outside repository" and
+    the audit compares it against nothing -- flagging the node's own declared
+    write as undeclared. Anything outside the tree is dropped (never a way to
+    commit stray paths).
+    """
+    prefixes = [str(r).replace("\\", "/").rstrip("/") + "/"
+                for r in roots if r]
+    out = []
+    for raw in declared or []:
+        p = str(raw).replace("\\", "/")
+        for prefix in prefixes:
+            if p.startswith(prefix):
+                p = p[len(prefix):]
+                break
+        if p.startswith("./"):
+            p = p[2:]
+        if p and p != "." and not p.startswith("../") and p != "..":
+            out.append(p)
+    return out
+
+
 def _git(repo, *args):
     """One git subprocess in ``repo``; HarnessError on failure."""
     try:
@@ -54,6 +80,11 @@ class WorktreeIsolation:
             return True
         except HarnessError:
             return False
+
+    def _declared(self, handle, declared):
+        """This node's declared targets, worktree-relative (see
+        :func:`_declared_relpaths`)."""
+        return _declared_relpaths(declared, handle.get("path"), self.repo)
 
     def create(self, node_id):
         """Isolated worktree + branch for one node. Returns the handle
@@ -87,14 +118,56 @@ class WorktreeIsolation:
             if rel.startswith(".harness/"):
                 continue
             changed.add(rel)
-        declared_norm = {str(d).replace("\\", "/").lstrip("./") for d in declared}
-        return sorted(c for c in changed
-                      if not any(c == d or c.startswith(d + "/")
-                                 for d in declared_norm))
+        declared_norm = set(self._declared(handle, declared))
 
-    def merge(self, handle):
-        """Merge the node's branch into the starting tree. Raises
-        HarnessError on conflict (the caller discards; never force-merge)."""
+        def generated_by_verification(path):
+            # ``py_compile`` is the default Python gate. Its __pycache__ and
+            # .pyc outputs are verification artifacts, not model writes; if
+            # they enter the undeclared-write set, every isolated Python node
+            # is rejected after its gate has actually passed.
+            parts = path.split("/")
+            return "__pycache__" in parts or path.endswith(".pyc")
+
+        return sorted(c for c in changed
+                      if not generated_by_verification(c)
+                      and not any(c == d or c.startswith(d + "/")
+                                  for d in declared_norm))
+
+    def commit(self, handle, paths=None):
+        """Commit the node's write INSIDE its worktree, so the branch
+        actually carries it. Returns True when a commit was made.
+
+        A worker writes files; a branch only carries what the worktree
+        *committed*. Merging an uncommitted worktree reports "Already up to
+        date": the node's edit silently never reaches the tree while the
+        node still reports ok and its gate passed inside the worktree --
+        exactly the fake success this lane exists to prevent. The audit has
+        already run, so "declared paths" (or, when a caller names none,
+        everything except the ``.harness/`` scaffolding) is precisely the
+        node's declared work.
+        """
+        specs = self._declared(handle, paths)
+        if not specs:
+            specs = [".", ":(exclude).harness"]
+        dirty = _git(handle["path"], "status", "--porcelain", "-uall",
+                     "--", *specs)
+        if not dirty.strip():
+            return False
+        # -f: a declared target may legitimately be ignored (e.g. tmp/x.py);
+        # the audit already refused anything the node did not declare.
+        _git(handle["path"], "add", "-A", "-f", "--", *specs)
+        _git(handle["path"], "-c", "user.name=harness",
+             "-c", "user.email=harness@local", "commit", "-q", "--no-verify",
+             "-m", f"harness node {handle.get('node_id', '')} isolated work")
+        return True
+
+    def merge(self, handle, paths=None):
+        """Merge the node's branch into the starting tree, committing the
+        worktree's declared work first (``paths``: the node's target files --
+        see :meth:`commit` for why an uncommitted worktree merges as
+        nothing). Raises HarnessError on conflict (the caller discards;
+        never force-merge)."""
+        self.commit(handle, paths)
         _git(self.repo, "merge", "--no-ff", "--no-edit", handle["branch"])
 
     def discard(self, handle):

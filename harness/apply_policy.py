@@ -26,7 +26,7 @@ from .errors import HarnessError, ToolCancelled
 from .output import eprint
 from .prompts import build_apply_prompt, consent_mechanics_text
 from .tokens import estimate_prompt_tokens
-from .escalation import EscalationDriver
+from .escalation import EscalationDriver, _annotate_escalation
 
 VERIFY_FEEDBACK_CHARS = 6000
 
@@ -582,7 +582,13 @@ class ApplyEngineMixin:
             if not usable:
                 content = None
         new_content = _extract_file_content(content) if content else state.current_content
-        return self.gate.finish_escalation(
+        result = self.gate.finish_escalation(
             req, state, esc["model"], new_content, cost, bool(content))
+        if result and result.get("status") == "ok":
+            # Same provenance contract as the ladder: a single-rung escalation
+            # is a real rung walk too, so it must carry its evidence.
+            _annotate_escalation(result, from_model=req.model,
+                                 to_model=esc["model"], rungs=[esc["model"]])
+        return result
 
 

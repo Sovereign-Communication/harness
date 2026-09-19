@@ -9,6 +9,99 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Isolated node writes now actually land, and a node gates the file it
+  edits.** Behavioural verification of the armed lane (a two-round, two-node
+  parallel plan on a real git repo) surfaced two independent lies: an
+  isolated node's edit never reached the tree while the node reported `ok`,
+  and a later round's node ran a verification gate about the *first* file the
+  prompt named. (1) A worker writes files but a branch carries only what the
+  worktree **committed**, so `git merge` reported "Already up to date" and the
+  edit vanished -- the gate passed inside the worktree, so nothing
+  contradicted the success. `WorktreeIsolation.merge` now commits the node's
+  declared work first (`commit(handle, paths)`, declared paths included:
+  absolute targets are relativized to the worktree, which also fixes the
+  audit flagging an MCP-lane node's own declared write as undeclared), and
+  the executor passes the node's targets through. (2) The agent lane's gate
+  was discovered once from the original prompt files, so a node editing
+  `b.py` ran `py_compile <repo>/a.py`: it proved nothing about that node's
+  write and made two concurrent nodes compile the same path (a real
+  intermittent `verify_failed` on Windows, which cost the node its merge).
+  Each node's own declared target now wins, then the run's gate, then its
+  own compile. Two smaller accounting fixes landed with them: the run's
+  per-node results are keyed per round (each round's plan restarts node ids,
+  so a later round silently overwrote an earlier round's result and its
+  cost, making the envelope under-report spend), and
+  `WorktreeIsolation.merge(handle, paths)` takes the node's declared targets.
+
+- **A node reservation is now bounded by the run's real budget, so the GUI
+  lane completes edits on default settings.** On a default run
+  (`max_cost=$0.05`) every node of the armed lane failed before doing any
+  work with `reservation $0.100000 would put spent+outstanding at
+  $0.100000, over ceiling $0.050000`: a free-tier node's route declares a
+  $0.00 cost ceiling, but `waist.node_apply_kwargs` deliberately drops a $0
+  ceiling from the request (a zero task budget would refuse the escalation
+  ladder), so `spend.NodeReserver` read "no ceiling" and reserved the
+  engine's nominal $0.10 default instead. Three things changed in the
+  owners: `NodeReserver.declared_ceiling` reads the node's own route
+  ceiling (so $0.00 free is a ceiling, not "unknown"), its nominal fallback
+  is capped by the run ceiling, `SpendGovernor.remaining()` is the one
+  accessor for what a run can still commit (spent plus outstanding
+  liability), and `executor.PlanExecutor` takes `run_ceiling`, which the
+  CLI, MCP, and agent lanes all pass -- so no lane depends on an unrelated
+  default. Fail-closed is preserved and pinned: a node whose worst case
+  cannot fit what remains is still refused (never trimmed to fit), and the
+  reason now names the remaining budget and the ceiling.
+
+### Added
+
+- **Plan-lane chunking: work that cannot fit one model pass is split before
+  dispatch, and work that fits stays one call.** Only targets past the
+  500-line rewrite cap previously reached the diff backend; nothing detected
+  an instruction that could not be sent at all or a target one pass cannot
+  even read, so those failed late as truncations, context errors, or
+  out-of-scope fatals. The plan lane now distinguishes the two remedies:
+  a target past the engine's whole-file rewrite cap (`MAX_FILE_LINES`), or
+  one whose rewrite could not fit the pass's output budget
+  (`config.DEFAULT_APPLY_MAX_TOKENS`, or the lane's pinned `max_tokens`),
+  becomes ONE node carrying the `backend: "diff"` hint -- bounded hunks, a
+  small edit to a big file stays a single call; while an instruction longer
+  than `MAX_INSTRUCTION_CHARS` (a request that could not be sent) or a
+  target larger than the pass's read budget (the rung's declared context
+  via `capability.source_budget_for`, with an unknown rung left alone
+  rather than given a guessed limit) splits into ordered chunks, each
+  inside budget, chained so the existing DAG dispatch runs them one pass at
+  a time; dependents of a split node wait for its last chunk. The policy
+  lives once, in `waist.chunk_oversized_nodes`; `compose_plan` fits the
+  plan before the waist gate reviews it (and re-fits an amended plan), so
+  every lane -- CLI, MCP, and the agent's edit lane -- dispatches the same
+  plan, with a `chunking` block on the envelope when nodes were split.
+
+### Changed
+
+- **The GUI/Auto edit lane now runs the full hourglass.** The lane the
+  desktop actually drives (`harness serve` -> `server.run_chat_task` ->
+  `AutonomousAgent._handle_edit`) planned and executed on its own private
+  path: a serial single-tree executor, no waist confirmation, no cost
+  reservations, no worktree isolation, no write attestation -- so a run
+  could report "escalated" while every node ran on one free model. It now
+  plans through the ONE composer (`waist.compose_plan`, confirmation
+  included) and executes through the ONE assembly
+  (`executor.PlanExecutor`: parallel workers, per-node reservations via
+  `spend.NodeReserver`, isolation rooted at the edited tree, and write
+  attestation). CLI, MCP, and the agent lane build that same object, and
+  the hourglass switches come from `config.resolve_hourglass`, so the lane
+  inherits exactly the settings the CLI reads. Two gate defects surfaced
+  while wiring it: the waist confirmation reused the *decomposition*
+  model's seam (a cheap rung answered, and the ledger credited, the
+  frontier verdict -- it now resolves and calls its own frontier rung, the
+  same owner the Router binds from), and an unset `--frontier-model` made
+  the default-ON confirmation fatal on every plan run (it now resolves
+  instead of dying). A waist refusal, or an unreachable waist rung,
+  dispatches nothing and says why. Disarming the hourglass (`hourglass_*:
+  false`) keeps the historical serial single-tree lane, unchanged.
+
 ### Added
 
 - **Free-tier saturation auto-escalates into the lowest paid rung.** With
@@ -195,6 +288,26 @@ break APIs between minor versions).
 
 ### Fixed
 
+- **"Escalated" is evidence-bound, not a handoff note.** A capability defer
+  that routed itself into the plan lane stamped `escalated_from_defer`
+  unconditionally, so a run that planned, executed every node on the free
+  lane, and never touched an escalation rung still reported itself as
+  escalated (the ling/gemma-100% report). The label now requires evidence
+  produced where the walk is actually known: the escalation driver annotates
+  a gate-passed rung with the primary it replaced (`escalated_from`), the
+  rung that passed (`escalated_to`), the walked rungs, and both pool families
+  -- `escalation.escalation_evidence` is the ONE definition of that evidence
+  and returns nothing for a failed attempt or a walk that stayed inside one
+  family (a free rung rotated to another free rung is a rung walk, not an
+  escalation). The edit lane stamps `escalated_from_defer` only on that
+  evidence and otherwise says plainly that the handoff ran while no rung did;
+  the envelope carries `escalated_model`, `escalated_from_model`,
+  `escalation_family`, and `escalation_rungs` so the claim is checkable. The
+  legacy single-rung path annotates identically. Agent nodes also thread
+  `allow_escalation` and `attest_model` explicitly (`node_apply_kwargs`),
+  with `session.attest_model_for` as the one owner of the verifier identity,
+  so a GUI node's escalation arming and verifier are auditable from the lane
+  instead of inherited silently.
 - **Frontier defaults to the price-efficient rung.** qwen3.8-max lists the
   same intelligence tier (53/100) as fable-5.1 / gpt-6-astra at $2/$6
   in/out vs their $10/$50, so `resolve_frontier_model`'s paid default and

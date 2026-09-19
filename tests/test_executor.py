@@ -7,7 +7,7 @@ import unittest
 from harness.batch import BatchOptions, run_batch
 from harness.dag import DAGNode, TaskDAG
 from harness.errors import HarnessError
-from harness.executor import ConcurrentExecutor, FileLockManager
+from harness.executor import ConcurrentExecutor, FileLockManager, PlanExecutor
 
 
 class FileLockManagerTests(unittest.TestCase):
@@ -54,6 +54,11 @@ class FileLockManagerTests(unittest.TestCase):
 
 
 class ConcurrentExecutorTests(unittest.TestCase):
+    def test_plan_summary_does_not_treat_empty_execution_as_success(self):
+        summary = PlanExecutor.summarize({})
+        self.assertFalse(summary["all_ok"])
+        self.assertEqual(summary["completed"], 0)
+
     def test_executor_invalid_workers(self):
         with self.assertRaises(HarnessError):
             ConcurrentExecutor(max_workers=0)
@@ -114,6 +119,72 @@ class ConcurrentExecutorTests(unittest.TestCase):
         self.assertEqual(len(results), 2)
         self.assertEqual(results[0]["status"], "fatal")
         self.assertIn("crash", results[0]["error"])
+
+    def test_isolation_creation_failure_cleans_prior_handles(self):
+        class FailingIsolation:
+            def __init__(self):
+                self.created = []
+                self.discarded = []
+
+            def create(self, node_id):
+                if node_id == "B":
+                    raise HarnessError("worktree unavailable")
+                handle = {"node_id": node_id, "path": node_id}
+                self.created.append(handle)
+                return handle
+
+            def discard(self, handle):
+                self.discarded.append(handle)
+
+            def audit(self, handle, declared):
+                return []
+
+            def merge(self, handle, paths=None):
+                return None
+
+        isolation = FailingIsolation()
+        dag = TaskDAG(nodes={
+            "A": DAGNode(node_id="A", instruction="a", target_files=("a.py",)),
+            "B": DAGNode(node_id="B", instruction="b", target_files=("b.py",)),
+        })
+        with self.assertRaises(HarnessError):
+            ConcurrentExecutor(max_workers=2).execute_dag(
+                dag, lambda node, **kwargs: {"status": "ok"},
+                isolator=isolation)
+        self.assertEqual(isolation.discarded, isolation.created)
+
+    def test_isolated_merges_follow_batch_order_not_completion_order(self):
+        class Isolation:
+            def __init__(self):
+                self.merges = []
+
+            def create(self, node_id):
+                return {"node_id": node_id, "path": node_id}
+
+            def audit(self, handle, declared):
+                return []
+
+            def merge(self, handle, paths=None):
+                self.merges.append(handle["node_id"])
+
+            def discard(self, handle):
+                pass
+
+        isolation = Isolation()
+        dag = TaskDAG(nodes={
+            "A": DAGNode(node_id="A", instruction="a", target_files=("a.py",)),
+            "B": DAGNode(node_id="B", instruction="b", target_files=("b.py",)),
+        })
+
+        def worker(node, **kwargs):
+            if node.node_id == "A":
+                time.sleep(0.03)
+            return {"status": "ok", "node_id": node.node_id}
+
+        results = ConcurrentExecutor(max_workers=2).execute_dag(
+            dag, worker, isolator=isolation)
+        self.assertEqual(results["A"]["status"], "ok")
+        self.assertEqual(isolation.merges, ["A", "B"])
 
     def test_execute_dag_stages(self):
         executor = ConcurrentExecutor(max_workers=4)
