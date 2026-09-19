@@ -33,6 +33,7 @@ let workDir = localStorage.getItem("harness_workdir") || "";
 let currentRunId = null;
 let pollTimer = null;
 let eventSeq = 0;
+let routeRequestSeq = 0;
 
 // Initialize
 window.addEventListener("DOMContentLoaded", () => {
@@ -42,7 +43,9 @@ window.addEventListener("DOMContentLoaded", () => {
   setupStarterChips();
   loadHistory();
   pollSpend();
+  pollRoute();
   setInterval(pollSpend, 8000);
+  setInterval(pollRoute, 15000);
 });
 
 // Setup Sidebar (session list, workdir)
@@ -437,8 +440,13 @@ function renderFinalResult(runRecord, agentMsg) {
 
   // Footer Spend Pill
   const cost = res.cost ?? 0.0;
+  const paidProvenance = res.escalated_model
+    ? `<span title="Evidence-bound paid rung used">Escalated: ${esc(res.escalated_model)}`
+      + `${res.escalation_family ? ` (${esc(res.escalation_family)})` : ""}</span>`
+    : "";
   agentMsg.footer.innerHTML = `
     <span>Model: ${esc(res.model || "Sliding-Scale Multi-Tier")}</span>
+    ${paidProvenance}
     ${res.web_used ? `<span title="Live web evidence was retrieved for this answer">🌐 web</span>` : ``}
     <span>Spend: ${fmtCost(cost)}</span>
   `;
@@ -565,6 +573,35 @@ async function loadHistory() {
       scrollToBottom();
     }
   } catch (_e) {}
+}
+
+// Poll routing posture and budget semantics. A configured paid key does not
+// mean every request uses a paid model: free is primary when use_free=true,
+// and paid models are entered only on an evidence-backed escalation walk.
+async function pollRoute() {
+  const badge = $("#route-badge");
+  const text = $("#route-text");
+  if (!badge || !text) return;
+  const requestSeq = ++routeRequestSeq;
+  try {
+    const data = await api("/api/settings");
+    if (requestSeq !== routeRequestSeq) return;
+    const s = data.settings || {};
+    if (typeof s.use_free !== "boolean") {
+      throw new Error("routing posture is incomplete");
+    }
+    const freePrimary = s.use_free;
+    const paidArmed = Boolean(s.paid_key_present && s.allow_escalation);
+    const posture = freePrimary
+      ? (paidArmed ? "Primary: free · paid escalation armed" : "Primary: free · escalation unavailable")
+      : "Primary: paid";
+    text.textContent = posture;
+    badge.title = `${posture}. The spend badge is the per-run ceiling.`;
+  } catch (_e) {
+    if (requestSeq !== routeRequestSeq) return;
+    text.textContent = "Route: unavailable";
+    badge.title = "Routing posture unavailable";
+  }
 }
 
 // Poll Spend & Quota

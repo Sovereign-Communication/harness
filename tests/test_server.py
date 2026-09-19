@@ -597,6 +597,32 @@ class ClaimsLaneTests(ServerHarness):
         self.assertEqual(full["result"]["cost_by_model"], {"m/a": 0.0007})
 
 
+class RoutingMetadataTests(unittest.TestCase):
+    def test_settings_view_reports_paid_posture_without_secrets(self):
+        cases = (
+            ({"use_free": True, "allow_escalation": True, "max_cost": 0.05,
+              "mcp_auth_token": "secret-token"}, "sk-secret", True),
+            ({"use_free": True, "allow_escalation": True, "max_cost": 0.05},
+             None, False),
+        )
+        for values, key, present in cases:
+            with self.subTest(paid_key=present):
+                settings = mock.Mock()
+                settings.to_dict.return_value = values
+                with mock.patch.object(ui_server, "load_settings",
+                                       return_value=settings), \
+                        mock.patch.object(ui_server, "resolve_api_key",
+                                          return_value=key):
+                    view = ui_server._settings_view()
+                self.assertEqual(view["paid_key_present"], present)
+                self.assertTrue(view["allow_escalation"])
+                self.assertEqual(view["max_cost"], 0.05)
+                self.assertNotIn("sk-secret", json.dumps(view))
+                if present:
+                    self.assertIsNone(view["mcp_auth_token"])
+                    self.assertTrue(view["mcp_auth_token_present"])
+
+
 class TtlCacheTests(unittest.TestCase):
     def test_cached_collapses_calls_within_ttl(self):
         ui = ui_server.UiState()
@@ -861,6 +887,18 @@ class ChatEndpointTests(ServerHarness):
                     self.assertEqual(len(hist_data["history"]), 1)
             finally:
                 conn.close()
+
+    def test_chat_runner_uses_classifier_for_lane_selection(self):
+        cases = (("Explain the router", True),
+                 ("Fix harness/server.py to validate the request", False))
+        with mock.patch.object(ui_server, "load_settings", return_value=mock.Mock()), \
+                mock.patch.object(ui_server, "AutonomousAgent") as agent_cls:
+            agent_cls.return_value.run_prompt.return_value = {"status": "ok"}
+            for prompt, force_conversation in cases:
+                with self.subTest(prompt=prompt):
+                    ui_server.run_chat_task("task-1", {"prompt": prompt}, lambda: False)
+                    call = agent_cls.return_value.run_prompt.call_args
+                    self.assertEqual(call.kwargs["force_conversation"], force_conversation)
 
     def test_chat_server_direct_synchronous_execution(self):
         # Directly test validate_dispatch, run_chat_task, and handler endpoints in the main thread

@@ -234,6 +234,13 @@ def drive(*, goal: str, target_files: List[str], initial_plan: Dict,
             break
 
         missing = [note for note in artifact_notes if "MISSING" in note]
+        if verdict["complete"] and not round_ok:
+            emit("orchestration_note",
+                 note="judge said complete but one or more nodes did not succeed; "
+                      "overriding to incomplete")
+            verdict = {"complete": False,
+                       "remaining": "one or more execution nodes did not complete",
+                       "reason": "node failure despite completion verdict"}
         if verdict["complete"] and missing:
             emit("orchestration_note",
                  note=f"judge said complete but {len(missing)} named artifact(s) missing; "

@@ -117,6 +117,13 @@ class ApplyEngineMixin:
             outcome = self._attempt_round(req, state, attempt_model)
             if outcome.model_used is None:
                 if outcome.last_defer_reason is not None:
+                    # A readiness defer is evidence that the current rung
+                    # cannot finish the task, not a terminal handoff. Give
+                    # the configured paid ladder its chance before returning
+                    # the honest deferral envelope.
+                    escalated = self._escalate(req, state)
+                    if escalated is not None:
+                        return escalated
                     return self._readiness_deferral(req, state, outcome)
                 state.rounds.append(_round_entry(
                     round_no, req.model or outcome.model, "api_error",
@@ -125,7 +132,9 @@ class ApplyEngineMixin:
                 break
 
             if CAPABILITY_MARKER in outcome.content:
-                return self._capability_deferral(req, state, outcome)
+                deferred = self._capability_deferral(req, state, outcome)
+                escalated = self._escalate(req, state)
+                return escalated or deferred
 
             if req.backend == "diff":
                 # Strict-match merge (#11): a non-matching or malformed diff is

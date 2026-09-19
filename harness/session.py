@@ -91,12 +91,12 @@ def router_for(settings):
                   use_free=settings.use_free)
 
 
-def engine_for(settings, api_key, gov, ledger, router):
+def engine_for(settings, api_key, gov, ledger, router, transport=None):
     """The ApplyEngine with every settings-level policy applied. Only
     per-request knobs (instruction, ceilings for THIS task) are passed at
     the engine call site -- construction-level policy lives here."""
     return ApplyEngine(
-        HttpTransport(), api_key=api_key, governor=gov, ledger=ledger, router=router,
+        transport or HttpTransport(), api_key=api_key, governor=gov, ledger=ledger, router=router,
         default_require_consent=settings.default_require_consent,
         default_renew_consent=settings.renew_consent,
         reasoning_effort=settings.reasoning_effort,
@@ -107,7 +107,7 @@ def engine_for(settings, api_key, gov, ledger, router):
         allowed_roots=settings.mcp_allowed_roots)
 
 
-def apply_session(settings, max_cost=None):
+def apply_session(settings, max_cost=None, transport=None):
     """ONE assembly step for engine-running commands (apply, continue,
     dogfood's apply phase, bench): key+governor, ledger, the pre-spend
     saturation look-ahead (advice only, never a gate), router, engine.
@@ -118,7 +118,8 @@ def apply_session(settings, max_cost=None):
     api_key, gov = governor_for(settings, max_cost)
     ledger = ledger_for(settings)
     pre_run_warning(governor=gov, ledger=ledger, use_free=settings.use_free)
-    return engine_for(settings, api_key, gov, ledger, router_for(settings))
+    return engine_for(settings, api_key, gov, ledger, router_for(settings),
+                      transport=transport)
 
 
 def run_meta(settings, governor):

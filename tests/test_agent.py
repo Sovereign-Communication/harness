@@ -51,6 +51,25 @@ def _lane_settings(**overrides):
     return settings
 
 
+def _lane_settings(**overrides):
+    """Agent-lane settings with the hourglass DISARMED explicitly.
+
+    These tests pin lane mechanics (round drive, healing retry, artifact
+    truth, escalation evidence) that are independent of the plan gate, and
+    the hourglass switch must come from the test -- never from whatever
+    config file happens to be on the machine running the suite. The armed
+    lane is covered by TestHourglassLane, which scripts the waist verdict.
+    """
+    settings = load_settings()
+    settings.hourglass_confirm = False
+    settings.hourglass_isolate = False
+    settings.hourglass_parallel = False
+    settings.hourglass_require_attestation = False
+    for key, value in overrides.items():
+        setattr(settings, key, value)
+    return settings
+
+
 class TestAgentClassificationAndDiscovery(unittest.TestCase):
     def test_classify_prompt_intent(self):
         # Conversational

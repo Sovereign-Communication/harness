@@ -32,10 +32,10 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 from . import events as _events
-from .agent import AutonomousAgent
+from .agent import AutonomousAgent, classify_prompt_intent
 import harness.history as _history
 from .batch import BatchOptions
-from .config import HARD_TASK_MAX_COST, HARD_MAX_COST, load_settings
+from .config import HARD_TASK_MAX_COST, HARD_MAX_COST, load_settings, resolve_api_key
 from .errors import HarnessError, ToolCancelled
 from .history import delete_chat_session, list_chat_sessions, load_chat_history as _history_load_chat_history
 from .session import (apply_session, governor_for, ledger_for, run_meta)
@@ -303,19 +303,19 @@ def run_bench_task(task_id, args, cancel_check):
 
 
 def run_chat_task(task_id, args, cancel_check):
-    # Autonomous chat runner driving prompt to conclusion with zero UI clutter.
-    # force_conversation=True bypasses the intent classifier: every UI chat
-    # prompt is conversational by definition and must load session history.
+    # Keep ordinary chat in the conversation lane, but let the existing
+    # classifier hand explicit mutation requests to the governed edit lane.
     settings = load_settings()
+    prompt = args["prompt"]
     root_dir = Path(args["root_dir"]) if args.get("root_dir") else None
     agent = AutonomousAgent(settings=settings, root_dir=root_dir)
     return agent.run_prompt(
-        prompt=args["prompt"],
+        prompt=prompt,
         auto_apply=args.get("auto_apply", True),
         web=bool(args.get("web", False)),
         session_id=args.get("session_id"),
         cancel_check=cancel_check,
-        force_conversation=True,
+        force_conversation=classify_prompt_intent(prompt) != "edit",
     )
 
 
@@ -437,8 +437,11 @@ class UiState:
 
 def _settings_view():
     """Read-only settings for the UI. Secrets become presence booleans."""
-    from .config import load_settings
-    d = load_settings().to_dict()
+    settings = load_settings()
+    d = settings.to_dict()
+    # Expose routing posture, never the key itself: the UI must distinguish a
+    # free primary lane from a paid escalation ladder.
+    d["paid_key_present"] = bool(resolve_api_key())
     if d.get("mcp_auth_token"):
         d["mcp_auth_token"] = None
         d["mcp_auth_token_present"] = True

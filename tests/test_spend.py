@@ -8,6 +8,16 @@ from tests._fake import FakeTransport, m, comp, _gov, P1, P2, JUDGE
 
 
 class CostMathTests(unittest.TestCase):
+    def test_snapshot_reports_public_spend_state(self):
+        gov = _gov(FakeTransport(models=[m(P1)]), max_cost=0.05)
+        token = gov.reserve(0.00234567, "task_1")
+        gov.reconcile(token, 0.00123456)
+        self.assertEqual(gov.snapshot(), {
+            "spent": 0.001235,
+            "outstanding": 0.0,
+            "ceiling": 0.05,
+        })
+
     def test_pricing_is_per_token_not_per_million(self):
         """Regression: OpenRouter pricing fields are per-token dollars. An
         earlier SCMessenger version divided by 1e6 a second time and

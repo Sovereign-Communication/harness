@@ -144,18 +144,15 @@ def rebase_gate(gate: Optional[str], from_root, to_root) -> Optional[str]:
     """
     if not gate or not from_root or not to_root:
         return gate
-    raw_source = str(from_root).rstrip("\\/")
-    raw_destination = str(to_root).rstrip("\\/")
-    if os.path.normcase(raw_source) == os.path.normcase(raw_destination):
+    source = os.path.abspath(str(from_root)).rstrip("\\/")
+    destination = os.path.abspath(str(to_root)).rstrip("\\/")
+    if os.path.normcase(source) == os.path.normcase(destination):
         return gate
-    variants = []
-    for old, new in (
-        (raw_source, raw_destination),
-        (raw_source.replace("\\", "/"), raw_destination.replace("\\", "/")),
-        (raw_source.replace("/", "\\"), raw_destination.replace("/", "\\")),
-    ):
-        if (old, new) not in variants:
-            variants.append((old, new))
+    variants = (
+        (source, destination),
+        (source.replace("\\", "/"), destination.replace("\\", "/")),
+        (source.replace("/", "\\"), destination.replace("/", "\\")),
+    )
     for old, new in variants:
         if old and old in gate:
             return gate.replace(old, new)

@@ -17,16 +17,24 @@ from .orchestrator import drive, keyword_fallback, triage_files
 from .prompts import CAPABILITY_MARKER
 from .escalation import escalation_evidence, escalation_evidence_fields
 from .executor import PlanExecutor
-from .history import load_chat_history, save_chat_turn
-from .repo_scope import discover_target_files, discover_verification_gate, enumerate_repo_files
+from .history import get_default_history_dir, load_chat_history, save_chat_turn
+from .repo_scope import (
+    _REPO_SKIP_DIRS,
+    _REPO_SKIP_SUFFIXES,
+    discover_target_files,
+    discover_verification_gate,
+    enumerate_repo_files,
+)
 from .results import SUCCESS_STATUSES, _http_error
 from .session import apply_session, attest_model_for, governor_for, ledger_for
 from .waist import compose_plan, resolve_scout_ladder
-from .web import DEFAULT_FETCH_HOSTS, gather_web_context
+from .web import DEFAULT_FETCH_HOSTS, extract_query, fetch_url, find_urls, gather_web_context, search_web
 
-# The history and repository-scope helpers remain imported at their owning
-# modules; this file keeps only the agent-facing compatibility names still
-# used by callers and tests.
+# Deliberate compatibility re-exports, declared so the architecture guard
+# reads intent instead of a dead import. The web seams are imported so
+# hermetic tests can patch them at this module path, and the history /
+# repo_scope helpers were this module's public surface before the split. The
+# owners are harness.web, harness.history, and harness.repo_scope.
 __all__ = [
     "AutonomousAgent",
     "CONVERSATION_STARTERS",
@@ -36,8 +44,15 @@ __all__ = [
     "discover_target_files",
     "discover_verification_gate",
     "enumerate_repo_files",
+    "extract_query",
+    "fetch_url",
+    "find_urls",
+    "get_default_history_dir",
     "load_chat_history",
     "save_chat_turn",
+    "search_web",
+    "_REPO_SKIP_DIRS",
+    "_REPO_SKIP_SUFFIXES",
 ]
 
 DEFAULT_CHAT_SYSTEM_PROMPT = (
@@ -187,11 +202,16 @@ class AutonomousAgent:
             return self._handle_edit(prompt, sid, auto_apply, cancel_check)
 
     def _gather_web_context(self, prompt: str) -> List[Dict[str, Any]]:
-        # Web policy and transport belong to harness.web; this agent only
-        # supplies the request and renders the returned evidence.
+        # Web owns the network seams; pass those module functions through so
+        # policy and hermetic test patches remain at the single owner.
+        import harness.web as _web
         return gather_web_context(
             prompt,
             allowed_hosts=DEFAULT_FETCH_HOSTS,
+            fetch_url_fn=_web.fetch_url,
+            search_web_fn=_web.search_web,
+            find_urls_fn=_web.find_urls,
+            extract_query_fn=_web.extract_query,
             max_sources=_MAX_WEB_SOURCES,
         )
 
@@ -633,7 +653,11 @@ class AutonomousAgent:
         # plan -> execute EVERY node (keep_going: failures are state for the
         # judge, not abort) -> completion judge -> re-plan remaining scope --
         # until the judge calls it complete or the round budget is spent.
-        engine = apply_session(self.settings)
+        # Keep the injected transport on the actual apply engine as well as
+        # planning/judging. This is the sole transport boundary for the agent
+        # lane; otherwise a dogfood/test transport silently fell back to live
+        # HTTP during node execution.
+        engine = apply_session(self.settings, transport=self.transport)
 
         def apply_node(target, node: DAGNode, route_kwargs, task_runner):
             """One node's engine call for the agent lane: the absolute target
@@ -799,8 +823,9 @@ class AutonomousAgent:
 
         result = {
             "status": "ok" if final_all_ok else "failed",
-            **({"escalated_from_defer": escalation_note}
-               if (escalation_note and escalation_ev is not None) else {}),
+            **({"escalated_from_defer":
+                escalation_note or "free model capability defer"}
+               if escalation_ev is not None else {}),
             **escalation_evidence_fields(escalation_ev),
             "intent": "edit",
             "prompt": prompt,
@@ -813,6 +838,7 @@ class AutonomousAgent:
             **({"confirmation": plan["confirmation"]}
                if plan.get("confirmation") else {}),
             "cost": round(total_cost, 6),
+            **engine.governor.snapshot(),
             "results": list(all_results.values()),
             "orchestrator_rounds": len(rounds_history),
             "orchestrator_history": rounds_history,
