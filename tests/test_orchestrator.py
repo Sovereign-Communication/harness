@@ -37,6 +37,22 @@ class AssessCompletionTests(unittest.TestCase):
             orch.assess_completion("g", "s", chat_fn)
 
 
+class DriveTruthTests(unittest.TestCase):
+    def test_failed_node_overrides_complete_judge(self):
+        plan = {"total_nodes": 1, "total_cost_ceiling": 0.0,
+                "nodes": [{"node_id": "n1", "instruction": "edit",
+                            "target_files": ["a.py"]}],
+                "dag": {"nodes": [{"node_id": "n1"}]}}
+        driven = orch.drive(
+            goal="edit a.py", target_files=[], initial_plan=plan,
+            root_dir=".", plan_round=lambda goal: plan,
+            execute_plan=lambda current: {"n1": {"status": "failed"}},
+            completion_chat=lambda prompt: '{"complete": true}',
+            emit=lambda *args, **kwargs: None)
+        self.assertFalse(driven["final_all_ok"])
+        self.assertIn("did not complete", driven["remaining_scope"])
+
+
 class TriageFilesTests(unittest.TestCase):
     _FILES = ["harness/agent.py", "harness/dag.py", "harness/web.py",
               "tests/test_agent.py", "README.md"]

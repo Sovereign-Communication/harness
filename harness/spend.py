@@ -80,6 +80,15 @@ class SpendGovernor:
             self.verify_key()
         return dict(self.key_info, session_spent=self.spent)
 
+    def snapshot(self):
+        """Return the synchronized spend state for result envelopes."""
+        with self._spend_lock:
+            return {
+                "spent": round(float(self.spent), 6),
+                "outstanding": round(float(self._outstanding), 6),
+                "ceiling": round(float(self.max_cost), 6),
+            }
+
     def cost_by_model(self):
         """Actual session spend per model label, for per-run cost reports."""
         return dict(sorted(self._cost_by_model.items(), key=lambda kv: -kv[1]))

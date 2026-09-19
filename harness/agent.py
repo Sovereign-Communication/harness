@@ -666,7 +666,11 @@ class AutonomousAgent:
         # plan -> execute EVERY node (keep_going: failures are state for the
         # judge, not abort) -> completion judge -> re-plan remaining scope --
         # until the judge calls it complete or the round budget is spent.
-        engine = apply_session(self.settings)
+        # Keep the injected transport on the actual apply engine as well as
+        # planning/judging. This is the sole transport boundary for the agent
+        # lane; otherwise a dogfood/test transport silently fell back to live
+        # HTTP during node execution.
+        engine = apply_session(self.settings, transport=self.transport)
 
         def apply_node(target, node: DAGNode, route_kwargs, task_runner):
             """One node's engine call for the agent lane: the absolute target
@@ -832,8 +836,9 @@ class AutonomousAgent:
 
         result = {
             "status": "ok" if final_all_ok else "failed",
-            **({"escalated_from_defer": escalation_note}
-               if (escalation_note and escalation_ev is not None) else {}),
+            **({"escalated_from_defer":
+                escalation_note or "free model capability defer"}
+               if escalation_ev is not None else {}),
             **escalation_evidence_fields(escalation_ev),
             "intent": "edit",
             "prompt": prompt,
@@ -846,6 +851,7 @@ class AutonomousAgent:
             **({"confirmation": plan["confirmation"]}
                if plan.get("confirmation") else {}),
             "cost": round(total_cost, 6),
+            **engine.governor.snapshot(),
             "results": list(all_results.values()),
             "orchestrator_rounds": len(rounds_history),
             "orchestrator_history": rounds_history,
