@@ -202,29 +202,16 @@ class AutonomousAgent:
             return self._handle_edit(prompt, sid, auto_apply, cancel_check)
 
     def _gather_web_context(self, prompt: str) -> List[Dict[str, Any]]:
-        # Delegates to web.gather_web_context (single owner) with module seams
-        # so tests patching harness.agent.fetch_url/search_web keep working:
-        # we forward the currently-patched callables explicitly. Prefer any
-        # patch on harness.agent (legacy test seam) else harness.web.
+        # Web owns the network seams; pass those module functions through so
+        # policy and hermetic test patches remain at the single owner.
         import harness.web as _web
-        import sys as _sys
-        _agent_mod = _sys.modules.get(__name__)
-        def _pick(name):
-            # patched on agent wins; otherwise web's implementation
-            fn = getattr(_agent_mod, name, None)
-            # distinguish between our own shim (not patched) vs a MagicMock patch:
-            # if the attribute is exactly the web function object, it's unpatched -> use web
-            web_fn = getattr(_web, name)
-            if fn is None or fn is web_fn:
-                return web_fn
-            return fn
         return gather_web_context(
             prompt,
             allowed_hosts=DEFAULT_FETCH_HOSTS,
-            fetch_url_fn=_pick("fetch_url"),
-            search_web_fn=_pick("search_web"),
-            find_urls_fn=_pick("find_urls"),
-            extract_query_fn=_pick("extract_query"),
+            fetch_url_fn=_web.fetch_url,
+            search_web_fn=_web.search_web,
+            find_urls_fn=_web.find_urls,
+            extract_query_fn=_web.extract_query,
             max_sources=_MAX_WEB_SOURCES,
         )
 
