@@ -3,7 +3,6 @@ from dataclasses import FrozenInstanceError
 import unittest
 
 from harness.config import (
-    DEFAULT_JUDGE_PAID_TOP,
     FREE_JUDGE,
     HARD_MAX_COST,
     load_settings,
@@ -38,7 +37,8 @@ class TestSlidingScale(unittest.TestCase):
         self.assertEqual(resolve_frontier_model("sol"), "openai/gpt-5.6-sol")
         self.assertEqual(resolve_frontier_model("custom/model-x"), "custom/model-x")
         self.assertEqual(resolve_frontier_model(None, use_free=True), FREE_JUDGE)
-        self.assertEqual(resolve_frontier_model(None, use_free=False), DEFAULT_JUDGE_PAID_TOP)
+        self.assertEqual(resolve_frontier_model(None, use_free=False),
+                         "qwen/qwen3.8-max-0902")
 
     def test_classify_tier_0_scout(self):
         c = classify_task_tier(

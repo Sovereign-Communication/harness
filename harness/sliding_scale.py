@@ -19,7 +19,6 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from .config import (
     DEFAULT_APPLY_POOL_PAID,
     DEFAULT_JUDGE_PAID,
-    DEFAULT_JUDGE_PAID_TOP,
     DEFAULT_PANEL_PAID,
     ESCALATION_POOL_FREE,
     ESCALATION_POOL_PAID,
@@ -48,6 +47,9 @@ FRONTIER_ALIASES: Dict[str, str] = {
     "sol": "openai/gpt-5.6-sol",
     "gpt-4.1": "openai/gpt-4.1",
     "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
+    "qwen": "qwen/qwen3.8-max-0902",
+    "qwen3.8-max": "qwen/qwen3.8-max-0902",
+    "qwen-max": "qwen/qwen3.8-max-0902",
 }
 
 # Linguistic keyword markers for complexity heuristics
@@ -93,7 +95,13 @@ class SlidingScaleRoute:
 
 
 def resolve_frontier_model(custom_frontier: Optional[str] = None, use_free: bool = False) -> str:
-    """Resolve a user or config frontier model, mapping aliases when present."""
+    """Resolve a user or config frontier model, mapping aliases when present.
+
+    The paid default is the price-efficient frontier: qwen3.8-max lists the
+    same intelligence tier as the flagship anthropic/openai options (53/100
+    vs fable-5.1 / gpt-6-astra) at $2/$6 in/out vs their $10/$50 -- frontier
+    work defaults there unless the operator pins something else.
+    """
     if custom_frontier:
         stripped = custom_frontier.strip()
         if stripped in FRONTIER_ALIASES:
@@ -101,7 +109,7 @@ def resolve_frontier_model(custom_frontier: Optional[str] = None, use_free: bool
         return stripped
     if use_free:
         return FREE_JUDGE
-    return DEFAULT_JUDGE_PAID_TOP
+    return "qwen/qwen3.8-max-0902"
 
 
 def classify_task_tier(

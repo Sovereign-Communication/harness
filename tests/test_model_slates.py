@@ -55,6 +55,7 @@ class SlatePolicyTests(unittest.TestCase):
         self.assertEqual(config.ESCALATION_POOL_PAID, [
             "z-ai/glm-5.3-flash",
             "deepseek/deepseek-v4-pro",
+            "qwen/qwen3.8-max-0902",
             "openai/gpt-4.1",
             "openai/gpt-5.6-sol",
         ])
@@ -62,6 +63,15 @@ class SlatePolicyTests(unittest.TestCase):
         # Rung caps match the new ladder length.
         self.assertEqual(len(config.ESCALATION_RUNG_CAPS["paid"]),
                          len(config.ESCALATION_POOL_PAID))
+
+    def test_frontier_default_is_the_price_efficient_rung(self):
+        # Same listed intelligence tier as the $10/$50 flagships at $2/$6:
+        # frontier work defaults to qwen unless the operator pins a model.
+        from harness.sliding_scale import resolve_frontier_model
+        self.assertEqual(resolve_frontier_model(None, use_free=False),
+                         "qwen/qwen3.8-max-0902")
+        self.assertEqual(resolve_frontier_model("qwen"),
+                         "qwen/qwen3.8-max-0902")
 
     def test_every_shipped_id_is_enumerated(self):
         shipped = config.shipped_model_ids()

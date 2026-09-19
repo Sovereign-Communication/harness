@@ -119,10 +119,18 @@ def model_trust(model, report):
                   + _int(entry, "consent_unusable"))
     hostile, soft = _model_denials(entry)
     levels = min(MAX_TRUST, clean // CLEAN_PER_LEVEL)
-    strikes = hygiene + hostile * STRIKE_HOSTILE + soft * STRIKE_SOFT
+    # Same forgiveness the host gets: soft denials are friction (often the
+    # attribution bug this calibration just recovered from), erased by
+    # surplus clean successes at the same 3-per-strike rate. Hostile stays.
+    surplus = max(0, clean - MAX_TRUST * CLEAN_PER_LEVEL)
+    forgiven = min(soft, surplus // CLEAN_PER_LEVEL)
+    strikes = (hygiene + hostile * STRIKE_HOSTILE
+               + (soft - forgiven) * STRIKE_SOFT)
     score = _clamp(levels - strikes)
     reasons = [f"{clean} clean successes ({levels} levels)",
                f"{strikes} strike points"]
+    if forgiven:
+        reasons.append(f"{forgiven} soft denials forgiven by surplus clean work")
     if score <= REFUSE_AT_OR_BELOW:
         reasons.append("at or below the refuse threshold")
     elif score < UNKNOWN:

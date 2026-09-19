@@ -306,6 +306,40 @@ function pollExecution(runId, agentMsg) {
 }
 
 // Live Progress Stepper Updates
+const PHASE_OK_STATUSES = new Set(["ok", "applied", "verified", "completed", "merged"]);
+
+function phaseKey(agentMsg, nodeId) {
+  return `r${agentMsg.orchRound || 1}:${nodeId || "?"}`;
+}
+
+function ensurePhase(agentMsg, nodeId, target, instruction) {
+  const key = phaseKey(agentMsg, nodeId);
+  if (agentMsg.phaseItems[key]) return agentMsg.phaseItems[key];
+  if (!agentMsg.phaseList) {
+    agentMsg.phaseList = document.createElement("div");
+    agentMsg.phaseList.className = "phase-list";
+    agentMsg.stepperBody.appendChild(agentMsg.phaseList);
+  }
+  const row = document.createElement("div");
+  row.className = "step-item";
+  const excerpt = String(instruction || target || "").slice(0, 70);
+  row.innerHTML = `<span class="step-icon">·</span> <span>${esc(String(nodeId || "?"))}`
+    + `${target ? ` → ${esc(String(target))}` : ""}${excerpt ? `: ${esc(excerpt)}` : ""}</span>`;
+  const glyph = row.querySelector(".step-icon");
+  agentMsg.phaseList.appendChild(row);
+  const phase = { row, glyph };
+  agentMsg.phaseItems[key] = phase;
+  scrollToBottom();
+  return phase;
+}
+
+function setPhase(agentMsg, nodeId, glyph, done) {
+  const phase = agentMsg.phaseItems[phaseKey(agentMsg, nodeId)];
+  if (!phase) return;
+  phase.glyph.textContent = glyph;
+  phase.row.className = `step-item${done ? " done" : ""}`;
+}
+
 function handleLiveEvent(ev, agentMsg) {
   const body = agentMsg.stepperBody;
   agentMsg.stepper.hidden = false;
@@ -323,19 +357,26 @@ function handleLiveEvent(ev, agentMsg) {
   } else if (ev.type === "dag_planned") {
     label = `Decomposed into ${ev.total_nodes || 1} subtask(s); ceiling $${(ev.total_ceiling || 0).toFixed(4)}`;
     agentMsg.stepperTitleText.textContent = `Executing ${ev.total_nodes || 1} subtask(s)...`;
+    (ev.nodes || []).forEach(n => ensurePhase(agentMsg, n.node_id, n.target, n.instruction));
   } else if (ev.type === "subtask_start") {
     label = `Executing subtask ${ev.node_id || ""}: ${ev.instruction || ""}`;
     icon = "⚙";
+    ensurePhase(agentMsg, ev.node_id, ev.target, ev.instruction);
+    setPhase(agentMsg, ev.node_id, "⚙", false);
     agentMsg.stepperTitleText.textContent = `Executing subtask ${ev.node_id || ""}...`;
   } else if (ev.type === "subtask_retry") {
     label = `Verification failed; auto-healing retry: ${ev.error || ""}`;
     icon = "↻";
+    setPhase(agentMsg, ev.node_id, "↻", false);
   } else if (ev.type === "subtask_finish") {
     label = `Completed subtask ${ev.node_id || ""} [${ev.status || "ok"}]`;
+    const ok = PHASE_OK_STATUSES.has(ev.status || "ok");
+    setPhase(agentMsg, ev.node_id, ok ? "✓" : "✗", ok);
   } else if (ev.type === "orchestration_round") {
     const goalExcerpt = String(ev.goal || "").slice(0, 80);
     label = `Orchestrator round ${ev.round || "?"}: re-planning remaining scope${goalExcerpt ? `: ${goalExcerpt}` : ""}`;
     icon = "↻";
+    agentMsg.orchRound = ev.round || (agentMsg.orchRound || 1) + 1;
     agentMsg.stepperTitleText.textContent = `Orchestrator round ${ev.round || "?"}: driving remaining scope...`;
   } else if (ev.type === "orchestration_note") {
     label = ev.note || "";
@@ -444,6 +485,9 @@ function createAgentMessageCard() {
     stepperBody: card.querySelector(".stepper-body"),
     body: card.querySelector(".markdown-body"),
     footer: card.querySelector(".msg-footer"),
+    phaseList: null,
+    phaseItems: {},
+    orchRound: 1,
   };
 }
 

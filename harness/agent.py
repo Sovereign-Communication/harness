@@ -12,6 +12,7 @@ from .chat import assess_output, chat, extract_content_and_cost, governed_text, 
 from .condenser import distill_context, condense_error_log
 from .config import Settings, load_settings, resolve_api_key
 from .dag import TaskDAG, DAGNode, decompose_via_llm, node_apply_kwargs, plan_task
+from .prompts import MAX_FILE_LINES
 from .errors import HarnessError, ToolCancelled
 from .events import emit
 from .orchestrator import assess_completion, build_state_summary, keyword_fallback, triage_files
@@ -688,7 +689,11 @@ class AutonomousAgent:
         # orchestration ladder answers; heuristic fallback) and gate.
         _, gov = governor_for(self.settings)
         plan = self._plan_round(prompt, target_files, gov)
-        emit("dag_planned", total_nodes=plan["total_nodes"], total_ceiling=plan["total_cost_ceiling"])
+        emit("dag_planned", total_nodes=plan["total_nodes"],
+             total_ceiling=plan["total_cost_ceiling"],
+             nodes=[{"node_id": n["node_id"], "instruction": n["instruction"],
+                     "target": (n.get("target_files") or [""])[0]}
+                    for n in plan.get("nodes", [])])
 
         # Auto-discover local verification gate
         verification_gate = discover_verification_gate(target_files, self.root_dir)
@@ -740,6 +745,18 @@ class AutonomousAgent:
             if target and not Path(target).is_absolute():
                 engine_target = str(self.root_dir / target)
 
+            # Whole-file rewrites cap at MAX_FILE_LINES by engine policy;
+            # large-file nodes go straight to the diff backend (touched
+            # hunks only) instead of dying as "out of scope" fatals.
+            if engine_target and Path(engine_target).is_file():
+                try:
+                    line_count = len(Path(engine_target).read_text(
+                        encoding="utf-8", errors="replace").splitlines())
+                except OSError:
+                    line_count = 0
+                if line_count > MAX_FILE_LINES:
+                    route_kwargs.setdefault("backend", "diff")
+
             res = engine.apply_edit(
                 file_path=engine_target,
                 instruction=node.instruction,
@@ -784,7 +801,11 @@ class AutonomousAgent:
                 emit("orchestration_round", round=round_no, goal=current_goal)
                 plan = self._plan_round(current_goal, target_files, gov)
                 emit("dag_planned", total_nodes=plan["total_nodes"],
-                     total_ceiling=plan["total_cost_ceiling"])
+                     total_ceiling=plan["total_cost_ceiling"],
+                     nodes=[{"node_id": n["node_id"],
+                             "instruction": n["instruction"],
+                             "target": (n.get("target_files") or [""])[0]}
+                            for n in plan.get("nodes", [])])
                 verification_gate = discover_verification_gate(
                     target_files, self.root_dir)
             dag = TaskDAG.from_dict(plan["dag"])

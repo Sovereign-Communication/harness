@@ -126,6 +126,22 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(r["trust_gates"], 1)
         self.assertEqual(r["per_model"]["rung"]["trust_denials"], 1)
 
+    def test_participation_report_refuse_band_soft_denies_are_not_evidence(self):
+        # The deadlock breaker: a soft denial recorded AT the refuse band
+        # is the lockout speaking (denied nodes complete nothing, so the
+        # gate would otherwise feed itself strikes forever). Hostile
+        # attempts and soft denies above the band stay evidence.
+        led = self.ledger
+        led.append("trust_gate", task_id="t1", model="m",
+                   reason="refused", severity="soft", combined=-11)
+        led.append("trust_gate", task_id="t1", model="m",
+                   reason="over ceiling", severity="soft", combined=-2)
+        led.append("trust_gate", task_id="t1", model="m",
+                   reason="retarget", severity="hostile", combined=-11)
+        r = led.participation_report()
+        self.assertEqual(r["trust_gates"], 2)
+        self.assertEqual(r["trust_hostile"], 1)
+
     def test_participation_report_counts(self):
         led = self.ledger
         led.append("offer", task_id="t1", model="judge", required=True)

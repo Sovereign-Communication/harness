@@ -275,14 +275,18 @@ ESCALATION_POOL_FREE = [
     "cohere/north-mini-code:free",
 ]
 
-# Paid escalation ladder: curated from the verified deep-think tier
-# (2026-09-13 probes), cheapest -> most capable. The top rung is the
-# "smartest per price tier" capstone.
-# Per-rung cost caps are advisory (enforced by SpendGovernor preflight).
-# Only catalog-validated ids belong here (stale ids hard-fatal at fetch_pricing).
+# Paid escalation ladder: cheapest -> most capable. qwen3.8-max is the
+# price-efficient frontier rung (same listed intelligence tier as the
+# anthropic/openai flagships at $2/$6 vs their $10/$50), so it slots in
+# before them: the ladder reaches frontier intelligence at frontier-price
+# first and only climbs to the $10/$50 flagships when the judge escalates
+# past it. Per-rung cost caps are advisory (enforced by SpendGovernor
+# preflight). Only catalog-validated ids belong here (stale ids hard-fatal
+# at fetch_pricing).
 ESCALATION_POOL_PAID = [
     "z-ai/glm-5.3-flash",
     "deepseek/deepseek-v4-pro",
+    "qwen/qwen3.8-max-0902",
     "openai/gpt-4.1",
     "openai/gpt-5.6-sol",
 ]
@@ -297,7 +301,7 @@ DEFAULT_JUDGE_PAID_TOP = "openai/gpt-5.6-sol"
 # HARD_TASK_MAX_COST / HARD_MAX_COST via SpendGovernor preflight.
 ESCALATION_RUNG_CAPS = {
     "free": [0.0, 0.0, 0.0],
-    "paid": [0.03, 0.06, 0.10, 0.20],
+    "paid": [0.03, 0.06, 0.15, 0.20, 0.25],
 }
 
 

@@ -140,6 +140,21 @@ class ForgivenessTests(unittest.TestCase):
         self.assertEqual(score, -1)
         self.assertNotIn("forgiven", "; ".join(reasons))
 
+    def test_model_soft_denials_forgiven_by_surplus_clean_work(self):
+        # Same recovery the host gets, model side: 40 clean successes cap
+        # the levels (33 used), the 7 surplus forgive 2 of the 10 soft
+        # denials -> 11 - 8 = 3 instead of the old permanent 11 - 10 = 1.
+        entry = _entry(success_pass=40, trust_denials=10)
+        score, reasons = trust.model_trust("m", _report({"m": entry}))
+        self.assertEqual(score, 3)
+        self.assertIn("forgiven", "; ".join(reasons))
+
+    def test_model_hostile_denials_stay_permanent(self):
+        entry = _entry(success_pass=300, trust_denials=0, trust_hostile=4)
+        score, reasons = trust.model_trust("m", _report({"m": entry}))
+        self.assertEqual(score, -5)
+        self.assertNotIn("forgiven", "; ".join(reasons))
+
     def test_per_caller_path_forgives_the_same_way(self):
         report = {"completions": 0, "trust_gates": 0, "trust_hostile": 0,
                   "calibration": {},

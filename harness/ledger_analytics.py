@@ -10,6 +10,8 @@ site keeps its shape; ledger.py owns the storage/integrity lifecycle
 """
 from collections import defaultdict
 
+from .trust import REFUSE_AT_OR_BELOW
+
 class LedgerAnalytics:
     """Mixin: read-only ledger analytics (see module docstring)."""
 
@@ -61,6 +63,17 @@ class LedgerAnalytics:
                 # they are neither a host denial nor a model strike.
                 if str(e.get("reason") or "").startswith("primary stepped up"):
                     continue
+                # A SOFT denial at the refuse band is the lockout speaking,
+                # not new misbehavior evidence: counting it makes the gate
+                # feed itself strikes (denied nodes complete nothing, so no
+                # earn-back is possible -- a permanent deadlock from a
+                # transient outage). Hostile denials are attempts and stay
+                # evidence regardless of band.
+                combined_at_deny = e.get("combined")
+                if (e.get("severity") != "hostile"
+                        and isinstance(combined_at_deny, (int, float))
+                        and combined_at_deny <= REFUSE_AT_OR_BELOW):
+                    continue
                 trust_gates += 1
                 if e.get("severity") == "hostile":
                     trust_hostile += 1
@@ -111,9 +124,15 @@ class LedgerAnalytics:
                 if ev == "complete":
                     cs["completions"] += 1
                 elif ev == "trust_gate":
-                    cs["trust_gates"] += 1
-                    if e.get("severity") == "hostile":
-                        cs["trust_hostile"] += 1
+                    # Same refuse-band soft skip as the host-global count:
+                    # the lockout loop is not evidence.
+                    _combined = e.get("combined")
+                    if (e.get("severity") == "hostile"
+                            or not isinstance(_combined, (int, float))
+                            or _combined > REFUSE_AT_OR_BELOW):
+                        cs["trust_gates"] += 1
+                        if e.get("severity") == "hostile":
+                            cs["trust_hostile"] += 1
 
         offers = counts["offer"]
         accepts = counts["consent_accept"]

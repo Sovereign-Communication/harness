@@ -1258,6 +1258,28 @@ class TestOrchestratorWiring(unittest.TestCase):
         self.assertEqual(Path(str(seen["verify_cmd"]).split('"')[1]).parent,
                          root)
 
+    def test_large_file_nodes_route_to_diff_backend(self):
+        # Whole-file rewrites cap at MAX_FILE_LINES by engine policy; the
+        # orchestrator sends large-file nodes straight to the diff backend
+        # instead of dying as "out of scope" fatals. (The scripted seam's
+        # nodes target util.py, so the oversized file is util.py.)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "util.py").write_text("x = 1\n" * 600, encoding="utf-8")
+            agent = self._agent(root)
+            engine = MagicMock()
+            seen = {}
+            def capture(**kwargs):
+                seen.update(kwargs)
+                return {"status": "ok", "cost": 0.001}
+            engine.apply_edit.side_effect = capture
+            with patch("harness.agent.apply_session", return_value=engine), \
+                 TestOrchestratorDrive._scripted_seam(
+                     [{"complete": True, "remaining": "", "reason": "done"}]):
+                res = agent.run_prompt("Update util.py", auto_apply=True)
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(seen.get("backend"), "diff")
+
     def test_judge_down_with_failed_nodes_reports_honest_scope(self):
         # Judge dies AND nodes fail: the loop must not fake a completion --
         # the remaining scope names the judge outage, per-node failures shown.

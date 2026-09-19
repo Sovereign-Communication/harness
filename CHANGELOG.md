@@ -195,6 +195,19 @@ break APIs between minor versions).
 
 ### Fixed
 
+- **Frontier defaults to the price-efficient rung.** qwen3.8-max lists the
+  same intelligence tier (53/100) as fable-5.1 / gpt-6-astra at $2/$6
+  in/out vs their $10/$50, so `resolve_frontier_model`'s paid default and
+  the escalation ladder now reach qwen first: the ladder reads
+  glm-5.3-flash → deepseek-v4-pro → **qwen3.8-max** → gpt-4.1 →
+  gpt-5.6-sol, and the `qwen` / `qwen-max` / `qwen3.8-max` aliases map to
+  it. The flagship capstone stays as the judge's last resort.
+- **The orchestrator finishes what it plans in one pass.** Node targets
+  over the 500-line whole-file ceiling route straight to the diff backend
+  (touched hunks only) instead of dying as "out of scope" fatals, and the
+  GUI's "Processing task" stepper renders the DAG as a live phase list --
+  one row per subtask (· pending, ⚙ running, ✓ done, ✗ failed), keyed per
+  orchestrator round so re-plans extend the list instead of erasing it.
 - **Trust recovers: the saturation spiral can no longer lock the operator
   out.** Three compounding calibration bugs turned a saturated free tier
   into a permanent mutation ban. (1) Host trust: guidance-denial strikes
@@ -209,7 +222,14 @@ break APIs between minor versions).
   every model the rotation touches. (3) The trust step-up ledgered its
   own escalation as a soft denial against the rung being promoted
   (now its own `trust_escalation` event type, excluded from denial
-  counts). Alongside these, the unknown-correctness task ceiling rose
+  counts). The deadlock breaker: a SOFT denial recorded at the refuse
+  band is the lockout speaking, not new evidence -- counting it made the
+  gate feed itself strikes while denied nodes completed nothing, so no
+  earn-back was ever possible; refuse-band soft denials no longer count
+  (host or model side), while hostile attempts stay evidence in every
+  band. Models get the same surplus-forgiveness arithmetic as the host,
+  healing the calibration the attribution bug poisoned. Alongside these,
+  the unknown-correctness task ceiling rose
   from 0.2 to 0.4 of the $0.25 hard cap (`DEFAULT_TASK_MAX_COST` $0.05 →
   $0.10): a fresh-ledger paid rescue rung must afford one worst-case call
   (~$0.084) or the ladder starves the rung it just stepped up to. Free
