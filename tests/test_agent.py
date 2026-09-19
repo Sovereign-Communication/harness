@@ -11,12 +11,44 @@ from harness.agent import (
     discover_target_files,
     discover_verification_gate,
     enumerate_repo_files,
-    get_default_history_dir,
     load_chat_history,
     save_chat_turn,
 )
+from harness.history import get_default_history_dir
 from harness.config import load_settings
 from harness.errors import HarnessError, ToolCancelled
+from tests._fake import FakeTransport, _gov
+
+
+# The agent suite must remain hermetic on CI: production governor_for correctly
+# refuses without a real key, while these tests replace the transport boundary.
+_TEST_GOVERNOR = _gov(FakeTransport(), max_cost=0.05)
+_TEST_GOVERNOR_PATCH = patch("harness.agent.governor_for",
+                            return_value=(None, _TEST_GOVERNOR))
+_TEST_GOVERNOR_PATCH.start()
+
+
+def tearDownModule():
+    _TEST_GOVERNOR_PATCH.stop()
+
+
+def _lane_settings(**overrides):
+    """Agent-lane settings with the hourglass DISARMED explicitly.
+
+    These tests pin lane mechanics (round drive, healing retry, artifact
+    truth, escalation evidence) that are independent of the plan gate, and
+    the hourglass switch must come from the test -- never from whatever
+    config file happens to be on the machine running the suite. The armed
+    lane is covered by TestHourglassLane, which scripts the waist verdict.
+    """
+    settings = load_settings()
+    settings.hourglass_confirm = False
+    settings.hourglass_isolate = False
+    settings.hourglass_parallel = False
+    settings.hourglass_require_attestation = False
+    for key, value in overrides.items():
+        setattr(settings, key, value)
+    return settings
 
 
 def _lane_settings(**overrides):
@@ -345,9 +377,9 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         # the turn still carries evidence, with the FAILED fetch kept honest.
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
-            with patch("harness.agent.fetch_url",
+            with patch("harness.web.fetch_url",
                        side_effect=HarnessError("web fetch HTTP 503")), \
-                 patch("harness.agent.search_web",
+                 patch("harness.web.search_web",
                        return_value=[{"url": "https://www.anthropic.com/rz",
                                       "title": "Riemann",
                                       "snippet": "bound moved to 67.2%"}]), \
@@ -372,7 +404,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         # is attached (search + allowlist hosts) and never deny access.
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
-            with patch("harness.agent.search_web", return_value=[]), \
+            with patch("harness.web.search_web", return_value=[]), \
                  patch("harness.agent.chat",
                        side_effect=HarnessError("stop at the system prompt")) as mc, \
                  patch("harness.agent.governor_for",
@@ -390,7 +422,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
             agent = self._agent(Path(tmp))
             fake_results = [{"title": "Bound moved", "url": "https://e.example/a",
                              "snippet": "zero-free region extended"}]
-            with patch("harness.agent.search_web", return_value=fake_results) as ms, \
+            with patch("harness.web.search_web", return_value=fake_results) as ms, \
                  patch("harness.agent.chat", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.agent.governor_for", return_value=(None, MagicMock())):
                 res = agent.run_prompt("search for the riemann bound", session_id="w2", web=True)
@@ -405,7 +437,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
             page = {"url": "https://www.anthropic.com/r", "title": "T", "text": "page body"}
-            with patch("harness.agent.fetch_url", return_value=page) as mf, \
+            with patch("harness.web.fetch_url", return_value=page) as mf, \
                  patch("harness.agent.chat", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.agent.governor_for", return_value=(None, MagicMock())):
                 agent.run_prompt("https://www.anthropic.com/r", session_id="w3", web=True)
@@ -417,7 +449,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         from harness.errors import HarnessError as _HE
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
-            with patch("harness.agent.search_web", side_effect=_HE("web search failed: down")), \
+            with patch("harness.web.search_web", side_effect=_HE("web search failed: down")), \
                  patch("harness.agent.chat", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.agent.governor_for", return_value=(None, MagicMock())):
                 res = agent.run_prompt("search the web", session_id="w4", web=True)
@@ -429,7 +461,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
     def test_web_never_kills_the_chat_lane(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
-            with patch("harness.agent.search_web", side_effect=RuntimeError("boom")), \
+            with patch("harness.web.search_web", side_effect=RuntimeError("boom")), \
                  patch("harness.agent.chat", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.agent.governor_for", return_value=(None, MagicMock())):
                 res = agent.run_prompt("search the web", session_id="w5", web=True)
@@ -443,11 +475,11 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         from harness.errors import HarnessError as _HE
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
-            with patch("harness.agent.find_urls",
+            with patch("harness.web.find_urls",
                        return_value=["https://www.anthropic.com/x"]), \
-                 patch("harness.agent.fetch_url",
+                 patch("harness.web.fetch_url",
                        side_effect=_HE("web fetch refused: host not allowed")), \
-                 patch("harness.agent.search_web",
+                 patch("harness.web.search_web",
                        return_value=[{"url": "https://www.anthropic.com/x",
                                       "title": "X", "snippet": "s"}]), \
                  patch("harness.agent.chat", return_value=(200, self._mock_resp())) as mc, \
@@ -736,7 +768,7 @@ class TestChatDeferral(unittest.TestCase):
                  patch("harness.agent.governor_for",
                        return_value=(None, MagicMock())), \
                  patch("harness.agent.ledger_for", return_value=fake_ledger), \
-                 patch("harness.agent.search_web",
+                 patch("harness.web.search_web",
                        return_value=[{"url": "https://www.anthropic.com/rz",
                                       "title": "Riemann", "snippet": "67.2%"}]):
                 res = agent.run_prompt("verify the claim", session_id="d5",
@@ -883,7 +915,10 @@ class TestChatAutoEscalation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp), root_dir=Path(tmp))
-            with patch("harness.agent.discover_target_files",
+            mock_engine = MagicMock()
+            mock_engine.apply_edit.return_value = {"status": "ok", "cost": 0.0}
+            with patch("harness.agent.apply_session", return_value=mock_engine), \
+                 patch("harness.agent.discover_target_files",
                        return_value=["util.py"]), \
                  patch("harness.waist.plan_task",
                        return_value={"dag": {"nodes": []}, "nodes": [],
