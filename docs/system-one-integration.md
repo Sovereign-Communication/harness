@@ -1,5 +1,9 @@
 # System One & Jev Architecture Integration Plan for Harness
 
+> **Tracking:** Implementation progress is tracked in [jev-roadmap.md](jev-roadmap.md)
+> (`JEV-P0`…`JEV-P4`). This document remains the architecture rationale; the roadmap
+> is the backlog and acceptance checklist. Live client work started in `#PR-Jev-Live`.
+
 ## Executive Summary
 
 TypeSafe AI's release of **Jev** and the **System One** model paradigm shifts the focus of AI infrastructure from conversational text generation to high-speed, machine-native decision execution. Standard LLMs operate under a "System Two" mode—slow, sequential, token-by-token reasoning. System One models, by contrast, evaluate structured decisions (choices, classifications, scores) in parallel with millisecond latency and low cost using techniques like **Reinforcement Learning for Calibrated Decisions (RLCD)**.
@@ -116,17 +120,20 @@ For advisory panel verification (`--verify-only` or multi-model voting), generat
 
 ## 4. Implementation Roadmap & Milestones
 
+Status after Freebuff `#PR-Jev-Live` audit (2026-09-20). Detailed work items live in [jev-roadmap.md](jev-roadmap.md).
+
 - [x] **Milestone 1: Architectural Foundation & Decision Contracts**
   - Publish `docs/system-one-integration.md` defining JSON decision schemas, calibration mechanics, and integration boundaries.
   - Link architecture in repository `README.md`.
-- [ ] **Milestone 2: Confidence Extraction & Ledger Recording**
+- [ ] **Milestone 2: Confidence Extraction & Ledger Recording** — `JEV-P2-consent-confidence`
   - Update `harness.consent.probe_consent` to parse optional calibrated `confidence` floats from model output.
   - Record `confidence` into ledger consent events (`consent_accept`, `consent_defer`).
-- [ ] **Milestone 3: Automated Confidence-Gated Deferrals**
-  - Expose `HARNESS_MIN_CONFIDENCE` (defaulting to e.g. `0.60` or `None` if unconfigured).
+- [ ] **Milestone 3: Automated Confidence-Gated Deferrals** — `JEV-P2-min-confidence`
+  - Wire `HARNESS_MIN_CONFIDENCE` (settings default `0.70`) into consent/apply abstention via `sliding_scale.should_abstain`.
   - Automatically escalate/rotate to next tier model if reported confidence is below threshold.
-- [ ] **Milestone 4: Native Jev / System One Provider Endpoints**
-  - Add native provider adapter for Jev / TypeSafe endpoints when operating in pure triage or AST candidate filtering mode.
+- [~] **Milestone 4: Native Jev / System One Provider Endpoints** — `JEV-P0-*` / `JEV-P1-*`
+  - Partial: `harness/jev.py` posts to `https://api.typesafe.ai/v1/systemone` with local fallback; agent lane only.
+  - Remaining: honest cost/parse/questions (P0); ONE policy owner wired across CLI/MCP/waist/apply (P1); ledger + spend.
 
 ---
 

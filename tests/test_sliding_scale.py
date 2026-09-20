@@ -20,6 +20,8 @@ from harness.sliding_scale import (
     resolve_tier_recommended_model,
     tier_cost_ceiling,
     tier_model_ladder,
+    decide_probe_verify_escalate,
+    should_abstain,
 )
 
 
@@ -110,9 +112,16 @@ class TestSlidingScale(unittest.TestCase):
         ladder_free_0 = tier_model_ladder(TIER_0_SCOUT, use_free=True)
         self.assertGreaterEqual(len(ladder_free_0), 2)
 
+        ladder_esc_0 = tier_model_ladder(TIER_0_SCOUT, use_free=True, allow_escalation=True)
+        self.assertGreaterEqual(len(ladder_esc_0), 4)
+
+        ladder_esc_1 = tier_model_ladder(TIER_1_DISTILLER, use_free=True, allow_escalation=True)
+        self.assertGreaterEqual(len(ladder_esc_1), 4)
+
         ladder_paid_2 = tier_model_ladder(TIER_2_FRONTIER, use_free=False, custom_frontier="fable-5.1")
         self.assertEqual(ladder_paid_2[0], "fable/fable-5.1")
         self.assertIn("openai/gpt-5.6-sol", ladder_paid_2)
+
 
     def test_tier_cost_ceilings(self):
         self.assertEqual(tier_cost_ceiling(TIER_0_SCOUT, use_free=True), 0.0)
@@ -156,6 +165,43 @@ class TestSlidingScale(unittest.TestCase):
         self.assertIn("frontier_model", d)
         self.assertEqual(d["frontier_model"], "fable-5.1")
 
+    def test_calibrated_abstention_and_pipeline(self):
+        # Abstain if confidence < threshold
+        self.assertTrue(should_abstain(0.65, min_confidence=0.70))
+        self.assertFalse(should_abstain(0.75, min_confidence=0.70))
+
+        # Pipeline: structural invalid escalates
+        t_esc1 = decide_probe_verify_escalate("update", confidence=0.90, structural_valid=False, current_tier=TIER_1_DISTILLER)
+        self.assertEqual(t_esc1, TIER_2_FRONTIER)
+
+        # Pipeline: low confidence triggers calibrated abstention
+        t_esc2 = decide_probe_verify_escalate("update", confidence=0.50, structural_valid=True, current_tier=TIER_1_DISTILLER, min_confidence=0.70)
+        self.assertEqual(t_esc2, TIER_2_FRONTIER)
+
+        # Pipeline: valid structure & confident accepts at current tier
+        t_ok = decide_probe_verify_escalate("update", confidence=0.85, structural_valid=True, current_tier=TIER_1_DISTILLER, min_confidence=0.70)
+        self.assertEqual(t_ok, TIER_1_DISTILLER)
+
+    def test_tier_2_free_with_escalation(self):
+        ladder = tier_model_ladder(TIER_2_FRONTIER, use_free=True, allow_escalation=True, custom_frontier="gpt-6")
+        self.assertIn("openai/gpt-6", ladder)
+        self.assertIn("deepseek/deepseek-v4-pro", ladder)
+
+    def test_planner_ladder_and_decomposition(self):
+        from harness.waist import resolve_planner_ladder, heuristic_decompose_goal
+        ladder_free = resolve_planner_ladder(use_free=True)
+        self.assertIn(":free", ladder_free[0])
+
+        ladder_paid = resolve_planner_ladder(use_free=False, custom_frontier="claude-3.7")
+        self.assertIn("claude", ladder_paid[0])
+
+        ladder_allow_paid = resolve_planner_ladder(use_free=True, allow_paid=True)
+        self.assertGreaterEqual(len(ladder_allow_paid), 2)
+
+        dag = heuristic_decompose_goal("Refactor helper functions in utils.py")
+        self.assertEqual(dag.nodes["task_1"].target_files, ("utils.py",))
+
 
 if __name__ == "__main__":
     unittest.main()
+

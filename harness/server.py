@@ -157,6 +157,8 @@ def validate_dispatch(kind, args):
         if rd and not os.path.isdir(rd):
             raise HarnessError(f"root_dir does not exist or is not a directory: {rd}")
         _opt_bool(args, "web")
+        _opt_bool(args, "allow_paid")
+        _opt_bool(args, "allow_escalation")
     elif kind == "apply":
         f = _opt_str(args, "file", required=True)
         if not os.path.isfile(f):
@@ -306,6 +308,10 @@ def run_chat_task(task_id, args, cancel_check):
     # Keep ordinary chat in the conversation lane, but let the existing
     # classifier hand explicit mutation requests to the governed edit lane.
     settings = load_settings()
+    if args.get("allow_paid") is not None:
+        settings.allow_escalation = bool(args["allow_paid"])
+    elif args.get("allow_escalation") is not None:
+        settings.allow_escalation = bool(args["allow_escalation"])
     prompt = args["prompt"]
     root_dir = Path(args["root_dir"]) if args.get("root_dir") else None
     agent = AutonomousAgent(settings=settings, root_dir=root_dir)

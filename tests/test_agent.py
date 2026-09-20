@@ -229,14 +229,21 @@ class TestAutonomousAgent(unittest.TestCase):
                                     history_dir=root)
 
             def fake_apply_edit(file_path, instruction, **kwargs):
-                # Simulate modifying file
-                (root / file_path).write_text("def add(a: int, b: int) -> int: return a + b\n", encoding="utf-8")
-                return {"status": "ok", "cost": 0.002}
+                # Simulate modifying file and returning the candidate that Jev verifies.
+                content = "def add(a: int, b: int) -> int: return a + b\n"
+                (root / file_path).write_text(content, encoding="utf-8")
+                return {
+                    "status": "ok", "cost": 0.002, "content": content,
+                    "diff": "--- a/harness/calc.py\n+++ b/harness/calc.py\n@@ -1 +1 @@\n-def add(a, b): return a + b\n+def add(a: int, b: int) -> int: return a + b\n",
+                }
 
             mock_engine = MagicMock()
             mock_engine.apply_edit.side_effect = fake_apply_edit
+            from harness.jev import JevEvaluator
+            jev = MagicMock(wraps=JevEvaluator())
 
             with patch("harness.agent.apply_session", return_value=mock_engine), \
+                 patch("harness.agent.jev_for", return_value=jev), \
                  patch.object(AutonomousAgent, "_orchestrator_chat_fn",
                               side_effect=HarnessError("hermetic test")):
                 res = agent.run_prompt("Update harness/calc.py with type annotations", auto_apply=True)
@@ -247,6 +254,9 @@ class TestAutonomousAgent(unittest.TestCase):
                 self.assertIn("harness/calc.py", res["target_files"])
                 self.assertIn("+def add(a: int, b: int) -> int:", res["diff"])
                 self.assertAlmostEqual(res["cost"], 0.002)
+                jev.verify_diff_mechanics.assert_called_once()
+                self.assertEqual(jev.verify_diff_mechanics.call_args.kwargs["candidate"],
+                                 "def add(a: int, b: int) -> int: return a + b\n")
 
     def test_handle_edit_self_healing_retry(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1682,6 +1692,24 @@ class TestHourglassLane(unittest.TestCase):
         engine.apply_edit.assert_not_called()
         self.assertEqual(res["cost"], 0.0)
 
+    def test_jev_preplanning_injects_algorithmic_guideline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent, engine = self._lane(Path(tmp))
+            planned_prompts = []
+            orig_plan_round = agent._plan_round
+
+            def track_plan(goal, candidate_files, gov, confirm=None):
+                planned_prompts.append(goal)
+                return orig_plan_round(goal, candidate_files, gov, confirm=False)
+
+            with patch.object(agent, "_plan_round", side_effect=track_plan), \
+                 self._decompose_seam():
+                agent._handle_edit("Implement an iterative convergence loop over util.py", "sid_jev", False)
+
+        self.assertTrue(len(planned_prompts) > 0)
+        self.assertIn("[STRUCTURAL GUIDELINE]", planned_prompts[0])
+        self.assertIn("iterative control flow", planned_prompts[0])
+
     def test_agent_lane_measures_its_own_root(self):
         """The planning owner reads the LANE's tree: the target's size is
         measured against the agent's root (the server's CWD has no big.py),
@@ -1743,6 +1771,27 @@ class TestHourglassLane(unittest.TestCase):
         self.assertNotIn("confirmation", res)
         self.assertFalse(
             engine.apply_edit.call_args[1]["require_diff_authorization"])
+
+    def test_apply_node_jev_structural_evaluation_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "foo.py").write_text("def f():\n    pass\n", encoding="utf-8")
+            agent = AutonomousAgent(settings=_lane_settings(), root_dir=root, history_dir=root)
+            engine = MagicMock()
+            broken_diff = "just conversation without any unified diff headers"
+            fixed_diff = "--- a/foo.py\n+++ b/foo.py\n@@ -1,2 +1,2 @@\n-def f():\n+def f():\n     return 42\n"
+            engine.apply_edit.side_effect = [
+                {"status": "ok", "diff": broken_diff, "cost": 0.001},
+                {"status": "ok", "diff": fixed_diff, "cost": 0.001},
+            ]
+            with patch("harness.agent.apply_session", return_value=engine), \
+                 self._decompose_seam():
+                res = agent._handle_edit("Update foo.py", "hg_jev", True)
+            self.assertEqual(res["status"], "ok")
+            self.assertEqual(engine.apply_edit.call_count, 2)
+            self.assertIn("STRUCTURAL EVALUATION FAILED", engine.apply_edit.call_args[1]["instruction"])
+
+
 
 
 if __name__ == "__main__":

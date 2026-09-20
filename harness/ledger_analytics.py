@@ -307,3 +307,115 @@ class LedgerAnalytics:
             m_ for m_, c in calibration.items()
             if c["confidence_precision"] is not None and c["confidence_precision"] < 0.6)
         return report
+
+    def cost_report(self, window=None, by_tier=False, by_model=False, savings=False):
+        """Aggregate spend analytics by tier, model, and calculate savings vs frontier baseline."""
+        from datetime import datetime, timezone, timedelta
+        from .routing_table import classify_model_tier, strip_variant_suffix
+
+        events = list(self._tail)
+        if window:
+            s = str(window).strip().lower()
+            cutoff = None
+            if s.endswith("h"):
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=float(s[:-1]))
+            elif s.endswith("d"):
+                cutoff = datetime.now(timezone.utc) - timedelta(days=float(s[:-1]))
+            elif s.endswith("m"):
+                cutoff = datetime.now(timezone.utc) - timedelta(minutes=float(s[:-1]))
+            elif s.endswith("s"):
+                cutoff = datetime.now(timezone.utc) - timedelta(seconds=float(s[:-1]))
+            else:
+                try:
+                    events = events[-int(s):]
+                except ValueError:
+                    pass
+
+            if cutoff is not None:
+                filtered = []
+                for e in events:
+                    ts_raw = e.get("ts")
+                    if not ts_raw:
+                        continue
+                    try:
+                        dt = datetime.fromisoformat(str(ts_raw))
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        if dt >= cutoff:
+                            filtered.append(e)
+                    except (ValueError, TypeError):
+                        pass
+                events = filtered
+
+        total_cost = 0.0
+        events_count = len(events)
+        billable_calls = 0
+        free_calls = 0
+        tier_stats = {
+            "T0": {"cost": 0.0, "calls": 0},
+            "T1": {"cost": 0.0, "calls": 0},
+            "T2": {"cost": 0.0, "calls": 0},
+            "T3": {"cost": 0.0, "calls": 0},
+        }
+        model_stats = {}
+        baseline_cost = 0.0
+
+        for e in events:
+            raw_cost = e.get("billable_cost", e.get("cost"))
+            has_cost = raw_cost is not None
+            try:
+                cost_val = float(raw_cost or 0.0)
+            except (ValueError, TypeError):
+                cost_val = 0.0
+
+            model = e.get("model")
+            if not model and not has_cost:
+                continue
+
+            tier = classify_model_tier(model or "")
+            if cost_val > 0.0:
+                billable_calls += 1
+            elif model:
+                free_calls += 1
+
+            total_cost += cost_val
+            tier_stats[tier]["cost"] = round(tier_stats[tier]["cost"] + cost_val, 6)
+            tier_stats[tier]["calls"] += 1
+
+            baseline_cost += max(cost_val, 0.015)
+
+            if model:
+                canonical = strip_variant_suffix(model)
+                ms = model_stats.setdefault(canonical, {"cost": 0.0, "calls": 0, "tier": tier})
+                ms["cost"] = round(ms["cost"] + cost_val, 6)
+                ms["calls"] += 1
+
+        total_cost = round(total_cost, 6)
+        baseline_cost = round(baseline_cost, 6)
+        net_savings = round(max(0.0, baseline_cost - total_cost), 6)
+        savings_percent = round((net_savings / baseline_cost * 100.0), 2) if baseline_cost > 0 else 0.0
+
+        report = {
+            "total_cost": total_cost,
+            "events_count": events_count,
+            "billable_calls": billable_calls,
+            "free_calls": free_calls,
+            "window": window,
+        }
+
+        include_all = not (by_tier or by_model or savings)
+        if by_tier or include_all:
+            report["by_tier"] = tier_stats
+        if by_model or include_all:
+            report["by_model"] = model_stats
+        if savings or include_all:
+            report["savings"] = {
+                "actual_cost": total_cost,
+                "baseline_frontier_cost": baseline_cost,
+                "net_savings": net_savings,
+                "savings_percent": savings_percent,
+                "baseline_reference": "qwen3.8-max / claude-3.7-sonnet (~$0.015/call)",
+            }
+
+        return report
+

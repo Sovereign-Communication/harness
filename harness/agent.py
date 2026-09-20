@@ -24,7 +24,7 @@ from .repo_scope import (
     enumerate_repo_files,
 )
 from .results import SUCCESS_STATUSES, _http_error
-from .session import apply_session, attest_model_for, governor_for, ledger_for
+from .session import apply_session, attest_model_for, governor_for, jev_for, ledger_for
 from .waist import compose_plan, resolve_scout_ladder
 from .web import DEFAULT_FETCH_HOSTS, gather_web_context
 
@@ -516,7 +516,8 @@ class AutonomousAgent:
             root=str(self.root_dir),
             chat_fn=lambda prompt_text: (
                 self._orchestrator_chat_fn(gov)(prompt_text), 0.0),
-            execute=True)
+            execute=True,
+            allow_escalation=bool(getattr(self.settings, "allow_escalation", False)))
         if plan.get("decomposition") == "heuristic":
             # compose_plan degrades to the heuristic only after the LLM
             # decomposition failed (execute=True); the GUI needs that on the
@@ -602,10 +603,25 @@ class AutonomousAgent:
         brief = distill_context(files=file_contents, summary=prompt)
         emit("context_condensed", estimated_tokens=brief.estimated_tokens)
 
+        # Jev structural pre-planning evaluation
+        jev = jev_for(self.settings, transport=self.transport)
+        plan_prompt = prompt
+        if jev:
+            plan_eval = jev.evaluate_plan_requirements(prompt, target_files)
+            if plan_eval.answers.get("requires_iteration"):
+                emit("orchestration_note",
+                     note="Jev structural analysis detected algorithmic iteration; injecting DAG loop directive")
+                plan_prompt = (
+                    f"{prompt}\n\n"
+                    f"[STRUCTURAL GUIDELINE]: This goal requires iterative control flow, conditional "
+                    f"branching, or multi-step execution. Ensure the decomposed DAG explicitly breaks "
+                    f"down the iterative loop and discrete steps into executable nodes."
+                )
+
         # Formulate the FIRST-round DAG plan (LLM decomposition when the
         # orchestration ladder answers; heuristic fallback) and gate.
         _, gov = governor_for(self.settings)
-        plan = self._plan_round(prompt, target_files, gov,
+        plan = self._plan_round(plan_prompt, target_files, gov,
                                 confirm=hourglass["confirm"])
         if plan.get("status") == "refused":
             return self._refused_edit(plan, prompt, target_files, session_id)
@@ -692,6 +708,36 @@ class AutonomousAgent:
                 require_diff_authorization=hourglass["require_diff_authorization"],
                 **apply_kwargs,
             )
+
+            # Jev System One structural verification pass
+            jev = jev_for(self.settings, transport=self.transport)
+            if res.get("status") in SUCCESS_STATUSES and res.get("diff"):
+                jev_res = jev.verify_diff_mechanics(
+                    diff=res["diff"],
+                    instruction=node.instruction,
+                    file_path=engine_target or "",
+                    candidate=res.get("content"),
+                )
+                emit("structural_eval", node_id=node.node_id,
+                     verdict=jev_res.verdict, confidence=jev_res.confidence,
+                     supported=jev_res.supported)
+                if not jev_res.is_passing(min_confidence=self.settings.min_confidence):
+                    emit("subtask_retry", node_id=node.node_id,
+                         error="Structural check failed: " + "; ".join(jev_res.reasons))
+                    healing_inst = (f"{node.instruction}\nSTRUCTURAL EVALUATION FAILED:\n"
+                                    + "\n".join(jev_res.reasons))
+                    prior_cost = float(res.get("cost", 0.0) or 0.0)
+                    res = engine.apply_edit(
+                        file_path=engine_target,
+                        instruction=healing_inst,
+                        verify_cmd=gate,
+                        allow_verify=True,
+                        require_consent=False,
+                        require_diff_authorization=hourglass["require_diff_authorization"],
+                        **apply_kwargs,
+                    )
+                    if isinstance(res, dict):
+                        res["cost"] = round(prior_cost + float(res.get("cost", 0.0) or 0.0) + jev_res.cost, 6)
 
             # Self-healing retry on verification failure
             if res.get("status") not in SUCCESS_STATUSES and res.get("error"):

@@ -8,7 +8,7 @@ Harness is a dependency-light Python package with three surfaces:
 
 ## Ownership
 
-- `config.py`: settings, model-pool defaults, and lane budgets
+- `config.py`: settings, model-pool defaults, lane budgets, and Jev endpoint/model/threshold configuration
   (`effective_lane_policy` is the ONE owner of per-lane output budgets and
   reasoning modes; lanes resolve policy through it, never locally).
   `resolve_hourglass(settings, opts)` is the ONE owner of the hourglass
@@ -16,6 +16,10 @@ Harness is a dependency-light Python package with three surfaces:
   CLI passes its parsed flags, MCP is seeded from it at startup, and the
   agent's edit lane passes no flags -- every lane therefore runs the same
   hourglass the settings file describes instead of re-deriving it.
+- `jev.py`: the sole Phase 0 TypeSafe System One adapter: official primitive
+  packs and answer parsing, input-token cost math, live thresholding, and
+  honest local AST/JSON/diff fallback. CLI/MCP/waist wiring is intentionally
+  Phase 1.
 - `service.py`: canonical verify/claims request assembly shared by the CLI
   and web interfaces (prompt/claims reading, cancelled-run envelope,
   cost/meta attachment). Interfaces consume it; they do not re-derive the

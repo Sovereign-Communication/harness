@@ -55,10 +55,10 @@
         <span id="spend-val">$0.0000</span>
         <span class="dim" id="spend-limit">/ $0.05</span>
       </div>
-      <div class="mode-badge route-badge" id="route-badge"
-           title="Primary model route and paid escalation posture">
-        <span id="route-text">Route: loading…</span>
-      </div>
+      <button type="button" class="mode-badge route-badge" id="route-badge"
+              title="Click to toggle paid escalation on/off">
+        <span id="route-icon">💳</span> <span id="route-text">Primary: free · paid escalation armed</span>
+      </button>
       <button type="button" id="btn-mode-toggle" class="mode-badge" title="Click to toggle between autonomous execution and review-first preview">
         <span id="mode-icon">⚡</span> <span id="mode-text">Auto</span>
       </button>
@@ -67,6 +67,14 @@
       </button>
     </div>
   </header>
+
+  <div id="consent-banner" class="consent-banner" hidden>
+    <span class="consent-msg" id="consent-msg">Free tier limits reached. Proceed with cheapest capable paid model?</span>
+    <div class="consent-btns">
+      <button type="button" id="btn-consent-approve" class="btn-consent approve">Proceed (Paid Fallback)</button>
+      <button type="button" id="btn-consent-deny" class="btn-consent deny">Cancel</button>
+    </div>
+  </div>
 
   <!-- Chat Area -->
   <main id="chat-container">

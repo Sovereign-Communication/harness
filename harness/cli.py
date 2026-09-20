@@ -73,7 +73,7 @@ from .claims import (
 from .claims import parse_claims
 from .config import load_settings, shipped_model_ids
 from .cli_parser import build_parser
-from .cli_report import _emit, _emit_by_status, _print_capabilities_table
+from .cli_report import _emit, _emit_by_status, _print_capabilities_table, _print_cost_table
 
 
 def _split_opt_list(value):
@@ -516,6 +516,20 @@ def _cmd_spend(opts, settings):
     _emit(status, opts.out)
 
 
+def _cmd_cost(opts, settings):
+    """Cost observability snapshot: track spend by tier, model, and calculate savings."""
+    ledger = _ledger(settings)
+    report = ledger.cost_report(
+        window=getattr(opts, "last", None),
+        by_tier=bool(getattr(opts, "by_tier", False)),
+        by_model=bool(getattr(opts, "by_model", False)),
+        savings=bool(getattr(opts, "savings", False)),
+    )
+    if not getattr(opts, "json", False):
+        _print_cost_table(report)
+    _emit(report, opts.out)
+
+
 def _cmd_trust(opts, settings):
     """Read-only trust snapshot: no key, no network, no ledger writes."""
     from . import trust as trust_policy
@@ -593,6 +607,7 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
         decompose_llm=getattr(opts, "decompose_llm", False),
         confirm=confirm,
         execute=execute,
+        allow_escalation=bool(getattr(opts, "allow_escalation", getattr(settings, "allow_escalation", False))),
         # The same pinned output budget the nodes will run with, so the
         # chunk policy measures each pass against the real one.
         max_tokens=getattr(opts, "max_tokens", None))
@@ -719,6 +734,7 @@ _DISPATCH = {
     "bench": _cmd_bench,
     "capabilities": _cmd_capabilities,
     "spend": _cmd_spend,
+    "cost": _cmd_cost,
     "trust": _cmd_trust,
     "rankings": _cmd_rankings,
 }

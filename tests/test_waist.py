@@ -22,7 +22,8 @@ from harness.spend import SpendGovernor
 from harness.capability import source_budget_for
 from harness.validation import MAX_INSTRUCTION_CHARS
 from harness.waist import (chunk_oversized_nodes, compose_plan, confirm_plan,
-                           node_apply_kwargs, plan_task_id, read_window)
+                           node_apply_kwargs, plan_task_id, read_window,
+                           resolve_waist_ladder)
 
 from tests._fake import FakeTransport
 
@@ -537,6 +538,180 @@ class ComposePlanTests(_WaistFixture):
         plan = {"goal": "same goal"}
         self.assertEqual(plan_task_id(plan), plan_task_id(dict(plan)))
         self.assertTrue(plan_task_id(plan).startswith("plan_"))
+
+    def test_resolve_waist_ladder_ordering(self):
+        ladder_free = resolve_waist_ladder(use_free=True, allow_escalation=False)
+        self.assertIn(":free", ladder_free[0])
+        self.assertTrue(all(m.endswith(":free") or "free" in m for m in ladder_free))
+
+        ladder_esc = resolve_waist_ladder(use_free=True, allow_escalation=True)
+        self.assertIn(":free", ladder_esc[0])
+        self.assertTrue(any(not m.endswith(":free") for m in ladder_esc))
+        self.assertIn("qwen/qwen3.8-max-0902", ladder_esc)
+
+        ladder_paid = resolve_waist_ladder(use_free=False, custom_frontier="claude-3.5-sonnet")
+        self.assertEqual(ladder_paid[0], "anthropic/claude-3.5-sonnet")
+
+    def test_compose_plan_rotates_on_429_to_next_free_model(self):
+        attempts = []
+        ladder = resolve_waist_ladder(use_free=True, allow_escalation=False)
+        first_model = ladder[0]
+        second_model = ladder[1]
+
+        def fake_gov(transport, api_key, governor, model, prompt, tokens, label=None):
+            attempts.append(model)
+            if model == first_model:
+                raise HarnessError("HTTP 429: Provider returned error")
+            return '{"verdict": "approve"}', 0.0
+
+        with patch("harness.waist.governed_text", side_effect=fake_gov):
+            plan = compose_plan(
+                transport=None, api_key="k", governor=self.gov, ledger=None,
+                opts_goal="Split the work", candidate_files=["harness/sync.py"],
+                confirm=True, execute=True)
+        self.assertEqual(attempts[0], first_model)
+        self.assertEqual(attempts[1], second_model)
+        self.assertEqual(plan["confirmation"]["model"], second_model)
+        self.assertEqual(plan["confirmation"]["verdict"], "approved")
+
+    def test_compose_plan_escalates_on_429_to_paid_model(self):
+        attempts = []
+        ladder = resolve_waist_ladder(use_free=True, allow_escalation=True)
+        paid_model = "qwen/qwen3.8-max-0902"
+        self.assertIn(paid_model, ladder)
+
+        def fake_gov(transport, api_key, governor, model, prompt, tokens, label=None):
+            attempts.append(model)
+            if model.endswith(":free"):
+                raise HarnessError("HTTP 429: Provider returned error")
+            return '{"verdict": "approve"}', 0.001
+
+        with patch("harness.waist.governed_text", side_effect=fake_gov):
+            plan = compose_plan(
+                transport=None, api_key="k", governor=self.gov, ledger=None,
+                opts_goal="Split the work", candidate_files=["harness/sync.py"],
+                confirm=True, execute=True, allow_escalation=True)
+        self.assertIn(paid_model, attempts)
+        self.assertEqual(plan["confirmation"]["model"], paid_model)
+        self.assertEqual(plan["confirmation"]["verdict"], "approved")
+
+    def test_compose_plan_exhausted_ladder_executes_under_local_gate(self):
+        def broken(transport, api_key, governor, model, prompt, tokens, label=None):
+            raise HarnessError("HTTP 429: Provider returned error")
+
+        with patch("harness.waist.governed_text", side_effect=broken):
+            plan = compose_plan(
+                transport=None, api_key="k", governor=self.gov, ledger=None,
+                opts_goal="Split the work", candidate_files=["harness/sync.py"],
+                confirm=True, execute=True)
+        self.assertEqual(plan["status"], "planned")
+        self.assertNotIn("confirmation", plan)
+
+    def test_compose_plan_exhausted_ladder_plan_only_fails_closed(self):
+        def broken(transport, api_key, governor, model, prompt, tokens, label=None):
+            raise HarnessError("HTTP 429: Provider returned error")
+
+        with patch("harness.waist.governed_text", side_effect=broken):
+            with self.assertRaises(HarnessError) as ctx:
+                compose_plan(
+                    transport=None, api_key="k", governor=self.gov, ledger=None,
+                    opts_goal="Split the work", candidate_files=["harness/sync.py"],
+                    confirm=True, execute=False)
+        self.assertIn("waist confirmation could not run on", str(ctx.exception))
+        self.assertIn("plan NOT executed", str(ctx.exception))
+
+    def test_compose_plan_refusal_fails_closed(self):
+        def refuse_gov(transport, api_key, governor, model, prompt, tokens, label=None):
+            return json.dumps({
+                "verdict": "refuse",
+                "reason": "goal is out of scope",
+                "evidence": "sync.py does not need refactoring"
+            }), 0.0
+
+        with patch("harness.waist.governed_text", side_effect=refuse_gov):
+            plan = compose_plan(
+                transport=None, api_key="k", governor=self.gov, ledger=None,
+                opts_goal="Split the work", candidate_files=["harness/sync.py"],
+                confirm=True, execute=True)
+        self.assertEqual(plan["status"], "refused")
+        self.assertEqual(plan["confirmation"]["verdict"], "refused")
+
+    def test_compose_plan_refusal_critique_replan_succeeds(self):
+        call_count = {"decompose": 0, "waist": 0}
+
+        def mock_chat(prompt_text):
+            call_count["decompose"] += 1
+            if call_count["decompose"] == 1:
+                # First decomposition: missing the loop
+                return json.dumps({
+                    "nodes": [{"node_id": "n1", "instruction": "Do step 1",
+                               "target_files": ["harness/sync.py"], "dependencies": []}]
+                }), 0.0
+            else:
+                # Re-planned decomposition incorporating critique
+                return json.dumps({
+                    "nodes": [
+                        {"node_id": "n1", "instruction": "Iterate step 1",
+                         "target_files": ["harness/sync.py"], "dependencies": []},
+                        {"node_id": "n2", "instruction": "Check convergence condition",
+                         "target_files": ["harness/sync.py"], "dependencies": ["n1"]}
+                    ]
+                }), 0.0
+
+        def mock_gov(transport, api_key, governor, model, prompt, tokens, label=None):
+            call_count["waist"] += 1
+            if call_count["waist"] == 1:
+                # First waist check: refuse due to missing iteration loop
+                return json.dumps({
+                    "verdict": "refuse",
+                    "reason": "DAG lacks iteration loop",
+                    "evidence": "only 1 node without convergence"
+                }), 0.0
+            else:
+                # Second waist check on re-planned DAG: approve
+                return json.dumps({"verdict": "approve"}), 0.0
+
+        with patch("harness.waist.governed_text", side_effect=mock_gov):
+            plan = compose_plan(
+                transport=None, api_key="k", governor=self.gov, ledger=None,
+                opts_goal="Run convergence loop", candidate_files=["harness/sync.py"],
+                decompose_llm=True, confirm=True, execute=True,
+                chat_fn=mock_chat)
+
+        self.assertEqual(plan["confirmation"]["verdict"], "approved")
+        self.assertEqual(len(plan["nodes"]), 2)
+        self.assertIn(":critique_replan", plan["decomposition"])
+        self.assertGreaterEqual(call_count["decompose"], 2)
+
+    def test_compose_plan_refusal_critique_replan_error_falls_back(self):
+        call_count = {"decompose": 0}
+
+        def mock_chat(prompt_text):
+            call_count["decompose"] += 1
+            if call_count["decompose"] == 1:
+                return json.dumps({
+                    "nodes": [{"node_id": "n1", "instruction": "Do step 1",
+                               "target_files": ["harness/sync.py"], "dependencies": []}]
+                }), 0.0
+            else:
+                raise HarnessError("decomposition service unavailable")
+
+        def mock_gov(transport, api_key, governor, model, prompt, tokens, label=None):
+            return json.dumps({
+                "verdict": "refuse",
+                "reason": "missing loop",
+                "evidence": "no loop in DAG"
+            }), 0.0
+
+        with patch("harness.waist.governed_text", side_effect=mock_gov):
+            plan = compose_plan(
+                transport=None, api_key="k", governor=self.gov, ledger=None,
+                opts_goal="Run loop", candidate_files=["harness/sync.py"],
+                decompose_llm=True, confirm=True, execute=True,
+                chat_fn=mock_chat)
+
+        self.assertEqual(plan["status"], "refused")
+        self.assertEqual(plan["confirmation"]["verdict"], "refused")
 
 
 if __name__ == "__main__":

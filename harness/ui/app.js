@@ -28,6 +28,7 @@ let sessionId = localStorage.getItem("harness_session_id") || "sess_" + Math.ran
 localStorage.setItem("harness_session_id", sessionId);
 
 let autoApply = localStorage.getItem("harness_auto_apply") !== "false";
+let paidEnabled = localStorage.getItem("harness_paid_enabled") !== "false";
 let webEnabled = localStorage.getItem("harness_web_enabled") === "true";
 let workDir = localStorage.getItem("harness_workdir") || "";
 let currentRunId = null;
@@ -141,6 +142,17 @@ function setupHeaderControls() {
     updateModeDisplay();
   });
 
+  const routeBtn = $("#route-badge");
+  if (routeBtn) {
+    updateRouteDisplay();
+    routeBtn.addEventListener("click", () => {
+      paidEnabled = !paidEnabled;
+      localStorage.setItem("harness_paid_enabled", paidEnabled ? "true" : "false");
+      updateRouteDisplay();
+    });
+  }
+
+
   $("#btn-new-chat").addEventListener("click", () => {
     sessionId = "sess_" + Math.random().toString(36).slice(2, 10);
     localStorage.setItem("harness_session_id", sessionId);
@@ -161,6 +173,47 @@ function setupHeaderControls() {
     });
   }
 }
+
+let backendSettings = null;
+
+function updateRouteDisplay() {
+  const badge = $("#route-badge");
+  const text = $("#route-text");
+  const icon = $("#route-icon");
+  if (!badge || !text) return;
+
+  const s = backendSettings || {};
+  const hasPaidKey = s.paid_key_present;
+
+  if (s.use_free === false) {
+    badge.classList.remove("disarmed");
+    if (icon) icon.textContent = "💳";
+    text.textContent = "Primary: paid";
+    badge.title = "Paid models configured as primary route. Click to toggle escalation setting.";
+    return;
+  }
+
+  if (hasPaidKey === false) {
+    badge.classList.add("disarmed");
+    if (icon) icon.textContent = "💳";
+    text.textContent = "Primary: free · escalation unavailable";
+    badge.title = "No paid API key configured; free tier only.";
+    return;
+  }
+
+  if (paidEnabled) {
+    badge.classList.remove("disarmed");
+    if (icon) icon.textContent = "💳";
+    text.textContent = "Primary: free · paid escalation armed";
+    badge.title = "Paid escalation ARMED: automatic fallback to cheapest capable paid model on limits (click to disarm)";
+  } else {
+    badge.classList.add("disarmed");
+    if (icon) icon.textContent = "💳";
+    text.textContent = "Primary: free · escalation disarmed";
+    badge.title = "Paid escalation DISARMED: free tier only; ask before entering paid rungs (click to arm)";
+  }
+}
+
 
 function updateWebDisplay() {
   const btn = $("#btn-web-toggle");
@@ -256,14 +309,16 @@ async function submitPrompt(prompt) {
       session_id: sessionId,
       auto_apply: autoApply,
       web: webEnabled,
+      allow_paid: paidEnabled,
     };
     if (workDir) payload.root_dir = workDir;
 
     const run = await api("/api/chat", {
       method: "POST",
       body: JSON.stringify(payload),
-    });        currentRunId = run.id;
-        eventSeq = 0;
+    });
+    currentRunId = run.id;
+    eventSeq = 0;
         pollExecution(run.id, agentMsg);
       } catch (err) {
         agentMsg.stepper.hidden = true;
@@ -384,6 +439,14 @@ function handleLiveEvent(ev, agentMsg) {
   } else if (ev.type === "orchestration_note") {
     label = ev.note || "";
     icon = "ℹ";
+  } else if (ev.type === "paid_consent_required") {
+    label = ev.message || "Free tier limits reached. Waiting for paid fallback approval...";
+    icon = "⚠️";
+    showConsentBanner(currentRunId, ev.message);
+  } else if (ev.type === "paid_consent_responded") {
+    label = ev.approved ? "Paid fallback approved by operator." : "Paid fallback denied by operator.";
+    icon = ev.approved ? "✓" : "✕";
+    hideConsentBanner();
   }
 
   if (label) {
@@ -395,8 +458,51 @@ function handleLiveEvent(ev, agentMsg) {
   }
 }
 
+function showConsentBanner(runId, message) {
+  const banner = $("#consent-banner");
+  if (!banner) return;
+  const msgEl = $("#consent-msg");
+  if (msgEl && message) msgEl.textContent = message;
+  banner.hidden = false;
+
+  const btnApprove = $("#btn-consent-approve");
+  const btnDeny = $("#btn-consent-deny");
+
+  if (btnApprove) {
+    btnApprove.onclick = async () => {
+      hideConsentBanner();
+      if (!runId) return;
+      try {
+        await api(`/api/runs/${runId}/consent`, {
+          method: "POST",
+          body: JSON.stringify({ approved: true })
+        });
+      } catch (_e) {}
+    };
+  }
+
+  if (btnDeny) {
+    btnDeny.onclick = async () => {
+      hideConsentBanner();
+      if (!runId) return;
+      try {
+        await api(`/api/runs/${runId}/consent`, {
+          method: "POST",
+          body: JSON.stringify({ approved: false })
+        });
+      } catch (_e) {}
+    };
+  }
+}
+
+function hideConsentBanner() {
+  const banner = $("#consent-banner");
+  if (banner) banner.hidden = true;
+}
+
 // Render Final Response
 function renderFinalResult(runRecord, agentMsg) {
+  hideConsentBanner();
   agentMsg.spinner.hidden = true;
   agentMsg.stepperTitleText.textContent = "Execution complete";
 
@@ -579,9 +685,6 @@ async function loadHistory() {
 // mean every request uses a paid model: free is primary when use_free=true,
 // and paid models are entered only on an evidence-backed escalation walk.
 async function pollRoute() {
-  const badge = $("#route-badge");
-  const text = $("#route-text");
-  if (!badge || !text) return;
   const requestSeq = ++routeRequestSeq;
   try {
     const data = await api("/api/settings");
@@ -590,19 +693,17 @@ async function pollRoute() {
     if (typeof s.use_free !== "boolean") {
       throw new Error("routing posture is incomplete");
     }
-    const freePrimary = s.use_free;
-    const paidArmed = Boolean(s.paid_key_present && s.allow_escalation);
-    const posture = freePrimary
-      ? (paidArmed ? "Primary: free · paid escalation armed" : "Primary: free · escalation unavailable")
-      : "Primary: paid";
-    text.textContent = posture;
-    badge.title = `${posture}. The spend badge is the per-run ceiling.`;
+    backendSettings = s;
+    updateRouteDisplay();
   } catch (_e) {
     if (requestSeq !== routeRequestSeq) return;
-    text.textContent = "Route: unavailable";
-    badge.title = "Routing posture unavailable";
+    const text = $("#route-text");
+    const badge = $("#route-badge");
+    if (text) text.textContent = "Route: unavailable";
+    if (badge) badge.title = "Routing posture unavailable";
   }
 }
+
 
 // Poll Spend & Quota
 async function pollSpend() {

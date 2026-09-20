@@ -682,6 +682,7 @@ class McpServer:
             parallel = validate_mcp_bool(
                 args.get("parallel", self.hourglass["parallel"]), "parallel")
             allow_write = validate_mcp_bool(args.get("allow_write", False), "allow_write")
+            allow_escalation = validate_mcp_bool(args.get("allow_escalation", False), "allow_escalation")
             decompose_llm = validate_mcp_bool(args.get("decompose_llm", False), "decompose_llm")
             confirm = validate_mcp_bool(
                 args.get("confirm", self.hourglass["confirm"]), "confirm")
@@ -707,7 +708,8 @@ class McpServer:
                 governor=self.governor, ledger=self.ledger, opts_goal=goal,
                 candidate_files=candidate_files, frontier_model=frontier_model,
                 use_free=self.use_free, decompose_llm=decompose_llm,
-                confirm=confirm, execute=execute)
+                confirm=confirm, execute=execute,
+                allow_escalation=allow_escalation)
             if plan_result.get("status") == "refused":
                 # Waist refusal is terminal evidence: the plan never executes.
                 return plan_result

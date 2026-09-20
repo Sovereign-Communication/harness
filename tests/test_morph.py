@@ -32,7 +32,7 @@ class MorphTests(ApplyFixture):
         with open(p, encoding="utf-8") as f:
             self.assertEqual(f.read(), ORIGINAL)
         payload = fake.payloads()[0]
-        self.assertEqual(payload["model"], MORPH)
+        self.assertEqual(payload["model"].replace(":floor", ""), MORPH)
         prompt = payload["messages"][0]["content"]
         self.assertIn("<instruction>add zero safely</instruction>", prompt)
         self.assertIn("<code>" + ORIGINAL + "</code>", prompt)

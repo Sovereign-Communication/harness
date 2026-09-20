@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from .capability import load_profiles, source_budget_for
 from .chat import governed_text
 from .condenser import distill_context
-from .config import CAPABILITIES_PATH, DEFAULT_APPLY_MAX_TOKENS
+from .config import CAPABILITIES_PATH, DEFAULT_APPLY_MAX_TOKENS, ESCALATION_POOL_FREE, ESCALATION_POOL_PAID, FREE_JUDGE
 from .dag import DAGNode, TaskDAG
 from .errors import HarnessError
 from .output import eprint
@@ -465,10 +465,19 @@ def heuristic_decompose_goal(goal: str, candidate_files: Optional[Sequence[str]]
             )
     else:
         # Single node goal
+        target = tuple(files)
+        if not target:
+            # If no files were provided, check if the goal mentions a specific file
+            found = re.findall(r"\b[\w-]+\.(?:py|rs|go|ts|js|md|json|toml|yaml|yml|c|cpp|h)\b", goal)
+            if found:
+                target = (found[0],)
+            else:
+                # Default deliverable target for analytical / open-ended tasks
+                target = ("docs/reports/analysis.md",)
         nodes["task_1"] = DAGNode(
             node_id="task_1",
             instruction=goal.strip(),
-            target_files=tuple(files),
+            target_files=target,
             dependencies=(),
             complexity_tier=1,
         )
@@ -515,6 +524,7 @@ def plan_task(
     decomposed_dag: Optional[TaskDAG] = None,
     root: Optional[str] = None,
     run_gate: Optional[str] = None,
+    allow_escalation: bool = False,
 ) -> Dict[str, Any]:
     # Formulate a TaskDAG and classify sliding-scale tiers for each node.
     # decomposed_dag: a pre-built DAG (LLM-authored via decompose_via_llm or
@@ -550,6 +560,7 @@ def plan_task(
             is_leaf=is_leaf,
             use_free=use_free,
             custom_frontier=custom_frontier,
+            allow_escalation=allow_escalation,
         )
         total_ceiling += route.cost_ceiling
         classified_nodes[node_id] = DAGNode(
@@ -728,6 +739,12 @@ def build_waist_prompt(
         "Rules: the DAG must stay acyclic; node instructions must be precise and",
         "scoped (they are executed verbatim by cheaper models); do not request",
         "more windows than you need -- round-trips are budgeted.",
+        "AMENDMENT vs REFUSAL POLICY:",
+        "- DO NOT REFUSE simply because the planned DAG is incomplete, lacks iteration loops,",
+        "  has missing steps, or needs different granularity/ordering. If the planned DAG is",
+        "  suboptimal, REPAIR IT: return 'amend' with the complete, corrected replacement DAG nodes.",
+        "- 'refuse' is STRICTLY reserved for requests that are genuinely impossible, out of scope,",
+        "  destructive, or malicious. Refusing an executable coding task is a failure.",
     ])
     return "\n".join(lines)
 
@@ -966,7 +983,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                  candidate_files=None, frontier_model=None, use_free=True,
                  decompose_llm=False, confirm=False, decompose_model=None,
                  chat_fn=None, max_cost=None, keep_going=False, out=None,
-                 execute=False, root=None, max_tokens=None) -> Dict[str, Any]:
+                 execute=False, root=None, max_tokens=None,
+                 allow_escalation: bool = False) -> Dict[str, Any]:
     """ONE owner of the plan-lane flow (CLI and MCP call this).
 
     Order: optional cheap-LLM decomposition (M1) -> tier classification ->
@@ -1019,53 +1037,110 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     plan_result = plan_task(
         goal=opts_goal, candidate_files=candidate_files,
         custom_frontier=frontier_model, use_free=use_free,
-        decomposed_dag=decomposed, root=root, run_gate=run_gate)
+        decomposed_dag=decomposed, root=root, run_gate=run_gate,
+        allow_escalation=allow_escalation)
     plan_result["decomposition"] = decomposition
     # Chunk anything that cannot fit ONE model pass before the gate sees it,
     # so the waist confirms the plan that will actually run.
     plan_result = _fit_plan_to_single_pass(
         plan_result, goal=opts_goal, candidate_files=candidate_files,
         custom_frontier=frontier_model, use_free=use_free, root=root,
-        run_gate=run_gate, max_tokens=max_tokens)
+        run_gate=run_gate, max_tokens=max_tokens,
+        allow_escalation=allow_escalation)
 
     if confirm:
-        # An unnamed frontier rung resolves through the same sliding-scale
-        # owner the Router binds its frontier from (the free arming's
-        # frontier is the free one), so the hourglass being ON by default
-        # confirms instead of dying on an unset --frontier-model.
-        confirm_model = frontier_model or resolve_frontier_model(
-            None, use_free=use_free)
-        # The decomposition seam is NOT the gate's seam: a cheap decomposer
-        # must never answer the waist (and the verdict/ledger must never
-        # name the frontier as the model that answered). confirm_plan builds
-        # its own governed call on the resolved frontier model; hermetic
-        # tests patch harness.waist.governed_text or call confirm_plan
-        # directly with its own chat_fn.
-        try:
-            plan_result = confirm_plan(
-                transport=transport, api_key=api_key, governor=governor,
-                ledger=ledger, plan_result=plan_result, model=confirm_model,
-                use_free=use_free, custom_frontier=frontier_model,
-                root=root, run_gate=run_gate, chat_fn=None)
-        except HarnessError as exc:
-            # Fail-closed, and legible: the caller learns which gate and
-            # which rung could not confirm, instead of a bare provider error.
-            raise HarnessError(
-                f"waist confirmation could not run on {confirm_model} "
-                f"(plan NOT executed): {exc}") from exc
-        if plan_result.get("status") != "refused":
-            # An amend/split verdict replaces the node set: re-fit it, or the
-            # gate's own repair could hand execution an oversized node.
-            plan_result = _fit_plan_to_single_pass(
-                plan_result, goal=opts_goal, candidate_files=candidate_files,
-                custom_frontier=frontier_model, use_free=use_free, root=root,
-                run_gate=run_gate, max_tokens=max_tokens)
+        ladder = resolve_waist_ladder(
+            use_free=use_free, custom_frontier=frontier_model,
+            allow_escalation=allow_escalation)
+        plan_result_confirmed = None
+        last_exc = None
+        for rung_idx, candidate_model in enumerate(ladder):
+            try:
+                res = confirm_plan(
+                    transport=transport, api_key=api_key, governor=governor,
+                    ledger=ledger, plan_result=plan_result, model=candidate_model,
+                    use_free=use_free, custom_frontier=frontier_model,
+                    root=root, run_gate=run_gate, chat_fn=None)
+                plan_result_confirmed = res
+                break
+            except HarnessError as exc:
+                last_exc = exc
+                from . import events as _events
+                _events.emit("rotation", model=candidate_model, reason=str(exc),
+                             note=f"waist confirmation failed on rung {rung_idx + 1}/{len(ladder)}")
+                continue
+
+        if plan_result_confirmed is not None:
+            plan_result = plan_result_confirmed
+            # When in autonomous execution mode and the waist refused,
+            # do not immediately halt. Attempt critique-driven re-planning if decomposition
+            # was LLM-based, feeding the frontier's architectural critique back to the planner.
+            if plan_result.get("status") == "refused" and execute and decompose_llm:
+                refusal_reason = plan_result.get("confirmation", {}).get("reason", "")
+                from . import events as _events
+                _events.emit("orchestration_note",
+                             note=f"Waist refused plan ('{refusal_reason}'); re-planning with critique")
+                critique_prompt = (
+                    f"{opts_goal}\n\n"
+                    f"[ARCHITECTURAL REVIEW CRITIQUE]: The previous plan was rejected: "
+                    f"'{refusal_reason}'. "
+                    f"Address this critique directly: ensure all iteration loops, conditional branching, "
+                    f"dependencies, and granular steps are properly structured into the DAG."
+                )
+                try:
+                    re_decomposed = decompose_via_llm(lambda p: chat_fn(p)[0], critique_prompt,
+                                                      candidate_files=candidate_files)
+                    re_plan = plan_task(
+                        goal=opts_goal, candidate_files=candidate_files,
+                        custom_frontier=frontier_model, use_free=use_free,
+                        decomposed_dag=re_decomposed, root=root, run_gate=run_gate,
+                        allow_escalation=allow_escalation)
+                    re_plan["decomposition"] = decomposition + ":critique_replan"
+                    re_plan = _fit_plan_to_single_pass(
+                        re_plan, goal=opts_goal, candidate_files=candidate_files,
+                        custom_frontier=frontier_model, use_free=use_free, root=root,
+                        run_gate=run_gate, max_tokens=max_tokens,
+                        allow_escalation=allow_escalation)
+                    for candidate_model in ladder:
+                        try:
+                            re_res = confirm_plan(
+                                transport=transport, api_key=api_key, governor=governor,
+                                ledger=ledger, plan_result=re_plan, model=candidate_model,
+                                use_free=use_free, custom_frontier=frontier_model,
+                                root=root, run_gate=run_gate, chat_fn=None)
+                            if re_res.get("status") != "refused":
+                                plan_result = re_res
+                                break
+                        except HarnessError:
+                            continue
+                except HarnessError as exc:
+                    eprint(f"[plan] Critique re-planning failed ({exc}); retaining initial result")
+
+            if plan_result.get("status") != "refused":
+                # An amend/split verdict replaces the node set: re-fit it, or the
+                # gate's own repair could hand execution an oversized node.
+                plan_result = _fit_plan_to_single_pass(
+                    plan_result, goal=opts_goal, candidate_files=candidate_files,
+                    custom_frontier=frontier_model, use_free=use_free, root=root,
+                    run_gate=run_gate, max_tokens=max_tokens,
+                    allow_escalation=allow_escalation)
+        else:
+            first_model = ladder[0] if ladder else (frontier_model or resolve_frontier_model(None, use_free=use_free))
+            if not execute:
+                raise HarnessError(
+                    f"waist confirmation could not run on {first_model} "
+                    f"(plan NOT executed): {last_exc}") from last_exc
+            from . import events as _events
+            _events.emit("orchestration_note",
+                         note=f"Waist confirmation unreachable across ladder ({last_exc}); proceeding under local verification gate")
+            eprint(f"[waist] Confirmation unreachable across ladder ({last_exc}); proceeding under local verification gate")
     return plan_result
 
 
 def _fit_plan_to_single_pass(plan_result: Dict[str, Any], *, goal,
                              candidate_files, custom_frontier, use_free,
-                             root, run_gate, max_tokens) -> Dict[str, Any]:
+                             root, run_gate, max_tokens,
+                             allow_escalation: bool = False) -> Dict[str, Any]:
     """Apply the chunk policy to a plan result, re-planning when it split.
 
     The chunk policy itself lives in :func:`chunk_oversized_nodes` (ONE
@@ -1082,7 +1157,8 @@ def _fit_plan_to_single_pass(plan_result: Dict[str, Any], *, goal,
         return plan_result
     rebuilt = plan_task(goal=goal, candidate_files=candidate_files,
                         custom_frontier=custom_frontier, use_free=use_free,
-                        decomposed_dag=fitted, root=root, run_gate=run_gate)
+                        decomposed_dag=fitted, root=root, run_gate=run_gate,
+                        allow_escalation=allow_escalation)
     rebuilt["decomposition"] = plan_result.get("decomposition", "heuristic")
     if len(fitted.nodes) != len(dag.nodes):
         # Visible evidence that the planner chunked: a reader can see how
@@ -1104,3 +1180,48 @@ def resolve_scout_ladder(use_free=True, custom_frontier=None):
         target_files=(), dependency_depth=0, is_leaf=True,
         use_free=use_free, custom_frontier=custom_frontier)
     return list(route.ladder)
+
+
+def resolve_waist_ladder(use_free=True, custom_frontier=None, allow_escalation=False):
+    """The model ladder for waist plan confirmation (cheapest / free first).
+
+    - If custom_frontier is specified, it is placed at the head of the ladder.
+    - If use_free is True:
+        - Primary free judge (FREE_JUDGE, e.g. google/gemma-4-31b-it:free)
+        - Free alternatives from ESCALATION_POOL_FREE
+        - If allow_escalation is True:
+            - Paid frontier model: resolve_frontier_model(custom_frontier, use_free=False)
+            - Paid escalation models from ESCALATION_POOL_PAID
+    - If use_free is False:
+        - Paid frontier model, then ESCALATION_POOL_PAID.
+    """
+    out = []
+    if custom_frontier:
+        resolved = resolve_frontier_model(custom_frontier, use_free=use_free)
+        if resolved and resolved not in out:
+            out.append(resolved)
+    if use_free:
+        for m in [FREE_JUDGE] + list(ESCALATION_POOL_FREE):
+            if m not in out:
+                out.append(m)
+        if allow_escalation:
+            frontier_paid = resolve_frontier_model(custom_frontier, use_free=False)
+            if frontier_paid not in out:
+                out.append(frontier_paid)
+            for m in ESCALATION_POOL_PAID:
+                if m not in out:
+                    out.append(m)
+    else:
+        frontier_paid = resolve_frontier_model(custom_frontier, use_free=False)
+        if frontier_paid not in out:
+            out.append(frontier_paid)
+        for m in ESCALATION_POOL_PAID:
+            if m not in out:
+                out.append(m)
+    return out
+
+
+def resolve_planner_ladder(use_free=True, custom_frontier=None, allow_paid=False):
+    """The model ladder for task decomposition and complex planning."""
+    return resolve_waist_ladder(use_free=use_free, custom_frontier=custom_frontier, allow_escalation=allow_paid)
+

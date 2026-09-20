@@ -9,7 +9,23 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
+### Added
+
+- **JEV-P0 contract-truth adapter.** TypeSafe System One answers now use only official Noul/Choice/Score shapes, input-token pricing (`$42/Mtok`, output free), configured model/threshold settings, per-call question packs, and honest code-owned local structural fallback. Optional live smoke is operator-gated; CLI/MCP/waist wiring remains P1.
+
 ### Fixed
+
+- **Waist confirmation walks an ordered ladder with 429 rotation and paid escalation.**
+  When the primary frontier model (`google/gemma-4-31b-it:free`) experienced
+  `HTTP 429: Provider returned error`, plan confirmation halted immediately on the
+  first attempt without retrying across fallback rungs or escalating to paid models.
+  `harness/waist.py` now resolves `resolve_waist_ladder` (free models first, then
+  paid frontier escalation when `allow_escalation` is enabled), emits rotation events
+  on transient failures, and rotates to subsequent rungs. In autonomous execution mode
+  (`execute=True`), if all external confirmation rungs are unreachable due to provider
+  outage, it emits an honest orchestration note and proceeds with DAG execution under
+  the local verification gate instead of crashing the run thread. Web UI dispatch
+  and agent lanes now properly propagate `allow_paid` / `allow_escalation`.
 
 - **Isolated node writes now actually land, and a node gates the file it
   edits.** Behavioural verification of the armed lane (a two-round, two-node

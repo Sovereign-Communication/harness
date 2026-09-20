@@ -718,7 +718,7 @@ class McpProtocolTests(unittest.TestCase):
             "require_consent": False, "renew_consent": False,
         })
         self.assertEqual(result["status"], "preview")
-        self.assertEqual(transport.chat_posts()[0][2]["model"], APPLY)
+        self.assertEqual(transport.chat_posts()[0][2]["model"].replace(":floor", ""), APPLY)
 
     def test_symlink_target_is_rejected_before_dispatch(self):
         if not hasattr(os, "symlink"):

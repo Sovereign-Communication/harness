@@ -154,6 +154,9 @@ statement covers the CI matrix by direct execution.
 | `harness/executor.py` | concurrent multi-threaded batch dispatch & file mutex manager |
 | `harness/condenser.py` | context distillation & micro-brief pipeline: AST signature extraction, error pruning |
 | `harness/sliding_scale.py` | dynamic sliding-scale tier classification (Tiers 0, 1, 2) & frontier model routing ladder |
+| `harness/routing_table.py` | task-to-model 4-tier routing table, :floor provider formatting, and gateway-level max_price ceilings |
+| `harness/jev.py` | TypeSafe AI Jev / System One structural verification client with local AST and diff fallbacks |
+| `harness/providers.py` | modular provider adapter interface and registry for external execution backends |
 | `harness/agent.py` | autonomous agent orchestration: natural language prompt intent classification, file/gate discovery, sliding-scale DAG execution, self-healing retry |
 | `harness/apply_gate.py` | one candidate-to-gate transaction: write, verify, preview, rewind, and terminal gate results |
 | `harness/apply_state.py` | apply request data and mutable per-run state |

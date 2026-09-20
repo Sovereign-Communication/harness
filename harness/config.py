@@ -354,6 +354,13 @@ _ENV_NAMES = {
     "hourglass_isolate": "HARNESS_HOURGLASS_ISOLATE",
     "hourglass_parallel": "HARNESS_HOURGLASS_PARALLEL",
     "hourglass_require_attestation": "HARNESS_HOURGLASS_REQUIRE_ATTESTATION",
+    "openrouter_floor_default": "HARNESS_OPENROUTER_FLOOR",
+    "max_price_prompt": "HARNESS_MAX_PRICE_PROMPT",
+    "max_price_completion": "HARNESS_MAX_PRICE_COMPLETION",
+    "jev_api_key": "HARNESS_JEV_KEY",
+    "jev_endpoint": "HARNESS_JEV_ENDPOINT",
+    "jev_model": "HARNESS_JEV_MODEL",
+    "min_confidence": "HARNESS_MIN_CONFIDENCE",
 }
 
 
@@ -418,6 +425,32 @@ def resolve_api_key():
     return key
 
 
+def resolve_jev_key():
+    """Resolve the Jev / System One API key: env file first, then environment.
+
+    Checks ~/.config/scmorc/jev.env, ~/.config/harness/jev.env, and environment
+    variables HARNESS_JEV_KEY, TYPESAFE_API_KEY, and JEV_API_KEY.
+    """
+    for p in (
+        os.path.join(os.path.expanduser("~/.config/scmorc"), "jev.env"),
+        os.path.join(CONFIG_DIR, "jev.env"),
+    ):
+        try:
+            with open(p, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if "=" in line and not line.startswith("#"):
+                        k, v = line.split("=", 1)
+                        if k.strip() in ("HARNESS_JEV_KEY", "JEV_API_KEY", "TYPESAFE_API_KEY") and v.strip():
+                            _warn_insecure_keyfile(p)
+                            return v.strip().strip('"').strip("'")
+        except OSError:
+            pass
+    return (os.environ.get("HARNESS_JEV_KEY")
+            or os.environ.get("TYPESAFE_API_KEY")
+            or os.environ.get("JEV_API_KEY"))
+
+
 def _as_bool(value):
     if isinstance(value, bool):
         return value
@@ -445,7 +478,11 @@ class Settings:
                   mcp_allow_write=False, mcp_allow_verify=False, mcp_allowed_roots=None,
                   mcp_tool_timeout=1800, mcp_auth_token=None, frontier_model=None,
                   hourglass_confirm=True, hourglass_isolate=True,
-                  hourglass_parallel=True, hourglass_require_attestation=True):
+                  hourglass_parallel=True, hourglass_require_attestation=True,
+                  openrouter_floor_default=True, max_price_prompt=None,
+                  max_price_completion=None, jev_api_key=None,
+                  jev_endpoint="https://api.typesafe.ai/v1/systemone",
+                  jev_model="jev-latest", min_confidence=0.70):
         self.use_free = use_free
         self.panel = list(panel)
         self.panel_pool = list(panel_pool)
@@ -494,6 +531,13 @@ class Settings:
         self.hourglass_isolate = hourglass_isolate
         self.hourglass_parallel = hourglass_parallel
         self.hourglass_require_attestation = hourglass_require_attestation
+        self.openrouter_floor_default = openrouter_floor_default
+        self.max_price_prompt = max_price_prompt
+        self.max_price_completion = max_price_completion
+        self.jev_api_key = jev_api_key
+        self.jev_endpoint = jev_endpoint
+        self.jev_model = jev_model or "jev-latest"
+        self.min_confidence = min_confidence
 
     def to_dict(self):
         return {k: getattr(self, k) for k in (
@@ -507,7 +551,9 @@ class Settings:
             "mcp_allow_verify", "mcp_allowed_roots", "mcp_tool_timeout",
             "mcp_auth_token", "frontier_model", "hourglass_confirm",
             "hourglass_isolate", "hourglass_parallel",
-            "hourglass_require_attestation")}
+            "hourglass_require_attestation", "openrouter_floor_default",
+            "max_price_prompt", "max_price_completion", "jev_api_key",
+            "jev_endpoint", "jev_model", "min_confidence")}
 
 
 def load_settings(overrides=None):
@@ -630,6 +676,15 @@ def load_settings(overrides=None):
         hourglass_parallel=_as_bool(get("hourglass_parallel", True)),
         hourglass_require_attestation=_as_bool(
             get("hourglass_require_attestation", True)),
+        openrouter_floor_default=_as_bool(get("openrouter_floor_default", True)),
+        max_price_prompt=(float(get("max_price_prompt", None))
+                          if get("max_price_prompt", None) is not None else None),
+        max_price_completion=(float(get("max_price_completion", None))
+                              if get("max_price_completion", None) is not None else None),
+        jev_api_key=get("jev_api_key", None) or resolve_jev_key(),
+        jev_endpoint=str(get("jev_endpoint", "https://api.typesafe.ai/v1/systemone")),
+        jev_model=str(get("jev_model", "jev-latest")),
+        min_confidence=_num("min_confidence", float, 0.0, 1.0, 0.70),
     )
 
 

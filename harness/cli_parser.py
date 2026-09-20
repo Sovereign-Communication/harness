@@ -247,6 +247,19 @@ def build_parser():
     sub.add_parser("spend", help="Key identity & spend status")
     _add_output_flags(sub.choices["spend"])
 
+    pcost = sub.add_parser("cost", help="Track spend by tier, model, and calculate savings vs. naive frontier baseline")
+    pcost.add_argument("--last", default=None,
+                       help="filter by time window (e.g. '24h', '7d', '30m') or entry count limit")
+    pcost.add_argument("--by-tier", action="store_true",
+                       help="break down spend by tier (T0..T3)")
+    pcost.add_argument("--by-model", action="store_true",
+                       help="break down spend by model")
+    pcost.add_argument("--savings", action="store_true",
+                       help="calculate savings vs. naive frontier-only baseline")
+    pcost.add_argument("--json", action="store_true",
+                       help="emit raw JSON output only")
+    _add_output_flags(pcost)
+
     prank = sub.add_parser(
         "rankings",
         help="Daily OpenRouter rankings: top models, climbers, and "

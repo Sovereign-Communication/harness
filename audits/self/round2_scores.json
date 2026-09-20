@@ -83,7 +83,7 @@
         "id": "A13",
         "label": "hard config ceilings + fail-clean load",
         "score": 1.0,
-        "evidence": "8 numeric settings range-validated; hard ceilings enforced in load_settings; unknown keys warned; load inside CLI try"
+        "evidence": "9 numeric settings range-validated; hard ceilings enforced in load_settings; unknown keys warned; load inside CLI try"
       }
     ],
     "R": [
@@ -151,7 +151,7 @@
         "id": "R11",
         "label": "config validation ranges + unknown-key warning",
         "score": 1.0,
-        "evidence": "range-validated: ['apply_max_tokens', 'max_cost', 'max_panelists', 'max_rotations', 'max_tokens', 'mcp_tool_timeout', 'reasoning_token_budget', 'task_max_cost']; unknown-key warning present"
+        "evidence": "range-validated: ['apply_max_tokens', 'max_cost', 'max_panelists', 'max_rotations', 'max_tokens', 'mcp_tool_timeout', 'min_confidence', 'reasoning_token_budget', 'task_max_cost']; unknown-key warning present"
       },
       {
         "id": "R12",
@@ -163,7 +163,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 1096 tests in 108.227s\n\nOK"
+        "evidence": "unittest: Ran 1138 tests in 79.352s\n\nOK"
       },
       {
         "id": "R14",
@@ -207,7 +207,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "55/55 modules imported by tests"
+        "evidence": "58/58 modules imported by tests"
       },
       {
         "id": "S7",
@@ -245,7 +245,7 @@
         "id": "D4",
         "label": "config table keys real",
         "score": 1.0,
-        "evidence": "17 README config keys all resolve to real settings (34 configurable)"
+        "evidence": "23 README config keys all resolve to real settings (40 configurable)"
       },
       {
         "id": "D5",
