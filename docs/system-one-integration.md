@@ -132,8 +132,8 @@ Status after Freebuff `#PR-Jev-Live` audit (2026-09-20). Detailed work items liv
   - Wire `HARNESS_MIN_CONFIDENCE` (settings default `0.70`) into consent/apply abstention via `sliding_scale.should_abstain`.
   - Automatically escalate/rotate to next tier model if reported confidence is below threshold.
 - [~] **Milestone 4: Native Jev / System One Provider Endpoints** — `JEV-P0-*` / `JEV-P1-*`
-  - Partial: `harness/jev.py` posts to `https://api.typesafe.ai/v1/systemone` with local fallback; agent lane only.
-  - Remaining: honest cost/parse/questions (P0); ONE policy owner wired across CLI/MCP/waist/apply (P1); ledger + spend.
+  - Complete P0: `harness/jev.py` posts to `https://api.typesafe.ai/v1/systemone` with token-priced cost, official typed parsing, local fallback, and operator-gated smoke.
+  - P1 implementation is in progress on `feat/jev-p1-policy-and-lanes`: the shared policy, apply/waist/agent wiring, ledger/spend accounting, and structural envelopes are locally green but not merged yet.
 
 ---
 

@@ -11,6 +11,8 @@ break APIs between minor versions).
 
 ### Added
 
+- **JEV-P1 shared structural policy and lane evidence.** CLI, MCP, waist, batch, and agent paths now share one Jev policy owner with preflighted input-token spend, hash-chained `jev_eval` records, and stable structural envelopes; the verification gate remains code-authoritative and unkeyed runs remain explicit local fallback.
+
 - **JEV-P0 contract-truth adapter.** TypeSafe System One answers now use only official Noul/Choice/Score shapes, input-token pricing (`$42/Mtok`, output free), configured model/threshold settings, per-call question packs, and honest code-owned local structural fallback. Optional live smoke is operator-gated; CLI/MCP/waist wiring remains P1.
 
 ### Fixed

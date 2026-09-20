@@ -34,6 +34,13 @@ VERIFY_FEEDBACK_CHARS = 6000
 class ApplyEngineMixin:
     """Mixin: the apply engine's per-round machinery (see module docstring)."""
 
+    @staticmethod
+    def _attach_structural(result, state):
+        """Keep the shared structural envelope on every apply terminal."""
+        if isinstance(result, dict) and state.structural is not None:
+            result.setdefault("structural", state.structural)
+        return result
+
     def _record_billable(self, req, model_id, amount, status, **fields):
         """Record every billable apply attempt, including rotated failures."""
         try:
@@ -97,7 +104,7 @@ class ApplyEngineMixin:
             if req.renew:
                 deferral = self._renew_consent(req, state)
                 if deferral is not None:
-                    return deferral
+                    return self._attach_structural(deferral, state)
 
             state.round_ctx, state.gate_broken = self._round_context(req, state)
             if state.gate_broken:
@@ -124,7 +131,8 @@ class ApplyEngineMixin:
                     escalated = self._escalate(req, state)
                     if escalated is not None:
                         return escalated
-                    return self._readiness_deferral(req, state, outcome)
+                    return self._attach_structural(
+                        self._readiness_deferral(req, state, outcome), state)
                 state.rounds.append(_round_entry(
                     round_no, req.model or outcome.model, "api_error",
                     cost=_reported_cost(outcome.resp), verify_output="",
@@ -134,7 +142,7 @@ class ApplyEngineMixin:
             if CAPABILITY_MARKER in outcome.content:
                 deferred = self._capability_deferral(req, state, outcome)
                 escalated = self._escalate(req, state)
-                return escalated or deferred
+                return self._attach_structural(escalated or deferred, state)
 
             if req.backend == "diff":
                 # Strict-match merge (#11): a non-matching or malformed diff is
@@ -148,9 +156,10 @@ class ApplyEngineMixin:
                 new_content = _extract_file_content(outcome.content)
             result = self.gate.apply_candidate(req, state, outcome, new_content)
             if result is not None:
-                return result
+                return self._attach_structural(result, state)
 
-        return self._escalate(req, state) or self.gate.terminal_failure(req, state)
+        result = self._escalate(req, state) or self.gate.terminal_failure(req, state)
+        return self._attach_structural(result, state)
 
     # ---------------- phases ----------------------------------------------
 

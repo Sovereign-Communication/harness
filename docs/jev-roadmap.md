@@ -153,7 +153,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | Phase | IDs | Primary modules | Gate tests | Status |
 |---|---|---|---|---|
 | 0 Contract | `JEV-P0-*` | `jev.py`, `config.py`, docs | `tests/test_jev.py` + `tests/test_jev_smoke.py` | **complete in this PR** |
-| 1 One owner | `JEV-P1-*` | policy + apply/waist/CLI/MCP/agent | `tests/test_jev_policy.py`, lane parity | planned |
+| 1 One owner | `JEV-P1-*` | policy + apply/waist/CLI/MCP/agent | `tests/test_jev_policy.py`, `tests/test_jev_lane_parity.py`, `tests/test_jev_ledger_spend.py` | **complete** — PR #35; named gates, regression, traced D12 audit, and CI all green |
 | 2 Pillars | `JEV-P2-*` | consent, sliding_scale, panel | consent/confidence + panel pre-gate | planned |
 | 3 Utilization | `JEV-P3-*` | orchestrator, routing, context | per-pattern hermetic tests | planned |
 | 4 Ops | `JEV-P4-*` | workflows, analytics, docs | live acceptance checklist | planned |
@@ -162,11 +162,10 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 `feat(jev): JEV-P0-cost — token-priced TypeSafe usage on JevEvaluationResult`
 
 ### Next implementation slice (priority order)
-1. **P0** question redesign + cost/parse truth  
-2. **P1** policy owner + lane wiring + ledger/spend  
-3. **P2** consent confidence + abstention  
-4. **P3** utilization patterns  
-5. **P4** dogfood + freeze thresholds  
+1. **P2** implement consent confidence + abstention; merge only after named gates and regression are green
+2. **P2** consent confidence + abstention
+3. **P3** utilization patterns
+4. **P4** dogfood + freeze thresholds
 
 ---
 

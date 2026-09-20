@@ -14,6 +14,7 @@ and primitives; nothing here imports interfaces.
 from ._http import HttpTransport
 from .apply import ApplyEngine
 from .jev import JevEvaluator
+from .jev_policy import policy_for
 from .ledger import AutonomyLedger
 from .router import Router
 from .saturation import pre_run_warning
@@ -106,8 +107,11 @@ def engine_for(settings, api_key, gov, ledger, router, transport=None):
     """The ApplyEngine with every settings-level policy applied. Only
     per-request knobs (instruction, ceilings for THIS task) are passed at
     the engine call site -- construction-level policy lives here."""
+    wire = transport or HttpTransport()
     return ApplyEngine(
-        transport or HttpTransport(), api_key=api_key, governor=gov, ledger=ledger, router=router,
+        wire, api_key=api_key, governor=gov, ledger=ledger, router=router,
+        jev_policy=policy_for(settings, transport=wire,
+                              governor=gov, ledger=ledger),
         default_require_consent=settings.default_require_consent,
         default_renew_consent=settings.renew_consent,
         reasoning_effort=settings.reasoning_effort,

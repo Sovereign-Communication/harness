@@ -25,6 +25,7 @@ from .repo_scope import (
 )
 from .results import SUCCESS_STATUSES, _http_error
 from .session import apply_session, attest_model_for, governor_for, jev_for, ledger_for
+from .jev_policy import JevPolicy, aggregate_structural, policy_for
 from .waist import compose_plan, resolve_scout_ladder
 from .web import DEFAULT_FETCH_HOSTS, gather_web_context
 
@@ -541,6 +542,8 @@ class AutonomousAgent:
             "dag": plan.get("dag"),
             "confirmation": confirmation,
             "cost": float(confirmation.get("cost") or 0.0),
+            **({"structural": plan["structural"]}
+               if isinstance(plan.get("structural"), dict) else {}),
         }
         save_chat_turn(session_id, result, self.history_dir)
         emit("chat_response", intent="edit", status="refused")
@@ -603,26 +606,30 @@ class AutonomousAgent:
         brief = distill_context(files=file_contents, summary=prompt)
         emit("context_condensed", estimated_tokens=brief.estimated_tokens)
 
-        # Jev structural pre-planning evaluation
-        jev = jev_for(self.settings, transport=self.transport)
-        plan_prompt = prompt
-        if jev:
-            plan_eval = jev.evaluate_plan_requirements(prompt, target_files)
-            if plan_eval.answers.get("requires_iteration"):
-                emit("orchestration_note",
-                     note="Jev structural analysis detected algorithmic iteration; injecting DAG loop directive")
-                plan_prompt = (
-                    f"{prompt}\n\n"
-                    f"[STRUCTURAL GUIDELINE]: This goal requires iterative control flow, conditional "
-                    f"branching, or multi-step execution. Ensure the decomposed DAG explicitly breaks "
-                    f"down the iterative loop and discrete steps into executable nodes."
-                )
-
         # Formulate the FIRST-round DAG plan (LLM decomposition when the
         # orchestration ladder answers; heuristic fallback) and gate.
+        # The generative plan lane still requires the normal Harness
+        # governor. Jev's own key controls only the typed structural call;
+        # an unkeyed Jev evaluator remains the explicit local fallback.
         _, gov = governor_for(self.settings)
+        plan_policy = policy_for(
+            self.settings, transport=self.transport, governor=gov,
+            ledger=ledger_for(self.settings, caller="agent"))
+        plan_prompt = prompt
+        plan_eval, plan_structural = plan_policy.evaluate_plan(
+            prompt, target_files, site="agent-plan", task_id=session_id)
+        if plan_eval.answers.get("requires_iteration"):
+            emit("orchestration_note",
+                 note="Jev structural analysis detected algorithmic iteration; injecting DAG loop directive")
+            plan_prompt = (
+                f"{prompt}\n\n[STRUCTURAL GUIDELINE]: This goal requires iterative "
+                "control flow, conditional branching, or multi-step execution. "
+                "Ensure the decomposed DAG explicitly breaks down the iterative "
+                "loop and discrete steps into executable nodes.")
         plan = self._plan_round(plan_prompt, target_files, gov,
                                 confirm=hourglass["confirm"])
+        if isinstance(plan_structural, dict):
+            plan["structural"] = plan_structural
         if plan.get("status") == "refused":
             return self._refused_edit(plan, prompt, target_files, session_id)
         emit("dag_planned", total_nodes=plan["total_nodes"],
@@ -646,6 +653,8 @@ class AutonomousAgent:
                 "verification_gate": verification_gate,
                 "cost_ceiling": plan["total_cost_ceiling"],
                 "cost": 0.0,
+                **({"structural": dict(plan["structural"])}
+                   if isinstance(plan.get("structural"), dict) else {}),
             }
             save_chat_turn(session_id, result, self.history_dir)
             return result
@@ -709,18 +718,27 @@ class AutonomousAgent:
                 **apply_kwargs,
             )
 
-            # Jev System One structural verification pass
-            jev = jev_for(self.settings, transport=self.transport)
-            if res.get("status") in SUCCESS_STATUSES and res.get("diff"):
-                jev_res = jev.verify_diff_mechanics(
-                    diff=res["diff"],
-                    instruction=node.instruction,
-                    file_path=engine_target or "",
-                    candidate=res.get("content"),
-                )
+            # The shared engine gate owns Jev when it was composed normally.
+            # A lightweight injected engine (used by library callers/tests)
+            # has no policy, so this lane supplies the same policy owner as a
+            # compatibility boundary rather than silently skipping the check.
+            structural = res.get("structural") if isinstance(res, dict) else None
+            policy = getattr(engine, "jev_policy", None)
+            if (res.get("status") in SUCCESS_STATUSES and res.get("diff")
+                    and not isinstance(policy, JevPolicy)):
+                policy = policy_for(
+                    self.settings, transport=self.transport, governor=gov,
+                    evaluator=jev_for(self.settings, transport=self.transport),
+                    ledger=ledger_for(self.settings, caller="agent"))
+                jev_res, structural = policy.evaluate_diff(
+                    diff=res["diff"], instruction=node.instruction,
+                    file_path=engine_target or "", candidate=res.get("content"),
+                    site="agent-apply", task_id=session_id,
+                    node_id=node.node_id)
                 emit("structural_eval", node_id=node.node_id,
-                     verdict=jev_res.verdict, confidence=jev_res.confidence,
-                     supported=jev_res.supported)
+                     verdict=structural["verdict"],
+                     confidence=structural["confidence"],
+                     supported=structural["supported"])
                 if not jev_res.is_passing(min_confidence=self.settings.min_confidence):
                     emit("subtask_retry", node_id=node.node_id,
                          error="Structural check failed: " + "; ".join(jev_res.reasons))
@@ -737,7 +755,8 @@ class AutonomousAgent:
                         **apply_kwargs,
                     )
                     if isinstance(res, dict):
-                        res["cost"] = round(prior_cost + float(res.get("cost", 0.0) or 0.0) + jev_res.cost, 6)
+                        res["cost"] = round(prior_cost + float(res.get("cost", 0.0) or 0.0), 6)
+                        res["structural"] = structural
 
             # Self-healing retry on verification failure
             if res.get("status") not in SUCCESS_STATUSES and res.get("error"):
@@ -855,6 +874,11 @@ class AutonomousAgent:
                     f"node stayed on its configured lane, so this run is not "
                     f"escalated.")
 
+        agent_structural = aggregate_structural(
+            list(all_results.values()), site="agent")
+        if agent_structural is None and isinstance(plan.get("structural"), dict):
+            agent_structural = dict(plan["structural"])
+            agent_structural["site"] = "agent"
         result = {
             "status": "ok" if final_all_ok else "failed",
             **({"escalated_from_defer":
@@ -871,6 +895,8 @@ class AutonomousAgent:
             # can see what confirmed this plan (and on which model).
             **({"confirmation": plan["confirmation"]}
                if plan.get("confirmation") else {}),
+            **({"structural": agent_structural}
+               if agent_structural is not None else {}),
             "cost": round(total_cost, 6),
             **engine.governor.snapshot(),
             "results": list(all_results.values()),

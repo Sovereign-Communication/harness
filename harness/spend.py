@@ -168,6 +168,17 @@ class SpendGovernor:
                     raise HarnessError(f"could not fetch model list: {e}") from e
         return self._models
 
+    def preflight_jev(self, input_tokens, label="jev"):
+        """Preflight a TypeSafe call at its fixed input-token price."""
+        from .jev import jev_cost
+        worst = jev_cost(input_tokens)
+        with self._spend_lock:
+            if self.spent + self._outstanding + worst > self.max_cost:
+                raise HarnessError(
+                    f"Jev worst-case ${worst:.6f} for {label} exceeds remaining "
+                    f"budget ${self.remaining():.6f}; refusing.")
+        return worst
+
     def preflight(self, prompt_text, calls):
         """calls = [(label, model, max_tokens, extra_input)] -> (total, breakdown).
 

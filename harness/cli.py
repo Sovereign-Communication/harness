@@ -41,6 +41,7 @@ from .service import run_verify as _service_verify
 from .service import read_text_file as _service_read_text
 from .rankings import build_rankings_report as _rankings_report
 from .waist import compose_plan as _compose_plan
+from .jev_policy import aggregate_structural, policy_for
 from .capability import capabilities_payload as _capability_payload_owner
 from .brief import build_brief, validate_brief
 from .dag import TaskDAG, node_apply_kwargs
@@ -599,15 +600,20 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
     confirmation."""
     if confirm is None:
         confirm = getattr(settings, "hourglass_confirm", True)
+    plan_ledger = (_ledger(settings) if hasattr(settings, "ledger_path") else None)
+    jev_policy = (policy_for(settings, transport=transport,
+                             governor=gov, ledger=plan_ledger)
+                  if hasattr(settings, "jev_api_key") else None)
     return _compose_plan(
         transport=transport, api_key=api_key, governor=gov,
-        ledger=_ledger(settings) if confirm else None, opts_goal=opts.goal,
+        ledger=plan_ledger if confirm else None, opts_goal=opts.goal,
         candidate_files=candidate_files, frontier_model=frontier_model,
         use_free=settings.use_free,
         decompose_llm=getattr(opts, "decompose_llm", False),
         confirm=confirm,
         execute=execute,
         allow_escalation=bool(getattr(opts, "allow_escalation", getattr(settings, "allow_escalation", False))),
+        jev_policy=jev_policy,
         # The same pinned output budget the nodes will run with, so the
         # chunk policy measures each pass against the real one.
         max_tokens=getattr(opts, "max_tokens", None))
@@ -652,6 +658,9 @@ def _cmd_plan(opts, settings):
         _emit_by_status(plan_result, opts.out)
         return
     if not execute:
+        if isinstance(plan_result.get("structural"), dict):
+            plan_result["structural"] = dict(plan_result["structural"])
+            plan_result["structural"]["site"] = "cli"
         _emit(plan_result, opts.out)
         return
 
@@ -712,6 +721,12 @@ def _cmd_plan(opts, settings):
         "results": list(all_results.values()),
         "cost": summary["total_cost"],
     }
+    structural = aggregate_structural(list(all_results.values()), site="cli")
+    if structural is None and isinstance(plan_result.get("structural"), dict):
+        structural = dict(plan_result["structural"])
+        structural["site"] = "cli"
+    if structural is not None:
+        output["structural"] = structural
     _emit_by_status(output, opts.out)
 
 
