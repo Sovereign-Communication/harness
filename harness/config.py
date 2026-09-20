@@ -480,7 +480,7 @@ class Settings:
                   hourglass_parallel=True, hourglass_require_attestation=True,
                   openrouter_floor_default=True, max_price_prompt=None,
                   max_price_completion=None, jev_api_key=None,
-                  jev_endpoint="https://api.typesafe.ai/v1/eval",
+                  jev_endpoint="https://api.typesafe.ai/v1/systemone",
                   min_confidence=0.70):
         self.use_free = use_free
         self.panel = list(panel)
@@ -680,7 +680,7 @@ def load_settings(overrides=None):
         max_price_completion=(float(get("max_price_completion", None))
                               if get("max_price_completion", None) is not None else None),
         jev_api_key=get("jev_api_key", None) or resolve_jev_key(),
-        jev_endpoint=str(get("jev_endpoint", "https://api.typesafe.ai/v1/eval")),
+        jev_endpoint=str(get("jev_endpoint", "https://api.typesafe.ai/v1/systemone")),
         min_confidence=_num("min_confidence", float, 0.0, 1.0, 0.70),
     )
 

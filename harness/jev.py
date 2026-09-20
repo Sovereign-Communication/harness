@@ -35,7 +35,7 @@ class JevEvaluator:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        endpoint: str = "https://api.typesafe.ai/v1/eval",
+        endpoint: str = "https://api.typesafe.ai/v1/systemone",
         transport: Optional[HttpTransport] = None,
         settings: Optional[Any] = None,
     ):
@@ -52,7 +52,7 @@ class JevEvaluator:
 
     def evaluate(
         self,
-        state: Dict[str, Any],
+        state: Any,
         questions: Optional[Dict[str, Any]] = None,
     ) -> JevEvaluationResult:
         """Evaluate shared state against typed questions.
@@ -60,9 +60,9 @@ class JevEvaluator:
         If a Jev API key is configured, dispatches to the Jev System One endpoint.
         Otherwise, executes hermetic local structural and AST verification.
         """
-        active_questions = questions or {
+        raw_questions = questions or {
             "supported": {
-                "type": "boolean",
+                "type": "noul",
                 "instructions": "Does the draft follow logically from the provided context?",
             },
             "confidence": {
@@ -71,14 +71,39 @@ class JevEvaluator:
                 "criteria": ["Hallucinated", "Uncertain", "Plausible", "Verified"],
             },
             "syntax_clean": {
-                "type": "boolean",
+                "type": "noul",
                 "instructions": "Is the code or diff syntactically valid and free of obvious defects?",
             },
         }
 
+        # Convert question types to TypeSafe System One primitives
+        active_questions = {}
+        for q_id, q_def in raw_questions.items():
+            q_type = q_def.get("type")
+            instr = q_def.get("instructions", "")
+            if q_type in ("boolean", "noul"):
+                q_obj = {"type": "noul", "instructions": instr}
+                if "criteria" in q_def:
+                    q_obj["criteria"] = q_def["criteria"]
+                active_questions[q_id] = q_obj
+            elif q_type == "score":
+                active_questions[q_id] = {
+                    "type": "score",
+                    "instructions": instr,
+                    "criteria": q_def.get("criteria", ["Low", "Medium", "High"]),
+                }
+            elif q_type == "choice":
+                active_questions[q_id] = {
+                    "type": "choice",
+                    "instructions": instr,
+                    "criteria": q_def.get("criteria", q_def.get("options", {})),
+                }
+            else:
+                active_questions[q_id] = q_def
+
         if self.api_key:
             try:
-                payload = {"state": state, "questions": active_questions}
+                payload = {"model": "jev-latest", "state": state, "questions": active_questions}
                 status, resp = self.transport.post(self.endpoint, self.api_key, payload)
                 if status == 200 and isinstance(resp, dict):
                     return self._parse_jev_response(resp)
@@ -87,38 +112,62 @@ class JevEvaluator:
                 pass
 
         # Local structural evaluation fallback ($0, millisecond latency)
-        return self._local_structural_eval(state, active_questions)
+        state_dict = state if isinstance(state, dict) else {"content": str(state)}
+        return self._local_structural_eval(state_dict, active_questions)
 
     def _parse_jev_response(self, resp: Dict[str, Any]) -> JevEvaluationResult:
         """Parse native Jev response into JevEvaluationResult."""
         answers = resp.get("answers", resp.get("results", {}))
-        cost = float(resp.get("usage", {}).get("cost", 0.00004))
+        usage = resp.get("usage", {})
+        cost = float(usage.get("cost", 0.00004))
 
-        supported_val = answers.get("supported", 1.0)
-        if isinstance(supported_val, dict):
-            supported_prob = float(supported_val.get("probability", 1.0))
-        elif isinstance(supported_val, (int, float)):
-            supported_prob = float(supported_val)
+        # 1. Parse supported probability
+        supp_ans = answers.get("supported", 1.0)
+        if isinstance(supp_ans, dict):
+            supported_prob = float(supp_ans.get("noul", supp_ans.get("probability", 1.0)))
+        elif isinstance(supp_ans, (int, float)):
+            supported_prob = float(supp_ans)
         else:
-            supported_prob = 1.0 if supported_val else 0.0
+            supported_prob = 1.0 if supp_ans else 0.0
 
-        conf_val = answers.get("confidence", 3)
-        if isinstance(conf_val, dict):
-            conf_score = float(conf_val.get("score", 0.85))
-        elif isinstance(conf_val, (int, float)):
-            # Normalize 0..3 score scale to 0.0..1.0
-            conf_score = conf_val / 3.0 if conf_val <= 3 else conf_val / 100.0
+        # 2. Parse confidence score
+        conf_ans = answers.get("confidence", 0.85)
+        if isinstance(conf_ans, dict):
+            if "confidence" in conf_ans:
+                conf_score = float(conf_ans["confidence"])
+            elif "score" in conf_ans:
+                conf_score = float(conf_ans["score"])
+            else:
+                conf_score = 0.85
+        elif isinstance(conf_ans, (int, float)):
+            conf_score = float(conf_ans)
         else:
             conf_score = 0.85
+
+        # 3. Parse syntax_clean
+        syntax_ans = answers.get("syntax_clean", 1.0)
+        if isinstance(syntax_ans, dict):
+            syntax_prob = float(syntax_ans.get("noul", 1.0))
+        elif isinstance(syntax_ans, bool):
+            syntax_prob = 1.0 if syntax_ans else 0.0
+        else:
+            syntax_prob = 1.0
 
         reasons: List[str] = []
         if "reason" in resp:
             reasons.append(str(resp["reason"]))
         for k, v in answers.items():
-            if isinstance(v, dict) and "rationale" in v:
-                reasons.append(f"{k}: {v['rationale']}")
+            if isinstance(v, dict):
+                if "rationale" in v:
+                    reasons.append(f"{k}: {v['rationale']}")
+                elif v.get("type") == "noul":
+                    reasons.append(f"{k} (noul): {v.get('noul')}")
+                elif v.get("type") == "choice":
+                    reasons.append(f"{k} (choice): {v.get('choice')} (conf: {v.get('confidence')})")
+                elif v.get("type") == "score":
+                    reasons.append(f"{k} (score): {v.get('score')} (conf: {v.get('confidence')})")
 
-        verdict = "pass" if (supported_prob >= 0.70 and conf_score >= 0.70) else "fail"
+        verdict = "pass" if (supported_prob >= 0.70 and conf_score >= 0.70 and syntax_prob >= 0.70) else "fail"
         return JevEvaluationResult(
             verdict=verdict,
             confidence=conf_score,
@@ -234,20 +283,35 @@ class JevEvaluator:
         }
         questions = {
             "requires_iteration": {
-                "type": "boolean",
+                "type": "noul",
                 "instructions": "Does this coding task require iterative loops, conditional branches, or multi-step algorithms?",
             },
             "confidence": {
                 "type": "score",
                 "instructions": "Confidence in requirement analysis",
+                "criteria": ["Uncertain", "Likely", "Verified"],
             },
         }
         if self.api_key:
             try:
-                payload = {"state": state, "questions": questions}
-                status, resp = self.transport.post(self.endpoint, self.api_key, payload)
-                if status == 200 and isinstance(resp, dict):
-                    return self._parse_jev_response(resp)
+                res = self.evaluate(state, questions)
+                if not res.is_fallback:
+                    req_ans = res.answers.get("requires_iteration")
+                    if isinstance(req_ans, dict):
+                        is_iter = float(req_ans.get("noul", 0.0)) >= 0.50
+                    elif isinstance(req_ans, (int, float)):
+                        is_iter = float(req_ans) >= 0.50
+                    else:
+                        is_iter = bool(req_ans)
+                    return JevEvaluationResult(
+                        verdict=res.verdict,
+                        confidence=res.confidence,
+                        supported=res.supported,
+                        answers={"requires_iteration": is_iter, "confidence": res.confidence, "raw": res.answers},
+                        reasons=res.reasons,
+                        cost=res.cost,
+                        is_fallback=False,
+                    )
             except Exception:
                 pass
         lower = prompt.lower()

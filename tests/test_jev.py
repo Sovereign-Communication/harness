@@ -88,14 +88,14 @@ class JevEvaluatorTests(unittest.TestCase):
         transport = FakeTransport(status=200, resp=mock_resp)
         evaluator = JevEvaluator(
             api_key="jev-secret-key",
-            endpoint="https://api.typesafe.ai/v1/eval",
+            endpoint="https://api.typesafe.ai/v1/systemone",
             transport=transport,
         )
 
         res = evaluator.evaluate({"diff": "+print('hello')"})
         self.assertEqual(len(transport.calls), 1)
         call = transport.calls[0]
-        self.assertEqual(call["url"], "https://api.typesafe.ai/v1/eval")
+        self.assertEqual(call["url"], "https://api.typesafe.ai/v1/systemone")
         self.assertEqual(call["api_key"], "jev-secret-key")
         self.assertEqual(res.verdict, "pass")
         self.assertAlmostEqual(res.confidence, 0.88)
@@ -178,6 +178,107 @@ class JevEvaluatorTests(unittest.TestCase):
         err_eval = JevEvaluator(api_key="jev-key", transport=bad_transport)
         res_err = err_eval.evaluate_plan_requirements("Fix typo")
         self.assertFalse(res_err.answers.get("requires_iteration"))
+
+    def test_question_primitives_and_parsing(self):
+        # Test converting question types (choice, criteria noul, unhandled) and parsing answers
+        mock_resp = {
+            "answers": {
+                "supported": True,
+                "confidence": {"score": 0.90},
+                "syntax_clean": False,
+                "q_noul": {"type": "noul", "noul": 0.88},
+                "q_choice": {"type": "choice", "choice": "fast", "confidence": 0.95},
+                "q_score": {"type": "score", "score": 3.0, "confidence": 0.85},
+            },
+            "usage": {"cost": 0.00004},
+        }
+        transport = FakeTransport(status=200, resp=mock_resp)
+        evaluator = JevEvaluator(api_key="test-key", transport=transport)
+
+        custom_questions = {
+            "q_noul": {
+                "type": "noul",
+                "instructions": "Is it valid?",
+                "criteria": {"true": "yes", "false": "no"},
+            },
+            "q_choice": {
+                "type": "choice",
+                "instructions": "Select mode",
+                "criteria": {"fast": "speed", "safe": "accuracy"},
+            },
+            "q_custom": {
+                "type": "custom_primitive",
+                "data": 123,
+            },
+        }
+        # Pass state as string to verify string conversion
+        res = evaluator.evaluate("some draft code string", questions=custom_questions)
+        self.assertEqual(len(transport.calls), 1)
+        sent_payload = transport.calls[0]["payload"]
+        self.assertEqual(sent_payload["model"], "jev-latest")
+        self.assertIn("criteria", sent_payload["questions"]["q_noul"])
+        self.assertEqual(sent_payload["questions"]["q_choice"]["type"], "choice")
+        self.assertEqual(sent_payload["questions"]["q_custom"]["type"], "custom_primitive")
+        # Check reasons parsed
+        self.assertTrue(any("q_noul (noul): 0.88" in r for r in res.reasons))
+        self.assertTrue(any("q_choice (choice): fast (conf: 0.95)" in r for r in res.reasons))
+        self.assertTrue(any("q_score (score): 3.0 (conf: 0.85)" in r for r in res.reasons))
+        # syntax_clean is False, so verdict should be fail
+        self.assertEqual(res.verdict, "fail")
+
+    def test_parse_jev_response_variations(self):
+        evaluator = JevEvaluator()
+
+        # supported = False, confidence empty dict, syntax_clean True
+        resp1 = {
+            "answers": {
+                "supported": False,
+                "confidence": {},
+                "syntax_clean": True,
+            }
+        }
+        res1 = evaluator._parse_jev_response(resp1)
+        self.assertEqual(res1.supported, 0.0)
+        self.assertEqual(res1.confidence, 0.85)
+
+        # supported float, confidence float
+        resp2 = {
+            "answers": {
+                "supported": 0.85,
+                "confidence": 0.92,
+            }
+        }
+        res2 = evaluator._parse_jev_response(resp2)
+        self.assertEqual(res2.supported, 0.85)
+        self.assertEqual(res2.confidence, 0.92)
+
+        # confidence is None
+        resp3 = {
+            "answers": {
+                "supported": 1.0,
+                "confidence": None,
+            }
+        }
+        res3 = evaluator._parse_jev_response(resp3)
+        self.assertEqual(res3.confidence, 0.85)
+
+    def test_evaluate_plan_requirements_primitive_answers(self):
+        # int / float answer for requires_iteration
+        t1 = FakeTransport(status=200, resp={"answers": {"requires_iteration": 1.0, "confidence": 0.9}})
+        e1 = JevEvaluator(api_key="key", transport=t1)
+        res1 = e1.evaluate_plan_requirements("prompt")
+        self.assertTrue(res1.answers["requires_iteration"])
+
+        # boolean answer
+        t2 = FakeTransport(status=200, resp={"answers": {"requires_iteration": False, "confidence": 0.9}})
+        e2 = JevEvaluator(api_key="key", transport=t2)
+        res2 = e2.evaluate_plan_requirements("prompt")
+        self.assertFalse(res2.answers["requires_iteration"])
+
+        # string state fallback
+        local_eval = JevEvaluator()
+        res_str = local_eval.evaluate("some raw text string")
+        self.assertIn(res_str.verdict, ("pass", "fail"))
 
 
 if __name__ == "__main__":
