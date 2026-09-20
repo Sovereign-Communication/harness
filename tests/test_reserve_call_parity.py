@@ -243,7 +243,7 @@ class ApplyReserveParityTests(ApplyFixture):
         apply_rows = [c for c in spy.rows if "apply attempt" in c[0]]
         self.assertTrue(apply_rows)
         payload_tokens = [pl["max_tokens"] for pl in fake.payloads()
-                          if pl.get("model") == APPLY]
+                          if pl.get("model", "").replace(":floor", "") == APPLY]
         self.assertTrue(payload_tokens)
         for row in apply_rows:
             self.assertIn(row[2], payload_tokens,

@@ -230,7 +230,7 @@ def resolve_tier_recommended_model(tier: int, use_free: bool = True, custom_fron
         return resolve_frontier_model(custom_frontier, use_free=False)
 
 
-def tier_model_ladder(tier: int, use_free: bool = True, custom_frontier: Optional[str] = None) -> List[str]:
+def tier_model_ladder(tier: int, use_free: bool = True, custom_frontier: Optional[str] = None, allow_escalation: bool = False) -> List[str]:
     """Return an ordered candidate ladder for the given tier, cheapest first."""
     out: List[str] = []
     if use_free:
@@ -238,14 +238,29 @@ def tier_model_ladder(tier: int, use_free: bool = True, custom_frontier: Optiona
             for m in [FREE_PANEL_POOL[1], FREE_PANEL_POOL[2], FREE_PANEL_POOL[0], "openrouter/free"]:
                 if m not in out:
                     out.append(m)
+            if allow_escalation:
+                for m in [DEFAULT_PANEL_PAID[0], DEFAULT_PANEL_PAID[1]]:
+                    if m not in out:
+                        out.append(m)
         elif tier == TIER_1_DISTILLER:
             for m in FREE_APPLY_POOL:
                 if m not in out:
                     out.append(m)
+            if allow_escalation:
+                for m in DEFAULT_APPLY_POOL_PAID:
+                    if m not in out:
+                        out.append(m)
         else:  # TIER_2_FRONTIER
             for m in [FREE_JUDGE] + ESCALATION_POOL_FREE:
                 if m not in out:
                     out.append(m)
+            if allow_escalation:
+                frontier = resolve_frontier_model(custom_frontier, use_free=False)
+                if frontier not in out:
+                    out.append(frontier)
+                for m in ESCALATION_POOL_PAID:
+                    if m not in out:
+                        out.append(m)
     else:
         if tier == TIER_0_SCOUT:
             candidates = [DEFAULT_PANEL_PAID[0], DEFAULT_PANEL_PAID[1], DEFAULT_PANEL_PAID[2]]
@@ -306,6 +321,7 @@ def resolve_sliding_scale_route(
     previous_failures: int = 0,
     use_free: bool = True,
     custom_frontier: Optional[str] = None,
+    allow_escalation: bool = False,
 ) -> SlidingScaleRoute:
     """Classify and resolve full routing ladder and budget ceiling in one call."""
     classification = classify_task_tier(
@@ -322,6 +338,7 @@ def resolve_sliding_scale_route(
         tier=classification.tier,
         use_free=use_free,
         custom_frontier=custom_frontier,
+        allow_escalation=allow_escalation,
     )
     ceiling = tier_cost_ceiling(
         tier=classification.tier,
@@ -332,3 +349,29 @@ def resolve_sliding_scale_route(
         ladder=tuple(ladder),
         cost_ceiling=ceiling,
     )
+
+
+def should_abstain(confidence: float, min_confidence: float = 0.70) -> bool:
+    """Calibrated abstention check: if confidence is below threshold,
+    abstain from execution and escalate directly to higher tier."""
+    return confidence < min_confidence
+
+
+def decide_probe_verify_escalate(
+    instruction: str,
+    confidence: Optional[float] = None,
+    structural_valid: bool = True,
+    current_tier: int = TIER_1_DISTILLER,
+    min_confidence: float = 0.70,
+) -> int:
+    """The Decide -> Probe -> Verify -> Escalate decision pipeline.
+
+    Given a task's structural validation status and calibrated confidence score,
+    determines whether to accept the result at the current tier or escalate to
+    the next capability tier.
+    """
+    if not structural_valid:
+        return min(TIER_2_FRONTIER, current_tier + 1)
+    if confidence is not None and should_abstain(confidence, min_confidence):
+        return min(TIER_2_FRONTIER, current_tier + 1)
+    return current_tier

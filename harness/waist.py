@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from .capability import load_profiles, source_budget_for
 from .chat import governed_text
 from .condenser import distill_context
-from .config import CAPABILITIES_PATH, DEFAULT_APPLY_MAX_TOKENS
+from .config import CAPABILITIES_PATH, DEFAULT_APPLY_MAX_TOKENS, ESCALATION_POOL_PAID, FREE_JUDGE
 from .dag import DAGNode, TaskDAG
 from .errors import HarnessError
 from .output import eprint
@@ -465,10 +465,19 @@ def heuristic_decompose_goal(goal: str, candidate_files: Optional[Sequence[str]]
             )
     else:
         # Single node goal
+        target = tuple(files)
+        if not target:
+            # If no files were provided, check if the goal mentions a specific file
+            found = re.findall(r"\b[\w-]+\.(?:py|rs|go|ts|js|md|json|toml|yaml|yml|c|cpp|h)\b", goal)
+            if found:
+                target = (found[0],)
+            else:
+                # Default deliverable target for analytical / open-ended tasks
+                target = ("docs/reports/analysis.md",)
         nodes["task_1"] = DAGNode(
             node_id="task_1",
             instruction=goal.strip(),
-            target_files=tuple(files),
+            target_files=target,
             dependencies=(),
             complexity_tier=1,
         )
@@ -515,6 +524,7 @@ def plan_task(
     decomposed_dag: Optional[TaskDAG] = None,
     root: Optional[str] = None,
     run_gate: Optional[str] = None,
+    allow_escalation: bool = False,
 ) -> Dict[str, Any]:
     # Formulate a TaskDAG and classify sliding-scale tiers for each node.
     # decomposed_dag: a pre-built DAG (LLM-authored via decompose_via_llm or
@@ -550,6 +560,7 @@ def plan_task(
             is_leaf=is_leaf,
             use_free=use_free,
             custom_frontier=custom_frontier,
+            allow_escalation=allow_escalation,
         )
         total_ceiling += route.cost_ceiling
         classified_nodes[node_id] = DAGNode(
@@ -966,7 +977,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                  candidate_files=None, frontier_model=None, use_free=True,
                  decompose_llm=False, confirm=False, decompose_model=None,
                  chat_fn=None, max_cost=None, keep_going=False, out=None,
-                 execute=False, root=None, max_tokens=None) -> Dict[str, Any]:
+                 execute=False, root=None, max_tokens=None,
+                 allow_escalation: bool = False) -> Dict[str, Any]:
     """ONE owner of the plan-lane flow (CLI and MCP call this).
 
     Order: optional cheap-LLM decomposition (M1) -> tier classification ->
@@ -1019,14 +1031,16 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     plan_result = plan_task(
         goal=opts_goal, candidate_files=candidate_files,
         custom_frontier=frontier_model, use_free=use_free,
-        decomposed_dag=decomposed, root=root, run_gate=run_gate)
+        decomposed_dag=decomposed, root=root, run_gate=run_gate,
+        allow_escalation=allow_escalation)
     plan_result["decomposition"] = decomposition
     # Chunk anything that cannot fit ONE model pass before the gate sees it,
     # so the waist confirms the plan that will actually run.
     plan_result = _fit_plan_to_single_pass(
         plan_result, goal=opts_goal, candidate_files=candidate_files,
         custom_frontier=frontier_model, use_free=use_free, root=root,
-        run_gate=run_gate, max_tokens=max_tokens)
+        run_gate=run_gate, max_tokens=max_tokens,
+        allow_escalation=allow_escalation)
 
     if confirm:
         # An unnamed frontier rung resolves through the same sliding-scale
@@ -1059,13 +1073,15 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             plan_result = _fit_plan_to_single_pass(
                 plan_result, goal=opts_goal, candidate_files=candidate_files,
                 custom_frontier=frontier_model, use_free=use_free, root=root,
-                run_gate=run_gate, max_tokens=max_tokens)
+                run_gate=run_gate, max_tokens=max_tokens,
+                allow_escalation=allow_escalation)
     return plan_result
 
 
 def _fit_plan_to_single_pass(plan_result: Dict[str, Any], *, goal,
                              candidate_files, custom_frontier, use_free,
-                             root, run_gate, max_tokens) -> Dict[str, Any]:
+                             root, run_gate, max_tokens,
+                             allow_escalation: bool = False) -> Dict[str, Any]:
     """Apply the chunk policy to a plan result, re-planning when it split.
 
     The chunk policy itself lives in :func:`chunk_oversized_nodes` (ONE
@@ -1082,7 +1098,8 @@ def _fit_plan_to_single_pass(plan_result: Dict[str, Any], *, goal,
         return plan_result
     rebuilt = plan_task(goal=goal, candidate_files=candidate_files,
                         custom_frontier=custom_frontier, use_free=use_free,
-                        decomposed_dag=fitted, root=root, run_gate=run_gate)
+                        decomposed_dag=fitted, root=root, run_gate=run_gate,
+                        allow_escalation=allow_escalation)
     rebuilt["decomposition"] = plan_result.get("decomposition", "heuristic")
     if len(fitted.nodes) != len(dag.nodes):
         # Visible evidence that the planner chunked: a reader can see how
@@ -1104,3 +1121,23 @@ def resolve_scout_ladder(use_free=True, custom_frontier=None):
         target_files=(), dependency_depth=0, is_leaf=True,
         use_free=use_free, custom_frontier=custom_frontier)
     return list(route.ladder)
+
+
+def resolve_planner_ladder(use_free=True, custom_frontier=None, allow_paid=False):
+    """The model ladder for task decomposition and complex planning.
+
+    Unlike scout (which uses Tier-0 models for fast/cheap AST parsing),
+    planning requires deep reasoning to structure multi-step DAGs.
+    When allow_paid is True (or use_free is False), planning escalates
+    to the frontier ladder (qwen3.8-max, deepseek-v4-pro, glm-5.3-flash).
+    When free-only, it uses the strongest free JSON emitter.
+    """
+    if allow_paid or not use_free:
+        frontier = resolve_frontier_model(custom_frontier, use_free=False)
+        out = [frontier]
+        for m in ESCALATION_POOL_PAID:
+            if m not in out:
+                out.append(m)
+        return out
+    return [FREE_JUDGE, "google/gemma-4-26b-a4b-it:free"]
+

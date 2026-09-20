@@ -296,9 +296,65 @@ header {
   color: var(--dim);
 }
 
+.route-badge.disarmed,
+.paid-badge.paid-off {
+  border-color: var(--line);
+  color: var(--dim);
+}
+
+
 .mode-badge.review-mode {
   border-color: var(--yellow);
   color: var(--yellow);
+}
+
+/* Consent Banner */
+.consent-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  background: rgba(210, 153, 34, 0.15);
+  border-bottom: 1px solid var(--yellow);
+  color: var(--fg);
+  font-size: 13px;
+  animation: fadeIn 0.2s ease;
+}
+
+.consent-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-consent {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-consent.approve {
+  background: var(--yellow);
+  border: 1px solid var(--yellow);
+  color: #12141a;
+}
+
+.btn-consent.approve:hover {
+  filter: brightness(1.1);
+}
+
+.btn-consent.deny {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--dim);
+}
+
+.btn-consent.deny:hover {
+  color: var(--fg);
+  border-color: var(--fg);
 }
 
 .btn-ghost {

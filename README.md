@@ -126,6 +126,12 @@ with `HARNESS_*` env overrides:
 | `hourglass_parallel` | `true` | `plan --execute` runs independent stages concurrently (`--no-parallel` opts out) |
 | `hourglass_isolate` | `true` | parallel-stage nodes run in isolated git worktrees (`--no-isolate` opts out) |
 | `hourglass_require_attestation` | `true` | every node write is attested against its exact diff by an independent verifier (`--no-attestation` opts out) |
+| `openrouter_floor_default` | `true` | append :floor selector to paid model calls to lock onto lowest price provider |
+| `max_price_prompt` | `null` | OpenRouter provider.max_price cap for prompt tokens ($/M tokens) |
+| `max_price_completion` | `null` | OpenRouter provider.max_price cap for completion tokens ($/M tokens) |
+| `jev_api_key` | `null` | TypeSafe AI Jev structural evaluation API key (HARNESS_JEV_KEY) |
+| `jev_endpoint` | `https://api.typesafe.ai/v1/eval` | Jev structural verification endpoint |
+| `min_confidence` | `0.70` | calibrated abstention confidence threshold (HARNESS_MIN_CONFIDENCE) |
 
 `harness models` lists the current live free models (refreshed from
 OpenRouter). Hardcoded slugs go stale — the curated pools are validated live
@@ -227,11 +233,13 @@ harness plan --goal "..." --decompose-llm --confirm --frontier-model fable-5.1 -
 # node's worst-case cost is reserved before dispatch. --stage-gate runs the
 # composed tree's gate after each stage; failure stops before dependents.
 
-# Autonomy ledger, live free models, key status, trust standing
+# Autonomy ledger, live free models, key status, trust standing, cost analytics
 harness ledger report          # includes chain status (segments, pruned cut)
 harness ledger verify          # chain integrity + retention shape
 harness models
 harness spend
+harness cost                   # track spend by tier, model, and savings vs frontier
+harness cost --last 24h --by-tier --savings
 harness trust --model <id>     # bipolar trust + correctness (read-only)
 harness trust --caller <id>    # one peer's standing
 
