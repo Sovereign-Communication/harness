@@ -27,6 +27,7 @@ from .errors import HarnessError, ToolCancelled
 from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
 from .mcp_lanes import LANES, lane_for
 from .mcp_schemas import TOOL_SCHEMAS
+from .jev_policy import aggregate_structural, policy_for
 from .service import run_verify as _service_run_verify
 from .validation import (
     MAX_LINES,
@@ -703,17 +704,28 @@ class McpServer:
                     "re-send with allow_write=true or configure allow_write=True explicitly",
                     model=frontier_model)
 
+            jev_policy = getattr(self.engine, "jev_policy", None)
+            if jev_policy is None:
+                settings = getattr(self.engine, "settings", None)
+                if settings is not None:
+                    jev_policy = policy_for(
+                        settings, transport=self.transport,
+                        governor=self.governor, ledger=self.ledger)
             plan_result = compose_plan(
                 transport=self.transport, api_key=self.api_key,
                 governor=self.governor, ledger=self.ledger, opts_goal=goal,
                 candidate_files=candidate_files, frontier_model=frontier_model,
                 use_free=self.use_free, decompose_llm=decompose_llm,
                 confirm=confirm, execute=execute,
-                allow_escalation=allow_escalation)
+                allow_escalation=allow_escalation,
+                jev_policy=jev_policy)
             if plan_result.get("status") == "refused":
                 # Waist refusal is terminal evidence: the plan never executes.
                 return plan_result
             if not execute:
+                if isinstance(plan_result.get("structural"), dict):
+                    plan_result["structural"] = dict(plan_result["structural"])
+                    plan_result["structural"]["site"] = "mcp"
                 return plan_result
 
             dag = TaskDAG.from_dict(plan_result["dag"])
@@ -738,7 +750,7 @@ class McpServer:
                 run_ceiling=self.governor.max_cost)
             all_results = plan_exec.execute(dag)
             summary = PlanExecutor.summarize(all_results)
-            return {
+            output = {
                 "status": "ok" if summary["all_ok"] else "failed",
                 "goal": goal,
                 "total_nodes": len(dag.nodes),
@@ -747,6 +759,14 @@ class McpServer:
                 "cost": summary["total_cost"],
                 "dag": plan_result["dag"],
             }
+            structural = aggregate_structural(
+                list(all_results.values()), site="mcp")
+            if structural is None and isinstance(plan_result.get("structural"), dict):
+                structural = dict(plan_result["structural"])
+                structural["site"] = "mcp"
+            if structural is not None:
+                output["structural"] = structural
+            return output
         raise ValueError(f"unknown tool: {name}")
 
     # ---------------- notifications/progress streaming ----------------

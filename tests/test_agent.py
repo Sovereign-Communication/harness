@@ -42,6 +42,8 @@ def _lane_settings(**overrides):
     lane is covered by TestHourglassLane, which scripts the waist verdict.
     """
     settings = load_settings()
+    # Hermetic agent tests must never inherit the operator's live Jev key.
+    settings.jev_api_key = None
     settings.hourglass_confirm = False
     settings.hourglass_isolate = False
     settings.hourglass_parallel = False
@@ -61,6 +63,8 @@ def _lane_settings(**overrides):
     lane is covered by TestHourglassLane, which scripts the waist verdict.
     """
     settings = load_settings()
+    # Hermetic agent tests must never inherit the operator's live Jev key.
+    settings.jev_api_key = None
     settings.hourglass_confirm = False
     settings.hourglass_isolate = False
     settings.hourglass_parallel = False
@@ -1523,6 +1527,8 @@ class TestHourglassLane(unittest.TestCase):
     @staticmethod
     def _armed(**overrides):
         settings = load_settings()
+        # The armed lane scripts the waist/model seams; keep this test network-free.
+        settings.jev_api_key = None
         settings.hourglass_confirm = True
         settings.hourglass_isolate = True
         settings.hourglass_parallel = True

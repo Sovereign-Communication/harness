@@ -34,6 +34,7 @@ from .repo_scope import discover_verification_gate, gate_for_targets
 from .sliding_scale import resolve_frontier_model, resolve_sliding_scale_route
 from .tokens import estimate_prompt_tokens
 from .validation import MAX_INSTRUCTION_CHARS
+from .jev_policy import JevPolicy
 
 MAX_WAIST_ROUNDS = 2
 MAX_WINDOWS_PER_ROUND = 8
@@ -984,7 +985,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                  decompose_llm=False, confirm=False, decompose_model=None,
                  chat_fn=None, max_cost=None, keep_going=False, out=None,
                  execute=False, root=None, max_tokens=None,
-                 allow_escalation: bool = False) -> Dict[str, Any]:
+                 allow_escalation: bool = False,
+                 jev_policy=None) -> Dict[str, Any]:
     """ONE owner of the plan-lane flow (CLI and MCP call this).
 
     Order: optional cheap-LLM decomposition (M1) -> tier classification ->
@@ -1004,6 +1006,17 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     """
     if (decompose_llm or confirm) and governor is None:
         raise HarnessError("LLM plan features require a governor")
+
+    plan_goal = opts_goal
+    plan_structural = None
+    if isinstance(jev_policy, JevPolicy):
+        plan_eval, plan_structural = jev_policy.evaluate_plan(
+            opts_goal, candidate_files, site="waist")
+        if plan_eval.answers.get("requires_iteration"):
+            plan_goal = (
+                f"{opts_goal}\n\n[STRUCTURAL GUIDELINE]: This goal requires iterative "
+                "control flow, conditional branching, or multi-step execution. "
+                "Represent those dependencies explicitly in the executable DAG.")
 
     # The run-level gate: the goal's own candidate files. It is the
     # last-resort arm of the ONE gate rule (repo_scope.gate_for_targets),
@@ -1025,7 +1038,7 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         try:
             # chat_fn's contract is (text, cost) -- decomposition consumes
             # the text only; the cost stays on the governor/caller side.
-            decomposed = decompose_via_llm(lambda p: chat_fn(p)[0], opts_goal,
+            decomposed = decompose_via_llm(lambda p: chat_fn(p)[0], plan_goal,
                                            candidate_files=candidate_files)
             decomposition = (f"llm:{decompose_model}"
                              if decompose_model else "llm:injected")
@@ -1035,11 +1048,13 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             eprint(f"[plan] LLM decomposition failed ({exc}); heuristic fallback")
 
     plan_result = plan_task(
-        goal=opts_goal, candidate_files=candidate_files,
+        goal=plan_goal, candidate_files=candidate_files,
         custom_frontier=frontier_model, use_free=use_free,
         decomposed_dag=decomposed, root=root, run_gate=run_gate,
         allow_escalation=allow_escalation)
     plan_result["decomposition"] = decomposition
+    if plan_structural is not None:
+        plan_result["structural"] = plan_structural
     # Chunk anything that cannot fit ONE model pass before the gate sees it,
     # so the waist confirms the plan that will actually run.
     plan_result = _fit_plan_to_single_pass(
@@ -1047,6 +1062,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         custom_frontier=frontier_model, use_free=use_free, root=root,
         run_gate=run_gate, max_tokens=max_tokens,
         allow_escalation=allow_escalation)
+    if plan_structural is not None:
+        plan_result["structural"] = plan_structural
 
     if confirm:
         ladder = resolve_waist_ladder(
@@ -1072,6 +1089,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
 
         if plan_result_confirmed is not None:
             plan_result = plan_result_confirmed
+            if plan_structural is not None:
+                plan_result["structural"] = plan_structural
             # When in autonomous execution mode and the waist refused,
             # do not immediately halt. Attempt critique-driven re-planning if decomposition
             # was LLM-based, feeding the frontier's architectural critique back to the planner.
@@ -1091,7 +1110,7 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                     re_decomposed = decompose_via_llm(lambda p: chat_fn(p)[0], critique_prompt,
                                                       candidate_files=candidate_files)
                     re_plan = plan_task(
-                        goal=opts_goal, candidate_files=candidate_files,
+                        goal=plan_goal, candidate_files=candidate_files,
                         custom_frontier=frontier_model, use_free=use_free,
                         decomposed_dag=re_decomposed, root=root, run_gate=run_gate,
                         allow_escalation=allow_escalation)

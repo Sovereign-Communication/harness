@@ -58,6 +58,7 @@ class RunState:
     # Auto-escalation / de-escalation state
     escalation_condensed_context: str = ""
     de_escalation_target_rung: int = 0
+    structural: object = None
 
 
 @dataclass

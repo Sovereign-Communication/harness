@@ -20,7 +20,8 @@ from .results import _content_diff, _round_entry, _terminal_result
 class GatePolicy:
     """Own the candidate-to-gate transaction without owning run state."""
 
-    def __init__(self, ledger, governor, transport=None, api_key=None):
+    def __init__(self, ledger, governor, transport=None, api_key=None,
+                 jev_policy=None):
         self.ledger = ledger
         self.governor = governor
         # The LLM diff verifier (M4 phase 2) calls the provider directly,
@@ -28,6 +29,7 @@ class GatePolicy:
         # require_diff_authorization flag is set.
         self.transport = transport
         self.api_key = api_key
+        self.jev_policy = jev_policy
 
     def runner(self, req):
         return bound_gate(req.continuation_gate, req.verify_cmd,
@@ -69,8 +71,23 @@ class GatePolicy:
 
     def apply_candidate(self, req, state, outcome, new_content):
 
-        """Write a candidate or preview it, then run its gate when required."""
+        """Evaluate a candidate before writing, then run its gate."""
         changed = new_content != state.current_content
+        if changed and self.jev_policy is not None:
+            jev_result, structural = self.jev_policy.evaluate_candidate(
+                state.current_content, new_content, req.instruction,
+                req.file_path, task_id=req.task_id)
+            state.structural = structural
+            if not jev_result.is_passing(getattr(self.jev_policy.settings,
+                                                 "min_confidence", 0.70)):
+                self.ledger.append("jev_refusal", task_id=req.task_id,
+                                   site="apply", reason="structural Jev refusal")
+                return _terminal_result(
+                    "jev_failed", task_id=req.task_id, rounds=state.rounds,
+                    cost=self.governor.spent, rotations=state.rotations,
+                    backend=req.backend, structural=structural,
+                    file=req.file_path,
+                    diff=_content_diff(state.current_content, new_content))
         if req.verify_only:
             return self.preview(req, state, outcome, new_content, changed)
         if changed:
