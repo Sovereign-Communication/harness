@@ -739,6 +739,12 @@ def build_waist_prompt(
         "Rules: the DAG must stay acyclic; node instructions must be precise and",
         "scoped (they are executed verbatim by cheaper models); do not request",
         "more windows than you need -- round-trips are budgeted.",
+        "AMENDMENT vs REFUSAL POLICY:",
+        "- DO NOT REFUSE simply because the planned DAG is incomplete, lacks iteration loops,",
+        "  has missing steps, or needs different granularity/ordering. If the planned DAG is",
+        "  suboptimal, REPAIR IT: return 'amend' with the complete, corrected replacement DAG nodes.",
+        "- 'refuse' is STRICTLY reserved for requests that are genuinely impossible, out of scope,",
+        "  destructive, or malicious. Refusing an executable coding task is a failure.",
     ])
     return "\n".join(lines)
 
@@ -1066,6 +1072,50 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
 
         if plan_result_confirmed is not None:
             plan_result = plan_result_confirmed
+            # When in autonomous execution mode and the waist refused,
+            # do not immediately halt. Attempt critique-driven re-planning if decomposition
+            # was LLM-based, feeding the frontier's architectural critique back to the planner.
+            if plan_result.get("status") == "refused" and execute and decompose_llm:
+                refusal_reason = plan_result.get("confirmation", {}).get("reason", "")
+                from . import events as _events
+                _events.emit("orchestration_note",
+                             note=f"Waist refused plan ('{refusal_reason}'); re-planning with critique")
+                critique_prompt = (
+                    f"{opts_goal}\n\n"
+                    f"[ARCHITECTURAL REVIEW CRITIQUE]: The previous plan was rejected: "
+                    f"'{refusal_reason}'. "
+                    f"Address this critique directly: ensure all iteration loops, conditional branching, "
+                    f"dependencies, and granular steps are properly structured into the DAG."
+                )
+                try:
+                    re_decomposed = decompose_via_llm(lambda p: chat_fn(p)[0], critique_prompt,
+                                                      candidate_files=candidate_files)
+                    re_plan = plan_task(
+                        goal=opts_goal, candidate_files=candidate_files,
+                        custom_frontier=frontier_model, use_free=use_free,
+                        decomposed_dag=re_decomposed, root=root, run_gate=run_gate,
+                        allow_escalation=allow_escalation)
+                    re_plan["decomposition"] = decomposition + ":critique_replan"
+                    re_plan = _fit_plan_to_single_pass(
+                        re_plan, goal=opts_goal, candidate_files=candidate_files,
+                        custom_frontier=frontier_model, use_free=use_free, root=root,
+                        run_gate=run_gate, max_tokens=max_tokens,
+                        allow_escalation=allow_escalation)
+                    for candidate_model in ladder:
+                        try:
+                            re_res = confirm_plan(
+                                transport=transport, api_key=api_key, governor=governor,
+                                ledger=ledger, plan_result=re_plan, model=candidate_model,
+                                use_free=use_free, custom_frontier=frontier_model,
+                                root=root, run_gate=run_gate, chat_fn=None)
+                            if re_res.get("status") != "refused":
+                                plan_result = re_res
+                                break
+                        except HarnessError:
+                            continue
+                except HarnessError as exc:
+                    eprint(f"[plan] Critique re-planning failed ({exc}); retaining initial result")
+
             if plan_result.get("status") != "refused":
                 # An amend/split verdict replaces the node set: re-fit it, or the
                 # gate's own repair could hand execution an oversized node.

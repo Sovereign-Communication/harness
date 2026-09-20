@@ -135,6 +135,50 @@ class JevEvaluatorTests(unittest.TestCase):
         self.assertEqual(evaluator.endpoint, "https://custom.eval/v1")
         self.assertEqual(evaluator.transport, transport)
 
+    def test_resolve_jev_key_from_env_file(self):
+        import os
+        import tempfile
+        from unittest import mock
+        from harness.config import resolve_jev_key
+
+        with tempfile.TemporaryDirectory() as td:
+            env_file = os.path.join(td, "jev.env")
+            with open(env_file, "w", encoding="utf-8") as f:
+                f.write("# comment\nHARNESS_JEV_KEY=test-jev-key-123\n")
+
+            with mock.patch("harness.config.CONFIG_DIR", td), \
+                 mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(resolve_jev_key(), "test-jev-key-123")
+
+    def test_evaluate_plan_requirements(self):
+        evaluator = JevEvaluator()
+        # Iterative prompt triggers requires_iteration
+        res_iter = evaluator.evaluate_plan_requirements("Implement an iterative convergence loop over nodes")
+        self.assertTrue(res_iter.answers.get("requires_iteration"))
+
+        # Simple prompt does not trigger
+        res_simple = evaluator.evaluate_plan_requirements("Fix typo in readme")
+        self.assertFalse(res_simple.answers.get("requires_iteration"))
+
+        # Keyed dispatch
+        mock_resp = {
+            "answers": {
+                "requires_iteration": True,
+                "confidence": {"score": 0.95},
+            },
+            "usage": {"cost": 0.00004},
+        }
+        transport = FakeTransport(status=200, resp=mock_resp)
+        keyed_eval = JevEvaluator(api_key="jev-key", transport=transport)
+        res_keyed = keyed_eval.evaluate_plan_requirements("do something")
+        self.assertTrue(res_keyed.answers.get("requires_iteration"))
+
+        # Error fallback
+        bad_transport = FakeTransport(status=500, resp={})
+        err_eval = JevEvaluator(api_key="jev-key", transport=bad_transport)
+        res_err = err_eval.evaluate_plan_requirements("Fix typo")
+        self.assertFalse(res_err.answers.get("requires_iteration"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -636,6 +636,83 @@ class ComposePlanTests(_WaistFixture):
         self.assertEqual(plan["status"], "refused")
         self.assertEqual(plan["confirmation"]["verdict"], "refused")
 
+    def test_compose_plan_refusal_critique_replan_succeeds(self):
+        call_count = {"decompose": 0, "waist": 0}
+
+        def mock_chat(prompt_text):
+            call_count["decompose"] += 1
+            if call_count["decompose"] == 1:
+                # First decomposition: missing the loop
+                return json.dumps({
+                    "nodes": [{"node_id": "n1", "instruction": "Do step 1",
+                               "target_files": ["harness/sync.py"], "dependencies": []}]
+                }), 0.0
+            else:
+                # Re-planned decomposition incorporating critique
+                return json.dumps({
+                    "nodes": [
+                        {"node_id": "n1", "instruction": "Iterate step 1",
+                         "target_files": ["harness/sync.py"], "dependencies": []},
+                        {"node_id": "n2", "instruction": "Check convergence condition",
+                         "target_files": ["harness/sync.py"], "dependencies": ["n1"]}
+                    ]
+                }), 0.0
+
+        def mock_gov(transport, api_key, governor, model, prompt, tokens, label=None):
+            call_count["waist"] += 1
+            if call_count["waist"] == 1:
+                # First waist check: refuse due to missing iteration loop
+                return json.dumps({
+                    "verdict": "refuse",
+                    "reason": "DAG lacks iteration loop",
+                    "evidence": "only 1 node without convergence"
+                }), 0.0
+            else:
+                # Second waist check on re-planned DAG: approve
+                return json.dumps({"verdict": "approve"}), 0.0
+
+        with patch("harness.waist.governed_text", side_effect=mock_gov):
+            plan = compose_plan(
+                transport=None, api_key="k", governor=self.gov, ledger=None,
+                opts_goal="Run convergence loop", candidate_files=["harness/sync.py"],
+                decompose_llm=True, confirm=True, execute=True,
+                chat_fn=mock_chat)
+
+        self.assertEqual(plan["confirmation"]["verdict"], "approved")
+        self.assertEqual(len(plan["nodes"]), 2)
+        self.assertIn(":critique_replan", plan["decomposition"])
+        self.assertGreaterEqual(call_count["decompose"], 2)
+
+    def test_compose_plan_refusal_critique_replan_error_falls_back(self):
+        call_count = {"decompose": 0}
+
+        def mock_chat(prompt_text):
+            call_count["decompose"] += 1
+            if call_count["decompose"] == 1:
+                return json.dumps({
+                    "nodes": [{"node_id": "n1", "instruction": "Do step 1",
+                               "target_files": ["harness/sync.py"], "dependencies": []}]
+                }), 0.0
+            else:
+                raise HarnessError("decomposition service unavailable")
+
+        def mock_gov(transport, api_key, governor, model, prompt, tokens, label=None):
+            return json.dumps({
+                "verdict": "refuse",
+                "reason": "missing loop",
+                "evidence": "no loop in DAG"
+            }), 0.0
+
+        with patch("harness.waist.governed_text", side_effect=mock_gov):
+            plan = compose_plan(
+                transport=None, api_key="k", governor=self.gov, ledger=None,
+                opts_goal="Run loop", candidate_files=["harness/sync.py"],
+                decompose_llm=True, confirm=True, execute=True,
+                chat_fn=mock_chat)
+
+        self.assertEqual(plan["status"], "refused")
+        self.assertEqual(plan["confirmation"]["verdict"], "refused")
+
 
 if __name__ == "__main__":
     unittest.main()

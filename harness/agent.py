@@ -603,10 +603,25 @@ class AutonomousAgent:
         brief = distill_context(files=file_contents, summary=prompt)
         emit("context_condensed", estimated_tokens=brief.estimated_tokens)
 
+        # Jev structural pre-planning evaluation
+        jev = jev_for(self.settings, transport=self.transport)
+        plan_prompt = prompt
+        if jev:
+            plan_eval = jev.evaluate_plan_requirements(prompt, target_files)
+            if plan_eval.answers.get("requires_iteration"):
+                emit("orchestration_note",
+                     note="Jev structural analysis detected algorithmic iteration; injecting DAG loop directive")
+                plan_prompt = (
+                    f"{prompt}\n\n"
+                    f"[STRUCTURAL GUIDELINE]: This goal requires iterative control flow, conditional "
+                    f"branching, or multi-step execution. Ensure the decomposed DAG explicitly breaks "
+                    f"down the iterative loop and discrete steps into executable nodes."
+                )
+
         # Formulate the FIRST-round DAG plan (LLM decomposition when the
         # orchestration ladder answers; heuristic fallback) and gate.
         _, gov = governor_for(self.settings)
-        plan = self._plan_round(prompt, target_files, gov,
+        plan = self._plan_round(plan_prompt, target_files, gov,
                                 confirm=hourglass["confirm"])
         if plan.get("status") == "refused":
             return self._refused_edit(plan, prompt, target_files, session_id)
