@@ -13,6 +13,7 @@ and primitives; nothing here imports interfaces.
 """
 from ._http import HttpTransport
 from .apply import ApplyEngine
+from .jev import JevEvaluator
 from .ledger import AutonomyLedger
 from .router import Router
 from .saturation import pre_run_warning
@@ -53,6 +54,16 @@ def ledger_for(settings, caller="cli"):
     untagged as before).
     """
     return AutonomyLedger(settings.ledger_path, caller=caller)
+
+
+def jev_for(settings, transport=None):
+    """The run's Jev structural evaluator (with fallback if unkeyed)."""
+    return JevEvaluator(
+        api_key=settings.jev_api_key,
+        endpoint=settings.jev_endpoint,
+        transport=transport or HttpTransport(),
+        settings=settings,
+    )
 
 
 def attest_model_for(settings):

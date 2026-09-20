@@ -1744,6 +1744,27 @@ class TestHourglassLane(unittest.TestCase):
         self.assertFalse(
             engine.apply_edit.call_args[1]["require_diff_authorization"])
 
+    def test_apply_node_jev_structural_evaluation_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "foo.py").write_text("def f():\n    pass\n", encoding="utf-8")
+            agent = AutonomousAgent(settings=_lane_settings(), root_dir=root, history_dir=root)
+            engine = MagicMock()
+            broken_diff = "just conversation without any unified diff headers"
+            fixed_diff = "--- a/foo.py\n+++ b/foo.py\n@@ -1,2 +1,2 @@\n-def f():\n+def f():\n     return 42\n"
+            engine.apply_edit.side_effect = [
+                {"status": "ok", "diff": broken_diff, "cost": 0.001},
+                {"status": "ok", "diff": fixed_diff, "cost": 0.001},
+            ]
+            with patch("harness.agent.apply_session", return_value=engine), \
+                 self._decompose_seam():
+                res = agent._handle_edit("Update foo.py", "hg_jev", True)
+            self.assertEqual(res["status"], "ok")
+            self.assertEqual(engine.apply_edit.call_count, 2)
+            self.assertIn("STRUCTURAL EVALUATION FAILED", engine.apply_edit.call_args[1]["instruction"])
+
+
+
 
 if __name__ == "__main__":
     unittest.main()

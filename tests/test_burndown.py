@@ -158,7 +158,7 @@ class JudgeRotationTests(unittest.TestCase):
             panel=[P1, P2], judge=P2, max_panelists=2)
         self.assertEqual(len(fake.chat_posts()), 4)
         # The judge seat ended on P2 without any third judge attempt.
-        models = [p["model"] for p in fake.payloads()]
+        models = [p["model"].replace(":floor", "") for p in fake.payloads()]
         self.assertEqual(models[-2:], [P2, P2])
 
     def test_failed_panelist_is_eligible_fallback_candidate(self):

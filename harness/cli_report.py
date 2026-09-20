@@ -79,3 +79,33 @@ def _print_capabilities_table(out):
                f"{jd:>4.2f} {jr:>4.2f} "
                f"{r['capability']:>5.2f} {r['fitness_structured']:>5.2f} "
                f"{r['reliability_structured']:>5.2f}{probe_note}")
+
+
+def _print_cost_table(report):
+    """Render human-readable cost analytics summary on stderr."""
+    eprint(f"[cost] Total spend: ${report.get('total_cost', 0.0):.6f} across {report.get('events_count', 0)} events "
+           f"({report.get('billable_calls', 0)} billable, {report.get('free_calls', 0)} free)")
+    if "savings" in report:
+        s = report["savings"]
+        eprint(f"[cost] Baseline frontier estimate: ${s.get('baseline_frontier_cost', 0.0):.6f}")
+        eprint(f"[cost] Net savings: ${s.get('net_savings', 0.0):.6f} ({s.get('savings_percent', 0.0):.1f}%)")
+
+    by_tier = report.get("by_tier")
+    if by_tier:
+        eprint("\nSpend by Tier:")
+        hdr = f"{'Tier':<8} {'Calls':>8} {'Cost ($)':>12}"
+        eprint(hdr)
+        eprint("-" * len(hdr))
+        for t in ("T0", "T1", "T2", "T3"):
+            d = by_tier.get(t, {})
+            eprint(f"{t:<8} {d.get('calls', 0):>8} {d.get('cost', 0.0):>12.6f}")
+
+    by_model = report.get("by_model")
+    if by_model:
+        eprint("\nSpend by Model:")
+        hdr = f"{'Model':<40} {'Tier':<6} {'Calls':>8} {'Cost ($)':>12}"
+        eprint(hdr)
+        eprint("-" * len(hdr))
+        for m, d in sorted(by_model.items(), key=lambda item: item[1].get("cost", 0.0), reverse=True):
+            eprint(f"{m:<40} {d.get('tier', 'T2'):<6} {d.get('calls', 0):>8} {d.get('cost', 0.0):>12.6f}")
+

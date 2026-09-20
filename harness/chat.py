@@ -12,6 +12,7 @@ import json
 
 from .config import OPENROUTER_CHAT_URL
 from .output import eprint
+from .routing_table import floor_model, strip_variant_suffix
 
 REASONING_FALLBACK_PREFIX = "[NOTE] model returned no content"
 
@@ -261,7 +262,8 @@ def _ensure_accounted(governor, model, resp, usage):
 
 
 def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto",
-         reasoning_token_budget=0.4, governor=None):
+         reasoning_token_budget=0.4, governor=None, enable_floor=True,
+         max_price=None, provider_sort="price"):
     """One chat completion with the spend governor's payload guards.
 
     Reasoning is included whenever the effort mode resolves to a value --
@@ -273,25 +275,34 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
     accounting: a missing usage.cost is resolved here, once, so no lane can
     bill a paid call as $0.
     """
+    canonical_model = strip_variant_suffix(model)
     if governor:
-        governor.check_byok(model)
+        governor.check_byok(canonical_model)
 
     def build(with_reasoning):
-        payload = {"model": model, "messages": messages, "max_tokens": max_tokens}
+        model_to_send = floor_model(model, enable_floor=enable_floor)
+        payload = {"model": model_to_send, "messages": messages, "max_tokens": max_tokens}
+        provider_obj = {}
+        if provider_sort:
+            provider_obj["sort"] = provider_sort
+        if max_price:
+            provider_obj["max_price"] = max_price
+        if provider_obj:
+            payload["provider"] = provider_obj
         if with_reasoning:
-            rp = _build_reasoning_param(model, reasoning_effort, max_tokens,
+            rp = _build_reasoning_param(canonical_model, reasoning_effort, max_tokens,
                                         reasoning_token_budget)
             if rp:
                 payload["reasoning"] = rp
         if governor:
-            governor.assert_no_tools(payload, model)
+            governor.assert_no_tools(payload, canonical_model)
         return payload
 
     def _account(status, resp):
         if governor is not None and status == 200 and isinstance(resp, dict):
             usage = resp.get("usage")
             if isinstance(usage, dict) and "cost" not in usage:
-                _ensure_accounted(governor, model, resp, usage)
+                _ensure_accounted(governor, canonical_model, resp, usage)
         return status, resp
 
     want_reasoning = _effort_to_send(reasoning_effort, model) is not None
