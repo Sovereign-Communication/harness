@@ -1,332 +1,342 @@
-"""Jev & System One structural evaluation adapter.
+"""Pure-stdlib TypeSafe System One adapter (JEV-P0).
 
-Evaluates shared state (prompts, context, code diffs) against typed questions
-(boolean, score, choice) with calibrated confidence bounds, replacing costly
-multi-model consensus loops with fast structural verification.
+Code owns exact mechanics (paths, syntax, hunk shape and thresholds); Jev owns
+only bounded semantic judgments. The API contract is deliberately strict:
+questions are only ``noul``, ``choice`` or ``score`` and answers must use the
+official typed shapes from docs.typesafe.ai/api.md.
 """
 import ast
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from ._http import HttpTransport
 
+JEV_INPUT_PRICE_PER_MILLION = 42.0
+_PRIMITIVES = frozenset(("noul", "choice", "score"))
+
+
+def jev_cost(input_tokens: int) -> float:
+    """Return TypeSafe's input-only price; output tokens are free."""
+    if isinstance(input_tokens, bool) or not isinstance(input_tokens, int) or input_tokens < 0:
+        raise ValueError("input_tokens must be a non-negative integer")
+    return input_tokens * JEV_INPUT_PRICE_PER_MILLION / 1_000_000
+
 
 @dataclass(frozen=True)
 class JevEvaluationResult:
-    """Immutable result of a Jev / System One structural evaluation."""
+    """An honest typed evaluation envelope."""
 
-    verdict: str  # "pass", "fail", or "defer"
-    confidence: float  # Calibrated probability in [0.0, 1.0]
-    supported: float  # Probability [0.0, 1.0] that state is supported
+    verdict: str
+    # Confidence is only populated from Choice/Score confidence. Noul values
+    # remain probabilities in ``supported``/``answers`` and are never renamed.
+    confidence: float
+    supported: float
     answers: Dict[str, Any] = field(default_factory=dict)
     reasons: List[str] = field(default_factory=list)
     cost: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
     is_fallback: bool = False
+    model: Optional[str] = None
 
     def is_passing(self, min_confidence: float = 0.70) -> bool:
-        """Check whether the evaluation passes the calibrated confidence threshold."""
-        return self.verdict == "pass" and self.confidence >= min_confidence and self.supported >= min_confidence
+        """Apply the configured action threshold without conflating signals."""
+        return (self.verdict == "pass" and self.supported >= min_confidence
+                and (self.confidence <= 0.0 or self.confidence >= min_confidence))
+
+
+def _noul(question: str, yes: str, no: str) -> Dict[str, Any]:
+    return {"type": "noul", "instructions": question,
+            "criteria": {"true": yes, "false": no}}
+
+
+def diff_question_pack() -> Dict[str, Dict[str, Any]]:
+    """The one semantic question answerable from the diff and instruction.
+
+    Paths, hunk shape, change presence, and AST validity are code-owned facts,
+    so they are enforced locally rather than asking Jev to re-judge them.
+    """
+    return {
+        "instruction_matches": _noul(
+            "Does the changed code implement the supplied instruction?",
+            "The changed behavior directly addresses the instruction.",
+            "The changed behavior does not address, or contradicts, the instruction."),
+    }
+
+
+def plan_question_pack() -> Dict[str, Dict[str, Any]]:
+    """A narrow plan-site pack; no generic confidence question."""
+    return {
+        "requires_iteration": _noul(
+            "Does the stated coding task require iterative control flow or multiple dependent steps?",
+            "The task requires iteration or dependent steps.",
+            "The task is a bounded declarative or single-step edit."),
+        "requirement_complexity": {
+            "type": "score",
+            "instructions": "Rate the task's execution complexity from the supplied prompt and target list.",
+            "criteria": ["single bounded edit", "several dependent edits", "iterative or algorithmic work"],
+        },
+    }
+
+
+def _validate_questions(questions: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(questions, dict) or not questions:
+        raise ValueError("questions must be a non-empty map")
+    out = {}
+    for key, question in questions.items():
+        if not isinstance(key, str) or not isinstance(question, dict):
+            raise ValueError("questions must map string ids to objects")
+        kind = question.get("type")
+        if kind not in _PRIMITIVES:
+            raise ValueError("unsupported TypeSafe primitive: %r" % (kind,))
+        if "instructions" not in question:
+            raise ValueError("question %s is missing instructions" % key)
+        if kind in ("choice", "score") and "criteria" not in question:
+            raise ValueError("question %s is missing criteria" % key)
+        if kind == "choice" and (not isinstance(question["criteria"], dict) or not question["criteria"]):
+            raise ValueError("choice criteria must be a non-empty map")
+        if kind == "score" and (not isinstance(question["criteria"], list) or len(question["criteria"]) < 2):
+            raise ValueError("score criteria must contain at least two levels")
+        out[key] = {k: question[k] for k in ("type", "instructions", "criteria") if k in question}
+    return out
+
+
+def _number(value: Any, name: str, lo: float = 0.0, hi: Optional[float] = 1.0) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("%s must be a number" % name)
+    result = float(value)
+    if not math.isfinite(result) or result < lo or (hi is not None and result > hi):
+        raise ValueError("%s outside range" % name)
+    return result
+
+
+def _probabilities(value: Any, name: str) -> Dict[str, float]:
+    if not isinstance(value, dict) or not value:
+        raise ValueError("%s must be a non-empty map" % name)
+    parsed = {str(k): _number(v, name) for k, v in value.items()}
+    if abs(sum(parsed.values()) - 1.0) > 1e-6:
+        raise ValueError("%s must sum to 1" % name)
+    return parsed
+
+
+def _parse_answer(answer: Any, expected: str, key: str,
+                 question: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(answer, dict) or answer.get("type") != expected:
+        raise ValueError("answer %s is not an official %s answer" % (key, expected))
+    if expected == "noul":
+        return {"type": "noul", "noul": _number(answer["noul"], key + ".noul")}
+    if expected == "choice":
+        choice = answer.get("choice")
+        parsed_probs = _probabilities(answer.get("probabilities"), key + ".probabilities")
+        criteria = question.get("criteria")
+        if not isinstance(choice, str) or choice not in parsed_probs:
+            raise ValueError("choice answer %s has an invalid choice" % key)
+        if isinstance(criteria, dict) and set(parsed_probs) != set(criteria):
+            raise ValueError("choice answer %s probabilities do not match criteria" % key)
+        return {"type": "choice", "choice": choice, "probabilities": parsed_probs,
+                "confidence": _number(answer["confidence"], key + ".confidence")}
+    score = answer.get("score")
+    legend = answer.get("legend")
+    if isinstance(score, bool) or not isinstance(score, (int, float)) or not isinstance(legend, dict) or not legend:
+        raise ValueError("score answer %s is missing required fields" % key)
+    parsed_probs = _probabilities(answer.get("probabilities"), key + ".probabilities")
+    if set(parsed_probs) != {str(k) for k in legend}:
+        raise ValueError("score answer %s legend does not match probabilities" % key)
+    return {"type": "score", "score": float(score), "legend": dict(legend),
+            "probabilities": parsed_probs,
+            "confidence": _number(answer["confidence"], key + ".confidence")}
 
 
 class JevEvaluator:
-    """System One structural evaluation client with deterministic local fallback."""
-
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        endpoint: str = "https://api.typesafe.ai/v1/systemone",
-        transport: Optional[HttpTransport] = None,
-        settings: Optional[Any] = None,
-    ):
-        if settings is not None:
-            self.api_key = api_key or getattr(settings, "jev_api_key", None)
-            self.endpoint = getattr(settings, "jev_endpoint", endpoint) or endpoint
-            self.min_confidence = getattr(settings, "min_confidence", 0.70)
-        else:
-            self.api_key = api_key
-            self.endpoint = endpoint
-            self.min_confidence = 0.70
-
+    def __init__(self, api_key: Optional[str] = None, endpoint: str = "https://api.typesafe.ai/v1/systemone",
+                 transport: Optional[HttpTransport] = None, settings: Optional[Any] = None):
+        self.api_key = api_key or (getattr(settings, "jev_api_key", None) if settings else None)
+        self.endpoint = (getattr(settings, "jev_endpoint", endpoint) if settings else endpoint) or endpoint
+        self.model = getattr(settings, "jev_model", "jev-latest") if settings else "jev-latest"
+        self.min_confidence = getattr(settings, "min_confidence", 0.70) if settings else 0.70
         self.transport = transport or HttpTransport()
 
-    def evaluate(
-        self,
-        state: Any,
-        questions: Optional[Dict[str, Any]] = None,
-    ) -> JevEvaluationResult:
-        """Evaluate shared state against typed questions.
-
-        If a Jev API key is configured, dispatches to the Jev System One endpoint.
-        Otherwise, executes hermetic local structural and AST verification.
-        """
-        raw_questions = questions or {
-            "supported": {
-                "type": "noul",
-                "instructions": "Does the draft follow logically from the provided context?",
-            },
-            "confidence": {
-                "type": "score",
-                "instructions": "How confident is the evaluation?",
-                "criteria": ["Hallucinated", "Uncertain", "Plausible", "Verified"],
-            },
-            "syntax_clean": {
-                "type": "noul",
-                "instructions": "Is the code or diff syntactically valid and free of obvious defects?",
-            },
-        }
-
-        # Convert question types to TypeSafe System One primitives
-        active_questions = {}
-        for q_id, q_def in raw_questions.items():
-            q_type = q_def.get("type")
-            instr = q_def.get("instructions", "")
-            if q_type in ("boolean", "noul"):
-                q_obj = {"type": "noul", "instructions": instr}
-                if "criteria" in q_def:
-                    q_obj["criteria"] = q_def["criteria"]
-                active_questions[q_id] = q_obj
-            elif q_type == "score":
-                active_questions[q_id] = {
-                    "type": "score",
-                    "instructions": instr,
-                    "criteria": q_def.get("criteria", ["Low", "Medium", "High"]),
-                }
-            elif q_type == "choice":
-                active_questions[q_id] = {
-                    "type": "choice",
-                    "instructions": instr,
-                    "criteria": q_def.get("criteria", q_def.get("options", {})),
-                }
-            else:
-                active_questions[q_id] = q_def
-
+    def evaluate(self, state: Any, questions: Optional[Dict[str, Any]] = None) -> JevEvaluationResult:
+        raw = diff_question_pack() if questions is None else questions
+        try:
+            active = _validate_questions(raw)
+        except ValueError as exc:
+            return self._failure(str(exc), fallback=False)
         if self.api_key:
             try:
-                payload = {"model": "jev-latest", "state": state, "questions": active_questions}
-                status, resp = self.transport.post(self.endpoint, self.api_key, payload)
+                status, resp = self.transport.post(self.endpoint, self.api_key,
+                                                   {"model": self.model, "state": state, "questions": active})
                 if status == 200 and isinstance(resp, dict):
-                    return self._parse_jev_response(resp)
+                    try:
+                        return self._parse_jev_response(resp, active)
+                    except (KeyError, TypeError, ValueError) as exc:
+                        usage = resp.get("usage") if isinstance(resp.get("usage"), dict) else {}
+                        input_tokens = usage.get("input_tokens", 0)
+                        output_tokens = usage.get("output_tokens", 0)
+                        if (isinstance(input_tokens, bool) or not isinstance(input_tokens, int)
+                                or input_tokens < 0):
+                            input_tokens = 0
+                        if (isinstance(output_tokens, bool) or not isinstance(output_tokens, int)
+                                or output_tokens < 0):
+                            output_tokens = 0
+                        return self._failure(
+                            "invalid TypeSafe response: " + str(exc), fallback=False,
+                            input_tokens=input_tokens, output_tokens=output_tokens)
+                if status in (401, 422):
+                    return self._failure("TypeSafe request rejected (HTTP %s)" % status, fallback=False)
             except Exception:
-                # Network or endpoint failure falls back to local structural checks
                 pass
+        return self._local_structural_eval(state if isinstance(state, dict) else {"content": str(state)})
 
-        # Local structural evaluation fallback ($0, millisecond latency)
-        state_dict = state if isinstance(state, dict) else {"content": str(state)}
-        return self._local_structural_eval(state_dict, active_questions)
+    def _failure(self, reason: str, fallback: bool, input_tokens: int = 0,
+                 output_tokens: int = 0) -> JevEvaluationResult:
+        return JevEvaluationResult(
+            "fail", 0.0, 0.0, {}, [reason],
+            cost=jev_cost(input_tokens), input_tokens=input_tokens,
+            output_tokens=output_tokens, is_fallback=fallback, model=self.model)
 
-    def _parse_jev_response(self, resp: Dict[str, Any]) -> JevEvaluationResult:
-        """Parse native Jev response into JevEvaluationResult."""
-        answers = resp.get("answers", resp.get("results", {}))
-        usage = resp.get("usage", {})
-        cost = float(usage.get("cost", 0.00004))
-
-        # 1. Parse supported probability
-        supp_ans = answers.get("supported", 1.0)
-        if isinstance(supp_ans, dict):
-            supported_prob = float(supp_ans.get("noul", supp_ans.get("probability", 1.0)))
-        elif isinstance(supp_ans, (int, float)):
-            supported_prob = float(supp_ans)
-        else:
-            supported_prob = 1.0 if supp_ans else 0.0
-
-        # 2. Parse confidence score
-        conf_ans = answers.get("confidence", 0.85)
-        if isinstance(conf_ans, dict):
-            if "confidence" in conf_ans:
-                conf_score = float(conf_ans["confidence"])
-            elif "score" in conf_ans:
-                conf_score = float(conf_ans["score"])
+    def _parse_jev_response(self, resp: Dict[str, Any], questions: Dict[str, Any]) -> JevEvaluationResult:
+        if not isinstance(resp.get("answers"), dict) or not isinstance(resp.get("usage"), dict):
+            raise ValueError("response requires answers and usage")
+        usage = resp["usage"]
+        input_tokens = usage["input_tokens"]
+        output_tokens = usage["output_tokens"]
+        if isinstance(input_tokens, bool) or not isinstance(input_tokens, int) or input_tokens < 0:
+            raise ValueError("usage.input_tokens must be a non-negative integer")
+        if isinstance(output_tokens, bool) or not isinstance(output_tokens, int) or output_tokens < 0:
+            raise ValueError("usage.output_tokens must be a non-negative integer")
+        expected = _validate_questions(questions)
+        answers = {}
+        for key, question in expected.items():
+            if key not in resp["answers"]:
+                raise ValueError("response is missing answer %s" % key)
+            answers[key] = _parse_answer(resp["answers"][key], question["type"], key, question)
+        nouls = [a["noul"] for a in answers.values() if a["type"] == "noul"]
+        supported = min(nouls) if nouls else 1.0
+        action_confidences = [a["confidence"] for a in answers.values() if a["type"] in ("choice", "score")]
+        confidence = min(action_confidences) if action_confidences else 0.0
+        # With no Choice/Score action confidence, noul probabilities are the
+        # separate supported signal. A purely-noul pack is still thresholded
+        # by supported in is_passing; confidence remains explicitly absent/0.
+        verdict = "pass" if supported >= self.min_confidence and (not action_confidences or confidence >= self.min_confidence) else "fail"
+        reasons = []
+        for key, answer in answers.items():
+            if answer["type"] == "noul":
+                reasons.append("%s (noul): %s" % (key, answer["noul"]))
+            elif answer["type"] == "choice":
+                reasons.append("%s (choice): %s (conf: %s)" % (key, answer["choice"], answer["confidence"]))
             else:
-                conf_score = 0.85
-        elif isinstance(conf_ans, (int, float)):
-            conf_score = float(conf_ans)
-        else:
-            conf_score = 0.85
+                reasons.append("%s (score): %s (conf: %s)" % (key, answer["score"], answer["confidence"]))
+        return JevEvaluationResult(verdict, confidence, supported, answers, reasons,
+                                   cost=jev_cost(input_tokens), input_tokens=input_tokens,
+                                   output_tokens=output_tokens, model=resp.get("model", self.model))
 
-        # 3. Parse syntax_clean
-        syntax_ans = answers.get("syntax_clean", 1.0)
-        if isinstance(syntax_ans, dict):
-            syntax_prob = float(syntax_ans.get("noul", 1.0))
-        elif isinstance(syntax_ans, bool):
-            syntax_prob = 1.0 if syntax_ans else 0.0
-        else:
-            syntax_prob = 1.0
-
-        reasons: List[str] = []
-        if "reason" in resp:
-            reasons.append(str(resp["reason"]))
-        for k, v in answers.items():
-            if isinstance(v, dict):
-                if "rationale" in v:
-                    reasons.append(f"{k}: {v['rationale']}")
-                elif v.get("type") == "noul":
-                    reasons.append(f"{k} (noul): {v.get('noul')}")
-                elif v.get("type") == "choice":
-                    reasons.append(f"{k} (choice): {v.get('choice')} (conf: {v.get('confidence')})")
-                elif v.get("type") == "score":
-                    reasons.append(f"{k} (score): {v.get('score')} (conf: {v.get('confidence')})")
-
-        verdict = "pass" if (supported_prob >= 0.70 and conf_score >= 0.70 and syntax_prob >= 0.70) else "fail"
-        return JevEvaluationResult(
-            verdict=verdict,
-            confidence=conf_score,
-            supported=supported_prob,
-            answers=answers,
-            reasons=reasons,
-            cost=cost,
-            is_fallback=False,
-        )
-
-    def _local_structural_eval(
-        self,
-        state: Dict[str, Any],
-        questions: Dict[str, Any],
-    ) -> JevEvaluationResult:
-        """Deterministic local AST, JSON, and structural validation."""
-        reasons: List[str] = []
-        code_to_check = state.get("code") or state.get("content") or ""
-        diff_to_check = state.get("diff") or ""
-        json_to_check = state.get("json_content") or ""
-
-        # 1. JSON parsing check
-        if json_to_check:
+    def _local_structural_eval(self, state: Dict[str, Any], fallback: bool = True) -> JevEvaluationResult:
+        code = state.get("code") or state.get("content") or ""
+        json_content = state.get("json_content") or ""
+        if json_content:
             try:
-                json.loads(json_to_check)
-            except Exception as e:
-                return JevEvaluationResult(
-                    verdict="fail",
-                    confidence=0.1,
-                    supported=0.0,
-                    answers={"syntax_clean": False, "supported": 0.0, "confidence": 0},
-                    reasons=[f"Invalid JSON: {e}"],
-                    cost=0.0,
-                    is_fallback=True,
-                )
-
-        # 2. Python AST syntax check
-        if code_to_check and not diff_to_check:
+                json.loads(json_content)
+            except Exception as exc:
+                return self._failure("Invalid JSON: %s" % exc, fallback)
+        if code and not state.get("diff"):
             try:
-                ast.parse(code_to_check)
-            except SyntaxError as e:
-                return JevEvaluationResult(
-                    verdict="fail",
-                    confidence=0.1,
-                    supported=0.0,
-                    answers={"syntax_clean": False, "supported": 0.0, "confidence": 0},
-                    reasons=[f"Python SyntaxError: {e.msg} at line {e.lineno}"],
-                    cost=0.0,
-                    is_fallback=True,
-                )
+                ast.parse(code)
+            except SyntaxError as exc:
+                return self._failure("Python SyntaxError: %s at line %s" % (exc.msg, exc.lineno), fallback)
+        if state.get("diff"):
+            facts = state
+            checks = [("hunk_shape_ok", bool(facts.get("hunk_shape_ok", False)), "diff hunk shape"),
+                      ("has_changes", bool(facts.get("has_changes", False)), "diff change"),
+                      ("path_matches", bool(facts.get("path_matches", False)), "target path")]
+            if facts.get("ast_parse_ok") is not None:
+                checks.append(("ast_parse_ok", bool(facts["ast_parse_ok"]), "AST parse"))
+            for _, ok, label in checks:
+                if not ok:
+                    return JevEvaluationResult("fail", 0.0, 0.0, {}, ["Code-owned %s check failed." % label], is_fallback=fallback, model=self.model)
+        elif not code and not json_content and not state.get("response") and not state.get("prompt"):
+            return self._failure("Empty candidate state returned.", fallback)
+        return JevEvaluationResult("pass", 0.0, 1.0,
+                                   {"mechanical_checks": "passed"},
+                                   ["All local code-owned structural checks passed."], is_fallback=fallback, model=self.model)
 
-        # 3. Diff checks
-        if diff_to_check:
-            if not any(diff_to_check.strip().startswith(p) for p in ("---", "+++", "@@", "diff")):
-                if "+" not in diff_to_check and "-" not in diff_to_check:
-                    reasons.append("Diff output does not resemble unified diff structure.")
-                    return JevEvaluationResult(
-                        verdict="fail",
-                        confidence=0.3,
-                        supported=0.2,
-                        answers={"syntax_clean": False, "supported": 0.2, "confidence": 1},
-                        reasons=reasons,
-                        cost=0.0,
-                        is_fallback=True,
-                    )
-
-        # 4. Empty output check
-        if not code_to_check and not diff_to_check and not json_to_check and not state.get("response"):
-            return JevEvaluationResult(
-                verdict="fail",
-                confidence=0.0,
-                supported=0.0,
-                answers={"syntax_clean": False, "supported": 0.0, "confidence": 0},
-                reasons=["Empty candidate state returned."],
-                cost=0.0,
-                is_fallback=True,
-            )
-
-        # Passed all structural checks
-        return JevEvaluationResult(
-            verdict="pass",
-            confidence=0.92,
-            supported=0.95,
-            answers={"syntax_clean": True, "supported": 0.95, "confidence": 3},
-            reasons=["All local structural, AST, and format invariants satisfied."],
-            cost=0.0,
-            is_fallback=True,
-        )
-
-    def verify_diff_mechanics(
-        self,
-        diff: str,
-        instruction: str = "",
-        file_path: str = "",
-    ) -> JevEvaluationResult:
-        """Cheap mechanical check for code edits before executing real gates."""
-        state = {
-            "diff": diff,
-            "instruction": instruction,
-            "file_path": file_path,
-        }
+    def verify_diff_mechanics(self, diff: str, instruction: str = "", file_path: str = "",
+                              candidate: Optional[str] = None) -> JevEvaluationResult:
+        state = _diff_state(diff or "", instruction or "", file_path or "", candidate=candidate)
+        mechanical = self._local_structural_eval(state, fallback=not bool(self.api_key))
+        if mechanical.verdict != "pass":
+            return mechanical
         return self.evaluate(state)
 
-    def evaluate_plan_requirements(
-        self,
-        prompt: str,
-        target_files: Optional[List[str]] = None,
-    ) -> JevEvaluationResult:
-        """Evaluate goal and targets for structural requirements (loops, branching, complexity)."""
-        state = {
-            "prompt": prompt,
-            "target_files": list(target_files or []),
-        }
-        questions = {
-            "requires_iteration": {
-                "type": "noul",
-                "instructions": "Does this coding task require iterative loops, conditional branches, or multi-step algorithms?",
-            },
-            "confidence": {
-                "type": "score",
-                "instructions": "Confidence in requirement analysis",
-                "criteria": ["Uncertain", "Likely", "Verified"],
-            },
-        }
-        if self.api_key:
-            try:
-                res = self.evaluate(state, questions)
-                if not res.is_fallback:
-                    req_ans = res.answers.get("requires_iteration")
-                    if isinstance(req_ans, dict):
-                        is_iter = float(req_ans.get("noul", 0.0)) >= 0.50
-                    elif isinstance(req_ans, (int, float)):
-                        is_iter = float(req_ans) >= 0.50
-                    else:
-                        is_iter = bool(req_ans)
-                    return JevEvaluationResult(
-                        verdict=res.verdict,
-                        confidence=res.confidence,
-                        supported=res.supported,
-                        answers={"requires_iteration": is_iter, "confidence": res.confidence, "raw": res.answers},
-                        reasons=res.reasons,
-                        cost=res.cost,
-                        is_fallback=False,
-                    )
-            except Exception:
-                pass
+    def evaluate_plan_requirements(self, prompt: str, target_files: Optional[List[str]] = None) -> JevEvaluationResult:
+        prompt = prompt or ""
+        questions = plan_question_pack()
+        result = self.evaluate({"prompt": prompt, "target_files": list(target_files or [])}, questions)
+        if not result.is_fallback:
+            answer = result.answers.get("requires_iteration", {"noul": 0.0})
+            return JevEvaluationResult(result.verdict, result.confidence, result.supported,
+                                       {"requires_iteration": answer["noul"] >= 0.5, "raw": result.answers},
+                                       result.reasons, result.cost, result.input_tokens,
+                                       result.output_tokens, False, result.model)
         lower = prompt.lower()
-        iter_keywords = (
-            "loop", "iterat", "branch", "recur", "dag", "multi-step", "pipeline",
-            "while", "until", "retry", "traverse", "graph", "step by step",
-            "condition", "algorithm", "cycle"
-        )
-        has_iter = any(k in lower for k in iter_keywords)
-        return JevEvaluationResult(
-            verdict="pass",
-            confidence=0.88 if has_iter else 0.75,
-            supported=0.90,
-            answers={"requires_iteration": has_iter, "confidence": 0.88 if has_iter else 0.75},
-            reasons=["Detected iterative/algorithmic requirements" if has_iter else "Standard declarative edit flow"],
-            cost=0.0,
-            is_fallback=True,
-        )
+        has_iter = any(word in lower for word in ("loop", "iterat", "branch", "recur", "dag", "retry", "traverse", "graph", "algorithm", "cycle"))
+        return JevEvaluationResult("pass", 0.0, 1.0, {"requires_iteration": has_iter},
+                                   ["Detected iterative/algorithmic requirements" if has_iter else "Standard declarative edit flow"], is_fallback=True)
+
+
+def _looks_like_diff(diff: str) -> bool:
+    return bool(diff.strip()) and diff.lstrip().startswith(("---", "diff "))
+
+
+def _valid_hunks(lines: List[str]) -> bool:
+    """Require a hunk header, valid body prefixes, and at least one change."""
+    saw_hunk = saw_change = False
+    in_hunk = False
+    for line in lines:
+        if line.startswith("@@"):
+            saw_hunk = in_hunk = True
+            continue
+        if not in_hunk:
+            continue
+        if line.startswith(("--- ", "+++ ", "diff ")):
+            in_hunk = False
+            continue
+        if line.startswith(("+", "-")):
+            saw_change = True
+        elif not line.startswith((" ", "\\")):
+            return False
+    return saw_hunk and saw_change
+
+
+def _path_matches(file_path: str, paths: List[str]) -> bool:
+    if not file_path or not paths:
+        return bool(not file_path)
+    target = file_path.replace("\\", "/").rstrip("/")
+    for path in paths:
+        path = path.replace("\\", "/").rstrip("/")
+        if target == path or target.endswith("/" + path) or path.endswith("/" + target):
+            return True
+    return False
+
+
+def _diff_state(diff: str, instruction: str, file_path: str,
+                candidate: Optional[str] = None) -> Dict[str, Any]:
+    lines = diff.splitlines()
+    headers = [line[4:].strip() for line in lines if line.startswith(("--- ", "+++ "))]
+    paths = [p[2:] if p.startswith(("a/", "b/")) else p for p in headers]
+    changed = [line for line in lines
+               if line.startswith(("+", "-"))
+               and not line.startswith(("--- ", "+++ "))]
+    ast_ok = None
+    if isinstance(candidate, str) and file_path.lower().endswith(".py"):
+        try:
+            ast.parse(candidate)
+            ast_ok = True
+        except SyntaxError:
+            ast_ok = False
+    return {"diff": diff, "instruction": instruction, "file_path": file_path,
+            "path_matches": _path_matches(file_path, paths),
+            "hunk_shape_ok": _looks_like_diff(diff) and _valid_hunks(lines),
+            "ast_parse_ok": ast_ok, "has_changes": bool(changed)}

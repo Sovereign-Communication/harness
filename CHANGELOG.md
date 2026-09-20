@@ -9,6 +9,10 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
+### Added
+
+- **JEV-P0 contract-truth adapter.** TypeSafe System One answers now use only official Noul/Choice/Score shapes, input-token pricing (`$42/Mtok`, output free), configured model/threshold settings, per-call question packs, and honest code-owned local structural fallback. Optional live smoke is operator-gated; CLI/MCP/waist wiring remains P1.
+
 ### Fixed
 
 - **Waist confirmation walks an ordered ladder with 429 rotation and paid escalation.**

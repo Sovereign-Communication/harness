@@ -77,7 +77,7 @@ Related design context (not the tracker): [system-one-integration.md](system-one
 | `JEV-P0-tests` | Hermetic fixtures from live answer shapes; cost math; no-fabrication parse |
 | `JEV-P0-smoke` | Operator-gated live smoke for key changes |
 
-**Acceptance:** `tests/test_jev.py` + parse/cost tests green; live smoke returns non-fallback with honest cost; structural fail only on real defects.
+**Acceptance:** `tests/test_jev.py` + parse/cost tests green; live smoke returns non-fallback with honest cost; structural fail only on real defects. **P0 status:** implemented in this PR; P1 remains untouched.
 
 **Modules:** `harness/jev.py`, `harness/config.py`, `tests/test_jev.py`, README, `docs/architecture.md`, CHANGELOG.
 
@@ -152,7 +152,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 
 | Phase | IDs | Primary modules | Gate tests | Status |
 |---|---|---|---|---|
-| 0 Contract | `JEV-P0-*` | `jev.py`, `config.py`, docs | `tests/test_jev.py` + new parse/cost | **next** |
+| 0 Contract | `JEV-P0-*` | `jev.py`, `config.py`, docs | `tests/test_jev.py` + `tests/test_jev_smoke.py` | **complete in this PR** |
 | 1 One owner | `JEV-P1-*` | policy + apply/waist/CLI/MCP/agent | `tests/test_jev_policy.py`, lane parity | planned |
 | 2 Pillars | `JEV-P2-*` | consent, sliding_scale, panel | consent/confidence + panel pre-gate | planned |
 | 3 Utilization | `JEV-P3-*` | orchestrator, routing, context | per-pattern hermetic tests | planned |

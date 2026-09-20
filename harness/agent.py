@@ -716,6 +716,7 @@ class AutonomousAgent:
                     diff=res["diff"],
                     instruction=node.instruction,
                     file_path=engine_target or "",
+                    candidate=res.get("content"),
                 )
                 emit("structural_eval", node_id=node.node_id,
                      verdict=jev_res.verdict, confidence=jev_res.confidence,

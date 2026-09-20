@@ -130,8 +130,9 @@ with `HARNESS_*` env overrides:
 | `max_price_prompt` | `null` | OpenRouter provider.max_price cap for prompt tokens ($/M tokens) |
 | `max_price_completion` | `null` | OpenRouter provider.max_price cap for completion tokens ($/M tokens) |
 | `jev_api_key` | `null` | TypeSafe AI Jev structural evaluation API key (HARNESS_JEV_KEY) |
-| `jev_endpoint` | `https://api.typesafe.ai/v1/eval` | Jev structural verification endpoint |
+| `jev_endpoint` | `https://api.typesafe.ai/v1/systemone` | Jev structural verification endpoint |
 | `min_confidence` | `0.70` | calibrated abstention confidence threshold (HARNESS_MIN_CONFIDENCE) |
+| `jev_model` | `jev-latest` | TypeSafe model alias; pin `jev-1.13.0` when calibrating |
 
 `harness models` lists the current live free models (refreshed from
 OpenRouter). Hardcoded slugs go stale — the curated pools are validated live

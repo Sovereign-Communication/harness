@@ -229,14 +229,21 @@ class TestAutonomousAgent(unittest.TestCase):
                                     history_dir=root)
 
             def fake_apply_edit(file_path, instruction, **kwargs):
-                # Simulate modifying file
-                (root / file_path).write_text("def add(a: int, b: int) -> int: return a + b\n", encoding="utf-8")
-                return {"status": "ok", "cost": 0.002}
+                # Simulate modifying file and returning the candidate that Jev verifies.
+                content = "def add(a: int, b: int) -> int: return a + b\n"
+                (root / file_path).write_text(content, encoding="utf-8")
+                return {
+                    "status": "ok", "cost": 0.002, "content": content,
+                    "diff": "--- a/harness/calc.py\n+++ b/harness/calc.py\n@@ -1 +1 @@\n-def add(a, b): return a + b\n+def add(a: int, b: int) -> int: return a + b\n",
+                }
 
             mock_engine = MagicMock()
             mock_engine.apply_edit.side_effect = fake_apply_edit
+            from harness.jev import JevEvaluator
+            jev = MagicMock(wraps=JevEvaluator())
 
             with patch("harness.agent.apply_session", return_value=mock_engine), \
+                 patch("harness.agent.jev_for", return_value=jev), \
                  patch.object(AutonomousAgent, "_orchestrator_chat_fn",
                               side_effect=HarnessError("hermetic test")):
                 res = agent.run_prompt("Update harness/calc.py with type annotations", auto_apply=True)
@@ -247,6 +254,9 @@ class TestAutonomousAgent(unittest.TestCase):
                 self.assertIn("harness/calc.py", res["target_files"])
                 self.assertIn("+def add(a: int, b: int) -> int:", res["diff"])
                 self.assertAlmostEqual(res["cost"], 0.002)
+                jev.verify_diff_mechanics.assert_called_once()
+                self.assertEqual(jev.verify_diff_mechanics.call_args.kwargs["candidate"],
+                                 "def add(a: int, b: int) -> int: return a + b\n")
 
     def test_handle_edit_self_healing_retry(self):
         with tempfile.TemporaryDirectory() as tmp:

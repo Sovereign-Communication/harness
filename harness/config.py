@@ -359,6 +359,7 @@ _ENV_NAMES = {
     "max_price_completion": "HARNESS_MAX_PRICE_COMPLETION",
     "jev_api_key": "HARNESS_JEV_KEY",
     "jev_endpoint": "HARNESS_JEV_ENDPOINT",
+    "jev_model": "HARNESS_JEV_MODEL",
     "min_confidence": "HARNESS_MIN_CONFIDENCE",
 }
 
@@ -481,7 +482,7 @@ class Settings:
                   openrouter_floor_default=True, max_price_prompt=None,
                   max_price_completion=None, jev_api_key=None,
                   jev_endpoint="https://api.typesafe.ai/v1/systemone",
-                  min_confidence=0.70):
+                  jev_model="jev-latest", min_confidence=0.70):
         self.use_free = use_free
         self.panel = list(panel)
         self.panel_pool = list(panel_pool)
@@ -535,6 +536,7 @@ class Settings:
         self.max_price_completion = max_price_completion
         self.jev_api_key = jev_api_key
         self.jev_endpoint = jev_endpoint
+        self.jev_model = jev_model or "jev-latest"
         self.min_confidence = min_confidence
 
     def to_dict(self):
@@ -551,7 +553,7 @@ class Settings:
             "hourglass_isolate", "hourglass_parallel",
             "hourglass_require_attestation", "openrouter_floor_default",
             "max_price_prompt", "max_price_completion", "jev_api_key",
-            "jev_endpoint", "min_confidence")}
+            "jev_endpoint", "jev_model", "min_confidence")}
 
 
 def load_settings(overrides=None):
@@ -681,6 +683,7 @@ def load_settings(overrides=None):
                               if get("max_price_completion", None) is not None else None),
         jev_api_key=get("jev_api_key", None) or resolve_jev_key(),
         jev_endpoint=str(get("jev_endpoint", "https://api.typesafe.ai/v1/systemone")),
+        jev_model=str(get("jev_model", "jev-latest")),
         min_confidence=_num("min_confidence", float, 0.0, 1.0, 0.70),
     )
 
