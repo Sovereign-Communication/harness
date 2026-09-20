@@ -17,10 +17,8 @@ from .orchestrator import drive, keyword_fallback, triage_files
 from .prompts import CAPABILITY_MARKER
 from .escalation import escalation_evidence, escalation_evidence_fields
 from .executor import PlanExecutor
-from .history import get_default_history_dir, load_chat_history, save_chat_turn
+from .history import load_chat_history, save_chat_turn
 from .repo_scope import (
-    _REPO_SKIP_DIRS,
-    _REPO_SKIP_SUFFIXES,
     discover_target_files,
     discover_verification_gate,
     enumerate_repo_files,
@@ -28,13 +26,10 @@ from .repo_scope import (
 from .results import SUCCESS_STATUSES, _http_error
 from .session import apply_session, attest_model_for, governor_for, ledger_for
 from .waist import compose_plan, resolve_scout_ladder
-from .web import DEFAULT_FETCH_HOSTS, extract_query, fetch_url, find_urls, gather_web_context, search_web
+from .web import DEFAULT_FETCH_HOSTS, gather_web_context
 
-# Deliberate compatibility re-exports, declared so the architecture guard
-# reads intent instead of a dead import. The web seams are imported so
-# hermetic tests can patch them at this module path, and the history /
-# repo_scope helpers were this module's public surface before the split. The
-# owners are harness.web, harness.history, and harness.repo_scope.
+# Consumers import history/repo_scope/web helpers from their owners
+# (harness.history, harness.repo_scope, harness.web), not from this module.
 __all__ = [
     "AutonomousAgent",
     "CONVERSATION_STARTERS",
@@ -44,15 +39,8 @@ __all__ = [
     "discover_target_files",
     "discover_verification_gate",
     "enumerate_repo_files",
-    "extract_query",
-    "fetch_url",
-    "find_urls",
-    "get_default_history_dir",
     "load_chat_history",
     "save_chat_turn",
-    "search_web",
-    "_REPO_SKIP_DIRS",
-    "_REPO_SKIP_SUFFIXES",
 ]
 
 DEFAULT_CHAT_SYSTEM_PROMPT = (
