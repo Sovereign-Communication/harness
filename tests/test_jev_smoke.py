@@ -7,7 +7,7 @@ from harness.config import load_settings
 from harness.jev import JevEvaluator
 
 
-@unittest.skipUnless(os.environ.get("HARNESS_JEV_LIVE_SMOKE") == "1", "operator-gated live Jev smoke")
+@unittest.skipUnless(os.environ.get("HARNESS_JEV_LIVE_SMOKE") == "1", "live-key gated operator smoke")
 class LiveJevSmokeTests(unittest.TestCase):
     def test_live_contract_and_cost(self):
         settings = load_settings()

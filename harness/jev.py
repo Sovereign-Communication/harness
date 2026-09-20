@@ -90,11 +90,11 @@ def _validate_questions(questions: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             raise ValueError("questions must map string ids to objects")
         kind = question.get("type")
         if kind not in _PRIMITIVES:
-            raise ValueError("unsupported TypeSafe primitive: %r" % (kind,))
+            raise ValueError(f"unsupported TypeSafe primitive: {kind!r}")
         if "instructions" not in question:
-            raise ValueError("question %s is missing instructions" % key)
+            raise ValueError(f"question {key} is missing instructions")
         if kind in ("choice", "score") and "criteria" not in question:
-            raise ValueError("question %s is missing criteria" % key)
+            raise ValueError(f"question {key} is missing criteria")
         if kind == "choice" and (not isinstance(question["criteria"], dict) or not question["criteria"]):
             raise ValueError("choice criteria must be a non-empty map")
         if kind == "score" and (not isinstance(question["criteria"], list) or len(question["criteria"]) < 2):
@@ -105,26 +105,26 @@ def _validate_questions(questions: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 def _number(value: Any, name: str, lo: float = 0.0, hi: Optional[float] = 1.0) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("%s must be a number" % name)
+        raise ValueError(f"{name} must be a number")
     result = float(value)
     if not math.isfinite(result) or result < lo or (hi is not None and result > hi):
-        raise ValueError("%s outside range" % name)
+        raise ValueError(f"{name} outside range")
     return result
 
 
 def _probabilities(value: Any, name: str) -> Dict[str, float]:
     if not isinstance(value, dict) or not value:
-        raise ValueError("%s must be a non-empty map" % name)
+        raise ValueError(f"{name} must be a non-empty map")
     parsed = {str(k): _number(v, name) for k, v in value.items()}
     if abs(sum(parsed.values()) - 1.0) > 1e-6:
-        raise ValueError("%s must sum to 1" % name)
+        raise ValueError(f"{name} must sum to 1")
     return parsed
 
 
 def _parse_answer(answer: Any, expected: str, key: str,
                  question: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(answer, dict) or answer.get("type") != expected:
-        raise ValueError("answer %s is not an official %s answer" % (key, expected))
+        raise ValueError(f"answer {key} is not an official {expected} answer")
     if expected == "noul":
         return {"type": "noul", "noul": _number(answer["noul"], key + ".noul")}
     if expected == "choice":
@@ -132,18 +132,18 @@ def _parse_answer(answer: Any, expected: str, key: str,
         parsed_probs = _probabilities(answer.get("probabilities"), key + ".probabilities")
         criteria = question.get("criteria")
         if not isinstance(choice, str) or choice not in parsed_probs:
-            raise ValueError("choice answer %s has an invalid choice" % key)
+            raise ValueError(f"choice answer {key} has an invalid choice")
         if isinstance(criteria, dict) and set(parsed_probs) != set(criteria):
-            raise ValueError("choice answer %s probabilities do not match criteria" % key)
+            raise ValueError(f"choice answer {key} probabilities do not match criteria")
         return {"type": "choice", "choice": choice, "probabilities": parsed_probs,
                 "confidence": _number(answer["confidence"], key + ".confidence")}
     score = answer.get("score")
     legend = answer.get("legend")
     if isinstance(score, bool) or not isinstance(score, (int, float)) or not isinstance(legend, dict) or not legend:
-        raise ValueError("score answer %s is missing required fields" % key)
+        raise ValueError(f"score answer {key} is missing required fields")
     parsed_probs = _probabilities(answer.get("probabilities"), key + ".probabilities")
     if set(parsed_probs) != {str(k) for k in legend}:
-        raise ValueError("score answer %s legend does not match probabilities" % key)
+        raise ValueError(f"score answer {key} legend does not match probabilities")
     return {"type": "score", "score": float(score), "legend": dict(legend),
             "probabilities": parsed_probs,
             "confidence": _number(answer["confidence"], key + ".confidence")}
@@ -185,7 +185,7 @@ class JevEvaluator:
                             "invalid TypeSafe response: " + str(exc), fallback=False,
                             input_tokens=input_tokens, output_tokens=output_tokens)
                 if status in (401, 422):
-                    return self._failure("TypeSafe request rejected (HTTP %s)" % status, fallback=False)
+                    return self._failure(f"TypeSafe request rejected (HTTP {status})", fallback=False)
             except Exception:
                 pass
         return self._local_structural_eval(state if isinstance(state, dict) else {"content": str(state)})
@@ -211,7 +211,7 @@ class JevEvaluator:
         answers = {}
         for key, question in expected.items():
             if key not in resp["answers"]:
-                raise ValueError("response is missing answer %s" % key)
+                raise ValueError(f"response is missing answer {key}")
             answers[key] = _parse_answer(resp["answers"][key], question["type"], key, question)
         nouls = [a["noul"] for a in answers.values() if a["type"] == "noul"]
         supported = min(nouls) if nouls else 1.0
@@ -224,11 +224,11 @@ class JevEvaluator:
         reasons = []
         for key, answer in answers.items():
             if answer["type"] == "noul":
-                reasons.append("%s (noul): %s" % (key, answer["noul"]))
+                reasons.append(f"{key} (noul): {answer['noul']}")
             elif answer["type"] == "choice":
-                reasons.append("%s (choice): %s (conf: %s)" % (key, answer["choice"], answer["confidence"]))
+                reasons.append(f"{key} (choice): {answer['choice']} (conf: {answer['confidence']})")
             else:
-                reasons.append("%s (score): %s (conf: %s)" % (key, answer["score"], answer["confidence"]))
+                reasons.append(f"{key} (score): {answer['score']} (conf: {answer['confidence']})")
         return JevEvaluationResult(verdict, confidence, supported, answers, reasons,
                                    cost=jev_cost(input_tokens), input_tokens=input_tokens,
                                    output_tokens=output_tokens, model=resp.get("model", self.model))
@@ -240,12 +240,12 @@ class JevEvaluator:
             try:
                 json.loads(json_content)
             except Exception as exc:
-                return self._failure("Invalid JSON: %s" % exc, fallback)
+                return self._failure(f"Invalid JSON: {exc}", fallback)
         if code and not state.get("diff"):
             try:
                 ast.parse(code)
             except SyntaxError as exc:
-                return self._failure("Python SyntaxError: %s at line %s" % (exc.msg, exc.lineno), fallback)
+                return self._failure(f"Python SyntaxError: {exc.msg} at line {exc.lineno}", fallback)
         if state.get("diff"):
             facts = state
             checks = [("hunk_shape_ok", bool(facts.get("hunk_shape_ok", False)), "diff hunk shape"),
@@ -255,7 +255,7 @@ class JevEvaluator:
                 checks.append(("ast_parse_ok", bool(facts["ast_parse_ok"]), "AST parse"))
             for _, ok, label in checks:
                 if not ok:
-                    return JevEvaluationResult("fail", 0.0, 0.0, {}, ["Code-owned %s check failed." % label], is_fallback=fallback, model=self.model)
+                    return JevEvaluationResult("fail", 0.0, 0.0, {}, [f"Code-owned {label} check failed."], is_fallback=fallback, model=self.model)
         elif not code and not json_content and not state.get("response") and not state.get("prompt"):
             return self._failure("Empty candidate state returned.", fallback)
         return JevEvaluationResult("pass", 0.0, 1.0,
