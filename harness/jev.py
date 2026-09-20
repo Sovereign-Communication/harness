@@ -221,3 +221,48 @@ class JevEvaluator:
             "file_path": file_path,
         }
         return self.evaluate(state)
+
+    def evaluate_plan_requirements(
+        self,
+        prompt: str,
+        target_files: Optional[List[str]] = None,
+    ) -> JevEvaluationResult:
+        """Evaluate goal and targets for structural requirements (loops, branching, complexity)."""
+        state = {
+            "prompt": prompt,
+            "target_files": list(target_files or []),
+        }
+        questions = {
+            "requires_iteration": {
+                "type": "boolean",
+                "instructions": "Does this coding task require iterative loops, conditional branches, or multi-step algorithms?",
+            },
+            "confidence": {
+                "type": "score",
+                "instructions": "Confidence in requirement analysis",
+            },
+        }
+        if self.api_key:
+            try:
+                payload = {"state": state, "questions": questions}
+                status, resp = self.transport.post(self.endpoint, self.api_key, payload)
+                if status == 200 and isinstance(resp, dict):
+                    return self._parse_jev_response(resp)
+            except Exception:
+                pass
+        lower = prompt.lower()
+        iter_keywords = (
+            "loop", "iterat", "branch", "recur", "dag", "multi-step", "pipeline",
+            "while", "until", "retry", "traverse", "graph", "step by step",
+            "condition", "algorithm", "cycle"
+        )
+        has_iter = any(k in lower for k in iter_keywords)
+        return JevEvaluationResult(
+            verdict="pass",
+            confidence=0.88 if has_iter else 0.75,
+            supported=0.90,
+            answers={"requires_iteration": has_iter, "confidence": 0.88 if has_iter else 0.75},
+            reasons=["Detected iterative/algorithmic requirements" if has_iter else "Standard declarative edit flow"],
+            cost=0.0,
+            is_fallback=True,
+        )

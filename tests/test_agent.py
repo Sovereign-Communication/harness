@@ -1682,6 +1682,24 @@ class TestHourglassLane(unittest.TestCase):
         engine.apply_edit.assert_not_called()
         self.assertEqual(res["cost"], 0.0)
 
+    def test_jev_preplanning_injects_algorithmic_guideline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent, engine = self._lane(Path(tmp))
+            planned_prompts = []
+            orig_plan_round = agent._plan_round
+
+            def track_plan(goal, candidate_files, gov, confirm=None):
+                planned_prompts.append(goal)
+                return orig_plan_round(goal, candidate_files, gov, confirm=False)
+
+            with patch.object(agent, "_plan_round", side_effect=track_plan), \
+                 self._decompose_seam():
+                agent._handle_edit("Implement an iterative convergence loop over util.py", "sid_jev", False)
+
+        self.assertTrue(len(planned_prompts) > 0)
+        self.assertIn("[STRUCTURAL GUIDELINE]", planned_prompts[0])
+        self.assertIn("iterative control flow", planned_prompts[0])
+
     def test_agent_lane_measures_its_own_root(self):
         """The planning owner reads the LANE's tree: the target's size is
         measured against the agent's root (the server's CWD has no big.py),

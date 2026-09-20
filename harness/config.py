@@ -424,6 +424,32 @@ def resolve_api_key():
     return key
 
 
+def resolve_jev_key():
+    """Resolve the Jev / System One API key: env file first, then environment.
+
+    Checks ~/.config/scmorc/jev.env, ~/.config/harness/jev.env, and environment
+    variables HARNESS_JEV_KEY, TYPESAFE_API_KEY, and JEV_API_KEY.
+    """
+    for p in (
+        os.path.join(os.path.expanduser("~/.config/scmorc"), "jev.env"),
+        os.path.join(CONFIG_DIR, "jev.env"),
+    ):
+        try:
+            with open(p, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if "=" in line and not line.startswith("#"):
+                        k, v = line.split("=", 1)
+                        if k.strip() in ("HARNESS_JEV_KEY", "JEV_API_KEY", "TYPESAFE_API_KEY") and v.strip():
+                            _warn_insecure_keyfile(p)
+                            return v.strip().strip('"').strip("'")
+        except OSError:
+            pass
+    return (os.environ.get("HARNESS_JEV_KEY")
+            or os.environ.get("TYPESAFE_API_KEY")
+            or os.environ.get("JEV_API_KEY"))
+
+
 def _as_bool(value):
     if isinstance(value, bool):
         return value
@@ -653,7 +679,7 @@ def load_settings(overrides=None):
                           if get("max_price_prompt", None) is not None else None),
         max_price_completion=(float(get("max_price_completion", None))
                               if get("max_price_completion", None) is not None else None),
-        jev_api_key=get("jev_api_key", None) or os.environ.get("TYPESAFE_API_KEY"),
+        jev_api_key=get("jev_api_key", None) or resolve_jev_key(),
         jev_endpoint=str(get("jev_endpoint", "https://api.typesafe.ai/v1/eval")),
         min_confidence=_num("min_confidence", float, 0.0, 1.0, 0.70),
     )
