@@ -516,7 +516,8 @@ class AutonomousAgent:
             root=str(self.root_dir),
             chat_fn=lambda prompt_text: (
                 self._orchestrator_chat_fn(gov)(prompt_text), 0.0),
-            execute=True)
+            execute=True,
+            allow_escalation=bool(getattr(self.settings, "allow_escalation", False)))
         if plan.get("decomposition") == "heuristic":
             # compose_plan degrades to the heuristic only after the LLM
             # decomposition failed (execute=True); the GUI needs that on the

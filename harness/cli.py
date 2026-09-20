@@ -607,6 +607,7 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
         decompose_llm=getattr(opts, "decompose_llm", False),
         confirm=confirm,
         execute=execute,
+        allow_escalation=bool(getattr(opts, "allow_escalation", getattr(settings, "allow_escalation", False))),
         # The same pinned output budget the nodes will run with, so the
         # chunk policy measures each pass against the real one.
         max_tokens=getattr(opts, "max_tokens", None))

@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from .capability import load_profiles, source_budget_for
 from .chat import governed_text
 from .condenser import distill_context
-from .config import CAPABILITIES_PATH, DEFAULT_APPLY_MAX_TOKENS, ESCALATION_POOL_PAID, FREE_JUDGE
+from .config import CAPABILITIES_PATH, DEFAULT_APPLY_MAX_TOKENS, ESCALATION_POOL_FREE, ESCALATION_POOL_PAID, FREE_JUDGE
 from .dag import DAGNode, TaskDAG
 from .errors import HarnessError
 from .output import eprint
@@ -1043,38 +1043,47 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         allow_escalation=allow_escalation)
 
     if confirm:
-        # An unnamed frontier rung resolves through the same sliding-scale
-        # owner the Router binds its frontier from (the free arming's
-        # frontier is the free one), so the hourglass being ON by default
-        # confirms instead of dying on an unset --frontier-model.
-        confirm_model = frontier_model or resolve_frontier_model(
-            None, use_free=use_free)
-        # The decomposition seam is NOT the gate's seam: a cheap decomposer
-        # must never answer the waist (and the verdict/ledger must never
-        # name the frontier as the model that answered). confirm_plan builds
-        # its own governed call on the resolved frontier model; hermetic
-        # tests patch harness.waist.governed_text or call confirm_plan
-        # directly with its own chat_fn.
-        try:
-            plan_result = confirm_plan(
-                transport=transport, api_key=api_key, governor=governor,
-                ledger=ledger, plan_result=plan_result, model=confirm_model,
-                use_free=use_free, custom_frontier=frontier_model,
-                root=root, run_gate=run_gate, chat_fn=None)
-        except HarnessError as exc:
-            # Fail-closed, and legible: the caller learns which gate and
-            # which rung could not confirm, instead of a bare provider error.
-            raise HarnessError(
-                f"waist confirmation could not run on {confirm_model} "
-                f"(plan NOT executed): {exc}") from exc
-        if plan_result.get("status") != "refused":
-            # An amend/split verdict replaces the node set: re-fit it, or the
-            # gate's own repair could hand execution an oversized node.
-            plan_result = _fit_plan_to_single_pass(
-                plan_result, goal=opts_goal, candidate_files=candidate_files,
-                custom_frontier=frontier_model, use_free=use_free, root=root,
-                run_gate=run_gate, max_tokens=max_tokens,
-                allow_escalation=allow_escalation)
+        ladder = resolve_waist_ladder(
+            use_free=use_free, custom_frontier=frontier_model,
+            allow_escalation=allow_escalation)
+        plan_result_confirmed = None
+        last_exc = None
+        for rung_idx, candidate_model in enumerate(ladder):
+            try:
+                res = confirm_plan(
+                    transport=transport, api_key=api_key, governor=governor,
+                    ledger=ledger, plan_result=plan_result, model=candidate_model,
+                    use_free=use_free, custom_frontier=frontier_model,
+                    root=root, run_gate=run_gate, chat_fn=None)
+                plan_result_confirmed = res
+                break
+            except HarnessError as exc:
+                last_exc = exc
+                from . import events as _events
+                _events.emit("rotation", model=candidate_model, reason=str(exc),
+                             note=f"waist confirmation failed on rung {rung_idx + 1}/{len(ladder)}")
+                continue
+
+        if plan_result_confirmed is not None:
+            plan_result = plan_result_confirmed
+            if plan_result.get("status") != "refused":
+                # An amend/split verdict replaces the node set: re-fit it, or the
+                # gate's own repair could hand execution an oversized node.
+                plan_result = _fit_plan_to_single_pass(
+                    plan_result, goal=opts_goal, candidate_files=candidate_files,
+                    custom_frontier=frontier_model, use_free=use_free, root=root,
+                    run_gate=run_gate, max_tokens=max_tokens,
+                    allow_escalation=allow_escalation)
+        else:
+            first_model = ladder[0] if ladder else (frontier_model or resolve_frontier_model(None, use_free=use_free))
+            if not execute:
+                raise HarnessError(
+                    f"waist confirmation could not run on {first_model} "
+                    f"(plan NOT executed): {last_exc}") from last_exc
+            from . import events as _events
+            _events.emit("orchestration_note",
+                         note=f"Waist confirmation unreachable across ladder ({last_exc}); proceeding under local verification gate")
+            eprint(f"[waist] Confirmation unreachable across ladder ({last_exc}); proceeding under local verification gate")
     return plan_result
 
 
@@ -1123,21 +1132,46 @@ def resolve_scout_ladder(use_free=True, custom_frontier=None):
     return list(route.ladder)
 
 
-def resolve_planner_ladder(use_free=True, custom_frontier=None, allow_paid=False):
-    """The model ladder for task decomposition and complex planning.
+def resolve_waist_ladder(use_free=True, custom_frontier=None, allow_escalation=False):
+    """The model ladder for waist plan confirmation (cheapest / free first).
 
-    Unlike scout (which uses Tier-0 models for fast/cheap AST parsing),
-    planning requires deep reasoning to structure multi-step DAGs.
-    When allow_paid is True (or use_free is False), planning escalates
-    to the frontier ladder (qwen3.8-max, deepseek-v4-pro, glm-5.3-flash).
-    When free-only, it uses the strongest free JSON emitter.
+    - If custom_frontier is specified, it is placed at the head of the ladder.
+    - If use_free is True:
+        - Primary free judge (FREE_JUDGE, e.g. google/gemma-4-31b-it:free)
+        - Free alternatives from ESCALATION_POOL_FREE
+        - If allow_escalation is True:
+            - Paid frontier model: resolve_frontier_model(custom_frontier, use_free=False)
+            - Paid escalation models from ESCALATION_POOL_PAID
+    - If use_free is False:
+        - Paid frontier model, then ESCALATION_POOL_PAID.
     """
-    if allow_paid or not use_free:
-        frontier = resolve_frontier_model(custom_frontier, use_free=False)
-        out = [frontier]
+    out = []
+    if custom_frontier:
+        resolved = resolve_frontier_model(custom_frontier, use_free=use_free)
+        if resolved and resolved not in out:
+            out.append(resolved)
+    if use_free:
+        for m in [FREE_JUDGE] + list(ESCALATION_POOL_FREE):
+            if m not in out:
+                out.append(m)
+        if allow_escalation:
+            frontier_paid = resolve_frontier_model(custom_frontier, use_free=False)
+            if frontier_paid not in out:
+                out.append(frontier_paid)
+            for m in ESCALATION_POOL_PAID:
+                if m not in out:
+                    out.append(m)
+    else:
+        frontier_paid = resolve_frontier_model(custom_frontier, use_free=False)
+        if frontier_paid not in out:
+            out.append(frontier_paid)
         for m in ESCALATION_POOL_PAID:
             if m not in out:
                 out.append(m)
-        return out
-    return [FREE_JUDGE, "google/gemma-4-26b-a4b-it:free"]
+    return out
+
+
+def resolve_planner_ladder(use_free=True, custom_frontier=None, allow_paid=False):
+    """The model ladder for task decomposition and complex planning."""
+    return resolve_waist_ladder(use_free=use_free, custom_frontier=custom_frontier, allow_escalation=allow_paid)
 

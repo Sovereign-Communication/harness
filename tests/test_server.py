@@ -907,16 +907,19 @@ class ChatEndpointTests(ServerHarness):
         self.assertEqual(args1["prompt"], "Hello")
         self.assertTrue(args1["auto_apply"])
 
-        args2 = ui_server.validate_dispatch("chat", {"prompt": "Fix", "auto_apply": False, "session_id": "s123"})
+        args2 = ui_server.validate_dispatch("chat", {"prompt": "Fix", "auto_apply": False, "session_id": "s123", "allow_paid": True})
         self.assertEqual(args2["prompt"], "Fix")
         self.assertFalse(args2["auto_apply"])
         self.assertEqual(args2["session_id"], "s123")
+        self.assertTrue(args2["allow_paid"])
 
         # run_chat_task
         with mock.patch("harness.server.AutonomousAgent") as mock_cls:
             mock_cls.return_value.run_prompt.return_value = {"status": "ok"}
-            res = ui_server.run_chat_task("task-1", {"prompt": "Hello"}, lambda: False)
+            res = ui_server.run_chat_task("task-1", {"prompt": "Hello", "allow_paid": True}, lambda: False)
             self.assertEqual(res, {"status": "ok"})
+            settings_passed = mock_cls.call_args[1]["settings"]
+            self.assertTrue(settings_passed.allow_escalation)
 
         # Handler synchronous dispatch for /api/chat/history and /api/chat
         class DirectHandler(ui_server.UiRequestHandler):
