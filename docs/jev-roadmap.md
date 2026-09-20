@@ -153,7 +153,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | Phase | IDs | Primary modules | Gate tests | Status |
 |---|---|---|---|---|
 | 0 Contract | `JEV-P0-*` | `jev.py`, `config.py`, docs | `tests/test_jev.py` + `tests/test_jev_smoke.py` | **complete in this PR** |
-| 1 One owner | `JEV-P1-*` | policy + apply/waist/CLI/MCP/agent | `tests/test_jev_policy.py`, `tests/test_jev_lane_parity.py`, `tests/test_jev_ledger_spend.py` | in progress on `feat/jev-p1-policy-and-lanes`; gates green locally, PR pending |
+| 1 One owner | `JEV-P1-*` | policy + apply/waist/CLI/MCP/agent | `tests/test_jev_policy.py`, `tests/test_jev_lane_parity.py`, `tests/test_jev_ledger_spend.py` | **blocked** on PR #35 CI self-audit D12: stale coverage baseline reports 193/380 changed lines (51%); focused P1 gates are green, but the full traced baseline cannot be regenerated in this checkout because unrelated `tests.test_local_fit_*` fixtures are absent |
 | 2 Pillars | `JEV-P2-*` | consent, sliding_scale, panel | consent/confidence + panel pre-gate | planned |
 | 3 Utilization | `JEV-P3-*` | orchestrator, routing, context | per-pattern hermetic tests | planned |
 | 4 Ops | `JEV-P4-*` | workflows, analytics, docs | live acceptance checklist | planned |
