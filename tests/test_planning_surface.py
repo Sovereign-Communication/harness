@@ -80,6 +80,27 @@ class TestPlanningSurface(unittest.TestCase):
             r'python -m py_compile "C:\repo\.harness\wt\n1\a.py"')
         self.assertNotIn(r".harness\wt\n1\.harness", rebased)
 
+    def test_rebase_gate_is_host_independent(self):
+        """Roots are path spellings, not host paths: a POSIX host rebasing a
+        Windows-shaped gate must not abspath-resolve the root against its
+        own CWD (the regression that broke Linux CI), and a Windows host
+        must not drive-letter a POSIX-shaped root. Both shapes rebase
+        identically on every OS."""
+        self.assertEqual(
+            rebase_gate(r'python -m py_compile "C:\repo\a.py"',
+                        r"C:\repo", r"C:\repo\.harness\wt\n1"),
+            r'python -m py_compile "C:\repo\.harness\wt\n1\a.py"')
+        self.assertEqual(
+            rebase_gate('python -m py_compile "/repo/a.py"',
+                        "/repo", "/repo/.harness/wt/n1"),
+            'python -m py_compile "/repo/.harness/wt/n1/a.py"')
+        # Same-root or unmatched spelling: command passes through untouched.
+        self.assertEqual(rebase_gate('x "/repo/a.py"', "/repo", "/repo"),
+                         'x "/repo/a.py"')
+        self.assertEqual(
+            rebase_gate('python -m py_compile "/repo/a.py"', "/other", "/another"),
+            'python -m py_compile "/repo/a.py"')
+
     def test_cli_parser_plan_subcommand(self):
         p = build_parser()
         opts = p.parse_args(["plan", "--goal", "Refactor X", "--execute", "--parallel", "--max-workers", "8"])
