@@ -43,7 +43,8 @@ from .rankings import build_rankings_report as _rankings_report
 from .waist import compose_plan as _compose_plan
 from .jev_policy import aggregate_structural, policy_for
 from .jev_completion import dogfood_phase
-from .jev_packs import validate_operator_pack
+from .jev_packs import validate_log_pack, validate_operator_pack
+from .log_analysis import analyze_log as _log_analyze, load_log_text as _log_load_text, write_analysis as _log_write_analysis
 from .mission_driver import pack_probe_attempt as _mission_pack_probe
 from .mission_driver import run_mission as _mission_run
 from .capability import capabilities_payload as _capability_payload_owner
@@ -457,6 +458,28 @@ def _cmd_issue_sort(opts, settings):
         "suggested_next_action": combo.get("suggested_next_action"),
     }
     _emit(envelope, opts.out)
+
+
+def _cmd_log_judgment(opts, settings):
+    """Thin JEV-LOG face: parse ($0), judge every item via the ONE policy
+    owner, aggregate to JSON. No second Jev client; unmatched stays honest."""
+    raw_pack = _read_json(opts.pack, "log pack")
+    try:
+        pack = validate_log_pack(raw_pack)
+    except ValueError as exc:
+        raise HarnessError(f"log pack invalid: {exc}") from exc
+    log_text = _log_load_text(opts.log)
+    # Hermetic-friendly composition: policy + ledger only (same as issue-sort;
+    # keyed calls fall back honestly with is_fallback=true without a governor).
+    jev_policy = policy_for(settings, transport=HttpTransport(),
+                            ledger=_ledger(settings))
+    analysis = _log_analyze(
+        log_text, pack, jev_policy,
+        info_sample=int(getattr(opts, "info_sample", 0) or 0),
+    )
+    if getattr(opts, "save_to", None):
+        _log_write_analysis(analysis, opts.save_to)
+    _emit(analysis, opts.out)
 
 
 def _cmd_ledger(opts, settings):
@@ -956,6 +979,7 @@ _DISPATCH = {
     "offer": _cmd_offer,
     "defer": _cmd_defer,
     "issue-sort": _cmd_issue_sort,
+    "log-judgment": _cmd_log_judgment,
     "ledger": _cmd_ledger,
     "models": _cmd_models,
     "bench": _cmd_bench,

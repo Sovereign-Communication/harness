@@ -183,4 +183,23 @@ TOOL_SCHEMAS = [
             "task_id": {"type": "string"},
         }, "required": ["issue", "pack"]},
     },
+    {
+        "name": "log_judgment",
+        "title": "Single-pass log-factor analysis against a frozen operator pack",
+        "description": "JEV-LOG: code extracts log items ($0), the ONE Jev policy "
+                       "owner judges every item (bucket choice + operator-declared "
+                       "score), and code aggregates the JSON artifact. Bucket ids and "
+                       "score levels come only from the operator pack; unmatched "
+                       "items stay unmatched; fallback counts are reported, never "
+                       "smoothed. Freeze the pack via operator approval before use.",
+        "inputSchema": {"type": "object", "properties": {
+            "log_text": {"type": "string", "description": "Raw runtime log dump text"},
+            "pack": {"type": "object",
+                     "description": "Frozen operator log pack: P5 bucket pack + one "
+                                    "score block {id, instructions, levels[]}"},
+            "info_sample": {"type": "integer", "minimum": 0,
+                            "description": "Also judge every Nth INFO record (0 = WARN/ERROR only)"},
+            "task_id": {"type": "string"},
+        }, "required": ["log_text", "pack"]},
+    },
 ]

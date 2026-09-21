@@ -208,6 +208,20 @@ def build_parser():
                      help="path to the operator bucket pack JSON")
     _add_output_flags(pis)
 
+    plog = sub.add_parser(
+        "log-judgment",
+        help="JEV-LOG single-pass log analysis against a frozen operator "
+             "pack (never invents buckets, levels, or actions)")
+    plog.add_argument("--log", required=True,
+                      help="path to the raw runtime log dump")
+    plog.add_argument("--pack", required=True,
+                      help="path to the frozen operator log pack JSON")
+    plog.add_argument("--info-sample", type=int, default=0,
+                      help="also judge every Nth INFO record (default: WARN/ERROR only)")
+    plog.add_argument("--save-to", default=None,
+                      help="also write the aggregate JSON artifact to this path")
+    _add_output_flags(plog)
+
     pl = sub.add_parser("ledger", help="Autonomy ledger")
     pls = pl.add_subparsers(dest="ledger_cmd", required=True)
     for _lc in ("verify", "report"):
