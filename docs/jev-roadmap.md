@@ -170,7 +170,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | JEV-COMPLETION | **complete** | **PR #39 MERGED** `5e15f8d` |
 | `JEV-P5-*` issue-sort buckets | **in progress** | PR #42 `feat/jev-p5-issue-sort`; **not complete until merge + CI green** |
 | `HUL-A` mission pack | **complete** | **PR #41 MERGED** `64e63a3`; mission pack + CLI + gate tests; CI green |
-| `HUL-B` dual budget | **in progress** | PR #47 |
+| `HUL-B` dual budget | **in progress** | PR #47 `7bf098c` |
 | `HUL-C` Jev scope gate | **in progress** | PR #48 |
 | `HUL-D` until-limits driver | **in progress** | PR #48 |
 | `HG-*` hourglass composition | **complete** | **PR #44 MERGED** `f22accb` |

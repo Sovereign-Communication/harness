@@ -342,7 +342,28 @@ def build_parser():
                       help="session cost ceiling for the live verify + apply phases")
     _add_output_flags(pdog)
 
+<<<<<<< HEAD
     # HUL-A/D mission pack surface (run = HUL-D until-limits driver).
+=======
+    pjphase = sub.add_parser(
+        "jev-phase",
+        help="Dogfood Jev 0-100 phase completion score; STATUS complete only "
+             "if hard gates pass and score >= min-score")
+    pjphase.add_argument("--phase", required=True,
+                         help="phase id (JEV-P1, P2, JEV-COMPLETION, ...)")
+    pjphase.add_argument("--repo-root", default=".",
+                         help="repo root containing docs/jev-roadmap.md and tests")
+    pjphase.add_argument("--evidence", default=None,
+                         help="optional JSON evidence overrides")
+    pjphase.add_argument("--min-score", type=float, default=85.0,
+                         help="threshold for can_mark_complete (default 85)")
+    pjphase.add_argument("--local-only", action="store_true",
+                         help="skip live Jev; use code gates + local semantic score")
+    pjphase.add_argument("--json", action="store_true", help="emit raw JSON only")
+    _add_output_flags(pjphase)
+
+    # HUL-A mission pack surface.
+>>>>>>> origin/main
     pmiss = sub.add_parser(
         "mission",
         help="Mission pack (HUL-A/D): init | status | resume | findings | run")
