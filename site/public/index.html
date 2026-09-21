@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proof Bench — real capability per dollar, proven</title>
+<meta name="description" content="Real LLM efficiency measured by verify gates and hash-chained evidence: cost per gated task by tier, escalation run-depth, and frontier warrants.">
+<link rel="stylesheet" href="./assets/site.css">
+</head>
+<body>
+<header class="site">
+  <h1>Proof Bench</h1>
+  <nav>
+    <a href="./index.html">Home</a>
+    <a href="./tiers/index.html">Tiers</a>
+    <a href="./router/index.html">Router</a>
+    <a href="./traces/index.html">Traces</a>
+    <a href="./publish/index.html">Publish</a>
+    <a href="./methodology/index.html">Methodology</a>
+  </nav>
+</header>
+<div id="demo-banner" class="demo-banner" role="status">DEMO DATA — synthetic evidence generated through the real export pipeline.</div>
+<main id="app"><noscript><p>Proof Bench needs JavaScript for its charts; the underlying tables ship as static JSON you can read directly.</p></noscript><p class="muted">Loading snapshot…</p></main>
+<footer class="site">
+  <p class="small muted">Every number on this site links to verify-gate evidence in a hash-chained ledger. Failures are data; ungated self-reports are not proof.</p>
+</footer>
+<script type="module">
+  import { loadSnapshot, renderHome, markDemo } from "./assets/app.js";
+  const root = document.getElementById("app");
+  const snapshot = await loadSnapshot();
+  markDemo();
+  root.replaceChildren();
+  renderHome(root, snapshot);
+</script>
+</body>
+</html>

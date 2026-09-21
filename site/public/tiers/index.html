@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tiers — what belongs at each rung, with proof</title>
+<meta name="description" content="Per-tier guidance for the escalation ladder: what each cost tier is genuinely for, and the gated evidence behind the claim.">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header class="site">
+  <h1>Proof Bench</h1>
+  <nav>
+    <a href="../index.html">Home</a>
+    <a href="./index.html">Tiers</a>
+    <a href="../router/index.html">Router</a>
+    <a href="../traces/index.html">Traces</a>
+    <a href="../publish/index.html">Publish</a>
+    <a href="../methodology/index.html">Methodology</a>
+  </nav>
+</header>
+<div id="demo-banner" class="demo-banner" role="status">DEMO DATA — synthetic evidence generated through the real export pipeline.</div>
+<main id="app"><p class="muted">Loading…</p></main>
+<footer class="site"><p class="small muted">Guidance plus the gated evidence behind it.</p></footer>
+<script type="module">
+  import { loadSnapshot, renderTiers, markDemo } from "../assets/app.js";
+  const root = document.getElementById("app");
+  const snapshot = await loadSnapshot();
+  markDemo();
+  root.replaceChildren();
+  renderTiers(root, snapshot);
+</script>
+</body>
+</html>

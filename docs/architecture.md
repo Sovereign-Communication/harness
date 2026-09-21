@@ -27,6 +27,11 @@ Harness is a dependency-light Python package with three surfaces:
   construction outside this owner.
 - `jev_packs.py`: typed question packs + local heuristics imported by
   `jev_policy` (still one policy owner, never a second client).
+- `site_export.py`: the ONE boundary owner between a private evidence ledger
+  and the public Proof Bench site (SITE-*): rebuilds sanitized runs from an
+  allowlist of ledger events, requires a consent record and a hash chain
+  that verifies, and refuses (never redacts) on secret-shaped content.
+  No other module may produce a `site-bundle-v1` payload.
 - `service.py`: canonical verify/claims request assembly shared by the CLI
   and web interfaces (prompt/claims reading, cancelled-run envelope,
   cost/meta attachment). Interfaces consume it; they do not re-derive the

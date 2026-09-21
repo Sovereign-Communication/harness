@@ -1,0 +1,41 @@
+# Proof Bench worker (SITE-5) — one Worker serving static assets + API.
+# Free-plan compatible: rate limiting bindings, KV rollup, D1 bundle store.
+name = "proof-bench"
+main = "index.js"
+compatibility_date = "2026-09-01"
+
+[assets]
+directory = "../public"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "proof-bench"
+database_id = "SET-BY-OPERATOR"          # `wrangler d1 create proof-bench`
+migrations_dir = "migrations"
+
+[[kv_namespaces]]
+binding = "ROLLUP"                       # rollup fold + dedupe + route cache
+id = "SET-BY-OPERATOR"                   # `wrangler kv namespace create ROLLUP`
+
+[[ratelimits]]
+name = "SUBMIT_LIMIT"
+namespace_id = "1001"
+[ratelimits.simple]
+limit = 20
+period = 60
+
+[[ratelimits]]
+name = "ROUTE_LIMIT"
+namespace_id = "1002"
+[ratelimits.simple]
+limit = 20
+period = 60
+
+# Secrets (set once by the operator; never committed):
+#   wrangler secret put JEV_ENDPOINT   # e.g. https://api.typesafe.ai/v1/systemone
+#   wrangler secret put JEV_KEY
+#   wrangler secret put JEV_MODEL      # optional, defaults to jev-latest
+# Vars:
+[vars]
+ROUTE_DAILY_BUDGET = "200"

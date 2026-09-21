@@ -13,6 +13,9 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 from .errors import HarnessError
 from .jev import (JevEvaluationResult, JevEvaluator, jev_cost,
                   triage_question_pack)
+from .route_pack import (ROUTE_QUERY_SITE, fallback_route, route_combo,
+                         route_question_pack as route_query_pack,
+                         validate_route_pack)
 from .jev_packs import (
     HUL_SCOPE_SITE,
     LOG_FACTOR_SITE,
@@ -1283,6 +1286,127 @@ class JevPolicy:
         if isinstance(choice, str) and choice not in pack_ids:
             reasons = reasons + [f"out-of-pack choice refused: {choice!r}"]
         return keyword_judgment(
+            reasons, model=result.model,
+            cost=float(result.cost or 0.0),
+            input_tokens=int(result.input_tokens or 0),
+            output_tokens=int(result.output_tokens or 0),
+            reservation=reservation)
+
+    @staticmethod
+    def _route_query_text(state: Any) -> str:
+        """Text extraction for route queries (accepts the ``goal`` key)."""
+        if isinstance(state, str):
+            return state
+        if isinstance(state, dict):
+            for key in ("goal", "query", "prompt", "issue", "text"):
+                value = state.get(key)
+                if isinstance(value, str):
+                    return value
+            return ""
+        return "" if state is None else str(state)
+
+    def evaluate_model_route(self, state, pack, *, site: str = ROUTE_QUERY_SITE,
+                             task_id: Optional[str] = None,
+                             node_id: Optional[str] = None,
+                             max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+        """Route a user query onto the declared model ladder (SITE-2).
+
+        0-hallucination contract (same class as ``evaluate_issue_sort``):
+        - choice criteria = declared rung ids only (via ``route_pack``);
+          ``_parse_answer`` already requires choice ∈ criteria.
+        - unkeyed / transport fail / out-of-ladder → the code-owned tier
+          heuristic answers with ``is_fallback=True``; no rung is invented.
+        - ladder cannot satisfy the heuristic floor → ``rung_id=None`` (the
+          honest "no declared rung can do this" answer).
+        - ONE ledger ``jev_eval`` per call; ``structural.site=model_route``.
+        Extends (never modifies) ``evaluate_route``: lane choice stays there;
+        this method chooses the cheapest capable DECLARED rung.
+        Returns ``(result, structural, combo)``.
+        """
+        goal_text = self._route_query_text(state)
+
+        try:
+            pack_doc = validate_route_pack(pack)
+        except ValueError as exc:
+            result = JevEvaluationResult(
+                "fail", 0.0, 0.0, {}, [str(exc)], cost=0.0,
+                input_tokens=0, output_tokens=0, is_fallback=True,
+                model=self.evaluator.model)
+            structural = self._account(
+                result, site=site, task_id=task_id, node_id=node_id)
+            combo = route_combo(
+                None, None, tier=None, reasons=[str(exc)],
+                is_fallback=True, structural=structural)
+            return result, structural, combo
+
+        def heuristic_route(reasons, *, model=None, cost=0.0,
+                            input_tokens=0, output_tokens=0,
+                            reservation=None):
+            rung_id, tier, fb_reasons = fallback_route(goal_text, pack_doc)
+            result = JevEvaluationResult(
+                "pass" if rung_id else "fail", 0.0, 1.0 if rung_id else 0.0,
+                {"rung": rung_id, "tier": tier},
+                list(reasons or []) + list(fb_reasons),
+                is_fallback=True,
+                model=model or self.evaluator.model)
+            if cost or input_tokens or output_tokens:
+                result = JevEvaluationResult(
+                    result.verdict, result.confidence, result.supported,
+                    result.answers, result.reasons, cost=cost,
+                    input_tokens=input_tokens, output_tokens=output_tokens,
+                    is_fallback=True, model=result.model)
+            # ONE ledger jev_eval per evaluate_model_route call.
+            structural = self._account(
+                result, site=site, task_id=task_id, node_id=node_id,
+                reservation=reservation)
+            combo = route_combo(
+                rung_id, pack_doc, tier=tier,
+                reasons=list(result.reasons), is_fallback=True,
+                structural=structural)
+            return result, structural, combo
+
+        if not self.keyed:
+            return heuristic_route(["unkeyed: deterministic tier heuristic only"])
+
+        reservation = None
+        try:
+            questions = route_query_pack(pack_doc)
+            reservation = self._preflight(
+                site=site, max_input_tokens=max_input_tokens)
+            result = self.evaluator.evaluate(
+                {"goal": goal_text, "pack_id": pack_doc["id"]},
+                questions)
+        except HarnessError as exc:
+            return heuristic_route([str(exc)], reservation=reservation)
+
+        answers = result.answers if isinstance(result.answers, dict) else {}
+        rung_ans = answers.get("rung")
+        choice = rung_ans.get("choice") if isinstance(rung_ans, dict) else None
+        declared = {r["rung_id"] for r in pack_doc["rungs"]}
+        in_ladder = (not result.is_fallback
+                     and isinstance(choice, str)
+                     and choice in declared)
+
+        if in_ladder and result.verdict == "pass":
+            structural = self._account(
+                result, site=site, task_id=task_id, node_id=node_id,
+                reservation=reservation)
+            entry = next(r for r in pack_doc["rungs"]
+                         if r["rung_id"] == choice)
+            combo = route_combo(
+                choice, pack_doc, tier=entry["tier"],
+                reasons=list(result.reasons or []) + [f"choice:{choice}"],
+                confidence=result.confidence, is_fallback=False,
+                structural=structural)
+            return result, structural, combo
+
+        # Out-of-ladder / transport fail / fallback / unparseable choice:
+        # never invent a rung. Deterministic heuristic answers instead.
+        reasons = list(result.reasons) if result.reasons else []
+        if isinstance(choice, str) and choice not in declared:
+            reasons = reasons + [
+                f"out-of-ladder choice refused: {choice!r}"]
+        return heuristic_route(
             reasons, model=result.model,
             cost=float(result.cost or 0.0),
             input_tokens=int(result.input_tokens or 0),

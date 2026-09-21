@@ -1,0 +1,72 @@
+name: site
+
+on:
+  push:
+    branches: [main]
+    paths: ["site/**", "bench/manifests/efficiency/**", "harness/site_export.py",
+            "harness/site_aggregate.py", "harness/route_pack.py",
+            ".github/workflows/site.yml"]
+  pull_request:
+    paths: ["site/**", "bench/manifests/efficiency/**", "harness/site_export.py",
+            "harness/site_aggregate.py", "harness/route_pack.py",
+            ".github/workflows/site.yml"]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy to Cloudflare (requires CF_API_TOKEN secrets)"
+        type: boolean
+        default: false
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Site-track hermetic tests (exporter, aggregator, router, fold parity)
+        run: |
+          python -m unittest tests.test_site_export tests.test_site_aggregate \
+            tests.test_route_pack tests.test_site_fold_parity -v
+      - name: Rebuild demo snapshot through the real pipeline
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          sys.path.insert(0, os.getcwd())
+          from bench.manifests.efficiency.demo_ledger import write_demo_artifacts
+          out = write_demo_artifacts("site/data/demo", tasks=26)
+          print("demo artifacts:", out)
+          bundle = json.load(open(os.path.join("site/data/demo", "bundle.json"),
+                                  encoding="utf-8"))
+          assert bundle["schema"] == "site-bundle-v1"
+          assert bundle["totals"]["runs"] > 0
+          assert bundle["chain"]["verified_claim"] is True
+          PY
+      - name: Validate bundle schema shape (smoke)
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          sys.path.insert(0, os.getcwd())
+          from harness.site_export import export_bundle, load_consent, verify_chain
+          # Re-verify the chain claim of the shipped demo bundle through the
+          # one owner: a bundle whose chain fails verify must never deploy.
+          ledger = "site/data/demo/demo-ledger.jsonl"
+          chain = verify_chain(ledger)
+          assert chain["verified_claim"] is True
+          PY
+      - name: Node fold-parity (worker vs Python vectors)
+        run: python -m unittest tests.test_site_fold_parity.FoldParityWorkerTests -v
+      - name: Deploy (only when secrets configured)
+        if: ${{ (github.ref == 'refs/heads/main' && github.event_name == 'push') || inputs.deploy }}
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          if [ -z "$CF_API_TOKEN" ]; then
+            echo "CF_API_TOKEN not configured; skipping deploy (build artifacts still validated)."
+            exit 0
+          fi
+          npx --yes wrangler@latest deploy --config site/worker/wrangler.toml

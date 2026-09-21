@@ -1,0 +1,98 @@
+/* SITE-8 pane styles — additive only, scoped to .pane-* classes. */
+/* Map the site palette names onto the existing app theme vars. */
+:root {
+  --ink: var(--fg, #e6edf3);
+  --muted: var(--dim, #8b949e);
+  --accent: var(--cyan, #58a6ff);
+  --warn: var(--yellow, #d29922);
+  --good: var(--green, #3fb950);
+  --bad: var(--red, #f85149);
+}
+.pane-tabs {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0 1rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  flex: none;
+}
+.pane-tab {
+  appearance: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  padding: 0.5rem 0.9rem;
+  cursor: pointer;
+  border-radius: 8px 8px 0 0;
+}
+.pane-tab:hover { color: var(--ink); }
+.pane-tab.active {
+  color: var(--ink);
+  background: var(--bg);
+  border-color: var(--line);
+}
+#pane-host { padding: 1.25rem 1.5rem; overflow-y: auto; flex: 1; min-height: 0; }
+#pane-host h2 { margin: 0.2rem 0 0.8rem; font-size: 1.25rem; }
+#pane-host h3 { margin: 1.4rem 0 0.5rem; font-size: 1rem; color: var(--accent); }
+#pane-host table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 720px;
+  font-size: 0.9rem;
+  margin-bottom: 0.6rem;
+}
+#pane-host th, #pane-host td {
+  border: 1px solid var(--line);
+  padding: 0.35rem 0.6rem;
+  text-align: left;
+}
+#pane-host td.num { text-align: right; font-family: var(--mono); }
+.pane-bars { max-width: 720px; margin-bottom: 0.5rem; }
+.pane-bar-row { display: flex; align-items: center; gap: 0.6rem; margin: 0.25rem 0; }
+.pane-bar-label { width: 2.2rem; font-family: var(--mono); font-size: 0.85rem; }
+.pane-track { flex: 1; height: 12px; background: var(--line); border-radius: 6px; }
+.pane-fill { height: 100%; background: var(--accent); border-radius: 6px; }
+.pane-fill.t3 { background: var(--warn); }
+.pane-num { font-family: var(--mono); font-size: 0.85rem; width: 6.5rem; text-align: right; }
+.pane-section { max-width: 860px; }
+.pane-json {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  max-height: 340px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.pane-legacy { display: flex; flex-direction: column; gap: 0.5rem; max-width: 860px; }
+.pane-legacy-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+}
+.pane-legacy-row code { font-size: 0.82rem; }
+.pane-legacy-row .pane-json { flex-basis: 100%; display: block; }
+.pane-fetch {
+  appearance: none;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  border-radius: 6px;
+  padding: 0.3rem 0.8rem;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+}
+.pane-fetch:hover { border-color: var(--accent); color: var(--accent); }
+.pane-fetch:disabled { opacity: 0.5; cursor: wait; }
+.muted { color: var(--muted); }
+.small { font-size: 0.8rem; }

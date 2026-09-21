@@ -1,0 +1,63 @@
+{
+  "comment": "Parity vectors for the Proof Bench rollup fold. Each case is folded by harness/site_aggregate.fold_rollup (Python) and site/worker/index.js foldRollup (JS); outputs must be deep-equal. The nightly CI rebuild fails on drift.",
+  "cases": [
+    {
+      "name": "empty_previous_single_bundle",
+      "previous": null,
+      "bundle": {
+        "bundle_id": "0123456789abcdef",
+        "schema": "site-bundle-v1",
+        "runs": [
+          {"run_id": "r1", "task_ref": "t1", "lane": "bench", "ts": "2026-09-01T00:00:00Z",
+           "primary_model": "m", "tier": "T0", "entry_tier": "T0", "rounds": 1,
+           "tokens_in": null, "tokens_out": null, "cost": 0.001,
+           "outcome": "pass", "gated": true, "deepest_tier_reached": "T0",
+           "jev_evals": {"count": 0, "cost": 0.0, "fallback": 0}},
+          {"run_id": "r2", "task_ref": "t2", "lane": "task", "ts": "2026-09-01T00:00:00Z",
+           "primary_model": "m2", "tier": "T3", "entry_tier": "T1", "rounds": 2,
+           "tokens_in": null, "tokens_out": null, "cost": 1.5,
+           "outcome": "fail", "gated": true, "deepest_tier_reached": "T3",
+           "jev_evals": {"count": 1, "cost": 0.00001, "fallback": 0}}
+        ]
+      },
+      "expected": {
+        "schema": "site-rollup-v1",
+        "contributors": 1,
+        "bundles": ["0123456789abcdef"],
+        "total_runs": 2,
+        "total_cost": 1.501,
+        "depth": {"T0": 1, "T3": 1}
+      }
+    },
+    {
+      "name": "chains_previous_and_dedupes_tiers",
+      "previous": {
+        "schema": "site-rollup-v1",
+        "contributors": 1,
+        "bundles": ["aaaaaaaaaaaaaaaa"],
+        "total_runs": 1,
+        "total_cost": 0.25,
+        "depth": {"T1": 1, "unknown": 0}
+      },
+      "bundle": {
+        "bundle_id": "bbbbbbbbbbbbbbbb",
+        "schema": "site-bundle-v1",
+        "runs": [
+          {"run_id": "r3", "task_ref": "t3", "lane": "task", "ts": "2026-09-02T00:00:00Z",
+           "primary_model": "m", "tier": "T1", "entry_tier": "T1", "rounds": 1,
+           "tokens_in": null, "tokens_out": null, "cost": 0.000001,
+           "outcome": "pass", "gated": false, "deepest_tier_reached": "not-a-tier",
+           "jev_evals": {"count": 0, "cost": 0.0, "fallback": 0}}
+        ]
+      },
+      "expected": {
+        "schema": "site-rollup-v1",
+        "contributors": 2,
+        "bundles": ["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"],
+        "total_runs": 2,
+        "total_cost": 0.250001,
+        "depth": {"T1": 1, "unknown": 1}
+      }
+    }
+  ]
+}

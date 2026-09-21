@@ -29,6 +29,7 @@ from .mcp_lanes import LANES, lane_for
 from .mcp_schemas import TOOL_SCHEMAS
 from .jev_policy import aggregate_structural, policy_for
 from .jev_packs import validate_log_pack, validate_operator_pack
+from .route_pack import validate_route_pack
 from .log_analysis import analyze_log
 from .service import run_verify as _service_run_verify
 from .validation import (
@@ -696,6 +697,43 @@ class McpServer:
                 "bucket": combo.get("bucket"),
                 "path_id": combo.get("path_id"),
                 "suggested_next_action": combo.get("suggested_next_action"),
+                "pack_id": combo.get("pack_id"),
+            }
+        if name == "route_query":
+            # Thin face over the ONE policy owner
+            # (jev_policy.evaluate_model_route). No second Jev client; combo
+            # fields come only from the declared route pack.
+            goal = validate_text(args.get("goal"), "goal", 100000, required=True)
+            raw_pack = args.get("pack")
+            if raw_pack is None:
+                raise HarnessError(
+                    "route_query requires 'pack' (operator-declared rung ladder)")
+            try:
+                pack = validate_route_pack(raw_pack)
+            except ValueError as exc:
+                raise HarnessError(f"route pack invalid: {exc}") from exc
+            jev_policy = getattr(self.engine, "jev_policy", None)
+            if jev_policy is None:
+                settings = getattr(self.engine, "settings", None)
+                if settings is not None:
+                    jev_policy = policy_for(
+                        settings, transport=self.transport,
+                        governor=self.governor, ledger=self.ledger)
+            if jev_policy is None:
+                raise HarnessError("route_query requires a Jev policy on the engine")
+            result, structural, combo = jev_policy.evaluate_model_route(
+                {"goal": goal}, pack, site="model_route")
+            return {
+                "status": "ok" if combo.get("rung_id") else "unroutable",
+                "route": combo,
+                "structural": structural,
+                "answers": getattr(result, "answers", {}),
+                "reasons": getattr(result, "reasons", []),
+                "is_fallback": bool(combo.get("is_fallback")),
+                "rung_id": combo.get("rung_id"),
+                "tier": combo.get("tier"),
+                "model": combo.get("model"),
+                "cost_class": combo.get("cost_class"),
                 "pack_id": combo.get("pack_id"),
             }
         if name == "log_judgment":

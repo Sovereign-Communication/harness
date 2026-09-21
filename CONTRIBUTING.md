@@ -162,6 +162,9 @@ statement covers the CI matrix by direct execution.
 | `harness/jev_packs.py` | operator-declared issue-sort bucket packs (schema validation, TypeSafe choice pack builder, keyword matcher); never invents buckets or actions |
 | `harness/jev_packs.py` | HUL-C mission scope packs (`hul_scope_question_pack`, site=`hul_scope`); unkeyed fallback cannot alone mark a mission complete |
 | `harness/jev_packs.py` | JEV-LOG operator log-factor packs (`validate_log_pack`, `log_factor_question_pack`, site=`log_factor`); never invents buckets, levels, paths, or actions |
+| `harness/route_pack.py` | SITE-2 operator route-ladder packs: schema validation, rung/guidance normalization, deterministic tier heuristic (`fallback_route`) — choice vocabulary is the declared rungs only |
+| `harness/site_export.py` | SITE-1 fail-closed exporter: verified ledger + consent → sanitized site-bundle-v1 (allowlist sanitize + credential scan before any bytes land) |
+| `harness/site_aggregate.py` | SITE-3 capability/$ metrics over exported bundles (gated-runs-only headlines, frontier warrant rate, modeled hourglass savings with stated basis) + KV rollup fold |
 | `harness/log_items.py` | JEV-LOG code-owned log item extraction + mechanical tallies ($0; header-token levels; bounded continuations) — judgment happens later via `jev_policy`, never here |
 | `harness/log_analysis.py` | JEV-LOG Stage D batch + Stage E aggregate artifact; Stage B draft prompt + operator freeze gate (a draft is never valid without explicit approval) — no second Jev client |
 | `harness/jev_policy.py` | `JevPolicy.evaluate_log_item`: JEV-LOG per-item bucket choice + score judgment (0-hallucination; one ledger `jev_eval` per call) |

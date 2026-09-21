@@ -1,0 +1,6 @@
+{
+  "name": "race-guard",
+  "file": "counters.py",
+  "instruction": "The Counter.bump method races when called from multiple threads (read-modify-write without synchronization). Make it thread-safe using a lock created in __init__, keeping the method signature and return value (the new total) identical.",
+  "verify": "python check.py"
+}

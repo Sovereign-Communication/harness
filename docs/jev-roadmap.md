@@ -174,6 +174,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `HUL-C` Jev scope gate | **complete** | **PR #48 MERGED** `469f34f`; scope packs via `jev_policy.evaluate_scope` (site=`hul_scope`); unkeyed cannot alone complete |
 | `HUL-D` until-limits driver | **complete** | **PR #48 MERGED** `469f34f`; `mission run` until limits/stall + FINDINGS.md + interrupt-safe resume; D12 coverage honestly refreshed (`a3afc16`) |
 | `HG-*` hourglass composition | **complete** | **PR #44 MERGED** `f22accb` |
+| `SITE-*` proof bench site | **complete** | `harness site-export` → bundle-v1 → aggregate/Worker; tiers page + router; sanitized opt-in only |
 | `MS-*` cheapest-capable + context | **open** | ad-hoc model strings → config/ladders; expensive seats get condensed state |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
 | Exit | Jev P4 checklist all true on `origin/main` | **open** |
@@ -208,6 +209,8 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | HUL-C | `HUL-C-*` | scope packs via `jev_policy.evaluate_scope` (`harness/jev_packs.py`, site=`hul_scope`) | `tests/test_hul_jev_scope_gate.py` | **complete** — PR #48 `469f34f` |
 | HUL-D | `HUL-D-*` | `harness/mission_driver.py` + FINDINGS + resume | `tests/test_hul_driver_findings_resume.py` | **complete** — PR #48 `469f34f` |
 | Hourglass | `HG-*` | waist/executor/spend/plan consensus/pyramid state | `tests/test_hg_*.py` | **complete** — PR #44 |
+| SITE-1/2 | `SITE-*` | `site_export.py`, `route_pack.py`, `jev_policy.evaluate_model_route` | `tests/test_site_export.py`, `tests/test_route_pack.py` | **complete** — fail-closed exporter + 0-hallucination router |
+| SITE-3..9 | `SITE-*` | `site_aggregate.py`, `site/` (pages+worker), `harness/server.py` site endpoints, `harness/ui/panes.js` | `tests/test_site_aggregate.py`, `tests/test_site_fold_parity.py` | **complete** — 8 gated-run metrics, fold parity (py↔js), CI workflow, UI panes |
 
 ### JEV-P3 patterns (implementer notes)
 
@@ -229,6 +232,16 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `JEV-P5-envelope` | Issue/fix combo bound to pack fields; `structural.site=issue_sort` |
 | `JEV-P5-orchestration` | Waist/orchestration/HUL attention steering via declared `path_id` only |
 | `JEV-P5-cli` | Thin `harness issue-sort` + MCP tool → policy owner only |
+
+### SITE proof bench (implementer notes)
+
+| ID | Work | Rule |
+|---|---|---|
+| `SITE-1` | Fail-closed `harness site-export` (consent + chain verify + secret scan → bundle-v1); efficiency bench manifests base-layer-first | exporter is the only ledger→public boundary; fail-closed |
+| `SITE-2` | `harness route` + MCP `route_query`; tier guidance with proof | choice ⊆ declared ladder only; no provider brands in phase code |
+| `SITE-3` | `site_aggregate` 8 metrics; gated-runs-only headlines | frontier rarity is a first-class metric (warrant rate + run-depth histogram) |
+| `SITE-4/5` | Static site (6 pages) + CF Worker (D1/KV/rate-limit bindings) | fold parity pinned by shared fixture vectors (py↔js) |
+| `SITE-6..9` | Consent publish flow + CI deploy; UI panes (legacy preserved); coalesce with Jev escalation events | consumer-tolerant v1/v2 event contract; no parallel STATUS elsewhere |
 
 **0-hallucination rule:** operator declares buckets; code owns matching; Jev may only select declared choice keys; unmatched/unkeyed → `is_fallback=true` and `bucket=None` — never invent buckets or actions.
 
