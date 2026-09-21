@@ -4,7 +4,7 @@ import unittest
 
 from harness.ledger import AutonomyLedger
 from harness.spend import SpendGovernor
-from harness.waist import compose_plan, parse_plan_consensus, plan_task
+from harness.waist import compose_plan, parse_plan_consensus
 
 from tests._fake import FakeTransport, m
 import tempfile
