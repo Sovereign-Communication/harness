@@ -10,7 +10,7 @@ Pack layout (every mission owns all of these paths):
     FINDINGS.md        placeholder until the terminal helper runs (HUL-D driver)
     receipts.jsonl     append-only attempt/evidence receipts (history/ledger style)
     jev_evals.jsonl    append-only Jev evaluation records (no second Jev client)
-    budget.json        spent + ceiling + terminal_reserve (dual budget is HUL-B)
+    budget.json        dual envelope: spent + working_remaining + terminal_reserve
     resume.json        continuation-style resumable state
     artifacts/         per-attempt artifacts
     INDEX.md           pack file index
@@ -25,10 +25,13 @@ mission.yaml minimum fields::
     persistence.root,
     verifier.kind
 
-Dual-budget *enforcement* is deliberately out of scope (HUL-B). This module
-only stores ``terminal_reserve`` and honestly computes::
+Dual-budget policy (HUL-B) lives in :mod:`harness.spend` — ONE formula owner::
 
     working_remaining = max_cost_usd - spent - terminal_reserve.cost_usd
+
+Attempts never eat ``terminal_reserve``. Terminal FINDINGS may spend up to
+the reserve only when the mission is already terminal. This module stores the
+same numbers and refuses spend that would violate the envelope.
 
 Failures raise ``HarnessError``. JSONL appends and file rewrites follow the
 history/ledger append style and ``filesafety._atomic_write``.
@@ -41,6 +44,14 @@ from typing import Any, Dict, List, Optional
 
 from .errors import HarnessError
 from .filesafety import _atomic_write
+from .spend import (
+    PHASE_ATTEMPT,
+    PHASE_TERMINAL,
+    assert_spend_allowed,
+    dual_budget_envelope,
+    normalize_phase,
+    working_remaining as _spend_working_remaining,
+)
 
 RESUME_SCHEMA_VERSION = 1
 PACK_FILES = (
@@ -506,6 +517,9 @@ def load_jev_evals(pack: MissionPack) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------- budget
+# Dual-budget arithmetic is owned by harness.spend (HUL-B). This module keeps
+# a thin mission-facing wrapper so pack callers do not re-derive the formula;
+# architecture forbids a bare re-export facade.
 
 
 def working_remaining(
@@ -513,17 +527,35 @@ def working_remaining(
     spent: float,
     terminal_reserve_cost_usd: float,
 ) -> float:
-    """Honest remaining budget after spent and terminal reserve.
+    """Mission-facing wrapper around spend.working_remaining (ONE formula)."""
+    return _spend_working_remaining(max_cost_usd, spent, terminal_reserve_cost_usd)
 
-    Full dual-budget *enforcement* (attempts never eat reserve) is HUL-B;
-    this helper only computes the stored field honestly.
-    """
-    return max(
-        0.0,
-        _require_number(max_cost_usd, "max_cost_usd")
-        - _require_number(spent, "spent")
-        - _require_number(terminal_reserve_cost_usd, "terminal_reserve_cost_usd"),
-    )
+
+def _budget_envelope_from_values(
+    max_cost: float,
+    spent: float,
+    reserve: float,
+    *,
+    phase: str = PHASE_ATTEMPT,
+    outstanding: float = 0.0,
+) -> Dict[str, Any]:
+    """Normalized dual-envelope body used by budget.json writes."""
+    # Validate mission-style fields first so HUL-A error names stay stable.
+    _require_number(max_cost, "budget.max_cost_usd")
+    _require_number(reserve, "budget.terminal_reserve_cost_usd")
+    _require_number(spent, "budget.spent")
+    env = dual_budget_envelope(
+        max_cost, spent, reserve, phase=phase, outstanding=outstanding)
+    return {
+        "max_cost_usd": env["max_cost_usd"],
+        "terminal_reserve_cost_usd": env["terminal_reserve_cost_usd"],
+        "spent": env["spent"],
+        "working_remaining": env["working_remaining"],
+        "phase": env["phase"],
+        "phase_ceiling": env["phase_ceiling"],
+        "phase_remaining": env["phase_remaining"],
+        "terminal_available": env["terminal_available"],
+    }
 
 
 def budget_from_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -531,14 +563,10 @@ def budget_from_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
     max_cost = norm["limits"]["max_cost_usd"]
     reserve = norm["terminal_reserve"]["cost_usd"]
     spent = 0.0
-    return {
-        "mission_id": norm["id"],
-        "max_cost_usd": max_cost,
-        "terminal_reserve_cost_usd": reserve,
-        "spent": spent,
-        "working_remaining": working_remaining(max_cost, spent, reserve),
-        "updated_at": _now_iso(),
-    }
+    out = _budget_envelope_from_values(max_cost, spent, reserve)
+    out["mission_id"] = norm["id"]
+    out["updated_at"] = _now_iso()
+    return out
 
 
 def write_budget(pack: MissionPack, budget: Dict[str, Any]) -> Dict[str, Any]:
@@ -547,14 +575,13 @@ def write_budget(pack: MissionPack, budget: Dict[str, Any]) -> Dict[str, Any]:
     reserve = _require_number(
         body.get("terminal_reserve_cost_usd"), "budget.terminal_reserve_cost_usd")
     spent = _require_number(body.get("spent", 0.0), "budget.spent")
-    out = {
-        "mission_id": pack.id,
-        "max_cost_usd": max_cost,
-        "terminal_reserve_cost_usd": reserve,
-        "spent": spent,
-        "working_remaining": working_remaining(max_cost, spent, reserve),
-        "updated_at": _now_iso(),
-    }
+    phase = body.get("phase", PHASE_ATTEMPT)
+    phase_n = normalize_phase(phase) if phase is not None else PHASE_ATTEMPT
+    outstanding = _require_number(body.get("outstanding", 0.0), "budget.outstanding")
+    out = _budget_envelope_from_values(
+        max_cost, spent, reserve, phase=phase_n, outstanding=outstanding)
+    out["mission_id"] = pack.id
+    out["updated_at"] = _now_iso()
     _atomic_write(str(pack.budget_path), json.dumps(out, indent=2, sort_keys=True) + "\n")
     return out
 
@@ -569,15 +596,81 @@ def load_budget(pack: MissionPack) -> Dict[str, Any]:
     return _require_mapping(body, "budget.json")
 
 
-def record_spend(pack: MissionPack, amount: float) -> Dict[str, Any]:
-    """Record attempt spend against the mission budget and rewrite budget.json."""
+def preflight_mission_spend(
+    pack: MissionPack,
+    worst_case: float,
+    *,
+    phase: Optional[str] = None,
+) -> float:
+    """Preflight worst-case spend against the dual envelope (fail closed).
+
+    Attempt phase refuses when the worst-case would eat ``terminal_reserve``.
+    Terminal phase may use the reserve; it still requires the pack to be
+    terminal (see :func:`record_spend`).
+    """
+    if not pack.exists():
+        raise HarnessError(f"mission pack not found: {pack.dir}")
+    budget = load_budget(pack)
+    terminal_now = is_terminal(pack)
+    if phase is None:
+        phase_n = PHASE_TERMINAL if terminal_now else PHASE_ATTEMPT
+    else:
+        phase_n = normalize_phase(phase)
+        if phase_n == PHASE_TERMINAL and not terminal_now:
+            raise HarnessError(
+                "terminal findings preflight requires a terminal mission "
+                "(mark_terminal first); refusing to unlock terminal_reserve early")
+    return assert_spend_allowed(
+        budget.get("max_cost_usd"),
+        budget.get("spent", 0.0),
+        worst_case,
+        budget.get("terminal_reserve_cost_usd"),
+        phase=phase_n,
+        outstanding=0.0,
+        label=f"mission:{pack.id}",
+    )
+
+
+def record_spend(
+    pack: MissionPack,
+    amount: float,
+    *,
+    phase: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Record spend against the mission dual budget and rewrite budget.json.
+
+    Default phase is ``attempt`` while the pack is non-terminal: spend that
+    would eat ``terminal_reserve`` is refused. After ``mark_terminal``,
+    findings spend may unlock the reserve (up to ``max_cost_usd``) and is
+    recorded with ``phase=terminal``.
+    """
+    if not pack.exists():
+        raise HarnessError(f"mission pack not found: {pack.dir}")
     delta = _require_number(amount, "spend amount")
     budget = load_budget(pack)
-    spent = _require_number(budget.get("spent", 0.0), "budget.spent") + delta
+    spent = _require_number(budget.get("spent", 0.0), "budget.spent")
+    max_cost = _require_number(budget.get("max_cost_usd"), "budget.max_cost_usd")
+    reserve = _require_number(
+        budget.get("terminal_reserve_cost_usd"), "budget.terminal_reserve_cost_usd")
+    terminal_now = is_terminal(pack)
+    if phase is None:
+        phase_n = PHASE_TERMINAL if terminal_now else PHASE_ATTEMPT
+    else:
+        phase_n = normalize_phase(phase)
+        if phase_n == PHASE_TERMINAL and not terminal_now:
+            raise HarnessError(
+                "terminal findings spend requires a terminal mission "
+                "(mark_terminal first); refusing to unlock terminal_reserve early")
+    assert_spend_allowed(
+        max_cost, spent, delta, reserve,
+        phase=phase_n,
+        label=f"mission:{pack.id}",
+    )
     return write_budget(pack, {
-        "max_cost_usd": budget.get("max_cost_usd"),
-        "terminal_reserve_cost_usd": budget.get("terminal_reserve_cost_usd"),
-        "spent": spent,
+        "max_cost_usd": max_cost,
+        "terminal_reserve_cost_usd": reserve,
+        "spent": spent + delta,
+        "phase": phase_n,
     })
 
 
@@ -722,7 +815,11 @@ def generate_status_md(pack: MissionPack) -> str:
         f"- **terminal_reserve.cost_usd:** {spec['terminal_reserve']['cost_usd']}",
         f"- **verifier.kind:** {spec['verifier']['kind']}",
         f"- **budget.spent:** {budget.get('spent', 0.0)}",
+        f"- **budget.terminal_reserve_cost_usd:** "
+        f"{budget.get('terminal_reserve_cost_usd', spec['terminal_reserve']['cost_usd'])}",
         f"- **budget.working_remaining:** {budget.get('working_remaining', 0.0)}",
+        f"- **budget.terminal_available:** {budget.get('terminal_available', 0.0)}",
+        f"- **budget.phase:** {budget.get('phase', 'attempt')}",
         f"- **receipts:** {len(receipts)}",
         f"- **jev_evals:** {len(evals)}",
         f"- **resume.attempts:** {resume.get('attempts', 0)}",
@@ -925,6 +1022,14 @@ def pack_summary(pack: MissionPack) -> Dict[str, Any]:
         "terminal_reserve": spec["terminal_reserve"],
         "verifier": spec["verifier"],
         "budget": budget,
+        "dual_budget": {
+            "working_remaining": budget.get("working_remaining", 0.0),
+            "terminal_reserve_cost_usd": budget.get(
+                "terminal_reserve_cost_usd",
+                spec["terminal_reserve"]["cost_usd"]),
+            "terminal_available": budget.get("terminal_available", 0.0),
+            "phase": budget.get("phase", PHASE_ATTEMPT),
+        },
         "receipts_count": len(receipts),
         "jev_evals_count": len(evals),
         "receipts": receipts,
