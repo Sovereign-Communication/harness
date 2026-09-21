@@ -190,7 +190,8 @@ statement covers the CI matrix by direct execution.
 | `harness/web.py` | deliberate web access for the chat lane: allowlist-only fetch (https, redirects refused) + one operator-configured search endpoint; opt-in per run, honest failures, never an SSRF surface |
 | `harness/claims.py` | structured-claims grounding: source_refs lint + claims curation from the ledger's own evidence |
 | `harness/continuation.py` | the resumable-task state contract and its verification identity |
-| `harness/mission_record.py` | HUL-A mission pack: mission.yaml schema, pack layout under missions/<id>/, STATUS generator, append-only receipts/jev_evals, budget.json + resume.json, terminal findings helper |
+| `harness/spend.py` | Cost-bounded spend: the governor that makes ceilings guarantees. Live pricing catalog, key identity, BYOK learning/denylist, free-model discovery, and the HUL-B dual envelope (`working_remaining = max - spent - terminal_reserve`; attempts never eat reserve; terminal findings may). |
+| `harness/mission_record.py` | HUL-A/B mission pack: mission.yaml schema, pack layout under missions/<id>/, STATUS generator, append-only receipts/jev_evals, dual-budget budget.json (delegates formula to spend.py) + resume.json, terminal findings helper |
 | `harness/convergence.py` | deterministic tally over panel votes + the rotating specialist lane |
 | `harness/errors.py` | shared exception types (`HarnessError`) |
 | `harness/filesafety.py` | file-safety primitives: every mutation of a real file goes through these |

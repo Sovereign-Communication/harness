@@ -169,7 +169,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `JEV-P4-*` ops / exit | **open** | after P3 DoD |
 | `JEV-P5-*` issue-sort buckets | **in progress** | PR #42 `feat/jev-p5-issue-sort`; **not complete until merge + CI green** |
 | `HUL-A` mission pack | **complete** | **PR #41 MERGED** `64e63a3`; mission pack + CLI + gate tests; CI green |
-| `HUL-B` dual budget | **open** | after A |
+| `HUL-B` dual budget | **in progress** | branch `feat/hul-b-dual-budget` (`Harness-hul-b`); `spend.py` dual envelope + `tests/test_hul_budget_reserve.py`; **not complete until merge + CI green** |
 | `HUL-C` Jev scope gate | **open** | after A + P1 policy (merged) |
 | `HUL-D` until-limits driver | **open** | after A–C |
 | `HG-*` hourglass composition | **open** | composed ceiling, pyramid resume, final gates, hybrid isolation, plan consensus, condensation into decompose, MS surface parity |
@@ -203,7 +203,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | 4 Ops | `JEV-P4-*` | workflows, analytics, docs | live acceptance checklist + dogfood with/without jev | **open** |
 | 5 Issue-sort | `JEV-P5-*` | `jev_policy` + `harness/jev_packs.py`, waist/orchestrator/CLI/MCP | `tests/test_jev_issue_sort.py` (+ pack/orchestration) | **in progress** — PR #42 `feat/jev-p5-issue-sort`; operator bucket packs, 0 hallucination |
 | HUL-A | `HUL-A-*` | `harness/mission_record.py`, CLI `mission` | `tests/test_hul_mission_record.py` | **complete** — PR #41 `64e63a3` |
-| HUL-B | `HUL-B-*` | `spend.py` dual envelope | `tests/test_hul_budget_reserve.py` | **open** |
+| HUL-B | `HUL-B-*` | `spend.py` dual envelope | `tests/test_hul_budget_reserve.py` | **in progress** — `feat/hul-b-dual-budget`; evidence pending merge + CI |
 | HUL-C | `HUL-C-*` | scope packs via `jev_policy.evaluate_scope` (pack module name when shipped) | `tests/test_hul_jev_scope_gate.py` | **open** |
 | HUL-D | `HUL-D-*` | mission driver + FINDINGS + resume | `tests/test_hul_driver_findings_resume.py` | **open** |
 | Hourglass | `HG-*` | waist/executor/spend/plan consensus/pyramid state | named hermetic tests per gap (see HG notes) | **open** |

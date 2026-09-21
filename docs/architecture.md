@@ -25,7 +25,7 @@ Harness is a dependency-light Python package with three surfaces:
   cost/meta attachment). Interfaces consume it; they do not re-derive the
   verify lane.
 - `validation.py`: shared trust-boundary validation.
-- `spend.py`: cost ceilings, pricing, BYOK, and model discovery.
+- `spend.py`: cost ceilings, pricing, BYOK, model discovery, and the HUL-B dual-budget envelope (ONE owner of `working_remaining = max_cost - spent - terminal_reserve`; attempt preflight/reserve/record never eat the terminal reserve; terminal findings may spend up to the reserve).
 - `chat.py`: model transport payloads and output usability (one owner of the
   text-shape verdicts: `assess_output` for lane gates, `looks_truncated` for
   bodies cut off mid-JSON).
