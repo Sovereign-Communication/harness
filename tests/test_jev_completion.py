@@ -1,7 +1,6 @@
 """Hermetic tests for the Jev phase-completion dogfood gate."""
 import io
 import json
-import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
