@@ -172,7 +172,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `HUL-B` dual budget | **open** | after A |
 | `HUL-C` Jev scope gate | **open** | after A + P1 policy (merged) |
 | `HUL-D` until-limits driver | **open** | after A–C |
-| `HG-*` hourglass composition | **in progress** | PR #44; local full suite + audit BAR MET; **not complete until merge + CI green** |
+| `HG-*` hourglass composition | **in progress** | PR #44; suite+audit BAR MET after P5 union; **not complete until merge + CI green** |
 | `MS-*` cheapest-capable + context | **open** | ad-hoc model strings → config/ladders; expensive seats get condensed state |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
 | Exit | Jev P4 checklist all true on `origin/main` | **open** |

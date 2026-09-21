@@ -1237,13 +1237,9 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                  chat_fn=None, max_cost=None, keep_going=False, out=None,
                  execute=False, root=None, max_tokens=None,
                  allow_escalation: bool = False,
-<<<<<<< HEAD
                  plan_consensus: bool = False,
-                 jev_policy=None) -> Dict[str, Any]:
-=======
                  jev_policy=None,
                  issue_sort_pack=None) -> Dict[str, Any]:
->>>>>>> origin/main
     """ONE owner of the plan-lane flow (CLI and MCP call this).
 
     Order: optional cheap-LLM decomposition (M1, condensed signatures) ->
@@ -1430,13 +1426,10 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             plan_result = plan_result_confirmed
             if plan_structural is not None:
                 plan_result["structural"] = plan_structural
-<<<<<<< HEAD
             if consensus is not None:
                 plan_result["consensus"] = consensus
-=======
             if plan_issue_sort is not None:
                 plan_result["issue_sort"] = plan_issue_sort
->>>>>>> origin/main
             # When in autonomous execution mode and the waist refused,
             # do not immediately halt. Attempt critique-driven re-planning if decomposition
             # was LLM-based, feeding the frontier's architectural critique back to the planner.
