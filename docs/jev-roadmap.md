@@ -1,4 +1,4 @@
-# Jev Full-Functionality Roadmap
+﻿# Jev Full-Functionality Roadmap
 
 **Status:** active tracking doc  
 **Picked up from:** Freebuff / Buffy lane (PR-Jev-Live `b6fa945`, waist pre-plan `a591739`, cost foundation `b3960e7`)  
@@ -157,54 +157,37 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 
 ---
 
-## Canonical STATUS (update here only — truth as of P3 utilization slice on `feat/jev-p3-utilization`)
+## Canonical STATUS (update here only — truth as of 2026-09-21 post P2 merge)
 
 | Track / phase | Status | PR / evidence |
 |---|---|---|
 | Preflight sync `main`↔`origin` P0 | **complete** | `origin/main` includes P0 `d042d70` |
 | `JEV-P0-*` contract truth | **complete** | PR #34 / `d042d70`; live smoke OK |
 | `JEV-P1-*` one owner + lanes | **complete** | **PR #35 MERGED** → `origin/main` `9d5ff14` |
-| `JEV-P2-*` System One pillars | **complete** | **PR #36 MERGED** → `origin/main` `405bbc1`; named P2 tests + hermetic lane-parity on merge tip; `JEV-P2-jury` remains deferred |
-| `JEV-P3-*` utilization | **in progress** | Worktree `Harness-jev-p3` / `feat/jev-p3-utilization`; base `origin/main` `405bbc1`; one policy owner (`jev_policy` + packs in `jev_packs`); hermetic tests: `tests.test_jev_util_route`, `tests.test_jev_triage_files`, `tests.test_jev_context_pack`, `tests.test_jev_claims_support`, `tests.test_jev_completion_nouls`, `tests.test_jev_calibration`, `tests.test_jev_util_paths`; required battery green locally; **not complete until merge gates green** |
-| `JEV-P4-*` ops / exit | **open** | after P3 merge + STATUS complete |
+| `JEV-P2-*` System One pillars | **complete** | **PR #36 MERGED** → `origin/main` `405bbc1`; hermetic lane-parity; D12 executed; local audit BAR MET; CI green on PR tip **and** post-merge `main`; live Jev smoke OK; **`JEV-P2-jury` deferred** (follow-up, not blocking P2 complete) |
+| `JEV-P3-*` utilization | **in progress** | PR #43 `feat/jev-p3-utilization`; route/triage-files/context-pack/claims/completion/calibration hermetic tests green locally; audit BAR MET; **not complete until merge + CI green** |
+| `JEV-P4-*` ops / exit | **open** | after P3 DoD |
+| `JEV-P5-*` issue-sort buckets | **open** | **new product track** (operator category packs → typed choice + 0-hallucination steering); worktree after P3 or parallel docs-row only until implementer PR |
+| `HUL-A` mission pack | **open** | worktree `Harness-hul-a` / `feat/hul-a-mission-pack`; no product code on main yet |
+| `HUL-B` dual budget | **open** | after A |
+| `HUL-C` Jev scope gate | **open** | after A + P1 policy (merged) |
+| `HUL-D` until-limits driver | **open** | after A–C |
+| `HG-*` hourglass composition | **open** | composed ceiling, pyramid resume, final gates, hybrid isolation, plan consensus, condensation into decompose, MS surface parity |
+| `MS-*` cheapest-capable + context | **open** | ad-hoc model strings → config/ladders; expensive seats get condensed state |
+| Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
+| Exit | Jev P4 checklist all true on `origin/main` | **open** |
+| Exit | HUL A–D shipped **or** open-problem packs on HUL contract | **open** |
 
-**P3 done when (all true):** named P3 tests + required battery green → `python audits/self/audit.py` **BAR MET** → coverage baseline refreshed only via official script after real tests → STATUS on PR branch honest → PR merged → post-merge `main` CI green → STATUS P3 `complete`.
+**P2 done when (all true):** … → PR #36 merged → post-merge `main` CI green → STATUS P2 `complete`. **TRUE on 2026-09-21.**
 
-### P3 evidence snapshot (this branch)
+### P2 evidence snapshot (repair complete — merged)
 
 | Item | Finding |
 |---|---|
-| Branch | `feat/jev-p3-utilization` on `Harness-jev-p3`, base `origin/main` `405bbc1` |
-| Policy owner | ONE: `harness/jev_policy.py` evaluate helpers; packs in `harness/jev_packs.py` (no second Jev client; route vocabulary `free-distill`/`diff`/`frontier`, never brand ids) |
-| `JEV-P3-route` | `JevPolicy.evaluate_route` + optional `jev_route` tier floor in `sliding_scale.classify_task_tier` / `resolve_sliding_scale_route`; waist `compose_plan` feeds keyed route into `plan_task` |
-| `JEV-P3-triage-files` | `JevPolicy.evaluate_file_triage` + `orchestrator.triage_files(..., jev_policy=)`; listing validation; keyword/unkeyed fallback honest |
-| `JEV-P3-context-pack` | `jev_packs.build_context_pack`; waist decompose passes distilled `repo_context` when missing |
-| `JEV-P3-claims` | `JevPolicy.evaluate_claim_support` flag-gated; `panel_judge(..., jev_claim_support=False)` default off; `claims.lint_claims` ownership unchanged |
-| `JEV-P3-completion` | `JevPolicy.evaluate_completion_nouls` + `orchestrator.assess_completion_nouls` before generative judge when policy attached; missing named artifact → cannot complete |
-| `JEV-P3-calibration` | `LedgerAnalytics.jev_calibration_report` (advisory); embedded in `participation_report`; no silent threshold mutation |
-| Live dogfood | Optional TypeSafe key present at `~/.config/harness/jev.env`; **not spent this PR** (hermetic complete; prefer no live cost) |
-| Local battery | 270 tests green: `tests.test_jev` + `test_jev_policy` + `test_jev_lane_parity` + `test_agent` + `test_waist` + `test_orchestrator` + `test_sliding_scale` + all named P3 modules |
-| Coverage baseline | Refreshed via `audits/self/refresh_coverage_baseline.py` **after** real tests executed new lines (official script only) |
-| Audit | `python audits/self/audit.py` → **BAR MET** (A 10.0 / R 10.0 / SM 10.0 / SD 10.0) |
-| Gate to merge | Local battery + audit BAR MET on branch; STATUS stays **in progress until merge + post-merge CI green**; do **not** mark complete before merge |
-
-### Named P3 proving tests
-
-| Pattern | Test module |
-|---|---|
-| route | `tests.test_jev_util_route` |
-| triage-files | `tests.test_jev_triage_files` |
-| context-pack | `tests.test_jev_context_pack` |
-| claims | `tests.test_jev_claims_support` |
-| completion | `tests.test_jev_completion_nouls` |
-| calibration | `tests.test_jev_calibration` |
-| refusal/fallback paths | `tests.test_jev_util_paths` |
-| D12 path coverage | `tests.test_jev_util_coverage` |
-
-### Next implementation slice (priority order — no guessing)
-1. Finish **P3** gates on this branch: coverage baseline refresh via official script → audit BAR MET → open/merge PR. Do **not** mark P3 complete while audit or local gates are red.
-2. After P3 merge + STATUS complete → **P4** dogfood + freeze thresholds (plus any still-open promoted product tracks).
-3. `JEV-P2-jury` remains a follow-up; do not reopen P0–P2 phase code.
+| PR | [#36](https://github.com/Sovereign-Communication/harness/pull/36) **MERGED** `405bbc1` |
+| Repair | hermetic `tests/test_jev_lane_parity.py`; D12 lines executed; battery 118 OK; audit BAR MET; live smoke `jev-1.13.0` non-fallback honest cost |
+| Deferred | `JEV-P2-jury` — needs fail-closed contract + dedicated coverage |
+| Post-merge CI | `main` audit + test 3.9/3.11/3.13 + package **SUCCESS** |
 
 ---
 
@@ -212,18 +195,90 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 
 | Phase | IDs | Primary modules | Gate tests | Status |
 |---|---|---|---|---|
-| 0 Contract | `JEV-P0-*` | `jev.py`, `config.py`, docs | `tests/test_jev.py` + `tests/test_jev_smoke.py` | **complete** — PR #34 |
-| 1 One owner | `JEV-P1-*` | policy + apply/waist/CLI/MCP/agent | `tests/test_jev_policy.py`, `tests/test_jev_lane_parity.py`, `tests/test_jev_ledger_spend.py` | **complete** — PR #35 merged; do not re-open |
-| 2 Pillars | `JEV-P2-*` | consent, sliding_scale, panel | `tests/test_jev_triage.py`, `tests/test_consent_confidence.py`, `tests/test_min_confidence_gating.py` + hermetic `tests/test_jev_lane_parity.py` | **complete** — PR #36 merged `405bbc1`; jury deferred |
-| 3 Utilization | `JEV-P3-*` | `jev_packs`, `jev_policy`, orchestrator, waist, sliding_scale, ledger_analytics, panel | `tests.test_jev_util_route`, `tests.test_jev_triage_files`, `tests.test_jev_context_pack`, `tests.test_jev_claims_support`, `tests.test_jev_completion_nouls`, `tests.test_jev_calibration`, `tests.test_jev_util_paths`, `tests.test_jev_util_coverage` | **in progress** — this branch; not complete until merge gates green |
-| 4 Ops | `JEV-P4-*` | workflows, analytics, docs | live acceptance checklist | planned |
+| 0 Contract | `JEV-P0-*` | `jev.py`, `config.py`, docs | `tests/test_jev.py` + smoke | **complete** — PR #34 |
+| 1 One owner | `JEV-P1-*` | policy + lanes | `test_jev_policy` / `lane_parity` / `ledger_spend` | **complete** — PR #35 |
+| 2 Pillars | `JEV-P2-*` | consent, sliding_scale, waist triage | `test_jev_triage`, `test_consent_confidence`, `test_min_confidence_gating` + hermetic lane parity + audit | **complete** — PR #36 `405bbc1`; jury deferred |
+| 3 Utilization | `JEV-P3-*` | orchestrator, routing, context, panel, calibration | `tests/test_jev_util_*.py` + keep-green battery | **in progress** — PR #43 |
+| 4 Ops | `JEV-P4-*` | workflows, analytics, docs | live acceptance checklist + dogfood with/without jev | **open** |
+| 5 Issue-sort | `JEV-P5-*` | `jev_policy` + planned pack module (name when shipped), waist/orchestrator/CLI/MCP | `tests/test_jev_issue_sort.py` (+ pack/orchestration) | **open** — operator bucket packs, 0 hallucination |
+| HUL-A | `HUL-A-*` | new mission pack module (name when shipped), CLI `mission` | `tests/test_hul_mission_record.py` | **open** |
+| HUL-B | `HUL-B-*` | `spend.py` dual envelope | `tests/test_hul_budget_reserve.py` | **open** |
+| HUL-C | `HUL-C-*` | scope packs via `jev_policy.evaluate_scope` (pack module name when shipped) | `tests/test_hul_jev_scope_gate.py` | **open** |
+| HUL-D | `HUL-D-*` | mission driver + FINDINGS + resume | `tests/test_hul_driver_findings_resume.py` | **open** |
+| Hourglass | `HG-*` | waist/executor/spend/plan consensus/pyramid state | named hermetic tests per gap (see HG notes) | **open** |
+
+### JEV-P3 patterns (implementer notes)
+
+| ID | Work | Rule |
+|---|---|---|
+| `JEV-P3-route` | Typed apply-route choice via `jev_policy` pack; consumed by router — **no brand names** | packs owned by policy (optional shared pack module when shipped); unkeyed = skip live + `is_fallback` |
+| `JEV-P3-triage-files` | Orchestrator file-relevance nouls over candidate list | validate picks against real listing |
+| `JEV-P3-context-pack` | Filter state to decision-relevant fields before generative seats | prefer MicroBrief/condensed; expensive seats never get unbounded raw dumps when a pack exists |
+| `JEV-P3-claims` | Panel claim-support nouls before judge synthesis | claims lint stays code-owned |
+| `JEV-P3-completion` | Artifact/goal nouls before completion judge | missing named artifact → not complete |
+| `JEV-P3-calibration` | `ledger_analytics`: jev confidence vs verify outcomes | advisory retune; no fake green |
+
+### JEV-P5 issue-sort (operator product — after or beside P3)
+
+| ID | Work |
+|---|---|
+| `JEV-P5-buckets` | Operator pack schema + validation + keyword matcher |
+| `JEV-P5-issue-sort` | `JevPolicy.evaluate_issue_sort`; choice criteria ⊆ operator buckets only |
+| `JEV-P5-envelope` | Issue/fix combo bound to pack fields; `structural.site=issue_sort` |
+| `JEV-P5-orchestration` | Waist/orchestration/HUL attention steering via declared `path_id` only |
+| `JEV-P5-cli` | Thin `harness issue-sort` + MCP tool → policy owner only |
+
+**0-hallucination rule:** operator declares buckets; code owns matching; Jev may only select declared choice keys; unmatched/unkeyed → `is_fallback=true` and `bucket=None` — never invent buckets or actions.
+
+### HUL product phases (Track B)
+
+| ID | Work | Gate test |
+|---|---|---|
+| `HUL-A` | `missions/<id>/` pack + loader + STATUS generator + receipts + CLI `mission init\|status\|resume\|findings` | `tests/test_hul_mission_record.py` |
+| `HUL-B` | Dual budget: `working_remaining = max - spent - terminal_reserve`; attempts never eat reserve | `tests/test_hul_budget_reserve.py` |
+| `HUL-C` | Scope packs via `jev_policy` (`site=hul_scope`); unkeyed cannot alone complete | `tests/test_hul_jev_scope_gate.py` |
+| `HUL-D` | `mission run` until limits/stall + FINDINGS.md + resume.json | `tests/test_hul_driver_findings_resume.py` |
+
+Reuse `jev_policy` — no second Jev client. Stall default: 5 consecutive attempts with no new artifact/evidence.
+
+### Hourglass remaining (`HG-*`)
+
+| ID | Work |
+|---|---|
+| `HG-composed-ceiling` | Preflight decompose + waist + Σ node ceilings vs session ceiling **before** spend; envelope carries number |
+| `HG-pyramid-resume` | Persist plan/DAG/node results; `plan --resume` skips completed nodes |
+| `HG-final-gate` | Default final/stage gate on CLI+MCP+agent; false-ok blocked |
+| `HG-hybrid-isolate` | Worktree only for overlap-free concurrent nodes; shared-tree mutex when paths collide |
+| `HG-plan-consensus` | Cheap second soundness check before waist when confirm armed |
+| `HG-condense-decompose` | Feed MicroBrief/signatures into LLM decompose + waist on all surfaces |
+| `HG-decompose-default` | CLI/MCP default decompose_llm follows `resolve_hourglass` (align with agent) |
+| `HG-ms-parity` | Remove lane-level ad-hoc model strings; ladders/config only; MS envelope requested vs observed |
+
+### Model selection + dogfood policy (all phases)
+
+- Hermetic tests stay hermetic (`test/model` doubles).
+- Live tracking/dogfood: **cheap paid** first (`deepseek/deepseek-v4.1-flash` apply, `z-ai/glm-5.3-flash` judge); `HARNESS_USE_FREE=false` for tracking; free-tier is fallback evidence only.
+- Hourglass dogfood surface: `harness plan --goal … --decompose-llm --confirm [--execute] --task-max-cost …` + MCP/agent twins; prove cheapest-first + waist model + condensed brief from ledger/envelope.
+- Phase PRs must not hardcode provider brands — resolve via router/ladders/`MS-*`.
+- FRP: swap-grade, verdicts, evidence, bounds. Fail ≠ approve. Builder ≠ sole grader.
 
 ### PR title convention
-`feat(jev): JEV-P3-route — typed route choice via one policy owner`
+`feat(jev): JEV-P3-…` · `feat(jev): JEV-P5-…` · `feat(harness): HUL-A-…` · `feat(hourglass): HG-…` · `docs(jev): STATUS …`
 
-> Historical: the P2 repair playbook below applied only to `Harness-jev-p2` / PR #36 and is kept for evidence. P2 is merged; do not re-run that playbook.
+### Next implementation slice (priority order — no guessing)
+1. **Docs STATUS promote** (this branch): P2 complete + open rows for P3/P4/P5/HUL/HG/MS.
+2. **P3 utilization** on `Harness-jev-p3` — one pattern per commit acceptable; full DoD before PR merge.
+3. **HUL-A** on `Harness-hul-a` (Track B; can develop in parallel; merge after/with green CI when operator schedules PRs).
+4. **HG composition** on `Harness-hg-remain` (product integrity for full hourglass).
+5. **JEV-P5 issue-sort** after P3 pack pattern exists (or immediately after docs if operator prioritizes steering).
+6. **P4** dogfood + freeze + exit checklist once P3 (+ preferred P5/HG core) exist.
+7. **Paid dogfood battery** continuous; record costs/models in PR evidence.
 
---- 
+**Do not mark P3/HUL/HG complete without:** named tests green + audit BAR MET on PR tip + honest STATUS + merge CI green + live dogfood where the lane is user-facing.
+
+
+
+---
 
 ## P2 repair playbook (Freebuff / implementer — read before coding)
 
@@ -319,3 +374,4 @@ Write STATUS `blocked` + the **exact** failing command/output. No “will do”.
 - Endpoint (authoritative): `https://api.typesafe.ai/v1/systemone`
 - Models: alias `jev-latest` → `jev-1.13.0` (pin version id when calibrating thresholds)
 - Verification gates remain authoritative for code correctness; Jev is pre-gate triage and structural refusal, not a substitute for tests
+

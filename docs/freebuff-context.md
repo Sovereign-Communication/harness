@@ -55,7 +55,7 @@ Key resolution for OpenRouter: `~/.config/scmorc/openrouter_fusion.env` then `op
 | Prompt delivery | Operator P2 repair paste landed (msg 902) |
 | Work evidence | `Harness-jev-p2` tip advanced to `449a1ce test(jev): refresh P2 coverage baseline` (pushed) |
 | STATUS on P2 branch | Updated to **in progress / repair** (good) |
-| Coverage baseline | Refreshed to `c50b22e`; D12 target lines mostly now present; **`jev_policy.py` 235/239/241/242 still missing** — those still need real tests, not baseline-only refresh |
+| Coverage baseline | **Repaired with PR #36** — D12 lines executed by real tests; baseline refreshed after green tests; audit BAR MET on merge tip |
 | Lane parity | Still expected red on operator machine until hermetic fixtures land |
 | PR #36 | Open; do not merge until audit BAR MET + local gates green |
 | Context gap | Root `AGENTS.md` was missing until this pack — required for injectAgentsMd |
