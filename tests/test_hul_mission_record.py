@@ -435,33 +435,34 @@ class MissionCliTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 1)
         self.assertFalse((Path(self.root) / "m-cli-bad" / "mission.yaml").exists())
 
-    def test_cli_run_is_stub_until_hul_d(self):
+    def test_cli_run_drives_until_stall_with_findings(self):
+        """HUL-D: CLI mission run is live — empty pack stalls honestly."""
         cli.main([
             "mission", "init",
             "--id", "m-cli-run",
             "--request", "r",
             "--success", "s",
             "--max-cost", "0.1",
+            "--in-scope", "pack-layout",
             "--root", self.root,
             "--out", self.out,
             "--quiet",
         ])
-        with self.assertRaises(SystemExit) as cm:
-            cli.main([
-                "mission", "run", "--id", "m-cli-run",
-                "--root", self.root, "--quiet",
-            ])
-        self.assertEqual(cm.exception.code, 1)
-        # Direct handler call surfaces the HUL-D message (not only via exit).
-        class _Opts:
-            mission_cmd = "run"
-            mission_id = "m-cli-run"
-            root = self.root
-            out = None
-        with self.assertRaises(HarnessError) as cm2:
-            cli._cmd_mission(_Opts(), None)
-        self.assertIn("HUL-D", str(cm2.exception))
-        self.assertTrue(mr.load_mission_pack(self.root, "m-cli-run").exists())
+        cli.main([
+            "mission", "run", "--id", "m-cli-run",
+            "--root", self.root,
+            "--stall-limit", "2",
+            "--out", self.out,
+            "--quiet",
+        ])
+        result = self._read_out()
+        self.assertTrue(result["terminal"])
+        self.assertEqual(result["driver"]["status"], "stalled")
+        pack = mr.load_mission_pack(self.root, "m-cli-run")
+        self.assertTrue(mr.is_terminal(pack))
+        findings = pack.findings_md.read_text(encoding="utf-8")
+        self.assertIn("stalled", findings)
+        self.assertIn("HUL-D", findings)
 
     def test_cli_status_missing_pack(self):
         with self.assertRaises(SystemExit) as cm:

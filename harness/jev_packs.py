@@ -397,3 +397,76 @@ def sort_notes_into_buckets(
             {"issue": text}, pack, site=site)
         out.append(combo)
     return out
+
+
+# --- HUL-C mission scope packs (site=hul_scope) ---
+
+HUL_SCOPE_SITE = "hul_scope"
+SCOPE_COMPLEXITY_VOCABULARY = ("bounded", "iterative", "architectural")
+# Code-owned hold thresholds for scope determination (not model brands).
+SCOPE_COVERAGE_HOLD = 0.5
+SCOPE_NOUL_HOLD = 0.5
+
+
+def hul_scope_question_pack() -> Dict[str, Dict[str, Any]]:
+    """HUL-C scope question pack consumed by ``JevPolicy.evaluate_scope``.
+
+    Typed questions only: one score, three nouls, one choice. Criteria are
+    fixed vocabulary — never provider brands or invented mission facts.
+    """
+    return {
+        "scope_coverage": {
+            "type": "score",
+            "instructions": (
+                "Rate how completely the attempt evidence covers the "
+                "mission scope.in_scope entries."),
+            "criteria": [
+                "little or no in-scope work is evidenced",
+                "some in-scope items evidenced, others missing",
+                "all in-scope items are evidenced",
+            ],
+        },
+        "success_definition_met": _noul(
+            "Does the attempt evidence show the mission success_definition "
+            "is met?",
+            "Evidence demonstrates the stated success definition.",
+            "Evidence does not demonstrate the stated success definition."),
+        "claims_supported": _noul(
+            "Are the mission claims supported by the attempt evidence?",
+            "Claims are backed by artifacts or receipts.",
+            "Claims are unsupported or contradicted by evidence."),
+        "needs_human": _noul(
+            "Does this mission require human intervention beyond the driver?",
+            "Human action is required before the mission can complete.",
+            "No human intervention is required beyond automated attempts."),
+        "complexity_class": {
+            "type": "choice",
+            "instructions": (
+                "Choose the complexity class that matches this mission."),
+            "criteria": {
+                "bounded": "single-step or low-dependency mission work",
+                "iterative": "dependent steps or loop-shaped work",
+                "architectural": "multi-component or high-dependency work",
+            },
+        },
+    }
+
+
+def scope_in_scope_holds(scope: Any) -> bool:
+    """Code-owned: declared scope must be non-empty for a complete claim."""
+    if not isinstance(scope, dict):
+        return False
+    in_scope = scope.get("in_scope")
+    if not isinstance(in_scope, (list, tuple)):
+        return False
+    return any(isinstance(item, str) and item.strip() for item in in_scope)
+
+
+def normalize_complexity_class(value: Any) -> Optional[str]:
+    """Return a declared complexity vocabulary id, or None."""
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().lower().replace("_", "-").replace(" ", "-")
+    if cleaned in SCOPE_COMPLEXITY_VOCABULARY:
+        return cleaned
+    return None
