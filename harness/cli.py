@@ -42,6 +42,7 @@ from .service import read_text_file as _service_read_text
 from .rankings import build_rankings_report as _rankings_report
 from .waist import compose_plan as _compose_plan
 from .jev_policy import aggregate_structural, policy_for
+from .jev_completion import dogfood_phase
 from .capability import capabilities_payload as _capability_payload_owner
 from .brief import build_brief, validate_brief
 from .dag import TaskDAG, node_apply_kwargs
@@ -732,7 +733,6 @@ def _cmd_plan(opts, settings):
 
 def _cmd_jev_phase(opts, settings):
     """Dogfood: score whether a mission phase may be marked complete."""
-    from .jev_completion import dogfood_phase
     use_live = not getattr(opts, "local_only", False)
     result = dogfood_phase(
         opts.repo_root,
