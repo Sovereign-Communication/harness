@@ -306,7 +306,117 @@ class LedgerAnalytics:
         report["underconfident_or_overconfident"] = sorted(
             m_ for m_, c in calibration.items()
             if c["confidence_precision"] is not None and c["confidence_precision"] < 0.6)
+        # JEV-P3-calibration: advisory jev_eval confidence vs verify outcomes.
+        report["jev_calibration"] = self.jev_calibration_report()
         return report
+
+    def jev_calibration_report(self):
+        """Advisory JEV-P3 calibration: jev confidence vs real verify outcomes.
+
+        Joins ``jev_eval`` events (site, verdict, confidence, supported,
+        is_fallback) with later ``verify_round`` outcomes on the same
+        ``task_id``. Read-only summary for operators — this never silently
+        retunes thresholds; threshold freeze stays an operator action.
+        """
+        events = list(self._tail)
+        jev_by_task = defaultdict(list)
+        verify_by_task = defaultdict(list)
+        site_counts = defaultdict(int)
+        fallback_evals = 0
+        total_evals = 0
+        for e in events:
+            ev = e.get("event")
+            if ev == "jev_eval":
+                total_evals += 1
+                site_counts[e.get("site") or "?"] += 1
+                if e.get("is_fallback"):
+                    fallback_evals += 1
+                tid = e.get("task_id")
+                if tid is None:
+                    continue
+                try:
+                    conf = float(e.get("confidence") or 0.0)
+                    supported = float(e.get("supported") or 0.0)
+                except (TypeError, ValueError):
+                    conf = supported = 0.0
+                jev_by_task[tid].append({
+                    "site": e.get("site"),
+                    "verdict": e.get("verdict"),
+                    "confidence": conf,
+                    "supported": supported,
+                    "is_fallback": bool(e.get("is_fallback")),
+                })
+            elif ev == "verify_round" and "passed" in e:
+                tid = e.get("task_id")
+                if tid is None:
+                    continue
+                verify_by_task[tid].append(bool(e.get("passed")))
+
+        buckets = {
+            "high_supported_ge_0.8": {"evals": 0, "tasks": 0,
+                                       "verify_pass": 0, "verify_fail": 0},
+            "mid_supported_0.5_0.8": {"evals": 0, "tasks": 0,
+                                       "verify_pass": 0, "verify_fail": 0},
+            "low_supported_lt_0.5": {"evals": 0, "tasks": 0,
+                                      "verify_pass": 0, "verify_fail": 0},
+        }
+        joined_tasks = 0
+        notes = [
+            "advisory only: thresholds stay operator-owned; "
+            "this report never mutates settings",
+            "join key is task_id; jev_eval without task_id is counted in "
+            "site totals only",
+        ]
+        for tid, evals in jev_by_task.items():
+            outcomes = verify_by_task.get(tid)
+            if not outcomes:
+                continue
+            joined_tasks += 1
+            passed = sum(1 for p in outcomes if p)
+            failed = len(outcomes) - passed
+            for item in evals:
+                if item["is_fallback"]:
+                    continue
+                supported = item["supported"]
+                if supported >= 0.8:
+                    key = "high_supported_ge_0.8"
+                elif supported >= 0.5:
+                    key = "mid_supported_0.5_0.8"
+                else:
+                    key = "low_supported_lt_0.5"
+                buckets[key]["evals"] += 1
+                buckets[key]["tasks"] += 1
+                buckets[key]["verify_pass"] += passed
+                buckets[key]["verify_fail"] += failed
+
+        review = []
+        for key, data in buckets.items():
+            denom = data["verify_pass"] + data["verify_fail"]
+            if denom == 0:
+                data["verify_pass_rate"] = None
+                continue
+            rate = round(data["verify_pass"] / denom, 3)
+            data["verify_pass_rate"] = rate
+            if key.startswith("high_") and rate is not None and rate < 0.6:
+                review.append(
+                    f"{key}: high jev supported but verify pass_rate={rate} "
+                    f"(possible overconfidence — review min_confidence)")
+            if key.startswith("low_") and rate is not None and rate > 0.8:
+                review.append(
+                    f"{key}: low jev supported but verify pass_rate={rate} "
+                    f"(possible underconfidence — do not silently lower bars)")
+
+        return {
+            "jev_evals": total_evals,
+            "jev_fallback_evals": fallback_evals,
+            "jev_keyed_evals": total_evals - fallback_evals,
+            "by_site": dict(site_counts),
+            "tasks_with_jev": len(jev_by_task),
+            "tasks_joined_with_verify": joined_tasks,
+            "confidence_buckets": buckets,
+            "review_notes": review,
+            "notes": notes,
+        }
 
     def cost_report(self, window=None, by_tier=False, by_model=False, savings=False):
         """Aggregate spend analytics by tier, model, and calculate savings vs frontier baseline."""

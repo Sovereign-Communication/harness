@@ -1,17 +1,31 @@
-"""The single Jev policy owner for all Harness decision lanes (JEV-P1).
+"""The single Jev policy owner for all Harness decision lanes (JEV-P1/P3).
 
 The P0 evaluator owns TypeSafe parsing and code-owned mechanics. This module
 owns lane policy: when a typed call may dispatch, its bounded spend, one ledger
 event, and the structural envelope shared by apply, plan, waist, and agent
-lanes.
+lanes. P3 utilization packs live in :mod:`harness.jev_packs` and are imported
+here — still ONE policy owner, never a second Jev client.
 """
 import difflib
 import os
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from .errors import HarnessError
 from .jev import (JevEvaluationResult, JevEvaluator, jev_cost,
                   triage_question_pack)
+from .jev_packs import (
+    claim_support_question_pack,
+    claims_from_payload,
+    completion_question_pack,
+    file_relevance_question_pack,
+    heuristic_file_relevance,
+    heuristic_requires_iteration,
+    heuristic_route,
+    named_artifact_status,
+    normalize_route,
+    route_question_pack,
+    validate_candidates,
+)
 
 JEV_MAX_INPUT_TOKENS = 1024
 
@@ -272,6 +286,373 @@ class JevPolicy:
                     pass
             return self._record_refusal(
                 str(exc), site=site, task_id=task_id, node_id=node_id)
+
+    def evaluate_route(self, prompt: str, target_files=None, *,
+                       site: str = "route", task_id: Optional[str] = None,
+                       node_id: Optional[str] = None,
+                       max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+        """JEV-P3-route: typed route choice over the shared vocabulary.
+
+        Keyed answers use the route pack; unkeyed/transport failure returns
+        the existing heuristic with ``is_fallback=True`` (never brand ids).
+        """
+        reservation = None
+        try:
+            reservation = self._preflight(
+                site=site, max_input_tokens=max_input_tokens)
+            result = self.evaluator.evaluate(
+                {"prompt": prompt or "", "target_files": list(target_files or [])},
+                route_question_pack())
+            answers = dict(result.answers or {})
+            if result.is_fallback or "route" not in answers:
+                route = heuristic_route(prompt, target_files)
+                iterative = heuristic_requires_iteration(prompt)
+                answers = {
+                    "route": route,
+                    "requires_iteration": iterative,
+                    **{k: v for k, v in answers.items() if k not in ("route", "requires_iteration")},
+                }
+                result = JevEvaluationResult(
+                    "pass", 0.0, 1.0, answers, result.reasons,
+                    cost=result.cost, input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    is_fallback=True, model=result.model)
+            else:
+                # Normalize live choice into the vocabulary (or fall back).
+                normalized = normalize_route(
+                    answers.get("route", {}).get("choice")
+                    if isinstance(answers.get("route"), dict)
+                    else answers.get("route"))
+                if normalized is None:
+                    route = heuristic_route(prompt, target_files)
+                    answers = dict(answers)
+                    answers["route"] = route
+                    result = JevEvaluationResult(
+                        result.verdict, result.confidence, result.supported,
+                        answers, list(result.reasons) + [
+                            "live route outside vocabulary; heuristic applied"],
+                        cost=result.cost, input_tokens=result.input_tokens,
+                        output_tokens=result.output_tokens,
+                        is_fallback=True, model=result.model)
+                else:
+                    answers = dict(answers)
+                    answers["route"] = normalized
+                    raw_iter = answers.get("requires_iteration")
+                    if isinstance(raw_iter, dict) and "noul" in raw_iter:
+                        answers["requires_iteration"] = float(raw_iter["noul"]) >= 0.5
+                    elif not isinstance(raw_iter, bool):
+                        answers["requires_iteration"] = heuristic_requires_iteration(prompt)
+                    result = JevEvaluationResult(
+                        result.verdict, result.confidence, result.supported,
+                        answers, result.reasons,
+                        cost=result.cost, input_tokens=result.input_tokens,
+                        output_tokens=result.output_tokens,
+                        is_fallback=False, model=result.model)
+            structural = self._account(
+                result, site=site, task_id=task_id, node_id=node_id,
+                reservation=reservation)
+            return result, structural
+        except HarnessError as exc:
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            route = heuristic_route(prompt, target_files)
+            answers = {
+                "route": route,
+                "requires_iteration": heuristic_requires_iteration(prompt),
+            }
+            fallback = JevEvaluationResult(
+                "pass", 0.0, 1.0, answers, [str(exc)],
+                is_fallback=True, model=self.evaluator.model)
+            return fallback, self._structural(fallback, site)
+
+    def evaluate_file_triage(self, goal: str, candidates: Sequence[str],
+                             known_files: Optional[Sequence[str]] = None, *,
+                             site: str = "triage-files",
+                             task_id: Optional[str] = None,
+                             max_files: int = 15,
+                             max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+        """JEV-P3-triage-files: noul relevance over orchestrator candidates.
+
+        Every kept path is validated against ``known_files`` when supplied.
+        Unkeyed path uses the keyword heuristic with honest ``is_fallback``.
+        """
+        listing = list(known_files) if known_files is not None else None
+        scoped = validate_candidates(candidates, listing)[:max_files]
+        if not scoped:
+            empty = JevEvaluationResult(
+                "pass", 0.0, 1.0,
+                {"files": [], "is_fallback": True},
+                ["no candidates to triage"], is_fallback=True,
+                model=self.evaluator.model)
+            structural = self._structural(empty, site)
+            structural["files"] = []
+            return empty, structural
+        reservation = None
+        try:
+            reservation = self._preflight(
+                site=site, max_input_tokens=max_input_tokens)
+            result = self.evaluator.evaluate(
+                {"goal": goal or "", "files": list(scoped)},
+                file_relevance_question_pack(scoped))
+            picked: List[str] = []
+            if result.is_fallback:
+                picked = heuristic_file_relevance(goal, scoped, max_files=max_files)
+                answers = {"files": picked, "heuristic": True}
+                result = JevEvaluationResult(
+                    "pass", 0.0, 1.0, answers, result.reasons,
+                    cost=result.cost, input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    is_fallback=True, model=result.model)
+            else:
+                for index, path in enumerate(scoped):
+                    key = f"file_{index}_relevant"
+                    answer = (result.answers or {}).get(key)
+                    prob = None
+                    if isinstance(answer, dict):
+                        prob = answer.get("noul")
+                    elif isinstance(answer, (int, float)):
+                        prob = answer
+                    if isinstance(prob, (int, float)) and float(prob) >= 0.5:
+                        picked.append(path)
+                if not picked:
+                    # Live pack said nothing relevant — keep honest empty list.
+                    picked = []
+                answers = {"files": picked}
+                result = JevEvaluationResult(
+                    result.verdict, result.confidence, result.supported,
+                    answers, result.reasons,
+                    cost=result.cost, input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    is_fallback=False, model=result.model)
+            # Defense in depth: never emit a path outside the real listing.
+            result.answers["files"] = validate_candidates(picked, listing)
+            structural = self._account(
+                result, site=site, task_id=task_id, reservation=reservation)
+            structural["files"] = list(result.answers["files"])
+            return result, structural
+        except HarnessError as exc:
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            picked = heuristic_file_relevance(goal, scoped, max_files=max_files)
+            picked = validate_candidates(picked, listing)
+            fallback = JevEvaluationResult(
+                "pass", 0.0, 1.0,
+                {"files": picked, "heuristic": True}, [str(exc)],
+                is_fallback=True, model=self.evaluator.model)
+            structural = self._structural(fallback, site)
+            structural["files"] = picked
+            return fallback, structural
+
+    def evaluate_claim_support(self, claims, source_context: str, *,
+                               enabled: bool = False,
+                               site: str = "claims",
+                               task_id: Optional[str] = None,
+                               max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+        """JEV-P3-claims: optional lean support checks before panel judge.
+
+        Default off (``enabled=False``). Does not own claims lint — that stays
+        in :mod:`harness.claims`. This only adds advisory typed flags.
+        """
+        normalized = claims_from_payload(claims)
+        if not enabled or not normalized:
+            skipped = JevEvaluationResult(
+                "pass", 0.0, 1.0,
+                {"enabled": bool(enabled), "claims": [], "skipped": True},
+                ["claim-support checks disabled or empty"],
+                is_fallback=True, model=self.evaluator.model)
+            structural = self._structural(skipped, site)
+            structural["claim_flags"] = []
+            structural["skipped"] = True
+            return skipped, structural
+        reservation = None
+        try:
+            reservation = self._preflight(
+                site=site, max_input_tokens=max_input_tokens)
+            result = self.evaluator.evaluate(
+                {
+                    "claims": [{"id": c["id"], "text": c["text"]}
+                               for c in normalized],
+                    "evidence": (source_context or "")[:4000],
+                },
+                claim_support_question_pack(len(normalized)))
+            flags = []
+            if result.is_fallback:
+                # Unkeyed: no support claim either way — advisory unknown.
+                flags = [{"id": c["id"], "supported": None, "fallback": True}
+                         for c in normalized]
+                result = JevEvaluationResult(
+                    "pass", 0.0, 1.0,
+                    {"claim_flags": flags, "skipped": False},
+                    result.reasons, cost=result.cost,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    is_fallback=True, model=result.model)
+            else:
+                for index, claim in enumerate(normalized):
+                    key = f"claim_{index}_supported"
+                    answer = (result.answers or {}).get(key)
+                    prob = None
+                    if isinstance(answer, dict):
+                        prob = answer.get("noul")
+                    elif isinstance(answer, (int, float)):
+                        prob = answer
+                    supported = None
+                    if isinstance(prob, (int, float)):
+                        supported = float(prob) >= 0.5
+                    flags.append({"id": claim["id"], "supported": supported,
+                                  "noul": prob, "fallback": False})
+                result = JevEvaluationResult(
+                    result.verdict, result.confidence, result.supported,
+                    {"claim_flags": flags, "skipped": False}, result.reasons,
+                    cost=result.cost, input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    is_fallback=False, model=result.model)
+            structural = self._account(
+                result, site=site, task_id=task_id, reservation=reservation)
+            structural["claim_flags"] = flags
+            structural["skipped"] = False
+            return result, structural
+        except HarnessError as exc:
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            flags = [{"id": c["id"], "supported": None, "fallback": True}
+                     for c in normalized]
+            fallback = JevEvaluationResult(
+                "pass", 0.0, 1.0,
+                {"claim_flags": flags, "skipped": False}, [str(exc)],
+                is_fallback=True, model=self.evaluator.model)
+            structural = self._structural(fallback, site)
+            structural["claim_flags"] = flags
+            structural["skipped"] = False
+            return fallback, structural
+
+    def evaluate_completion_nouls(self, goal: str, state_summary: str,
+                                  named_artifacts=None, root_dir=None, *,
+                                  site: str = "completion",
+                                  task_id: Optional[str] = None,
+                                  max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+        """JEV-P3-completion: artifact/goal nouls before the generative judge.
+
+        Missing named artifact is code-owned truth: the envelope cannot
+        complete regardless of live answers.
+        """
+        from pathlib import Path as _Path
+        if named_artifacts is None:
+            artifact_facts = named_artifact_status(goal, root_dir=root_dir)
+        else:
+            base = _Path(root_dir) if root_dir is not None else _Path.cwd()
+            artifact_facts = []
+            for item in named_artifacts:
+                if isinstance(item, dict):
+                    path = str(item.get("path") or "").replace("\\", "/")
+                    present = bool(item.get("present"))
+                    if path and not item.get("present") and "present" not in item:
+                        present = (base / path).is_file()
+                    artifact_facts.append({
+                        "path": path,
+                        "present": present,
+                        "lines": item.get("lines"),
+                    })
+                else:
+                    path = str(item).replace("\\", "/").strip("`'\" .")
+                    present = bool(path) and (base / path).is_file()
+                    artifact_facts.append({
+                        "path": path, "present": present, "lines": None,
+                    })
+        missing = [item["path"] for item in artifact_facts
+                   if item.get("path") and not item.get("present")]
+        artifacts_payload = artifact_facts
+        if missing:
+            # Code-owned refuse: no spend required to know completion is false.
+            answers = {
+                "named_artifacts_present": 0.0,
+                "goal_achieved": 0.0,
+                "missing_artifacts": missing,
+                "artifacts": artifacts_payload,
+            }
+            result = JevEvaluationResult(
+                "fail", 0.0, 0.0, answers,
+                [f"named artifact missing: {p}" for p in missing],
+                is_fallback=True, model=self.evaluator.model)
+            structural = self._account(
+                result, site=site, task_id=task_id, reservation=None)
+            structural["cannot_complete"] = True
+            structural["missing_artifacts"] = missing
+            return result, structural
+        reservation = None
+        try:
+            reservation = self._preflight(
+                site=site, max_input_tokens=max_input_tokens)
+            result = self.evaluator.evaluate(
+                {
+                    "goal": goal or "",
+                    "execution_state": (state_summary or "")[:4000],
+                    "named_artifacts": artifacts_payload,
+                },
+                completion_question_pack())
+            answers = dict(result.answers or {})
+            cannot = False
+            if result.is_fallback:
+                # Unkeyed: artifacts exist; generative judge remains the seat.
+                answers.setdefault("named_artifacts_present", 1.0)
+                answers.setdefault("goal_achieved", None)
+                answers["artifacts"] = artifacts_payload
+                result = JevEvaluationResult(
+                    "pass", 0.0, 1.0, answers, result.reasons,
+                    cost=result.cost, input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    is_fallback=True, model=result.model)
+            else:
+                present = answers.get("named_artifacts_present")
+                achieved = answers.get("goal_achieved")
+                present_p = float(present.get("noul", 0.0)) if isinstance(present, dict) else float(present or 0.0)
+                achieved_p = float(achieved.get("noul", 0.0)) if isinstance(achieved, dict) else float(achieved or 0.0)
+                answers = dict(answers)
+                answers["named_artifacts_present"] = present_p
+                answers["goal_achieved"] = achieved_p
+                answers["artifacts"] = artifacts_payload
+                verdict = "pass" if present_p >= 0.5 and achieved_p >= 0.5 else "fail"
+                result = JevEvaluationResult(
+                    verdict, result.confidence,
+                    min(present_p, achieved_p),
+                    answers, result.reasons,
+                    cost=result.cost, input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    is_fallback=False, model=result.model)
+                cannot = present_p < 0.5 or achieved_p < 0.5
+            structural = self._account(
+                result, site=site, task_id=task_id, reservation=reservation)
+            structural["cannot_complete"] = bool(cannot)
+            structural["missing_artifacts"] = missing
+            return result, structural
+        except HarnessError as exc:
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            answers = {
+                "named_artifacts_present": 1.0,
+                "goal_achieved": 0.5,
+                "artifacts": artifacts_payload,
+            }
+            fallback = JevEvaluationResult(
+                "pass", 0.0, 0.5, answers, [str(exc)],
+                is_fallback=True, model=self.evaluator.model)
+            structural = self._structural(fallback, site)
+            structural["cannot_complete"] = True
+            structural["missing_artifacts"] = missing
+            structural["reason"] = str(exc)
+            return fallback, structural
 
     @staticmethod
     def attach(envelope: Dict[str, Any], structural: Optional[Dict[str, Any]]):
