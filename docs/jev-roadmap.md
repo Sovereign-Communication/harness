@@ -166,13 +166,13 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `JEV-P1-*` one owner + lanes | **complete** | **PR #35 MERGED** → `origin/main` `9d5ff14` |
 | `JEV-P2-*` System One pillars | **complete** | **PR #36 MERGED** → `origin/main` `405bbc1`; hermetic lane-parity; D12 executed; local audit BAR MET; CI green on PR tip **and** post-merge `main`; live Jev smoke OK; **`JEV-P2-jury` deferred** (follow-up, not blocking P2 complete) |
 | `JEV-P3-*` utilization | **complete** | **PR #43 MERGED** `7eb18ea`; route/triage/context/claims/completion/calibration |
-| `JEV-P4-*` ops / exit | **open** | after P3 DoD |
+| `JEV-P4-*` ops / exit | **open / WIP** | worktree `Harness-p4` / `feat/jev-p4-ops-exit`; jury remains deferred |
 | `JEV-P5-*` issue-sort buckets | **in progress** | PR #42 `feat/jev-p5-issue-sort`; **not complete until merge + CI green** |
 | `HUL-A` mission pack | **complete** | **PR #41 MERGED** `64e63a3`; mission pack + CLI + gate tests; CI green |
-| `HUL-B` dual budget | **open** | after A |
-| `HUL-C` Jev scope gate | **open** | after A + P1 policy (merged) |
-| `HUL-D` until-limits driver | **open** | after A–C |
-| `HG-*` hourglass composition | **in progress** | PR #44; suite+audit BAR MET after P5 union; **not complete until merge + CI green** |
+| `HUL-B` dual budget | **open / WIP** | worktree `Harness-hul-b` / `feat/hul-b-dual-budget` |
+| `HUL-C` Jev scope gate | **open / WIP** | worktree `Harness-hul-cd` / `feat/hul-cd-scope-driver` |
+| `HUL-D` until-limits driver | **open / WIP** | same worktree as HUL-C |
+| `HG-*` hourglass composition | **complete** | **PR #44 MERGED** `f22accb` |
 | `MS-*` cheapest-capable + context | **open** | ad-hoc model strings → config/ladders; expensive seats get condensed state |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
 | Exit | Jev P4 checklist all true on `origin/main` | **open** |
@@ -206,7 +206,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | HUL-B | `HUL-B-*` | `spend.py` dual envelope | `tests/test_hul_budget_reserve.py` | **open** |
 | HUL-C | `HUL-C-*` | scope packs via `jev_policy.evaluate_scope` (pack module name when shipped) | `tests/test_hul_jev_scope_gate.py` | **open** |
 | HUL-D | `HUL-D-*` | mission driver + FINDINGS + resume | `tests/test_hul_driver_findings_resume.py` | **open** |
-| Hourglass | `HG-*` | waist/executor/spend/plan consensus/pyramid state | named hermetic tests per gap (see HG notes) | **open** |
+| Hourglass | `HG-*` | waist/executor/spend/plan consensus/pyramid state | `tests/test_hg_*.py` | **complete** — PR #44 |
 
 ### JEV-P3 patterns (implementer notes)
 
@@ -376,6 +376,7 @@ Write STATUS `blocked` + the **exact** failing command/output. No “will do”.
 - Endpoint (authoritative): `https://api.typesafe.ai/v1/systemone`
 - Models: alias `jev-latest` → `jev-1.13.0` (pin version id when calibrating thresholds)
 - Verification gates remain authoritative for code correctness; Jev is pre-gate triage and structural refusal, not a substitute for tests
+
 
 
 
