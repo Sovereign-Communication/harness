@@ -1,4 +1,4 @@
-﻿"""The CLI's argparse surface: one owner for flag construction.
+"""The CLI's argparse surface: one owner for flag construction.
 
 cli.py keeps handlers, dispatch, and presentation; every subparser and
 flag lives here, so a surface change lands in exactly one module.
