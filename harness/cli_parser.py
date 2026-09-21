@@ -127,10 +127,14 @@ def build_parser():
     pp.add_argument("--max-workers", type=int, default=4, help="thread pool worker count for parallel execution")
     pp.add_argument("--frontier-model", default=None, help="frontier model or alias for Tier 2 nodes (e.g. fable-5.1, gpt-6)")
     pp.add_argument("--file", action="append", default=None, help="constrain candidate target files")
-    pp.add_argument("--decompose-llm", dest="decompose_llm", action="store_true", default=False,
+    pp.add_argument("--decompose-llm", dest="decompose_llm", action="store_true",
+                    default=None,
                     help="author the DAG with the cheapest tier-appropriate model "
-                         "(schema-validated; on --execute a failure falls back to the "
+                         "(schema-validated; default: on when the hourglass is "
+                         "active; on --execute a decompose failure falls back to the "
                          "heuristic with a loud note, a plan-only preview fails loudly)")
+    pp.add_argument("--no-decompose-llm", dest="decompose_llm", action="store_false",
+                    help="force heuristic decomposition even when the hourglass is on")
     pp.add_argument("--confirm", dest="confirm", action="store_true", default=None,
                     help="confirm the plan at the frontier waist before execution: "
                          "condensed brief + bounded file-window round-trips; "
@@ -138,10 +142,27 @@ def build_parser():
                          "against the run's ceiling; a refused plan never executes)")
     pp.add_argument("--no-confirm", dest="confirm", action="store_false",
                     help="skip the frontier waist confirmation")
+    pp.add_argument("--plan-consensus", dest="plan_consensus", action="store_true",
+                    default=None,
+                    help="cheap plan-soundness check before the waist "
+                         "(governed_text + JSON sound/reasons; unsound forces "
+                         "the waist amend path; ledgered plan_consensus)")
+    pp.add_argument("--no-plan-consensus", dest="plan_consensus", action="store_false",
+                    help="skip the cheap plan-consensus pre-check")
+    pp.add_argument("--final-gate", dest="final_gate", default=None,
+                    help="command run after the whole DAG completes (default: on "
+                         "when a verify command was discovered/declared -- run-level "
+                         "gate or a discovered suite command)")
+    pp.add_argument("--no-final-gate", dest="final_gate", action="store_false",
+                    help="skip the post-DAG final verification gate")
+    pp.add_argument("--resume", dest="resume", default=None,
+                    help="path to a pyramid state JSON; re-dispatch only nodes "
+                         "that are not already completed ok")
     pp.add_argument("--isolate", dest="isolate", action="store_true", default=None,
                     help="isolate parallel-stage nodes in git worktrees + local branches "
-                         "(default: on; audited against declared target files, merged in "
-                         "topological order; merge conflicts fail the node, never "
+                         "(default: on; overlap-free concurrent nodes only -- nodes "
+                         "that share declared target files serialize under the "
+                         "shared-tree mutex; merge conflicts fail the node, never "
                          "force-merge; unavailable git degrades to shared-tree mutex execution)")
     pp.add_argument("--no-isolate", dest="isolate", action="store_false",
                     help="execute parallel stages in the shared tree (mutex only)")
@@ -176,6 +197,16 @@ def build_parser():
     pd.add_argument("--task-id", required=True)
     pd.add_argument("--reason", default=None)
     pd.add_argument("--category", default=None)
+
+    pis = sub.add_parser(
+        "issue-sort",
+        help="Sort an issue into an operator-declared bucket pack "
+             "(JEV-P5; never invents buckets or actions)")
+    pis.add_argument("--issue", required=True,
+                     help="issue or deferral note text to sort")
+    pis.add_argument("--pack", required=True,
+                     help="path to the operator bucket pack JSON")
+    _add_output_flags(pis)
 
     pl = sub.add_parser("ledger", help="Autonomy ledger")
     pls = pl.add_subparsers(dest="ledger_cmd", required=True)
@@ -311,6 +342,7 @@ def build_parser():
                       help="session cost ceiling for the live verify + apply phases")
     _add_output_flags(pdog)
 
+<<<<<<< HEAD
     pjphase = sub.add_parser(
         "jev-phase",
         help="Dogfood Jev 0-100 phase completion score; STATUS complete only "
@@ -327,5 +359,38 @@ def build_parser():
                          help="skip live Jev; use code gates + local semantic score")
     pjphase.add_argument("--json", action="store_true", help="emit raw JSON only")
     _add_output_flags(pjphase)
+=======
+    # HUL-A mission pack surface (run stubs until HUL-D driver lands).
+    pmiss = sub.add_parser(
+        "mission",
+        help="Mission pack (HUL-A): init | status | resume | findings "
+             "(run stubs until HUL-D)")
+    pms = pmiss.add_subparsers(dest="mission_cmd", required=True)
+    pmi = pms.add_parser("init", help="create missions/<id>/ pack from mission fields")
+    pmi.add_argument("--id", dest="mission_id", required=True, help="mission id")
+    pmi.add_argument("--request", required=True, help="the mission request text")
+    pmi.add_argument("--success", dest="success_definition", required=True,
+                     help="success definition (what 'done' means)")
+    pmi.add_argument("--max-cost", dest="max_cost_usd", type=float, required=True,
+                     help="limits.max_cost_usd for the mission pack")
+    pmi.add_argument("--terminal-reserve", dest="terminal_reserve_cost_usd",
+                     type=float, default=0.0,
+                     help="terminal_reserve.cost_usd stored in mission.yaml + budget.json")
+    pmi.add_argument("--in-scope", default="",
+                     help="comma-separated scope.in_scope entries")
+    pmi.add_argument("--out-of-scope", default="",
+                     help="comma-separated scope.out_of_scope entries")
+    pmi.add_argument("--root", default="missions",
+                     help="pack parent directory (default: missions)")
+    pmi.add_argument("--verifier-kind", default="unspecified",
+                     help="verifier.kind recorded in mission.yaml")
+    _add_output_flags(pmi)
+    for _sub in ("status", "resume", "findings", "run"):
+        _p = pms.add_parser(_sub, help=f"mission {_sub}")
+        _p.add_argument("--id", dest="mission_id", required=True, help="mission id")
+        _p.add_argument("--root", default="missions",
+                        help="pack parent directory (default: missions)")
+        _add_output_flags(_p)
+>>>>>>> origin/main
 
     return ap

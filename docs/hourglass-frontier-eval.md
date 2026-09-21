@@ -134,8 +134,12 @@ the pyramid itself, and a spec for the reusable `harness brief` context pack.
 ### 1.4 Honest residuals (documented, not hidden)
 
 - `docs/system-one-integration.md`: fast-path triage + calibrated-confidence
-  deferral designed; **Milestones 2–4 unimplemented** (confidence extraction
-  into ledger, `HARNESS_MIN_CONFIDENCE` gating, Jev/System-One adapter).
+  deferral designed; **Milestones 2–4 implemented** on `origin/main`
+  (PR #35/#36 — consent confidence into ledger, `HARNESS_MIN_CONFIDENCE`
+  gating, Jev/System-One adapter + one `jev_policy` owner). D8's original
+  "defer until the pyramid works" lean is **resolved**: the System One
+  fast path ships with the Jev track; hourglass composition (PR #44)
+  consumes the same policy owner rather than a private client.
 - `local_fit`: safe, fail-closed, but proven to add no routing lift on the
   current small corpus (it recapitulates ledger observed rates); INFLUENCE
   mode stays off pending profile-enriched retraining.
@@ -352,9 +356,11 @@ composed ceiling for the whole pyramid run; consent is taken per dispatch
 - **D7 — Ceiling UX:** one `--max-cost` for the whole pyramid (composed
   preflight) vs per-tier budgets (`HARNESS_*` env ladder). *Lean:* composed
   single ceiling with visible per-stage reserves in the envelope.
-- **D8 — System One fast path:** implement Milestones 2–3 (confidence
-  extraction + `HARNESS_MIN_CONFIDENCE` gating) as the tier-0 triage gate, or
-  defer? *Lean:* defer until the pyramid works with explicit signals only.
+- **D8 — System One fast path:** *Resolved (JEV-P1/P2 + P4 ops).* Confidence
+  extraction + `HARNESS_MIN_CONFIDENCE` gating shipped (PR #35/#36); the
+  hourglass lanes share `jev_policy` via `session.engine_for` /
+  `policy_for`. Original lean ("defer until the pyramid works with explicit
+  signals only") is superseded by merged product — no second Jev client.
 - **D9 — PR mechanism:** patch-bundle artifacts (forge-agnostic, stdlib) vs
   subprocess `git worktree` + branch vs opt-in `gh`. *Lean:* worktree+branch
   core, gh optional.

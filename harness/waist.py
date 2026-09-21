@@ -34,6 +34,7 @@ from .repo_scope import discover_verification_gate, gate_for_targets
 from .sliding_scale import resolve_frontier_model, resolve_sliding_scale_route
 from .tokens import estimate_prompt_tokens
 from .validation import MAX_INSTRUCTION_CHARS
+from .jev_packs import build_context_pack
 from .jev_policy import JevPolicy
 
 MAX_WAIST_ROUNDS = 2
@@ -516,6 +517,240 @@ def decompose_via_llm(
 
 
 
+def _call_worst_case(governor, model, max_tokens) -> float:
+    """Worst-case dollar cost of ONE bounded chat call on ``model``.
+
+    Completion-side only (prompt tokens are typically small relative to the
+    pinned output budget for plan-lane calls). Free / unpriceable models
+    contribute $0.0 -- the node ceilings still bind the run.
+    """
+    if governor is None or not model:
+        return 0.0
+    try:
+        pricing = governor.fetch_pricing([model])
+        _pp, cp = pricing[model]
+    except Exception:
+        return 0.0
+    try:
+        return max(0.0, float(max_tokens) * float(cp))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def composed_worst_case(
+    plan_result: Dict[str, Any],
+    *,
+    governor=None,
+    decompose_llm: bool = False,
+    confirm: bool = False,
+    decompose_model: Optional[str] = None,
+    frontier_model: Optional[str] = None,
+    use_free: bool = True,
+    allow_escalation: bool = False,
+    plan_consensus: bool = False,
+) -> Dict[str, Any]:
+    """Composed pyramid ceiling: decompose + consensus + waist + node sum.
+
+    ONE owner of the pre-execute worst-case budget. Called before execute
+    spend when a governor is present; if the composed total exceeds
+    ``governor.remaining()`` the plan lane REFUSES instead of dispatching
+    into an unfunded pyramid. The envelope always carries the breakdown so
+    an operator can see which rung would blow the ceiling.
+    """
+    node_ceiling = 0.0
+    try:
+        node_ceiling = float(plan_result.get("total_cost_ceiling") or 0.0)
+    except (TypeError, ValueError):
+        node_ceiling = 0.0
+    if node_ceiling <= 0.0:
+        for detail in plan_result.get("nodes") or ():
+            if not isinstance(detail, dict):
+                continue
+            route = detail.get("route") if isinstance(detail.get("route"), dict) else {}
+            try:
+                node_ceiling += float(route.get("cost_ceiling") or detail.get("cost_ceiling") or 0.0)
+            except (TypeError, ValueError):
+                continue
+
+    decompose_cost = 0.0
+    waist_cost = 0.0
+    consensus_cost = 0.0
+    if governor is not None:
+        if decompose_llm:
+            model = decompose_model
+            if not model:
+                try:
+                    model = resolve_scout_ladder(use_free=use_free,
+                                                 custom_frontier=frontier_model)[0]
+                except Exception:
+                    model = None
+            decompose_cost = _call_worst_case(governor, model, DECOMPOSE_MAX_TOKENS)
+        if plan_consensus:
+            model = decompose_model
+            if not model:
+                try:
+                    model = resolve_scout_ladder(use_free=use_free,
+                                                 custom_frontier=frontier_model)[0]
+                except Exception:
+                    model = None
+            consensus_cost = _call_worst_case(governor, model, 256)
+        if confirm:
+            try:
+                ladder = resolve_waist_ladder(
+                    use_free=use_free, custom_frontier=frontier_model,
+                    allow_escalation=allow_escalation)
+            except Exception:
+                ladder = [frontier_model] if frontier_model else []
+            # Worst-case: every ladder rung could be attempted across the
+            # window-round budget before one lands.
+            for rung in ladder[:4]:
+                waist_cost += _call_worst_case(
+                    governor, rung, WAIST_MAX_TOKENS * MAX_WAIST_ROUNDS)
+
+    composed = round(node_ceiling + decompose_cost + waist_cost + consensus_cost, 6)
+    remaining = None
+    if governor is not None and callable(getattr(governor, "remaining", None)):
+        try:
+            remaining = float(governor.remaining())
+        except Exception:
+            remaining = None
+    return {
+        "composed_worst_case": composed,
+        "node_ceiling": round(node_ceiling, 6),
+        "decompose": round(decompose_cost, 6),
+        "waist": round(waist_cost, 6),
+        "consensus": round(consensus_cost, 6),
+        "remaining": remaining,
+        "exceeds_remaining": (
+            None if remaining is None else bool(composed > remaining + 1e-12)),
+    }
+
+
+def _refuse_composed_ceiling(plan_result: Dict[str, Any], composed: Dict[str, Any]) -> Dict[str, Any]:
+    """Fail-closed envelope when the composed pyramid ceiling cannot fit."""
+    refused = dict(plan_result)
+    refused["status"] = "refused"
+    refused["composed_worst_case"] = composed
+    reason = (
+        f"composed worst-case ${composed['composed_worst_case']:.6f} exceeds "
+        f"remaining budget ${composed['remaining']:.6f}")
+    refused["confirmation"] = {
+        "verdict": "refused",
+        "model": "composed-ceiling",
+        "rounds": 0,
+        "reason": reason,
+        "evidence": (
+            f"nodes={composed['node_ceiling']:.6f} "
+            f"decompose={composed['decompose']:.6f} "
+            f"waist={composed['waist']:.6f} "
+            f"consensus={composed['consensus']:.6f}"),
+        "cost": 0.0,
+    }
+    return refused
+
+
+def _decompose_repo_context(goal: str,
+                            candidate_files: Optional[Sequence[str]],
+                            root: Optional[str] = None) -> Optional[str]:
+    """Condensed signatures for the decompose prompt (HG-condense-decompose).
+
+    ``decompose_via_llm`` / ``build_decomposition_prompt`` already accept
+    ``repo_context``; this is the plan lane's producer: distill candidate
+    files into signatures so the cheap decomposer never sees raw bodies.
+    """
+    if not candidate_files:
+        return None
+    files: Dict[str, str] = {}
+    for rel in candidate_files:
+        rel_s = str(rel)
+        path = rel_s if os.path.isabs(rel_s) else os.path.join(root or os.getcwd(), rel_s)
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                files[rel_s] = handle.read()
+        except OSError:
+            continue
+    if not files:
+        return None
+    brief = distill_context(files, summary=goal or "")
+    return brief.to_prompt_context()
+
+
+def build_consensus_prompt(plan_result: Dict[str, Any]) -> str:
+    """Cheap plan-soundness prompt (HG-plan-consensus)."""
+    nodes = [
+        {k: n[k] for k in ("node_id", "instruction", "target_files",
+                           "dependencies", "local_gate", "complexity_tier")
+         if k in n}
+        for n in plan_result.get("nodes", [])
+        if isinstance(n, dict)
+    ]
+    return "\n".join([
+        "You are a cheap soundness checker for an autonomous coding plan.",
+        "Decide whether this DAG can actually achieve the goal. You do NOT",
+        "confirm routing quality (the waist does that); you only catch",
+        "structurally unsound plans before confirmation spend grows.",
+        "",
+        "GOAL:",
+        (plan_result.get("goal") or "").strip(),
+        "",
+        "PLANNED DAG (JSON):",
+        json.dumps({"nodes": nodes}, indent=2),
+        "",
+        "Respond with ONLY one JSON object:",
+        '  {"sound": true, "reasons": []}',
+        '  {"sound": false, "reasons": ["..."]}',
+        "sound=false when the DAG cannot achieve the goal, has cycles,",
+        "omits critical write steps, or targets files unrelated to the work.",
+    ])
+
+
+def parse_plan_consensus(response_text: str) -> Dict[str, Any]:
+    """Parse the plan-consensus verdict (strict; fail-closed)."""
+    data = _parse_json_object(response_text, "plan consensus")
+    if "sound" not in data:
+        raise HarnessError("plan consensus verdict requires 'sound'")
+    reasons = data.get("reasons") or []
+    if not isinstance(reasons, list):
+        reasons = [reasons]
+    return {"sound": bool(data["sound"]), "reasons": [str(r) for r in reasons]}
+
+
+def plan_consensus(*, transport, api_key, governor, ledger, plan_result,
+                   model, chat_fn=None) -> Dict[str, Any]:
+    """Optional cheap soundness check that runs BEFORE the waist.
+
+    Returns ``{sound, reasons, cost, model}``. Ledger event:
+    ``plan_consensus``. Cost is accounted on the governor (when the default
+    governed chat_fn runs) and reported in the envelope.
+    """
+    if not model:
+        raise HarnessError("plan consensus requires a model")
+    if chat_fn is None:
+        def chat_fn(prompt):
+            return governed_text(transport, api_key, governor, model, prompt,
+                                 256, label="plan_consensus")
+    spent_before = governor.spent if governor is not None else 0.0
+    raw = chat_fn(build_consensus_prompt(plan_result))
+    if isinstance(raw, tuple):
+        text = raw[0]
+    else:
+        text = raw
+    verdict = parse_plan_consensus(text)
+    cost = _verdict_cost(governor, spent_before)
+    verdict["cost"] = cost
+    verdict["model"] = model
+    if ledger is not None:
+        ledger.append(
+            "plan_consensus", task_id=plan_task_id(plan_result),
+            sound=verdict["sound"], reasons=verdict["reasons"],
+            model=model, cost=cost)
+    return verdict
+
+
+# Alias: compose_plan's boolean arm shares the public name ``plan_consensus``.
+plan_consensus_check = plan_consensus
+
+
 def plan_task(
     goal: str,
     candidate_files: Optional[Sequence[str]] = None,
@@ -526,6 +761,7 @@ def plan_task(
     root: Optional[str] = None,
     run_gate: Optional[str] = None,
     allow_escalation: bool = False,
+    jev_route: Optional[str] = None,
 ) -> Dict[str, Any]:
     # Formulate a TaskDAG and classify sliding-scale tiers for each node.
     # decomposed_dag: a pre-built DAG (LLM-authored via decompose_via_llm or
@@ -537,6 +773,8 @@ def plan_task(
     # gated nodes instead of each lane re-deriving the rule (or omitting
     # it: an ungated write is refused at unknown trust, so the MCP lane's
     # plan_and_execute could not land anything at all).
+    # jev_route: optional JEV-P3 typed route (vocabulary only) used as a
+    # tier floor when keyed; unkeyed callers leave it None.
     dag = (decomposed_dag if decomposed_dag is not None
            else heuristic_decompose_goal(goal, candidate_files))
     node_details: List[Dict[str, Any]] = []
@@ -562,6 +800,7 @@ def plan_task(
             use_free=use_free,
             custom_frontier=custom_frontier,
             allow_escalation=allow_escalation,
+            jev_route=jev_route,
         )
         total_ceiling += route.cost_ceiling
         classified_nodes[node_id] = DAGNode(
@@ -680,6 +919,7 @@ def build_waist_prompt(
     plan_result: Dict[str, Any],
     brief_context: str = "",
     window_context: str = "",
+    consensus: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Build the frontier waist-confirmation prompt (M2).
 
@@ -724,6 +964,15 @@ def build_waist_prompt(
     if window_context:
         lines.extend(["REQUESTED FILE WINDOWS (attached this round):",
                       window_context.strip(), ""])
+    if consensus is not None and not consensus.get("sound", True):
+        lines.extend([
+            "PLAN CONSENSUS (cheap pre-check marked this plan UNSOUND):",
+            json.dumps({"sound": False,
+                        "reasons": list(consensus.get("reasons") or [])}, indent=2),
+            "You MUST return 'amend' with a corrected replacement DAG. Do not",
+            "approve an unsound plan.",
+            "",
+        ])
     lines.extend([
         "VERDICT CONTRACT -- respond with ONLY one JSON object:",
         '  {"verdict": "approve"}                                   plan is sound as routed',
@@ -891,6 +1140,7 @@ def confirm_plan(*, transport, api_key, governor, ledger, plan_result,
                  model, use_free=True, custom_frontier=None,
                  chat_fn=None, reader=read_window,
                  root=None, run_gate=None,
+                 consensus=None,
                  max_rounds=MAX_WAIST_ROUNDS) -> Dict[str, Any]:
     """Run the waist: frontier confirms/repairs the plan; return the plan.
 
@@ -919,7 +1169,8 @@ def confirm_plan(*, transport, api_key, governor, ledger, plan_result,
     spent_before = governor.spent if governor is not None else 0.0
 
     for round_no in range(1, max_rounds + 1):
-        prompt = build_waist_prompt(plan_result, brief, window_context)
+        prompt = build_waist_prompt(plan_result, brief, window_context,
+                                    consensus=consensus)
         text, _cost = chat_fn(prompt)
         try:
             verdict = parse_waist_verdict(text)
@@ -986,37 +1237,74 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                  chat_fn=None, max_cost=None, keep_going=False, out=None,
                  execute=False, root=None, max_tokens=None,
                  allow_escalation: bool = False,
-                 jev_policy=None) -> Dict[str, Any]:
+                 plan_consensus: bool = False,
+                 jev_policy=None,
+                 issue_sort_pack=None) -> Dict[str, Any]:
     """ONE owner of the plan-lane flow (CLI and MCP call this).
 
-    Order: optional cheap-LLM decomposition (M1) -> tier classification ->
-    single-pass chunking (a node too big for one model pass becomes ordered
-    chunks, so it is split before dispatch instead of failing late) ->
-    optional waist confirmation (M2) over the plan that will actually run.
+    Order: optional cheap-LLM decomposition (M1, condensed signatures) ->
+    tier classification -> single-pass chunking -> optional cheap plan
+    consensus -> optional waist confirmation (M2) over the plan that will
+    actually run -> composed pyramid ceiling check before execute spend.
     Decomposition failures fall back to the heuristic only when ``execute``
     is set (the run spends anyway, so a loud note + fallback keeps it
     going); a plan-only preview fails loudly -- the operator asked for LLM
     planning, and silently handing back the heuristic plan would be
     dishonest.
 
+    Fail-closed rules (hourglass composition):
+    * confirm=True and EVERY waist rung unreachable on execute -> REFUSE
+      (never proceed under the local gate silently).
+    * composed_worst_case exceeds governor.remaining() -> REFUSE before
+      execute dispatch (spend stays 0 on that path when planning itself
+      was injected/hermetic).
+
     ``root`` is the tree the plan edits (defaults to the process CWD, which
     is what the CLI/MCP lanes edit); ``max_tokens`` is the lane's pinned
     output budget when it has one -- both feed the chunk policy's real
     per-pass budget, none of them add a budget of their own.
+
+    ``issue_sort_pack`` (optional operator bucket pack): when provided with
+    a ``jev_policy``, attach the issue-sort combo on the plan envelope as
+    ``issue_sort`` via the ONE policy owner (path_id from pack only).
     """
-    if (decompose_llm or confirm) and governor is None:
+    if (decompose_llm or confirm or plan_consensus) and governor is None:
         raise HarnessError("LLM plan features require a governor")
 
     plan_goal = opts_goal
     plan_structural = None
+    plan_triage = None
+    plan_issue_sort = None
+    jev_route_feed = None
+    repo_context = None
     if isinstance(jev_policy, JevPolicy):
+        # JEV-P3-route: one typed route choice through the policy owner.
+        route_eval, route_envelope = jev_policy.evaluate_route(
+            opts_goal, candidate_files, site="route")
         plan_eval, plan_structural = jev_policy.evaluate_plan(
             opts_goal, candidate_files, site="waist")
-        if plan_eval.answers.get("requires_iteration"):
+        plan_triage = dict(route_envelope)
+        plan_triage["route"] = route_eval.answers.get("route", "free-distill")
+        plan_triage["route_is_fallback"] = bool(route_eval.is_fallback)
+        plan_triage["requires_iteration"] = bool(
+            plan_eval.answers.get("requires_iteration")
+            or route_eval.answers.get("requires_iteration", False))
+        if not route_eval.is_fallback:
+            jev_route_feed = plan_triage["route"]
+        if plan_eval.answers.get("requires_iteration") or plan_triage["requires_iteration"]:
             plan_goal = (
                 f"{opts_goal}\n\n[STRUCTURAL GUIDELINE]: This goal requires iterative "
                 "control flow, conditional branching, or multi-step execution. "
                 "Represent those dependencies explicitly in the executable DAG.")
+        if issue_sort_pack is not None:
+            _sort_result, _sort_structural, plan_issue_sort = (
+                jev_policy.evaluate_issue_sort(
+                    {"issue": opts_goal}, issue_sort_pack, site="issue_sort"))
+    # JEV-P3-context-pack: distilled decision-relevant state before generative
+    # seats that lack a pack. Smallest seam — pass into LLM decompose.
+    if decompose_llm and not repo_context:
+        repo_context = build_context_pack(
+            opts_goal, candidate_files=candidate_files)
 
     # The run-level gate: the goal's own candidate files. It is the
     # last-resort arm of the ONE gate rule (repo_scope.gate_for_targets),
@@ -1038,8 +1326,20 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         try:
             # chat_fn's contract is (text, cost) -- decomposition consumes
             # the text only; the cost stays on the governor/caller side.
+            # HG-condense-decompose + JEV-P3-context-pack: signatures AND
+            # decision pack; never raw file bodies; prompt still labels
+            # REPOSITORY CONTEXT: via build_decomposition_prompt.
+            sig_ctx = _decompose_repo_context(
+                plan_goal, candidate_files, root=root)
+            decision_ctx = build_context_pack(
+                opts_goal, candidate_files=candidate_files)
+            if sig_ctx and str(sig_ctx).strip():
+                repo_context = decision_ctx + "\n\n" + str(sig_ctx).strip()
+            else:
+                repo_context = decision_ctx
             decomposed = decompose_via_llm(lambda p: chat_fn(p)[0], plan_goal,
-                                           candidate_files=candidate_files)
+                                           candidate_files=candidate_files,
+                                           repo_context=repo_context)
             decomposition = (f"llm:{decompose_model}"
                              if decompose_model else "llm:injected")
         except HarnessError as exc:
@@ -1051,10 +1351,14 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         goal=plan_goal, candidate_files=candidate_files,
         custom_frontier=frontier_model, use_free=use_free,
         decomposed_dag=decomposed, root=root, run_gate=run_gate,
-        allow_escalation=allow_escalation)
+        allow_escalation=allow_escalation, jev_route=jev_route_feed)
     plan_result["decomposition"] = decomposition
+    if plan_triage is not None:
+        plan_result["triage"] = plan_triage
     if plan_structural is not None:
         plan_result["structural"] = plan_structural
+    if plan_issue_sort is not None:
+        plan_result["issue_sort"] = plan_issue_sort
     # Chunk anything that cannot fit ONE model pass before the gate sees it,
     # so the waist confirms the plan that will actually run.
     plan_result = _fit_plan_to_single_pass(
@@ -1064,6 +1368,36 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         allow_escalation=allow_escalation)
     if plan_structural is not None:
         plan_result["structural"] = plan_structural
+    if plan_issue_sort is not None:
+        plan_result["issue_sort"] = plan_issue_sort
+
+    # HG-plan-consensus: optional cheap soundness check BEFORE the waist.
+    # It always uses its OWN governed call (or an injected consensus seam),
+    # never the decompose chat_fn -- those are different contracts.
+    consensus = None
+    if plan_consensus and confirm:
+        consensus_model = decompose_model
+        if not consensus_model:
+            try:
+                consensus_model = resolve_scout_ladder(
+                    use_free=use_free, custom_frontier=frontier_model)[0]
+            except Exception:
+                consensus_model = frontier_model
+        try:
+            # chat_fn=None -> plan_consensus builds the governed_text call.
+            consensus = plan_consensus_check(
+                transport=transport, api_key=api_key, governor=governor,
+                ledger=ledger, plan_result=plan_result,
+                model=consensus_model, chat_fn=None)
+        except HarnessError as exc:
+            # Fail closed on unparseable consensus when the operator armed it.
+            if not execute:
+                raise
+            eprint(f"[plan] plan consensus failed ({exc}); continuing to waist")
+            consensus = {"sound": True, "reasons": [f"consensus_unavailable: {exc}"],
+                         "cost": 0.0, "model": consensus_model}
+        if consensus is not None:
+            plan_result["consensus"] = consensus
 
     if confirm:
         ladder = resolve_waist_ladder(
@@ -1077,7 +1411,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                     transport=transport, api_key=api_key, governor=governor,
                     ledger=ledger, plan_result=plan_result, model=candidate_model,
                     use_free=use_free, custom_frontier=frontier_model,
-                    root=root, run_gate=run_gate, chat_fn=None)
+                    root=root, run_gate=run_gate, chat_fn=None,
+                    consensus=consensus)
                 plan_result_confirmed = res
                 break
             except HarnessError as exc:
@@ -1091,6 +1426,10 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             plan_result = plan_result_confirmed
             if plan_structural is not None:
                 plan_result["structural"] = plan_structural
+            if consensus is not None:
+                plan_result["consensus"] = consensus
+            if plan_issue_sort is not None:
+                plan_result["issue_sort"] = plan_issue_sort
             # When in autonomous execution mode and the waist refused,
             # do not immediately halt. Attempt critique-driven re-planning if decomposition
             # was LLM-based, feeding the frontier's architectural critique back to the planner.
@@ -1107,8 +1446,12 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                     f"dependencies, and granular steps are properly structured into the DAG."
                 )
                 try:
-                    re_decomposed = decompose_via_llm(lambda p: chat_fn(p)[0], critique_prompt,
-                                                      candidate_files=candidate_files)
+                    critique_context = _decompose_repo_context(
+                        critique_prompt, candidate_files, root=root)
+                    re_decomposed = decompose_via_llm(
+                        lambda p: chat_fn(p)[0], critique_prompt,
+                        candidate_files=candidate_files,
+                        repo_context=critique_context)
                     re_plan = plan_task(
                         goal=plan_goal, candidate_files=candidate_files,
                         custom_frontier=frontier_model, use_free=use_free,
@@ -1126,7 +1469,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                                 transport=transport, api_key=api_key, governor=governor,
                                 ledger=ledger, plan_result=re_plan, model=candidate_model,
                                 use_free=use_free, custom_frontier=frontier_model,
-                                root=root, run_gate=run_gate, chat_fn=None)
+                                root=root, run_gate=run_gate, chat_fn=None,
+                                consensus=consensus)
                             if re_res.get("status") != "refused":
                                 plan_result = re_res
                                 break
@@ -1144,15 +1488,54 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                     run_gate=run_gate, max_tokens=max_tokens,
                     allow_escalation=allow_escalation)
         else:
-            first_model = ladder[0] if ladder else (frontier_model or resolve_frontier_model(None, use_free=use_free))
+            # HG: Confirm-armed waist unreachable -> REFUSE execute (fail closed).
+            # Proceeding under the local gate would spend an unconfirmed pyramid.
+            first_model = ladder[0] if ladder else (
+                frontier_model or resolve_frontier_model(None, use_free=use_free))
+            message = (
+                f"waist confirmation could not run on {first_model} "
+                f"(plan NOT executed): {last_exc}")
             if not execute:
-                raise HarnessError(
-                    f"waist confirmation could not run on {first_model} "
-                    f"(plan NOT executed): {last_exc}") from last_exc
+                raise HarnessError(message) from last_exc
             from . import events as _events
             _events.emit("orchestration_note",
-                         note=f"Waist confirmation unreachable across ladder ({last_exc}); proceeding under local verification gate")
-            eprint(f"[waist] Confirmation unreachable across ladder ({last_exc}); proceeding under local verification gate")
+                         note=f"Waist confirmation unreachable across ladder ({last_exc}); REFUSING execute (fail-closed)")
+            eprint(f"[waist] Confirmation unreachable across ladder ({last_exc}); REFUSING execute (fail-closed)")
+            refused = dict(plan_result)
+            refused["status"] = "refused"
+            refused["confirmation"] = {
+                "verdict": "refused",
+                "model": first_model,
+                "rounds": 0,
+                "reason": "waist confirmation unreachable across the full ladder",
+                "evidence": str(last_exc) if last_exc is not None else "",
+                "cost": 0.0,
+            }
+            plan_result = refused
+
+    # HG-composed-ceiling: ALWAYS compute the pyramid envelope; refuse execute
+    # when the composed worst case cannot fit the governor's remaining budget.
+    composed = composed_worst_case(
+        plan_result,
+        governor=governor,
+        decompose_llm=decompose_llm,
+        confirm=confirm,
+        decompose_model=decompose_model,
+        frontier_model=frontier_model,
+        use_free=use_free,
+        allow_escalation=allow_escalation,
+        plan_consensus=plan_consensus,
+    )
+    plan_result["composed_worst_case"] = composed
+    if (execute and governor is not None
+            and plan_result.get("status") != "refused"
+            and composed.get("exceeds_remaining")):
+        from . import events as _events
+        _events.emit(
+            "orchestration_note",
+            note=("composed pyramid ceiling exceeds remaining budget; "
+                  "refusing before execute spend"))
+        plan_result = _refuse_composed_ceiling(plan_result, composed)
     return plan_result
 
 

@@ -166,8 +166,8 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `JEV-P1-*` one owner + lanes | **complete** | **PR #35 MERGED** → `origin/main` `9d5ff14` |
 | `JEV-P2-*` System One pillars | **complete** | **PR #36 MERGED** → `origin/main` `405bbc1`; hermetic lane-parity; D12 executed; local audit BAR MET; CI green on PR tip **and** post-merge `main`; live Jev smoke OK; **`JEV-P2-jury` deferred** (follow-up, not blocking P2 complete) |
 | `JEV-P3-*` utilization | **complete** | **PR #43 MERGED** `7eb18ea`; route/triage/context/claims/completion/calibration |
-| `JEV-P4-*` ops / exit | **complete** | **PR #46 MERGED** `a021cfc`; policy-only jev_for + dogfood switch + freeze helper; jury deferred; residual: A/B pass-rate + freeze persistence |
-| JEV-COMPLETION | **in progress** | PR #39 `harness jev-phase` 0-100 dogfood gate; not complete until merge + CI green |
+| `JEV-P4-*` ops / exit | **complete** | **PR #46 MERGED** `a021cfc`; jury deferred; residual: A/B pass-rate + freeze persistence |
+| JEV-COMPLETION | **in progress** | **PR #39** `harness jev-phase` gate |
 | `JEV-P5-*` issue-sort buckets | **in progress** | PR #42 `feat/jev-p5-issue-sort`; **not complete until merge + CI green** |
 | `HUL-A` mission pack | **complete** | **PR #41 MERGED** `64e63a3`; mission pack + CLI + gate tests; CI green |
 | `HUL-B` dual budget | **open / WIP** | worktree `Harness-hul-b` / `feat/hul-b-dual-budget` |

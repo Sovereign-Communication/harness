@@ -28,6 +28,7 @@ from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
 from .mcp_lanes import LANES, lane_for
 from .mcp_schemas import TOOL_SCHEMAS
 from .jev_policy import aggregate_structural, policy_for
+from .jev_packs import validate_operator_pack
 from .service import run_verify as _service_run_verify
 from .validation import (
     MAX_LINES,
@@ -135,6 +136,8 @@ class McpServer:
         self.hourglass = {
             "confirm": True, "isolate": True, "parallel": True,
             "require_diff_authorization": True,
+            # HG-decompose-default: rides the hourglass (True when active).
+            "decompose": True,
         }
         self.hourglass.update(hourglass or {})
         # Session authorship for the evidence loop: the stdio peer (captured
@@ -649,7 +652,9 @@ class McpServer:
                 transport=self.transport, api_key=self.api_key, governor=self.governor,
                 task_id=offer_task_id, task=task, model=model_arg or self.router.judge,
                 context=context, ledger=self.ledger, required=True,
-                fallback_pool=self.router.panel_pool)
+                fallback_pool=self.router.panel_pool,
+                min_confidence=getattr(getattr(self, "settings", None),
+                                       "min_confidence", 0.70))
 
         if name == "defer_work":
             task_id = validate_mcp_task_id(args.get("task_id"))
@@ -660,6 +665,38 @@ class McpServer:
             return {"status": "deferred", "task_id": task_id,
                     "reason": reason, "note": "partial work preserved",
                     "participation": self.ledger.participation_report()}
+        if name == "issue_sort":
+            # Thin face over the ONE policy owner (jev_policy.evaluate_issue_sort).
+            # No second Jev client; combo fields come only from the operator pack.
+            issue = validate_text(args.get("issue"), "issue", 100000, required=True)
+            raw_pack = args.get("pack")
+            if raw_pack is None:
+                raise HarnessError(
+                    "issue_sort requires 'pack' (operator-declared bucket pack)")
+            pack = validate_operator_pack(raw_pack)
+            jev_policy = getattr(self.engine, "jev_policy", None)
+            if jev_policy is None:
+                settings = getattr(self.engine, "settings", None)
+                if settings is not None:
+                    jev_policy = policy_for(
+                        settings, transport=self.transport,
+                        governor=self.governor, ledger=self.ledger)
+            if jev_policy is None:
+                raise HarnessError("issue_sort requires a Jev policy on the engine")
+            result, structural, combo = jev_policy.evaluate_issue_sort(
+                {"issue": issue}, pack, site="issue_sort")
+            return {
+                "status": "ok" if combo.get("bucket") else "unmatched",
+                "combo": combo,
+                "structural": structural,
+                "answers": getattr(result, "answers", {}),
+                "reasons": getattr(result, "reasons", []),
+                "is_fallback": bool(combo.get("is_fallback")),
+                "bucket": combo.get("bucket"),
+                "path_id": combo.get("path_id"),
+                "suggested_next_action": combo.get("suggested_next_action"),
+                "pack_id": combo.get("pack_id"),
+            }
         if name == "ledger_status":
             limit = validate_mcp_limit(args.get("limit"))
             ok, bad_seq = self.ledger.verify()
@@ -684,13 +721,21 @@ class McpServer:
                 args.get("parallel", self.hourglass["parallel"]), "parallel")
             allow_write = validate_mcp_bool(args.get("allow_write", False), "allow_write")
             allow_escalation = validate_mcp_bool(args.get("allow_escalation", False), "allow_escalation")
-            decompose_llm = validate_mcp_bool(args.get("decompose_llm", False), "decompose_llm")
+            decompose_llm = validate_mcp_bool(
+                args.get("decompose_llm", self.hourglass["decompose"]),
+                "decompose_llm")
             confirm = validate_mcp_bool(
                 args.get("confirm", self.hourglass["confirm"]), "confirm")
+            plan_consensus = validate_mcp_bool(
+                args.get("plan_consensus", self.hourglass.get("plan_consensus", False)),
+                "plan_consensus")
             require_auth = validate_mcp_bool(
                 args.get("require_diff_authorization",
                          self.hourglass["require_diff_authorization"]),
                 "require_diff_authorization")
+            final_gate = args.get("final_gate", None)
+            if final_gate is not None and not isinstance(final_gate, str):
+                final_gate = validate_mcp_bool(final_gate, "final_gate")
             max_workers = int(args.get("max_workers", DEFAULT_PLAN_WORKERS)
                               or DEFAULT_PLAN_WORKERS)
             frontier_model = validate_mcp_model(args.get("frontier_model"), "frontier_model")
@@ -718,9 +763,11 @@ class McpServer:
                 use_free=self.use_free, decompose_llm=decompose_llm,
                 confirm=confirm, execute=execute,
                 allow_escalation=allow_escalation,
+                plan_consensus=plan_consensus,
                 jev_policy=jev_policy)
             if plan_result.get("status") == "refused":
-                # Waist refusal is terminal evidence: the plan never executes.
+                # Waist refusal / composed-ceiling / unreachable-waist is
+                # terminal evidence: the plan never executes.
                 return plan_result
             if not execute:
                 if isinstance(plan_result.get("structural"), dict):
@@ -730,10 +777,15 @@ class McpServer:
 
             dag = TaskDAG.from_dict(plan_result["dag"])
             node_routes = {n.get("node_id"): n for n in plan_result["nodes"]}
+            run_gate = None
+            for n in plan_result.get("nodes") or ():
+                if isinstance(n, dict) and n.get("local_gate"):
+                    run_gate = n["local_gate"]
+                    break
             # ONE execution assembly for every lane (executor.PlanExecutor):
             # the same object the CLI plan lane and the agent's edit lane
-            # build, so parallelism/isolation/reservation policy is derived
-            # once.
+            # build, so parallelism/isolation/reservation/final-gate policy
+            # is derived once.
             plan_exec = PlanExecutor(
                 self.engine, node_routes,
                 parallel=parallel, isolate=self.hourglass["isolate"],
@@ -747,7 +799,9 @@ class McpServer:
                 },
                 # This server's real budget, so a node reservation can never
                 # be bounded by an unrelated nominal default instead.
-                run_ceiling=self.governor.max_cost)
+                run_ceiling=self.governor.max_cost,
+                final_gate=final_gate,
+                run_gate=run_gate)
             all_results = plan_exec.execute(dag)
             summary = PlanExecutor.summarize(all_results)
             output = {
@@ -755,9 +809,12 @@ class McpServer:
                 "goal": goal,
                 "total_nodes": len(dag.nodes),
                 "completed_nodes": summary["completed"],
-                "results": list(all_results.values()),
+                "results": [r for key, r in all_results.items()
+                            if key != "final_gate"],
                 "cost": summary["total_cost"],
                 "dag": plan_result["dag"],
+                "composed_worst_case": plan_result.get("composed_worst_case"),
+                "final_gate": summary.get("final_gate"),
             }
             structural = aggregate_structural(
                 list(all_results.values()), site="mcp")

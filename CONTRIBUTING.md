@@ -156,8 +156,13 @@ statement covers the CI matrix by direct execution.
 | `harness/sliding_scale.py` | dynamic sliding-scale tier classification (Tiers 0, 1, 2) & frontier model routing ladder |
 | `harness/routing_table.py` | task-to-model 4-tier routing table, :floor provider formatting, and gateway-level max_price ceilings |
 | `harness/jev.py` | TypeSafe AI Jev / System One structural verification client with local AST and diff fallbacks |
+| `harness/jev_packs.py` | JEV-P3 utilization packs and pure helpers (route vocabulary, file-relevance/claim/completion nouls, context pack, artifact facts) — no second Jev client |
 | `harness/jev_policy.py` | shared Jev decision policy: bounded packs, spend preflight, ledger evidence, and structural envelopes |
+<<<<<<< HEAD
 | `harness/jev_completion.py` | phase-completion dogfood gate: hard mechanical gates + Jev 0-100 semantic score; STATUS complete only when `can_mark_complete` and score ≥ 85 (`harness jev-phase`) |
+=======
+| `harness/jev_packs.py` | operator-declared issue-sort bucket packs (schema validation, TypeSafe choice pack builder, keyword matcher); never invents buckets or actions |
+>>>>>>> origin/main
 | `harness/providers.py` | modular provider adapter interface and registry for external execution backends |
 | `harness/agent.py` | autonomous agent orchestration: natural language prompt intent classification, file/gate discovery, sliding-scale DAG execution, self-healing retry |
 | `harness/apply_gate.py` | one candidate-to-gate transaction: write, verify, preview, rewind, and terminal gate results |
@@ -183,12 +188,14 @@ statement covers the CI matrix by direct execution.
 | `harness/bench.py` | hermetic known-answer benchmarks |
 | `harness/chat.py` | the one chat-completion path and the one assessment of what a model actually produced |
 | `harness/waist.py` | plan-confirmation waist + LLM decomposition lane: condensed-brief frontier confirmation, bounded file-window rounds, `plan_verdict` ledger events |
+| `harness/pyramid_state.py` | persisted pyramid run envelope (goal, DAG, node_results, spent) and resume helpers: pending-node selection so `plan --resume` never re-dispatches completed ok nodes |
 | `harness/attest.py` | diff-bound independent authorization (M4): sovereign-diff-v1 schema + fail-closed binding checks; the LLM second-verifier lane (`authorize_diff`) is enforced in `write_candidate` before every write when opted in |
 | `harness/brief.py` | grounded context packs (`harness brief`): cited hash-pinned windows, honest truncation, no uncited claims; `validate_brief` is the grounding lint |
 | `harness/worktree.py` | git-worktree isolation for parallel DAG stages: per-node worktree/branch, declared-write audit, topological merge, conflict fail-closed |
 | `harness/web.py` | deliberate web access for the chat lane: allowlist-only fetch (https, redirects refused) + one operator-configured search endpoint; opt-in per run, honest failures, never an SSRF surface |
 | `harness/claims.py` | structured-claims grounding: source_refs lint + claims curation from the ledger's own evidence |
 | `harness/continuation.py` | the resumable-task state contract and its verification identity |
+| `harness/mission_record.py` | HUL-A mission pack: mission.yaml schema, pack layout under missions/<id>/, STATUS generator, append-only receipts/jev_evals, budget.json + resume.json, terminal findings helper |
 | `harness/convergence.py` | deterministic tally over panel votes + the rotating specialist lane |
 | `harness/errors.py` | shared exception types (`HarnessError`) |
 | `harness/filesafety.py` | file-safety primitives: every mutation of a real file goes through these |

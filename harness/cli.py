@@ -42,11 +42,17 @@ from .service import read_text_file as _service_read_text
 from .rankings import build_rankings_report as _rankings_report
 from .waist import compose_plan as _compose_plan
 from .jev_policy import aggregate_structural, policy_for
+<<<<<<< HEAD
 from .jev_completion import dogfood_phase
+=======
+from .jev_packs import validate_operator_pack
+>>>>>>> origin/main
 from .capability import capabilities_payload as _capability_payload_owner
 from .brief import build_brief, validate_brief
 from .dag import TaskDAG, node_apply_kwargs
 from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
+from .pyramid_state import (
+    dag_for_pending, load_state, node_routes_for_pending, persist_state)
 from .results import terminal_exit_code
 from .saturation import advise
 import sys
@@ -414,7 +420,8 @@ def _cmd_offer(opts, settings):
         transport=HttpTransport(), api_key=api_key, governor=gov,
         task_id=opts.task_id or uuid.uuid4().hex[:8], task=opts.task,
         model=opts.model or settings.judge, context=opts.context,
-        ledger=ledger, required=True, fallback_pool=settings.panel_pool)
+        ledger=ledger, required=True, fallback_pool=settings.panel_pool,
+        min_confidence=settings.min_confidence)
     _emit(result, opts.out)
 
 
@@ -424,6 +431,33 @@ def _cmd_defer(opts, settings):
                           category=opts.category or None, model="(deferral)")
     _emit({"status": "deferred", "task_id": opts.task_id, "reason": opts.reason,
            "category": opts.category, "ledger_entry": entry}, None)
+
+
+def _cmd_issue_sort(opts, settings):
+    """Thin JEV-P5 face: load the operator pack, call the ONE policy owner,
+    emit combo + structural. No second Jev client, no invented buckets."""
+    raw_pack = _read_json(opts.pack, "issue-sort pack")
+    pack = validate_operator_pack(raw_pack)
+    ledger = _ledger(settings)
+    # Hermetic-friendly composition: policy + ledger only. Keyed live calls
+    # still require the shared spend governor (evaluate_issue_sort falls back
+    # honestly with is_fallback=true when the governor is absent).
+    jev_policy = policy_for(settings, transport=HttpTransport(), ledger=ledger)
+    result, structural, combo = jev_policy.evaluate_issue_sort(
+        {"issue": opts.issue}, pack, site="issue_sort")
+    envelope = {
+        "status": "ok" if combo.get("bucket") else "unmatched",
+        "combo": combo,
+        "structural": structural,
+        "answers": result.answers,
+        "reasons": result.reasons,
+        "is_fallback": bool(combo.get("is_fallback")),
+        "pack_id": combo.get("pack_id"),
+        "bucket": combo.get("bucket"),
+        "path_id": combo.get("path_id"),
+        "suggested_next_action": combo.get("suggested_next_action"),
+    }
+    _emit(envelope, opts.out)
 
 
 def _cmd_ledger(opts, settings):
@@ -532,6 +566,60 @@ def _cmd_cost(opts, settings):
     _emit(report, opts.out)
 
 
+def _cmd_mission(opts, settings):
+    """HUL-A mission pack CLI: init | status | resume | findings (+ run stub)."""
+    from . import mission_record as mr
+    cmd = getattr(opts, "mission_cmd", None)
+    if cmd == "init":
+        in_scope = _split_opt_list(getattr(opts, "in_scope", ""))
+        out_scope = _split_opt_list(getattr(opts, "out_of_scope", ""))
+        spec = mr.build_mission_spec(
+            mission_id=opts.mission_id,
+            request=opts.request,
+            success_definition=opts.success_definition,
+            max_cost_usd=opts.max_cost_usd,
+            terminal_reserve_cost_usd=getattr(opts, "terminal_reserve_cost_usd", 0.0),
+            in_scope=in_scope,
+            out_of_scope=out_scope,
+            persistence_root=getattr(opts, "root", "missions"),
+            verifier_kind=getattr(opts, "verifier_kind", "unspecified"),
+        )
+        pack = mr.init_mission_pack(opts.root, spec)
+        _emit(mr.pack_summary(pack), opts.out)
+        return
+    if cmd == "run":
+        # HUL-D owns the until-limits driver; fail closed with an honest stub.
+        raise HarnessError(
+            "mission run is not implemented yet (HUL-D until-limits driver); "
+            f"use mission status/resume for pack {getattr(opts, 'mission_id', '?')}")
+    pack = mr.load_mission_pack(opts.root, opts.mission_id)
+    if cmd == "status":
+        mr.write_status(pack)
+        mr.write_index(pack)
+        _emit(mr.pack_summary(pack), opts.out)
+        return
+    if cmd == "resume":
+        state = mr.load_resume(pack)
+        validated = mr.validate_resume(state, expected_id=pack.id)
+        mr.write_resume(pack, validated)
+        mr.write_status(pack)
+        out = mr.pack_summary(pack)
+        out["resume"] = validated
+        out["resumable"] = validated["status"] not in ("terminal", "complete", "failed")
+        _emit(out, opts.out)
+        return
+    if cmd == "findings":
+        if not pack.findings_md.is_file():
+            mr.ensure_findings_placeholder(pack)
+        body = pack.findings_md.read_text(encoding="utf-8")
+        out = mr.pack_summary(pack)
+        out["findings_md"] = body
+        out["terminal"] = mr.is_terminal(pack)
+        _emit(out, opts.out)
+        return
+    raise HarnessError(f"unknown mission command: {cmd!r}")
+
+
 def _cmd_trust(opts, settings):
     """Read-only trust snapshot: no key, no network, no ledger writes."""
     from . import trust as trust_policy
@@ -595,23 +683,32 @@ def _capabilities_payload(settings, gov, api_key=None, refresh=False,
 
 
 def _plan_compose(settings, opts, gov, transport, api_key, *,
-                  candidate_files, frontier_model, execute, confirm=None):
+                  candidate_files, frontier_model, execute, confirm=None,
+                  decompose_llm=None, plan_consensus=None, hourglass=None):
     """Plan-lane flow via the ONE owner (harness/waist.py): heuristic or
     cheap-LLM decomposition, then (hourglass default: on) waist
     confirmation."""
+    if hourglass is None:
+        hourglass = _resolve_hourglass(opts, settings)
     if confirm is None:
-        confirm = getattr(settings, "hourglass_confirm", True)
+        confirm = hourglass["confirm"]
+    if decompose_llm is None:
+        decompose_llm = hourglass.get("decompose", False)
+    if plan_consensus is None:
+        plan_consensus = bool(getattr(opts, "plan_consensus", None))
     plan_ledger = (_ledger(settings) if hasattr(settings, "ledger_path") else None)
     jev_policy = (policy_for(settings, transport=transport,
                              governor=gov, ledger=plan_ledger)
                   if hasattr(settings, "jev_api_key") else None)
     return _compose_plan(
         transport=transport, api_key=api_key, governor=gov,
-        ledger=plan_ledger if confirm else None, opts_goal=opts.goal,
+        ledger=plan_ledger if (confirm or plan_consensus) else None,
+        opts_goal=opts.goal,
         candidate_files=candidate_files, frontier_model=frontier_model,
         use_free=settings.use_free,
-        decompose_llm=getattr(opts, "decompose_llm", False),
+        decompose_llm=decompose_llm,
         confirm=confirm,
+        plan_consensus=plan_consensus,
         execute=execute,
         allow_escalation=bool(getattr(opts, "allow_escalation", getattr(settings, "allow_escalation", False))),
         jev_policy=jev_policy,
@@ -632,9 +729,11 @@ def _cmd_plan(opts, settings):
     candidate_files = getattr(opts, "file", None)
     frontier_model = getattr(opts, "frontier_model", None) or getattr(settings, "frontier_model", None)
     execute = getattr(opts, "execute", False)
-    decompose_llm = getattr(opts, "decompose_llm", False)
     hourglass = _resolve_hourglass(opts, settings)
     confirm = hourglass["confirm"]
+    decompose_llm = hourglass["decompose"]
+    plan_consensus = bool(getattr(opts, "plan_consensus", None))
+    resume_path = getattr(opts, "resume", None)
 
     # ONE governor for the whole run when it spends: decomposition,
     # confirmation, and node execution share a single ceiling (the engine's
@@ -643,19 +742,26 @@ def _cmd_plan(opts, settings):
     if execute:
         engine = _session(settings, max_cost=getattr(opts, "max_cost", None))
         gov, transport, api_key = engine.governor, engine.transport, engine.api_key
-    elif decompose_llm or confirm:
+    elif decompose_llm or confirm or plan_consensus:
         api_key, gov = _governor(settings, getattr(opts, "max_cost", None))
         transport = HttpTransport()
     else:
         gov, transport, api_key = None, None, None
 
+    # HG-pyramid-resume: a resume run re-plans only if no state was supplied;
+    # with state, the stored DAG's pending nodes are the work.
+    pending_state = None
+    if resume_path:
+        pending_state = load_state(resume_path)
+
     plan_result = _plan_compose(
         settings, opts, gov, transport, api_key,
         candidate_files=candidate_files, frontier_model=frontier_model,
-        execute=execute, confirm=confirm)
+        execute=execute, confirm=confirm, decompose_llm=decompose_llm,
+        plan_consensus=plan_consensus, hourglass=hourglass)
     if plan_result.get("status") == "refused":
-        # The waist refused; execution must not start (fail-closed), and the
-        # refusal's reason + evidence ride the envelope (exit code 2).
+        # The waist refused (or the composed ceiling / unreachable waist
+        # fail-closed fired); execution must not start (exit code 2).
         _emit_by_status(plan_result, opts.out)
         return
     if not execute:
@@ -665,9 +771,35 @@ def _cmd_plan(opts, settings):
         _emit(plan_result, opts.out)
         return
 
-    dag = TaskDAG.from_dict(plan_result["dag"])
-    node_routes = {n.get("node_id"): n for n in plan_result["nodes"]}
+    run_gate = None
+    if isinstance(plan_result.get("dag"), dict):
+        # Carry the plan-level discovered gate into the executor for the
+        # default final gate.
+        for n in plan_result.get("nodes") or ():
+            if isinstance(n, dict) and n.get("local_gate"):
+                run_gate = n["local_gate"]
+                break
     stage_gate = getattr(opts, "stage_gate", None)
+
+    if pending_state is not None:
+        dag = dag_for_pending(pending_state)
+        node_routes = node_routes_for_pending(pending_state, plan_result.get("nodes"))
+        if not dag.nodes:
+            output = {
+                "status": "ok",
+                "goal": pending_state.get("goal") or opts.goal,
+                "total_nodes": 0,
+                "completed_nodes": 0,
+                "results": list((pending_state.get("node_results") or {}).values()),
+                "cost": float(pending_state.get("spent") or 0.0),
+                "resumed": True,
+                "composed_worst_case": plan_result.get("composed_worst_case"),
+            }
+            _emit_by_status(output, opts.out)
+            return
+    else:
+        dag = TaskDAG.from_dict(plan_result["dag"])
+        node_routes = {n.get("node_id"): n for n in plan_result["nodes"]}
 
     def on_stage_done(executable_nodes, _results):
         # Optional full-suite stage gate (MR-5): the composed tree must be
@@ -682,8 +814,8 @@ def _cmd_plan(opts, settings):
                 f"stopping before dependent stages (gate: {stage_gate})")
 
     # ONE execution assembly for every lane (executor.PlanExecutor): worker
-    # count, reservations, worktree isolation, and per-node routing. The
-    # agent's edit lane builds the same object.
+    # count, reservations, worktree isolation, final gate, and per-node
+    # routing. The agent's edit lane builds the same object.
     plan_exec = PlanExecutor(
         engine, node_routes,
         parallel=hourglass["parallel"], isolate=hourglass["isolate"],
@@ -710,18 +842,45 @@ def _cmd_plan(opts, settings):
         # this command resolved), so a node reservation is bounded by it
         # instead of by an unrelated nominal default.
         run_ceiling=getattr(gov, "max_cost", None),
-        on_stage_done=on_stage_done)
+        on_stage_done=on_stage_done,
+        final_gate=getattr(opts, "final_gate", None),
+        run_gate=run_gate)
     all_results = plan_exec.execute(dag)
     summary = PlanExecutor.summarize(all_results)
+
+    # HG-pyramid-resume: persist after every execute so a later --resume can
+    # skip completed ok nodes.
+    if resume_path or getattr(opts, "persist_state", None):
+        state_path = resume_path or getattr(opts, "persist_state", None)
+        merged = dict((pending_state or {}).get("node_results") or {})
+        for key, res in all_results.items():
+            if key == "final_gate":
+                continue
+            merged[key] = res
+        persist_state(
+            state_path,
+            goal=plan_result.get("goal") or opts.goal,
+            dag=(pending_state or {}).get("dag") or plan_result.get("dag"),
+            node_results=merged,
+            spent=float(summary.get("total_cost") or 0.0)
+            + float((pending_state or {}).get("spent") or 0.0),
+            plan_nodes=plan_result.get("nodes"))
 
     output = {
         "status": "ok" if summary["all_ok"] else "failed",
         "goal": opts.goal,
         "total_nodes": len(dag.nodes),
         "completed_nodes": summary["completed"],
-        "results": list(all_results.values()),
+        "results": [r for key, r in all_results.items() if key != "final_gate"],
         "cost": summary["total_cost"],
+        "composed_worst_case": plan_result.get("composed_worst_case"),
+        "final_gate": summary.get("final_gate"),
     }
+    if pending_state is not None:
+        output["resumed"] = True
+        output["skipped_completed"] = sorted(
+            nid for nid, res in ((pending_state.get("node_results") or {}).items())
+            if isinstance(res, dict) and res.get("status") in ("ok", "success"))
     structural = aggregate_structural(list(all_results.values()), site="cli")
     if structural is None and isinstance(plan_result.get("structural"), dict):
         structural = dict(plan_result["structural"])
@@ -781,6 +940,7 @@ _DISPATCH = {
     "continue": _cmd_continue,
     "offer": _cmd_offer,
     "defer": _cmd_defer,
+    "issue-sort": _cmd_issue_sort,
     "ledger": _cmd_ledger,
     "models": _cmd_models,
     "bench": _cmd_bench,
@@ -789,7 +949,11 @@ _DISPATCH = {
     "cost": _cmd_cost,
     "trust": _cmd_trust,
     "rankings": _cmd_rankings,
+<<<<<<< HEAD
     "jev-phase": _cmd_jev_phase,
+=======
+    "mission": _cmd_mission,
+>>>>>>> origin/main
 }
 
 

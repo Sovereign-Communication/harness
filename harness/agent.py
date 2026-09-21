@@ -512,6 +512,7 @@ class AutonomousAgent:
             frontier_model=self.settings.frontier_model,
             use_free=self.settings.use_free,
             decompose_llm=True, confirm=bool(confirm),
+            plan_consensus=bool(getattr(self.settings, "hourglass_plan_consensus", False)),
             # The lane's tree: a node's target size is measured against the
             # files this run actually edits, not the server's CWD.
             root=str(self.root_dir),
@@ -722,13 +723,14 @@ class AutonomousAgent:
             # A lightweight injected engine (used by library callers/tests)
             # has no policy, so this lane supplies the same policy owner as a
             # compatibility boundary rather than silently skipping the check.
+            # JEV-P4: composition goes through session.jev_for → policy_for
+            # (no raw JevEvaluator outside the policy owner).
             structural = res.get("structural") if isinstance(res, dict) else None
             policy = getattr(engine, "jev_policy", None)
             if (res.get("status") in SUCCESS_STATUSES and res.get("diff")
                     and not isinstance(policy, JevPolicy)):
-                policy = policy_for(
+                policy = jev_for(
                     self.settings, transport=self.transport, governor=gov,
-                    evaluator=jev_for(self.settings, transport=self.transport),
                     ledger=ledger_for(self.settings, caller="agent"))
                 jev_res, structural = policy.evaluate_diff(
                     diff=res["diff"], instruction=node.instruction,
@@ -783,6 +785,11 @@ class AutonomousAgent:
         def execute_plan(plan_to_run):
             dag = TaskDAG.from_dict(plan_to_run["dag"])
             node_routes = {n.get("node_id"): n for n in plan_to_run["nodes"]}
+            run_gate = None
+            for n in plan_to_run.get("nodes") or ():
+                if isinstance(n, dict) and n.get("local_gate"):
+                    run_gate = n["local_gate"]
+                    break
             plan_exec = PlanExecutor(
                 engine, node_routes,
                 parallel=hourglass["parallel"], isolate=hourglass["isolate"],
@@ -793,7 +800,11 @@ class AutonomousAgent:
                     allow_escalation=self.settings.allow_escalation,
                     attest_model=attest_model_for(self.settings)),
                 repo=str(self.root_dir), run_ceiling=gov.max_cost,
-                apply=apply_node)
+                apply=apply_node,
+                # HG-final-gate: default ON when a verify command was
+                # discovered/declared; shared with CLI/MCP via PlanExecutor.
+                final_gate=hourglass.get("final_gate"),
+                run_gate=run_gate)
             return plan_exec.execute(dag)
 
         driven = drive(
