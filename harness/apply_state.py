@@ -59,6 +59,9 @@ class RunState:
     # Auto-escalation / de-escalation state
     escalation_condensed_context: str = ""
     de_escalation_target_rung: int = 0
+    # Jev-directed escalation decision (JEV-P2-dead-code): parked directive
+    # for the escalation driver (ONE consumer); None = no Jev signal.
+    pending_jev_directive: object = None
     structural: object = None
 
 

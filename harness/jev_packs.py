@@ -41,6 +41,35 @@ def _noul(question: str, yes: str, no: str) -> Dict[str, Any]:
             "criteria": {"true": yes, "false": no}}
 
 
+def escalation_decision_pack() -> Dict[str, Dict[str, Any]]:
+    """Typed Jev signals for the Decide->Probe->Verify->Escalate pipeline
+    (JEV-P2-dead-code). One decision noul for ``decide_probe_verify_escalate``
+    -- calibrated confidence that ANOTHER ATTEMPT AT THE CURRENT TIER will
+    pass verification (the exact signal that function's ``confidence``
+    parameter consumes: low confidence means escalate) -- and one budget
+    noul for ``should_abstain`` (is remaining capability budget worth
+    another same-tier attempt?). Both feed the escalation driver via the
+    policy directive; the generative verify lane stays the escalated
+    executor.
+    """
+    return {
+        "escalation_decision": _noul(
+            "Would another attempt at the CURRENT tier pass verification "
+            "for this edit?",
+            "A retry at the current tier will very likely pass; the failure "
+            "looks transient or marginal.",
+            "A retry at the current tier is unlikely to pass verification; "
+            "escalation is warranted."),
+        "capability_budget": _noul(
+            "Does the remaining attempt budget justify another attempt at "
+            "the current tier?",
+            "There is meaningful progress to harvest from another same-tier "
+            "attempt; do not abstain yet.",
+            "The budget is better spent escalating or stopping; abstain from "
+            "another same-tier attempt."),
+    }
+
+
 def route_question_pack() -> Dict[str, Dict[str, Any]]:
     """Typed route choice pack for JEV-P3-route — vocabulary, not brands."""
     return {

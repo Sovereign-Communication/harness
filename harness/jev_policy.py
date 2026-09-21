@@ -20,6 +20,7 @@ from .jev_packs import (
     SCOPE_NOUL_HOLD,
     claim_support_question_pack,
     claims_from_payload,
+    escalation_decision_pack,
     completion_question_pack,
     file_relevance_question_pack,
     heuristic_file_relevance,
@@ -273,6 +274,48 @@ class JevPolicy:
                 {"route": route, "requires_iteration": iterative}, [str(exc)],
                 is_fallback=True, model=self.evaluator.model)
             return fallback, self._structural(fallback, site)
+
+    def evaluate_escalation_decision(
+            self, failure_context: str, *, site: str = "escalation-decision",
+            task_id: Optional[str] = None,
+            max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+        """Jev-directed escalation signals for the P2 decision pipeline
+        (JEV-P2-dead-code: wire, not delete).
+
+        Two nouls over the code-owned failure context (verify-output tail +
+        attempt history -- never model output treated as state):
+
+        - ``escalation_decision``: the ``decide_probe_verify_escalate``
+          noul. Its calibrated confidence IS the confidence the dead
+          function's ``confidence`` parameter was always meant to receive.
+        - ``capability_budget``: the ``should_abstain`` noul (remaining
+          attempt budget worth another same-tier retry?).
+
+        Unkeyed runs dispatch no network and resolve to the evaluator's
+        honest local fallback (``is_fallback=True``), so callers treat a
+        fallback result as "no Jev signal available" and keep the
+        status-quo walk. Live transport/contract failures refund the
+        reservation and refuse honestly. Returns ``(result, structural)``.
+        """
+        reservation = None
+        try:
+            reservation = self._preflight(
+                site=site, max_input_tokens=max_input_tokens)
+            result = self.evaluator.evaluate(
+                {"context": failure_context or ""},
+                escalation_decision_pack())
+            structural = self._account(
+                result, site=site, task_id=task_id, reservation=reservation)
+            reservation = None
+            return result, structural
+        except HarnessError as exc:
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            return self._record_refusal(
+                str(exc), site=site, task_id=task_id)
 
     def evaluate_plan(self, prompt: str, target_files=None, *, site: str = "waist",
                       task_id: Optional[str] = None, node_id: Optional[str] = None,

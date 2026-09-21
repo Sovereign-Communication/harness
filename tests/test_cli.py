@@ -170,9 +170,24 @@ class EngineKeyWiringTests(unittest.TestCase):
             # The ledger is temp-isolated too: trust scores read history,
             # so the machine's real ledger must never decide a hermetic run.
             led = AutonomyLedger(os.path.join(d, "ledger.jsonl"))
+            # JEV-P2-dead-code hermetic isolation: the engine now carries a
+            # Jev policy (Jev-directed escalation). On an operator machine
+            # load_settings() resolves a live System One key and a Jev noul
+            # call would ride the session transport with its own credential;
+            # the key-wiring assertion below is about ENGINE chat calls, so
+            # the Jev key is disarmed at the session composition seam per
+            # the documented doctrine ("never inherit live jev keys").
+            real_policy_for = session.policy_for
+
+            def _hermetic_policy_for(settings, **kwargs):
+                settings.jev_api_key = None
+                return real_policy_for(settings, **kwargs)
+
             with mock.patch.object(session, "governor_for", side_effect=fake_governor), \
                  mock.patch.object(session, "HttpTransport", TransportStub), \
-                 mock.patch.object(session, "ledger_for", return_value=led):
+                 mock.patch.object(session, "ledger_for", return_value=led), \
+                 mock.patch.object(session, "policy_for",
+                                   side_effect=_hermetic_policy_for):
                 with contextlib.redirect_stderr(io.StringIO()):
                     with self.assertRaises(SystemExit) as ctx:
                         cli.main(["bench", os.path.join(d, "task.json"),
