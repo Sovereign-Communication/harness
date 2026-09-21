@@ -470,3 +470,68 @@ def normalize_complexity_class(value: Any) -> Optional[str]:
     if cleaned in SCOPE_COMPLEXITY_VOCABULARY:
         return cleaned
     return None
+
+
+# --- JEV-LOG operator log-factor packs (site=log_factor) ---
+
+LOG_FACTOR_SITE = "log_factor"
+
+
+def validate_log_pack(pack: Any) -> Dict[str, Any]:
+    """Validate an operator log-factor pack; return a clean copy.
+
+    Extends the JEV-P5 operator-pack shape with ONE operator-declared score
+    dimension. Buckets keep every P5 rule (declared labels, kinds, path_id,
+    keywords); the score block declares the level strings and code maps them
+    to the score-question criteria in declared order. The model never invents
+    buckets, path ids, actions, or score levels.
+    """
+    doc = validate_operator_pack(pack)
+    score = pack.get("score")
+    if not isinstance(score, dict):
+        raise ValueError("log pack requires a score block object")
+    score_id = score.get("id")
+    if not isinstance(score_id, str) or not score_id or score_id == "bucket":
+        raise ValueError(
+            "log pack score requires a non-empty string id other than 'bucket'")
+    instructions = score.get("instructions")
+    if not isinstance(instructions, str) or not instructions:
+        raise ValueError("log pack score requires non-empty instructions")
+    levels = score.get("levels")
+    if (not isinstance(levels, list) or len(levels) < 2
+            or any(not isinstance(x, str) or not x for x in levels)):
+        raise ValueError(
+            "log pack score levels must be a list of at least two non-empty strings")
+    if len(set(levels)) != len(levels):
+        raise ValueError("log pack score levels must be unique")
+    doc["score"] = {"id": score_id, "instructions": instructions,
+                    "levels": list(levels)}
+    return doc
+
+
+def log_factor_question_pack(pack: Any) -> Dict[str, Dict[str, Any]]:
+    """The TypeSafe question pack for one log item: bucket choice + score.
+
+    Choice criteria keys are operator bucket ids, values their labels (the
+    P5 parse contract). Score criteria are the operator level strings in
+    declared order. Typed primitives only; nothing invented.
+    """
+    doc = validate_log_pack(pack)
+    criteria = {
+        bid: entry["label"] for bid, entry in doc["buckets"].items()
+    }
+    return {
+        "bucket": {
+            "type": "choice",
+            "instructions": (
+                "Choose the operator-declared bucket that best matches this "
+                "log item. Select only from the declared criteria keys; do "
+                "not invent categories."),
+            "criteria": criteria,
+        },
+        doc["score"]["id"]: {
+            "type": "score",
+            "instructions": doc["score"]["instructions"],
+            "criteria": list(doc["score"]["levels"]),
+        },
+    }
