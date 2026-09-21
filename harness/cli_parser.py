@@ -359,11 +359,10 @@ def build_parser():
     pjphase.add_argument("--json", action="store_true", help="emit raw JSON only")
     _add_output_flags(pjphase)
 
-    # HUL-A mission pack surface.
+    # HUL-A/D mission pack surface (run = HUL-D until-limits driver).
     pmiss = sub.add_parser(
         "mission",
-        help="Mission pack (HUL-A): init | status | resume | findings "
-             "(run stubs until HUL-D)")
+        help="Mission pack (HUL-A/D): init | status | resume | findings | run")
     pms = pmiss.add_subparsers(dest="mission_cmd", required=True)
     pmi = pms.add_parser("init", help="create missions/<id>/ pack from mission fields")
     pmi.add_argument("--id", dest="mission_id", required=True, help="mission id")
@@ -384,11 +383,22 @@ def build_parser():
     pmi.add_argument("--verifier-kind", default="unspecified",
                      help="verifier.kind recorded in mission.yaml")
     _add_output_flags(pmi)
-    for _sub in ("status", "resume", "findings", "run"):
+    for _sub in ("status", "resume", "findings"):
         _p = pms.add_parser(_sub, help=f"mission {_sub}")
         _p.add_argument("--id", dest="mission_id", required=True, help="mission id")
         _p.add_argument("--root", default="missions",
                         help="pack parent directory (default: missions)")
         _add_output_flags(_p)
+    prun = pms.add_parser(
+        "run",
+        help="HUL-D until-limits driver: attempts until limits/stall/success")
+    prun.add_argument("--id", dest="mission_id", required=True, help="mission id")
+    prun.add_argument("--root", default="missions",
+                      help="pack parent directory (default: missions)")
+    prun.add_argument("--max-attempts", dest="max_attempts", type=int, default=None)
+    prun.add_argument("--stall-limit", dest="stall_limit", type=int, default=5)
+    prun.add_argument("--max-tokens", dest="max_tokens", type=int, default=None)
+    prun.add_argument("--max-errors", dest="max_errors", type=int, default=None)
+    _add_output_flags(prun)
 
     return ap
