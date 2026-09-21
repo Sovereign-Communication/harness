@@ -386,3 +386,18 @@ Write STATUS `blocked` + the **exact** failing command/output. No “will do”.
 ### Follow-up addendum (NOT promoted to STATUS)
 
 `docs/jev-log-analysis-followup.md` remains a **parking plan** for SCMessenger log/insight work (JEV-LOG-*). Canon wins; no STATUS rows until explicit promotion. Shared pattern with shipped `JEV-P5` operator packs / `evaluate_issue_sort`. SCMessenger implements batch callers against **origin/main** only; Harness owns `jev_policy`/`jev_packs` and phase PRs #39/#47/#48.
+
+
+---
+
+## Mission order of operations (operator ruling 2026-09-21)
+
+**No conflict — sequence only.**
+
+| Step | Work | Rule |
+|---|---|---|
+| **1 (now)** | **Drive canon to completion** | Land open product PRs when CI audit BAR MET + tests green: **#39** completion gate, **#47** HUL-B dual budget, **#48** HUL-C/D scope+driver. Then flip their STATUS rows complete with merge evidence. Exit checklist: Jev P4 residual + HUL A–D product + FRP. |
+| **2 (after step 1)** | **Promote addendum to canonical** | One docs PR: fold `docs/jev-log-analysis-followup.md` IDs (`JEV-LOG-schema` / `parse` / `factor-pass` / `judgment` / `envelope` / `cli` / `dogfood`) into this STATUS as **open** rows + pointer. Addendum file remains design detail; **canon STATUS is the tracker**. |
+| **3** | **Implement addendum in full** | Fresh worktree `feat/jev-log-factor-analysis` off `origin/main`; one phase PR at a time; extend `jev_packs`/`jev_policy` only (no second Jev client); 0-hallucination operator packs + score block; code owns parse/aggregate; JSON only; dogfood `C:\\temp\\logsSCMessenger.txt`. |
+
+Until step 2 promotion, `JEV-LOG-*` stay planning labels (not STATUS). Until step 1 exit, do not start addendum implementation — keeps single-threaded canon.

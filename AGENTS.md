@@ -20,8 +20,8 @@ If a local dirty `docs/jev-roadmap.md` disagrees with `origin/main`, **fetch ori
 | Item | Truth |
 |---|---|
 | P0 + P1 + P2 | **complete** â€” PR #34 / #35 / **#36 merged `405bbc1`**; post-merge `main` CI green |
-| Open PRs | **#47 HUL-B** `d881622`, **#48 HUL-C/D** `aea9b9a`, **#39 completion** `d9f36af` |
-| Addendum | `docs/jev-log-analysis-followup.md` deferred (JEV-LOG-* not in STATUS); SCMessenger batch insights consume origin/main APIs only |
+| Open PRs | **#47 HUL-B**, **#48 HUL-C/D**, **#39 completion** — drive to green then merge; docs #49 already merged `8187d5a` |
+| Order | **1)** Finish canon open PRs #39/#47/#48 → STATUS complete + exit. **2)** Promote JEV-LOG addendum into canon STATUS. **3)** Implement addendum in full (canonical). No conflict — sequence only. |
 | Do not | Redo P0â€“P2; edit `Harness-jev-p1`/`Harness-jev-p2` (locked); mark complete while audit/CI red; merge red CI; brand hardcode in phase code |
 | `JEV-P2-jury` | **deferred** â€” not blocking anything above |
 
@@ -76,5 +76,6 @@ Operator harness config (`~/.config/harness/config.json`) already arms paid esca
 4. No provider brand hardcoding in phase code PRs â€” resolve via ladders / `MS-*`.
 5. Do not game `audits/self/coverage_baseline.json` to hide untested new lines; refresh only after real tests execute those lines.
 6. Report blocked with exact command/output â€” never â€œwill doâ€.
+
 
 
