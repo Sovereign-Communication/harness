@@ -42,6 +42,7 @@ from .service import read_text_file as _service_read_text
 from .rankings import build_rankings_report as _rankings_report
 from .waist import compose_plan as _compose_plan
 from .jev_policy import aggregate_structural, policy_for
+from .jev_packs import validate_operator_pack
 from .capability import capabilities_payload as _capability_payload_owner
 from .brief import build_brief, validate_brief
 from .dag import TaskDAG, node_apply_kwargs
@@ -426,6 +427,33 @@ def _cmd_defer(opts, settings):
            "category": opts.category, "ledger_entry": entry}, None)
 
 
+def _cmd_issue_sort(opts, settings):
+    """Thin JEV-P5 face: load the operator pack, call the ONE policy owner,
+    emit combo + structural. No second Jev client, no invented buckets."""
+    raw_pack = _read_json(opts.pack, "issue-sort pack")
+    pack = validate_operator_pack(raw_pack)
+    ledger = _ledger(settings)
+    # Hermetic-friendly composition: policy + ledger only. Keyed live calls
+    # still require the shared spend governor (evaluate_issue_sort falls back
+    # honestly with is_fallback=true when the governor is absent).
+    jev_policy = policy_for(settings, transport=HttpTransport(), ledger=ledger)
+    result, structural, combo = jev_policy.evaluate_issue_sort(
+        {"issue": opts.issue}, pack, site="issue_sort")
+    envelope = {
+        "status": "ok" if combo.get("bucket") else "unmatched",
+        "combo": combo,
+        "structural": structural,
+        "answers": result.answers,
+        "reasons": result.reasons,
+        "is_fallback": bool(combo.get("is_fallback")),
+        "pack_id": combo.get("pack_id"),
+        "bucket": combo.get("bucket"),
+        "path_id": combo.get("path_id"),
+        "suggested_next_action": combo.get("suggested_next_action"),
+    }
+    _emit(envelope, opts.out)
+
+
 def _cmd_ledger(opts, settings):
     if opts.ledger_cmd == "tail" and opts.n < 1:
         # tail(0) is [-0:] == the whole ledger; negative n slices from the
@@ -745,6 +773,7 @@ _DISPATCH = {
     "continue": _cmd_continue,
     "offer": _cmd_offer,
     "defer": _cmd_defer,
+    "issue-sort": _cmd_issue_sort,
     "ledger": _cmd_ledger,
     "models": _cmd_models,
     "bench": _cmd_bench,

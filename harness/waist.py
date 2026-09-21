@@ -986,7 +986,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                  chat_fn=None, max_cost=None, keep_going=False, out=None,
                  execute=False, root=None, max_tokens=None,
                  allow_escalation: bool = False,
-                 jev_policy=None) -> Dict[str, Any]:
+                 jev_policy=None,
+                 issue_sort_pack=None) -> Dict[str, Any]:
     """ONE owner of the plan-lane flow (CLI and MCP call this).
 
     Order: optional cheap-LLM decomposition (M1) -> tier classification ->
@@ -1003,6 +1004,10 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     is what the CLI/MCP lanes edit); ``max_tokens`` is the lane's pinned
     output budget when it has one -- both feed the chunk policy's real
     per-pass budget, none of them add a budget of their own.
+
+    ``issue_sort_pack`` (optional operator bucket pack): when provided with
+    a ``jev_policy``, attach the issue-sort combo on the plan envelope as
+    ``issue_sort`` via the ONE policy owner (path_id from pack only).
     """
     if (decompose_llm or confirm) and governor is None:
         raise HarnessError("LLM plan features require a governor")
@@ -1010,6 +1015,7 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     plan_goal = opts_goal
     plan_structural = None
     plan_triage = None
+    plan_issue_sort = None
     if isinstance(jev_policy, JevPolicy):
         triage_eval, plan_triage = jev_policy.evaluate_triage(
             opts_goal, candidate_files, site="triage")
@@ -1024,6 +1030,10 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                 f"{opts_goal}\n\n[STRUCTURAL GUIDELINE]: This goal requires iterative "
                 "control flow, conditional branching, or multi-step execution. "
                 "Represent those dependencies explicitly in the executable DAG.")
+        if issue_sort_pack is not None:
+            _sort_result, _sort_structural, plan_issue_sort = (
+                jev_policy.evaluate_issue_sort(
+                    {"issue": opts_goal}, issue_sort_pack, site="issue_sort"))
 
     # The run-level gate: the goal's own candidate files. It is the
     # last-resort arm of the ONE gate rule (repo_scope.gate_for_targets),
@@ -1064,6 +1074,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         plan_result["triage"] = plan_triage
     if plan_structural is not None:
         plan_result["structural"] = plan_structural
+    if plan_issue_sort is not None:
+        plan_result["issue_sort"] = plan_issue_sort
     # Chunk anything that cannot fit ONE model pass before the gate sees it,
     # so the waist confirms the plan that will actually run.
     plan_result = _fit_plan_to_single_pass(
@@ -1073,6 +1085,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         allow_escalation=allow_escalation)
     if plan_structural is not None:
         plan_result["structural"] = plan_structural
+    if plan_issue_sort is not None:
+        plan_result["issue_sort"] = plan_issue_sort
 
     if confirm:
         ladder = resolve_waist_ladder(
@@ -1100,6 +1114,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             plan_result = plan_result_confirmed
             if plan_structural is not None:
                 plan_result["structural"] = plan_structural
+            if plan_issue_sort is not None:
+                plan_result["issue_sort"] = plan_issue_sort
             # When in autonomous execution mode and the waist refused,
             # do not immediately halt. Attempt critique-driven re-planning if decomposition
             # was LLM-based, feeding the frontier's architectural critique back to the planner.

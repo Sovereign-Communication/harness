@@ -177,6 +177,16 @@ def build_parser():
     pd.add_argument("--reason", default=None)
     pd.add_argument("--category", default=None)
 
+    pis = sub.add_parser(
+        "issue-sort",
+        help="Sort an issue into an operator-declared bucket pack "
+             "(JEV-P5; never invents buckets or actions)")
+    pis.add_argument("--issue", required=True,
+                     help="issue or deferral note text to sort")
+    pis.add_argument("--pack", required=True,
+                     help="path to the operator bucket pack JSON")
+    _add_output_flags(pis)
+
     pl = sub.add_parser("ledger", help="Autonomy ledger")
     pls = pl.add_subparsers(dest="ledger_cmd", required=True)
     for _lc in ("verify", "report"):

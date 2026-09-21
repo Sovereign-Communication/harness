@@ -28,6 +28,7 @@ from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
 from .mcp_lanes import LANES, lane_for
 from .mcp_schemas import TOOL_SCHEMAS
 from .jev_policy import aggregate_structural, policy_for
+from .jev_packs import validate_operator_pack
 from .service import run_verify as _service_run_verify
 from .validation import (
     MAX_LINES,
@@ -662,6 +663,38 @@ class McpServer:
             return {"status": "deferred", "task_id": task_id,
                     "reason": reason, "note": "partial work preserved",
                     "participation": self.ledger.participation_report()}
+        if name == "issue_sort":
+            # Thin face over the ONE policy owner (jev_policy.evaluate_issue_sort).
+            # No second Jev client; combo fields come only from the operator pack.
+            issue = validate_text(args.get("issue"), "issue", 100000, required=True)
+            raw_pack = args.get("pack")
+            if raw_pack is None:
+                raise HarnessError(
+                    "issue_sort requires 'pack' (operator-declared bucket pack)")
+            pack = validate_operator_pack(raw_pack)
+            jev_policy = getattr(self.engine, "jev_policy", None)
+            if jev_policy is None:
+                settings = getattr(self.engine, "settings", None)
+                if settings is not None:
+                    jev_policy = policy_for(
+                        settings, transport=self.transport,
+                        governor=self.governor, ledger=self.ledger)
+            if jev_policy is None:
+                raise HarnessError("issue_sort requires a Jev policy on the engine")
+            result, structural, combo = jev_policy.evaluate_issue_sort(
+                {"issue": issue}, pack, site="issue_sort")
+            return {
+                "status": "ok" if combo.get("bucket") else "unmatched",
+                "combo": combo,
+                "structural": structural,
+                "answers": getattr(result, "answers", {}),
+                "reasons": getattr(result, "reasons", []),
+                "is_fallback": bool(combo.get("is_fallback")),
+                "bucket": combo.get("bucket"),
+                "path_id": combo.get("path_id"),
+                "suggested_next_action": combo.get("suggested_next_action"),
+                "pack_id": combo.get("pack_id"),
+            }
         if name == "ledger_status":
             limit = validate_mcp_limit(args.get("limit"))
             ok, bad_seq = self.ledger.verify()

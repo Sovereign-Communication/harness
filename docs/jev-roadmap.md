@@ -157,18 +157,21 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 
 ---
 
-## Canonical STATUS (update here only — truth as of 2026-09-21 P2 repair pass)
+## Canonical STATUS (update here only — truth as of P5 issue-sort branch)
 
 | Track / phase | Status | PR / evidence |
 |---|---|---|
 | Preflight sync `main`↔`origin` P0 | **complete** | `origin/main` includes P0 `d042d70` |
 | `JEV-P0-*` contract truth | **complete** | PR #34 / `d042d70`; live smoke OK |
 | `JEV-P1-*` one owner + lanes | **complete** | **PR #35 MERGED** → `origin/main` `9d5ff14`; required tests present; structural retry green in CI |
-| `JEV-P2-*` System One pillars | **in progress / repair** | WIP `Harness-jev-p2` / `feat/jev-p2-system-one-pillars`; **PR #36 OPEN**; lane-parity **hermetic**; D12 target lines **executed** by named tests; local battery green; audit **BAR MET** locally; live Jev smoke OK; lean jury **`JEV-P2-jury` deferred** — STATUS stays **in progress until merge + CI green** |
-| `JEV-P3-*` utilization | **open** | after P2 merge + STATUS complete |
+| `JEV-P2-*` System One pillars | **complete** | **PR #36 MERGED** `405bbc1`; post-merge `main` CI green; `JEV-P2-jury` deferred |
+| `JEV-P3-*` utilization | **open** | separate track |
 | `JEV-P4-*` ops / exit | **open** | after P3 DoD |
+| `JEV-P5-*` issue-sort | **in progress** | worktree `Harness-jev-p5` / `feat/jev-p5-issue-sort`; `jev_packs.py` + `JevPolicy.evaluate_issue_sort` + waist attach + CLI `issue-sort` + MCP `issue_sort`; tests `tests/test_jev_issue_sort.py` (19 OK); battery green; audit **BAR MET** (A/R/SM/SD 10.0); **not complete until merge + CI green** |
 
-**P2 done when (all true):** repair finished on PR #36 branch → named P2 tests **and** full listed battery green **locally and on CI** → `python audits/self/audit.py` **BAR MET** (D12 ≥95%) → STATUS on that branch honest (jury deferred if not shipped) → PR #36 merged → post-merge `main` CI green → STATUS P2 `complete`.
+**P5 done when (all true):** issue-sort implementation + named tests green locally → `python audits/self/audit.py` **BAR MET** → STATUS on that branch honest → PR merged → post-merge `main` CI green → STATUS P5 `complete`. Local gates **MET** on branch; merge still required.
+
+**P2 done when (all true):** repair finished on PR #36 branch → named P2 tests **and** full listed battery green **locally and on CI** → `python audits/self/audit.py` **BAR MET** (D12 ≥95%) → STATUS on that branch honest (jury deferred if not shipped) → PR #36 merged → post-merge `main` CI green → STATUS P2 `complete`. **TRUE after merge `405bbc1`.**
 
 ### P2 evidence snapshot (repair pass — update when gates change)
 
@@ -191,22 +194,20 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 |---|---|---|---|---|
 | 0 Contract | `JEV-P0-*` | `jev.py`, `config.py`, docs | `tests/test_jev.py` + `tests/test_jev_smoke.py` | **complete** — PR #34 |
 | 1 One owner | `JEV-P1-*` | policy + apply/waist/CLI/MCP/agent | `tests/test_jev_policy.py`, `tests/test_jev_lane_parity.py`, `tests/test_jev_ledger_spend.py` | **complete** — PR #35 merged; do not re-open |
-| 2 Pillars | `JEV-P2-*` | consent, sliding_scale, panel | `tests/test_jev_triage.py`, `tests/test_consent_confidence.py`, `tests/test_min_confidence_gating.py` + hermetic `tests/test_jev_lane_parity.py` + audit | **in progress / repair** — PR #36 open; local gates green after hermetic + D12 repair; **not complete until merge + CI audit green**; jury deferred |
-| 3 Utilization | `JEV-P3-*` | orchestrator, routing, context | per-pattern hermetic tests | planned — **after P2 merge** |
-| 4 Ops | `JEV-P4-*` | workflows, analytics, docs | live acceptance checklist | planned |
+| 2 Pillars | `JEV-P2-*` | consent, sliding_scale, panel | `tests/test_jev_triage.py`, `tests/test_consent_confidence.py`, `tests/test_min_confidence_gating.py` + hermetic `tests/test_jev_lane_parity.py` + audit | **complete** — PR #36 merged `405bbc1`; jury deferred |
+| 3 Utilization | `JEV-P3-*` | orchestrator, routing, context | per-pattern hermetic tests | open |
+| 4 Ops | `JEV-P4-*` | workflows, analytics, docs | live acceptance checklist | open |
+| 5 Issue-sort | `JEV-P5-*` | `jev_packs.py`, `jev_policy.evaluate_issue_sort`, waist/CLI/MCP | `tests/test_jev_issue_sort.py` | **in progress** — operator bucket packs, 0 hallucination; `feat/jev-p5-issue-sort` |
 
 ### PR title convention
 `feat(jev): JEV-P0-cost — token-priced TypeSafe usage on JevEvaluationResult`
 
 ### Next implementation slice (priority order — no guessing)
-1. **P2 repair only** on `Harness-jev-p2` / PR #36 — follow **P2 repair playbook** below. Do **not** re-implement P1. Do **not** start P3. Do **not** mark complete while audit or local gates are red.
-   - Lane parity is now **hermetic** (scripted gate + isolated settings); keep that contract.
-   - D12 lines listed in the evidence snapshot are **executed** by real tests; do not game the baseline to hide them.
-   - STATUS stays `**in progress / repair**` until PR #36 is **merged** with local+CI green; `JEV-P2-jury` stays **deferred**.
-2. After P2 merge + STATUS complete → **P3** utilization patterns (plus promoted rows: HUL product, JEV-P5 issue-sort, hourglass remaining).
+1. **JEV-P5 issue-sort** on `Harness-jev-p5` / `feat/jev-p5-issue-sort` — finish gates (named tests + audit BAR MET) then merge. STATUS stays **in progress** until merge + CI green.
+2. After P5 merge → **P3** utilization patterns (plus promoted rows: HUL product, hourglass remaining).
 3. **P4** dogfood + freeze thresholds.
 
-**Do not mark P2 complete while:** PR #36 is open, local lane-parity is red, audit is red, or CI on the tip is red. Canon + `AGENTS.md` on `origin/main` are the tracking truth if this row disagrees.
+**Do not mark P5 complete while:** local gates or audit are red, or the PR is unmerged. Canon + `AGENTS.md` on `origin/main` are the tracking truth if a row disagrees.
 
 
 ---

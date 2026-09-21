@@ -157,6 +157,7 @@ statement covers the CI matrix by direct execution.
 | `harness/routing_table.py` | task-to-model 4-tier routing table, :floor provider formatting, and gateway-level max_price ceilings |
 | `harness/jev.py` | TypeSafe AI Jev / System One structural verification client with local AST and diff fallbacks |
 | `harness/jev_policy.py` | shared Jev decision policy: bounded packs, spend preflight, ledger evidence, and structural envelopes |
+| `harness/jev_packs.py` | operator-declared issue-sort bucket packs (schema validation, TypeSafe choice pack builder, keyword matcher); never invents buckets or actions |
 | `harness/providers.py` | modular provider adapter interface and registry for external execution backends |
 | `harness/agent.py` | autonomous agent orchestration: natural language prompt intent classification, file/gate discovery, sliding-scale DAG execution, self-healing retry |
 | `harness/apply_gate.py` | one candidate-to-gate transaction: write, verify, preview, rewind, and terminal gate results |
