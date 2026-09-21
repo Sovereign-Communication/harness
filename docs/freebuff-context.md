@@ -63,6 +63,9 @@ Key resolution for OpenRouter: `~/.config/scmorc/openrouter_fusion.env` then `op
 ## Mission loop reminder
 
 1. Read canon STATUS (origin/main).
-2. Pick first incomplete row with a playbook (now: P2 repair).
+2. Pick first incomplete row with a playbook (priority: **JEV-COMPLETION** gate, then P2 repair).
 3. Implement in the **named worktree only**.
-4. Gates local + CI → PR → merge green only → STATUS → next phase.
+4. Before any STATUS `complete`: run
+   `python -m harness.cli jev-phase --phase <JEV-Pn> --repo-root . --local-only`
+   and paste `can_mark_complete=true` + score ≥ 85.
+5. Gates local + CI → PR → merge green only → STATUS → next phase.

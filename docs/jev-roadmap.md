@@ -164,9 +164,14 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | Preflight sync `main`↔`origin` P0 | **complete** | `origin/main` includes P0 `d042d70` |
 | `JEV-P0-*` contract truth | **complete** | PR #34 / `d042d70`; live smoke OK |
 | `JEV-P1-*` one owner + lanes | **complete** | **PR #35 MERGED** → `origin/main` `9d5ff14`; required tests present; structural retry green in CI |
-| `JEV-P2-*` System One pillars | **in progress — blocked on evidence** | WIP `Harness-jev-p2` / `feat/jev-p2-system-one-pillars` @ `c50b22e`; **PR #36 OPEN**; CI test jobs pass; **CI audit FAIL** (D12 changed-line coverage **29/43 = 67%**, bar 95%); operator local re-run **FAIL** 2× `tests/test_jev_lane_parity.py` (non-hermetic / `no canned chat response left` after HARNESS_READY); lean jury **`JEV-P2-jury` deferred** — STATUS must **not** say complete |
-| `JEV-P3-*` utilization | **open** | after P2 merge + STATUS complete |
+| `JEV-COMPLETION` dogfood 0-100 phase gate | **in progress** | this feature PR — `harness jev-phase`; STATUS complete only if score ≥ 85 + hard gates |
+| `JEV-P2-*` System One pillars | **in progress — blocked on evidence** | WIP `Harness-jev-p2` / `feat/jev-p2-system-one-pillars`; **PR #36 OPEN**; local lane-parity FAIL ×2; jury deferred — must stay incomplete until `jev-phase --phase JEV-P2` passes |
+| `JEV-P3-*` utilization | **open** | after P2 **and** JEV-COMPLETION green on origin |
 | `JEV-P4-*` ops / exit | **open** | after P3 DoD |
+
+**Completion dogfood rule:** every STATUS flip to **complete** requires pasteable evidence from
+`python -m harness.cli jev-phase --phase <id> --repo-root . --local-only`
+(`can_mark_complete=true`, score ≥ 85). Hard gates are code-owned; Jev supplies the semantic 0-100 score.
 
 **P2 done when (all true):** repair finished on PR #36 branch → named P2 tests **and** full listed battery green **locally and on CI** → `python audits/self/audit.py` **BAR MET** (D12 ≥95%) → STATUS on that branch honest (jury deferred if not shipped) → PR #36 merged → post-merge `main` CI green → STATUS P2 `complete`.
 
@@ -190,15 +195,19 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 |---|---|---|---|---|
 | 0 Contract | `JEV-P0-*` | `jev.py`, `config.py`, docs | `tests/test_jev.py` + `tests/test_jev_smoke.py` | **complete** — PR #34 |
 | 1 One owner | `JEV-P1-*` | policy + apply/waist/CLI/MCP/agent | `tests/test_jev_policy.py`, `tests/test_jev_lane_parity.py`, `tests/test_jev_ledger_spend.py` | **complete** — PR #35 merged; do not re-open |
-| 2 Pillars | `JEV-P2-*` | consent, sliding_scale, panel | `tests/test_jev_triage.py`, `tests/test_consent_confidence.py`, `tests/test_min_confidence_gating.py` + P1 gates + audit | **in progress / repair** — PR #36 open; audit red; lane-parity not hermetic; jury deferred |
-| 3 Utilization | `JEV-P3-*` | orchestrator, routing, context | per-pattern hermetic tests | planned |
+| Accountability | `JEV-COMPLETION` | `jev_completion.py`, CLI `jev-phase` | `tests/test_jev_completion.py` | **in progress** — 0-100 phase score; required on every STATUS complete |
+| 2 Pillars | `JEV-P2-*` | consent, sliding_scale, panel | `tests/test_jev_triage.py`, `tests/test_consent_confidence.py`, `tests/test_min_confidence_gating.py` + P1 gates + audit | **in progress / repair** — PR #36 open; jury deferred |
+| 3 Utilization | `JEV-P3-*` | orchestrator, routing, context | per-pattern hermetic tests | planned — after P2 + completion gate |
 | 4 Ops | `JEV-P4-*` | workflows, analytics, docs | live acceptance checklist | planned |
 
 ### PR title convention
 `feat(jev): JEV-P0-cost — token-priced TypeSafe usage on JevEvaluationResult`
 
 ### Next implementation slice (priority order — no guessing)
-1. **P2 repair only** on `Harness-jev-p2` / PR #36 — follow **P2 repair playbook** below. Do **not** re-implement P1. Do **not** start P3. Do **not** mark complete while audit or local gates are red.
+1. **JEV-COMPLETION** — land `harness jev-phase` dogfood gate (this PR). Mission loop must score every phase before STATUS complete.
+2. **P2 repair only** on `Harness-jev-p2` / PR #36 — follow **P2 repair playbook** below. Before STATUS complete: `jev-phase --phase JEV-P2` must return `can_mark_complete=true`. Do **not** re-implement P1. Do **not** start P3.
+3. After P2 merge + completion gate green → **P3**.
+4. **P4** dogfood + freeze thresholds.
 2. After P2 merge + STATUS complete → **P3** utilization patterns.
 3. **P4** dogfood + freeze thresholds.
 

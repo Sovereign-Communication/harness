@@ -26,6 +26,14 @@ If a local dirty `docs/jev-roadmap.md` disagrees with `origin/main`, **fetch ori
 
 **Next work:** finish P2 repair on PR #36 per canon **P2 repair playbook** (hermetic lane-parity tests, D12 coverage / honest baseline, honest STATUS, local+CI green, then merge).
 
+**Accountability gate (dogfood):** every STATUS `complete` requires
+
+```bash
+python -m harness.cli jev-phase --phase <JEV-Pn> --repo-root . --local-only
+```
+
+`can_mark_complete=true` + score ≥ 85, or the row stays open/repair. Do not flip complete on prose alone.
+
 ## Worktrees
 
 | Path | Branch | Use |
