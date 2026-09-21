@@ -11,11 +11,9 @@ break APIs between minor versions).
 
 ### Added
 
-<<<<<<< HEAD
 - **JEV-COMPLETION dogfood phase gate.** `harness jev-phase` scores a mission phase 0-100 from code-owned hard gates (PR/origin evidence, required tests present, local+CI green, no open blockers) plus a Jev semantic score; STATUS may claim complete only when `can_mark_complete=true` and score ≥ 85 (`harness/jev_completion.py`, CLI, `tests/test_jev_completion.py`).
-=======
+
 - **JEV-P2 confidence-gated System One pillars.** Consent now preserves calibrated confidence, low-confidence Jev decisions abstain before writes, verification gates, and Jev spend, and typed triage signals route complex work toward the plan lane. The lean jury is intentionally deferred until it has a dedicated fail-closed gate contract.
->>>>>>> origin/main
 
 - **JEV-P1 shared structural policy and lane evidence.** CLI, MCP, waist, batch, and agent paths now share one Jev policy owner with preflighted input-token spend, hash-chained `jev_eval` records, and stable structural envelopes; the verification gate remains code-authoritative and unkeyed runs remain explicit local fallback.
 

@@ -158,11 +158,8 @@ statement covers the CI matrix by direct execution.
 | `harness/jev.py` | TypeSafe AI Jev / System One structural verification client with local AST and diff fallbacks |
 | `harness/jev_packs.py` | JEV-P3 utilization packs and pure helpers (route vocabulary, file-relevance/claim/completion nouls, context pack, artifact facts) — no second Jev client |
 | `harness/jev_policy.py` | shared Jev decision policy: bounded packs, spend preflight, ledger evidence, and structural envelopes |
-<<<<<<< HEAD
 | `harness/jev_completion.py` | phase-completion dogfood gate: hard mechanical gates + Jev 0-100 semantic score; STATUS complete only when `can_mark_complete` and score ≥ 85 (`harness jev-phase`) |
-=======
 | `harness/jev_packs.py` | operator-declared issue-sort bucket packs (schema validation, TypeSafe choice pack builder, keyword matcher); never invents buckets or actions |
->>>>>>> origin/main
 | `harness/providers.py` | modular provider adapter interface and registry for external execution backends |
 | `harness/agent.py` | autonomous agent orchestration: natural language prompt intent classification, file/gate discovery, sliding-scale DAG execution, self-healing retry |
 | `harness/apply_gate.py` | one candidate-to-gate transaction: write, verify, preview, rewind, and terminal gate results |
