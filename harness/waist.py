@@ -1316,10 +1316,17 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         try:
             # chat_fn's contract is (text, cost) -- decomposition consumes
             # the text only; the cost stays on the governor/caller side.
-            # HG-condense-decompose: the decomposer sees distilled signatures,
-            # never raw file bodies.
-            repo_context = _decompose_repo_context(
+            # HG-condense-decompose + JEV-P3-context-pack: signatures AND
+            # decision pack; never raw file bodies; prompt still labels
+            # REPOSITORY CONTEXT: via build_decomposition_prompt.
+            sig_ctx = _decompose_repo_context(
                 plan_goal, candidate_files, root=root)
+            decision_ctx = build_context_pack(
+                opts_goal, candidate_files=candidate_files)
+            if sig_ctx and str(sig_ctx).strip():
+                repo_context = decision_ctx + "\n\n" + str(sig_ctx).strip()
+            else:
+                repo_context = decision_ctx
             decomposed = decompose_via_llm(lambda p: chat_fn(p)[0], plan_goal,
                                            candidate_files=candidate_files,
                                            repo_context=repo_context)
