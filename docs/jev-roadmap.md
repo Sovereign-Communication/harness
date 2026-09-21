@@ -166,13 +166,18 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `JEV-P1-*` one owner + lanes | **complete** | **PR #35 MERGED** → `origin/main` `9d5ff14` |
 | `JEV-P2-*` System One pillars | **complete** | **PR #36 MERGED** → `origin/main` `405bbc1`; hermetic lane-parity; D12 executed; local audit BAR MET; CI green on PR tip **and** post-merge `main`; live Jev smoke OK; **`JEV-P2-jury` deferred** (follow-up, not blocking P2 complete) |
 | `JEV-P3-*` utilization | **complete** | **PR #43 MERGED** `7eb18ea`; route/triage/context/claims/completion/calibration |
+<<<<<<< HEAD
 | `JEV-P4-*` ops / exit | **complete** | **PR #46 MERGED** `a021cfc`; jury deferred; residual: A/B pass-rate + freeze persistence |
 | JEV-COMPLETION | **in progress** | **PR #39** `harness jev-phase` gate |
+=======
+| `JEV-P4-*` ops / exit | **complete** | **PR #46 MERGED** `a021cfc`; jury deferred; residual: dogfood A/B pass-rate + freeze persistence |
+| JEV-COMPLETION | **in progress** | **PR #39** `d9f36af` `harness jev-phase` gate |
+>>>>>>> origin/main
 | `JEV-P5-*` issue-sort buckets | **in progress** | PR #42 `feat/jev-p5-issue-sort`; **not complete until merge + CI green** |
 | `HUL-A` mission pack | **complete** | **PR #41 MERGED** `64e63a3`; mission pack + CLI + gate tests; CI green |
-| `HUL-B` dual budget | **open / WIP** | worktree `Harness-hul-b` / `feat/hul-b-dual-budget` |
-| `HUL-C` Jev scope gate | **open / WIP** | worktree `Harness-hul-cd` / `feat/hul-cd-scope-driver` |
-| `HUL-D` until-limits driver | **open / WIP** | same worktree as HUL-C |
+| `HUL-B` dual budget | **in progress** | **PR #47** `feat/hul-b-dual-budget` @ `d881622`; dual envelope + gate tests; not complete until merge + CI green |
+| `HUL-C` Jev scope gate | **in progress** | **PR #48** `feat/hul-cd-scope-driver` @ `aea9b9a`; site=hul_scope; false-done blocked |
+| `HUL-D` until-limits driver | **in progress** | **PR #48** `aea9b9a`; mission_driver + FINDINGS + resume |
 | `HG-*` hourglass composition | **complete** | **PR #44 MERGED** `f22accb` |
 | `MS-*` cheapest-capable + context | **open** | ad-hoc model strings → config/ladders; expensive seats get condensed state |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
@@ -382,4 +387,26 @@ Write STATUS `blocked` + the **exact** failing command/output. No “will do”.
 
 
 
+
+<<<<<<< HEAD
+=======
+### Follow-up addendum (NOT promoted to STATUS)
+
+`docs/jev-log-analysis-followup.md` remains a **parking plan** for SCMessenger log/insight work (JEV-LOG-*). Canon wins; no STATUS rows until explicit promotion. Shared pattern with shipped `JEV-P5` operator packs / `evaluate_issue_sort`. SCMessenger implements batch callers against **origin/main** only; Harness owns `jev_policy`/`jev_packs` and phase PRs #39/#47/#48.
+
+
+---
+
+## Mission order of operations (operator ruling 2026-09-21)
+
+**No conflict — sequence only.**
+
+| Step | Work | Rule |
+|---|---|---|
+| **1 (now)** | **Drive canon to completion** | Land open product PRs when CI audit BAR MET + tests green: **#39** completion gate, **#47** HUL-B dual budget, **#48** HUL-C/D scope+driver. Then flip their STATUS rows complete with merge evidence. Exit checklist: Jev P4 residual + HUL A–D product + FRP. |
+| **2 (after step 1)** | **Promote addendum to canonical** | One docs PR: fold `docs/jev-log-analysis-followup.md` IDs (`JEV-LOG-schema` / `parse` / `factor-pass` / `judgment` / `envelope` / `cli` / `dogfood`) into this STATUS as **open** rows + pointer. Addendum file remains design detail; **canon STATUS is the tracker**. |
+| **3** | **Implement addendum in full** | Fresh worktree `feat/jev-log-factor-analysis` off `origin/main`; one phase PR at a time; extend `jev_packs`/`jev_policy` only (no second Jev client); 0-hallucination operator packs + score block; code owns parse/aggregate; JSON only; dogfood `C:\\temp\\logsSCMessenger.txt`. |
+
+Until step 2 promotion, `JEV-LOG-*` stay planning labels (not STATUS). Until step 1 exit, do not start addendum implementation — keeps single-threaded canon.
+>>>>>>> origin/main
 
