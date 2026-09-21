@@ -1017,7 +1017,10 @@ def sd_coverage_changed():
     if not mf.exists():
         return 1.0, ("SKIP (fail-open): coverage_baseline.json missing -- "
                      "run refresh_coverage_baseline.py")
-    doc = json.loads(mf.read_text(encoding="utf-8"))
+    doc = json.loads(mf.read_text(encoding="utf-8-sig"))
+    # utf-8-sig: Windows editors (PowerShell Out-File, Notepad) emit a UTF-8
+    # BOM; the baseline was authored on Windows and must not fail D12 on the
+    # BOM instead of its coverage content (2026-09-21 CI failure).
     ref = doc.get("commit", "")
     if len(ref) != 40:
         return 1.0, "SKIP (fail-open): baseline lacks a commit reference"
