@@ -1,9 +1,9 @@
 {
   "scores": {
     "A": 10.0,
-    "R": 10.0,
+    "R": 9.29,
     "SM": 10.0,
-    "SD": 10.0
+    "SD": 9.17
   },
   "checks": {
     "A": [
@@ -162,8 +162,8 @@
       {
         "id": "R13",
         "label": "full suite green hermetically",
-        "score": 1.0,
-        "evidence": "unittest: Ran 1223 tests in 80.351s\n\nOK"
+        "score": 0.0,
+        "evidence": "struct ...\n[preflight] worst-case cost breakdown:\n  inclusionai/ling-2.6-flash (panel attempt 1/3): $0.000082\n  inclusionai/ling-2.6-flash (panel attempt 2/3): $0.000082\n  inclusionai/ling-2.6-flash (panel attempt 3/3): $0.000082\n  meta-llama/llama-3.1-8b-instruct (panel attempt 1/3): $0.000082\n  meta-llama/llama-3.1-8b-instruct (panel attempt 2/3): $0.000082\n  meta-llama/llama-3.1-8b-instruct (panel attempt 3/3): $0.000082\n  inclusionai/ling-2.6-flash (judge attempt 1/2): $0.000251\n  inclusionai/ling-2.6-flash (judge attempt 2/2): $0.000251\n[preflight] TOTAL worst-case: $0.000997 (ceiling: $0.050000)\n[panel] calling inclusionai/ling-2.6-flash ...\n[panel] inclusionai/ling-2.6-flash: cost=$0.000001, finish_reason=stop, 0.0s\n[panel] calling meta-llama/llama-3.1-8b-instruct ...\n[panel] meta-llama/llama-3.1-8b-instruct: cost=$0.000001, finish_reason=stop, 0.0s\n[judge] calling inclusionai/ling-2.6-flash ...\n[judge] inclusionai/ling-2.6-flash: unparseable\n\n[TOTAL] actual cost this run: $0.000003 (ceiling: $0.050000)\n[waist] Confirmation unreachable across ladder (HTTP 429: Provider returned error); proceeding under local verification gate\n[plan] Critique re-planning failed (decomposition service unavailable); retaining initial result\n[plan] LLM decomposition failed (HTTP 429: rate limited); heuristic fallback\n======================================================================\nFAIL: test_cli_cmd_plan_execute_isolated_parallel_with_stage_gate (test_planning_surface.TestPlanningSurface)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-a\\tests\\test_planning_surface.py\", line 484, in test_cli_cmd_plan_execute_isolated_parallel_with_stage_gate\n    self.assertEqual(res[\"status\"], \"ok\")\nAssertionError: 'failed' != 'ok'\n- failed\n+ ok\n\n\n======================================================================\nFAIL: test_mcp_plan_and_execute_parallel_isolated (test_planning_surface.TestPlanningSurface)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-a\\tests\\test_planning_surface.py\", line 794, in test_mcp_plan_and_execute_parallel_isolated\n    self.assertEqual(exec_res[\"status\"], \"ok\")\nAssertionError: 'failed' != 'ok'\n- failed\n+ ok\n\n\n----------------------------------------------------------------------\nRan 1223 tests in 81.628s\n\nFAILED (failures=2, skipped=46)\n"
       },
       {
         "id": "R14",
@@ -292,8 +292,8 @@
       {
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
-        "score": 1.0,
-        "evidence": "changed harness lines are suite-executed"
+        "score": 0.0,
+        "evidence": "changed-line coverage 413/447 = 92% (bar 95%) vs baseline 405bbc1642; untested: cli.py:579; mission_record.py:111,138,142,202,204,206,218,286..."
       }
     ]
   }
