@@ -1,64 +1,81 @@
-﻿commit 4c53a9d86b4236b1e27c5fb58a963aa3619f6810
-Author: Treystu <Treystu@users.noreply.github.com>
-Date:   Sun Sep 20 20:36:43 2026 -1000
+﻿# Harness â€” agent / Freebuff context
 
-    fix(jev-completion): union jev-phase + mission CLI after origin/main merge
+**Read this first.** Then read the canon.
 
-diff --git a/harness/cli.py b/harness/cli.py
-index b682aa0..93c3149 100644
---- a/harness/cli.py
-+++ b/harness/cli.py
-@@ -42,11 +42,8 @@ from .service import read_text_file as _service_read_text
- from .rankings import build_rankings_report as _rankings_report
- from .waist import compose_plan as _compose_plan
- from .jev_policy import aggregate_structural, policy_for
--<<<<<<< HEAD
- from .jev_completion import dogfood_phase
--=======
- from .jev_packs import validate_operator_pack
-->>>>>>> origin/main
- from .capability import capabilities_payload as _capability_payload_owner
- from .brief import build_brief, validate_brief
- from .dag import TaskDAG, node_apply_kwargs
-@@ -949,11 +946,8 @@ _DISPATCH = {
-     "cost": _cmd_cost,
-     "trust": _cmd_trust,
-     "rankings": _cmd_rankings,
--<<<<<<< HEAD
-     "jev-phase": _cmd_jev_phase,
--=======
-     "mission": _cmd_mission,
-->>>>>>> origin/main
- }
- 
- 
-diff --git a/harness/cli_parser.py b/harness/cli_parser.py
-index 1d3ffd7..8c1806c 100644
---- a/harness/cli_parser.py
-+++ b/harness/cli_parser.py
-@@ -342,7 +342,6 @@ def build_parser():
-                       help="session cost ceiling for the live verify + apply phases")
-     _add_output_flags(pdog)
- 
--<<<<<<< HEAD
-     pjphase = sub.add_parser(
-         "jev-phase",
-         help="Dogfood Jev 0-100 phase completion score; STATUS complete only "
-@@ -359,8 +358,8 @@ def build_parser():
-                          help="skip live Jev; use code gates + local semantic score")
-     pjphase.add_argument("--json", action="store_true", help="emit raw JSON only")
-     _add_output_flags(pjphase)
--=======
--    # HUL-A mission pack surface (run stubs until HUL-D driver lands).
-+
-+    # HUL-A mission pack surface.
-     pmiss = sub.add_parser(
-         "mission",
-         help="Mission pack (HUL-A): init | status | resume | findings "
-@@ -391,6 +390,5 @@ def build_parser():
-         _p.add_argument("--root", default="missions",
-                         help="pack parent directory (default: missions)")
-         _add_output_flags(_p)
-->>>>>>> origin/main
- 
-     return ap
+## Single source of truth
+
+| File | Role |
+|---|---|
+| **`docs/jev-roadmap.md`** | **CANON** â€” STATUS, DoD, playbooks. Only operational plan. |
+| `docs/jev-mission-prompt.md` | Paste prompts for Freebuff relaunch (current = **P2 repair**) |
+| `docs/freebuff-context.md` | Worktrees, model tracking policy, operator notes |
+| `docs/system-one-integration.md` | Architecture rationale only (not STATUS) |
+| `docs/MODEL_SELECTION_HANDOFF_2026-09-13.md` | Model policy evidence |
+| `.agents/skills/typesafe-ai/SKILL.md` | TypeSafe / System One skill |
+
+If a local dirty `docs/jev-roadmap.md` disagrees with `origin/main`, **fetch origin** â€” origin wins. A stale STATUS that still says â€œP1 incomplete / no PRâ€ is **wrong**: P1 merged as PR #35 (`9d5ff14`).
+
+## Current mission (do not guess)
+
+| Item | Truth |
+|---|---|
+| P0 + P1 + P2 | **complete** â€” PR #34 / #35 / **#36 merged `405bbc1`**; post-merge `main` CI green |
+| Open PRs | **#47 HUL-B**, **#48 HUL-C/D**, **#39 completion** — drive to green then merge; docs #49 already merged `8187d5a` |
+| Order | **1)** Finish canon open PRs #39/#47/#48 → STATUS complete + exit. **2)** Promote JEV-LOG addendum into canon STATUS. **3)** Implement addendum in full (canonical). No conflict — sequence only. |
+| Do not | Redo P0â€“P2; edit `Harness-jev-p1`/`Harness-jev-p2` (locked); mark complete while audit/CI red; merge red CI; brand hardcode in phase code |
+| `JEV-P2-jury` | **deferred** â€” not blocking anything above |
+
+**Next work:** implement first incomplete STATUS row with a worktree â€” P3 patterns, HUL-A mission pack, or HG composition per operator priority. Dogfood every user-facing lane. Paid cheap rungs for live evidence.
+
+## Worktrees
+
+| Path | Branch | Use |
+|---|---|---|
+| `C:\Users\SCM\Documents\GitHub\Harness` | `main` | Operator tree â€” may lag origin; reconcile before trusting STATUS |
+| `...\Harness-jev-p1` | `feat/jev-p1-policy-and-lanes` | Merged P1 â€” **leave alone** |
+| `...\Harness-jev-p2` | `feat/jev-p2-system-one-pillars` | Merged P2 (#36) â€” **leave alone** |
+| `...\Harness-jev-p0` | `feat/jev-p0` | Historical P0 â€” leave alone |
+| `...\Harness-jev-p3` | `feat/jev-p3-utilization` | **P3 utilization WIP** |
+| `...\Harness-hul-a` | `feat/hul-a-mission-pack` | **HUL-A WIP** |
+| `...\Harness-hg-remain` | `feat/hourglass-composition` | **Hourglass composition WIP** |
+| `...\Harness-jev-next` | `feat/jev-mission-next` | Docs/STATUS promote + next slices |
+
+Freebuff project id: `.freebuff/project-id` â†’ `079c1c19-eefd-49c1-b243-5cecf83ea4b6` (desktop project binds to this repo path).
+
+## Model tracking policy (operator ruling 2026-09-21)
+
+Hermetic unit tests stay hermetic (`test/model` doubles) â€” they prove contracts, not provider quality.
+
+**Live tracking / dogfood / smoke** must not be free-tier-only (`*:free`, especially ling). Use **cheap paid** rungs first so cost, parseability, and escalation are real:
+
+| Seat | Prefer (paid cheap) | Avoid as sole live evidence |
+|---|---|---|
+| Apply primary | `deepseek/deepseek-v4.1-flash` | `inclusionai/ling-3.0-flash-fin:free` |
+| Judge | `z-ai/glm-5.3-flash` | free gemma-only when rate-limited |
+| Paid ling (if used) | `inclusionai/ling-3.0-flash` | free `ling-â€¦:free` |
+| Escalation | `z-ai/glm-5.3-flash` â†’ `deepseek/deepseek-v4-pro` â†’ `qwen/qwen3.8-max-0902` | free-only ladder |
+
+Live probe snapshot (2026-09-21, OpenRouter fusion key, small â€œOKâ€ chat):
+
+| Model | Status | Notes |
+|---|---|---|
+| `inclusionai/ling-3.0-flash-fin:free` | 200 / $0 | Free baseline only |
+| `google/gemma-4-31b-it:free` | **429** | Free pool unstable â€” do not gate tracking on it |
+| `inclusionai/ling-3.0-flash` | 200 / ~$0.0000007 | Cheapest paid ling |
+| `deepseek/deepseek-v4.1-flash` | 200 / ~$0.000002 | Default paid apply |
+| `z-ai/glm-5.3-flash` | 200 / ~$0.00001 (reasoning-off retry) | Default paid judge |
+| `qwen/qwen3.8-max-0902` | 200 / ~$0.00029 | Frontier rung â€” use sparingly |
+
+Operator harness config (`~/.config/harness/config.json`) already arms paid escalation. For tracking runs prefer paid apply/judge via env or config (`HARNESS_USE_FREE=false`, paid pools in `harness/config.py`).
+
+## Rules Freebuff must keep
+
+1. Canon STATUS only â€” no parallel plans.
+2. One phase PR at a time; merge only when **local gates + CI audit** green.
+3. Builder â‰  sole grader; fail â‰  approve; no fake complete.
+4. No provider brand hardcoding in phase code PRs â€” resolve via ladders / `MS-*`.
+5. Do not game `audits/self/coverage_baseline.json` to hide untested new lines; refresh only after real tests execute those lines.
+6. Report blocked with exact command/output â€” never â€œwill doâ€.
+
+
+
