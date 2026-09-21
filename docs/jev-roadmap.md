@@ -152,19 +152,24 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 
 | Phase | IDs | Primary modules | Gate tests | Status |
 |---|---|---|---|---|
-| 0 Contract | `JEV-P0-*` | `jev.py`, `config.py`, docs | `tests/test_jev.py` + `tests/test_jev_smoke.py` | **complete in this PR** |
-| 1 One owner | `JEV-P1-*` | policy + apply/waist/CLI/MCP/agent | `tests/test_jev_policy.py`, `tests/test_jev_lane_parity.py`, `tests/test_jev_ledger_spend.py` | **complete** — PR #35; named gates, regression, traced D12 audit, and CI all green |
-| 2 Pillars | `JEV-P2-*` | consent, sliding_scale, panel | `tests/test_consent_confidence.py`, `tests/test_min_confidence_gating.py`, `tests/test_jev_triage.py` | **complete** — focused gates, full CI suite, and traced D12 coverage are green; lean jury explicitly deferred |
-| 3 Utilization | `JEV-P3-*` | orchestrator, routing, context | per-pattern hermetic tests | planned |
+| 0 Contract | `JEV-P0-*` | `jev.py`, `config.py`, docs | `tests/test_jev.py` + `tests/test_jev_smoke.py` | **complete** — PR #34 / `d042d70` |
+| 1 One owner | `JEV-P1-*` | policy + apply/waist/CLI/MCP/agent | `tests/test_jev_policy.py`, `tests/test_jev_lane_parity.py`, `tests/test_jev_ledger_spend.py` | **complete** — PR #35 merged to `origin/main` `9d5ff14`; do not re-open |
+| 2 Pillars | `JEV-P2-*` | consent, sliding_scale, panel | `tests/test_consent_confidence.py`, `tests/test_min_confidence_gating.py`, `tests/test_jev_triage.py` + P1 gates + audit | **in progress / repair** — PR #36 **OPEN** @ `68d24e7`; jury deferred OK; **not complete until merge** |
+| 3 Utilization | `JEV-P3-*` | orchestrator, routing, context | per-pattern hermetic tests | planned — **after P2 merge** |
 | 4 Ops | `JEV-P4-*` | workflows, analytics, docs | live acceptance checklist | planned |
 
 ### PR title convention
 `feat(jev): JEV-P0-cost — token-priced TypeSafe usage on JevEvaluationResult`
 
-### Next implementation slice (priority order)
-1. **P3** implement utilization patterns; merge only after named gates and regression are green
-2. **P4** dogfood + freeze thresholds
-3. **HUL-A…D** only if their STATUS rows are open
+### Next implementation slice (priority order — no guessing)
+1. **P2 repair only** on `Harness-jev-p2` / PR #36 — not P3.
+   - Make `tests/test_jev_lane_parity.py` **hermetic** (operator re-run still FAILs apply/batch envelope tests: `no canned chat response left` after HARNESS_READY extra round).
+   - Cover remaining D12 lines that are still missing from the refreshed baseline: `harness/jev_policy.py` **235, 239, 241, 242** (do not game baseline to hide them).
+   - Keep STATUS `in progress / repair` until PR #36 is **merged** with local+CI green; `JEV-P2-jury` stays **deferred**.
+2. After P2 merge + STATUS complete → **P3** utilization patterns.
+3. **P4** dogfood + freeze thresholds.
+
+**Do not mark P2 complete while:** PR #36 is open, local lane-parity is red on operator machines, or D12 evidence is incomplete. Canon + `AGENTS.md` + `docs/freebuff-context.md` on `origin/main` are the tracking truth if this row disagrees.
 
 ---
 
