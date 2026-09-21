@@ -19,12 +19,13 @@ If a local dirty `docs/jev-roadmap.md` disagrees with `origin/main`, **fetch ori
 
 | Item | Truth |
 |---|---|
-| P0 + P1 | **complete** — PR #34 / #35 on `origin/main` |
-| P2 | **in progress / repair** — worktree `Harness-jev-p2`, branch `feat/jev-p2-system-one-pillars`, **PR #36** open |
-| P3 / HUL | **open** — only after P2 merge + STATUS complete |
-| Do not | Redo P1; edit `Harness-jev-p1` (locked); mark complete while audit/local gates red; merge red CI |
+| P0 + P1 + P2 | **complete** — PR #34 / #35 / **#36 merged `405bbc1`**; post-merge `main` CI green |
+| Next code | **P3 utilization** (`Harness-jev-p3`) and/or **HUL-A** (`Harness-hul-a`) and/or **HG composition** (`Harness-hg-remain`) |
+| Also planned | `JEV-P5` issue-sort buckets; `JEV-P4` ops/exit; HUL-B/C/D; MS cheapest-capable + context condensation |
+| Do not | Redo P0–P2; edit `Harness-jev-p1`/`Harness-jev-p2` (locked); mark complete while audit/CI red; merge red CI; brand hardcode in phase code |
+| `JEV-P2-jury` | **deferred** — not blocking anything above |
 
-**Next work:** finish P2 repair on PR #36 per canon **P2 repair playbook** (hermetic lane-parity tests, D12 coverage / honest baseline, honest STATUS, local+CI green, then merge).
+**Next work:** implement first incomplete STATUS row with a worktree — P3 patterns, HUL-A mission pack, or HG composition per operator priority. Dogfood every user-facing lane. Paid cheap rungs for live evidence.
 
 ## Worktrees
 
@@ -32,8 +33,12 @@ If a local dirty `docs/jev-roadmap.md` disagrees with `origin/main`, **fetch ori
 |---|---|---|
 | `C:\Users\SCM\Documents\GitHub\Harness` | `main` | Operator tree — may lag origin; reconcile before trusting STATUS |
 | `...\Harness-jev-p1` | `feat/jev-p1-policy-and-lanes` | Merged P1 — **leave alone** |
-| `...\Harness-jev-p2` | `feat/jev-p2-system-one-pillars` | **Current Freebuff WIP** |
+| `...\Harness-jev-p2` | `feat/jev-p2-system-one-pillars` | Merged P2 (#36) — **leave alone** |
 | `...\Harness-jev-p0` | `feat/jev-p0` | Historical P0 — leave alone |
+| `...\Harness-jev-p3` | `feat/jev-p3-utilization` | **P3 utilization WIP** |
+| `...\Harness-hul-a` | `feat/hul-a-mission-pack` | **HUL-A WIP** |
+| `...\Harness-hg-remain` | `feat/hourglass-composition` | **Hourglass composition WIP** |
+| `...\Harness-jev-next` | `feat/jev-mission-next` | Docs/STATUS promote + next slices |
 
 Freebuff project id: `.freebuff/project-id` → `079c1c19-eefd-49c1-b243-5cecf83ea4b6` (desktop project binds to this repo path).
 
