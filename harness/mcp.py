@@ -28,7 +28,8 @@ from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
 from .mcp_lanes import LANES, lane_for
 from .mcp_schemas import TOOL_SCHEMAS
 from .jev_policy import aggregate_structural, policy_for
-from .jev_packs import validate_operator_pack
+from .jev_packs import validate_log_pack, validate_operator_pack
+from .log_analysis import analyze_log
 from .service import run_verify as _service_run_verify
 from .validation import (
     MAX_LINES,
@@ -696,6 +697,37 @@ class McpServer:
                 "path_id": combo.get("path_id"),
                 "suggested_next_action": combo.get("suggested_next_action"),
                 "pack_id": combo.get("pack_id"),
+            }
+        if name == "log_judgment":
+            # Thin face over the ONE policy owner (jev_policy.evaluate_log_item)
+            # + code-owned aggregation (log_analysis). Never invents buckets,
+            # levels, paths, or actions; unmatched stays honest.
+            log_text = validate_text(args.get("log_text"), "log_text", 8_000_000,
+                                     required=True)
+            raw_pack = args.get("pack")
+            if raw_pack is None:
+                raise HarnessError(
+                    "log_judgment requires 'pack' (frozen operator log pack)")
+            pack = validate_log_pack(raw_pack)
+            jev_policy = getattr(self.engine, "jev_policy", None)
+            if jev_policy is None:
+                settings = getattr(self.engine, "settings", None)
+                if settings is not None:
+                    jev_policy = policy_for(
+                        settings, transport=self.transport,
+                        governor=self.governor, ledger=self.ledger)
+            if jev_policy is None:
+                raise HarnessError("log_judgment requires a Jev policy on the engine")
+            analysis = analyze_log(
+                log_text, pack, jev_policy,
+                info_sample=int(args.get("info_sample") or 0),
+                task_id=validate_mcp_task_id(args.get("task_id"))
+                if args.get("task_id") else None)
+            return {
+                "status": "ok",
+                "analysis": analysis,
+                "pack_id": analysis.get("pack_id"),
+                "coverage": analysis.get("coverage"),
             }
         if name == "ledger_status":
             limit = validate_mcp_limit(args.get("limit"))

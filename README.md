@@ -257,6 +257,14 @@ harness trust --caller <id>    # one peer's standing
 harness jev-phase --phase JEV-P2 --repo-root . --local-only
 harness jev-phase --phase JEV-P1 --repo-root . --local-only --json --out phase.json
 
+# JEV-LOG single-pass log analysis: code extracts log items ($0), the ONE
+# Jev policy owner judges every item against a FROZEN operator pack (bucket
+# choice + operator-declared score), and code aggregates the JSON artifact.
+# Bucket ids and score levels come only from the pack; unmatched stays
+# unmatched; fallback counts are reported, never smoothed.
+harness log-judgment --log C:/temp/logsSCMessenger.txt --pack log-pack.json --out analysis.json
+harness log-judgment --log runtime.log --pack log-pack.json --info-sample 5   # also every 5th INFO
+
 # Model capability profiles + reliability (hypothesis from /models, corrected
 # by observed evidence). --bench runs a real JSON probe on the free pool.
 harness capabilities
@@ -315,6 +323,10 @@ plus the correctness level that rations spend ceilings (read-only).
 `issue_sort` takes an operator-declared bucket pack plus issue text and
 returns the policy-owner combo + structural envelope (never invents buckets
 or actions; unmatched → `bucket=null`).
+`log_judgment` takes raw log text plus a frozen operator log pack and returns
+the aggregate JEV-LOG analysis (per-item bucket + score judgment via the ONE
+policy owner, code-owned coverage/fallback tallies; unmatched items stay
+unmatched).
 `apply_edit` accepts
 `backend: "harness"|"morph"|"diff"`, `verify_only`, `max_lines`, `model`, and the
 same continuation controls as the CLI. Tools run on three serial lanes

@@ -18,7 +18,7 @@ run concurrently with each other.
 LANES = ("mutation", "spendy", "observe")
 
 MUTATION_LANE = {"apply_edit", "plan_and_execute"}
-SPENDY_LANE = {"panel_verify", "offer_work"}
+SPENDY_LANE = {"panel_verify", "offer_work", "log_judgment"}
 
 
 def lane_for(tool_name):

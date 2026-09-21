@@ -971,6 +971,7 @@ class LaneSchedulingTests(unittest.TestCase):
              "plan_and_execute": "mutation",
              "panel_verify": "spendy",
              "offer_work": "spendy",
+             "log_judgment": "spendy",
              "ledger_status": "observe",
              "defer_work": "observe",
              "participation_report": "observe",

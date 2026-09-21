@@ -163,6 +163,7 @@ statement covers the CI matrix by direct execution.
 | `harness/jev_packs.py` | HUL-C mission scope packs (`hul_scope_question_pack`, site=`hul_scope`); unkeyed fallback cannot alone mark a mission complete |
 | `harness/jev_packs.py` | JEV-LOG operator log-factor packs (`validate_log_pack`, `log_factor_question_pack`, site=`log_factor`); never invents buckets, levels, paths, or actions |
 | `harness/log_items.py` | JEV-LOG code-owned log item extraction + mechanical tallies ($0; header-token levels; bounded continuations) — judgment happens later via `jev_policy`, never here |
+| `harness/log_analysis.py` | JEV-LOG Stage D batch + Stage E aggregate artifact; Stage B draft prompt + operator freeze gate (a draft is never valid without explicit approval) — no second Jev client |
 | `harness/jev_policy.py` | `JevPolicy.evaluate_log_item`: JEV-LOG per-item bucket choice + score judgment (0-hallucination; one ledger `jev_eval` per call) |
 | `harness/mission_record.py` | HUL-A mission pack schema/layout/STATUS/receipts/budget/resume + `evaluate_scope_on_pack` storage (no second Jev client) |
 | `harness/mission_driver.py` | HUL-D until-limits driver: attempts until cost/token/error limits, honest HUL-C success, or stall; FINDINGS.md + interrupt-safe resume |
