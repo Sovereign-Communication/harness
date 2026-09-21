@@ -171,8 +171,8 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `JEV-P5-*` issue-sort buckets | **in progress** | PR #42 `feat/jev-p5-issue-sort`; **not complete until merge + CI green** |
 | `HUL-A` mission pack | **complete** | **PR #41 MERGED** `64e63a3`; mission pack + CLI + gate tests; CI green |
 | `HUL-B` dual budget | **complete** | **PR #47 MERGED** `536e75c`; dual envelope + tests |
-| `HUL-C` Jev scope gate | **in progress** | PR #48 |
-| `HUL-D` until-limits driver | **in progress** | PR #48 |
+| `HUL-C` Jev scope gate | **in progress** | PR #48 `7cfe112` |
+| `HUL-D` until-limits driver | **in progress** | PR #48 `7cfe112` |
 | `HG-*` hourglass composition | **complete** | **PR #44 MERGED** `f22accb` |
 | `MS-*` cheapest-capable + context | **open** | ad-hoc model strings → config/ladders; expensive seats get condensed state |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
