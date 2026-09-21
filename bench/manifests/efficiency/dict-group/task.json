@@ -1,0 +1,6 @@
+{
+  "name": "dict-group",
+  "file": "groups.py",
+  "instruction": "Implement group_by(pairs): given a list of (key, value) tuples, return a dict mapping each key to the list of its values in input order. The function currently raises NameError because the body is missing.",
+  "verify": "python check.py"
+}

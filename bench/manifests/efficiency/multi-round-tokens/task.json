@@ -1,0 +1,7 @@
+{
+  "name": "multi-round-tokens",
+  "file": "parse_csv.py",
+  "instruction": "Implement totals_by_category(rows): rows are dicts with keys \"category\" and \"amount\"; return a dict of category -> sum of amounts, rounded to 2 decimals. The body currently returns an empty dict, which fails verification.",
+  "verify": "python check.py",
+  "max_rounds": 4
+}

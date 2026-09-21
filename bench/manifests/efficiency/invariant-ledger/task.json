@@ -1,0 +1,6 @@
+{
+  "name": "invariant-ledger",
+  "file": "ledger2.py",
+  "instruction": "Ledger.post currently accepts unbalanced journal entries. Enforce the double-entry invariant: raise ValueError unless the debits and credits of an entry are exactly equal. Also make post() reject entries whose lines list is empty.",
+  "verify": "python check.py"
+}

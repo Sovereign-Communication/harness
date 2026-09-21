@@ -40,6 +40,9 @@ from .service import prepare_verify as _prepare_verify
 from .service import run_verify as _service_verify
 from .service import read_text_file as _service_read_text
 from .rankings import build_rankings_report as _rankings_report
+from .route_pack import validate_route_pack
+from .site_export import export_bundle as _site_export_bundle
+from .site_export import write_bundle as _site_export_write
 from .waist import compose_plan as _compose_plan
 from .jev_policy import aggregate_structural, policy_for
 from .jev_completion import dogfood_phase
@@ -480,6 +483,59 @@ def _cmd_log_judgment(opts, settings):
     if getattr(opts, "save_to", None):
         _log_write_analysis(analysis, opts.save_to)
     _emit(analysis, opts.out)
+
+
+def _cmd_route(opts, settings):
+    """SITE-2 face: route a user query onto the declared model ladder.
+
+    The ladder pack comes from --pack (operator/config owned, never
+    hardcoded here); unkeyed runs answer via the deterministic tier
+    heuristic with is_fallback=true. Same composition shape as issue-sort:
+    policy + ledger only.
+    """
+    try:
+        pack = validate_route_pack(_read_json(opts.pack, "route pack"))
+    except ValueError as exc:
+        raise HarnessError(f"route pack invalid: {exc}") from exc
+    ledger = _ledger(settings)
+    jev_policy = policy_for(settings, transport=HttpTransport(), ledger=ledger)
+    result, structural, combo = jev_policy.evaluate_model_route(
+        {"goal": opts.goal}, pack, site="model_route")
+    envelope = {
+        "status": "ok" if combo.get("rung_id") else "unroutable",
+        "route": combo,
+        "structural": structural,
+        "answers": result.answers,
+        "reasons": result.reasons,
+        "is_fallback": bool(combo.get("is_fallback")),
+        "pack_id": combo.get("pack_id"),
+        "rung_id": combo.get("rung_id"),
+        "tier": combo.get("tier"),
+        "model": combo.get("model"),
+        "cost_class": combo.get("cost_class"),
+    }
+    _emit(envelope, opts.out)
+
+
+def _cmd_site_export(opts, settings):
+    """SITE-1 face: verified ledger -> sanitized site-bundle-v1 JSON.
+
+    Fail-closed end to end: refuses without --yes (the operator's explicit
+    public-release affirmation), refuses on a broken chain, and scans the
+    output for credential shapes before a single byte lands on disk.
+    """
+    if not opts.yes:
+        raise HarnessError(
+            "site-export publishes evidence beyond this machine; pass --yes "
+            "together with a consent record you actually signed")
+    import harness as _harness_pkg
+    bundle = _site_export_bundle(
+        opts.ledger, opts.consent, pricing_path=opts.pricing,
+        harness_version=_harness_pkg.__version__)
+    size = _site_export_write(bundle, opts.out)
+    eprint(f"[site-export] bundle {bundle['bundle_id']} written: {opts.out} "
+           f"({size} bytes, {bundle['totals']['runs']} runs, "
+           f"truncated={bundle['truncated']})")
 
 
 def _cmd_ledger(opts, settings):
@@ -980,6 +1036,8 @@ _DISPATCH = {
     "defer": _cmd_defer,
     "issue-sort": _cmd_issue_sort,
     "log-judgment": _cmd_log_judgment,
+    "route": _cmd_route,
+    "site-export": _cmd_site_export,
     "ledger": _cmd_ledger,
     "models": _cmd_models,
     "bench": _cmd_bench,

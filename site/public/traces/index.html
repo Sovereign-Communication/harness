@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Traces — escalation cascades from real evidence</title>
+<meta name="description" content="Sanitized per-run escalation cascades: where runs entered the ladder, how deep they went, and the warrant for every frontier climb.">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header class="site">
+  <h1>Proof Bench</h1>
+  <nav>
+    <a href="../index.html">Home</a>
+    <a href="../tiers/index.html">Tiers</a>
+    <a href="../router/index.html">Router</a>
+    <a href="./index.html">Traces</a>
+    <a href="../publish/index.html">Publish</a>
+    <a href="../methodology/index.html">Methodology</a>
+  </nav>
+</header>
+<div id="demo-banner" class="demo-banner" role="status">DEMO DATA — synthetic evidence generated through the real export pipeline.</div>
+<main id="app"><p class="muted">Loading…</p></main>
+<footer class="site"><p class="small muted">Traces render v1 and v2 escalation events; confidence columns appear when Jev-directed events are present.</p></footer>
+<script type="module">
+  import { loadSnapshot, renderTraces, markDemo } from "../assets/app.js";
+  const root = document.getElementById("app");
+  const snapshot = await loadSnapshot();
+  markDemo();
+  root.replaceChildren();
+  renderTraces(root, snapshot);
+</script>
+</body>
+</html>

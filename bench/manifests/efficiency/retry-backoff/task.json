@@ -1,0 +1,6 @@
+{
+  "name": "retry-backoff",
+  "file": "retry2.py",
+  "instruction": "Implement retry_call(fn, *, retries=5, base_delay=0.01, max_delay=0.2, sleep=time.sleep): call fn() and return its result; on exception, retry up to retries more times with exponential backoff (base_delay doubling each attempt, capped at max_delay), re-raising the last exception when retries are exhausted. The current version never retries.",
+  "verify": "python check.py"
+}

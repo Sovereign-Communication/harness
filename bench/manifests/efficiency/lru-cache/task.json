@@ -1,0 +1,6 @@
+{
+  "name": "lru-cache",
+  "file": "slowmath.py",
+  "instruction": "Add @functools.lru_cache(maxsize=None) to fib so repeated calls are served from cache instead of recomputing recursively. Do not change the algorithm itself.",
+  "verify": "python check.py"
+}

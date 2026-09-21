@@ -265,6 +265,16 @@ harness jev-phase --phase JEV-P1 --repo-root . --local-only --json --out phase.j
 harness log-judgment --log C:/temp/logsSCMessenger.txt --pack log-pack.json --out analysis.json
 harness log-judgment --log runtime.log --pack log-pack.json --info-sample 5   # also every 5th INFO
 
+# Proof Bench (SITE-*): verified ledger -> sanitized site-bundle-v1 JSON for
+# the public capability/$ site. Fail-closed end to end: refuses without the
+# explicit public-release affirmation (--yes + a consent record), refuses on
+# a broken hash chain, and scans the output for credential shapes. No prompt
+# text, paths, gate output, or caller identity ever enters a bundle.
+harness route --goal "fix the race in the token bucket" --pack route-pack.json
+harness site-export --ledger ledger.jsonl --consent consent.json --yes --out bundle.json
+harness site-export --ledger ledger.jsonl --consent consent.json \
+  --pricing models-snapshot.json --yes --out bundle.json   # + USD/Mtok prices
+
 # Model capability profiles + reliability (hypothesis from /models, corrected
 # by observed evidence). --bench runs a real JSON probe on the free pool.
 harness capabilities
@@ -317,7 +327,10 @@ Wire into any MCP host (Claude Code, Cursor, your own agents):
 ```
 
 Tools: `panel_verify`, `apply_edit`, `plan_and_execute`, `offer_work`, `defer_work`,
-`issue_sort`, `ledger_status`, `participation_report`, `spend_status`, `trust_status`.
+`issue_sort`, `route_query`, `ledger_status`, `participation_report`, `spend_status`, `trust_status`.
+`route_query` takes a user request plus an operator-declared model-ladder pack and
+returns the cheapest capable declared rung (choice ⊆ declared rungs only;
+unkeyed/failed → code-owned tier heuristic with `is_fallback=true`).
 `trust_status` reports bipolar trust (-11..+11) for the host and a model,
 plus the correctness level that rations spend ceilings (read-only).
 `issue_sort` takes an operator-declared bucket pack plus issue text and

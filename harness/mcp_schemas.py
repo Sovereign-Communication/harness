@@ -184,6 +184,25 @@ TOOL_SCHEMAS = [
         }, "required": ["issue", "pack"]},
     },
     {
+        "name": "route_query",
+        "title": "Route a query onto the declared model ladder",
+        "description": "SITE-2 route marketplace: compares the request against the "
+                       "declared rung ladder (tier + cost class + observed evidence) "
+                       "and picks the cheapest capable rung. Choice criteria = declared "
+                       "rung ids only; never invents rungs or model ids. Unkeyed / "
+                       "transport fail / out-of-ladder → is_fallback with the code-owned "
+                       "tier heuristic; unsatisfiable floor → rung=null.",
+        "inputSchema": {"type": "object", "properties": {
+            "goal": {"type": "string", "description": "The user request to route"},
+            "pack": {"type": "object",
+                     "description": "Operator route pack: {id, rungs: [{rung_id, tier: "
+                                    "T0|T1|T2|T3, model, cost_class: free|cheap|moderate|"
+                                    "expensive|premium, observed_success?, samples?, "
+                                    "guidance?, notes?}]}"},
+            "task_id": {"type": "string"},
+        }, "required": ["goal", "pack"]},
+    },
+    {
         "name": "log_judgment",
         "title": "Single-pass log-factor analysis against a frozen operator pack",
         "description": "JEV-LOG: code extracts log items ($0), the ONE Jev policy "

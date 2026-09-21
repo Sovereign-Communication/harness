@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Publish — opt in and submit your sanitized bundle</title>
+<meta name="description" content="Inspect exactly what your harness site-export bundle contains, consent, and submit it to the public Proof Bench.">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header class="site">
+  <h1>Proof Bench</h1>
+  <nav>
+    <a href="../index.html">Home</a>
+    <a href="../tiers/index.html">Tiers</a>
+    <a href="../router/index.html">Router</a>
+    <a href="../traces/index.html">Traces</a>
+    <a href="./index.html">Publish</a>
+    <a href="../methodology/index.html">Methodology</a>
+  </nav>
+</header>
+<main id="app">
+  <h2>Publish your evidence</h2>
+  <ol>
+    <li>Run <code>harness site-export --ledger &lt;ledger.jsonl&gt; --consent &lt;consent.json&gt; --yes --out bundle.json</code> on your machine.</li>
+    <li>Paste or load the bundle below. The page renders <strong>exactly what will be sent</strong> — the same sanitized fields anyone will see.</li>
+    <li>Confirm the consent checkbox and submit. The server re-validates the schema, the consent block, and the bundle hash before accepting.</li>
+  </ol>
+  <form id="publish-form">
+    <p><label for="bundle-text">Bundle JSON (from site-export)</label></p>
+    <textarea id="bundle-text" rows="10" spellcheck="false"
+      placeholder='{"schema": "site-bundle-v1", …}'></textarea>
+    <p>
+      <label><input type="checkbox" id="consent-box" required>
+      I confirm this data is sanitized to my satisfaction and I consent to its public display.</label>
+    </p>
+    <button type="submit" id="submit-btn">Submit bundle</button>
+  </form>
+  <div id="publish-result" role="status"></div>
+  <h3>What a bundle can and cannot contain</h3>
+  <p class="small muted">Cannot: prompt text, file paths, gate output, error text, caller identity, task names (hashes only). Can: model ids, tiers, costs, outcomes, round counts, escalation provenance. The full allowlist is in <code>harness/site_export.py</code>.</p>
+</main>
+<footer class="site"><p class="small muted">Deletion: open a repo issue referencing your bundle_id; removal propagates at the next aggregate rebuild.</p></footer>
+<script type="module">
+  const form = document.getElementById("publish-form");
+  const out = document.getElementById("publish-result");
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const btn = document.getElementById("submit-btn");
+    let bundle;
+    try {
+      bundle = JSON.parse(document.getElementById("bundle-text").value);
+    } catch (err) {
+      out.textContent = "Not valid JSON: " + err.message;
+      return;
+    }
+    if (!document.getElementById("consent-box").checked) {
+      out.textContent = "Consent checkbox is required.";
+      return;
+    }
+    btn.disabled = true;
+    try {
+      const res = await fetch("/api/submit", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(bundle),
+      });
+      const body = await res.json();
+      out.replaceChildren(
+        Object.assign(document.createElement("pre"), { className: "json",
+          textContent: JSON.stringify(body, null, 2) }));
+    } catch (err) {
+      out.textContent = "Submission failed: " + (err.message || err);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+{
+  "name": "import-order",
+  "file": "order.py",
+  "instruction": "Reorder the two import statements at the top of order.py so that the standard-library import (json) comes before the local helper import. Change nothing else.",
+  "verify": "python check.py"
+}

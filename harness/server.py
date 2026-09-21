@@ -101,6 +101,9 @@ STATIC_FILES = {
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),
     "/app.css": ("app.css", "text/css; charset=utf-8"),
+    # SITE-8 panes (additive; legacy chat UI remains the default view)
+    "/panes.js": ("panes.js", "application/javascript; charset=utf-8"),
+    "/panes.css": ("panes.css", "text/css; charset=utf-8"),
 }
 
 
@@ -458,6 +461,20 @@ def _settings_view():
     return d
 
 
+def _site_demo_snapshot():
+    """The labeled demo snapshot (SITE local mode fallback source)."""
+    from pathlib import Path
+    demo = Path(__file__).resolve().parent.parent / "site" / "data" / "demo" \
+        / "snapshot.json"
+    try:
+        import json
+        with open(demo, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError) as exc:
+        return {"schema": "site-snapshot-v1", "contributors": 0,
+                "sessions": [], "error": f"demo snapshot unavailable: {exc}"}
+
+
 class UiRequestHandler(BaseHTTPRequestHandler):
     server_version = "harness-ui/0.1"
     protocol_version = "HTTP/1.1"
@@ -544,6 +561,12 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_models(q)
             if path == "/api/rankings":
                 return self._api_rankings()
+            if path == "/api/snapshot":
+                # SITE local mode: the static Proof Bench site reads its
+                # snapshot here (same payload site/data snapshots use).
+                return self._api_site_snapshot()
+            if path == "/api/site/demo-snapshot":
+                return self._send_json(_site_demo_snapshot())
             if path == "/api/chat/history":
                 sid = (q.get("session_id") or ["default"])[0]
                 return self._send_json({"session_id": sid, "history": load_chat_history(sid)})
@@ -573,6 +596,9 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_session_delete(body)
             if parsed.path == "/api/runs":
                 return self._api_dispatch(body)
+            if parsed.path == "/api/route":
+                # SITE local mode: same policy owner as `harness route`.
+                return self._api_site_route(body)
             m = RUN_SUB_RE.match(parsed.path)
             if m and m.group(2) == "cancel":
                 return self._api_cancel(m.group(1))
@@ -714,6 +740,54 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         report = ledger.participation_report()
         report["trust"] = trust_policy.trust_status(report)
         return self._send_json(report)
+
+    def _api_site_snapshot(self):
+        """SITE local mode: aggregate snapshot over THIS operator's ledger
+        (export logic reused, not re-derived; no consent required to READ
+        your own aggregated view — consent gates only public release)."""
+        settings = load_settings()
+        ledger = ledger_for(settings)
+        ok, _bad = ledger.verify()
+        if not ok:
+            raise HarnessError(
+                "ledger hash chain failed verification; refusing snapshot")
+        from .site_export import _allow, build_runs
+        from .site_aggregate import compute_metrics
+        runs = build_runs(_allow(ledger.entries()))
+        metrics = compute_metrics(runs, None)
+        return self._send_json({
+            "schema": "site-snapshot-v1",
+            "contributors": 1,
+            "sessions": [{"bundle_id": "local", "runs": len(runs),
+                          "metrics": metrics}],
+        })
+
+    def _api_site_route(self, body):
+        """SITE local mode: route a query through the ONE policy owner.
+        Mirrors `harness route` exactly; the demo site proxies this."""
+        from .route_pack import validate_route_pack
+        goal = str(body.get("goal") or "").strip()
+        if not goal:
+            raise HarnessError("route requires a non-empty 'goal'")
+        raw_pack = body.get("pack")
+        if raw_pack is None:
+            raise HarnessError("route requires 'pack' (declared rung ladder)")
+        try:
+            pack = validate_route_pack(raw_pack)
+        except ValueError as exc:
+            raise HarnessError(f"route pack invalid: {exc}") from exc
+        settings = load_settings()
+        _, governor = governor_for(settings)
+        from .jev_policy import policy_for
+        policy = policy_for(settings, ledger=ledger_for(settings),
+                            governor=governor)
+        _result, _structural, combo = policy.evaluate_model_route(
+            {"goal": goal}, pack, site="model_route")
+        return self._send_json({
+            "status": "ok" if combo.get("rung_id") else "unroutable",
+            "route": combo,
+            "is_fallback": bool(combo.get("is_fallback")),
+        })
 
     def _api_ledger_defer_stats(self, q):
         window = int((q.get("window") or ["500"])[0] or 500)

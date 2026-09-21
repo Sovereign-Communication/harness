@@ -222,6 +222,27 @@ def build_parser():
                       help="also write the aggregate JSON artifact to this path")
     _add_output_flags(plog)
 
+    proute = sub.add_parser("route", help="Route a query onto the declared model ladder "
+                                           "(cheapest capable rung; unkeyed = deterministic "
+                                           "tier heuristic)")
+    proute.add_argument("--goal", required=True,
+                        help="the request to route")
+    proute.add_argument("--pack", required=True,
+                        help="operator route pack: {id, rungs: [{rung_id, tier, model, "
+                             "cost_class, observed_success?, samples?, guidance?, notes?}]}")
+    _add_output_flags(proute)
+
+    psite = sub.add_parser("site-export", help="Verified ledger -> sanitized site-bundle-v1 "
+                                              "JSON for the Proof Bench public site "
+                                              "(fail-closed: consent + chain verify + secret scan)")
+    psite.add_argument("--ledger", required=True)
+    psite.add_argument("--consent", required=True)
+    psite.add_argument("--pricing", default=None,
+                       help="optional pricing snapshot JSON (USD per Mtok, from models --all)")
+    psite.add_argument("--yes", action="store_true",
+                       help="affirm public release of the sanitized bundle (required)")
+    _add_output_flags(psite)
+
     pl = sub.add_parser("ledger", help="Autonomy ledger")
     pls = pl.add_subparsers(dest="ledger_cmd", required=True)
     for _lc in ("verify", "report"):

@@ -1,0 +1,6 @@
+{
+  "name": "unpack-args",
+  "file": "dims.py",
+  "instruction": "area() crashes with a TypeError when called with a (width, height) tuple: it is unpacked into three names but the tuple has two elements. Fix the unpacking so area() returns width * height.",
+  "verify": "python check.py"
+}

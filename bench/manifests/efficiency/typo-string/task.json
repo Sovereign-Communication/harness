@@ -1,0 +1,6 @@
+{
+  "name": "typo-string",
+  "file": "greet.py",
+  "instruction": "The greeting string in greet() is misspelled: it says \"Helo\" but must say \"Hello\". Fix the spelling and change nothing else.",
+  "verify": "python check.py"
+}

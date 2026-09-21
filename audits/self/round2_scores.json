@@ -163,7 +163,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 1533 tests in 81.878s\n\nOK"
+        "evidence": "unittest: Ran 1631 tests in 95.102s\n\nOK"
       },
       {
         "id": "R14",
@@ -207,7 +207,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "66/66 modules imported by tests"
+        "evidence": "69/69 modules imported by tests"
       },
       {
         "id": "S7",
@@ -227,7 +227,7 @@
         "id": "D1",
         "label": "MCP tool parity with README",
         "score": 1.0,
-        "evidence": "README documents all 11 MCP tools, no stale names"
+        "evidence": "README documents all 12 MCP tools, no stale names"
       },
       {
         "id": "D2",
@@ -263,7 +263,7 @@
         "id": "D7",
         "label": "docs reference only real modules",
         "score": 1.0,
-        "evidence": "all module references across 21 docs resolve to real files"
+        "evidence": "all module references across 23 docs resolve to real files"
       },
       {
         "id": "D8",

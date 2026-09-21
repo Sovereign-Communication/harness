@@ -1,0 +1,6 @@
+{
+  "name": "arg-default",
+  "file": "retry.py",
+  "instruction": "The fetch_retries() signature has a mutable default argument (a list), so repeated calls share state. Fix it with the standard None-sentinel pattern, keeping the parameter name and return behavior identical.",
+  "verify": "python check.py"
+}

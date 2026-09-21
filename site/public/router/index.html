@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Router — cheapest capable rung for your request</title>
+<meta name="description" content="Interactive demo of the harness route marketplace: pick the cheapest capable model rung for a request, with the reasoning shown.">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header class="site">
+  <h1>Proof Bench</h1>
+  <nav>
+    <a href="../index.html">Home</a>
+    <a href="../tiers/index.html">Tiers</a>
+    <a href="./index.html">Router</a>
+    <a href="../traces/index.html">Traces</a>
+    <a href="../publish/index.html">Publish</a>
+    <a href="../methodology/index.html">Methodology</a>
+  </nav>
+</header>
+<main id="app"><p class="muted">Loading router…</p></main>
+<footer class="site"><p class="small muted">The site demos the product pack; it does not re-implement routing.</p></footer>
+<script type="module">
+  import { loadSnapshot, renderRouter } from "../assets/app.js";
+  const root = document.getElementById("app");
+  const snapshot = await loadSnapshot();
+  root.replaceChildren();
+  await renderRouter(root, snapshot);
+</script>
+</body>
+</html>

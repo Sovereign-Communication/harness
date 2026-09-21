@@ -1,0 +1,6 @@
+{
+  "name": "docstring",
+  "file": "docs.py",
+  "instruction": "Add a one-line docstring to celsius_to_fahrenheit that reads exactly: \"Convert a Celsius temperature to Fahrenheit.\" Do not change any code behavior.",
+  "verify": "python check.py"
+}

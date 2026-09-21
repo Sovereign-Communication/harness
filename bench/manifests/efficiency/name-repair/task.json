@@ -1,0 +1,6 @@
+{
+  "name": "name-repair",
+  "file": "calc.py",
+  "instruction": "calc.py raises NameError when imported: one reference to the DEFAULT_RATE constant is misspelled. Fix the misspelling so the module imports and interest() works.",
+  "verify": "python check.py"
+}

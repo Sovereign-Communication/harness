@@ -1,0 +1,1 @@
+{"demo/scout-free:free": {"input_per_mtok": 0.0, "output_per_mtok": 0.0}, "demo/helper-lite": {"input_per_mtok": 0.1, "output_per_mtok": 0.0}, "demo/reasoner-mid": {"input_per_mtok": 0.8, "output_per_mtok": 0.0}, "demo/frontier-max": {"input_per_mtok": 10.0, "output_per_mtok": 0.0}}
