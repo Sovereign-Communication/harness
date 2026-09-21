@@ -2,10 +2,19 @@
 
 **Status:** active tracking doc  
 **Picked up from:** Freebuff / Buffy lane (PR-Jev-Live `b6fa945`, waist pre-plan `a591739`, cost foundation `b3960e7`)  
-**Audit date:** 2026-09-20  
+**Audit date:** 2026-09-21 (WIP freebuff audit)  
 **Live probe:** TypeSafe `POST https://api.typesafe.ai/v1/systemone` succeeded with key at `~/.config/harness/jev.env`
 
 This file is the **single source of truth** for finishing Jev / System One utilization in Harness. Every future jev-related PR must carry a `JEV-Pn-…` ID from the tracker below and reference an acceptance test named here. Do not open parallel ad-hoc jev plans.
+
+**Mission paste:** [jev-mission-prompt.md](jev-mission-prompt.md). Prefer that file for the **next Freebuff pass** (P2 repair). Do **not** run from a dirty local `main` STATUS that still says P1 incomplete — that is stale.
+
+**Worktrees (do not invent new P1 work):**
+
+| Path | Branch | Use |
+|---|---|---|
+| `Harness-jev-p1` | `feat/jev-p1-policy-and-lanes` | **Merged PR #35 — leave alone** (may be locked) |
+| `Harness-jev-p2` | `feat/jev-p2-system-one-pillars` | **Current WIP** — PR #36 open; repair here only |
 
 Related design context (not the tracker): [system-one-integration.md](system-one-integration.md), [hourglass-frontier-eval.md](hourglass-frontier-eval.md) (D8), skill at `.agents/skills/typesafe-ai/SKILL.md`, live API at <https://docs.typesafe.ai/api.md>.
 
@@ -148,24 +157,138 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 
 ---
 
+## Canonical STATUS (update here only — truth as of 2026-09-21 audit)
+
+| Track / phase | Status | PR / evidence |
+|---|---|---|
+| Preflight sync `main`↔`origin` P0 | **complete** | `origin/main` includes P0 `d042d70` |
+| `JEV-P0-*` contract truth | **complete** | PR #34 / `d042d70`; live smoke OK |
+| `JEV-P1-*` one owner + lanes | **complete** | **PR #35 MERGED** → `origin/main` `9d5ff14`; required tests present; structural retry green in CI |
+| `JEV-P2-*` System One pillars | **in progress — blocked on evidence** | WIP `Harness-jev-p2` / `feat/jev-p2-system-one-pillars` @ `c50b22e`; **PR #36 OPEN**; CI test jobs pass; **CI audit FAIL** (D12 changed-line coverage **29/43 = 67%**, bar 95%); operator local re-run **FAIL** 2× `tests/test_jev_lane_parity.py` (non-hermetic / `no canned chat response left` after HARNESS_READY); lean jury **`JEV-P2-jury` deferred** — STATUS must **not** say complete |
+| `JEV-P3-*` utilization | **open** | after P2 merge + STATUS complete |
+| `JEV-P4-*` ops / exit | **open** | after P3 DoD |
+
+**P2 done when (all true):** repair finished on PR #36 branch → named P2 tests **and** full listed battery green **locally and on CI** → `python audits/self/audit.py` **BAR MET** (D12 ≥95%) → STATUS on that branch honest (jury deferred if not shipped) → PR #36 merged → post-merge `main` CI green → STATUS P2 `complete`.
+
+### P2 evidence snapshot (read-only audit — do not re-litigate)
+
+| Item | Finding |
+|---|---|
+| PR | [#36](https://github.com/Sovereign-Communication/harness/pull/36) `feat(jev): JEV-P2 confidence gating and triage` — **OPEN**, base `main` |
+| Branch tip | `c50b22e test(jev): cover P2 confidence and triage branches` |
+| Implemented | consent confidence + min-confidence abstain; `evaluate_triage` / waist triage envelope; tests `test_jev_triage`, `test_consent_confidence`, `test_min_confidence_gating` |
+| Deferred | `JEV-P2-jury` lean typed pre-gate — keep **deferred**, not complete |
+| CI #36 | test 3.9/3.11/3.13 **pass**; package **pass**; **audit FAIL** D12 67% |
+| D12 untested changed lines | `apply_state.py:41`; `consent.py:225,226,231`; `jev_policy.py:227,231,233,235,239,241,242`; `waist.py:1018,1019,1020` |
+| Local lane parity | `test_apply_envelope_contains_structural_for_unkeyed_policy` + `test_batch_aggregates_child_structural_envelopes` fail when machine harness settings are live (`jev_key`/`hourglass`/readiness path); fixtures supply one canned chat reply but apply takes another round |
+
+---
+
 ## Tracker
 
 | Phase | IDs | Primary modules | Gate tests | Status |
 |---|---|---|---|---|
-| 0 Contract | `JEV-P0-*` | `jev.py`, `config.py`, docs | `tests/test_jev.py` + `tests/test_jev_smoke.py` | **complete in this PR** |
-| 1 One owner | `JEV-P1-*` | policy + apply/waist/CLI/MCP/agent | `tests/test_jev_policy.py`, `tests/test_jev_lane_parity.py`, `tests/test_jev_ledger_spend.py` | **complete** — PR #35; named gates, regression, traced D12 audit, and CI all green |
-| 2 Pillars | `JEV-P2-*` | consent, sliding_scale, panel | consent/confidence + panel pre-gate | planned |
+| 0 Contract | `JEV-P0-*` | `jev.py`, `config.py`, docs | `tests/test_jev.py` + `tests/test_jev_smoke.py` | **complete** — PR #34 |
+| 1 One owner | `JEV-P1-*` | policy + apply/waist/CLI/MCP/agent | `tests/test_jev_policy.py`, `tests/test_jev_lane_parity.py`, `tests/test_jev_ledger_spend.py` | **complete** — PR #35 merged; do not re-open |
+| 2 Pillars | `JEV-P2-*` | consent, sliding_scale, panel | `tests/test_jev_triage.py`, `tests/test_consent_confidence.py`, `tests/test_min_confidence_gating.py` + P1 gates + audit | **in progress / repair** — PR #36 open; audit red; lane-parity not hermetic; jury deferred |
 | 3 Utilization | `JEV-P3-*` | orchestrator, routing, context | per-pattern hermetic tests | planned |
 | 4 Ops | `JEV-P4-*` | workflows, analytics, docs | live acceptance checklist | planned |
 
 ### PR title convention
 `feat(jev): JEV-P0-cost — token-priced TypeSafe usage on JevEvaluationResult`
 
-### Next implementation slice (priority order)
-1. **P2** implement consent confidence + abstention; merge only after named gates and regression are green
-2. **P2** consent confidence + abstention
-3. **P3** utilization patterns
-4. **P4** dogfood + freeze thresholds
+### Next implementation slice (priority order — no guessing)
+1. **P2 repair only** on `Harness-jev-p2` / PR #36 — follow **P2 repair playbook** below. Do **not** re-implement P1. Do **not** start P3. Do **not** mark complete while audit or local gates are red.
+2. After P2 merge + STATUS complete → **P3** utilization patterns.
+3. **P4** dogfood + freeze thresholds.
+
+---
+
+## P2 repair playbook (Freebuff / implementer — read before coding)
+
+**Only work tree:** `C:\Users\SCM\Documents\GitHub\Harness-jev-p2`  
+**Only branch:** `feat/jev-p2-system-one-pillars` (PR #36)  
+**Forbidden trees:** `Harness-jev-p1` (locked/merged), freeform new plans, redo P0/P1.
+
+### Goal
+Drive PR #36 from “code exists, claims green” to **reproducible green**: local gates + CI audit BAR MET + honest STATUS. Then merge. Nothing else this pass.
+
+### Ordered checklist (do in order)
+
+| # | Action | Done when |
+|---|---|---|
+| 1 | **Make lane-parity hermetic** — `tests/test_jev_lane_parity.py` | Apply/batch tests pass on a machine with **real** harness settings **and** on clean CI |
+| 2 | **Cover D12 changed lines** listed above | `python audits/self/audit.py` prints **BAR MET**; D12 ≥95% |
+| 3 | **Honest STATUS on the PR branch** | Tracker/STATUS rows: P2 `in progress` until merge; `JEV-P2-jury` **deferred**; M2/M3 `[x]` only with named tests |
+| 4 | **Run full battery locally, paste output** | Command below all green |
+| 5 | **Push same branch to PR #36** | All CI checks green including **audit** |
+| 6 | **Merge allowed only after 1–5** | Post-merge `main` CI green → STATUS P2 **complete** → then P3 |
+
+### 1) Hermetic lane parity (exact intent)
+
+Current fail mode (operator re-run):
+
+```text
+[apply] test/model did not emit HARNESS_READY; treating as confident
+AssertionError: no canned chat response left
+```
+
+Cause class: `load_settings()` on a real machine enables paths that issue **extra** chat calls; fixtures only queue one `comp(CHANGED)`.
+
+Implementer must pick **one** contract and test it:
+
+- In test `setUp`/`_engine`, force a **disarmed hermetic envelope**: `jev_api_key=None`, consent off, readiness treated as confident **without** another model call, no hourglass/escalation extras that post chat, and FakeTransport posts sized for **every** call apply will make (or a transport that ignores surplus).
+- Do **not** weaken production apply readiness to make one test pass; fix the **test doubles / settings isolation**.
+- Keep production fail-closed behavior intact.
+
+Minimum assertions stay the same: result contains `structural`, `structural["is_fallback"] is True` for unkeyed policy; batch child carries the same block.
+
+### 2) D12 coverage (exact untested lines)
+
+Add hermetic tests that **execute** (not mock away):
+
+- `harness/apply_state.py:41` (min_confidence on request/state)
+- `harness/consent.py:225,226,231` (low-confidence accept → defer path)
+- `harness/jev_policy.py:227,231,233,235,239,241,242` (plan/triage refusal + reservation release paths)
+- `harness/waist.py:1018,1019,1020` (triage `requires_iteration` wiring)
+
+Rules:
+
+- Prefer real unit tests over expanding mocks that never hit the lines.
+- **Do not** game `audits/self/coverage_baseline.json` by committing a baseline that hides untested new lines. Regenerate only via the official refresh script **after** real tests exist, as a reviewable diff.
+- Paste `python audits/self/audit.py` output in the PR.
+
+### 3) STATUS honesty (exact wording targets)
+
+On the **PR branch** docs (not operator-local dirty main):
+
+- Tracker P2 status: `**in progress / repair** — PR #36; evidence pending audit + hermetic gates` until merge.
+- After merge: `**complete** — PR #36; audit BAR MET; local+CI gates green; JEV-P2-jury deferred to follow-up`.
+- `JEV-P2-jury`: **deferred** — “not in PR #36; needs fail-closed contract + dedicated coverage.”
+- `docs/system-one-integration.md` M4: P1 **complete** via PR #35 / `9d5ff14` (remove “not merged yet”). M2/M3 only `[x]` when named tests are green on the merge tip.
+
+### 4) Local gates (must paste raw output)
+
+```powershell
+$env:PYTHONPATH = "C:\Users\SCM\Documents\GitHub\Harness-jev-p2"
+python -m unittest tests.test_jev tests.test_jev_smoke tests.test_jev_policy tests.test_jev_lane_parity tests.test_jev_ledger_spend tests.test_jev_triage tests.test_consent_confidence tests.test_min_confidence_gating tests.test_agent.TestHourglassLane tests.test_waist -v
+python audits/self/audit.py
+```
+
+CI on PR #36 must show **audit = success** (not only unittest jobs).
+
+### 5) Forbidden this pass
+
+- Re-implement or reopen P1 / PR #35
+- Start P3 / HUL product code
+- Mark STATUS complete while audit red or lane-parity red locally
+- Merge red CI
+- Edit `Harness-jev-p1`
+- Provider brand hardcoding in phase code
+- Fake “done” without commit + green tests + audit paste
+
+### Blocked? 
+Write STATUS `blocked` + the **exact** failing command/output. No “will do”.
 
 ---
 
