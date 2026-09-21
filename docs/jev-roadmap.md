@@ -167,6 +167,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `JEV-P2-*` System One pillars | **in progress / repair** | WIP `Harness-jev-p2` / `feat/jev-p2-system-one-pillars`; **PR #36 OPEN**; lane-parity **hermetic**; D12 target lines **executed** by named tests; local battery green; audit **BAR MET** locally; live Jev smoke OK; lean jury **`JEV-P2-jury` deferred** — STATUS stays **in progress until merge + CI green** |
 | `JEV-P3-*` utilization | **open** | after P2 merge + STATUS complete |
 | `JEV-P4-*` ops / exit | **open** | after P3 DoD |
+| `HUL-A` mission pack | **in progress** | worktree `Harness-hul-a` / `feat/hul-a-mission-pack`; `harness/mission_record.py` + CLI `mission init\|status\|resume\|findings` + `tests/test_hul_mission_record.py`; **not complete until merge + CI green** |
 
 **P2 done when (all true):** repair finished on PR #36 branch → named P2 tests **and** full listed battery green **locally and on CI** → `python audits/self/audit.py` **BAR MET** (D12 ≥95%) → STATUS on that branch honest (jury deferred if not shipped) → PR #36 merged → post-merge `main` CI green → STATUS P2 `complete`.
 
@@ -194,6 +195,10 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | 2 Pillars | `JEV-P2-*` | consent, sliding_scale, panel | `tests/test_jev_triage.py`, `tests/test_consent_confidence.py`, `tests/test_min_confidence_gating.py` + hermetic `tests/test_jev_lane_parity.py` + audit | **in progress / repair** — PR #36 open; local gates green after hermetic + D12 repair; **not complete until merge + CI audit green**; jury deferred |
 | 3 Utilization | `JEV-P3-*` | orchestrator, routing, context | per-pattern hermetic tests | planned — **after P2 merge** |
 | 4 Ops | `JEV-P4-*` | workflows, analytics, docs | live acceptance checklist | planned |
+| HUL-A | `HUL-A-*` | `harness/mission_record.py`, CLI mission | `tests/test_hul_mission_record.py` | **in progress** — `Harness-hul-a` / `feat/hul-a-mission-pack` |
+| HUL-B | `HUL-B-*` | `spend.py` dual envelope | `tests/test_hul_budget_reserve.py` | **open** — after A |
+| HUL-C | `HUL-C-*` | `jev_packs` scope + `jev_policy.evaluate_scope` | `tests/test_hul_jev_scope_gate.py` | **open** — after A |
+| HUL-D | `HUL-D-*` | mission driver + FINDINGS + resume | `tests/test_hul_driver_findings_resume.py` | **open** — after A–C |
 
 ### PR title convention
 `feat(jev): JEV-P0-cost — token-priced TypeSafe usage on JevEvaluationResult`
