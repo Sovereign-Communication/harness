@@ -13,10 +13,6 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 from .errors import HarnessError
 from .jev import (JevEvaluationResult, JevEvaluator, jev_cost,
                   triage_question_pack)
-<<<<<<< HEAD
-from .jev_packs import (issue_sort_question_pack, match_keywords,
-                        validate_operator_pack)
-=======
 from .jev_packs import (
     claim_support_question_pack,
     claims_from_payload,
@@ -25,12 +21,14 @@ from .jev_packs import (
     heuristic_file_relevance,
     heuristic_requires_iteration,
     heuristic_route,
+    issue_sort_question_pack,
+    match_keywords,
     named_artifact_status,
     normalize_route,
     route_question_pack,
     validate_candidates,
+    validate_operator_pack,
 )
->>>>>>> origin/main
 
 JEV_MAX_INPUT_TOKENS = 1024
 

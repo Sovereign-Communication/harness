@@ -122,6 +122,49 @@ class OperatorPackSchemaTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_operator_pack(missing)
 
+    def test_validate_rejects_every_declared_schema_branch(self):
+        """Every explicit refuse branch in validate_operator_pack must fire."""
+        with self.assertRaises(ValueError):
+            validate_operator_pack(["not-an-object"])
+        with self.assertRaises(ValueError):
+            validate_operator_pack({"buckets": {"a": {"label": "A",
+                 "kind": "trouble_area", "path_id": "p", "keywords": []}}})
+        non_str_id = sample_pack()
+        non_str_id["buckets"] = {1: non_str_id["buckets"]["auth"]}
+        with self.assertRaises(ValueError):
+            validate_operator_pack(non_str_id)
+        not_obj = sample_pack()
+        not_obj["buckets"]["auth"] = "nope"
+        with self.assertRaises(ValueError):
+            validate_operator_pack(not_obj)
+        no_label = sample_pack()
+        del no_label["buckets"]["auth"]["label"]
+        with self.assertRaises(ValueError):
+            validate_operator_pack(no_label)
+        bad_keywords = sample_pack()
+        bad_keywords["buckets"]["auth"]["keywords"] = ["ok", ""]
+        with self.assertRaises(ValueError):
+            validate_operator_pack(bad_keywords)
+        bad_action = sample_pack()
+        bad_action["buckets"]["auth"]["suggested_next_action"] = 7
+        with self.assertRaises(ValueError):
+            validate_operator_pack(bad_action)
+        bad_attention = sample_pack()
+        bad_attention["buckets"]["auth"]["attention"] = ["high"]
+        with self.assertRaises(ValueError):
+            validate_operator_pack(bad_attention)
+
+    def test_sort_notes_empty_input_is_honest_empty(self):
+        policy = policy_for(_unkeyed_settings(), ledger=AutonomyLedger(
+            os.path.join(tempfile.mkdtemp(), "led.jsonl")))
+        self.assertEqual(sort_notes_into_buckets(None, sample_pack(), policy),
+                         [])
+        self.assertEqual(sort_notes_into_buckets([], sample_pack(), policy), [])
+        single = sort_notes_into_buckets(
+            {"issue": "auth token"}, sample_pack(), policy)
+        self.assertEqual(len(single), 1)
+        self.assertEqual(single[0]["bucket"], "auth")
+
     def test_question_pack_criteria_are_operator_labels_only(self):
         questions = issue_sort_question_pack(sample_pack())
         criteria = questions["bucket"]["criteria"]

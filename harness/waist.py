@@ -1020,12 +1020,9 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     plan_goal = opts_goal
     plan_structural = None
     plan_triage = None
-<<<<<<< HEAD
     plan_issue_sort = None
-=======
     jev_route_feed = None
     repo_context = None
->>>>>>> origin/main
     if isinstance(jev_policy, JevPolicy):
         # JEV-P3-route: one typed route choice through the policy owner.
         route_eval, route_envelope = jev_policy.evaluate_route(
@@ -1045,18 +1042,15 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                 f"{opts_goal}\n\n[STRUCTURAL GUIDELINE]: This goal requires iterative "
                 "control flow, conditional branching, or multi-step execution. "
                 "Represent those dependencies explicitly in the executable DAG.")
-<<<<<<< HEAD
         if issue_sort_pack is not None:
             _sort_result, _sort_structural, plan_issue_sort = (
                 jev_policy.evaluate_issue_sort(
                     {"issue": opts_goal}, issue_sort_pack, site="issue_sort"))
-=======
     # JEV-P3-context-pack: distilled decision-relevant state before generative
     # seats that lack a pack. Smallest seam — pass into LLM decompose.
     if decompose_llm and not repo_context:
         repo_context = build_context_pack(
             opts_goal, candidate_files=candidate_files)
->>>>>>> origin/main
 
     # The run-level gate: the goal's own candidate files. It is the
     # last-resort arm of the ONE gate rule (repo_scope.gate_for_targets),

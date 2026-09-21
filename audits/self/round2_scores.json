@@ -1,9 +1,9 @@
 {
   "scores": {
     "A": 10.0,
-    "R": 9.29,
-    "SM": 2.5,
-    "SD": 9.17
+    "R": 10.0,
+    "SM": 10.0,
+    "SD": 10.0
   },
   "checks": {
     "A": [
@@ -162,8 +162,8 @@
       {
         "id": "R13",
         "label": "full suite green hermetically",
-        "score": 0.0,
-        "evidence": "Users\\SCM\\Documents\\GitHub\\Harness-jev-p5\\harness\\apply.py\", line 53, in <module>\n    from .batch import run_batch\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-jev-p5\\harness\\batch.py\", line 13, in <module>\n    from .jev_policy import aggregate_structural\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-jev-p5\\harness\\jev_policy.py\", line 16\n    <<<<<<< HEAD\n    ^\nSyntaxError: invalid syntax\n\n======================================================================\nERROR: test_waist (unittest.loader._FailedTest)\n----------------------------------------------------------------------\nImportError: Failed to import test module: test_waist\nTraceback (most recent call last):\n  File \"C:\\Users\\SCM\\AppData\\Roaming\\uv\\python\\cpython-3.9-windows-x86_64-none\\lib\\unittest\\loader.py\", line 436, in _find_test_path\n    module = self._get_module_from_name(name)\n  File \"C:\\Users\\SCM\\AppData\\Roaming\\uv\\python\\cpython-3.9-windows-x86_64-none\\lib\\unittest\\loader.py\", line 377, in _get_module_from_name\n    __import__(name)\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-jev-p5\\tests\\test_waist.py\", line 24, in <module>\n    from harness.waist import (chunk_oversized_nodes, compose_plan, confirm_plan,\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-jev-p5\\harness\\waist.py\", line 1023\n    <<<<<<< HEAD\n    ^\nSyntaxError: invalid syntax\n\n\n======================================================================\nERROR: test_worktree (unittest.loader._FailedTest)\n----------------------------------------------------------------------\nImportError: Failed to import test module: test_worktree\nTraceback (most recent call last):\n  File \"C:\\Users\\SCM\\AppData\\Roaming\\uv\\python\\cpython-3.9-windows-x86_64-none\\lib\\unittest\\loader.py\", line 436, in _find_test_path\n    module = self._get_module_from_name(name)\n  File \"C:\\Users\\SCM\\AppData\\Roaming\\uv\\python\\cpython-3.9-windows-x86_64-none\\lib\\unittest\\loader.py\", line 377, in _get_module_from_name\n    __import__(name)\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-jev-p5\\tests\\test_worktree.py\", line 16, in <module>\n    from harness.executor import ConcurrentExecutor\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-jev-p5\\harness\\executor.py\", line 25, in <module>\n    from .waist import node_apply_kwargs\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-jev-p5\\harness\\waist.py\", line 1023\n    <<<<<<< HEAD\n    ^\nSyntaxError: invalid syntax\n\n\n----------------------------------------------------------------------\nRan 768 tests in 10.752s\n\nFAILED (errors=96, skipped=40)\n"
+        "score": 1.0,
+        "evidence": "unittest: Ran 1315 tests in 75.498s\n\nOK"
       },
       {
         "id": "R14",
@@ -176,32 +176,32 @@
       {
         "id": "S1",
         "label": "import direction (interfaces on top)",
-        "score": 0.0,
-        "evidence": "CHECK ERROR: SyntaxError: invalid syntax (jev_packs.py, line 1)"
+        "score": 1.0,
+        "evidence": "import direction clean (0 upward edges)"
       },
       {
         "id": "S2",
         "label": "no re-export facades",
-        "score": 0.0,
-        "evidence": "CHECK ERROR: SyntaxError: invalid syntax (jev_packs.py, line 1)"
+        "score": 1.0,
+        "evidence": "no re-export shims (harness/core.py cannot regrow)"
       },
       {
         "id": "S3",
         "label": "result vocabulary one def site",
-        "score": 0.0,
-        "evidence": "CHECK ERROR: SyntaxError: invalid syntax (jev_packs.py, line 1)"
+        "score": 1.0,
+        "evidence": "result vocabulary owned by results.py only"
       },
       {
         "id": "S4",
         "label": "engine/router construction one owner",
-        "score": 0.0,
-        "evidence": "CHECK ERROR: SyntaxError: invalid syntax (jev_packs.py, line 1)"
+        "score": 1.0,
+        "evidence": "engine/router construction owned by session.py"
       },
       {
         "id": "S5",
         "label": "ruff clean",
-        "score": 0.0,
-        "evidence": "   # so a node whose own target yields no gate still inherits the run's\n1064 |     # verification instead of dispatching an unverifiable write.\n1065 |     run_gate = discover_verification_gate(list(candidate_files or []), root)\n     | ^^^^\n1066 |\n1067 |     decomposed = None\n     |\n\nFound 58 errors."
+        "score": 1.0,
+        "evidence": "ruff check harness tests: clean"
       },
       {
         "id": "S6",
@@ -212,8 +212,8 @@
       {
         "id": "S7",
         "label": "one owner per policy (8 sampled)",
-        "score": 0.0,
-        "evidence": "CHECK ERROR: SyntaxError: invalid syntax (jev_packs.py, line 1)"
+        "score": 1.0,
+        "evidence": "all 8 sampled policies have exactly one definition site"
       },
       {
         "id": "S8",
@@ -292,8 +292,8 @@
       {
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
-        "score": 0.0,
-        "evidence": "CHECK ERROR: JSONDecodeError: Expecting value: line 1 column 1 (char 0)"
+        "score": 1.0,
+        "evidence": "changed harness lines are suite-executed"
       }
     ]
   }
