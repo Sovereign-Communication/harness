@@ -1,4 +1,4 @@
-﻿{
+{
   "scores": {
     "A": 10.0,
     "R": 10.0,
@@ -163,7 +163,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 1175 tests in 70.903s\n\nOK"
+        "evidence": "unittest: Ran 1194 tests in 69.531s\n\nOK"
       },
       {
         "id": "R14",
@@ -207,7 +207,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "59/59 modules imported by tests"
+        "evidence": "60/60 modules imported by tests"
       },
       {
         "id": "S7",
@@ -227,7 +227,7 @@
         "id": "D1",
         "label": "MCP tool parity with README",
         "score": 1.0,
-        "evidence": "README documents all 9 MCP tools, no stale names"
+        "evidence": "README documents all 10 MCP tools, no stale names"
       },
       {
         "id": "D2",
@@ -293,7 +293,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "no executable harness changes since the coverage baseline 15b98daa2f"
+        "evidence": "no executable harness changes since the coverage baseline d535329c78"
       }
     ]
   }
