@@ -1,4 +1,4 @@
-﻿{
+{
   "scores": {
     "A": 10.0,
     "R": 10.0,
@@ -163,7 +163,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 1364 tests in 81.333s\n\nOK"
+        "evidence": "unittest: Ran 1398 tests in 92.635s\n\nOK"
       },
       {
         "id": "R14",
@@ -293,7 +293,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "no executable harness changes since the coverage baseline b91a8a694d"
+        "evidence": "no executable harness changes since the coverage baseline bb3c979206"
       }
     ]
   }
