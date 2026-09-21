@@ -723,13 +723,14 @@ class AutonomousAgent:
             # A lightweight injected engine (used by library callers/tests)
             # has no policy, so this lane supplies the same policy owner as a
             # compatibility boundary rather than silently skipping the check.
+            # JEV-P4: composition goes through session.jev_for → policy_for
+            # (no raw JevEvaluator outside the policy owner).
             structural = res.get("structural") if isinstance(res, dict) else None
             policy = getattr(engine, "jev_policy", None)
             if (res.get("status") in SUCCESS_STATUSES and res.get("diff")
                     and not isinstance(policy, JevPolicy)):
-                policy = policy_for(
+                policy = jev_for(
                     self.settings, transport=self.transport, governor=gov,
-                    evaluator=jev_for(self.settings, transport=self.transport),
                     ledger=ledger_for(self.settings, caller="agent"))
                 jev_res, structural = policy.evaluate_diff(
                     diff=res["diff"], instruction=node.instruction,

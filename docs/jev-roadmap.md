@@ -166,7 +166,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `JEV-P1-*` one owner + lanes | **complete** | **PR #35 MERGED** → `origin/main` `9d5ff14` |
 | `JEV-P2-*` System One pillars | **complete** | **PR #36 MERGED** → `origin/main` `405bbc1`; hermetic lane-parity; D12 executed; local audit BAR MET; CI green on PR tip **and** post-merge `main`; live Jev smoke OK; **`JEV-P2-jury` deferred** (follow-up, not blocking P2 complete) |
 | `JEV-P3-*` utilization | **complete** | **PR #43 MERGED** `7eb18ea`; route/triage/context/claims/completion/calibration |
-| `JEV-P4-*` ops / exit | **open / WIP** | worktree `Harness-p4` / `feat/jev-p4-ops-exit`; jury remains deferred |
+| `JEV-P4-*` ops / exit | **in progress** | PR on `feat/jev-p4-ops-exit`; `session.jev_for`→`policy_for`; `HARNESS_JEV_DISABLE` dogfood switch; `freeze_jev_settings`; `docs/jev-dogfood.md`; local suite+audit BAR MET; live smoke OK; dogfood A/B pass-rate + freeze persistence + post-merge CI still open; **jury deferred** |
 | `JEV-P5-*` issue-sort buckets | **in progress** | PR #42 `feat/jev-p5-issue-sort`; **not complete until merge + CI green** |
 | `HUL-A` mission pack | **complete** | **PR #41 MERGED** `64e63a3`; mission pack + CLI + gate tests; CI green |
 | `HUL-B` dual budget | **open / WIP** | worktree `Harness-hul-b` / `feat/hul-b-dual-budget` |
@@ -376,6 +376,7 @@ Write STATUS `blocked` + the **exact** failing command/output. No “will do”.
 - Endpoint (authoritative): `https://api.typesafe.ai/v1/systemone`
 - Models: alias `jev-latest` → `jev-1.13.0` (pin version id when calibrating thresholds)
 - Verification gates remain authoritative for code correctness; Jev is pre-gate triage and structural refusal, not a substitute for tests
+
 
 
 
