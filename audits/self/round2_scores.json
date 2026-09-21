@@ -163,7 +163,11 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
+<<<<<<< HEAD
         "evidence": "unittest: Ran 1411 tests in 86.945s\n\nOK"
+=======
+        "evidence": "unittest: Ran 1390 tests in 80.684s\n\nOK"
+>>>>>>> origin/main
       },
       {
         "id": "R14",
@@ -207,7 +211,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "62/62 modules imported by tests"
+        "evidence": "63/63 modules imported by tests"
       },
       {
         "id": "S7",
@@ -263,7 +267,7 @@
         "id": "D7",
         "label": "docs reference only real modules",
         "score": 1.0,
-        "evidence": "all module references across 17 docs resolve to real files"
+        "evidence": "all module references across 18 docs resolve to real files"
       },
       {
         "id": "D8",
@@ -293,7 +297,11 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
+<<<<<<< HEAD
         "evidence": "no executable harness changes since the coverage baseline 3e635b5553"
+=======
+        "evidence": "no executable harness changes since the coverage baseline 324c9abe63"
+>>>>>>> origin/main
       }
     ]
   }

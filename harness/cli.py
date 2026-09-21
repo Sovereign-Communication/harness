@@ -42,6 +42,7 @@ from .service import read_text_file as _service_read_text
 from .rankings import build_rankings_report as _rankings_report
 from .waist import compose_plan as _compose_plan
 from .jev_policy import aggregate_structural, policy_for
+from .jev_completion import dogfood_phase
 from .jev_packs import validate_operator_pack
 from .capability import capabilities_payload as _capability_payload_owner
 from .brief import build_brief, validate_brief
@@ -886,6 +887,42 @@ def _cmd_plan(opts, settings):
     _emit_by_status(output, opts.out)
 
 
+def _cmd_jev_phase(opts, settings):
+    """Dogfood: score whether a mission phase may be marked complete."""
+    use_live = not getattr(opts, "local_only", False)
+    result = dogfood_phase(
+        opts.repo_root,
+        opts.phase,
+        evidence_path=getattr(opts, "evidence", None),
+        settings=settings if use_live else None,
+        use_live_jev=use_live,
+        min_score=float(getattr(opts, "min_score", 85.0)),
+    )
+    if getattr(opts, "json", False):
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print(f"phase={result['phase']} score={result['score']}/{result['min_score']} "
+              f"can_mark_complete={result['can_mark_complete']}")
+        print("hard_gates:", json.dumps(result["hard_gates"]))
+        if result.get("blockers"):
+            print("blockers:")
+            for b in result["blockers"]:
+                print(f"  - {b}")
+        sem = result.get("semantic") or {}
+        print(f"semantic: score={sem.get('score')} fallback={sem.get('is_fallback')} "
+              f"model={sem.get('model')} note={sem.get('note')}")
+    if getattr(opts, "out", None):
+        out_dir = os.path.dirname(opts.out)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        with open(opts.out, "w", encoding="utf-8") as fh:
+            json.dump(result, fh, indent=2, default=str)
+    if not result.get("can_mark_complete"):
+        raise HarnessError(
+            f"phase {result['phase']} completion score {result['score']} "
+            f"< {result['min_score']} or hard gates failed — do not mark complete")
+
+
 # Command -> handler. `required=True` subparsers make an unknown command
 # unreachable here, so the table has no default arm; every handler takes
 # (opts, settings), so a signature drift fails loudly at dispatch instead of
@@ -909,6 +946,7 @@ _DISPATCH = {
     "cost": _cmd_cost,
     "trust": _cmd_trust,
     "rankings": _cmd_rankings,
+    "jev-phase": _cmd_jev_phase,
     "mission": _cmd_mission,
 }
 

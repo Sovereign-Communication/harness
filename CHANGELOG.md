@@ -11,7 +11,11 @@ break APIs between minor versions).
 
 ### Added
 
+<<<<<<< HEAD
 - **HUL-B dual budget reserve.** `harness/spend.py` is the ONE owner of the dual envelope: `working_remaining = max_cost - spent - terminal_reserve`. Attempt-phase preflight/reserve/record refuse spend that would eat `terminal_reserve`; terminal FINDINGS may spend up to the reserve only when the mission is already terminal. Mission `budget.json` and STATUS report `working_remaining` + reserve honestly via the same formula (`mission_record` delegates; no second governor).
+=======
+- **JEV-COMPLETION dogfood phase gate.** `harness jev-phase` scores a mission phase 0-100 from code-owned hard gates (PR/origin evidence, required tests present, local+CI green, no open blockers) plus a Jev semantic score; STATUS may claim complete only when `can_mark_complete=true` and score ≥ 85 (`harness/jev_completion.py`, CLI, `tests/test_jev_completion.py`).
+>>>>>>> origin/main
 
 - **JEV-P2 confidence-gated System One pillars.** Consent now preserves calibrated confidence, low-confidence Jev decisions abstain before writes, verification gates, and Jev spend, and typed triage signals route complex work toward the plan lane. The lean jury is intentionally deferred until it has a dedicated fail-closed gate contract.
 
