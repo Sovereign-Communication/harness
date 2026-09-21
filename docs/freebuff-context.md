@@ -1,4 +1,4 @@
-﻿# Freebuff context pack — Harness Jev mission
+# Freebuff context pack — Harness Jev mission
 
 This file is the **operator/agent context pack** for Freebuff Codebuff sessions on this repo. Canonical STATUS still lives only in [jev-roadmap.md](jev-roadmap.md).
 

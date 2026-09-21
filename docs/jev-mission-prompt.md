@@ -1,4 +1,4 @@
-﻿# Freebuff Mission — paste prompts
+# Freebuff Mission — paste prompts
 
 **Canon:** [jev-roadmap.md](jev-roadmap.md) only.
 

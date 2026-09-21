@@ -304,11 +304,9 @@ class McpServer:
         if requested is None:
             return PROTOCOL_VERSION
         if requested != PROTOCOL_VERSION:
-            # Spec-conformant downgrade: reply with a version we support
-            # instead of erroring. A capable client retries at that revision;
-            # a strict client disconnects on its own. (OpenClaw's 2025-11-25
-            # client negotiates down to 2025-06-18 cleanly.)
-            return PROTOCOL_VERSION
+            raise HarnessError(
+                f"unsupported MCP protocol version {requested!r}; "
+                f"supported: {PROTOCOL_VERSION}")
         return requested
 
     def _handle(self, msg):

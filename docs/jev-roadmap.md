@@ -1,4 +1,4 @@
-﻿# Jev Full-Functionality Roadmap
+# Jev Full-Functionality Roadmap
 
 **Status:** active tracking doc  
 **Picked up from:** Freebuff / Buffy lane (PR-Jev-Live `b6fa945`, waist pre-plan `a591739`, cost foundation `b3960e7`)  
