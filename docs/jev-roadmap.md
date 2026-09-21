@@ -168,11 +168,11 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `JEV-P3-*` utilization | **complete** | **PR #43 MERGED** `7eb18ea`; route/triage/context/claims/completion/calibration |
 | `JEV-P4-*` ops / exit | **complete** | **PR #46 MERGED** `a021cfc`; jury deferred; residual: dogfood A/B pass-rate + freeze persistence |
 | JEV-COMPLETION | **complete** | **PR #39 MERGED** `5e15f8d`; `harness jev-phase` gate on main |
-| `JEV-P5-*` issue-sort buckets | **in progress** | PR #42 `feat/jev-p5-issue-sort`; **not complete until merge + CI green** |
+| `JEV-P5-*` issue-sort buckets | **complete** | **PR #42 MERGED** `c9e1c67`; operator bucket packs, 0 hallucination |
 | `HUL-A` mission pack | **complete** | **PR #41 MERGED** `64e63a3`; mission pack + CLI + gate tests; CI green |
 | `HUL-B` dual budget | **complete** | **PR #47 MERGED** `536e75c`; dual envelope + tests |
-| `HUL-C` Jev scope gate | **in progress** | PR #48 `7cfe112` |
-| `HUL-D` until-limits driver | **in progress** | PR #48 `7cfe112` |
+| `HUL-C` Jev scope gate | **complete** | **PR #48 MERGED** `469f34f`; scope packs via `jev_policy.evaluate_scope` (site=`hul_scope`); unkeyed cannot alone complete |
+| `HUL-D` until-limits driver | **complete** | **PR #48 MERGED** `469f34f`; `mission run` until limits/stall + FINDINGS.md + interrupt-safe resume; D12 coverage honestly refreshed (`a3afc16`) |
 | `HG-*` hourglass composition | **complete** | **PR #44 MERGED** `f22accb` |
 | `MS-*` cheapest-capable + context | **open** | ad-hoc model strings → config/ladders; expensive seats get condensed state |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
@@ -202,11 +202,11 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | 2 Pillars | `JEV-P2-*` | consent, sliding_scale, waist triage | `test_jev_triage`, `test_consent_confidence`, `test_min_confidence_gating` + hermetic lane parity + audit | **complete** — PR #36 `405bbc1`; jury deferred |
 | 3 Utilization | `JEV-P3-*` | orchestrator, routing, context, panel, calibration | `tests/test_jev_util_*.py` (route, triage-files, context-pack, claims, completion, calibration) | **complete** — PR #43 `7eb18ea` |
 | 4 Ops | `JEV-P4-*` | workflows, analytics, docs | live acceptance checklist + dogfood with/without jev | **complete** — PR #46 `a021cfc` |
-| 5 Issue-sort | `JEV-P5-*` | `jev_policy` + `harness/jev_packs.py`, waist/orchestrator/CLI/MCP | `tests/test_jev_issue_sort.py` (+ pack/orchestration) | **in progress** — PR #42 `feat/jev-p5-issue-sort`; operator bucket packs, 0 hallucination |
+| 5 Issue-sort | `JEV-P5-*` | `jev_policy` + `harness/jev_packs.py`, waist/orchestrator/CLI/MCP | `tests/test_jev_issue_sort.py` (+ pack/orchestration) | **complete** — PR #42 `c9e1c67`; operator bucket packs, 0 hallucination |
 | HUL-A | `HUL-A-*` | `harness/mission_record.py`, CLI `mission` | `tests/test_hul_mission_record.py` | **complete** — PR #41 `64e63a3` |
-| HUL-B | `HUL-B-*` | `spend.py` dual envelope | `tests/test_hul_budget_reserve.py` | **open** |
-| HUL-C | `HUL-C-*` | scope packs via `jev_policy.evaluate_scope` (pack module name when shipped) | `tests/test_hul_jev_scope_gate.py` | **open** |
-| HUL-D | `HUL-D-*` | mission driver + FINDINGS + resume | `tests/test_hul_driver_findings_resume.py` | **open** |
+| HUL-B | `HUL-B-*` | `spend.py` dual envelope | `tests/test_hul_budget_reserve.py` | **complete** — PR #47 `536e75c` |
+| HUL-C | `HUL-C-*` | scope packs via `jev_policy.evaluate_scope` (`harness/jev_packs.py`, site=`hul_scope`) | `tests/test_hul_jev_scope_gate.py` | **complete** — PR #48 `469f34f` |
+| HUL-D | `HUL-D-*` | `harness/mission_driver.py` + FINDINGS + resume | `tests/test_hul_driver_findings_resume.py` | **complete** — PR #48 `469f34f` |
 | Hourglass | `HG-*` | waist/executor/spend/plan consensus/pyramid state | `tests/test_hg_*.py` | **complete** — PR #44 |
 
 ### JEV-P3 patterns (implementer notes)
@@ -383,9 +383,34 @@ Write STATUS `blocked` + the **exact** failing command/output. No “will do”.
 
 
 
-### Follow-up addendum (NOT promoted to STATUS)
+### Follow-up track — Jev log-factor analysis (`JEV-LOG-*`) — promoted 2026-09-21
 
-`docs/jev-log-analysis-followup.md` remains a **parking plan** for SCMessenger log/insight work (JEV-LOG-*). Canon wins; no STATUS rows until explicit promotion. Shared pattern with shipped `JEV-P5` operator packs / `evaluate_issue_sort`. SCMessenger implements batch callers against **origin/main** only; Harness owns `jev_policy`/`jev_packs` and phase PRs #39/#47/#48.
+Operator analysis track promoted from the addendum after all canon product
+PRs merged (#39/#47/#48). Code extracts log items → cheap generative seat
+proposes an operator pack (buckets + score levels) → operator freezes the
+pack → Jev choice+score via `jev_policy` → code aggregates JSON. JSON only;
+no narrative from Jev; 0-hallucination operator packs. Details:
+`docs/jev-log-analysis-followup.md`. First dogfood: `C:\\temp\\logsSCMessenger.txt`.
+
+| ID | Work | Primary modules | Gate evidence | Status |
+|---|---|---|---|---|
+| `JEV-LOG-schema` | Operator log-pack schema + validation (P5 pack + `score` block) | `harness/jev_packs.py` (extend, one owner) | `tests/test_jev_log_pack.py` | **open** |
+| `JEV-LOG-parse` | Code-owned log item extractor + mechanical tallies | `harness/log_items.py` | hermetic fixture on real SCMessenger log sample | **open** |
+| `JEV-LOG-factor-pass` | Cheap generative factor/bucket draft → pack proposal adapter; **no brand hardcoding** | small helper + MS resolve | fixture pack draft; operator approve step documented | **open** |
+| `JEV-LOG-judgment` | `JevPolicy.evaluate_log_item` / batch: choice + score via packs | `harness/jev_policy.py` only | `tests/test_jev_log_judgment.py` — keyed/unkeyed, 0-hallucination, one ledger `jev_eval` per call | **open** |
+| `JEV-LOG-envelope` | Aggregate JSON artifact + `structural.site=log_factor` | policy + thin CLI/MCP | envelope keys stable; cost honest | **open** |
+| `JEV-LOG-cli` | Thin `harness log-judgment --pack … --items …` | `harness/cli.py` | calls policy owner only | **open** |
+| `JEV-LOG-dogfood` | Single-pass run on `C:\\temp\\logsSCMessenger.txt` | artifacts + receipts | JSON + cost + fallback rate recorded | **open** |
+
+---
+
+### Follow-up addendum (design detail — STATUS rows now live above)
+
+`docs/jev-log-analysis-followup.md` remains the design-detail file for the
+now-promoted `JEV-LOG-*` track (STATUS rows above are the tracker). Canon wins;
+shared pattern with shipped `JEV-P5` operator packs / `evaluate_issue_sort`.
+SCMessenger implements batch callers against **origin/main** only; Harness
+owns `jev_policy`/`jev_packs` and the shipped phase PRs #39/#42/#43/#46/#47/#48.
 
 
 ---
@@ -396,8 +421,8 @@ Write STATUS `blocked` + the **exact** failing command/output. No “will do”.
 
 | Step | Work | Rule |
 |---|---|---|
-| **1 (now)** | **Drive canon to completion** | Land open product PRs when CI audit BAR MET + tests green: **#39** completion gate, **#47** HUL-B dual budget, **#48** HUL-C/D scope+driver. Then flip their STATUS rows complete with merge evidence. Exit checklist: Jev P4 residual + HUL A–D product + FRP. |
-| **2 (after step 1)** | **Promote addendum to canonical** | One docs PR: fold `docs/jev-log-analysis-followup.md` IDs (`JEV-LOG-schema` / `parse` / `factor-pass` / `judgment` / `envelope` / `cli` / `dogfood`) into this STATUS as **open** rows + pointer. Addendum file remains design detail; **canon STATUS is the tracker**. |
-| **3** | **Implement addendum in full** | Fresh worktree `feat/jev-log-factor-analysis` off `origin/main`; one phase PR at a time; extend `jev_packs`/`jev_policy` only (no second Jev client); 0-hallucination operator packs + score block; code owns parse/aggregate; JSON only; dogfood `C:\\temp\\logsSCMessenger.txt`. |
+| **1** | **Drive canon to completion — COMPLETE 2026-09-21** | **#39** completion gate, **#47** HUL-B dual budget, **#48** HUL-C/D scope+driver all **MERGED** (`5e15f8d` / `536e75c` / `469f34f`; #48 audit green after BOM-tolerant D12 + honest coverage refresh `a3afc16`). STATUS rows flipped with merge evidence. Exit checklist: Jev P4 residual + FRP dogfood remain open. |
+| **2 (now)** | **Promote addendum to canonical — DONE in this docs PR** | `JEV-LOG-*` rows added to STATUS as **open** (see promoted track section above). Addendum file remains design detail. |
+| **3** | **Implement addendum in full** | Fresh worktree `feat/jev-log-factor-analysis` off `origin/main` (after this docs PR merges); one phase PR at a time; extend `jev_packs`/`jev_policy` only (no second Jev client); 0-hallucination operator packs + score block; code owns parse/aggregate; JSON only; dogfood `C:\\temp\\logsSCMessenger.txt`. |
 
-Until step 2 promotion, `JEV-LOG-*` stay planning labels (not STATUS). Until step 1 exit, do not start addendum implementation — keeps single-threaded canon.
+Promotion landed 2026-09-21 (rows above); `JEV-LOG-*` are now canon STATUS rows — implement on `feat/jev-log-factor-analysis` off `origin/main`, one phase PR at a time.
