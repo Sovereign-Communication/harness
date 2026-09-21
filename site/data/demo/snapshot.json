@@ -1,7 +1,7 @@
 {
   "schema": "site-snapshot-v1",
   "generated_from_bundles": [
-    "b72255f3b520fa9f"
+    "61705039a98265a6"
   ],
   "harness_version": "demo",
   "contributors": 1,
@@ -9,7 +9,7 @@
   "anomalies": [],
   "sessions": [
     {
-      "bundle_id": "b72255f3b520fa9f",
+      "bundle_id": "61705039a98265a6",
       "runs": 26,
       "metrics": {
         "runs": 26,
@@ -157,6 +157,74 @@
           }
         }
       },
+      "traces": [
+        {
+          "run_id": "e8f500e4e9708a4d",
+          "lane": "bench",
+          "outcome": "pass",
+          "gated": true,
+          "entry_tier": "T0",
+          "deepest_tier_reached": "T1",
+          "rounds": 1,
+          "cost": 0.0045,
+          "escalation": {
+            "directed_by": "verify_lane",
+            "jev_confidence": null,
+            "target_rung": null,
+            "condensed_context_chars": null,
+            "rungs": null
+          },
+          "jev_evals": {
+            "count": 1,
+            "cost": 3.6e-06,
+            "fallback": 0
+          }
+        },
+        {
+          "run_id": "a7fc92fa65c5403f",
+          "lane": "bench",
+          "outcome": "pass",
+          "gated": true,
+          "entry_tier": "T1",
+          "deepest_tier_reached": "T1",
+          "rounds": 1,
+          "cost": 0.017,
+          "escalation": {
+            "directed_by": "verify_lane",
+            "jev_confidence": null,
+            "target_rung": null,
+            "condensed_context_chars": null,
+            "rungs": null
+          },
+          "jev_evals": {
+            "count": 1,
+            "cost": 3.6e-06,
+            "fallback": 0
+          }
+        },
+        {
+          "run_id": "56fe4ed6fe4f5dcc",
+          "lane": "bench",
+          "outcome": "pass",
+          "gated": true,
+          "entry_tier": "T2",
+          "deepest_tier_reached": "T3",
+          "rounds": 1,
+          "cost": 3.782,
+          "escalation": {
+            "directed_by": "jev",
+            "jev_confidence": 0.32,
+            "target_rung": 3,
+            "condensed_context_chars": 1840,
+            "rungs": null
+          },
+          "jev_evals": {
+            "count": 1,
+            "cost": 3.6e-06,
+            "fallback": 0
+          }
+        }
+      ],
       "weight": 2.6
     }
   ],

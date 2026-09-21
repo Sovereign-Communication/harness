@@ -33,6 +33,7 @@ the most appropriate model rung (site demo + full product via `harness route`).
 | SITE-7 | Router page wired: local `harness serve` `/api/route` first, hosted Worker fallback | `site/public/router/index.html`, `harness/route_pack.py` |
 | SITE-8 | Local UI remake, additive: tab strip Chat (legacy, untouched) / Proof / Insights / Legacy API pane | `harness/ui/panes.js`, `harness/ui/panes.css`, `harness/ui/index.html`, `harness/server.py` STATIC_FILES |
 | SITE-9 | Coalescing pass (consumer-tolerant v1/v2 escalation events), STATUS rows, planning record | this doc + roadmap rows |
+| COALESCED | Merged origin/main at PR #58/#59 (Jev-directed escalation). Parity proven end-to-end: CLI escalation executor → ledgered `escalate` provenance (`directed_by=jev`, confidence, target rung, condensed-context size) → exporter allowlist → public trace cards on the site traces page AND the local UI Proof pane. `tests/test_site_parity_directives.py` pins the chain | `tests/test_site_parity_directives.py`, `harness/site_aggregate.py` (`run_trace`/`session_traces`) |
 
 ## Cross-session contract (summary)
 

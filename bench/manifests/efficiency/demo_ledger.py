@@ -89,9 +89,21 @@ def build_demo_ledger(path, tasks=8):
                 ledger.append("complete", task_id=task_id, model=model["id"],
                               rounds=1, status="ok")
             else:
-                ledger.append("escalate", task_id=task_id,
-                              from_model=model["id"], to_model="next")
-                ledger.append("jev_eval", task_id=task_id, site="model_route",
+                # The T2->T3 climb is Jev-directed (the low-confidence noul
+                # handed the decision to the next rung); other escalations
+                # stay verify-lane climbs. Same field names the production
+                # apply path ledger-issues (apply_policy + EscalationDriver).
+                directed = esc_model["tier"] == "T3"
+                ledger.append(
+                    "escalate", task_id=task_id,
+                    from_model=model["id"], to_model="next",
+                    directed_by="jev" if directed else "verify_lane",
+                    jev_confidence=0.32 if directed else None,
+                    target_rung=3 if directed else None,
+                    condensed_context_chars=1840 if directed else None)
+                ledger.append("jev_eval", task_id=task_id,
+                              site="escalation-decision" if directed
+                              else "model_route",
                               model="jev-latest", verdict="pass",
                               supported=0.4, confidence=0.38,
                               input_tokens=850, output_tokens=0,

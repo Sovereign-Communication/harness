@@ -220,5 +220,53 @@ class AggregateTests(unittest.TestCase):
         self.assertIn("b1", snap["generated_from_bundles"])
 
 
+class SessionTracesTests(unittest.TestCase):
+    """Public trace cards: Jev-directed provenance reaches the GUI surfaces
+    (site traces page + local UI panes) through the shared builder."""
+
+    def _run(self, run_id, *, escalation=None, outcome="pass", gated=True):
+        run = {"run_id": run_id, "lane": "task", "outcome": outcome,
+               "gated": gated, "entry_tier": "T0", "deepest_tier_reached": "T2",
+               "rounds": 2, "cost": 0.004,
+               "jev_evals": {"count": 1, "cost": 0.00004, "fallback": 0}}
+        if escalation is not None:
+            run["escalation"] = escalation
+        return run
+
+    def test_trace_carries_directed_provenance_not_context(self):
+        import json as _json
+        from harness.site_aggregate import run_trace
+        trace = run_trace(self._run("r1", escalation={
+            "directed_by": "jev", "jev_confidence": 0.05,
+            "target_rung": 1, "condensed_context_chars": 128,
+            "rungs": ["m/top"],
+            "condensed_context": "SECRET-ISH failure text"}))
+        self.assertEqual(trace["escalation"]["directed_by"], "jev")
+        self.assertEqual(trace["escalation"]["jev_confidence"], 0.05)
+        self.assertEqual(trace["escalation"]["condensed_context_chars"], 128)
+        # The context itself must never reach a trace card.
+        self.assertNotIn('"condensed_context":', _json.dumps(trace))
+
+    def test_session_traces_sample_escalating_runs_newest_last(self):
+        from harness.site_aggregate import session_traces
+        runs = [self._run(f"r{i}") for i in range(5)] + [
+            self._run(f"e{i}", escalation={"directed_by": "jev",
+                                            "jev_confidence": 0.3})
+            for i in range(10)]
+        traces = session_traces(runs, limit=4)
+        self.assertEqual(len(traces), 4)
+        self.assertEqual([t["run_id"] for t in traces],
+                         ["e6", "e7", "e8", "e9"],
+                         "newest escalations last, cap respected")
+
+    def test_snapshot_sessions_carry_traces(self):
+        from harness.site_aggregate import build_snapshot
+        runs = [self._run("e0", escalation={"directed_by": "verify_lane"})]
+        snapshot = build_snapshot([{"bundle_id": "b", "runs": runs}])
+        self.assertEqual(len(snapshot["sessions"][0]["traces"]), 1)
+        self.assertEqual(snapshot["sessions"][0]["traces"][0]
+                         ["escalation"]["directed_by"], "verify_lane")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -278,6 +278,30 @@ export function renderTraces(root, snapshot) {
       barChart(Object.entries(session.metrics.escalation_escape_rate).map(
         ([tier, v]) => ({ label: `entered ${tier}`, value: v.escape_rate,
           tier, format: pct(v.escape_rate) }))));
+    const traces = session.traces || [];
+    if (traces.length) {
+      root.append(el("h4", {}, "Recent escalations"));
+      for (const t of [...traces].reverse()) {
+        const esc = t.escalation || {};
+        const directed = esc.directed_by === "jev";
+        root.append(el("div", { class: "trace-card" },
+          el("span", { class: `badge ${directed ? "good" : ""}` },
+            directed
+              ? `Jev-directed climb (confidence ${esc.jev_confidence ?? "?"})`
+              : "verify-lane climb"),
+          el("span", { class: "badge" },
+            `entered ${t.entry_tier ?? "?"} → reached ${t.deepest_tier_reached ?? "?"}`),
+          esc.target_rung != null
+            ? el("span", { class: "badge" }, `target rung ${esc.target_rung}`)
+            : null,
+          esc.condensed_context_chars != null
+            ? el("span", { class: "small muted" },
+                `${esc.condensed_context_chars} chars of code-owned failure evidence carried`)
+            : null,
+          el("span", { class: `badge ${t.outcome === "pass" && t.gated ? "good" : "warn"}` },
+            t.outcome === "pass" && t.gated ? "gated pass" : t.outcome || "?")));
+      }
+    }
   }
 }
 

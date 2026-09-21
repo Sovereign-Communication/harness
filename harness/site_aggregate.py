@@ -263,6 +263,41 @@ def cohort_splits(runs):
     }
 
 
+def run_trace(run):
+    """Public per-run trace card: ladder provenance without raw artifacts.
+
+    Mirrors the exporter's escalation block (site_export): the
+    directed_by/jev_confidence/target_rung/condensed_context_chars chain is
+    what lets the site say "Jev directed this climb" -- nothing more. The
+    condensed context itself never crosses the sanitize boundary.
+    """
+    esc = run.get("escalation") or {}
+    return {
+        "run_id": run.get("run_id"),
+        "lane": run.get("lane"),
+        "outcome": run.get("outcome"),
+        "gated": bool(run.get("gated")),
+        "entry_tier": run.get("entry_tier"),
+        "deepest_tier_reached": run.get("deepest_tier_reached"),
+        "rounds": run.get("rounds"),
+        "cost": run.get("cost"),
+        "escalation": {
+            "directed_by": esc.get("directed_by") or "verify_lane",
+            "jev_confidence": esc.get("jev_confidence"),
+            "target_rung": esc.get("target_rung"),
+            "condensed_context_chars": esc.get("condensed_context_chars"),
+            "rungs": esc.get("rungs"),
+        },
+        "jev_evals": run.get("jev_evals"),
+    }
+
+
+def session_traces(runs, limit=8):
+    """Newest-first sample of escalating runs (public trace cards)."""
+    escalating = [r for r in runs if r.get("escalation")]
+    return [run_trace(r) for r in escalating[-limit:]]
+
+
 def compute_metrics(runs, pricing=None):
     """All eight metric families over one session's runs."""
     runs = list(runs or [])
@@ -406,6 +441,7 @@ def build_snapshot(bundles, harness_version=None):
             "runs": len(runs),
             "metrics": compute_metrics(runs,
                                        bundle.get("pricing_snapshot") or {}),
+            "traces": session_traces(runs),
         })
     if sessions:
         weights = _downweight_by_cap([s["runs"] for s in sessions])

@@ -210,7 +210,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | HUL-D | `HUL-D-*` | `harness/mission_driver.py` + FINDINGS + resume | `tests/test_hul_driver_findings_resume.py` | **complete** — PR #48 `469f34f` |
 | Hourglass | `HG-*` | waist/executor/spend/plan consensus/pyramid state | `tests/test_hg_*.py` | **complete** — PR #44 |
 | SITE-1/2 | `SITE-*` | `site_export.py`, `route_pack.py`, `jev_policy.evaluate_model_route` | `tests/test_site_export.py`, `tests/test_route_pack.py` | **complete** — fail-closed exporter + 0-hallucination router |
-| SITE-3..9 | `SITE-*` | `site_aggregate.py`, `site/` (pages+worker), `harness/server.py` site endpoints, `harness/ui/panes.js` | `tests/test_site_aggregate.py`, `tests/test_site_fold_parity.py` | **complete** — 8 gated-run metrics, fold parity (py↔js), CI workflow, UI panes |
+| SITE-3..9 | `SITE-*` | `site_aggregate.py`, `site/` (pages+worker), `harness/server.py` site endpoints, `harness/ui/panes.js` | `tests/test_site_aggregate.py`, `tests/test_site_fold_parity.py`, `tests/test_site_parity_directives.py` | **complete** — 8 gated-run metrics, fold parity (py↔js), CI workflow, UI panes; Jev-directed escalation evidence (PR #58/#59) proven to reach the sanitized bundle + GUI |
 
 ### JEV-P3 patterns (implementer notes)
 
@@ -242,6 +242,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `SITE-3` | `site_aggregate` 8 metrics; gated-runs-only headlines | frontier rarity is a first-class metric (warrant rate + run-depth histogram) |
 | `SITE-4/5` | Static site (6 pages) + CF Worker (D1/KV/rate-limit bindings) | fold parity pinned by shared fixture vectors (py↔js) |
 | `SITE-6..9` | Consent publish flow + CI deploy; UI panes (legacy preserved); coalesce with Jev escalation events | consumer-tolerant v1/v2 event contract; no parallel STATUS elsewhere |
+| `SITE-COALESCED` | Unified with PR #58/#59: the CLI escalation executor's ledgered `escalate` provenance (`directed_by=jev`, confidence, target rung, condensed-context size) flows through the exporter allowlist into public trace cards on both GUI surfaces | ledger is the evidence boundary; condensed context itself never crosses it |
 
 **0-hallucination rule:** operator declares buckets; code owns matching; Jev may only select declared choice keys; unmatched/unkeyed → `is_fallback=true` and `bucket=None` — never invent buckets or actions.
 

@@ -96,10 +96,14 @@ async function renderRecentEscalations() {
     if (!escalations.length) {
       return $("p", { class: "muted" }, "No escalations in the recent ledger tail.");
     }
-    return table(["seq", "from model", "to model", "task"],
-      escalations.slice(-12).reverse().map(e =>
-        [e.seq, e.from_model || "—", e.to_model || "—",
-          (e.task_id || "").slice(0, 18)]));
+    return table(["seq", "from model", "to model", "directed by", "task"],
+      escalations.slice(-12).reverse().map(e => {
+        const directed = (e.directed_by || "verify_lane") === "jev";
+        return [e.seq, e.from_model || "—", e.to_model || "—",
+          directed ? `jev (conf ${e.jev_confidence ?? "?"})`
+                   : "verify_lane",
+          (e.task_id || "").slice(0, 18)];
+      }));
   } catch (err) {
     return $("p", { class: "muted" }, `Ledger tail unavailable: ${err.message}`);
   }

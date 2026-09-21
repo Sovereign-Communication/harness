@@ -51,6 +51,16 @@ th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--lin
 th { color: var(--muted); font-weight: 600; }
 td.num, th.num { text-align: right; font-family: var(--mono); }
 tr.flag td { color: var(--warn); }
+.trace-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.45rem;
+}
 .badge {
   display: inline-block; padding: 1px 8px; border: 1px solid var(--line);
   border-radius: 10px; font-size: 0.78rem; color: var(--muted);
