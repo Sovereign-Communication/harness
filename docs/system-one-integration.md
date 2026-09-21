@@ -120,18 +120,24 @@ For advisory panel verification (`--verify-only` or multi-model voting), generat
 
 ## 4. Implementation Roadmap & Milestones
 
-Status after Freebuff `#PR-Jev-Live` audit (2026-09-20). Detailed work items live in [jev-roadmap.md](jev-roadmap.md).
+Status after Freebuff P2 repair pass (2026-09-21). Detailed work items live in [jev-roadmap.md](jev-roadmap.md).
 
 - [x] **Milestone 1: Architectural Foundation & Decision Contracts**
   - Publish `docs/system-one-integration.md` defining JSON decision schemas, calibration mechanics, and integration boundaries.
   - Link architecture in repository `README.md`.
 - [x] **Milestone 2: Confidence Extraction & Ledger Recording** — `JEV-P2-consent-confidence`
-  - `harness.consent.probe_consent` parses optional calibrated confidence and records it in consent ledger events.
+  - Named gate: `tests/test_consent_confidence.py` (accept records confidence; low-confidence accept defers; invalid confidence does not authorize).
+  - Evidence: green on PR #36 branch tip after hermetic D12 repair; flip back to `[~]` if those tests are red on a merge tip.
+  - Tracker still **in progress / repair** until PR #36 merges — this checkbox is test evidence, not merge completion.
 - [x] **Milestone 3: Automated Confidence-Gated Deferrals** — `JEV-P2-min-confidence`
-  - `HARNESS_MIN_CONFIDENCE` and `sliding_scale.should_abstain` defer before file writes, gate execution, or Jev spend; low-confidence decisions remain distinct from Noul probability.
+  - Named gate: `tests/test_min_confidence_gating.py` + `ApplyRequest.min_confidence` wiring in `tests/test_jev_lane_parity.py`.
+  - `settings.min_confidence` / `HARNESS_MIN_CONFIDENCE` defer low-confidence accept before write spend.
+  - Evidence: green on PR #36 branch tip after hermetic D12 repair; flip back to `[~]` if those tests are red on a merge tip.
 - [x] **Milestone 4: Native Jev / System One Provider Endpoints** — `JEV-P0-*` / `JEV-P1-*`
-  - P0 provides the stdlib live client, official typed parsing, token-priced cost, local fallback, and operator-gated smoke.
-  - P1 (PR #35) provides the shared policy owner, apply/waist/agent/CLI/MCP wiring, preflighted spend, ledger evidence, and structural envelopes.
+  - P0 complete: `harness/jev.py` posts to `https://api.typesafe.ai/v1/systemone` with token-priced cost, official typed parsing, local fallback, and operator-gated smoke.
+  - P1 complete via **PR #35 / `9d5ff14`** on `origin/main`: shared `harness/jev_policy.py` owner, apply/waist/CLI/MCP/agent envelopes, ledger/spend accounting. Do not re-open P1.
+- [ ] **Milestone (follow-up): Pillar 3 lean jury** — `JEV-P2-jury` **deferred**
+  - Not in PR #36; needs a fail-closed contract + dedicated coverage before any `[x]`.
 
 ---
 
