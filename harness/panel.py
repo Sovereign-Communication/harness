@@ -127,11 +127,17 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                 reasoning_effort="auto", reasoning_token_budget=0.4, task_id=None,
                 ledger=None, max_panelists=3, run_convergence=False,
                 convergence_model=None, specialist_pool=None, claim_polarity=None,
-                free_tier=False, cancel_check=None):
+                free_tier=False, cancel_check=None,
+                jev_policy=None, jev_claim_support=False,
+                claim_texts=None, claim_evidence=None):
     """Rotating panel of independent cheap takes + 1 structured judge verdict.
 
     panel is an ordered pool; members that fail are replaced by the next model
     in the pool until max_panelists succeed or the pool is exhausted.
+
+    JEV-P3-claims: optional lean claim-support checks before judge synthesis.
+    Flag-gated (``jev_claim_support``, default off). Does not replace or
+    weaken :mod:`harness.claims` lint ownership — advisory typed flags only.
     """
     max_tokens = max_tokens or DEFAULT_MAX_TOKENS
     # Lane policy (ONE owner: config). Construction applies the caller's
@@ -151,6 +157,16 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                              reasoning_effort=reasoning_effort,
                              run_convergence=run_convergence)
     panel_pool = list(panel)
+
+    claim_support = None
+    if jev_policy is not None and jev_claim_support:
+        try:
+            _cs_result, claim_support = jev_policy.evaluate_claim_support(
+                claim_texts if claim_texts is not None else [],
+                claim_evidence if claim_evidence is not None else prompt,
+                enabled=True, site="claims", task_id=task_id)
+        except Exception as exc:  # advisory only — never break panel dispatch
+            claim_support = {"skipped": True, "error": str(exc), "claim_flags": []}
 
     spec_model = convergence_model or judge
     for _m in panel_pool + [judge, spec_model]:
@@ -757,6 +773,9 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         "actual_cost": governor.spent,
         "max_cost_ceiling": governor.max_cost,
     }
+    if claim_support is not None:
+        # JEV-P3-claims advisory flags — never the claims lint authority.
+        result["claim_support"] = claim_support
     if convergence_spec is not None:
         result["convergence"] = convergence_spec
     if ledger and task_id:
