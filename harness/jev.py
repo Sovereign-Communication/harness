@@ -66,6 +66,25 @@ def diff_question_pack() -> Dict[str, Dict[str, Any]]:
     }
 
 
+def triage_question_pack() -> Dict[str, Dict[str, Any]]:
+    """Choice-based complexity route for Pillar 1; no arithmetic or paths."""
+    return {
+        "route": {
+            "type": "choice",
+            "instructions": "Choose the least capable execution route that can safely complete this task.",
+            "criteria": {
+                "free-distill": "bounded single-step or low-risk edit",
+                "diff": "mechanical or multi-file diff-shaped edit",
+                "frontier": "iterative, architectural, or high-dependency task",
+            },
+        },
+        "requires_iteration": _noul(
+            "Does the task require iterative control flow or dependent steps?",
+            "The task requires iteration or dependent steps.",
+            "The task is a bounded single-step edit."),
+    }
+
+
 def plan_question_pack() -> Dict[str, Dict[str, Any]]:
     """A narrow plan-site pack; no generic confidence question."""
     return {

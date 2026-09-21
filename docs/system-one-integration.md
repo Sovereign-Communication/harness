@@ -120,20 +120,22 @@ For advisory panel verification (`--verify-only` or multi-model voting), generat
 
 ## 4. Implementation Roadmap & Milestones
 
-Status after Freebuff `#PR-Jev-Live` audit (2026-09-20). Detailed work items live in [jev-roadmap.md](jev-roadmap.md).
+Status after Freebuff P2 repair pass (2026-09-21). Detailed work items live in [jev-roadmap.md](jev-roadmap.md).
 
 - [x] **Milestone 1: Architectural Foundation & Decision Contracts**
   - Publish `docs/system-one-integration.md` defining JSON decision schemas, calibration mechanics, and integration boundaries.
   - Link architecture in repository `README.md`.
 - [~] **Milestone 2: Confidence Extraction & Ledger Recording** — `JEV-P2-consent-confidence`
-  - Code present on PR #36 (`feat/jev-p2-system-one-pillars`): consent parses optional `confidence`; ledger/abstention paths added.
-  - Mark `[x]` only when PR #36 is merged **and** `tests/test_consent_confidence.py` is green on the merge tip.
+  - Named gate: `tests/test_consent_confidence.py` (green on PR #36 branch tip after hermetic repair).
+  - Mark `[x]` only when PR #36 is merged **and** those tests are green on the merge tip.
 - [~] **Milestone 3: Automated Confidence-Gated Deferrals** — `JEV-P2-min-confidence`
-  - Code present on PR #36: `HARNESS_MIN_CONFIDENCE` / `settings.min_confidence` gates low-confidence accept before write spend.
-  - Mark `[x]` only when PR #36 is merged **and** `tests/test_min_confidence_gating.py` is green on the merge tip.
+  - Named gate: `tests/test_min_confidence_gating.py` + `ApplyRequest.min_confidence` wiring (green on PR #36 branch tip).
+  - Mark `[x]` only when PR #36 is merged **and** those tests are green on the merge tip.
 - [x] **Milestone 4: Native Jev / System One Provider Endpoints** — `JEV-P0-*` / `JEV-P1-*`
   - P0 complete: `harness/jev.py` posts to `https://api.typesafe.ai/v1/systemone` with token-priced cost, official typed parsing, local fallback, and operator-gated smoke.
-  - P1 complete: shared `harness/jev_policy.py` owner, apply/waist/CLI/MCP/agent envelopes, ledger/spend accounting — **merged PR #35** (`9d5ff14` on `origin/main`). Do not re-open P1.
+  - P1 complete via **PR #35 / `9d5ff14`** on `origin/main`: shared `harness/jev_policy.py` owner, apply/waist/CLI/MCP/agent envelopes, ledger/spend accounting. Do not re-open P1.
+- [ ] **Milestone (follow-up): Pillar 3 lean jury** — `JEV-P2-jury` **deferred**
+  - Not in PR #36; needs a fail-closed contract + dedicated coverage before any `[x]`.
 
 ---
 

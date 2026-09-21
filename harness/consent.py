@@ -17,6 +17,8 @@ preserved and the continuation mode hands it to the next iteration. The apply
 prompt encodes that instruction; the consent ledger records these as
 category="capability" deferrals.
 """
+import math
+
 from . import events as _events
 from .chat import (chat, extract_content_and_cost, _extract_json, _reported_cost,
                    _chat_reservation_slots,
@@ -70,7 +72,7 @@ _EVENT_FOR = {
 
 def probe_consent(*, transport, api_key, governor, task_id, task, model,
                   context=None, max_tokens=512, ledger=None, required=True,
-                  fallback_pool=None):
+                  fallback_pool=None, min_confidence=0.70):
     """Ask a model whether it accepts the work. Returns a consent dict.
 
     The probe is itself a rotating lane: ``model`` is asked first, then
@@ -192,6 +194,7 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
             "task_id": task_id,
             "model": model,
             "decision": "defer",
+            "confidence": None,
             # Explicit dispatch verdict for consumers: fail-closed means the
             # work was never dispatched, and the shape says so unambiguously.
             "dispatched": False,
@@ -205,7 +208,7 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
         }
         if ledger:
             ledger.append("consent_defer", task_id=task_id, model=model, reason=reason,
-                          redirect_model=None, scope_suggestion=None,
+                          confidence=None, redirect_model=None, scope_suggestion=None,
                           cost=tracked_total, billable_cost=tracked_total)
         _events.emit("consent_result", task_id=task_id, model=model,
                      decision="defer", dispatched=False, fail_closed=True,
@@ -214,10 +217,26 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
 
     answered = m_
     reason = parsed.get("reason") or ""
+    confidence = parsed.get("confidence")
+    if confidence is not None:
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+            confidence = None
+        else:
+            confidence = float(confidence)
+            if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+                confidence = None
+    decision = parsed.get("decision")
+    if decision == "accept" and confidence is not None and confidence < min_confidence:
+        decision = "defer"
+        reason = (reason + " " if reason else "") + (
+            f"confidence {confidence:.3f} is below the configured minimum "
+            f"{min_confidence:.3f}")
     result = {
         "task_id": task_id,
         "model": answered,
-        "decision": parsed.get("decision"),
+        "decision": decision,
+        "confidence": confidence,
+        "dispatched": decision == "accept",
         "reason": reason,
         "redirect_model": parsed.get("redirect_model"),
         "scope_suggestion": parsed.get("scope_suggestion"),
@@ -231,7 +250,8 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
     }
     if ledger:
         ledger.append(_EVENT_FOR[result["decision"]], task_id=task_id, model=answered,
-                      reason=reason, redirect_model=result["redirect_model"],
+                      reason=reason, confidence=confidence,
+                      redirect_model=result["redirect_model"],
                       scope_suggestion=result["scope_suggestion"], cost=tracked_total,
                       billable_cost=tracked_total)
     _events.emit("consent_result", task_id=task_id, model=answered,
@@ -242,7 +262,7 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
 
 def consent_renew(*, transport, api_key, governor, task_id, task, model,
                   context=None, max_tokens=512, ledger=None, required=True,
-                  fallback_pool=None):
+                  fallback_pool=None, min_confidence=0.70):
     """Re-check consent at a verification checkpoint (continued consensus).
 
     Returns the probe result; records a consent_renew_* event. Any deferral
@@ -252,7 +272,7 @@ def consent_renew(*, transport, api_key, governor, task_id, task, model,
     base = probe_consent(transport=transport, api_key=api_key, governor=governor,
                           task_id=task_id, task=task, model=model, context=context,
                           max_tokens=max_tokens, ledger=None, required=required,
-                          fallback_pool=fallback_pool)
+                          fallback_pool=fallback_pool, min_confidence=min_confidence)
     if ledger:
         # Attribute to the model that ANSWERED (post-rotation), not the
         # requested primary: billing a rotated renewal to the wrong model
@@ -261,6 +281,6 @@ def consent_renew(*, transport, api_key, governor, task_id, task, model,
         # runs ledger-less here to avoid double-counting offers).
         event = "consent_renew_accept" if base["decision"] == "accept" else "consent_renew_defer"
         ledger.append(event, task_id=task_id, model=base.get("model") or model,
-                      reason=base["reason"], cost=base["cost"],
-                      attempts=base.get("attempts") or [])
+                      reason=base["reason"], confidence=base.get("confidence"),
+                      cost=base["cost"], attempts=base.get("attempts") or [])
     return base

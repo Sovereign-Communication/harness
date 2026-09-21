@@ -1009,9 +1009,16 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
 
     plan_goal = opts_goal
     plan_structural = None
+    plan_triage = None
     if isinstance(jev_policy, JevPolicy):
+        triage_eval, plan_triage = jev_policy.evaluate_triage(
+            opts_goal, candidate_files, site="triage")
         plan_eval, plan_structural = jev_policy.evaluate_plan(
             opts_goal, candidate_files, site="waist")
+        plan_triage = dict(plan_triage)
+        plan_triage["route"] = triage_eval.answers.get("route", "free-distill")
+        plan_triage["requires_iteration"] = bool(
+            triage_eval.answers.get("requires_iteration", False))
         if plan_eval.answers.get("requires_iteration"):
             plan_goal = (
                 f"{opts_goal}\n\n[STRUCTURAL GUIDELINE]: This goal requires iterative "
@@ -1053,6 +1060,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         decomposed_dag=decomposed, root=root, run_gate=run_gate,
         allow_escalation=allow_escalation)
     plan_result["decomposition"] = decomposition
+    if plan_triage is not None:
+        plan_result["triage"] = plan_triage
     if plan_structural is not None:
         plan_result["structural"] = plan_structural
     # Chunk anything that cannot fit ONE model pass before the gate sees it,

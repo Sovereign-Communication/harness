@@ -10,7 +10,8 @@ import os
 from typing import Any, Dict, Iterable, Optional
 
 from .errors import HarnessError
-from .jev import JevEvaluationResult, JevEvaluator, jev_cost
+from .jev import (JevEvaluationResult, JevEvaluator, jev_cost,
+                  triage_question_pack)
 
 JEV_MAX_INPUT_TOKENS = 1024
 
@@ -207,6 +208,45 @@ class JevPolicy:
             diff, instruction, file_path, candidate=candidate, site=site,
             task_id=task_id, node_id=node_id, max_input_tokens=max_input_tokens,
         )
+
+    def evaluate_triage(self, prompt: str, target_files=None, *,
+                        site: str = "triage", task_id: Optional[str] = None):
+        """Return a bounded route choice plus iteration signal for Pillar 1."""
+        reservation = None
+        try:
+            reservation = self._preflight(site=site, max_input_tokens=JEV_MAX_INPUT_TOKENS)
+            result = self.evaluator.evaluate(
+                {"prompt": prompt or "", "target_files": list(target_files or [])},
+                triage_question_pack())
+            if result.is_fallback and "route" not in result.answers:
+                lower = (prompt or "").lower()
+                iterative = any(word in lower for word in
+                                ("iterat", "loop", "branch", "recur", "algorithm", "architect"))
+                route = "frontier" if iterative else (
+                    "diff" if len(target_files or []) > 1 else "free-distill")
+                result = JevEvaluationResult(
+                    "pass", 0.0, 1.0,
+                    {"route": route, "requires_iteration": iterative},
+                    result.reasons, is_fallback=True, model=result.model)
+            structural = self._account(result, site=site, task_id=task_id,
+                                       reservation=reservation)
+            return result, structural
+        except HarnessError as exc:
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            # Honest local triage is heuristic only; it never pretends to be live.
+            lower = (prompt or "").lower()
+            iterative = any(word in lower for word in
+                            ("iterat", "loop", "branch", "recur", "algorithm", "architect"))
+            route = "frontier" if iterative else ("diff" if len(target_files or []) > 1 else "free-distill")
+            fallback = JevEvaluationResult(
+                "pass", 0.0, 1.0,
+                {"route": route, "requires_iteration": iterative}, [str(exc)],
+                is_fallback=True, model=self.evaluator.model)
+            return fallback, self._structural(fallback, site)
 
     def evaluate_plan(self, prompt: str, target_files=None, *, site: str = "waist",
                       task_id: Optional[str] = None, node_id: Optional[str] = None,
