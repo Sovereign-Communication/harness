@@ -11,6 +11,13 @@ break APIs between minor versions).
 
 ### Added
 
+- **HUL-B dual budget reserve.** `harness/spend.py` is the ONE owner of the dual envelope: `working_remaining = max_cost - spent - terminal_reserve`. Attempt-phase preflight/reserve/record refuse spend that would eat `terminal_reserve`; terminal FINDINGS may spend up to the reserve only when the mission is already terminal. Mission `budget.json` and STATUS report `working_remaining` + reserve honestly via the same formula (`mission_record` delegates; no second governor).
+- **JEV-COMPLETION dogfood phase gate.** `harness jev-phase` scores a mission phase 0-100 from code-owned hard gates (PR/origin evidence, required tests present, local+CI green, no open blockers) plus a Jev semantic score; STATUS may claim complete only when `can_mark_complete=true` and score ≥ 85 (`harness/jev_completion.py`, CLI, `tests/test_jev_completion.py`).
+
+- **JEV-P2 confidence-gated System One pillars.** Consent now preserves calibrated confidence, low-confidence Jev decisions abstain before writes, verification gates, and Jev spend, and typed triage signals route complex work toward the plan lane. The lean jury is intentionally deferred until it has a dedicated fail-closed gate contract.
+
+- **JEV-P1 shared structural policy and lane evidence.** CLI, MCP, waist, batch, and agent paths now share one Jev policy owner with preflighted input-token spend, hash-chained `jev_eval` records, and stable structural envelopes; the verification gate remains code-authoritative and unkeyed runs remain explicit local fallback.
+
 - **JEV-P0 contract-truth adapter.** TypeSafe System One answers now use only official Noul/Choice/Score shapes, input-token pricing (`$42/Mtok`, output free), configured model/threshold settings, per-call question packs, and honest code-owned local structural fallback. Optional live smoke is operator-gated; CLI/MCP/waist wiring remains P1.
 
 ### Fixed

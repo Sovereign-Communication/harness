@@ -73,7 +73,7 @@ class ApplyEngine(ApplyEngineMixin):
                  default_renew_consent=True, reasoning_effort="auto",
                  reasoning_token_budget=0.4, default_max_rotations=3,
                  default_task_max_cost=0.10, use_free=False,
-                 allowed_roots=None,
+                 allowed_roots=None, jev_policy=None, min_confidence=0.70,
                  default_require_diff_authorization=False,
                  default_attest_model=None):
         self.transport = transport
@@ -81,6 +81,8 @@ class ApplyEngine(ApplyEngineMixin):
         self.governor = governor
         self.ledger = ledger
         self.router = router
+        self.jev_policy = jev_policy
+        self.min_confidence = float(min_confidence)
         self.default_require_consent = default_require_consent
         self.run_verify = run_verify or default_run_verify
         self.default_renew_consent = default_renew_consent
@@ -106,7 +108,8 @@ class ApplyEngine(ApplyEngineMixin):
             for r in (allowed_roots or [])
             if r
         ]
-        self.gate = GatePolicy(ledger, governor, transport, api_key)
+        self.gate = GatePolicy(ledger, governor, transport, api_key,
+                               jev_policy=jev_policy)
 
     def _enforce_roots(self, file_path):
         """Refuse targets outside configured allowed_roots (realpath)."""
@@ -382,7 +385,7 @@ class ApplyEngine(ApplyEngineMixin):
             trust_combined=_trust_decision["combined"],
             trust_correctness=_trust_decision["correctness"],
             require_diff_authorization=require_auth,
-            attest_model=attest_model)
+            attest_model=attest_model, min_confidence=self.min_confidence)
 
     def apply_batch(self, files, **kwargs):
         """Run the shared multi-file policy over this engine."""

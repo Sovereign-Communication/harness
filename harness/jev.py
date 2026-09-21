@@ -66,6 +66,25 @@ def diff_question_pack() -> Dict[str, Dict[str, Any]]:
     }
 
 
+def triage_question_pack() -> Dict[str, Dict[str, Any]]:
+    """Choice-based complexity route for Pillar 1; no arithmetic or paths."""
+    return {
+        "route": {
+            "type": "choice",
+            "instructions": "Choose the least capable execution route that can safely complete this task.",
+            "criteria": {
+                "free-distill": "bounded single-step or low-risk edit",
+                "diff": "mechanical or multi-file diff-shaped edit",
+                "frontier": "iterative, architectural, or high-dependency task",
+            },
+        },
+        "requires_iteration": _noul(
+            "Does the task require iterative control flow or dependent steps?",
+            "The task requires iteration or dependent steps.",
+            "The task is a bounded single-step edit."),
+    }
+
+
 def plan_question_pack() -> Dict[str, Dict[str, Any]]:
     """A narrow plan-site pack; no generic confidence question."""
     return {
@@ -262,12 +281,20 @@ class JevEvaluator:
                                    {"mechanical_checks": "passed"},
                                    ["All local code-owned structural checks passed."], is_fallback=fallback, model=self.model)
 
-    def verify_diff_mechanics(self, diff: str, instruction: str = "", file_path: str = "",
-                              candidate: Optional[str] = None) -> JevEvaluationResult:
+    def check_diff_mechanics(self, diff: str, instruction: str = "", file_path: str = "",
+                             candidate: Optional[str] = None):
+        """Return the code-owned diff state and its local verdict."""
         state = _diff_state(diff or "", instruction or "", file_path or "", candidate=candidate)
-        mechanical = self._local_structural_eval(state, fallback=not bool(self.api_key))
+        return state, self._local_structural_eval(state, fallback=not bool(self.api_key))
+
+    def verify_diff_mechanics(self, diff: str, instruction: str = "", file_path: str = "",
+                              candidate: Optional[str] = None, preflight=None) -> JevEvaluationResult:
+        state, mechanical = self.check_diff_mechanics(
+            diff, instruction, file_path, candidate=candidate)
         if mechanical.verdict != "pass":
             return mechanical
+        if preflight is not None:
+            preflight()
         return self.evaluate(state)
 
     def evaluate_plan_requirements(self, prompt: str, target_files: Optional[List[str]] = None) -> JevEvaluationResult:

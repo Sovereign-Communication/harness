@@ -13,7 +13,7 @@ and primitives; nothing here imports interfaces.
 """
 from ._http import HttpTransport
 from .apply import ApplyEngine
-from .jev import JevEvaluator
+from .jev_policy import JevPolicy, policy_for
 from .ledger import AutonomyLedger
 from .router import Router
 from .saturation import pre_run_warning
@@ -56,14 +56,17 @@ def ledger_for(settings, caller="cli"):
     return AutonomyLedger(settings.ledger_path, caller=caller)
 
 
-def jev_for(settings, transport=None):
-    """The run's Jev structural evaluator (with fallback if unkeyed)."""
-    return JevEvaluator(
-        api_key=settings.jev_api_key,
-        endpoint=settings.jev_endpoint,
-        transport=transport or HttpTransport(),
-        settings=settings,
-    )
+def jev_for(settings, transport=None, governor=None, ledger=None) -> JevPolicy:
+    """Session composition for Jev: ONE policy owner (JEV-P4).
+
+    Historically this returned a raw ``JevEvaluator`` — an orphan client
+    outside ``jev_policy``. It now routes through ``policy_for`` and returns
+    the shared :class:`~harness.jev_policy.JevPolicy`. Lane code must not
+    construct ``JevEvaluator`` directly; if an injected evaluator is required
+    (tests), pass it via ``policy_for(..., evaluator=...)``.
+    """
+    return policy_for(settings, transport=transport, governor=governor,
+                      ledger=ledger)
 
 
 def attest_model_for(settings):
@@ -106,8 +109,11 @@ def engine_for(settings, api_key, gov, ledger, router, transport=None):
     """The ApplyEngine with every settings-level policy applied. Only
     per-request knobs (instruction, ceilings for THIS task) are passed at
     the engine call site -- construction-level policy lives here."""
+    wire = transport or HttpTransport()
     return ApplyEngine(
-        transport or HttpTransport(), api_key=api_key, governor=gov, ledger=ledger, router=router,
+        wire, api_key=api_key, governor=gov, ledger=ledger, router=router,
+        jev_policy=policy_for(settings, transport=wire,
+                              governor=gov, ledger=ledger),
         default_require_consent=settings.default_require_consent,
         default_renew_consent=settings.renew_consent,
         reasoning_effort=settings.reasoning_effort,
@@ -115,7 +121,8 @@ def engine_for(settings, api_key, gov, ledger, router, transport=None):
         default_max_rotations=settings.max_rotations,
         default_task_max_cost=settings.task_max_cost,
         use_free=settings.use_free,
-        allowed_roots=settings.mcp_allowed_roots)
+        allowed_roots=settings.mcp_allowed_roots,
+        min_confidence=settings.min_confidence)
 
 
 def apply_session(settings, max_cost=None, transport=None):

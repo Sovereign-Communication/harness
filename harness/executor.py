@@ -19,7 +19,7 @@ from .dag import DAGNode, TaskDAG
 from .errors import HarnessError
 from .filesafety import VERIFY_TIMEOUT, default_run_verify
 from .output import eprint
-from .repo_scope import _rebase_path, rebase_gate
+from .repo_scope import _rebase_path, discover_verification_gate, rebase_gate
 from .results import SUCCESS_STATUSES
 from .spend import NodeReserver
 from .waist import node_apply_kwargs
@@ -28,6 +28,37 @@ from .worktree import WorktreeIsolation
 # Auto-scaling hourglass default for concurrent node dispatch (the CLI
 # parser, MCP schema, and the agent lane all mean this number).
 DEFAULT_PLAN_WORKERS = 4
+
+
+def partition_by_target_overlap(nodes):
+    """HG-hybrid-isolate: split a concurrent stage by declared target_files.
+
+    Returns ``(isolated_nodes, shared_serial_nodes)``:
+    * overlap-free nodes (no shared declared target with any other node in
+      the stage) may run in git worktrees in parallel;
+    * nodes that share a declared target file are serialized under the
+      shared-tree mutex -- concurrent writers on one path cannot be
+      worktree-isolated without turning into a merge problem.
+    """
+    file_to_nodes = {}
+    for node in nodes:
+        targets = tuple(node.target_files or ())
+        if not targets:
+            # A node that declares no target cannot prove overlap-free;
+            # treat it as shared-tree serial.
+            file_to_nodes.setdefault((), []).append(node)
+            continue
+        for path in targets:
+            file_to_nodes.setdefault(path, []).append(node)
+    overlapping = set()
+    for path, ns in file_to_nodes.items():
+        if path != () and len(ns) > 1:
+            overlapping.update(ns)
+        elif path == () and len(ns) >= 1:
+            overlapping.update(ns)
+    isolated = [n for n in nodes if n not in overlapping]
+    serial = [n for n in nodes if n in overlapping]
+    return isolated, serial
 
 
 class FileLockManager:
@@ -221,37 +252,65 @@ class ConcurrentExecutor:
                 handles: Dict[DAGNode, Any] = {}
                 try:
                     if isolator is not None and parallel:
-                        # Create all handles inside the cleanup boundary. If a
-                        # later worktree cannot be created, earlier handles
-                        # must not leak branches/directories.
-                        for node in executable_nodes:
+                        # HG-hybrid-isolate: worktrees only for overlap-free
+                        # nodes; overlapping declared targets serialize in the
+                        # shared tree under the per-path mutex.
+                        iso_nodes, shared_nodes = partition_by_target_overlap(
+                            executable_nodes)
+                        # Create isolated handles inside the cleanup boundary.
+                        for node in iso_nodes:
                             handles[node] = isolator.create(node.node_id)
+                    else:
+                        iso_nodes, shared_nodes = list(executable_nodes), []
 
-                    # Run executable nodes in parallel. Results are collected
-                    # as futures finish, but isolated branches are settled in
-                    # DAG batch order below so merge/conflict outcomes do not
-                    # depend on scheduler timing.
-                    with ThreadPoolExecutor(max_workers=min(self.max_workers, len(executable_nodes))) as pool:
-                        future_to_node = {
-                            pool.submit(self._run_node_reserved, node, worker_fn,
-                                        reserver,
-                                        (handles.get(node) or {}).get("path")): node
-                            for node in executable_nodes
-                        }
-                        stage_results: Dict[DAGNode, Dict[str, Any]] = {}
-                        for future in as_completed(future_to_node):
-                            node = future_to_node[future]
-                            try:
-                                stage_results[node] = future.result()
-                            except Exception as exc:
-                                stage_results[node] = {
-                                    "status": "fatal", "error": str(exc),
-                                    "node_id": node.node_id,
-                                }
-                            if (not keep_going and
-                                    stage_results[node].get("status") not in SUCCESS_STATUSES):
-                                for f in future_to_node:
-                                    f.cancel()
+                    stage_results: Dict[DAGNode, Dict[str, Any]] = {}
+
+                    # Parallel: isolated worktree nodes, or (when isolation is
+                    # off) every concurrent node under shared-tree locks.
+                    parallel_nodes = iso_nodes if isolator is not None and parallel \
+                        else list(executable_nodes)
+                    if parallel_nodes:
+                        with ThreadPoolExecutor(max_workers=min(self.max_workers, len(parallel_nodes))) as pool:
+                            future_to_node = {
+                                pool.submit(self._run_node_reserved, node, worker_fn,
+                                            reserver,
+                                            (handles.get(node) or {}).get("path")): node
+                                for node in parallel_nodes
+                            }
+                            for future in as_completed(future_to_node):
+                                node = future_to_node[future]
+                                try:
+                                    stage_results[node] = future.result()
+                                except Exception as exc:
+                                    stage_results[node] = {
+                                        "status": "fatal", "error": str(exc),
+                                        "node_id": node.node_id,
+                                    }
+                                if (not keep_going and
+                                        stage_results[node].get("status") not in SUCCESS_STATUSES):
+                                    for f in future_to_node:
+                                        f.cancel()
+
+                    # Serial shared-tree arm: overlapping targets never share
+                    # a worktree; they run one-at-a-time under the mutex.
+                    for node in shared_nodes:
+                        if (not keep_going and any(
+                                stage_results.get(n, {}).get("status") not in SUCCESS_STATUSES
+                                for n in parallel_nodes)):
+                            stage_results[node] = {
+                                "status": "dependency_failed",
+                                "node_id": node.node_id,
+                                "error": "prior stage node failed; shared-tree serial arm skipped",
+                            }
+                            continue
+                        try:
+                            stage_results[node] = self._run_node_reserved(
+                                node, worker_fn, reserver, None)
+                        except Exception as exc:
+                            stage_results[node] = {
+                                "status": "fatal", "error": str(exc),
+                                "node_id": node.node_id,
+                            }
 
                     for node in executable_nodes:
                         res = stage_results[node]
@@ -356,7 +415,8 @@ class PlanExecutor:
                  max_workers=DEFAULT_PLAN_WORKERS, keep_going=False,
                  require_diff_authorization=False, route_kwargs_fn=None,
                  base_apply_kwargs=None, apply=None, task_max_cost=None,
-                 run_ceiling=None, repo=None, on_stage_done=None):
+                 run_ceiling=None, repo=None, on_stage_done=None,
+                 final_gate=None, run_gate=None, final_gate_runner=None):
         self.engine = engine
         # The tree the plan was made in: nodes' verification gates are rooted
         # here (the planner derives them from the plan's own root), so a node
@@ -371,6 +431,18 @@ class PlanExecutor:
         self.base_apply_kwargs = dict(base_apply_kwargs or {})
         self.apply = apply or self._apply_edit
         self.executor = ConcurrentExecutor(max_workers=self.workers)
+
+        # HG-final-gate: default ON when a verify command was discovered or
+        # declared. ``final_gate`` is tri-state:
+        #   False          -- operator opt-out (--no-final-gate)
+        #   str            -- explicit command override
+        #   None / True    -- auto: run_gate if set, else a discovered gate
+        #                     from the plan's targets / node local_gates
+        # ``final_gate_runner`` is the hermetic seam (defaults to
+        # filesafety.default_run_verify).
+        self.final_gate = final_gate
+        self.run_gate = run_gate
+        self.final_gate_runner = final_gate_runner or default_run_verify
 
         # MR-5 partition rule (hourglass default: on): concurrent nodes
         # execute in isolated git worktrees; serial nodes share the tree
@@ -400,6 +472,30 @@ class PlanExecutor:
             getattr(engine, "governor", None), self.node_routes, default_amount,
             route_kwargs_fn=self.route_kwargs_fn, run_ceiling=run_ceiling)
         self.on_stage_done = on_stage_done
+
+    def resolve_final_gate(self, dag: TaskDAG) -> Optional[str]:
+        """The final verification command for this run, or None to skip.
+
+        Default ON when a verify command was discovered or declared; an
+        explicit override wins; ``final_gate=False`` disables the gate.
+        """
+        if self.final_gate is False:
+            return None
+        if isinstance(self.final_gate, str) and self.final_gate.strip():
+            return self.final_gate.strip()
+        if self.run_gate:
+            return str(self.run_gate).strip()
+        declared = [n.local_gate for n in dag.nodes.values() if n.local_gate]
+        if not declared:
+            return None
+        targets = []
+        for node in dag.nodes.values():
+            targets.extend(node.target_files or ())
+        discovered = discover_verification_gate(targets, self.repo)
+        if discovered:
+            return discovered
+        unique = list(dict.fromkeys(str(g).strip() for g in declared if str(g).strip()))
+        return unique[0] if unique else None
 
     def route_kwargs(self, node) -> Dict[str, Any]:
         """This node's routing kwargs from the plan's own route detail."""
@@ -446,22 +542,49 @@ class PlanExecutor:
         return self.apply(target, node, self.route_kwargs(node), task_runner)
 
     def execute(self, dag: TaskDAG) -> Dict[str, Any]:
-        return self.executor.execute_dag(
+        results = self.executor.execute_dag(
             dag, self.run_node, keep_going=self.keep_going,
             reserver=self.reserver, isolator=self.isolator,
             on_stage_done=self.on_stage_done)
+        gate = self.resolve_final_gate(dag)
+        if gate:
+            try:
+                code, out = self.final_gate_runner(
+                    gate, timeout=VERIFY_TIMEOUT, cwd=self.repo)
+            except TypeError:
+                code, out = self.final_gate_runner(gate)
+            except HarnessError as exc:
+                code, out = 1, str(exc)
+            status = "ok" if code == 0 else "verify_failed"
+            results["final_gate"] = {
+                "status": status,
+                "node_id": "final_gate",
+                "gate": gate,
+                "returncode": code,
+                "output": (out or "")[-2000:],
+                "cost": 0.0,
+            }
+        return results
 
     @staticmethod
     def summarize(results: Dict[str, Any]) -> Dict[str, Any]:
         """The completion/cost summary every plan-lane caller reports."""
-        values = list(results.values())
+        final = results.get("final_gate") if isinstance(results, dict) else None
+        values = [res for key, res in (results or {}).items()
+                  if key != "final_gate" and isinstance(res, dict)]
+        nodes_ok = bool(values) and all(
+            res.get("status") in SUCCESS_STATUSES for res in values)
+        gate_ok = final is None or final.get("status") in SUCCESS_STATUSES
         return {
             # An empty DAG is not a successful execution. Treating all([]) as
             # true makes an empty/invalid plan report a false ok envelope.
-            "all_ok": bool(values) and all(
-                res.get("status") in SUCCESS_STATUSES for res in values),
+            # A failing final gate also invalidates a green node set (composed
+            # tree red: parallel green nodes can still compose into a red tree).
+            "all_ok": nodes_ok and gate_ok,
             "completed": sum(1 for res in values
                              if res.get("status") in SUCCESS_STATUSES),
-            "total_cost": round(sum(float(res.get("cost", 0.0) or 0.0)
-                                    for res in values), 6),
+            "total_cost": round(
+                sum(float(res.get("cost", 0.0) or 0.0) for res in values)
+                + (float(final.get("cost", 0.0) or 0.0) if final else 0.0), 6),
+            "final_gate": final,
         }

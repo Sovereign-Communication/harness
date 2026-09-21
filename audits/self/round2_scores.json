@@ -163,7 +163,11 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
+<<<<<<< HEAD
         "evidence": "unittest: Ran 1142 tests in 94.293s\n\nOK"
+=======
+        "evidence": "unittest: Ran 1424 tests in 84.166s\n\nOK"
+>>>>>>> origin/main
       },
       {
         "id": "R14",
@@ -207,7 +211,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "58/58 modules imported by tests"
+        "evidence": "63/63 modules imported by tests"
       },
       {
         "id": "S7",
@@ -227,7 +231,7 @@
         "id": "D1",
         "label": "MCP tool parity with README",
         "score": 1.0,
-        "evidence": "README documents all 9 MCP tools, no stale names"
+        "evidence": "README documents all 10 MCP tools, no stale names"
       },
       {
         "id": "D2",
@@ -245,7 +249,11 @@
         "id": "D4",
         "label": "config table keys real",
         "score": 1.0,
+<<<<<<< HEAD
         "evidence": "24 README config keys all resolve to real settings (41 configurable)"
+=======
+        "evidence": "24 README config keys all resolve to real settings (42 configurable)"
+>>>>>>> origin/main
       },
       {
         "id": "D5",
@@ -262,8 +270,13 @@
       {
         "id": "D7",
         "label": "docs reference only real modules",
+<<<<<<< HEAD
         "score": 0.0,
         "evidence": "stale: ['freebuff-context.md: jev_policy.py', 'jev-roadmap.md: jev_policy.py', 'jev-roadmap.md: test_jev_policy.py', 'jev-roadmap.md: test_jev_lane_parity.py', 'jev-roadmap.md: test_jev_ledger_spend.py', 'jev-roadmap.md: jev_packs.py']"
+=======
+        "score": 1.0,
+        "evidence": "all module references across 18 docs resolve to real files"
+>>>>>>> origin/main
       },
       {
         "id": "D8",
@@ -292,8 +305,13 @@
       {
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
+<<<<<<< HEAD
         "score": 0.0,
         "evidence": "changed-line coverage 128/188 = 68% (bar 95%) vs baseline 0796853e36; untested: config.py:539; jev.py:31,34,39,40,46,61,94,100..."
+=======
+        "score": 1.0,
+        "evidence": "no executable harness changes since the coverage baseline 8cc499b7d9"
+>>>>>>> origin/main
       }
     ]
   }

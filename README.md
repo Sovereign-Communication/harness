@@ -132,7 +132,14 @@ with `HARNESS_*` env overrides:
 | `jev_api_key` | `null` | TypeSafe AI Jev structural evaluation API key (HARNESS_JEV_KEY) |
 | `jev_endpoint` | `https://api.typesafe.ai/v1/systemone` | Jev structural verification endpoint |
 | `min_confidence` | `0.70` | calibrated abstention confidence threshold (HARNESS_MIN_CONFIDENCE) |
-| `jev_model` | `jev-latest` | TypeSafe model alias; pin `jev-1.13.0` when calibrating |
+| `jev_model` | `jev-latest` | TypeSafe model alias; pin `jev-1.13.0` when calibrating (see [docs/jev-dogfood.md](docs/jev-dogfood.md) freeze procedure) |
+
+Jev ops notes (JEV-P4): key present → default plan/write lanes run typed Jev
+through the one `jev_policy` owner; unkeyed → explicit `is_fallback` local
+structural checks. `HARNESS_JEV_DISABLE=1` forces the unkeyed path for
+with/without dogfood comparison. Ledger analytics (`harness ledger report`)
+include `jev_calibration`. Evidence template + pin/threshold freeze:
+[docs/jev-dogfood.md](docs/jev-dogfood.md).
 
 `harness models` lists the current live free models (refreshed from
 OpenRouter). Hardcoded slugs go stale — the curated pools are validated live
@@ -244,6 +251,12 @@ harness cost --last 24h --by-tier --savings
 harness trust --model <id>     # bipolar trust + correctness (read-only)
 harness trust --caller <id>    # one peer's standing
 
+# Mission phase completion dogfood (JEV-COMPLETION): 0-100 score from
+# code-owned hard gates + Jev semantic judgment. STATUS complete only when
+# can_mark_complete=true (score >= 85). Exit non-zero otherwise.
+harness jev-phase --phase JEV-P2 --repo-root . --local-only
+harness jev-phase --phase JEV-P1 --repo-root . --local-only --json --out phase.json
+
 # Model capability profiles + reliability (hypothesis from /models, corrected
 # by observed evidence). --bench runs a real JSON probe on the free pool.
 harness capabilities
@@ -296,9 +309,12 @@ Wire into any MCP host (Claude Code, Cursor, your own agents):
 ```
 
 Tools: `panel_verify`, `apply_edit`, `plan_and_execute`, `offer_work`, `defer_work`,
-`ledger_status`, `participation_report`, `spend_status`, `trust_status`.
+`issue_sort`, `ledger_status`, `participation_report`, `spend_status`, `trust_status`.
 `trust_status` reports bipolar trust (-11..+11) for the host and a model,
 plus the correctness level that rations spend ceilings (read-only).
+`issue_sort` takes an operator-declared bucket pack plus issue text and
+returns the policy-owner combo + structural envelope (never invents buckets
+or actions; unmatched → `bucket=null`).
 `apply_edit` accepts
 `backend: "harness"|"morph"|"diff"`, `verify_only`, `max_lines`, `model`, and the
 same continuation controls as the CLI. Tools run on three serial lanes

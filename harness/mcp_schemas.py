@@ -143,8 +143,19 @@ TOOL_SCHEMAS = [
             "parallel": {"type": "boolean", "default": True, "description": "Execute independent subtasks concurrently in parallel (default: on; isolation per the session's hourglass_isolate setting)"},
             "max_workers": {"type": "integer", "default": 4, "minimum": 1, "maximum": 16},
             "frontier_model": {"type": "string", "description": "Frontier model or alias for Tier 2 nodes (e.g. fable-5.1, gpt-6)"},
-            "decompose_llm": {"type": "boolean", "default": False, "description": "Author the DAG with the cheapest tier-appropriate model (schema-validated; heuristic fallback when execute=true)"},
+            "decompose_llm": {"type": "boolean", "default": True,
+                              "description": "Author the DAG with the cheapest tier-appropriate model "
+                                             "(schema-validated; default: on when the hourglass is active; "
+                                             "heuristic fallback when execute=true)"},
             "confirm": {"type": "boolean", "default": True, "description": "Confirm the plan at the frontier waist before execution (brief + bounded file-window rounds; approve/amend/split/refuse verdict; a refused plan never executes). Default: on"},
+            "plan_consensus": {"type": "boolean", "default": False,
+                               "description": "Cheap plan-soundness check before the waist "
+                                              "(JSON sound/reasons; unsound forces the waist "
+                                              "amend path; ledgered plan_consensus)"},
+            "final_gate": {"anyOf": [{"type": "boolean"}, {"type": "string"}],
+                           "description": "Post-DAG final verification gate: false disables, "
+                                          "true/auto uses a discovered/declared verify command, "
+                                          "or pass an explicit command string"},
             "require_diff_authorization": {"type": "boolean", "default": True, "description": "An independent verifier model must allow the exact resulting content of every node write before it lands (default: on)"},
             "file": {"anyOf": [
                          {"type": "string"},
@@ -154,5 +165,22 @@ TOOL_SCHEMAS = [
             "max_cost": {"type": "number", "minimum": 0, "maximum": 0.25},
             "allow_write": {"type": "boolean", "description": "Confirm permission to write files when execute=true"},
         }, "required": ["goal"]},
+    },
+    {
+        "name": "issue_sort",
+        "title": "Sort an issue into an operator-declared bucket",
+        "description": "JEV-P5 issue-sort: operator declares the bucket pack; code owns "
+                       "matching; TypeSafe choice criteria = operator labels only. Never "
+                       "invents buckets, path_ids, or suggested actions. Unkeyed / "
+                       "transport fail / out-of-pack → is_fallback with keyword match "
+                       "against pack keywords only; no match → bucket=null.",
+        "inputSchema": {"type": "object", "properties": {
+            "issue": {"type": "string", "description": "Issue or deferral note text to sort"},
+            "pack": {"type": "object",
+                     "description": "Operator bucket pack: {id, buckets: {id: {label, "
+                                    "kind: trouble_area|alternate_path|orchestration_driver, "
+                                    "path_id, keywords[], suggested_next_action, attention}}}"},
+            "task_id": {"type": "string"},
+        }, "required": ["issue", "pack"]},
     },
 ]

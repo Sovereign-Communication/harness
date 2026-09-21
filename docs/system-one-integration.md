@@ -119,20 +119,19 @@ For advisory panel verification (`--verify-only` or multi-model voting), generat
 
 ## 4. Implementation Roadmap & Milestones
 
-Status after Freebuff `#PR-Jev-Live` audit (2026-09-20). Detailed work items live in [jev-roadmap.md](jev-roadmap.md).
+Status after Freebuff P2 repair pass (2026-09-21). Detailed work items live in [jev-roadmap.md](jev-roadmap.md).
 
 - [x] **Milestone 1: Architectural Foundation & Decision Contracts**
   - Publish `docs/system-one-integration.md` defining JSON decision schemas, calibration mechanics, and integration boundaries.
   - Link architecture in repository `README.md`.
-- [ ] **Milestone 2: Confidence Extraction & Ledger Recording** — `JEV-P2-consent-confidence`
-  - Update `harness.consent.probe_consent` to parse optional calibrated `confidence` floats from model output.
-  - Record `confidence` into ledger consent events (`consent_accept`, `consent_defer`).
-- [ ] **Milestone 3: Automated Confidence-Gated Deferrals** — `JEV-P2-min-confidence`
-  - Wire `HARNESS_MIN_CONFIDENCE` (settings default `0.70`) into consent/apply abstention via `sliding_scale.should_abstain`.
-  - Automatically escalate/rotate to next tier model if reported confidence is below threshold.
-- [~] **Milestone 4: Native Jev / System One Provider Endpoints** — `JEV-P0-*` / `JEV-P1-*`
-  - Partial: `harness/jev.py` posts to `https://api.typesafe.ai/v1/systemone` with local fallback; agent lane only.
-  - Remaining: honest cost/parse/questions (P0); ONE policy owner wired across CLI/MCP/waist/apply (P1); ledger + spend.
+- [x] **Milestone 2: Confidence Extraction & Ledger Recording** — `JEV-P2-consent-confidence`
+  - Named gate: `tests/test_consent_confidence.py` green on merge tip `405bbc1` (PR #36).
+- [x] **Milestone 3: Automated Confidence-Gated Deferrals** — `JEV-P2-min-confidence`
+  - Named gate: `tests/test_min_confidence_gating.py` + `ApplyRequest.min_confidence` wiring green on merge tip `405bbc1`.
+- [x] **Milestone 4: Native Jev / System One Provider Endpoints** — `JEV-P0-*` / `JEV-P1-*`
+  - P0 complete (`d042d70`); P1 complete via **PR #35 / `9d5ff14`**. Do not re-open P1.
+- [ ] **Milestone (follow-up): Pillar 3 lean jury** — `JEV-P2-jury` **deferred**
+  - Not in PR #36; needs a fail-closed contract + dedicated coverage before any `[x]`.
 
 ---
 

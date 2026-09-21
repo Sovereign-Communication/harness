@@ -16,16 +16,23 @@ Harness is a dependency-light Python package with three surfaces:
   CLI passes its parsed flags, MCP is seeded from it at startup, and the
   agent's edit lane passes no flags -- every lane therefore runs the same
   hourglass the settings file describes instead of re-deriving it.
-- `jev.py`: the sole Phase 0 TypeSafe System One adapter: official primitive
+- `jev.py`: the Phase 0 TypeSafe System One adapter: official primitive
   packs and answer parsing, input-token cost math, live thresholding, and
-  honest local AST/JSON/diff fallback. CLI/MCP/waist wiring is intentionally
-  Phase 1.
+  honest local AST/JSON/diff fallback. Lane policy does **not** live here.
+- `jev_policy.py`: the ONE Jev policy owner (JEV-P1/P3/P5): when a typed
+  call may dispatch, bounded spend preflight, one ledger `jev_eval`, the
+  shared `structural` envelope, and utilization packs (route, triage-files,
+  context, claims, completion, issue-sort). `session.jev_for` and
+  `engine_for` route through `policy_for` — no orphan `JevEvaluator`
+  construction outside this owner.
+- `jev_packs.py`: typed question packs + local heuristics imported by
+  `jev_policy` (still one policy owner, never a second client).
 - `service.py`: canonical verify/claims request assembly shared by the CLI
   and web interfaces (prompt/claims reading, cancelled-run envelope,
   cost/meta attachment). Interfaces consume it; they do not re-derive the
   verify lane.
 - `validation.py`: shared trust-boundary validation.
-- `spend.py`: cost ceilings, pricing, BYOK, and model discovery.
+- `spend.py`: cost ceilings, pricing, BYOK, model discovery, and the HUL-B dual-budget envelope (ONE owner of `working_remaining = max_cost - spent - terminal_reserve`; attempt preflight/reserve/record never eat the terminal reserve; terminal findings may spend up to the reserve).
 - `chat.py`: model transport payloads and output usability (one owner of the
   text-shape verdicts: `assess_output` for lane gates, `looks_truncated` for
   bodies cut off mid-JSON).

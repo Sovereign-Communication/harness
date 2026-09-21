@@ -927,7 +927,8 @@ class PlanWaistTests(unittest.TestCase):
     def test_confirm_preview_rides_approval(self):
         verdict = json.dumps({"verdict": "approve"})
         _, frames = self._call(
-            {"goal": "Split the work", "confirm": True, "frontier_model": JUDGE},
+            {"goal": "Split the work", "confirm": True, "frontier_model": JUDGE,
+             "decompose_llm": False},
             posts=[{"choices": [{"message": {"content": verdict},
                                  "finish_reason": "stop"}],
                     "usage": {"cost": 0.0001, "is_byok": False}}])
@@ -940,7 +941,8 @@ class PlanWaistTests(unittest.TestCase):
         verdict = json.dumps({"verdict": "refuse", "reason": "tier mismatch",
                               "evidence": "brief: task_2 is concurrency"})
         _, frames = self._call(
-            {"goal": "Split the work", "confirm": True, "frontier_model": JUDGE},
+            {"goal": "Split the work", "confirm": True, "frontier_model": JUDGE,
+             "decompose_llm": False},
             posts=[{"choices": [{"message": {"content": verdict},
                                  "finish_reason": "stop"}],
                     "usage": {"cost": 0.0001, "is_byok": False}}])
@@ -973,7 +975,8 @@ class LaneSchedulingTests(unittest.TestCase):
              "defer_work": "observe",
              "participation_report": "observe",
              "spend_status": "observe",
-             "trust_status": "observe"})
+             "trust_status": "observe",
+             "issue_sort": "observe"})
 
     def test_unknown_and_missing_names_ride_observe(self):
         self.assertEqual(lane_for("not_a_tool"), "observe")

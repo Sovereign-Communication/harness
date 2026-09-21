@@ -1,4 +1,4 @@
-# Freebuff context pack — Harness Jev mission
+﻿# Freebuff context pack — Harness Jev mission
 
 This file is the **operator/agent context pack** for Freebuff Codebuff sessions on this repo. Canonical STATUS still lives only in [jev-roadmap.md](jev-roadmap.md).
 
@@ -55,7 +55,7 @@ Key resolution for OpenRouter: `~/.config/scmorc/openrouter_fusion.env` then `op
 | Prompt delivery | Operator P2 repair paste landed (msg 902) |
 | Work evidence | `Harness-jev-p2` tip advanced to `449a1ce test(jev): refresh P2 coverage baseline` (pushed) |
 | STATUS on P2 branch | Updated to **in progress / repair** (good) |
-| Coverage baseline | Refreshed to `c50b22e`; D12 target lines mostly now present; **`jev_policy.py` 235/239/241/242 still missing** — those still need real tests, not baseline-only refresh |
+| Coverage baseline | **Repaired with PR #36** — D12 lines executed by real tests; baseline refreshed after green tests; audit BAR MET on merge tip |
 | Lane parity | Still expected red on operator machine until hermetic fixtures land |
 | PR #36 | Open; do not merge until audit BAR MET + local gates green |
 | Context gap | Root `AGENTS.md` was missing until this pack — required for injectAgentsMd |
@@ -63,6 +63,9 @@ Key resolution for OpenRouter: `~/.config/scmorc/openrouter_fusion.env` then `op
 ## Mission loop reminder
 
 1. Read canon STATUS (origin/main).
-2. Pick first incomplete row with a playbook (now: P2 repair).
+2. Pick first incomplete row with a playbook (priority: **JEV-COMPLETION** gate, then P2 repair).
 3. Implement in the **named worktree only**.
-4. Gates local + CI → PR → merge green only → STATUS → next phase.
+4. Before any STATUS `complete`: run
+   `python -m harness.cli jev-phase --phase <JEV-Pn> --repo-root . --local-only`
+   and paste `can_mark_complete=true` + score ≥ 85.
+5. Gates local + CI → PR → merge green only → STATUS → next phase.

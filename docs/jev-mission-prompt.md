@@ -1,84 +1,79 @@
-# Freebuff Mission — paste prompts
+﻿# Freebuff Mission — paste prompts
 
-**Canon:** `docs/jev-roadmap.md`
+**Canon:** [jev-roadmap.md](jev-roadmap.md) only.
+
+Trust **origin/main** STATUS. A dirty local copy that still says “P1 incomplete” or “P2 in progress / blocked” is stale.
 
 ---
 
-## RE-LAUNCH (use this — forces real edits)
+## RE-LAUNCH after P2 merge (use this now)
 
-**Label:** `RELAUNCH P1 — edit or report blocked`
+**Label:** `RELAUNCH — P3 / HUL-A / HG composition (P2 complete)`
 
 ```text
 RE-LAUNCH. Reading is not enough. This run must produce file edits and a commit.
 
-CANON: docs/jev-roadmap.md — section “P1 implementer playbook”.
-STATUS: 0.0+P0 complete. P1 incomplete. That is the ONLY work this turn.
+TRUTH (trust origin/main, not dirty local STATUS):
+- P0 + P1 + P2 COMPLETE — PR #34 / #35 / #36 (405bbc1) merged; post-merge main CI green.
+- JEV-P2-jury remains DEFERRED — do not invent a jury to claim extra completeness.
+- Do NOT redo P0–P2. Do NOT edit Harness-jev-p1 or Harness-jev-p2 (locked).
+- Open tracks in canon STATUS: JEV-P3, JEV-P4, JEV-P5 issue-sort, HUL-A..D,
+  HG hourglass composition, MS cheapest-capable + context condensation.
 
-DO THIS NOW (in order; no planning essay):
+WORKTREES (pick the track you are assigned; do not invent parallel plans):
+- P3 utilization: C:\Users\SCM\Documents\GitHub\Harness-jev-p3
+  branch feat/jev-p3-utilization
+- HUL-A mission pack: C:\Users\SCM\Documents\GitHub\Harness-hul-a
+  branch feat/hul-a-mission-pack
+- Hourglass composition: C:\Users\SCM\Documents\GitHub\Harness-hg-remain
+  branch feat/hourglass-composition
+- Docs/STATUS: C:\Users\SCM\Documents\GitHub\Harness-jev-next
+  branch feat/jev-mission-next
 
-1) Open worktree/branch for P1:
-   C:\Users\SCM\Documents\GitHub\Harness-jev-p1
-   branch feat/jev-p1-policy-and-lanes (base origin/main / d042d70).
-   If the worktree is missing, create a fresh branch off origin/main and copy
-   any needed WIP — do not wait.
+CANON: docs/jev-roadmap.md sections Tracker + implementer notes for your track.
 
-2) IMPLEMENT P1 DoD from the playbook — concrete code edits required:
-   - Keep harness/jev_policy.py as the ONE owner (do not fork it).
-   - One gate story: if engine.jev_policy is set → agent does NOT re-run Jev;
-     if engine has no jev_policy → agent post-gate may heal-retry ONCE and
-     final status stays ok after a successful heal apply.
-   - Wire waist.compose_plan/confirm to policy.evaluate_plan(site="waist").
-   - CLI + MCP envelopes include structural via policy/aggregate_structural.
-   - spend.preflight_jev + record_actual; no double-bill.
-   - Tests that MUST exist and pass before PR:
-       tests/test_jev_policy.py
-       tests/test_jev_lane_parity.py
-       tests/test_jev_ledger_spend.py
-     Also green:
-       tests.test_jev
-       tests.test_agent.TestHourglassLane
-       (especially test_apply_node_jev_structural_evaluation_retry)
+RULES (every pass):
+1) Extend ONE policy owner (jev_policy / spend / waist) — no forks, no second Jev client.
+2) Hermetic tests named in canon MUST exist and pass; no coverage_baseline gaming.
+3) No provider brand hardcoding in phase code — resolve via router/ladders/MS-*.
+4) Live dogfood only when the lane is user-facing; use cheap paid rungs
+   (HARNESS_USE_FREE=false; apply deepseek-v4.1-flash class; judge glm-5.3-flash class).
+5) Gates green locally + audit BAR MET → push branch → PR → merge ONLY when CI green
+   → update STATUS with evidence → continue next incomplete row.
+6) If blocked: STATUS blocked + exact command/output. Never "will do".
 
-3) RUN GATES (show output):
-   $env:PYTHONPATH="<worktree>"; python -m unittest tests.test_jev
-     tests.test_agent.TestHourglassLane tests.test_jev_policy
-     tests.test_jev_lane_parity tests.test_jev_ledger_spend -v
-
-4) COMMIT + PUSH + PR:
-   git add -A && git commit -m "feat(jev): JEV-P1 policy owner, lanes, tests"
-   push -u origin feat/jev-p1-policy-and-lanes
-   open PR titled feat(jev): JEV-P1-…
-   Update docs/jev-roadmap.md STATUS on that branch (P1 evidence + PR URL).
-
-5) If you cannot edit (permissions/worktree locked): STOP and write to the
-   operator which path is blocked. Do not say “will do” — either edit files
-   or name the blocker.
-
-Forbidden: re-implement P0; new planning docs; provider brand hardcoding;
-claiming done without commits + green tests.
+FORBIDDEN: fake complete; merge red CI; brand mandates in phase DoD; parallel plans
+outside canon STATUS; redoing shipped phases.
 ```
 
 **savedMissions JSON**
 
 ```json
 {
-  "label": "RELAUNCH P1 — edit or report blocked",
-  "prompt": "RE-LAUNCH. Reading is not enough. This run must produce file edits and a commit. CANON: docs/jev-roadmap.md section P1 implementer playbook. STATUS: 0.0+P0 complete; P1 incomplete — ONLY work this turn. 1) Worktree C:\\Users\\SCM\\Documents\\GitHub\\Harness-jev-p1 branch feat/jev-p1-policy-and-lanes (or fresh branch off origin/main if missing — do not wait). 2) Implement P1 DoD: keep harness/jev_policy.py ONE owner; one gate story (engine.jev_policy set → agent does not re-run Jev; no policy → agent post-gate once, heal apply stays ok); waist evaluate_plan site=waist; CLI+MCP structural envelope via aggregate_structural; spend preflight_jev + record_actual no double-bill; ADD tests/test_jev_policy.py, test_jev_lane_parity.py, test_jev_ledger_spend.py and keep test_jev + TestHourglassLane green (structural retry). 3) Run those unittest modules and paste results. 4) Commit, push -u origin feat/jev-p1-policy-and-lanes, PR feat(jev): JEV-P1-…, update canon STATUS on the branch. 5) If blocked, name the exact blocker — no 'will do'. Forbidden: redo P0; new plans; brand hardcoding; done without commit+green tests."
+  "label": "RELAUNCH — P3 / HUL-A / HG composition (P2 complete)",
+  "prompt": "RE-LAUNCH. File edits + commit required. TRUTH origin/main: P0+P1+P2 COMPLETE PR #34/#35/#36 (405bbc1). JEV-P2-jury deferred. Do NOT redo P0-P2 or edit locked P1/P2 worktrees. Open tracks: JEV-P3 utilization (Harness-jev-p3 / feat/jev-p3-utilization), HUL-A mission pack (Harness-hul-a / feat/hul-a-mission-pack), HG composition (Harness-hg-remain / feat/hourglass-composition), plus P4/P5/HUL-B..D/MS when scheduled. CANON docs/jev-roadmap.md only. Implement your assigned track: extend one policy owner; hermetic named tests green; no coverage_baseline gaming; no brand hardcoding; live dogfood cheap-paid only when user-facing; local gates + audit BAR MET → push → PR → merge only when CI green → STATUS evidence → next row. Blocked = exact command/output. Forbidden: fake complete, merge red, parallel plans."
 }
 ```
 
 ---
 
-## Simple mission (full track — after P1 PR exists)
+## Full mission (operator loop)
 
-**Label:** `Harness mission — jev+HUL`
+**Label:** `Harness mission — remaining product tracks`
 
 ```text
 Harness mission. Read docs/jev-roadmap.md only.
-Execute every incomplete STATUS row until Exit: finish current phase per its
-implementer playbook/notes → gates → commit → push → PR → merge → verify
-origin/main → update canon STATUS → next phase immediately.
-Do not stop after one green PR. Do not fake done. No provider brands in phase
-work (canon § Model selection). Stop only if blocked (STATUS+reason) or
-P4+HUL complete / honest terminal with FINDINGS.md.
+Trust origin/main STATUS. Execute every incomplete STATUS row until Exit:
+phase playbook → local gates + audit → commit → push → PR → merge only when
+CI green → post-merge verify → update canon STATUS → immediately continue.
+Dogfood user-facing lanes. Paid cheap rungs for live evidence. No brand
+hardcoding in phase code. Stop only if blocked (STATUS + exact evidence) or
+Exit rows complete (Jev P4 + HUL product/open pack + FRP process).
 ```
+
+---
+
+## Obsolete prompts (do not use)
+
+- `RELAUNCH P1 — edit or report blocked` — P1 shipped (PR #35).
+- `RELAUNCH P2 repair — unblock PR #36` — P2 shipped (PR #36 `405bbc1`).

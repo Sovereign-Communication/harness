@@ -10,6 +10,7 @@ from .prompts import MAX_APPLY_ROUNDS, MAX_FILE_LINES
 from .results import SUCCESS_STATUSES
 from .continuation import validate_continuation
 from .validation import validate_batch_files
+from .jev_policy import aggregate_structural
 
 
 @dataclass(frozen=True)
@@ -121,10 +122,14 @@ def run_batch(engine, files, *, task_id=None, apply_pool=None,
     # keep_going, results[-1] can be a success while an earlier file died.
     overall = last.get("status") if first_failure is None \
         else first_failure.get("status")
-    return {"status": overall,
-            "batch": True, "files": list(files), "results": results,
-            "statuses": statuses, "cost": total,
+    envelope = {"status": overall,
+                "batch": True, "files": list(files), "results": results,
+                "statuses": statuses, "cost": total,
             "verify": {"command": gate_cmd,
                        "passed": bool(last_verify.get("passed", True))
                        if first_failure is None else False}
                       if gate_cmd else None}
+    structural = aggregate_structural(results, site="batch")
+    if structural is not None:
+        envelope["structural"] = structural
+    return envelope
