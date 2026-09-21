@@ -1,9 +1,9 @@
-﻿{
+{
   "scores": {
     "A": 10.0,
-    "R": 10.0,
-    "SM": 10.0,
-    "SD": 10.0
+    "R": 9.29,
+    "SM": 3.75,
+    "SD": 9.17
   },
   "checks": {
     "A": [
@@ -162,8 +162,8 @@
       {
         "id": "R13",
         "label": "full suite green hermetically",
-        "score": 1.0,
-        "evidence": "unittest: Ran 1390 tests in 80.684s\n\nOK"
+        "score": 0.0,
+        "evidence": "==========================================\nERROR: test_no_reexport_facades (test_architecture.ImportDirectionTests)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\tests\\test_architecture.py\", line 133, in test_no_reexport_facades\n    tree = ast.parse(source.read(), path)\n  File \"C:\\Users\\SCM\\AppData\\Roaming\\uv\\python\\cpython-3.9-windows-x86_64-none\\lib\\ast.py\", line 50, in parse\n    return compile(source, filename, mode, flags,\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\harness\\cli_parser.py\", line 1\n    \u00ef\u00bb\u00bf\"\"\"The CLI's argparse surface: one owner for flag construction.\n    ^\nSyntaxError: invalid non-printable character U+FEFF\n\n======================================================================\nERROR: test_result_vocabulary_has_one_def_site (test_architecture.ResultVocabularyTests)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\tests\\test_architecture.py\", line 78, in test_result_vocabulary_has_one_def_site\n    tree = ast.parse(source.read(), path)\n  File \"C:\\Users\\SCM\\AppData\\Roaming\\uv\\python\\cpython-3.9-windows-x86_64-none\\lib\\ast.py\", line 50, in parse\n    return compile(source, filename, mode, flags,\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\harness\\cli_parser.py\", line 1\n    \u00ef\u00bb\u00bf\"\"\"The CLI's argparse surface: one owner for flag construction.\n    ^\nSyntaxError: invalid non-printable character U+FEFF\n\n======================================================================\nERROR: test_no_slots_classes_in_harness (test_architecture.StructIdiomTests)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\tests\\test_architecture.py\", line 192, in test_no_slots_classes_in_harness\n    tree = ast.parse(source.read(), path)\n  File \"C:\\Users\\SCM\\AppData\\Roaming\\uv\\python\\cpython-3.9-windows-x86_64-none\\lib\\ast.py\", line 50, in parse\n    return compile(source, filename, mode, flags,\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\harness\\cli_parser.py\", line 1\n    \u00ef\u00bb\u00bf\"\"\"The CLI's argparse surface: one owner for flag construction.\n    ^\nSyntaxError: invalid non-printable character U+FEFF\n\n----------------------------------------------------------------------\nRan 1432 tests in 97.428s\n\nFAILED (errors=5, skipped=46)\n"
       },
       {
         "id": "R14",
@@ -176,26 +176,26 @@
       {
         "id": "S1",
         "label": "import direction (interfaces on top)",
-        "score": 1.0,
-        "evidence": "import direction clean (0 upward edges)"
+        "score": 0.0,
+        "evidence": "CHECK ERROR: SyntaxError: invalid non-printable character U+FEFF (cli_parser.py, line 1)"
       },
       {
         "id": "S2",
         "label": "no re-export facades",
-        "score": 1.0,
-        "evidence": "no re-export shims (harness/core.py cannot regrow)"
+        "score": 0.0,
+        "evidence": "CHECK ERROR: SyntaxError: invalid non-printable character U+FEFF (cli_parser.py, line 1)"
       },
       {
         "id": "S3",
         "label": "result vocabulary one def site",
-        "score": 1.0,
-        "evidence": "result vocabulary owned by results.py only"
+        "score": 0.0,
+        "evidence": "CHECK ERROR: SyntaxError: invalid non-printable character U+FEFF (cli_parser.py, line 1)"
       },
       {
         "id": "S4",
         "label": "engine/router construction one owner",
-        "score": 1.0,
-        "evidence": "engine/router construction owned by session.py"
+        "score": 0.0,
+        "evidence": "CHECK ERROR: SyntaxError: invalid non-printable character U+FEFF (cli_parser.py, line 1)"
       },
       {
         "id": "S5",
@@ -207,13 +207,13 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "63/63 modules imported by tests"
+        "evidence": "64/64 modules imported by tests"
       },
       {
         "id": "S7",
         "label": "one owner per policy (8 sampled)",
-        "score": 1.0,
-        "evidence": "all 8 sampled policies have exactly one definition site"
+        "score": 0.0,
+        "evidence": "CHECK ERROR: SyntaxError: invalid non-printable character U+FEFF (cli_parser.py, line 1)"
       },
       {
         "id": "S8",
@@ -292,8 +292,8 @@
       {
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
-        "score": 1.0,
-        "evidence": "no executable harness changes since the coverage baseline 324c9abe63"
+        "score": 0.0,
+        "evidence": "CHECK ERROR: JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)"
       }
     ]
   }
