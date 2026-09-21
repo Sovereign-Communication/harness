@@ -132,7 +132,14 @@ with `HARNESS_*` env overrides:
 | `jev_api_key` | `null` | TypeSafe AI Jev structural evaluation API key (HARNESS_JEV_KEY) |
 | `jev_endpoint` | `https://api.typesafe.ai/v1/systemone` | Jev structural verification endpoint |
 | `min_confidence` | `0.70` | calibrated abstention confidence threshold (HARNESS_MIN_CONFIDENCE) |
-| `jev_model` | `jev-latest` | TypeSafe model alias; pin `jev-1.13.0` when calibrating |
+| `jev_model` | `jev-latest` | TypeSafe model alias; pin `jev-1.13.0` when calibrating (see [docs/jev-dogfood.md](docs/jev-dogfood.md) freeze procedure) |
+
+Jev ops notes (JEV-P4): key present → default plan/write lanes run typed Jev
+through the one `jev_policy` owner; unkeyed → explicit `is_fallback` local
+structural checks. `HARNESS_JEV_DISABLE=1` forces the unkeyed path for
+with/without dogfood comparison. Ledger analytics (`harness ledger report`)
+include `jev_calibration`. Evidence template + pin/threshold freeze:
+[docs/jev-dogfood.md](docs/jev-dogfood.md).
 
 `harness models` lists the current live free models (refreshed from
 OpenRouter). Hardcoded slugs go stale — the curated pools are validated live
