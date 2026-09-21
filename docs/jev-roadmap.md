@@ -165,12 +165,12 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `JEV-P0-*` contract truth | **complete** | PR #34 / `d042d70`; live smoke OK |
 | `JEV-P1-*` one owner + lanes | **complete** | **PR #35 MERGED** → `origin/main` `9d5ff14` |
 | `JEV-P2-*` System One pillars | **complete** | **PR #36 MERGED** → `origin/main` `405bbc1`; hermetic lane-parity; D12 executed; local audit BAR MET; CI green on PR tip **and** post-merge `main`; live Jev smoke OK; **`JEV-P2-jury` deferred** (follow-up, not blocking P2 complete) |
-| `JEV-P3-*` utilization | **open** | worktree `Harness-jev-p3` / `feat/jev-p3-utilization` |
+| `JEV-P3-*` utilization | **complete** | **PR #43 MERGED** `7eb18ea`; route/triage/context/claims/completion/calibration |
 | `JEV-P4-*` ops / exit | **open** | after P3 DoD |
-| `JEV-P3-*` utilization | **open** | worktree `Harness-jev-p3` / `feat/jev-p3-utilization` |
+| `JEV-P3-*` utilization | **complete** | **PR #43 MERGED** `7eb18ea`; route/triage/context/claims/completion/calibration |
 | `JEV-P4-*` ops / exit | **open** | after P3 DoD |
-| `JEV-P5-*` issue-sort buckets | **in progress** | PR #42; packs + evaluate_issue_sort + CLI/MCP; BAR MET local; **not complete until merge + CI green** |
-| `HUL-A` mission pack | **complete** | **PR #41 MERGED** `64e63a3` |
+| `JEV-P5-*` issue-sort buckets | **in progress** | PR #42; BAR MET local; **not complete until merge + CI green** |
+| `HUL-A` mission pack | **complete** | **PR #41 MERGED** `64e63a3`; mission pack + CLI + gate tests; CI green |
 | `HUL-B` dual budget | **open** | after A |
 | `HUL-C` Jev scope gate | **open** | after A + P1 policy (merged) |
 | `HUL-D` until-limits driver | **open** | after A–C |
@@ -378,4 +378,5 @@ Write STATUS `blocked` + the **exact** failing command/output. No “will do”.
 - Endpoint (authoritative): `https://api.typesafe.ai/v1/systemone`
 - Models: alias `jev-latest` → `jev-1.13.0` (pin version id when calibrating thresholds)
 - Verification gates remain authoritative for code correctness; Jev is pre-gate triage and structural refusal, not a substitute for tests
+
 
