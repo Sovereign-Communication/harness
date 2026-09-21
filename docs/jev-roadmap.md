@@ -1,4 +1,4 @@
-﻿# Jev Full-Functionality Roadmap
+# Jev Full-Functionality Roadmap
 
 **Status:** active tracking doc  
 **Picked up from:** Freebuff / Buffy lane (PR-Jev-Live `b6fa945`, waist pre-plan `a591739`, cost foundation `b3960e7`)  
@@ -170,15 +170,9 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | JEV-COMPLETION | **in progress** | **PR #39** `d9f36af` `harness jev-phase` gate |
 | `JEV-P5-*` issue-sort buckets | **in progress** | PR #42 `feat/jev-p5-issue-sort`; **not complete until merge + CI green** |
 | `HUL-A` mission pack | **complete** | **PR #41 MERGED** `64e63a3`; mission pack + CLI + gate tests; CI green |
-<<<<<<< HEAD
-| `HUL-B` dual budget | **in progress** | PR #47 |
-| `HUL-C` Jev scope gate | **in progress** | PR #48; evaluate_scope site=hul_scope; false-done blocked |
-| `HUL-D` until-limits driver | **in progress** | PR #48; mission_driver + FINDINGS + resume |
-=======
-| `HUL-B` dual budget | **in progress** | **PR #47** `feat/hul-b-dual-budget` @ `d881622`; dual envelope + gate tests; not complete until merge + CI green |
-| `HUL-C` Jev scope gate | **in progress** | **PR #48** `feat/hul-cd-scope-driver` @ `aea9b9a`; site=hul_scope; false-done blocked |
-| `HUL-D` until-limits driver | **in progress** | **PR #48** `aea9b9a`; mission_driver + FINDINGS + resume |
->>>>>>> origin/main
+| `HUL-B` dual budget | **in progress** | PR #47 `feat/hul-b-dual-budget` |
+| `HUL-C` Jev scope gate | **in progress** | PR #48 `feat/hul-cd-scope-driver` |
+| `HUL-D` until-limits driver | **in progress** | PR #48 `feat/hul-cd-scope-driver` |
 | `HG-*` hourglass composition | **complete** | **PR #44 MERGED** `f22accb` |
 | `MS-*` cheapest-capable + context | **open** | ad-hoc model strings → config/ladders; expensive seats get condensed state |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
@@ -389,8 +383,6 @@ Write STATUS `blocked` + the **exact** failing command/output. No “will do”.
 
 
 
-<<<<<<< HEAD
-=======
 ### Follow-up addendum (NOT promoted to STATUS)
 
 `docs/jev-log-analysis-followup.md` remains a **parking plan** for SCMessenger log/insight work (JEV-LOG-*). Canon wins; no STATUS rows until explicit promotion. Shared pattern with shipped `JEV-P5` operator packs / `evaluate_issue_sort`. SCMessenger implements batch callers against **origin/main** only; Harness owns `jev_policy`/`jev_packs` and phase PRs #39/#47/#48.
@@ -409,5 +401,3 @@ Write STATUS `blocked` + the **exact** failing command/output. No “will do”.
 | **3** | **Implement addendum in full** | Fresh worktree `feat/jev-log-factor-analysis` off `origin/main`; one phase PR at a time; extend `jev_packs`/`jev_policy` only (no second Jev client); 0-hallucination operator packs + score block; code owns parse/aggregate; JSON only; dogfood `C:\\temp\\logsSCMessenger.txt`. |
 
 Until step 2 promotion, `JEV-LOG-*` stay planning labels (not STATUS). Until step 1 exit, do not start addendum implementation — keeps single-threaded canon.
->>>>>>> origin/main
-
