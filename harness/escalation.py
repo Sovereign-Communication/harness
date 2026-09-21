@@ -16,7 +16,8 @@ from .chat import (_chat_reservation_slots, chat, extract_content_and_cost,
 from .config import effective_lane_policy
 from .errors import HarnessError
 from .output import eprint
-from .sliding_scale import model_family
+from .sliding_scale import (decide_probe_verify_escalate, model_family,
+                            should_abstain)
 
 
 def _annotate_escalation(result, *, from_model, to_model, rungs) -> None:
@@ -37,6 +38,131 @@ def _annotate_escalation(result, *, from_model, to_model, rungs) -> None:
     result.setdefault(
         "escalation_family_changed",
         bool(from_model) and model_family(from_model) != model_family(to_model))
+
+
+def confidence_to_start_rung(confidence, ladder_size, *,
+                             current_rung=0):
+    """Map calibrated Jev confidence to a starting rung (JEV-P2-dead-code).
+
+    Pure, code-owned arithmetic over the TWO non-terminal capability buckets
+    (``decide_probe_verify_escalate`` currently knows TIER_1_DISTILLER and
+    TIER_2_FRONTIER; a ladder rung index is its production form).
+    ``confidence`` is confidence in ANOTHER ATTEMPT AT THE CURRENT TIER
+    (the exact signal ``should_abstain``/``decide_probe_verify_escalate``
+    consume -- low confidence means escalate):
+
+    - confidence < 0.5   -> the current tier is hopeless: climb toward the
+      ladder's most capable rung (the frontier bucket)
+    - 0.5 <= conf < 0.70 -> marginal: one rung above the current one (never
+      re-buys the rung whose gate just failed)
+    - confidence >= 0.70 -> retry-shaped: start at rung 0
+
+    The 0.70 boundary IS ``decide_probe_verify_escalate``'s default
+    ``min_confidence``, so the bucket and the tier decision can never
+    disagree (TIER_2 ⇔ escalate/retry buckets, TIER_1 ⇔ retry-shaped).
+
+    Always clamped into ``[0, ladder_size - 1]``; ``current_rung`` is the
+    last rung whose gate already failed (falls back to 0). Returns
+    ``(start_rung, bucket)`` with the bucket string carried for evidence.
+    """
+    try:
+        size = max(int(ladder_size), 0)
+        cur = int(current_rung)
+    except (TypeError, ValueError):
+        return 0, "escalate"
+    cur = max(cur, 0)
+    conf = float(confidence)
+    if conf < 0.5:
+        bucket = "escalate"
+    elif conf < 0.70:
+        bucket = "retry"
+    else:
+        bucket = "retry-shaped"
+    if bucket == "escalate":
+        # 0.0..0.5 -> the last 1-2 rungs of a real ladder; on the two-bucket
+        # production shape this IS the frontier bucket.
+        rung = size - 1 - (0 if conf < 0.075 else 1) if size >= 3 else size - 1
+    elif bucket == "retry":
+        rung = min(cur + 1, size - 1)
+    else:
+        rung = 0
+    return max(0, min(rung, size - 1)) if size else 0, bucket
+
+
+def jev_escalation_directive(result, *, ladder_size, current_rung=0,
+                             condensed_context=""):
+    """One code-owned directive from the Jev escalation-decision signals.
+
+    Feeds the REAL P2 decision functions: ``decide_probe_verify_escalate``
+    consumes the decision noul's calibrated probability (the ``confidence``
+    that function's signature always meant) and ``should_abstain`` consumes
+    the budget noul. The resulting tier decision maps onto ladder rung
+    indexes via :func:`confidence_to_start_rung`.
+
+    ``result`` is the :class:`~harness.jev_evaluation.JevEvaluationResult`
+    from ``JevPolicy.evaluate_escalation_decision`` (noul pack: each answer
+    carries its probability under ``noul``). A LOW decision noul is the
+    Jev "current tier is hopeless" verdict -- the primary escalation
+    trigger -- so the envelope's generic pass/fail verdict is not consulted;
+    only ``is_fallback`` (unkeyed/transport/parse failure) and noul validity
+    gate the signal.
+
+    Returns ``None`` (caller keeps the status-quo walk) whenever the Jev
+    signal is unavailable or unrunnable: no result, a fallback result, or
+    missing/invalid nouls. Fail-closed by design -- the generative verify
+    lane's verdicts remain the fallback trigger.
+
+    An ``abstain`` directive (``should_abstain`` fired on the budget noul)
+    is returned with ``kind="abstain"``: the driver retires the walk for
+    this failure instead of spending a rung, unless the verify lane already
+    directed one (lane priority).
+
+    ``condensed_context`` is the code-owned failure evidence (verify-output
+    tail, attempt history) the caller already assembled for the policy
+    call; it rides the escalate directive verbatim and is prepended for
+    rungs after the first by the driver's rung-context builder.
+    """
+    if result is None or getattr(result, "is_fallback", True):
+        return None
+    answers = getattr(result, "answers", None)
+    if not isinstance(answers, dict):
+        return None
+    decision = answers.get("escalation_decision")
+    if not isinstance(decision, dict):
+        return None
+    confidence = decision.get("noul")
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+        return None
+    confidence = float(confidence)
+    if not 0.0 <= confidence <= 1.0:
+        return None
+    budget = answers.get("capability_budget")
+    budget_noul = (float(budget["noul"])
+                   if isinstance(budget, dict)
+                   and isinstance(budget.get("noul"), (int, float))
+                   and not isinstance(budget.get("noul"), bool)
+                   else None)
+    if budget_noul is not None and should_abstain(budget_noul):
+        # Jev abstains: do not spend an escalation rung on this failure.
+        return {"kind": "abstain", "confidence": confidence,
+                "budget_noul": budget_noul, "decision": "abstain"}
+    tier = decide_probe_verify_escalate(
+        "escalation", confidence=confidence, structural_valid=True,
+        current_tier=1, min_confidence=0.70)
+    start_rung, bucket = confidence_to_start_rung(
+        confidence, ladder_size, current_rung=current_rung)
+    # Coherent by construction on one axis (0.70 is the decision function's
+    # own min_confidence): TIER_2 (conf < 0.70) pairs with the escalate/retry
+    # buckets; TIER_1 (conf >= 0.70) pairs with retry-shaped (rung 0).
+    marker = (f"[JEV-DIRECTED ESCALATION] Jev confidence {confidence:.2f} "
+              f"({bucket}); failure evidence follows.")
+    condensed = (f"{marker}\n{condensed_context}" if condensed_context
+                 else marker)
+    return {"kind": "escalate", "confidence": confidence,
+            "budget_noul": budget_noul,
+            "tier": int(tier), "decision": bucket,
+            "start_rung": start_rung,
+            "condensed_context": condensed}
 
 
 def escalation_evidence(result):
@@ -128,15 +254,46 @@ class EscalationDriver:
         if not allowed or not self.router.escalation_pool:
             return None
 
-        # Honor the judge's preferred starting rung when the verify lane
-        # already attached a condensed context (target_rung 0 is the first
-        # paid/capable rung in the ladder).
-        start_rung = 0
+        # Priority (JEV-P2-dead-code): the generative verify lane's directive
+        # wins when it already picked a valid resume rung; a pending
+        # Jev-directed directive (decision noul confidence) seeds the walk
+        # only when the lane did not. Code owns the mapping; Jev owns the
+        # judgment; the ladder stays the escalated executor.
         condensed = getattr(state, "escalation_condensed_context", "") or ""
         target = getattr(state, "de_escalation_target_rung", 0) or 0
+        lane_directed = bool(condensed) and 0 <= target < len(self.router.escalation_pool)
+        pending = getattr(state, "pending_jev_directive", None)
+        state.pending_jev_directive = None  # one-shot: consume on first walk
+        jev_directed = bool(pending) and not lane_directed
+        if jev_directed and pending.get("kind") == "abstain":
+            # Jev-directed abstention (should_abstain fired on the budget
+            # noul): retire the walk for this failure instead of spending a
+            # rung. The verify lane still owns future escalation verdicts.
+            _events.emit("jev_escalation_directive", task_id=self.task_id,
+                         start_rung=None,
+                         confidence=pending.get("confidence"),
+                         decision="abstain")
+            return None
+        if jev_directed:
+            rung = int(pending.get("start_rung") or 0)
+            if 0 <= rung < len(self.router.escalation_pool):
+                state.de_escalation_target_rung = rung
+                if not condensed:
+                    state.escalation_condensed_context = str(
+                        pending.get("condensed_context") or "")
+                condensed = state.escalation_condensed_context
+                target = rung
+                pending["applied"] = True
+                _events.emit("jev_escalation_directive", task_id=self.task_id,
+                             start_rung=rung,
+                             confidence=pending.get("confidence"),
+                             decision=pending.get("decision"))
+            else:
+                jev_directed = False
         # de_escalation_target_rung is the resume rung; escalation starts there
-        # when a prior plan asked us to. Otherwise start at 0.
-        if condensed and 0 <= target < len(self.router.escalation_pool):
+        # when the verify lane OR a Jev-directed decision asked us to.
+        start_rung = 0
+        if (condensed or jev_directed) and 0 <= target < len(self.router.escalation_pool):
             start_rung = target
 
         for rung in range(start_rung, len(self.router.escalation_pool)):
