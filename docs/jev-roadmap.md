@@ -200,10 +200,10 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | 2 Pillars | `JEV-P2-*` | consent, sliding_scale, waist triage | `test_jev_triage`, `test_consent_confidence`, `test_min_confidence_gating` + hermetic lane parity + audit | **complete** — PR #36 `405bbc1`; jury deferred |
 | 3 Utilization | `JEV-P3-*` | orchestrator, routing, context, panel, calibration | `tests/test_jev_util_*.py` (route, triage-files, context-pack, claims, completion, calibration) | **open** |
 | 4 Ops | `JEV-P4-*` | workflows, analytics, docs | live acceptance checklist + dogfood with/without jev | **open** |
-| 5 Issue-sort | `JEV-P5-*` | `jev_packs.py`, `jev_policy`, waist/orchestrator/CLI/MCP | `tests/test_jev_issue_sort.py` (+ pack/orchestration) | **open** — operator bucket packs, 0 hallucination |
-| HUL-A | `HUL-A-*` | `harness/mission_record.py`, CLI mission | `tests/test_hul_mission_record.py` | **open** |
+| 5 Issue-sort | `JEV-P5-*` | `jev_policy` + planned pack module (name when shipped), waist/orchestrator/CLI/MCP | `tests/test_jev_issue_sort.py` (+ pack/orchestration) | **open** — operator bucket packs, 0 hallucination |
+| HUL-A | `HUL-A-*` | new mission pack module (name when shipped), CLI `mission` | `tests/test_hul_mission_record.py` | **open** |
 | HUL-B | `HUL-B-*` | `spend.py` dual envelope | `tests/test_hul_budget_reserve.py` | **open** |
-| HUL-C | `HUL-C-*` | `jev_packs` scope + `jev_policy.evaluate_scope` | `tests/test_hul_jev_scope_gate.py` | **open** |
+| HUL-C | `HUL-C-*` | scope packs via `jev_policy.evaluate_scope` (pack module name when shipped) | `tests/test_hul_jev_scope_gate.py` | **open** |
 | HUL-D | `HUL-D-*` | mission driver + FINDINGS + resume | `tests/test_hul_driver_findings_resume.py` | **open** |
 | Hourglass | `HG-*` | waist/executor/spend/plan consensus/pyramid state | named hermetic tests per gap (see HG notes) | **open** |
 
@@ -211,7 +211,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 
 | ID | Work | Rule |
 |---|---|---|
-| `JEV-P3-route` | Typed apply-route choice via `jev_policy` pack; consumed by router — **no brand names** | packs in `jev_packs.py` or policy; unkeyed = skip live + `is_fallback` |
+| `JEV-P3-route` | Typed apply-route choice via `jev_policy` pack; consumed by router — **no brand names** | packs owned by policy (optional shared pack module when shipped); unkeyed = skip live + `is_fallback` |
 | `JEV-P3-triage-files` | Orchestrator file-relevance nouls over candidate list | validate picks against real listing |
 | `JEV-P3-context-pack` | Filter state to decision-relevant fields before generative seats | prefer MicroBrief/condensed; expensive seats never get unbounded raw dumps when a pack exists |
 | `JEV-P3-claims` | Panel claim-support nouls before judge synthesis | claims lint stays code-owned |

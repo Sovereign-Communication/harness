@@ -163,7 +163,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 1175 tests in 72.837s\n\nOK"
+        "evidence": "unittest: Ran 1175 tests in 70.903s\n\nOK"
       },
       {
         "id": "R14",
@@ -263,7 +263,7 @@
         "id": "D7",
         "label": "docs reference only real modules",
         "score": 1.0,
-        "evidence": "all module references across 14 docs resolve to real files"
+        "evidence": "all module references across 16 docs resolve to real files"
       },
       {
         "id": "D8",
