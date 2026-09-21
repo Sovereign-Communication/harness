@@ -199,7 +199,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 |---|---|---|---|---|
 | 0 Contract | `JEV-P0-*` | `jev.py`, `config.py`, docs | `tests/test_jev.py` + smoke | **complete** — PR #34 |
 | 1 One owner | `JEV-P1-*` | policy + lanes | `test_jev_policy` / `lane_parity` / `ledger_spend` | **complete** — PR #35 |
-| 2 Pillars | `JEV-P2-*` | consent, sliding_scale, waist triage | `test_jev_triage`, `test_consent_confidence`, `test_min_confidence_gating` + hermetic lane parity + audit | **complete** — PR #36 `405bbc1`; jury deferred |
+| 2 Pillars | `JEV-P2-*` | consent, sliding_scale, waist triage | `test_jev_triage`, `test_consent_confidence`, `test_min_confidence_gating` + hermetic lane parity + audit | **complete** — PR #36 `405bbc1`; jury deferred; `JEV-P2-dead-code` wired — PR #58 `b21d8f0` |
 | 3 Utilization | `JEV-P3-*` | orchestrator, routing, context, panel, calibration | `tests/test_jev_util_*.py` (route, triage-files, context-pack, claims, completion, calibration) | **complete** — PR #43 `7eb18ea` |
 | 4 Ops | `JEV-P4-*` | workflows, analytics, docs | live acceptance checklist + dogfood with/without jev | **complete** — PR #46 `a021cfc` |
 | 5 Issue-sort | `JEV-P5-*` | `jev_policy` + `harness/jev_packs.py`, waist/orchestrator/CLI/MCP | `tests/test_jev_issue_sort.py` (+ pack/orchestration) | **complete** — PR #42 `c9e1c67`; operator bucket packs, 0 hallucination |
@@ -421,7 +421,7 @@ owns `jev_policy`/`jev_packs` and the shipped phase PRs #39/#42/#43/#46/#47/#48.
 
 | Step | Work | Rule |
 |---|---|---|
-| **1** | **Drive canon to completion — COMPLETE 2026-09-21** | **#39** completion gate, **#47** HUL-B dual budget, **#48** HUL-C/D scope+driver all **MERGED** (`5e15f8d` / `536e75c` / `469f34f`; #48 audit green after BOM-tolerant D12 + honest coverage refresh `a3afc16`). STATUS rows flipped with merge evidence. Exit checklist: Jev P4 residual + FRP dogfood remain open. |
+| **1** | **Drive canon to completion — COMPLETE 2026-09-21** | **#39** completion gate, **#47** HUL-B dual budget, **#48** HUL-C/D scope+driver all **MERGED** (`5e15f8d` / `536e75c` / `469f34f`; #48 audit green after BOM-tolerant D12 + honest coverage refresh `a3afc16`). STATUS rows flipped with merge evidence. `JEV-P2-dead-code` wired with Jev-directed escalation — PR #58 `b21d8f0` (2026-09-21): `JevPolicy.evaluate_escalation_decision` + `jev_escalation_directive` + `EscalationDriver` consume calibrated nouls on the production apply path; lifecycle seam test in battery (`tests/test_jev_escalation_lifecycle.py`). Exit checklist: Jev P4 residual + FRP dogfood remain open. |
 | **2 (now)** | **Promote addendum to canonical — DONE in this docs PR** | `JEV-LOG-*` rows added to STATUS as **open** (see promoted track section above). Addendum file remains design detail. |
 | **3** | **Implement addendum in full** | Fresh worktree `feat/jev-log-factor-analysis` off `origin/main` (after this docs PR merges); one phase PR at a time; extend `jev_packs`/`jev_policy` only (no second Jev client); 0-hallucination operator packs + score block; code owns parse/aggregate; JSON only; dogfood `C:\\temp\\logsSCMessenger.txt`. |
 
