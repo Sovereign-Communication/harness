@@ -692,11 +692,36 @@ def load_settings(overrides=None):
                           if get("max_price_prompt", None) is not None else None),
         max_price_completion=(float(get("max_price_completion", None))
                               if get("max_price_completion", None) is not None else None),
-        jev_api_key=get("jev_api_key", None) or resolve_jev_key(),
+        jev_api_key=(None if os.environ.get("HARNESS_JEV_DISABLE") == "1"
+                     else (get("jev_api_key", None) or resolve_jev_key())),
         jev_endpoint=str(get("jev_endpoint", "https://api.typesafe.ai/v1/systemone")),
         jev_model=str(get("jev_model", "jev-latest")),
         min_confidence=_num("min_confidence", float, 0.0, 1.0, 0.70),
     )
+
+
+def freeze_jev_settings(settings, *, jev_model=None, min_confidence=None):
+    """JEV-P4 model pin + threshold freeze path.
+
+    Operators freeze after calibration by writing the observed model id and
+    the chosen ``min_confidence`` into settings (config.json / env). This
+    helper applies one freeze snapshot onto an existing Settings object and
+    returns the frozen fields for ledger/docs evidence. It never invents a
+    model: omit ``jev_model`` to keep the current pin; omit
+    ``min_confidence`` to keep the current threshold.
+    """
+    frozen = {
+        "jev_model": settings.jev_model,
+        "min_confidence": settings.min_confidence,
+    }
+    if jev_model is not None:
+        settings.jev_model = str(jev_model)
+        frozen["jev_model"] = settings.jev_model
+    if min_confidence is not None:
+        settings.min_confidence = float(min_confidence)
+        frozen["min_confidence"] = settings.min_confidence
+    frozen["jev_model_is_pinned"] = settings.jev_model not in (None, "", "jev-latest")
+    return frozen
 
 
 def resolve_hourglass(settings, opts=None):

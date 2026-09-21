@@ -243,11 +243,25 @@ class TestAutonomousAgent(unittest.TestCase):
 
             mock_engine = MagicMock()
             mock_engine.apply_edit.side_effect = fake_apply_edit
-            from harness.jev import JevEvaluator
-            jev = MagicMock(wraps=JevEvaluator())
+            from harness.jev_policy import JevPolicy, policy_for
+
+            class _RecordingPolicy(JevPolicy):
+                """Real policy owner that records evaluate_diff (JEV-P4)."""
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    self.diff_calls = []
+
+                def evaluate_diff(self, *args, **kwargs):
+                    out = super().evaluate_diff(*args, **kwargs)
+                    self.diff_calls.append((args, kwargs))
+                    return out
+
+            injected_policy = policy_for(_lane_settings())
+            recording = _RecordingPolicy(
+                injected_policy.settings, evaluator=injected_policy.evaluator)
 
             with patch("harness.agent.apply_session", return_value=mock_engine), \
-                 patch("harness.agent.jev_for", return_value=jev), \
+                 patch("harness.agent.jev_for", return_value=recording), \
                  patch.object(AutonomousAgent, "_orchestrator_chat_fn",
                               side_effect=HarnessError("hermetic test")):
                 res = agent.run_prompt("Update harness/calc.py with type annotations", auto_apply=True)
@@ -258,8 +272,9 @@ class TestAutonomousAgent(unittest.TestCase):
                 self.assertIn("harness/calc.py", res["target_files"])
                 self.assertIn("+def add(a: int, b: int) -> int:", res["diff"])
                 self.assertAlmostEqual(res["cost"], 0.002)
-                jev.verify_diff_mechanics.assert_called_once()
-                self.assertEqual(jev.verify_diff_mechanics.call_args.kwargs["candidate"],
+                self.assertEqual(len(recording.diff_calls), 1)
+                kwargs = recording.diff_calls[0][1]
+                self.assertEqual(kwargs.get("candidate"),
                                  "def add(a: int, b: int) -> int: return a + b\n")
 
     def test_handle_edit_self_healing_retry(self):
