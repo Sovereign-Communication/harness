@@ -167,12 +167,12 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `JEV-P2-*` System One pillars | **complete** | **PR #36 MERGED** → `origin/main` `405bbc1`; hermetic lane-parity; D12 executed; local audit BAR MET; CI green on PR tip **and** post-merge `main`; live Jev smoke OK; **`JEV-P2-jury` deferred** (follow-up, not blocking P2 complete) |
 | `JEV-P3-*` utilization | **complete** | **PR #43 MERGED** `7eb18ea`; route/triage/context/claims/completion/calibration |
 | `JEV-P4-*` ops / exit | **complete** | **PR #46 MERGED** `a021cfc`; jury deferred; residual: dogfood A/B pass-rate + freeze persistence |
-| JEV-COMPLETION | **in progress** | PR #39 `harness jev-phase` gate |
+| JEV-COMPLETION | **complete** | **PR #39 MERGED** `5e15f8d` |
 | `JEV-P5-*` issue-sort buckets | **in progress** | PR #42 `feat/jev-p5-issue-sort`; **not complete until merge + CI green** |
 | `HUL-A` mission pack | **complete** | **PR #41 MERGED** `64e63a3`; mission pack + CLI + gate tests; CI green |
-| `HUL-B` dual budget | **in progress** | PR #47 `feat/hul-b-dual-budget` |
-| `HUL-C` Jev scope gate | **in progress** | PR #48 `feat/hul-cd-scope-driver` |
-| `HUL-D` until-limits driver | **in progress** | PR #48 `feat/hul-cd-scope-driver` |
+| `HUL-B` dual budget | **in progress** | PR #47; local BAR MET; merge CI required |
+| `HUL-C` Jev scope gate | **in progress** | PR #48 |
+| `HUL-D` until-limits driver | **in progress** | PR #48 |
 | `HG-*` hourglass composition | **complete** | **PR #44 MERGED** `f22accb` |
 | `MS-*` cheapest-capable + context | **open** | ad-hoc model strings → config/ladders; expensive seats get condensed state |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
