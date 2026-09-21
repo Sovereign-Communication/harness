@@ -244,6 +244,12 @@ harness cost --last 24h --by-tier --savings
 harness trust --model <id>     # bipolar trust + correctness (read-only)
 harness trust --caller <id>    # one peer's standing
 
+# Mission phase completion dogfood (JEV-COMPLETION): 0-100 score from
+# code-owned hard gates + Jev semantic judgment. STATUS complete only when
+# can_mark_complete=true (score >= 85). Exit non-zero otherwise.
+harness jev-phase --phase JEV-P2 --repo-root . --local-only
+harness jev-phase --phase JEV-P1 --repo-root . --local-only --json --out phase.json
+
 # Model capability profiles + reliability (hypothesis from /models, corrected
 # by observed evidence). --bench runs a real JSON probe on the free pool.
 harness capabilities

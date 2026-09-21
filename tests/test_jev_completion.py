@@ -1,6 +1,4 @@
 """Hermetic tests for the Jev phase-completion dogfood gate."""
-import json
-import os
 import tempfile
 import unittest
 from pathlib import Path

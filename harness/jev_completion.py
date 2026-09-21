@@ -13,7 +13,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from .errors import HarnessError
-from .jev import JevEvaluationResult, JevEvaluator
+from .jev import JevEvaluationResult
 
 PHASE_COMPLETE_MIN_SCORE = 85.0
 COMPLETION_SCORE_MAX = 100.0
