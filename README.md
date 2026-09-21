@@ -296,9 +296,12 @@ Wire into any MCP host (Claude Code, Cursor, your own agents):
 ```
 
 Tools: `panel_verify`, `apply_edit`, `plan_and_execute`, `offer_work`, `defer_work`,
-`ledger_status`, `participation_report`, `spend_status`, `trust_status`.
+`issue_sort`, `ledger_status`, `participation_report`, `spend_status`, `trust_status`.
 `trust_status` reports bipolar trust (-11..+11) for the host and a model,
 plus the correctness level that rations spend ceilings (read-only).
+`issue_sort` takes an operator-declared bucket pack plus issue text and
+returns the policy-owner combo + structural envelope (never invents buckets
+or actions; unmatched → `bucket=null`).
 `apply_edit` accepts
 `backend: "harness"|"morph"|"diff"`, `verify_only`, `max_lines`, `model`, and the
 same continuation controls as the CLI. Tools run on three serial lanes
