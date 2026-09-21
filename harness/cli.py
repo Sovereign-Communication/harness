@@ -560,6 +560,60 @@ def _cmd_cost(opts, settings):
     _emit(report, opts.out)
 
 
+def _cmd_mission(opts, settings):
+    """HUL-A mission pack CLI: init | status | resume | findings (+ run stub)."""
+    from . import mission_record as mr
+    cmd = getattr(opts, "mission_cmd", None)
+    if cmd == "init":
+        in_scope = _split_opt_list(getattr(opts, "in_scope", ""))
+        out_scope = _split_opt_list(getattr(opts, "out_of_scope", ""))
+        spec = mr.build_mission_spec(
+            mission_id=opts.mission_id,
+            request=opts.request,
+            success_definition=opts.success_definition,
+            max_cost_usd=opts.max_cost_usd,
+            terminal_reserve_cost_usd=getattr(opts, "terminal_reserve_cost_usd", 0.0),
+            in_scope=in_scope,
+            out_of_scope=out_scope,
+            persistence_root=getattr(opts, "root", "missions"),
+            verifier_kind=getattr(opts, "verifier_kind", "unspecified"),
+        )
+        pack = mr.init_mission_pack(opts.root, spec)
+        _emit(mr.pack_summary(pack), opts.out)
+        return
+    if cmd == "run":
+        # HUL-D owns the until-limits driver; fail closed with an honest stub.
+        raise HarnessError(
+            "mission run is not implemented yet (HUL-D until-limits driver); "
+            f"use mission status/resume for pack {getattr(opts, 'mission_id', '?')}")
+    pack = mr.load_mission_pack(opts.root, opts.mission_id)
+    if cmd == "status":
+        mr.write_status(pack)
+        mr.write_index(pack)
+        _emit(mr.pack_summary(pack), opts.out)
+        return
+    if cmd == "resume":
+        state = mr.load_resume(pack)
+        validated = mr.validate_resume(state, expected_id=pack.id)
+        mr.write_resume(pack, validated)
+        mr.write_status(pack)
+        out = mr.pack_summary(pack)
+        out["resume"] = validated
+        out["resumable"] = validated["status"] not in ("terminal", "complete", "failed")
+        _emit(out, opts.out)
+        return
+    if cmd == "findings":
+        if not pack.findings_md.is_file():
+            mr.ensure_findings_placeholder(pack)
+        body = pack.findings_md.read_text(encoding="utf-8")
+        out = mr.pack_summary(pack)
+        out["findings_md"] = body
+        out["terminal"] = mr.is_terminal(pack)
+        _emit(out, opts.out)
+        return
+    raise HarnessError(f"unknown mission command: {cmd!r}")
+
+
 def _cmd_trust(opts, settings):
     """Read-only trust snapshot: no key, no network, no ledger writes."""
     from . import trust as trust_policy
@@ -782,6 +836,7 @@ _DISPATCH = {
     "cost": _cmd_cost,
     "trust": _cmd_trust,
     "rankings": _cmd_rankings,
+    "mission": _cmd_mission,
 }
 
 

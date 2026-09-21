@@ -321,4 +321,36 @@ def build_parser():
                       help="session cost ceiling for the live verify + apply phases")
     _add_output_flags(pdog)
 
+    # HUL-A mission pack surface (run stubs until HUL-D driver lands).
+    pmiss = sub.add_parser(
+        "mission",
+        help="Mission pack (HUL-A): init | status | resume | findings "
+             "(run stubs until HUL-D)")
+    pms = pmiss.add_subparsers(dest="mission_cmd", required=True)
+    pmi = pms.add_parser("init", help="create missions/<id>/ pack from mission fields")
+    pmi.add_argument("--id", dest="mission_id", required=True, help="mission id")
+    pmi.add_argument("--request", required=True, help="the mission request text")
+    pmi.add_argument("--success", dest="success_definition", required=True,
+                     help="success definition (what 'done' means)")
+    pmi.add_argument("--max-cost", dest="max_cost_usd", type=float, required=True,
+                     help="limits.max_cost_usd for the mission pack")
+    pmi.add_argument("--terminal-reserve", dest="terminal_reserve_cost_usd",
+                     type=float, default=0.0,
+                     help="terminal_reserve.cost_usd stored in mission.yaml + budget.json")
+    pmi.add_argument("--in-scope", default="",
+                     help="comma-separated scope.in_scope entries")
+    pmi.add_argument("--out-of-scope", default="",
+                     help="comma-separated scope.out_of_scope entries")
+    pmi.add_argument("--root", default="missions",
+                     help="pack parent directory (default: missions)")
+    pmi.add_argument("--verifier-kind", default="unspecified",
+                     help="verifier.kind recorded in mission.yaml")
+    _add_output_flags(pmi)
+    for _sub in ("status", "resume", "findings", "run"):
+        _p = pms.add_parser(_sub, help=f"mission {_sub}")
+        _p.add_argument("--id", dest="mission_id", required=True, help="mission id")
+        _p.add_argument("--root", default="missions",
+                        help="pack parent directory (default: missions)")
+        _add_output_flags(_p)
+
     return ap
