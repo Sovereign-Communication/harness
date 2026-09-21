@@ -1,4 +1,4 @@
-{
+﻿{
   "scores": {
     "A": 10.0,
     "R": 10.0,
@@ -163,7 +163,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 1419 tests in 100.281s\n\nOK"
+        "evidence": "unittest: Ran 1390 tests in 80.684s\n\nOK"
       },
       {
         "id": "R14",
@@ -263,7 +263,7 @@
         "id": "D7",
         "label": "docs reference only real modules",
         "score": 1.0,
-        "evidence": "all module references across 17 docs resolve to real files"
+        "evidence": "all module references across 18 docs resolve to real files"
       },
       {
         "id": "D8",
@@ -293,7 +293,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "no executable harness changes since the coverage baseline 6276477083"
+        "evidence": "no executable harness changes since the coverage baseline 324c9abe63"
       }
     ]
   }
