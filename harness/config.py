@@ -248,6 +248,9 @@ DEFAULT_PANEL_PAID = [
 # MANDATORY-reasoning, which the chat lane supports via the param-rejection
 # retry (an explicit disable draws one free 400, then the provider default).
 DEFAULT_JUDGE_PAID = "z-ai/glm-5.3-flash"
+# Price-efficient paid frontier rung (config constant, not a lane-local string).
+# sliding_scale.resolve_frontier_model binds the unpaid default from here.
+DEFAULT_FRONTIER_PAID = "qwen/qwen3.8-max-0902"
 # Apply primary: the operator pick (rankings #3 and climbing), with verified
 # cheaper/fallback candidates.
 DEFAULT_APPLY_MODEL_PAID = "deepseek/deepseek-v4.1-flash"
@@ -354,6 +357,7 @@ _ENV_NAMES = {
     "hourglass_isolate": "HARNESS_HOURGLASS_ISOLATE",
     "hourglass_parallel": "HARNESS_HOURGLASS_PARALLEL",
     "hourglass_require_attestation": "HARNESS_HOURGLASS_REQUIRE_ATTESTATION",
+    "hourglass_decompose": "HARNESS_HOURGLASS_DECOMPOSE",
     "openrouter_floor_default": "HARNESS_OPENROUTER_FLOOR",
     "max_price_prompt": "HARNESS_MAX_PRICE_PROMPT",
     "max_price_completion": "HARNESS_MAX_PRICE_COMPLETION",
@@ -479,6 +483,7 @@ class Settings:
                   mcp_tool_timeout=1800, mcp_auth_token=None, frontier_model=None,
                   hourglass_confirm=True, hourglass_isolate=True,
                   hourglass_parallel=True, hourglass_require_attestation=True,
+                  hourglass_decompose=None,
                   openrouter_floor_default=True, max_price_prompt=None,
                   max_price_completion=None, jev_api_key=None,
                   jev_endpoint="https://api.typesafe.ai/v1/systemone",
@@ -531,6 +536,9 @@ class Settings:
         self.hourglass_isolate = hourglass_isolate
         self.hourglass_parallel = hourglass_parallel
         self.hourglass_require_attestation = hourglass_require_attestation
+        # None = resolve_hourglass derives the default (True when the
+        # hourglass is active: confirm and/or parallel on).
+        self.hourglass_decompose = hourglass_decompose
         self.openrouter_floor_default = openrouter_floor_default
         self.max_price_prompt = max_price_prompt
         self.max_price_completion = max_price_completion
@@ -551,7 +559,8 @@ class Settings:
             "mcp_allow_verify", "mcp_allowed_roots", "mcp_tool_timeout",
             "mcp_auth_token", "frontier_model", "hourglass_confirm",
             "hourglass_isolate", "hourglass_parallel",
-            "hourglass_require_attestation", "openrouter_floor_default",
+            "hourglass_require_attestation", "hourglass_decompose",
+            "openrouter_floor_default",
             "max_price_prompt", "max_price_completion", "jev_api_key",
             "jev_endpoint", "jev_model", "min_confidence")}
 
@@ -676,6 +685,8 @@ def load_settings(overrides=None):
         hourglass_parallel=_as_bool(get("hourglass_parallel", True)),
         hourglass_require_attestation=_as_bool(
             get("hourglass_require_attestation", True)),
+        hourglass_decompose=(None if get("hourglass_decompose", None) is None
+                             else _as_bool(get("hourglass_decompose", None))),
         openrouter_floor_default=_as_bool(get("openrouter_floor_default", True)),
         max_price_prompt=(float(get("max_price_prompt", None))
                           if get("max_price_prompt", None) is not None else None),
@@ -699,14 +710,36 @@ def resolve_hourglass(settings, opts=None):
     resolves to for the CLI and MCP lanes, so no lane re-derives the
     switches or silently diverges from them.
     """
-    def resolve(flag, key):
+    def resolve(flag, key, default=True):
         value = getattr(opts, flag, None) if opts is not None else None
-        return getattr(settings, key, True) if value is None else value
+        return getattr(settings, key, default) if value is None else value
+
+    confirm = resolve("confirm", "hourglass_confirm")
+    parallel = resolve("parallel", "hourglass_parallel")
+    isolate = resolve("isolate", "hourglass_isolate")
+    require_diff_authorization = resolve(
+        "require_diff_authorization", "hourglass_require_attestation")
+
+    # HG-decompose-default: LLM decomposition rides the hourglass. An explicit
+    # flag/settings value wins; otherwise it defaults True whenever the
+    # hourglass is active (confirm and/or parallel on) so CLI/MCP/agent share
+    # one mapping instead of each hardcoding decompose_llm=False.
+    decompose_value = None
+    if opts is not None:
+        decompose_value = getattr(opts, "decompose", None)
+        if decompose_value is None:
+            decompose_value = getattr(opts, "decompose_llm", None)
+    if decompose_value is None:
+        settings_default = getattr(settings, "hourglass_decompose", None)
+        if settings_default is not None:
+            decompose_value = bool(settings_default)
+        else:
+            decompose_value = bool(confirm or parallel)
 
     return {
-        "confirm": resolve("confirm", "hourglass_confirm"),
-        "parallel": resolve("parallel", "hourglass_parallel"),
-        "isolate": resolve("isolate", "hourglass_isolate"),
-        "require_diff_authorization": resolve(
-            "require_diff_authorization", "hourglass_require_attestation"),
+        "confirm": confirm,
+        "parallel": parallel,
+        "isolate": isolate,
+        "require_diff_authorization": require_diff_authorization,
+        "decompose": bool(decompose_value),
     }

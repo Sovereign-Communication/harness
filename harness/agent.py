@@ -512,6 +512,7 @@ class AutonomousAgent:
             frontier_model=self.settings.frontier_model,
             use_free=self.settings.use_free,
             decompose_llm=True, confirm=bool(confirm),
+            plan_consensus=bool(getattr(self.settings, "hourglass_plan_consensus", False)),
             # The lane's tree: a node's target size is measured against the
             # files this run actually edits, not the server's CWD.
             root=str(self.root_dir),
@@ -783,6 +784,11 @@ class AutonomousAgent:
         def execute_plan(plan_to_run):
             dag = TaskDAG.from_dict(plan_to_run["dag"])
             node_routes = {n.get("node_id"): n for n in plan_to_run["nodes"]}
+            run_gate = None
+            for n in plan_to_run.get("nodes") or ():
+                if isinstance(n, dict) and n.get("local_gate"):
+                    run_gate = n["local_gate"]
+                    break
             plan_exec = PlanExecutor(
                 engine, node_routes,
                 parallel=hourglass["parallel"], isolate=hourglass["isolate"],
@@ -793,7 +799,11 @@ class AutonomousAgent:
                     allow_escalation=self.settings.allow_escalation,
                     attest_model=attest_model_for(self.settings)),
                 repo=str(self.root_dir), run_ceiling=gov.max_cost,
-                apply=apply_node)
+                apply=apply_node,
+                # HG-final-gate: default ON when a verify command was
+                # discovered/declared; shared with CLI/MCP via PlanExecutor.
+                final_gate=hourglass.get("final_gate"),
+                run_gate=run_gate)
             return plan_exec.execute(dag)
 
         driven = drive(

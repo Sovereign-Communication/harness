@@ -254,27 +254,69 @@ class ExecutorIsolationTests(WorktreeIsolationTests):
         self.assertFalse(os.path.exists(os.path.join(self.repo, "a.txt")))
 
     def test_merge_conflict_sets_merge_conflict_status(self):
-        # Both stage worktrees branch from the same commit (created up
-        # front), so two nodes adding the same file with different content
-        # genuinely conflict: exactly one node merges, the other fails as
-        # merge_conflict -- never force-merged.
+        # HG-hybrid-isolate: concurrent nodes that share a declared target
+        # file NEVER enter worktrees -- they serialize under the shared-tree
+        # mutex. The old "both branch, one merge_conflicts" path only applies
+        # to overlap-free nodes; this test pins the hybrid partition itself.
         n1 = DAGNode(node_id="task_1", instruction="x",
                      target_files=("a.txt",))
         n2 = DAGNode(node_id="task_2", instruction="y",
                      target_files=("a.txt",))
         dag = TaskDAG(nodes={"task_1": n1, "task_2": n2})
 
+        worktree_paths = []
+
         def worker(node, gate_cwd=None):
-            with open(os.path.join(gate_cwd, "a.txt"), "w") as f:
+            if gate_cwd:
+                worktree_paths.append(gate_cwd)
+            base = gate_cwd or self.repo
+            with open(os.path.join(base, "a.txt"), "w") as f:
                 f.write(f"written by {node.node_id}\n")
-            _git(gate_cwd, "add", ".")
-            _git(gate_cwd, "commit", "-q", "-m", node.node_id)
             return {"status": "ok", "cost": 0.0}
 
         results = ConcurrentExecutor(max_workers=2).execute_dag(
             dag, worker, isolator=self.iso)
         statuses = sorted(r["status"] for r in results.values())
-        self.assertEqual(statuses, ["merge_conflict", "ok"])
+        self.assertEqual(statuses, ["ok", "ok"])
+        # Shared-tree arm: no worktree checkout for overlapping targets.
+        self.assertEqual(worktree_paths, [])
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "a.txt")))
+
+    def test_overlap_free_nodes_can_still_merge_conflict(self):
+        """A worktree merge failure on an overlap-free node stays an honest
+        merge_conflict -- never force-merged."""
+        from unittest.mock import patch
+
+        n1 = DAGNode(node_id="task_1", instruction="x",
+                     target_files=("a.txt",))
+        n2 = DAGNode(node_id="task_2", instruction="y",
+                     target_files=("b.txt",))
+        dag = TaskDAG(nodes={"task_1": n1, "task_2": n2})
+
+        def worker(node, gate_cwd=None):
+            base = gate_cwd or self.repo
+            path = os.path.join(base, node.target_files[0])
+            with open(path, "w") as f:
+                f.write(f"written by {node.node_id}\n")
+            if gate_cwd:
+                _git(gate_cwd, "add", ".")
+                _git(gate_cwd, "commit", "-q", "-m", node.node_id)
+            return {"status": "ok", "cost": 0.0}
+
+        def merge(handle, declared=None):
+            if handle and handle.get("node_id") == "task_2" or (
+                    isinstance(handle, dict) and "task_2" in str(handle)):
+                raise HarnessError("merge conflict: b.txt")
+            # Real merge path for the other node is fine via the real iso;
+            # this seam only injects the conflict.
+            return None
+
+        with patch.object(self.iso, "merge", side_effect=merge):
+            results = ConcurrentExecutor(max_workers=2).execute_dag(
+                dag, worker, isolator=self.iso)
+        statuses = sorted(r["status"] for r in results.values())
+        self.assertIn("merge_conflict", statuses)
+        self.assertIn("ok", statuses)
 
     def test_reserver_bounds_concurrent_dispatch(self):
         from harness.spend import NodeReserver, SpendGovernor
