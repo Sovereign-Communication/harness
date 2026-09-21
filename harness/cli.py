@@ -43,6 +43,8 @@ from .rankings import build_rankings_report as _rankings_report
 from .waist import compose_plan as _compose_plan
 from .jev_policy import aggregate_structural, policy_for
 from .jev_packs import validate_operator_pack
+from .mission_driver import pack_probe_attempt as _mission_pack_probe
+from .mission_driver import run_mission as _mission_run
 from .capability import capabilities_payload as _capability_payload_owner
 from .brief import build_brief, validate_brief
 from .dag import TaskDAG, node_apply_kwargs
@@ -561,7 +563,7 @@ def _cmd_cost(opts, settings):
 
 
 def _cmd_mission(opts, settings):
-    """HUL-A mission pack CLI: init | status | resume | findings (+ run stub)."""
+    """HUL-A mission pack CLI: init | status | resume | findings | run."""
     from . import mission_record as mr
     cmd = getattr(opts, "mission_cmd", None)
     if cmd == "init":
@@ -582,10 +584,29 @@ def _cmd_mission(opts, settings):
         _emit(mr.pack_summary(pack), opts.out)
         return
     if cmd == "run":
-        # HUL-D owns the until-limits driver; fail closed with an honest stub.
-        raise HarnessError(
-            "mission run is not implemented yet (HUL-D until-limits driver); "
-            f"use mission status/resume for pack {getattr(opts, 'mission_id', '?')}")
+        # HUL-D until-limits driver. CLI scope seat is unkeyed by default
+        # (no network spend); live Jev scope is library-composed via
+        # jev_policy.policy_for + governor. Dual budget uses mission
+        # working_remaining until HUL-B enforcement lands.
+        pack = mr.load_mission_pack(opts.root, opts.mission_id)
+        run_settings = load_settings()
+        run_settings.jev_api_key = None
+        try:
+            scope_policy = policy_for(run_settings)
+        except HarnessError:
+            scope_policy = None
+        stall_limit = getattr(opts, "stall_limit", None)
+        result = _mission_run(
+            pack,
+            attempt_fn=_mission_pack_probe,
+            scope_policy=scope_policy,
+            stall_limit=int(stall_limit) if stall_limit else 5,
+            max_attempts=getattr(opts, "max_attempts", None),
+            max_tokens=getattr(opts, "max_tokens", None),
+            max_errors=getattr(opts, "max_errors", None),
+        )
+        _emit(result, opts.out)
+        return
     pack = mr.load_mission_pack(opts.root, opts.mission_id)
     if cmd == "status":
         mr.write_status(pack)
@@ -599,7 +620,7 @@ def _cmd_mission(opts, settings):
         mr.write_status(pack)
         out = mr.pack_summary(pack)
         out["resume"] = validated
-        out["resumable"] = validated["status"] not in ("terminal", "complete", "failed")
+        out["resumable"] = not mr.is_terminal(pack)
         _emit(out, opts.out)
         return
     if cmd == "findings":

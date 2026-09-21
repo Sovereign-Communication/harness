@@ -159,6 +159,9 @@ statement covers the CI matrix by direct execution.
 | `harness/jev_packs.py` | JEV-P3 utilization packs and pure helpers (route vocabulary, file-relevance/claim/completion nouls, context pack, artifact facts) — no second Jev client |
 | `harness/jev_policy.py` | shared Jev decision policy: bounded packs, spend preflight, ledger evidence, and structural envelopes |
 | `harness/jev_packs.py` | operator-declared issue-sort bucket packs (schema validation, TypeSafe choice pack builder, keyword matcher); never invents buckets or actions |
+| `harness/jev_packs.py` | HUL-C mission scope packs (`hul_scope_question_pack`, site=`hul_scope`); unkeyed fallback cannot alone mark a mission complete |
+| `harness/mission_record.py` | HUL-A mission pack schema/layout/STATUS/receipts/budget/resume + `evaluate_scope_on_pack` storage (no second Jev client) |
+| `harness/mission_driver.py` | HUL-D until-limits driver: attempts until cost/token/error limits, honest HUL-C success, or stall; FINDINGS.md + interrupt-safe resume |
 | `harness/providers.py` | modular provider adapter interface and registry for external execution backends |
 | `harness/agent.py` | autonomous agent orchestration: natural language prompt intent classification, file/gate discovery, sliding-scale DAG execution, self-healing retry |
 | `harness/apply_gate.py` | one candidate-to-gate transaction: write, verify, preview, rewind, and terminal gate results |

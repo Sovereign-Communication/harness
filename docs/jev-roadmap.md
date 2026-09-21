@@ -157,7 +157,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 
 ---
 
-## Canonical STATUS (update here only — truth as of 2026-09-21 post P3 + HUL-A merge)
+## Canonical STATUS (update here only — truth as of 2026-09-21 post P3 + HUL-A merge; HUL-C/D in progress on `feat/hul-cd-scope-driver`)
 
 | Track / phase | Status | PR / evidence |
 |---|---|---|
@@ -169,9 +169,9 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `JEV-P4-*` ops / exit | **open** | after P3 DoD |
 | `JEV-P5-*` issue-sort buckets | **in progress** | PR #42 `feat/jev-p5-issue-sort`; **not complete until merge + CI green** |
 | `HUL-A` mission pack | **complete** | **PR #41 MERGED** `64e63a3`; mission pack + CLI + gate tests; CI green |
-| `HUL-B` dual budget | **open** | after A |
-| `HUL-C` Jev scope gate | **open** | after A + P1 policy (merged) |
-| `HUL-D` until-limits driver | **open** | after A–C |
+| `HUL-B` dual budget | **open** | after A; HUL-D uses `working_remaining` until B lands |
+| `HUL-C` Jev scope gate | **in progress** | branch `feat/hul-cd-scope-driver`; packs + `evaluate_scope` + `tests/test_hul_jev_scope_gate.py` |
+| `HUL-D` until-limits driver | **in progress** | branch `feat/hul-cd-scope-driver`; `mission_driver` + CLI `mission run` + `tests/test_hul_driver_findings_resume.py` |
 | `HG-*` hourglass composition | **open** | composed ceiling, pyramid resume, final gates, hybrid isolation, plan consensus, condensation into decompose, MS surface parity |
 | `MS-*` cheapest-capable + context | **open** | ad-hoc model strings → config/ladders; expensive seats get condensed state |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
@@ -204,8 +204,8 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | 5 Issue-sort | `JEV-P5-*` | `jev_policy` + `harness/jev_packs.py`, waist/orchestrator/CLI/MCP | `tests/test_jev_issue_sort.py` (+ pack/orchestration) | **in progress** — PR #42 `feat/jev-p5-issue-sort`; operator bucket packs, 0 hallucination |
 | HUL-A | `HUL-A-*` | `harness/mission_record.py`, CLI `mission` | `tests/test_hul_mission_record.py` | **complete** — PR #41 `64e63a3` |
 | HUL-B | `HUL-B-*` | `spend.py` dual envelope | `tests/test_hul_budget_reserve.py` | **open** |
-| HUL-C | `HUL-C-*` | scope packs via `jev_policy.evaluate_scope` (pack module name when shipped) | `tests/test_hul_jev_scope_gate.py` | **open** |
-| HUL-D | `HUL-D-*` | mission driver + FINDINGS + resume | `tests/test_hul_driver_findings_resume.py` | **open** |
+| HUL-C | `HUL-C-*` | scope packs via `jev_policy.evaluate_scope` (`site=hul_scope`); `harness/jev_packs.hul_scope_question_pack` | `tests/test_hul_jev_scope_gate.py` | **in progress** — branch `feat/hul-cd-scope-driver` |
+| HUL-D | `HUL-D-*` | `harness/mission_driver.py` + FINDINGS + resume + CLI `mission run` | `tests/test_hul_driver_findings_resume.py` | **in progress** — branch `feat/hul-cd-scope-driver` |
 | Hourglass | `HG-*` | waist/executor/spend/plan consensus/pyramid state | named hermetic tests per gap (see HG notes) | **open** |
 
 ### JEV-P3 patterns (implementer notes)
@@ -237,10 +237,10 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 |---|---|---|
 | `HUL-A` | `missions/<id>/` pack + loader + STATUS generator + receipts + CLI `mission init\|status\|resume\|findings` | `tests/test_hul_mission_record.py` |
 | `HUL-B` | Dual budget: `working_remaining = max - spent - terminal_reserve`; attempts never eat reserve | `tests/test_hul_budget_reserve.py` |
-| `HUL-C` | Scope packs via `jev_policy` (`site=hul_scope`); unkeyed cannot alone complete | `tests/test_hul_jev_scope_gate.py` |
-| `HUL-D` | `mission run` until limits/stall + FINDINGS.md + resume.json | `tests/test_hul_driver_findings_resume.py` |
+| `HUL-C` | Scope packs via `jev_policy` (`site=hul_scope`); unkeyed cannot alone complete; complete = verifier + success_definition_met + scope hold | `tests/test_hul_jev_scope_gate.py` |
+| `HUL-D` | `mission run` until limits/stall + FINDINGS.md + resume.json; stall default 5 | `tests/test_hul_driver_findings_resume.py` |
 
-Reuse `jev_policy` — no second Jev client. Stall default: 5 consecutive attempts with no new artifact/evidence.
+Reuse `jev_policy` — no second Jev client. Stall default: 5 consecutive attempts with no new artifact/evidence. HUL-D budget uses `mission_record.working_remaining` until HUL-B dual-budget enforcement lands.
 
 ### Hourglass remaining (`HG-*`)
 
