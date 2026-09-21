@@ -164,7 +164,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | Preflight sync `main`↔`origin` P0 | **complete** | `origin/main` includes P0 `d042d70` |
 | `JEV-P0-*` contract truth | **complete** | PR #34 / `d042d70`; live smoke OK |
 | `JEV-P1-*` one owner + lanes | **complete** | **PR #35 MERGED** → `origin/main` `9d5ff14`; required tests present; structural retry green in CI |
-| `JEV-P2-*` System One pillars | **in progress / repair** | WIP `Harness-jev-p2` / `feat/jev-p2-system-one-pillars`; **PR #36 OPEN**; lane-parity **hermetic** on operator machine + CI contract; D12 target lines **executed** by named tests in `tests/test_jev_lane_parity.py` + existing P2 modules; full local battery green; lean jury **`JEV-P2-jury` deferred** — STATUS stays **in progress until merge** |
+| `JEV-P2-*` System One pillars | **in progress / repair** | WIP `Harness-jev-p2` / `feat/jev-p2-system-one-pillars`; **PR #36 OPEN**; lane-parity **hermetic**; D12 target lines **executed** by named tests; local battery green; audit **BAR MET** locally; live Jev smoke OK; lean jury **`JEV-P2-jury` deferred** — STATUS stays **in progress until merge + CI green** |
 | `JEV-P3-*` utilization | **open** | after P2 merge + STATUS complete |
 | `JEV-P4-*` ops / exit | **open** | after P3 DoD |
 
@@ -180,7 +180,8 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | Lane parity repair | `tests/test_jev_lane_parity.py` hermetic: isolated settings (`jev_api_key=None`, hourglass off), scripted `run_verify` (Windows-safe; no host-shell `true`), consent off, posts sized for every apply chat call; production fail-closed readiness **not** weakened |
 | D12 coverage repair | Named tests **execute** previously untested lines: `apply_state.py:41`; `consent.py:225,226,231`; `jev_policy.py:227,231,233,235,239,241,242`; `waist.py:1018,1019,1020` (exception/reservation-release path included). Baseline refreshed only **after** real tests via `audits/self/refresh_coverage_baseline.py` |
 | Local battery | Full repair battery green (118 tests, 1 live smoke skip); regression `test_agent` + `test_sliding_scale` + `test_consent` green (102 tests) |
-| Gate to merge | Local battery + `python audits/self/audit.py` **BAR MET** + CI audit success on PR #36; do **not** mark complete while any of those are red |
+| Live dogfood | `tests.test_jev_smoke.LiveJevSmokeTests` OK — `jev-1.13.0`, non-fallback, honest token cost |
+| Gate to merge | Local battery + `python audits/self/audit.py` **BAR MET** + CI audit success on PR #36 tip; do **not** mark complete while any of those are red |
 
 ---
 
@@ -202,10 +203,11 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
    - Lane parity is now **hermetic** (scripted gate + isolated settings); keep that contract.
    - D12 lines listed in the evidence snapshot are **executed** by real tests; do not game the baseline to hide them.
    - STATUS stays `**in progress / repair**` until PR #36 is **merged** with local+CI green; `JEV-P2-jury` stays **deferred**.
-2. After P2 merge + STATUS complete → **P3** utilization patterns.
+2. After P2 merge + STATUS complete → **P3** utilization patterns (plus promoted rows: HUL product, JEV-P5 issue-sort, hourglass remaining).
 3. **P4** dogfood + freeze thresholds.
 
-**Do not mark P2 complete while:** PR #36 is open, local lane-parity is red on operator machines, or D12 evidence is incomplete. Canon + `AGENTS.md` on `origin/main` are the tracking truth if this row disagrees.
+**Do not mark P2 complete while:** PR #36 is open, local lane-parity is red, audit is red, or CI on the tip is red. Canon + `AGENTS.md` on `origin/main` are the tracking truth if this row disagrees.
+
 
 ---
 
