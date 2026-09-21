@@ -1,4 +1,4 @@
-# Jev Full-Functionality Roadmap
+﻿# Jev Full-Functionality Roadmap
 
 **Status:** active tracking doc  
 **Picked up from:** Freebuff / Buffy lane (PR-Jev-Live `b6fa945`, waist pre-plan `a591739`, cost foundation `b3960e7`)  
@@ -157,7 +157,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 
 ---
 
-## Canonical STATUS (update here only — truth as of 2026-09-21 post P3 + HUL-A merge; HUL-C/D in progress on `feat/hul-cd-scope-driver`)
+## Canonical STATUS (update here only — truth as of 2026-09-21 post P3 + HUL-A merge)
 
 | Track / phase | Status | PR / evidence |
 |---|---|---|
@@ -166,13 +166,13 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `JEV-P1-*` one owner + lanes | **complete** | **PR #35 MERGED** → `origin/main` `9d5ff14` |
 | `JEV-P2-*` System One pillars | **complete** | **PR #36 MERGED** → `origin/main` `405bbc1`; hermetic lane-parity; D12 executed; local audit BAR MET; CI green on PR tip **and** post-merge `main`; live Jev smoke OK; **`JEV-P2-jury` deferred** (follow-up, not blocking P2 complete) |
 | `JEV-P3-*` utilization | **complete** | **PR #43 MERGED** `7eb18ea`; route/triage/context/claims/completion/calibration |
-| `JEV-P4-*` ops / exit | **open** | after P3 DoD |
+| `JEV-P4-*` ops / exit | **in progress** | PR #46; jury deferred |
 | `JEV-P5-*` issue-sort buckets | **in progress** | PR #42 `feat/jev-p5-issue-sort`; **not complete until merge + CI green** |
 | `HUL-A` mission pack | **complete** | **PR #41 MERGED** `64e63a3`; mission pack + CLI + gate tests; CI green |
-| `HUL-B` dual budget | **open** | after A; HUL-D uses `working_remaining` until B lands |
-| `HUL-C` Jev scope gate | **in progress** | branch `feat/hul-cd-scope-driver`; packs + `evaluate_scope` + `tests/test_hul_jev_scope_gate.py` |
-| `HUL-D` until-limits driver | **in progress** | branch `feat/hul-cd-scope-driver`; `mission_driver` + CLI `mission run` + `tests/test_hul_driver_findings_resume.py` |
-| `HG-*` hourglass composition | **open** | composed ceiling, pyramid resume, final gates, hybrid isolation, plan consensus, condensation into decompose, MS surface parity |
+| `HUL-B` dual budget | **in progress** | PR #47 |
+| `HUL-C` Jev scope gate | **in progress** | PR #48; evaluate_scope + false-done blocked |
+| `HUL-D` until-limits driver | **in progress** | PR #48; mission_driver + FINDINGS + resume |
+| `HG-*` hourglass composition | **complete** | **PR #44 MERGED** `f22accb` |
 | `MS-*` cheapest-capable + context | **open** | ad-hoc model strings → config/ladders; expensive seats get condensed state |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
 | Exit | Jev P4 checklist all true on `origin/main` | **open** |
@@ -204,9 +204,9 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | 5 Issue-sort | `JEV-P5-*` | `jev_policy` + `harness/jev_packs.py`, waist/orchestrator/CLI/MCP | `tests/test_jev_issue_sort.py` (+ pack/orchestration) | **in progress** — PR #42 `feat/jev-p5-issue-sort`; operator bucket packs, 0 hallucination |
 | HUL-A | `HUL-A-*` | `harness/mission_record.py`, CLI `mission` | `tests/test_hul_mission_record.py` | **complete** — PR #41 `64e63a3` |
 | HUL-B | `HUL-B-*` | `spend.py` dual envelope | `tests/test_hul_budget_reserve.py` | **open** |
-| HUL-C | `HUL-C-*` | scope packs via `jev_policy.evaluate_scope` (`site=hul_scope`); `harness/jev_packs.hul_scope_question_pack` | `tests/test_hul_jev_scope_gate.py` | **in progress** — branch `feat/hul-cd-scope-driver` |
-| HUL-D | `HUL-D-*` | `harness/mission_driver.py` + FINDINGS + resume + CLI `mission run` | `tests/test_hul_driver_findings_resume.py` | **in progress** — branch `feat/hul-cd-scope-driver` |
-| Hourglass | `HG-*` | waist/executor/spend/plan consensus/pyramid state | named hermetic tests per gap (see HG notes) | **open** |
+| HUL-C | `HUL-C-*` | scope packs via `jev_policy.evaluate_scope` (pack module name when shipped) | `tests/test_hul_jev_scope_gate.py` | **open** |
+| HUL-D | `HUL-D-*` | mission driver + FINDINGS + resume | `tests/test_hul_driver_findings_resume.py` | **open** |
+| Hourglass | `HG-*` | waist/executor/spend/plan consensus/pyramid state | `tests/test_hg_*.py` | **complete** — PR #44 |
 
 ### JEV-P3 patterns (implementer notes)
 
@@ -237,10 +237,10 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 |---|---|---|
 | `HUL-A` | `missions/<id>/` pack + loader + STATUS generator + receipts + CLI `mission init\|status\|resume\|findings` | `tests/test_hul_mission_record.py` |
 | `HUL-B` | Dual budget: `working_remaining = max - spent - terminal_reserve`; attempts never eat reserve | `tests/test_hul_budget_reserve.py` |
-| `HUL-C` | Scope packs via `jev_policy` (`site=hul_scope`); unkeyed cannot alone complete; complete = verifier + success_definition_met + scope hold | `tests/test_hul_jev_scope_gate.py` |
-| `HUL-D` | `mission run` until limits/stall + FINDINGS.md + resume.json; stall default 5 | `tests/test_hul_driver_findings_resume.py` |
+| `HUL-C` | Scope packs via `jev_policy` (`site=hul_scope`); unkeyed cannot alone complete | `tests/test_hul_jev_scope_gate.py` |
+| `HUL-D` | `mission run` until limits/stall + FINDINGS.md + resume.json | `tests/test_hul_driver_findings_resume.py` |
 
-Reuse `jev_policy` — no second Jev client. Stall default: 5 consecutive attempts with no new artifact/evidence. HUL-D budget uses `mission_record.working_remaining` until HUL-B dual-budget enforcement lands.
+Reuse `jev_policy` — no second Jev client. Stall default: 5 consecutive attempts with no new artifact/evidence.
 
 ### Hourglass remaining (`HG-*`)
 
@@ -376,5 +376,8 @@ Write STATUS `blocked` + the **exact** failing command/output. No “will do”.
 - Endpoint (authoritative): `https://api.typesafe.ai/v1/systemone`
 - Models: alias `jev-latest` → `jev-1.13.0` (pin version id when calibrating thresholds)
 - Verification gates remain authoritative for code correctness; Jev is pre-gate triage and structural refusal, not a substitute for tests
+
+
+
 
 

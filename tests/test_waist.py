@@ -595,7 +595,10 @@ class ComposePlanTests(_WaistFixture):
         self.assertEqual(plan["confirmation"]["model"], paid_model)
         self.assertEqual(plan["confirmation"]["verdict"], "approved")
 
-    def test_compose_plan_exhausted_ladder_executes_under_local_gate(self):
+    def test_compose_plan_exhausted_ladder_refuses_execute(self):
+        """HG: confirm-armed waist unreachable across the full ladder REFUSES
+        execute (fail-closed). Proceeding under the local gate would spend an
+        unconfirmed pyramid."""
         def broken(transport, api_key, governor, model, prompt, tokens, label=None):
             raise HarnessError("HTTP 429: Provider returned error")
 
@@ -604,8 +607,9 @@ class ComposePlanTests(_WaistFixture):
                 transport=None, api_key="k", governor=self.gov, ledger=None,
                 opts_goal="Split the work", candidate_files=["harness/sync.py"],
                 confirm=True, execute=True)
-        self.assertEqual(plan["status"], "planned")
-        self.assertNotIn("confirmation", plan)
+        self.assertEqual(plan["status"], "refused")
+        self.assertEqual(plan["confirmation"]["verdict"], "refused")
+        self.assertIn("unreachable", plan["confirmation"]["reason"])
 
     def test_compose_plan_exhausted_ladder_plan_only_fails_closed(self):
         def broken(transport, api_key, governor, model, prompt, tokens, label=None):

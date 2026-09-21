@@ -1,4 +1,4 @@
-{
+﻿{
   "scores": {
     "A": 10.0,
     "R": 10.0,
@@ -163,7 +163,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 1357 tests in 86.677s\n\nOK"
+        "evidence": "unittest: Ran 1364 tests in 81.333s\n\nOK"
       },
       {
         "id": "R14",
@@ -245,7 +245,7 @@
         "id": "D4",
         "label": "config table keys real",
         "score": 1.0,
-        "evidence": "24 README config keys all resolve to real settings (41 configurable)"
+        "evidence": "24 README config keys all resolve to real settings (42 configurable)"
       },
       {
         "id": "D5",
@@ -293,7 +293,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed"
+        "evidence": "no executable harness changes since the coverage baseline b91a8a694d"
       }
     ]
   }

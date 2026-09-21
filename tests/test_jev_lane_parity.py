@@ -160,6 +160,7 @@ class LaneParityTests(unittest.TestCase):
         result = server._invoke("plan_and_execute", {
             "goal": "Update x.py", "file": [self.target],
             "execute": False, "confirm": False,
+            "decompose_llm": False,
         })
         self.assertIn("structural", result)
         self.assertTrue(result["structural"]["is_fallback"])
