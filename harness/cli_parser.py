@@ -342,7 +342,6 @@ def build_parser():
                       help="session cost ceiling for the live verify + apply phases")
     _add_output_flags(pdog)
 
-<<<<<<< HEAD
     pjphase = sub.add_parser(
         "jev-phase",
         help="Dogfood Jev 0-100 phase completion score; STATUS complete only "
@@ -359,8 +358,8 @@ def build_parser():
                          help="skip live Jev; use code gates + local semantic score")
     pjphase.add_argument("--json", action="store_true", help="emit raw JSON only")
     _add_output_flags(pjphase)
-=======
-    # HUL-A mission pack surface (run stubs until HUL-D driver lands).
+
+    # HUL-A mission pack surface.
     pmiss = sub.add_parser(
         "mission",
         help="Mission pack (HUL-A): init | status | resume | findings "
@@ -391,6 +390,5 @@ def build_parser():
         _p.add_argument("--root", default="missions",
                         help="pack parent directory (default: missions)")
         _add_output_flags(_p)
->>>>>>> origin/main
 
     return ap

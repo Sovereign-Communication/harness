@@ -42,11 +42,8 @@ from .service import read_text_file as _service_read_text
 from .rankings import build_rankings_report as _rankings_report
 from .waist import compose_plan as _compose_plan
 from .jev_policy import aggregate_structural, policy_for
-<<<<<<< HEAD
 from .jev_completion import dogfood_phase
-=======
 from .jev_packs import validate_operator_pack
->>>>>>> origin/main
 from .capability import capabilities_payload as _capability_payload_owner
 from .brief import build_brief, validate_brief
 from .dag import TaskDAG, node_apply_kwargs
@@ -949,11 +946,8 @@ _DISPATCH = {
     "cost": _cmd_cost,
     "trust": _cmd_trust,
     "rankings": _cmd_rankings,
-<<<<<<< HEAD
     "jev-phase": _cmd_jev_phase,
-=======
     "mission": _cmd_mission,
->>>>>>> origin/main
 }
 
 
