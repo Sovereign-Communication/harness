@@ -1,7 +1,7 @@
-﻿{
+{
   "scores": {
     "A": 10.0,
-    "R": 10.0,
+    "R": 9.29,
     "SM": 10.0,
     "SD": 10.0
   },
@@ -162,8 +162,8 @@
       {
         "id": "R13",
         "label": "full suite green hermetically",
-        "score": 1.0,
-        "evidence": "unittest: Ran 1377 tests in 101.570s\n\nOK"
+        "score": 0.0,
+        "evidence": "ile \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\tests\\test_planning_surface.py\", line 497, in test_cli_cmd_plan_execute_isolated_parallel_with_stage_gate\n    _cmd_plan(opts, settings)\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\harness\\cli.py\", line 865, in _cmd_plan\n    all_results = plan_exec.execute(dag)\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\harness\\executor.py\", line 545, in execute\n    results = self.executor.execute_dag(\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\harness\\executor.py\", line 262, in execute_dag\n    handles[node] = isolator.create(node.node_id)\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\harness\\worktree.py\", line 100, in create\n    _git(self.repo, \"worktree\", \"add\", \"-b\", branch, path)\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\harness\\worktree.py\", line 65, in _git\n    raise HarnessError(\nharness.errors.HarnessError: git worktree add failed: Preparing worktree (new branch 'harness/task_1')\nfatal: cannot lock ref 'refs/heads/harness/task_1': reference already exists\n\n======================================================================\nERROR: test_mcp_plan_and_execute_parallel_isolated (test_planning_surface.TestPlanningSurface)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\tests\\test_planning_surface.py\", line 804, in test_mcp_plan_and_execute_parallel_isolated\n    exec_res = server._invoke(\"plan_and_execute\", {\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\harness\\mcp.py\", line 805, in _invoke\n    all_results = plan_exec.execute(dag)\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\harness\\executor.py\", line 545, in execute\n    results = self.executor.execute_dag(\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\harness\\executor.py\", line 262, in execute_dag\n    handles[node] = isolator.create(node.node_id)\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\harness\\worktree.py\", line 100, in create\n    _git(self.repo, \"worktree\", \"add\", \"-b\", branch, path)\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-hul-cd\\harness\\worktree.py\", line 65, in _git\n    raise HarnessError(\nharness.errors.HarnessError: git worktree add failed: Preparing worktree (new branch 'harness/task_1')\nfatal: a branch named 'harness/task_1' already exists\n\n----------------------------------------------------------------------\nRan 1419 tests in 94.689s\n\nFAILED (errors=2, skipped=46)\n"
       },
       {
         "id": "R14",
@@ -207,7 +207,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "62/62 modules imported by tests"
+        "evidence": "63/63 modules imported by tests"
       },
       {
         "id": "S7",
@@ -293,7 +293,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed"
+        "evidence": "no executable harness changes since the coverage baseline 6276477083"
       }
     ]
   }
