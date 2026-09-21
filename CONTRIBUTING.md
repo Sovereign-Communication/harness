@@ -156,6 +156,7 @@ statement covers the CI matrix by direct execution.
 | `harness/sliding_scale.py` | dynamic sliding-scale tier classification (Tiers 0, 1, 2) & frontier model routing ladder |
 | `harness/routing_table.py` | task-to-model 4-tier routing table, :floor provider formatting, and gateway-level max_price ceilings |
 | `harness/jev.py` | TypeSafe AI Jev / System One structural verification client with local AST and diff fallbacks |
+| `harness/jev_packs.py` | JEV-P3 utilization packs and pure helpers (route vocabulary, file-relevance/claim/completion nouls, context pack, artifact facts) — no second Jev client |
 | `harness/jev_policy.py` | shared Jev decision policy: bounded packs, spend preflight, ledger evidence, and structural envelopes |
 | `harness/providers.py` | modular provider adapter interface and registry for external execution backends |
 | `harness/agent.py` | autonomous agent orchestration: natural language prompt intent classification, file/gate discovery, sliding-scale DAG execution, self-healing retry |

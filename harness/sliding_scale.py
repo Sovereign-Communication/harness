@@ -124,11 +124,15 @@ def classify_task_tier(
     previous_failures: int = 0,
     use_free: bool = True,
     custom_frontier: Optional[str] = None,
+    jev_route: Optional[str] = None,
 ) -> TaskClassification:
     """Classify a task into Tier 0 (Scout), Tier 1 (Distiller), or Tier 2 (Frontier).
 
     Pure, deterministic evaluation based on instruction semantics, target scope,
-    dependency depth, and retry history.
+    dependency depth, and retry history. Optional ``jev_route`` is the typed
+    JEV-P3 route vocabulary (``free-distill``/``diff``/``frontier``) used only
+    as a floor — never a brand id; unkeyed callers leave it None and keep the
+    existing heuristic.
     """
     reasons: list[str] = []
     score = 0.20  # neutral starting score
@@ -204,6 +208,24 @@ def classify_task_tier(
     else:
         tier = TIER_0_SCOUT
         cost_tier = "free" if use_free else "budget"
+
+    # Optional keyed route floor (JEV-P3-route): never cheaper than the typed
+    # judgment; never brand-resolved here.
+    if jev_route:
+        from .jev_packs import route_tier_hint
+        hint = route_tier_hint(jev_route)
+        if hint is not None:
+            if hint > tier:
+                reasons.append(
+                    f"jev route '{jev_route}' raised tier floor to {hint}")
+                tier = hint
+            else:
+                reasons.append(
+                    f"jev route '{jev_route}' noted (tier stays {tier})")
+            if tier == TIER_2_FRONTIER:
+                cost_tier = "free" if use_free else "frontier"
+            else:
+                cost_tier = "free" if use_free else "budget"
 
     # Select recommended model for the tier
     rec_model = resolve_tier_recommended_model(tier, use_free=use_free, custom_frontier=custom_frontier)
@@ -325,6 +347,7 @@ def resolve_sliding_scale_route(
     use_free: bool = True,
     custom_frontier: Optional[str] = None,
     allow_escalation: bool = False,
+    jev_route: Optional[str] = None,
 ) -> SlidingScaleRoute:
     """Classify and resolve full routing ladder and budget ceiling in one call."""
     classification = classify_task_tier(
@@ -336,6 +359,7 @@ def resolve_sliding_scale_route(
         previous_failures=previous_failures,
         use_free=use_free,
         custom_frontier=custom_frontier,
+        jev_route=jev_route,
     )
     ladder = tier_model_ladder(
         tier=classification.tier,

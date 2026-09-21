@@ -34,6 +34,7 @@ from .repo_scope import discover_verification_gate, gate_for_targets
 from .sliding_scale import resolve_frontier_model, resolve_sliding_scale_route
 from .tokens import estimate_prompt_tokens
 from .validation import MAX_INSTRUCTION_CHARS
+from .jev_packs import build_context_pack
 from .jev_policy import JevPolicy
 
 MAX_WAIST_ROUNDS = 2
@@ -760,6 +761,7 @@ def plan_task(
     root: Optional[str] = None,
     run_gate: Optional[str] = None,
     allow_escalation: bool = False,
+    jev_route: Optional[str] = None,
 ) -> Dict[str, Any]:
     # Formulate a TaskDAG and classify sliding-scale tiers for each node.
     # decomposed_dag: a pre-built DAG (LLM-authored via decompose_via_llm or
@@ -771,6 +773,8 @@ def plan_task(
     # gated nodes instead of each lane re-deriving the rule (or omitting
     # it: an ungated write is refused at unknown trust, so the MCP lane's
     # plan_and_execute could not land anything at all).
+    # jev_route: optional JEV-P3 typed route (vocabulary only) used as a
+    # tier floor when keyed; unkeyed callers leave it None.
     dag = (decomposed_dag if decomposed_dag is not None
            else heuristic_decompose_goal(goal, candidate_files))
     node_details: List[Dict[str, Any]] = []
@@ -796,6 +800,7 @@ def plan_task(
             use_free=use_free,
             custom_frontier=custom_frontier,
             allow_escalation=allow_escalation,
+            jev_route=jev_route,
         )
         total_ceiling += route.cost_ceiling
         classified_nodes[node_id] = DAGNode(
@@ -1264,20 +1269,32 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     plan_goal = opts_goal
     plan_structural = None
     plan_triage = None
+    jev_route_feed = None
+    repo_context = None
     if isinstance(jev_policy, JevPolicy):
-        triage_eval, plan_triage = jev_policy.evaluate_triage(
-            opts_goal, candidate_files, site="triage")
+        # JEV-P3-route: one typed route choice through the policy owner.
+        route_eval, route_envelope = jev_policy.evaluate_route(
+            opts_goal, candidate_files, site="route")
         plan_eval, plan_structural = jev_policy.evaluate_plan(
             opts_goal, candidate_files, site="waist")
-        plan_triage = dict(plan_triage)
-        plan_triage["route"] = triage_eval.answers.get("route", "free-distill")
+        plan_triage = dict(route_envelope)
+        plan_triage["route"] = route_eval.answers.get("route", "free-distill")
+        plan_triage["route_is_fallback"] = bool(route_eval.is_fallback)
         plan_triage["requires_iteration"] = bool(
-            triage_eval.answers.get("requires_iteration", False))
-        if plan_eval.answers.get("requires_iteration"):
+            plan_eval.answers.get("requires_iteration")
+            or route_eval.answers.get("requires_iteration", False))
+        if not route_eval.is_fallback:
+            jev_route_feed = plan_triage["route"]
+        if plan_eval.answers.get("requires_iteration") or plan_triage["requires_iteration"]:
             plan_goal = (
                 f"{opts_goal}\n\n[STRUCTURAL GUIDELINE]: This goal requires iterative "
                 "control flow, conditional branching, or multi-step execution. "
                 "Represent those dependencies explicitly in the executable DAG.")
+    # JEV-P3-context-pack: distilled decision-relevant state before generative
+    # seats that lack a pack. Smallest seam — pass into LLM decompose.
+    if decompose_llm and not repo_context:
+        repo_context = build_context_pack(
+            opts_goal, candidate_files=candidate_files)
 
     # The run-level gate: the goal's own candidate files. It is the
     # last-resort arm of the ONE gate rule (repo_scope.gate_for_targets),
@@ -1317,7 +1334,7 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         goal=plan_goal, candidate_files=candidate_files,
         custom_frontier=frontier_model, use_free=use_free,
         decomposed_dag=decomposed, root=root, run_gate=run_gate,
-        allow_escalation=allow_escalation)
+        allow_escalation=allow_escalation, jev_route=jev_route_feed)
     plan_result["decomposition"] = decomposition
     if plan_triage is not None:
         plan_result["triage"] = plan_triage
