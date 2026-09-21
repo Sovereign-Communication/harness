@@ -365,8 +365,36 @@ def run_mission(
         tokens_total += int(receipt["tokens"])
         mr.append_receipt(pack, receipt)
         if receipt["cost_usd"] > 0:
-            mr.record_spend(pack, receipt["cost_usd"])
-            budget = _budget_view(pack)
+            try:
+                mr.record_spend(pack, receipt["cost_usd"])
+                budget = _budget_view(pack)
+            except HarnessError as spend_exc:
+                # HUL-B dual-budget / ceiling: treat as terminal cost limit.
+                reason_text = (
+                    f"cost limit / working_remaining refused spend: {spend_exc}"
+                )
+                budget = _budget_view(pack)
+                body = findings_md(
+                    pack,
+                    outcome="blocked",
+                    reason=reason_text,
+                    attempts=attempts,
+                    stall_counter=stall_counter,
+                    spent=budget.get("spent"),
+                    working_remaining=budget.get("working_remaining"),
+                    determination=last_determination,
+                )
+                resume_after = mr.mark_terminal(pack, outcome="blocked", findings=body)
+                mr.write_index(pack)
+                summary = mr.pack_summary(pack)
+                summary["driver"] = {
+                    "status": "blocked",
+                    "terminal": True,
+                    "reason": reason_text,
+                    "attempts": attempts,
+                    "resume": resume_after,
+                }
+                return summary
 
         seen_evidence |= claimed | set(new_on_disk)
         resume = _persist("in_progress")
