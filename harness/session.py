@@ -119,7 +119,8 @@ def engine_for(settings, api_key, gov, ledger, router, transport=None):
         default_max_rotations=settings.max_rotations,
         default_task_max_cost=settings.task_max_cost,
         use_free=settings.use_free,
-        allowed_roots=settings.mcp_allowed_roots)
+        allowed_roots=settings.mcp_allowed_roots,
+        min_confidence=settings.min_confidence)
 
 
 def apply_session(settings, max_cost=None, transport=None):

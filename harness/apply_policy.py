@@ -174,7 +174,8 @@ class ApplyEngineMixin:
             task_id=req.task_id, task=consent_mechanics_text(
                 req.file_path, req.original, req.instruction),
             model=self.router.judge, ledger=self.ledger, required=True,
-            fallback_pool=self.router.panel_pool)
+            fallback_pool=self.router.panel_pool,
+            min_confidence=req.min_confidence)
         if self.governor.spent - req.task_start_spent > req.task_max_cost:
             raise HarnessError(
                 f"consent cost exceeded task ceiling ${req.task_max_cost:.6f}; refusing to dispatch")
@@ -196,13 +197,14 @@ class ApplyEngineMixin:
             task_id=req.task_id, task=consent_mechanics_text(
                 req.file_path, state.current_content, req.instruction),
             model=self.router.judge, ledger=self.ledger, required=True,
-            fallback_pool=renew_pool)
+            fallback_pool=renew_pool, min_confidence=req.min_confidence)
         if self.governor.spent - req.task_start_spent > req.task_max_cost:
             raise HarnessError(
                 f"consent renewal exceeded task ceiling ${req.task_max_cost:.6f}; refusing to continue")
         if cr["decision"] != "accept":
             self.ledger.append("defer_midtask", task_id=req.task_id, category="consent",
-                               reason=cr["reason"], model=self.router.judge)
+                               reason=cr["reason"], confidence=cr.get("confidence"),
+                               model=self.router.judge)
             return _defer_result(
                 task_id=req.task_id, file_path=req.file_path, category="consent",
                 reason=cr["reason"], remaining_scope=req.instruction,

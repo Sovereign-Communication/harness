@@ -38,6 +38,7 @@ class ApplyRequest:
     trust_correctness: int = 0
     require_diff_authorization: bool = False
     attest_model: object = None
+    min_confidence: float = 0.70
 
 
 @dataclass

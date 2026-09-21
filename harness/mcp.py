@@ -649,7 +649,9 @@ class McpServer:
                 transport=self.transport, api_key=self.api_key, governor=self.governor,
                 task_id=offer_task_id, task=task, model=model_arg or self.router.judge,
                 context=context, ledger=self.ledger, required=True,
-                fallback_pool=self.router.panel_pool)
+                fallback_pool=self.router.panel_pool,
+                min_confidence=getattr(getattr(self, "settings", None),
+                                       "min_confidence", 0.70))
 
         if name == "defer_work":
             task_id = validate_mcp_task_id(args.get("task_id"))

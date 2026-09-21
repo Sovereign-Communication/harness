@@ -413,7 +413,8 @@ def _cmd_offer(opts, settings):
         transport=HttpTransport(), api_key=api_key, governor=gov,
         task_id=opts.task_id or uuid.uuid4().hex[:8], task=opts.task,
         model=opts.model or settings.judge, context=opts.context,
-        ledger=ledger, required=True, fallback_pool=settings.panel_pool)
+        ledger=ledger, required=True, fallback_pool=settings.panel_pool,
+        min_confidence=settings.min_confidence)
     _emit(result, opts.out)
 
 

@@ -125,15 +125,13 @@ Status after Freebuff `#PR-Jev-Live` audit (2026-09-20). Detailed work items liv
 - [x] **Milestone 1: Architectural Foundation & Decision Contracts**
   - Publish `docs/system-one-integration.md` defining JSON decision schemas, calibration mechanics, and integration boundaries.
   - Link architecture in repository `README.md`.
-- [ ] **Milestone 2: Confidence Extraction & Ledger Recording** — `JEV-P2-consent-confidence`
-  - Update `harness.consent.probe_consent` to parse optional calibrated `confidence` floats from model output.
-  - Record `confidence` into ledger consent events (`consent_accept`, `consent_defer`).
-- [ ] **Milestone 3: Automated Confidence-Gated Deferrals** — `JEV-P2-min-confidence`
-  - Wire `HARNESS_MIN_CONFIDENCE` (settings default `0.70`) into consent/apply abstention via `sliding_scale.should_abstain`.
-  - Automatically escalate/rotate to next tier model if reported confidence is below threshold.
-- [~] **Milestone 4: Native Jev / System One Provider Endpoints** — `JEV-P0-*` / `JEV-P1-*`
-  - Complete P0: `harness/jev.py` posts to `https://api.typesafe.ai/v1/systemone` with token-priced cost, official typed parsing, local fallback, and operator-gated smoke.
-  - P1 implementation is in progress on `feat/jev-p1-policy-and-lanes`: the shared policy, apply/waist/agent wiring, ledger/spend accounting, and structural envelopes are locally green but not merged yet.
+- [x] **Milestone 2: Confidence Extraction & Ledger Recording** — `JEV-P2-consent-confidence`
+  - `harness.consent.probe_consent` parses optional calibrated confidence and records it in consent ledger events.
+- [x] **Milestone 3: Automated Confidence-Gated Deferrals** — `JEV-P2-min-confidence`
+  - `HARNESS_MIN_CONFIDENCE` and `sliding_scale.should_abstain` defer before file writes, gate execution, or Jev spend; low-confidence decisions remain distinct from Noul probability.
+- [x] **Milestone 4: Native Jev / System One Provider Endpoints** — `JEV-P0-*` / `JEV-P1-*`
+  - P0 provides the stdlib live client, official typed parsing, token-priced cost, local fallback, and operator-gated smoke.
+  - P1 (PR #35) provides the shared policy owner, apply/waist/agent/CLI/MCP wiring, preflighted spend, ledger evidence, and structural envelopes.
 
 ---
 
