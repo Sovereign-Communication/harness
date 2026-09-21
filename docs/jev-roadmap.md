@@ -1,4 +1,4 @@
-# Jev Full-Functionality Roadmap
+﻿# Jev Full-Functionality Roadmap
 
 **Status:** active tracking doc  
 **Picked up from:** Freebuff / Buffy lane (PR-Jev-Live `b6fa945`, waist pre-plan `a591739`, cost foundation `b3960e7`)  
@@ -172,7 +172,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `HUL-B` dual budget | **open** | after A |
 | `HUL-C` Jev scope gate | **open** | after A + P1 policy (merged) |
 | `HUL-D` until-limits driver | **open** | after A–C |
-| `HG-*` hourglass composition | **open** | composed ceiling, pyramid resume, final gates, hybrid isolation, plan consensus, condensation into decompose, MS surface parity |
+| `HG-*` hourglass composition | **in progress** | PR #44; suite+audit BAR MET after P5 union; **not complete until merge + CI green** |
 | `MS-*` cheapest-capable + context | **open** | ad-hoc model strings → config/ladders; expensive seats get condensed state |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
 | Exit | Jev P4 checklist all true on `origin/main` | **open** |
@@ -376,5 +376,6 @@ Write STATUS `blocked` + the **exact** failing command/output. No “will do”.
 - Endpoint (authoritative): `https://api.typesafe.ai/v1/systemone`
 - Models: alias `jev-latest` → `jev-1.13.0` (pin version id when calibrating thresholds)
 - Verification gates remain authoritative for code correctness; Jev is pre-gate triage and structural refusal, not a substitute for tests
+
 
 

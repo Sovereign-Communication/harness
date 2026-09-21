@@ -364,8 +364,24 @@ def governed_text(transport, api_key, governor, model, prompt, max_tokens,
     return content, cost
 
 def chat_ladder(settings) -> list:
-    """Single-owner chat lane ladder: tier-1 head + free panel + paid escalation when allowed."""
-    models = [getattr(settings, "tier1_model", None) or getattr(settings, "judge", None) or "inclusionai/ling-3.0-flash-fin:free"]
+    """Single-owner chat lane ladder: tier-1 head + free panel + paid escalation when allowed.
+
+    HG-ms-parity: the last-resort head comes from the settings pool / config
+    constants -- chat.py never hardcodes a provider model id.
+    """
+    from .config import FREE_JUDGE, FREE_PANEL_POOL
+    head = None
+    for candidate in (
+        getattr(settings, "tier1_model", None),
+        getattr(settings, "judge", None),
+        (list(getattr(settings, "panel_pool", []) or []) or [None])[0],
+        FREE_JUDGE,
+        (list(FREE_PANEL_POOL) or [None])[0],
+    ):
+        if candidate:
+            head = candidate
+            break
+    models = [head] if head else []
     for m in list(getattr(settings, "panel_pool", []) or []):
         if m not in models:
             models.append(m)

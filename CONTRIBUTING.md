@@ -184,6 +184,7 @@ statement covers the CI matrix by direct execution.
 | `harness/bench.py` | hermetic known-answer benchmarks |
 | `harness/chat.py` | the one chat-completion path and the one assessment of what a model actually produced |
 | `harness/waist.py` | plan-confirmation waist + LLM decomposition lane: condensed-brief frontier confirmation, bounded file-window rounds, `plan_verdict` ledger events |
+| `harness/pyramid_state.py` | persisted pyramid run envelope (goal, DAG, node_results, spent) and resume helpers: pending-node selection so `plan --resume` never re-dispatches completed ok nodes |
 | `harness/attest.py` | diff-bound independent authorization (M4): sovereign-diff-v1 schema + fail-closed binding checks; the LLM second-verifier lane (`authorize_diff`) is enforced in `write_candidate` before every write when opted in |
 | `harness/brief.py` | grounded context packs (`harness brief`): cited hash-pinned windows, honest truncation, no uncited claims; `validate_brief` is the grounding lint |
 | `harness/worktree.py` | git-worktree isolation for parallel DAG stages: per-node worktree/branch, declared-write audit, topological merge, conflict fail-closed |
