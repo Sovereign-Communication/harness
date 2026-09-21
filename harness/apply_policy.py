@@ -26,7 +26,8 @@ from .errors import HarnessError, ToolCancelled
 from .output import eprint
 from .prompts import build_apply_prompt, consent_mechanics_text
 from .tokens import estimate_prompt_tokens
-from .escalation import EscalationDriver, _annotate_escalation
+from .escalation import (EscalationDriver, _annotate_escalation,
+                         jev_escalation_directive)
 
 VERIFY_FEEDBACK_CHARS = 6000
 
@@ -492,6 +493,30 @@ class ApplyEngineMixin:
                     if esc.get("target_rung") is not None:
                         state.de_escalation_target_rung = int(esc.get("target_rung") or 0)
                     break
+
+        # JEV-P2-dead-code (Jev-directed escalation): when the verify lane
+        # gave nothing to steer with, ask the shared Jev policy whether the
+        # next candidate should escalate, at what rung to resume, or abstain
+        # entirely. The directive is parked on state for the driver (ONE
+        # consumer); lane directives keep priority inside the driver.
+        lane_directed = bool(getattr(state, "escalation_condensed_context", "") or "")
+        if not lane_directed and self.jev_policy is not None:
+            try:
+                tail = (state.rounds[-1].get("verify_output") or "")[-600:] \
+                    if state.rounds else ""
+                failure_context = "\n".join(
+                    [f"instruction: {req.instruction}",
+                     f"rounds tried: {state.round_no}",
+                     f"last verify output: {tail}"])
+                jev_result, _structural = self.jev_policy.evaluate_escalation_decision(
+                    failure_context, task_id=req.task_id)
+                if jev_result is not None:
+                    state.pending_jev_directive = jev_escalation_directive(
+                        jev_result, ladder_size=len(self.router.escalation_pool),
+                        current_rung=max(state.round_no - 1, 0),
+                        condensed_context=failure_context)
+            except HarnessError:
+                state.pending_jev_directive = None
 
         def base_prompt_fn(st, rung_context):
             last = st.rounds[-1] if st.rounds else {}
