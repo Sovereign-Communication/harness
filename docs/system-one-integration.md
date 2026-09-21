@@ -1,8 +1,7 @@
 # System One & Jev Architecture Integration Plan for Harness
 
-> **Tracking:** Implementation progress is tracked in [jev-roadmap.md](jev-roadmap.md)
-> (`JEV-P0`…`JEV-P4`). This document remains the architecture rationale; the roadmap
-> is the backlog and acceptance checklist. Live client work started in `#PR-Jev-Live`.
+> **Canonical operational plan:** [jev-roadmap.md](jev-roadmap.md) only (`JEV-Pn-*` + `HUL-*`, STATUS, DoD, schedule).  
+> This document is **architecture rationale** — not a tracker. Milestones below map to canon IDs; if status disagrees, **the canon wins**. Live client work started in `#PR-Jev-Live` / PR #34.
 
 ## Executive Summary
 

@@ -3,7 +3,7 @@
     "A": 10.0,
     "R": 10.0,
     "SM": 10.0,
-    "SD": 10.0
+    "SD": 8.33
   },
   "checks": {
     "A": [
@@ -163,7 +163,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 1138 tests in 79.352s\n\nOK"
+        "evidence": "unittest: Ran 1142 tests in 94.293s\n\nOK"
       },
       {
         "id": "R14",
@@ -245,7 +245,7 @@
         "id": "D4",
         "label": "config table keys real",
         "score": 1.0,
-        "evidence": "23 README config keys all resolve to real settings (40 configurable)"
+        "evidence": "24 README config keys all resolve to real settings (41 configurable)"
       },
       {
         "id": "D5",
@@ -262,8 +262,8 @@
       {
         "id": "D7",
         "label": "docs reference only real modules",
-        "score": 1.0,
-        "evidence": "all module references across 13 docs resolve to real files"
+        "score": 0.0,
+        "evidence": "stale: ['freebuff-context.md: jev_policy.py', 'jev-roadmap.md: jev_policy.py', 'jev-roadmap.md: test_jev_policy.py', 'jev-roadmap.md: test_jev_lane_parity.py', 'jev-roadmap.md: test_jev_ledger_spend.py', 'jev-roadmap.md: jev_packs.py']"
       },
       {
         "id": "D8",
@@ -292,8 +292,8 @@
       {
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
-        "score": 1.0,
-        "evidence": "changed harness lines are suite-executed"
+        "score": 0.0,
+        "evidence": "changed-line coverage 128/188 = 68% (bar 95%) vs baseline 0796853e36; untested: config.py:539; jev.py:31,34,39,40,46,61,94,100..."
       }
     ]
   }
