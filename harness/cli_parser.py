@@ -127,10 +127,14 @@ def build_parser():
     pp.add_argument("--max-workers", type=int, default=4, help="thread pool worker count for parallel execution")
     pp.add_argument("--frontier-model", default=None, help="frontier model or alias for Tier 2 nodes (e.g. fable-5.1, gpt-6)")
     pp.add_argument("--file", action="append", default=None, help="constrain candidate target files")
-    pp.add_argument("--decompose-llm", dest="decompose_llm", action="store_true", default=False,
+    pp.add_argument("--decompose-llm", dest="decompose_llm", action="store_true",
+                    default=None,
                     help="author the DAG with the cheapest tier-appropriate model "
-                         "(schema-validated; on --execute a failure falls back to the "
+                         "(schema-validated; default: on when the hourglass is "
+                         "active; on --execute a decompose failure falls back to the "
                          "heuristic with a loud note, a plan-only preview fails loudly)")
+    pp.add_argument("--no-decompose-llm", dest="decompose_llm", action="store_false",
+                    help="force heuristic decomposition even when the hourglass is on")
     pp.add_argument("--confirm", dest="confirm", action="store_true", default=None,
                     help="confirm the plan at the frontier waist before execution: "
                          "condensed brief + bounded file-window round-trips; "
@@ -138,10 +142,27 @@ def build_parser():
                          "against the run's ceiling; a refused plan never executes)")
     pp.add_argument("--no-confirm", dest="confirm", action="store_false",
                     help="skip the frontier waist confirmation")
+    pp.add_argument("--plan-consensus", dest="plan_consensus", action="store_true",
+                    default=None,
+                    help="cheap plan-soundness check before the waist "
+                         "(governed_text + JSON sound/reasons; unsound forces "
+                         "the waist amend path; ledgered plan_consensus)")
+    pp.add_argument("--no-plan-consensus", dest="plan_consensus", action="store_false",
+                    help="skip the cheap plan-consensus pre-check")
+    pp.add_argument("--final-gate", dest="final_gate", default=None,
+                    help="command run after the whole DAG completes (default: on "
+                         "when a verify command was discovered/declared -- run-level "
+                         "gate or a discovered suite command)")
+    pp.add_argument("--no-final-gate", dest="final_gate", action="store_false",
+                    help="skip the post-DAG final verification gate")
+    pp.add_argument("--resume", dest="resume", default=None,
+                    help="path to a pyramid state JSON; re-dispatch only nodes "
+                         "that are not already completed ok")
     pp.add_argument("--isolate", dest="isolate", action="store_true", default=None,
                     help="isolate parallel-stage nodes in git worktrees + local branches "
-                         "(default: on; audited against declared target files, merged in "
-                         "topological order; merge conflicts fail the node, never "
+                         "(default: on; overlap-free concurrent nodes only -- nodes "
+                         "that share declared target files serialize under the "
+                         "shared-tree mutex; merge conflicts fail the node, never "
                          "force-merge; unavailable git degrades to shared-tree mutex execution)")
     pp.add_argument("--no-isolate", dest="isolate", action="store_false",
                     help="execute parallel stages in the shared tree (mutex only)")

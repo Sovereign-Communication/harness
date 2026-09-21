@@ -1636,7 +1636,9 @@ class TestHourglassLane(unittest.TestCase):
 
         self.assertEqual(res["status"], "ok")
         self.assertTrue(engine.calls, "the node never reached the engine")
-        self.assertEqual([r.get("status") for r in res["results"]], ["ok"])
+        self.assertEqual(
+            [r.get("status") for r in res["results"]
+             if r.get("node_id") != "final_gate"], ["ok"])
         # Nothing was reserved for a free node, and the run's ceiling is
         # untouched -- the free tier bills $0.00 on every rung.
         self.assertEqual(gov.outstanding, 0.0)

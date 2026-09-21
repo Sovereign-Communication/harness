@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from .config import (
     DEFAULT_APPLY_POOL_PAID,
+    DEFAULT_FRONTIER_PAID,
     DEFAULT_JUDGE_PAID,
     DEFAULT_PANEL_PAID,
     ESCALATION_POOL_FREE,
@@ -109,7 +110,9 @@ def resolve_frontier_model(custom_frontier: Optional[str] = None, use_free: bool
         return stripped
     if use_free:
         return FREE_JUDGE
-    return "qwen/qwen3.8-max-0902"
+    # HG-ms-parity: the paid default is a config constant, never a lane-local
+    # hardcoded id (operators retune the rung in config.py alone).
+    return DEFAULT_FRONTIER_PAID
 
 
 def classify_task_tier(

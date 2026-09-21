@@ -146,7 +146,7 @@ class TestPlanningSurface(unittest.TestCase):
         # 1. Preview mode (execute=False); the hourglass defaults are ON,
         # so a preview with confirm would attempt a frontier call -- the
         # host opts out per request (this test targets the planner only).
-        preview_res = server._invoke("plan_and_execute", {"goal": "1. Step A\n2. Step B", "execute": False, "confirm": False})
+        preview_res = server._invoke("plan_and_execute", {"goal": "1. Step A\n2. Step B", "execute": False, "confirm": False, "decompose_llm": False})
         self.assertEqual(preview_res["status"], "planned")
         self.assertEqual(preview_res["total_nodes"], 2)
 
@@ -157,7 +157,7 @@ class TestPlanningSurface(unittest.TestCase):
 
         # 3. Execution mode with allow_write succeeds and exercises target_files
         server.allow_write = True
-        exec_res = server._invoke("plan_and_execute", {"goal": "Step A", "file": ["foo.py"], "execute": True, "confirm": False, "require_diff_authorization": False})
+        exec_res = server._invoke("plan_and_execute", {"goal": "Step A", "file": ["foo.py"], "execute": True, "confirm": False, "require_diff_authorization": False, "decompose_llm": False, "final_gate": False})
         self.assertEqual(exec_res["status"], "ok")
         self.assertEqual(exec_res["completed_nodes"], 1)
         mock_engine.apply_edit.assert_called()
@@ -175,10 +175,13 @@ class TestPlanningSurface(unittest.TestCase):
             file=None,
             frontier_model=None,
             execute=False,
+            decompose_llm=False,
             out=None,
         )
         settings = SimpleNamespace(use_free=True, frontier_model=None,
-                                   hourglass_confirm=False)
+                                   hourglass_confirm=False,
+                                   hourglass_parallel=False,
+                                   hourglass_decompose=False)
 
         with patch("harness.cli._emit") as mock_emit:
             _cmd_plan(opts, settings)
@@ -212,11 +215,14 @@ class TestPlanningSurface(unittest.TestCase):
             allow_escalation=False,
             reasoning_effort=None,
             max_rotations=3,
+            decompose_llm=False,
+            final_gate=False,
         )
         settings = SimpleNamespace(use_free=False, frontier_model=None,
                                    hourglass_confirm=False,
                                    hourglass_isolate=False,
-                                   hourglass_require_attestation=False)
+                                   hourglass_require_attestation=False,
+                                   hourglass_decompose=False)
 
         with patch("harness.cli._session", return_value=mock_engine), patch("harness.cli._emit_by_status") as mock_emit:
             _cmd_plan(opts_seq, settings)
@@ -247,6 +253,8 @@ class TestPlanningSurface(unittest.TestCase):
             allow_escalation=False,
             reasoning_effort=None,
             max_rotations=3,
+            decompose_llm=False,
+            final_gate=False,
         )
         with patch("harness.cli._session", return_value=mock_engine), patch("harness.cli._emit_by_status") as mock_emit:
             _cmd_plan(opts_par, settings)
@@ -392,23 +400,27 @@ class TestPlanningSurface(unittest.TestCase):
         resolved = _resolve_hourglass(defaults, settings)
         self.assertEqual(resolved, {"confirm": True, "isolate": True,
                                     "parallel": True,
-                                    "require_diff_authorization": True})
+                                    "require_diff_authorization": True,
+                                    # HG-decompose-default: rides the hourglass.
+                                    "decompose": True})
         # Explicit flags win over settings; opt-outs honored.
         off = parser.parse_args(["plan", "--goal", "g", "--no-confirm",
                                  "--no-isolate", "--no-parallel",
                                  "--no-attestation"])
         self.assertEqual(_resolve_hourglass(off, settings), {
             "confirm": False, "isolate": False, "parallel": False,
-            "require_diff_authorization": False})
+            "require_diff_authorization": False, "decompose": False})
         settings_off = SimpleNamespace(
             hourglass_confirm=False, hourglass_isolate=False,
             hourglass_parallel=False, hourglass_require_attestation=False)
         self.assertEqual(_resolve_hourglass(defaults, settings_off), {
             "confirm": False, "isolate": False, "parallel": False,
-            "require_diff_authorization": False})
+            "require_diff_authorization": False, "decompose": False})
         mixed = parser.parse_args(["plan", "--goal", "g", "--no-confirm"])
         self.assertIs(_resolve_hourglass(mixed, settings)["confirm"], False)
         self.assertIs(_resolve_hourglass(mixed, settings)["isolate"], True)
+        # Parallel still on => decompose still defaults True.
+        self.assertIs(_resolve_hourglass(mixed, settings)["decompose"], True)
 
     def test_plan_isolation_flags_parse(self):
         parser = build_parser()
@@ -469,10 +481,13 @@ class TestPlanningSurface(unittest.TestCase):
             max_rotations=3,
             isolate=True,
             stage_gate="git rev-parse HEAD",
+            decompose_llm=False,
+            final_gate=False,
         )
         settings = SimpleNamespace(use_free=False, frontier_model=None,
                                    hourglass_confirm=True,
                                    hourglass_require_attestation=False,
+                                   hourglass_decompose=False,
                                    ledger_path=os.path.join(
                                        _tempfile.mkdtemp(), 'l.jsonl'))
 
@@ -622,7 +637,7 @@ class TestPlanningSurface(unittest.TestCase):
                                     require_diff_authorization=False)
         self.assertEqual(_resolve_hourglass(flags_off, settings), {
             "confirm": False, "parallel": False, "isolate": False,
-            "require_diff_authorization": False})
+            "require_diff_authorization": False, "decompose": False})
         # An explicit flag wins; a missing/None flag inherits the settings
         # file, which is exactly what the agent lane (opts=None) reads.
         self.assertTrue(resolve_hourglass(settings, SimpleNamespace())['confirm'])
@@ -708,7 +723,7 @@ class TestPlanningSurface(unittest.TestCase):
         with patch("harness.mcp.compose_plan", return_value=canned) as cp:
             plan_res = server._invoke("plan_and_execute", {
                 "goal": "Refactor auth system", "file": ["iso_e.py"],
-                "execute": True, "allow_write": True,
+                "execute": True, "allow_write": True, "final_gate": False,
             })
         self.assertEqual(plan_res["status"], "ok")
         # The waist-confirmation default reached the ONE owner.
@@ -746,6 +761,7 @@ class TestPlanningSurface(unittest.TestCase):
                 "execute": True, "allow_write": True,
                 "confirm": False, "parallel": False,
                 "require_diff_authorization": False,
+                "decompose_llm": False, "final_gate": False,
             })
         self.assertFalse(cp.call_args[1]["confirm"])
         call = mock_engine.apply_edit.call_args
@@ -789,7 +805,7 @@ class TestPlanningSurface(unittest.TestCase):
             "goal": "Update the modules",
             "file": ["iso_c.py", "iso_d.py"],
             "execute": True, "allow_write": True, "parallel": True,
-            "confirm": False,
+            "confirm": False, "decompose_llm": False, "final_gate": False,
         })
         self.assertEqual(exec_res["status"], "ok")
         self.assertEqual(exec_res["completed_nodes"], 2)

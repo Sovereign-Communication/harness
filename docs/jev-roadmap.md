@@ -157,7 +157,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 
 ---
 
-## Canonical STATUS (update here only — truth as of 2026-09-21 P2 repair pass)
+## Canonical STATUS (update here only — truth as of 2026-09-21 hourglass-composition pass)
 
 | Track / phase | Status | PR / evidence |
 |---|---|---|
@@ -167,6 +167,18 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `JEV-P2-*` System One pillars | **in progress / repair** | WIP `Harness-jev-p2` / `feat/jev-p2-system-one-pillars`; **PR #36 OPEN**; lane-parity **hermetic**; D12 target lines **executed** by named tests; local battery green; audit **BAR MET** locally; live Jev smoke OK; lean jury **`JEV-P2-jury` deferred** — STATUS stays **in progress until merge + CI green** |
 | `JEV-P3-*` utilization | **open** | after P2 merge + STATUS complete |
 | `JEV-P4-*` ops / exit | **open** | after P3 DoD |
+| `HG-composed-ceiling` | **implemented on branch** | `waist.composed_worst_case` + refuse-before-spend; `tests/test_hg_composed_ceiling.py::test_composed_pyramid_ceiling_refuses_before_any_spend` (spend==0) |
+| `HG-final-gate` | **implemented on branch** | `PlanExecutor.resolve_final_gate` default ON when a verify cmd is discovered/declared; CLI/MCP/agent share it; `--no-final-gate`; `tests/test_hg_final_gate.py::test_default_final_gate_blocks_false_ok` |
+| `HG-decompose-default` | **implemented on branch** | `config.resolve_hourglass` includes `decompose` (True when confirm/parallel on); CLI/MCP/agent share mapping; `tests/test_hg_hourglass_defaults.py` |
+| `HG-condense-decompose` | **implemented on branch** | `compose_plan` passes distilled signatures into `decompose_via_llm(repo_context=…)`; `tests/test_hg_condense_decompose.py` |
+| `HG-plan-consensus` | **implemented on branch** | optional `plan_consensus` before waist; unsound forces waist amend path; ledger `plan_consensus`; `tests/test_hg_plan_consensus.py` |
+| `HG-pyramid-resume` | **implemented on branch** | `harness/pyramid_state.py` persist/load; `plan --resume` skips completed ok nodes; `tests/test_hg_pyramid_resume.py` |
+| `HG-hybrid-isolate` | **implemented on branch** | `executor.partition_by_target_overlap`: overlap-free → worktree; overlapping → serial shared-tree; `tests/test_hg_hybrid_isolate.py` |
+| `HG-waist-unreachable` | **implemented on branch** | confirm-armed + ALL waist rungs fail on execute → REFUSE (fail closed); `tests/test_hg_waist_unreachable_refuses.py` |
+| `HG-ms-parity` | **implemented on branch** | `chat.chat_ladder` last-resort from settings/config; `sliding_scale.resolve_frontier_model` paid default = `config.DEFAULT_FRONTIER_PAID`; `tests/test_hg_ms_parity.py` |
+| Hourglass composition PR | **in progress** | branch `feat/hourglass-composition` worktree `Harness-hg-remain`; full discover **1224 green** (46 skipped); audit A=10 R=10; **D12 changed-line coverage still <95%** + residual ruff/coverage hygiene — STATUS stays **in progress** until CI audit BAR MET + merge |
+
+**Hourglass composition done when (all true):** named `tests/test_hg_*.py` green → keep-green battery (`test_waist`/`test_executor`/`test_planning_surface`/`test_spend`/`test_worktree`/`test_mcp`/`test_agent`/`test_cli`) green → `python audits/self/audit.py` **BAR MET** → PR merged → post-merge `main` CI green → HG STATUS rows `complete`. Do **not** mark complete while any of those are red.
 
 **P2 done when (all true):** repair finished on PR #36 branch → named P2 tests **and** full listed battery green **locally and on CI** → `python audits/self/audit.py` **BAR MET** (D12 ≥95%) → STATUS on that branch honest (jury deferred if not shipped) → PR #36 merged → post-merge `main` CI green → STATUS P2 `complete`.
 

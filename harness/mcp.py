@@ -135,6 +135,8 @@ class McpServer:
         self.hourglass = {
             "confirm": True, "isolate": True, "parallel": True,
             "require_diff_authorization": True,
+            # HG-decompose-default: rides the hourglass (True when active).
+            "decompose": True,
         }
         self.hourglass.update(hourglass or {})
         # Session authorship for the evidence loop: the stdio peer (captured
@@ -686,13 +688,21 @@ class McpServer:
                 args.get("parallel", self.hourglass["parallel"]), "parallel")
             allow_write = validate_mcp_bool(args.get("allow_write", False), "allow_write")
             allow_escalation = validate_mcp_bool(args.get("allow_escalation", False), "allow_escalation")
-            decompose_llm = validate_mcp_bool(args.get("decompose_llm", False), "decompose_llm")
+            decompose_llm = validate_mcp_bool(
+                args.get("decompose_llm", self.hourglass["decompose"]),
+                "decompose_llm")
             confirm = validate_mcp_bool(
                 args.get("confirm", self.hourglass["confirm"]), "confirm")
+            plan_consensus = validate_mcp_bool(
+                args.get("plan_consensus", self.hourglass.get("plan_consensus", False)),
+                "plan_consensus")
             require_auth = validate_mcp_bool(
                 args.get("require_diff_authorization",
                          self.hourglass["require_diff_authorization"]),
                 "require_diff_authorization")
+            final_gate = args.get("final_gate", None)
+            if final_gate is not None and not isinstance(final_gate, str):
+                final_gate = validate_mcp_bool(final_gate, "final_gate")
             max_workers = int(args.get("max_workers", DEFAULT_PLAN_WORKERS)
                               or DEFAULT_PLAN_WORKERS)
             frontier_model = validate_mcp_model(args.get("frontier_model"), "frontier_model")
@@ -720,9 +730,11 @@ class McpServer:
                 use_free=self.use_free, decompose_llm=decompose_llm,
                 confirm=confirm, execute=execute,
                 allow_escalation=allow_escalation,
+                plan_consensus=plan_consensus,
                 jev_policy=jev_policy)
             if plan_result.get("status") == "refused":
-                # Waist refusal is terminal evidence: the plan never executes.
+                # Waist refusal / composed-ceiling / unreachable-waist is
+                # terminal evidence: the plan never executes.
                 return plan_result
             if not execute:
                 if isinstance(plan_result.get("structural"), dict):
@@ -732,10 +744,15 @@ class McpServer:
 
             dag = TaskDAG.from_dict(plan_result["dag"])
             node_routes = {n.get("node_id"): n for n in plan_result["nodes"]}
+            run_gate = None
+            for n in plan_result.get("nodes") or ():
+                if isinstance(n, dict) and n.get("local_gate"):
+                    run_gate = n["local_gate"]
+                    break
             # ONE execution assembly for every lane (executor.PlanExecutor):
             # the same object the CLI plan lane and the agent's edit lane
-            # build, so parallelism/isolation/reservation policy is derived
-            # once.
+            # build, so parallelism/isolation/reservation/final-gate policy
+            # is derived once.
             plan_exec = PlanExecutor(
                 self.engine, node_routes,
                 parallel=parallel, isolate=self.hourglass["isolate"],
@@ -749,7 +766,9 @@ class McpServer:
                 },
                 # This server's real budget, so a node reservation can never
                 # be bounded by an unrelated nominal default instead.
-                run_ceiling=self.governor.max_cost)
+                run_ceiling=self.governor.max_cost,
+                final_gate=final_gate,
+                run_gate=run_gate)
             all_results = plan_exec.execute(dag)
             summary = PlanExecutor.summarize(all_results)
             output = {
@@ -757,9 +776,12 @@ class McpServer:
                 "goal": goal,
                 "total_nodes": len(dag.nodes),
                 "completed_nodes": summary["completed"],
-                "results": list(all_results.values()),
+                "results": [r for key, r in all_results.items()
+                            if key != "final_gate"],
                 "cost": summary["total_cost"],
                 "dag": plan_result["dag"],
+                "composed_worst_case": plan_result.get("composed_worst_case"),
+                "final_gate": summary.get("final_gate"),
             }
             structural = aggregate_structural(
                 list(all_results.values()), site="mcp")
