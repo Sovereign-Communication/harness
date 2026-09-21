@@ -11,11 +11,8 @@ break APIs between minor versions).
 
 ### Added
 
-<<<<<<< HEAD
 - **HUL-B dual budget reserve.** `harness/spend.py` is the ONE owner of the dual envelope: `working_remaining = max_cost - spent - terminal_reserve`. Attempt-phase preflight/reserve/record refuse spend that would eat `terminal_reserve`; terminal FINDINGS may spend up to the reserve only when the mission is already terminal. Mission `budget.json` and STATUS report `working_remaining` + reserve honestly via the same formula (`mission_record` delegates; no second governor).
-=======
-- **JEV-COMPLETION dogfood phase gate.** `harness jev-phase` scores a mission phase 0-100 from code-owned hard gates (PR/origin evidence, required tests present, local+CI green, no open blockers) plus a Jev semantic score; STATUS may claim complete only when `can_mark_complete=true` and score â‰¥ 85 (`harness/jev_completion.py`, CLI, `tests/test_jev_completion.py`).
->>>>>>> origin/main
+- **JEV-COMPLETION dogfood phase gate.** `harness jev-phase` scores a mission phase 0-100 from code-owned hard gates (PR/origin evidence, required tests present, local+CI green, no open blockers) plus a Jev semantic score; STATUS may claim complete only when `can_mark_complete=true` and score ≥ 85 (`harness/jev_completion.py`, CLI, `tests/test_jev_completion.py`).
 
 - **JEV-P2 confidence-gated System One pillars.** Consent now preserves calibrated confidence, low-confidence Jev decisions abstain before writes, verification gates, and Jev spend, and typed triage signals route complex work toward the plan lane. The lean jury is intentionally deferred until it has a dedicated fail-closed gate contract.
 
@@ -172,15 +169,15 @@ break APIs between minor versions).
 - **Parallel-stage isolation + cost reservations (M3).** Two frontier
   verdicts obtained through Harness itself (consensus across independent
   model families; see docs/hourglass-micro-requests.md) drove the design:
-  (1) **Isolation** â€” `harness plan --isolate` runs concurrent nodes of a
+  (1) **Isolation** — `harness plan --isolate` runs concurrent nodes of a
   stage in isolated `git worktree`s + local branches; the worker's gate
   and targets resolve inside its worktree; branches merge back in stage
   order, and a merge conflict fails the node (`merge_conflict`) instead of
   force-merging. Before accepting, the node's committed diff against its
   branch point plus uncommitted leftovers is audited against its declared
-  target files â€” undeclared writes reject the node and nothing lands in
+  target files — undeclared writes reject the node and nothing lands in
   the repo. Opt-in (git worktrees are host tooling; the default stays
-  shared-tree mutex execution). (2) **Reservations** â€” parallel dispatch
+  shared-tree mutex execution). (2) **Reservations** — parallel dispatch
   now reserves each node's worst-case cost before dispatch and reconciles
   the billed actual after (`SpendGovernor.reserve`/`reconcile`, `outstanding`
   liability counted by every preflight), closing the overspend interleaving
@@ -193,7 +190,7 @@ break APIs between minor versions).
   suite-executed lines inside executor worker threads were invisible --
   D12 would report phantom gaps for exactly the parallel paths M3 adds.
   `refresh_coverage_baseline.py` now installs the tracer for threads too,
-  and new tests pin the settle paths (audit failure â†’ `fatal`, failed-node
+  and new tests pin the settle paths (audit failure → `fatal`, failed-node
   passthrough without merge, `merge_conflict`), the CLI `--isolate` /
   `--stage-gate` surface, the MCP parallel lane, and the reservation
   error paths.
@@ -203,7 +200,7 @@ break APIs between minor versions).
   malformed input: truthy non-mapping detail/route crashed, a string
   ladder silently became per-character "model ids", a non-iterable ladder
   raised, and an `inf` ceiling passed through as an unbounded task budget.
-  All shapes now degrade to `{}` (previous behavior â€” the governor's
+  All shapes now degrade to `{}` (previous behavior — the governor's
   key-level ceiling still binds), pinned hermetically.
 - **`split` is a first-class waist verdict (MR-4).** A frontier review of
   the shipped verdict contract against its requirement found the
@@ -216,7 +213,7 @@ break APIs between minor versions).
   (MR-9 / M4).** The sovereign-diff-v1 contract drafted through Harness
   itself: canonical signing payload, strict JSON parse (duplicate keys
   rejected), exact-field schema, allow-only verdicts, diff/base/nonce
-  binding, exclusive expiry, and a pinned-verifier signature seam â€” no
+  binding, exclusive expiry, and a pinned-verifier signature seam — no
   verifier configured means refuse (intent approval is never a
   fallback). `require_attestation` is the one-call gate the phase-2
   apply-loop enforcement will consult before every write; an attestation
@@ -224,18 +221,18 @@ break APIs between minor versions).
 - **The second verifier is wired in (M4 phase 2).** With
   `--require-attestation` (CLI apply/continue/dogfood) or
   `require_diff_authorization` (MCP apply_edit), every candidate write
-  first shows the EXACT resulting content â€” plus both content hashes â€”
+  first shows the EXACT resulting content — plus both content hashes —
   to an independent verifier model (default: the router's judge), and
   writes only on a parsed `allow`. Deny, unparseable output, and
   transport errors all refuse the write fail-closed; the attestation
   (hash-bound to those exact bytes, `response_sha256` recording what the
-  verifier actually said â€” a ledger digest, not a signature) lands in the
+  verifier actually said — a ledger digest, not a signature) lands in the
   tamper-evident ledger. One extra verifier call per write, per the
   operator's cost-acceptable call.
 - **`harness brief`: grounded context packs (MR-8).** A hermetic builder
   that generates the reusable pack for a goal/model pair: cited file
   windows pinned to per-source content hashes, honest truncation labels,
-  and no claims of its own â€” `grounding.claims`/`unknowns` start empty
+  and no claims of its own — `grounding.claims`/`unknowns` start empty
   for the frontier consumer to fill under the same rule.
   `validate_brief` is the grounding lint (drifted sources, non-span
   windows, unknown citations, and uncited claims are all rejected);
@@ -243,7 +240,7 @@ break APIs between minor versions).
   step.
 - **Test determinism: the R3 flake caught and defused.** The battery
   flaked once under load; a focused MCP soak reproduced it on the first
-  try â€” a 0.05s `tool_timeout` could expire during the worker's lazy
+  try — a 0.05s `tool_timeout` could expire during the worker's lazy
   apply-chain construction, so the deadline tripped before the first
   POST and the test's 60s gate wait starved. Both deadline tests now
   give the startup a 30x-wider window (1.5s; every asserted behavior
@@ -338,14 +335,14 @@ break APIs between minor versions).
   same intelligence tier (53/100) as fable-5.1 / gpt-6-astra at $2/$6
   in/out vs their $10/$50, so `resolve_frontier_model`'s paid default and
   the escalation ladder now reach qwen first: the ladder reads
-  glm-5.3-flash â†’ deepseek-v4-pro â†’ **qwen3.8-max** â†’ gpt-4.1 â†’
+  glm-5.3-flash → deepseek-v4-pro → **qwen3.8-max** → gpt-4.1 →
   gpt-5.6-sol, and the `qwen` / `qwen-max` / `qwen3.8-max` aliases map to
   it. The flagship capstone stays as the judge's last resort.
 - **The orchestrator finishes what it plans in one pass.** Node targets
   over the 500-line whole-file ceiling route straight to the diff backend
   (touched hunks only) instead of dying as "out of scope" fatals, and the
   GUI's "Processing task" stepper renders the DAG as a live phase list --
-  one row per subtask (Â· pending, âš™ running, âœ“ done, âœ— failed), keyed per
+  one row per subtask (· pending, ⚙ running, ✓ done, ✗ failed), keyed per
   orchestrator round so re-plans extend the list instead of erasing it.
 - **Trust recovers: the saturation spiral can no longer lock the operator
   out.** Three compounding calibration bugs turned a saturated free tier
@@ -369,7 +366,7 @@ break APIs between minor versions).
   band. Models get the same surplus-forgiveness arithmetic as the host,
   healing the calibration the attribution bug poisoned. Alongside these,
   the unknown-correctness task ceiling rose
-  from 0.2 to 0.4 of the $0.25 hard cap (`DEFAULT_TASK_MAX_COST` $0.05 â†’
+  from 0.2 to 0.4 of the $0.25 hard cap (`DEFAULT_TASK_MAX_COST` $0.05 →
   $0.10): a fresh-ledger paid rescue rung must afford one worst-case call
   (~$0.084) or the ladder starves the rung it just stepped up to. Free
   saturation now verifiably escalates into the lowest paid rung and
@@ -483,7 +480,7 @@ break APIs between minor versions).
   (defense-in-depth: delete targets can no longer lean on `Path` collapsing
   traversal segments), pinned by endpoint tests.
 
-## [0.3.3] â€” 2026-09-16
+## [0.3.3] — 2026-09-16
 
 ### Fixed
 
@@ -521,7 +518,7 @@ break APIs between minor versions).
   executable lines overall -- honest, unmoving legacy gaps included
   (server.py 26%, mcp.py 62%); the 95% bar binds changed lines only.
 
-## [0.3.2] â€” 2026-09-16
+## [0.3.2] — 2026-09-16
 
 ### Added
 
@@ -549,7 +546,7 @@ break APIs between minor versions).
   rendering contract. Byte-identical, proven by a 27-artifact stdout/stderr/
   exit-code oracle replay across help, read-only, and both emit-code paths.
 
-## [0.3.1] â€” 2026-09-16
+## [0.3.1] — 2026-09-16
 
 ### Added
 - **Batch fail-soft (`apply --keep-going`).** A multi-file batch can
@@ -575,15 +572,15 @@ break APIs between minor versions).
   the real served server, and a render proof executing the actual
   `resultSummary` against the live payload.
 - **Rankings surface (server + UI, strictly read-only).** `GET /api/rankings`
-  serves the latest rankings report verbatim â€” the same data the weekly
+  serves the latest rankings report verbatim — the same data the weekly
   workflow files as its artifact (`window`, `top`, `climbers`,
-  `ranked_in_catalog`, `proposed_candidates` with probe verdicts) â€” plus the
+  `ranked_in_catalog`, `proposed_candidates` with probe verdicts) — plus the
   list of reports on disk, newest first. A missing or unreadable report is a
   200 with `available: false` and an actionable note (the empty/stale state
   is normal, never a silent fallback to an older file). A Rankings view in
   the web UI renders it with the established enter-to-refresh contract. The
   hard constraint holds: the endpoint and view never generate, probe, or
-  mutate configuration â€” `harness rankings` stays the one producer, so
+  mutate configuration — `harness rankings` stays the one producer, so
   nothing auto-mutates. Covered by endpoint tests through the real server
   surface, including a mechanized read-only check.
 - **MCP progress streaming (the one deferred UI-readiness item).** A client
@@ -643,7 +640,7 @@ break APIs between minor versions).
 
 - **The CLI parser surface has its own owner.** `harness/cli_parser.py`
   (build_parser, flag builders) is pure argparse construction moved
-  verbatim from cli.py (912 â†’ 683 lines): every subcommand and flag lives
+  verbatim from cli.py (912 → 683 lines): every subcommand and flag lives
   in exactly one module, and a new surface test pins parser registration
   against the dispatch table. All 12 help surfaces replayed byte-identical;
   the self-audit's subcommand extraction follows the move with a live-parser
@@ -652,7 +649,7 @@ break APIs between minor versions).
 ### Fixed
 - **The self-audit's MCP-tool extraction is blind no more.** The schema
   extraction moved the tool literals out of mcp.py, so the audit's source
-  grep returned an empty tool list â€” README parity then reported every
+  grep returned an empty tool list — README parity then reported every
   real tool stale while the missing-side check ran vacuous. The audit
   now imports the names from mcp_schemas (the contract owner); CI's
   audit job is back to a meaningful 10/10.
@@ -677,7 +674,7 @@ break APIs between minor versions).
   still refused, and the exact-source match still gates every line that
   reaches disk -- the validation gate is unchanged.
 
-## [0.3.0] â€” 2026-09-15
+## [0.3.0] — 2026-09-15
 
 ### Added
 - **Explicit reasoning disable (the "off means OFF" fix).** `off`/`none`
@@ -734,7 +731,7 @@ break APIs between minor versions).
   silent pool shrinkage is gone. The UI live feed renders `pool_filtered`
   and `rankings_probe` events, and the Trust view's Refresh button works.
 
-- **Full web-UI parity for the verify lane.** The Dispatch â†’ Verify tab now
+- **Full web-UI parity for the verify lane.** The Dispatch → Verify tab now
   covers the structured-claims workflow (claims manifest + source file +
   optional definitions), with pre-network lint rejection surfaced as a
   `rejected` run; `/api/trust` exposes the CLI `trust` snapshot on a new
@@ -766,21 +763,21 @@ break APIs between minor versions).
 
 - **Multi-rung apply escalation ladder (opt-in).** When `allow_escalation` is
   set and `escalation_pool` is configured, a failed cheap apply walks the
-  ladder (cheapest â†’ most capable). Each rung produces COMPLETE file content
+  ladder (cheapest → most capable). Each rung produces COMPLETE file content
   and is finished through the real verification gate.
 
 - **Minority-dissent demotion.** Structured panels record models that vote in
   the minority on defect claims (`minority_models` + ledger
   `panel_minority_dissent`). After two strikes, `order_pool` sorts them below
   unproven peers (same policy as unusable/consent-unusable). A lone dissenter
-  that is *correct* is not banned â€” it is demoted after *repeated* lone
+  that is *correct* is not banned — it is demoted after *repeated* lone
   dissent that invents conflicts.
 
 - **MCP shared-secret auth (optional).** `HARNESS_MCP_AUTH_TOKEN` /
   `mcp_auth_token`: when set, `tools/call` requires matching
   `params._meta.harness_token`. Unset keeps the documented stdio trust model.
 
-- **MCP `panel_verify.task_max_cost`.** Optional per-call ceiling (0â€“0.25);
+- **MCP `panel_verify.task_max_cost`.** Optional per-call ceiling (0–0.25);
   refuses before network spend if the session budget cannot absorb it.
 
 - **Polish pass (sandpaper):** README test-coverage list rewritten to match
@@ -853,8 +850,8 @@ break APIs between minor versions).
   (`harness/local_fit/`, opt-in, off by default).** A small locally-trained
   neural net (no LLM, no runtime dependencies) scores each candidate model
   seat for unusable/truncated/usable-stop risk from pre-dispatch features
-  only (task, lane, declared profile, ledger calibration), and â€” only when
-  explicitly enabled â€” demotes scorer-flagged likely-unusable models after
+  only (task, lane, declared profile, ledger calibration), and — only when
+  explicitly enabled — demotes scorer-flagged likely-unusable models after
   their peers *within* the existing demotion tier of
   `capability.order_pool`. Three-stage flag gating: OFF (default; the hook
   is never imported or called), OBSERVE (`HARNESS_LOCAL_FIT_ENABLE` +
@@ -877,7 +874,7 @@ break APIs between minor versions).
   eval features); specialist rows read model/raw/cost from the conv dict;
   shuffling is seeded; ONNX export derives width from the net; train-test
   numpy imports are guarded for clean CI. Honestly measured on 9 v4 runs:
-  leakage-free eval top1 0.647â€“0.867 (mean 0.761 vs ~0.64 majority), and a
+  leakage-free eval top1 0.647–0.867 (mean 0.761 vs ~0.64 majority), and a
   leave-one-run-out routing study shows the net recapitulating ledger
   observed rates with no measurable lift over the trivial baseline
   (Spearman +0.730 vs +0.750; precision@1 8/8 both) -- INFLUENCE is safe
@@ -922,58 +919,58 @@ break APIs between minor versions).
   suppress redundant auto-expansion.
 
 - **Consent-probe curation:** consent answers the parser cannot use (empty,
-  reasoning-only, unparseable â€” ledgered as `consent_rotate`, HTTP tier faults
+  reasoning-only, unparseable — ledgered as `consent_rotate`, HTTP tier faults
   excluded) now count toward the same two-strike demotion as the apply lane's
   unusable outputs, so a consent-blind judge is rotated below unproven models
   at the next panel/consent lane build.
 
-- **`capabilities --check-shipped`** â€” machine-checked config freshness: the
+- **`capabilities --check-shipped`** — machine-checked config freshness: the
   new `config.shipped_model_ids()` enumerates every default lane id across
   both tier policies; the command validates all of them against the live
-  catalog ($0.00, one GET /models) and exits 2 naming any stale id â€” closing
+  catalog ($0.00, one GET /models) and exits 2 naming any stale id — closing
   the twice-recurred stale-default-id defect class. The catalog-fixture pin
   (which itself rotted) is replaced by a live-gated suite test that
   auto-runs the same check wherever an API key exists.
 
-- **Pre-run saturation warning** â€” the look-ahead half of the saturation
+- **Pre-run saturation warning** — the look-ahead half of the saturation
   policy (`saturation.pre_run_warning`): before a run spends anything, the
   recent ledger is scanned for rate-limited model results (429s in the last
-  100 events, â‰¥3 = saturated; 401/auth faults deliberately not counted) and
-  one plain-language warning prints to stderr â€” advice, never a gate â€” with
+  100 events, ≥3 = saturated; 401/auth faults deliberately not counted) and
+  one plain-language warning prints to stderr — advice, never a gate — with
   key-near-limit state qualifying the BYOK advice. Warns at most once per
   process; every failure mode degrades to silence. Wired at both assembly
   sites (CLI `_session` + `_run_claims_verify`, MCP `main`).
 
-- **Ledger-seeded self-hosting (`dogfood --from-ledger`)** â€” the loop closes:
+- **Ledger-seeded self-hosting (`dogfood --from-ledger`)** — the loop closes:
   the harness curates its next self-audit from its own recorded run evidence
   instead of a hand-authored fixture. Three deterministic, ranked rules turn
-  recent ledger entries into factual claims â€” a model whose runs repeatedly
+  recent ledger entries into factual claims — a model whose runs repeatedly
   fail-closed at the verification gate, a model repeatedly paid for HTTP 200s
   with no usable content, and free-tier rate limiting dominating recent
-  dispatches â€” each with its evidence window. The curated manifest is
+  dispatches — each with its evidence window. The curated manifest is
   persisted via `--claims-out`, passes the hermetic ground lint, and flows
   through the same gate-confirmed panel and gated self-apply phases.
   Curation reads the ledger only (no live key) and is ledgered as a
   `dogfood_curate` event. (Live proof: curated 3 claims from this repo's real
-  ledger â€” 82 gemma-4-31b gate fail-closes, 4 for openrouter/free, 5 paid-
-  for-nothing calls â€” panel-confirmed, gated apply passed, $0.00.)
+  ledger — 82 gemma-4-31b gate fail-closes, 4 for openrouter/free, 5 paid-
+  for-nothing calls — panel-confirmed, gated apply passed, $0.00.)
 
-- **`harness dogfood` â€” the self-hosting loop as one command.** Composes the
+- **`harness dogfood` — the self-hosting loop as one command.** Composes the
   three lanes with fail-closed phase gates: hermetic claims lint (an
   ungrounded claim never reaches a model), live panel + convergence tally
-  (the defect must be *gate-confirmed* â€” every required panel slot voting â€”
+  (the defect must be *gate-confirmed* — every required panel slot voting —
   before any edit), then the gated self-apply with the operator's verify
   command. Exit 0 only if every phase proved its claim; shortfall panels,
   unconfirmed defects, and deferrals all stop short of the edit with full
   evidence in the `--out` report. CLI-only by design: the
-  verifyâ†’self-edit chain stays under operator authority; its phases remain
+  verify→self-edit chain stays under operator authority; its phases remain
   individually available over MCP. The verify execution path is shared with
   `verify` (`_run_claims_verify`), so the two surfaces cannot drift.
 
 - **MCP batch parity: `apply_edit` accepts a `file` array.** Multi-file
   batches run through the new engine-owned `ApplyEngine.apply_batch` (one
   governed session per file, shared budget, fail-fast, shared-gate
-  aggregation) â€” previously the batch loop lived only in the CLI, so MCP
+  aggregation) — previously the batch loop lived only in the CLI, so MCP
   had no batch capability at all.
 
 - `--quiet` on `bench` and `continue` (verify/apply had it; the others
@@ -985,7 +982,7 @@ break APIs between minor versions).
 - **No verify assembly left handler-side.** `mcp.py`'s `panel_verify` no
   longer lane-defaults locally (panel pool, judge, convergence model,
   specialists): validated-None arguments flow through to
-  `service.run_verify`, whose callerâ†’routerâ†’settings resolution is the one
+  `service.run_verify`, whose caller→router→settings resolution is the one
   owner. `cli._read_text` is now a delegation stub to
   `service.read_text_file`, the ONE BOM-tolerant reader; the name stays for
   its other call sites and patch seam. Error wording unchanged.
@@ -1009,14 +1006,14 @@ break APIs between minor versions).
 - **MCP tool schemas are pure data.** The ~140-line schema dict literal
   moved from `mcp.py` into a new `mcp_schemas.py` data-only module (no
   imports, no logic), leaving the protocol adapter as framing + lanes +
-  dispatch (785 â†’ 664 lines). Byte-identity proven by replaying the full
+  dispatch (785 → 664 lines). Byte-identity proven by replaying the full
   `tools/list` response through the real stdio frame loop before and after
   the extraction.
 
 - **MCP lane scheduling is pure policy.** `LANES`, the lane membership
   constants, and `lane_for` moved verbatim from `mcp.py` into a new
   `mcp_lanes.py`, leaving the protocol adapter as framing + dispatch +
-  cancellation lifecycle (664 â†’ 646 lines). Per-lane dispatch proven
+  cancellation lifecycle (664 → 646 lines). Per-lane dispatch proven
   byte-identical by an instrumented frame-loop probe (one request per
   lane, submit-to-pool correlation) before and after the extraction.
 
@@ -1052,8 +1049,8 @@ break APIs between minor versions).
   in `harness/ui/app.js`.
 
 - Architecture pass: the terminal status vocabulary gained its meaning as a
-  one-place policy â€” `results.SUCCESS_STATUSES` and
-  `results.terminal_exit_code` â€” replacing the failure-set copy in cli's
+  one-place policy — `results.SUCCESS_STATUSES` and
+  `results.terminal_exit_code` — replacing the failure-set copy in cli's
   `_emit_by_status`, the success-set copy in `apply_batch`, and dogfood's
   re-derived exit block. The consent mechanics text moved from apply.py to
   prompts.py (pure prompt text belongs with the prompt contracts);
@@ -1062,23 +1059,23 @@ break APIs between minor versions).
 
 - Architecture pass: the verify recipe (catalog seed, capability panel
   ordering, degrade-to-given-order) moved into the panel lane as its single
-  owner â€” the CLI's verify lane and MCP's `panel_verify` dropped their
+  owner — the CLI's verify lane and MCP's `panel_verify` dropped their
   duplicated seed+order blocks (MCP's even ordered converging panels under
   the wrong task key). dogfood tests lost 18 lines of dead governor-mock
   boilerplate by patching the session seam instead. Net -37 lines.
 
 - Architecture pass: engine composition extracted to `harness/session.py` as
   the ONE owner (governor/ledger/router/engine builders + `apply_session`
-  with the pre-spend saturation look-ahead). MCP now composes from it â€” its
+  with the pre-spend saturation look-ahead). MCP now composes from it — its
   20-line construction copy is deleted, so engine-kwarg and tier-policy
   changes can no longer land in the CLI and miss MCP. A new architecture
   guard pins ApplyEngine/Router construction to session.py only.
 
 - Earlier: one dependency-assembly site (`cli._session`) wired
   key+governor, ledger, router and engine identically for verify, apply,
-  continue, dogfood and bench â€” replacing the four verbatim copies, and
+  continue, dogfood and bench — replacing the four verbatim copies, and
   threading `settings.use_free` into the engine on both construction sites
-  (CLI and MCP â€” previously silently defaulted to False, so mixed-pool
+  (CLI and MCP — previously silently defaulted to False, so mixed-pool
   demotion sort semantics differed from config). Apply resumes inherit the
   saved continuation task id (ledger
   attribution stays under the original task; explicit --task-id still wins).
@@ -1088,8 +1085,8 @@ break APIs between minor versions).
 
 - Architecture pass: the apply result vocabulary (round entries, terminal
   and deferred result builders, HTTP error rendering) moved to a new
-  `harness/results.py` â€” one def site per result shape the CLI and MCP
-  consume; apply.py is 1,077 â†’ 999 lines and the vocabulary is pinned by
+  `harness/results.py` — one def site per result shape the CLI and MCP
+  consume; apply.py is 1,077 → 999 lines and the vocabulary is pinned by
   the architecture test. Interface hygiene is also pinned: interface
   functions import policy at module level (cli.py's three remaining lazy
   imports lifted), with `main()`'s lazy entry as the documented exception.
@@ -1097,13 +1094,13 @@ break APIs between minor versions).
   `test_spend.py` / `test_panel.py` / `test_convergence.py` /
   `test_specialist.py` / `test_chat.py`, and `test_audit_fixes.py` into
   `test_ledger.py` / `test_judge.py` / `test_tokens.py` / `test_probe.py` /
-  `test_dogfood.py` â€” same 262 tests, behavior-named homes, shared `_gov`
+  `test_dogfood.py` — same 262 tests, behavior-named homes, shared `_gov`
   fixture in `tests/_fake.py`.
 
 - **`apply_edit` decomposed into phases with a single orchestrator.** Argument
   policy lives in one `_prepare` (validated, engine defaults frozen into an
-  `_ApplyRequest`); the round loop's phases â€” initial consent, renewal,
-  rotation, dispatch, merge, gate, escalation, terminal assembly â€” are named
+  `_ApplyRequest`); the round loop's phases — initial consent, renewal,
+  rotation, dispatch, merge, gate, escalation, terminal assembly — are named
   helpers mutating one `_RunState`, and every outcome still exits through the
   shared terminal builders. Behavior-preserving: all 243 tests pass unchanged;
   a change to one behavior now lands in one phase, not a 600-line loop body.
@@ -1115,7 +1112,7 @@ break APIs between minor versions).
 - **Layering completed and enforced.** `apply.py` (1,062 lines) shed its two
   non-engine concerns: prompt contracts and response parsing moved to
   `prompts.py`, disk/gate mutation policy (atomic write, backups, shell-free
-  verify runner) to `filesafety.py` â€” `apply.py` is now the round loop,
+  verify runner) to `filesafety.py` — `apply.py` is now the round loop,
   rotation, escalation, and batch orchestration only. `core.py` was pruned to
   the names callers actually import, and the new `tests/test_architecture.py`
   enforces the import direction (no module may import an interface;
@@ -1172,7 +1169,7 @@ break APIs between minor versions).
   deterministic majority, the conflict is recorded on
   `convergence.specialist.tally_conflicts` and the tally is named authoritative.
 
-- **MCP verify default tokens.** `max_tokens` default raised 300 â†’ 2048 to
+- **MCP verify default tokens.** `max_tokens` default raised 300 → 2048 to
   match the CLI verify lane.
 
 - **Atomic write staging.** Temp files are staged under `realpath(parent)`.
@@ -1213,7 +1210,7 @@ break APIs between minor versions).
   `cannot write --out` when the parent folder is missing.
 
 - **Claims lint sees Python definitions.** `_DEFN_RE` now matches
-  `def`/`class` as well as Rust `fn`/`const`/â€¦ (and `pub(crate)`).
+  `def`/`class` as well as Rust `fn`/`const`/… (and `pub(crate)`).
 
 - **Train-time tests skip without the `local-fit-train` extra.**
   Clean runners without numpy/onnx no longer error; classes that import
@@ -1278,7 +1275,7 @@ break APIs between minor versions).
 
 - **Bench no longer leaves solved fixtures in the tree.** `run_bench` now
   restores every task sandbox in a `finally` (a successful run previously
-  left the fixed fixture on disk â€” committing that would defeat the bench;
+  left the fixed fixture on disk — committing that would defeat the bench;
   the docstring's "idempotent and re-runnable" promise now covers the tree
   it leaves behind), and the sandbox snapshot/restore plus `_atomic_write`
   round-trip is byte-faithful (`newline=""` throughout): CRLF fixtures no
@@ -1320,14 +1317,14 @@ break APIs between minor versions).
   `[FATAL]` path.
 
 - **Consent probes see the full target file** (both initial and renewal
-  probes, one preview policy in `consent.py`) â€” models were honestly refusing
+  probes, one preview policy in `consent.py`) — models were honestly refusing
   to consent to edits they could only see 60 lines of.
 
 - Line-numbered source in diff prompts plus richer merge-error feedback
   (models miscounted lines in unnumbered views); round-feedback strings no
   longer contain literal `\n` escapes.
 
-## [0.2.0] â€” 2026-09-05
+## [0.2.0] — 2026-09-05
 
 ### Changed
 - **Engine split by concern.** The 1,240-line `harness/core.py` is now a
@@ -1358,7 +1355,7 @@ break APIs between minor versions).
 - **`ApplyEngine._continuation_gate` no longer leaks across applies**
   (`harness/apply.py`). Resuming a gated apply pinned its gate on the engine
   for its lifetime, so a later *fresh* apply with a different gate was refused
-  with "verify gate changed" â€” and the MCP server, which keeps one engine for
+  with "verify gate changed" — and the MCP server, which keeps one engine for
   the whole session, would have broken every apply after the first resume.
   Per-request gate state now resets at the start of each apply; the resume
   path still pins and the tamper check still refuses.
@@ -1374,7 +1371,7 @@ break APIs between minor versions).
   an unrecognizable shape fails with a clear error instead of silent success.
 - **Backups survive slashed task ids** (`harness/apply.py`). Bench names tasks
   `bench/<name>`, and the slash landed in the backup *filename*, breaking the
-  backup write on every platform â€” bench ran with its safety net silently
+  backup write on every platform — bench ran with its safety net silently
   disabled (visible as a `[warn] backup failed` on each task). Task-id
   separators are now flattened in backup names.
 - **`harness-mcp` / `python -m harness.mcp` actually serve**
@@ -1389,7 +1386,7 @@ break APIs between minor versions).
 - `_atomic_write` now **preserves the target's permission mode**
   (`harness/apply.py`). `tempfile.mkstemp` creates files 0600, so every atomic
   replace silently stripped the executable bit (and all other mode bits) from
-  the written file â€” breaking verify-gate scripts and artifacts rewritten by
+  the written file — breaking verify-gate scripts and artifacts rewritten by
   an apply round. New files keep the safe 0600 default.
 - **`HARD_MAX_COST` / `HARD_TASK_MAX_COST` are now enforced**
   (`harness/config.py`). They were defined and documented as hard ceilings but
@@ -1400,14 +1397,14 @@ break APIs between minor versions).
   where a task ceiling larger than a call ceiling is intentional) and the
   ledger's `_acquire_process_lock` helper (`harness/ledger.py`), which
   referenced an uninitialized `_lockfile` attribute and would have crashed if
-  ever called â€” the live cross-process lock is acquired per-append in
+  ever called — the live cross-process lock is acquired per-append in
   `_persist`.
 - Removed a malformed `# noqa` directive (`harness/core.py`) flagged by ruff.
 - Documentation drift: README and CONTRIBUTING no longer hardcode a test
   count that immediately went stale; bench task fixtures now end with a
   trailing newline (ruff W292).
 
-## [0.1.0] â€” 2026-09-02
+## [0.1.0] — 2026-09-02
 
 Initial public development release. Development continued on the 0.1.0 line
 through 2026-09-05; the highlights below span that whole window.
@@ -1419,9 +1416,9 @@ ships intentionally as AI-assisted audit evidence (caveats in its
 
 ### Added
 - **Cost-bounded multi-model verification core** (`harness.core`): rotating
-  panel + structured judge over plain chat completions â€” no `tools` key in
+  panel + structured judge over plain chat completions — no `tools` key in
   any payload, pre-flight worst-case cost ceilings against live per-token
-  pricing (default 2Â¢/call, hard max 10Â¢), mid-batch fail-closed spend
+  pricing (default 2¢/call, hard max 10¢), mid-batch fail-closed spend
   checks, and BYOK route handling with learned org-prefix rotation.
 - **Sovereignty model** (`harness.consent`): an independent, cheap consent
   probe with decline/defer/redirect all valid; parsed defers honored without
@@ -1470,7 +1467,7 @@ ships intentionally as AI-assisted audit evidence (caveats in its
   `models`, `spend`, `capabilities` (with `--bench` probe). Exit codes:
   0 ok, 1 fatal, 2 verify failed, 3 deferred.
 - **CI**: hermetic tests + ruff on Python 3.9 / 3.11 / 3.13.
-- **Audit record**: SCMessenger security-audit artifacts (rounds 1â€“4,
+- **Audit record**: SCMessenger security-audit artifacts (rounds 1–4,
   convergence reports, CTO review) demonstrating the engine reproducing
   round-3 verdicts claim-by-claim on the free tier at $0.00.
 
