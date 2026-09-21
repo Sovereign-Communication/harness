@@ -166,4 +166,21 @@ TOOL_SCHEMAS = [
             "allow_write": {"type": "boolean", "description": "Confirm permission to write files when execute=true"},
         }, "required": ["goal"]},
     },
+    {
+        "name": "issue_sort",
+        "title": "Sort an issue into an operator-declared bucket",
+        "description": "JEV-P5 issue-sort: operator declares the bucket pack; code owns "
+                       "matching; TypeSafe choice criteria = operator labels only. Never "
+                       "invents buckets, path_ids, or suggested actions. Unkeyed / "
+                       "transport fail / out-of-pack → is_fallback with keyword match "
+                       "against pack keywords only; no match → bucket=null.",
+        "inputSchema": {"type": "object", "properties": {
+            "issue": {"type": "string", "description": "Issue or deferral note text to sort"},
+            "pack": {"type": "object",
+                     "description": "Operator bucket pack: {id, buckets: {id: {label, "
+                                    "kind: trouble_area|alternate_path|orchestration_driver, "
+                                    "path_id, keywords[], suggested_next_action, attention}}}"},
+            "task_id": {"type": "string"},
+        }, "required": ["issue", "pack"]},
+    },
 ]

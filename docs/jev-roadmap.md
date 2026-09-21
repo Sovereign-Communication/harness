@@ -157,7 +157,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 
 ---
 
-## Canonical STATUS (update here only — truth as of 2026-09-21 post P2 merge)
+## Canonical STATUS (update here only — truth as of 2026-09-21 post P3 + HUL-A merge)
 
 | Track / phase | Status | PR / evidence |
 |---|---|---|
@@ -165,16 +165,14 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `JEV-P0-*` contract truth | **complete** | PR #34 / `d042d70`; live smoke OK |
 | `JEV-P1-*` one owner + lanes | **complete** | **PR #35 MERGED** → `origin/main` `9d5ff14` |
 | `JEV-P2-*` System One pillars | **complete** | **PR #36 MERGED** → `origin/main` `405bbc1`; hermetic lane-parity; D12 executed; local audit BAR MET; CI green on PR tip **and** post-merge `main`; live Jev smoke OK; **`JEV-P2-jury` deferred** (follow-up, not blocking P2 complete) |
-| `JEV-P3-*` utilization | **complete** | **PR #43 MERGED** `7eb18ea` |
+| `JEV-P3-*` utilization | **complete** | **PR #43 MERGED** `7eb18ea`; route/triage/context/claims/completion/calibration |
 | `JEV-P4-*` ops / exit | **open** | after P3 DoD |
-| `JEV-P3-*` utilization | **complete** | **PR #43 MERGED** `7eb18ea` |
-| `JEV-P4-*` ops / exit | **open** | after P3 DoD |
-| `JEV-P5-*` issue-sort buckets | **open** | operator category packs → typed choice + 0-hallucination steering |
+| `JEV-P5-*` issue-sort buckets | **in progress** | PR #42 `feat/jev-p5-issue-sort`; **not complete until merge + CI green** |
 | `HUL-A` mission pack | **complete** | **PR #41 MERGED** `64e63a3`; mission pack + CLI + gate tests; CI green |
 | `HUL-B` dual budget | **open** | after A |
 | `HUL-C` Jev scope gate | **open** | after A + P1 policy (merged) |
 | `HUL-D` until-limits driver | **open** | after A–C |
-| `HG-*` hourglass composition | **in progress** | PR #44; local audit BAR MET; **not complete until merge + CI green** |
+| `HG-*` hourglass composition | **in progress** | PR #44; local full suite + audit BAR MET; **not complete until merge + CI green** |
 | `MS-*` cheapest-capable + context | **open** | ad-hoc model strings → config/ladders; expensive seats get condensed state |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
 | Exit | Jev P4 checklist all true on `origin/main` | **open** |
@@ -201,10 +199,10 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | 0 Contract | `JEV-P0-*` | `jev.py`, `config.py`, docs | `tests/test_jev.py` + smoke | **complete** — PR #34 |
 | 1 One owner | `JEV-P1-*` | policy + lanes | `test_jev_policy` / `lane_parity` / `ledger_spend` | **complete** — PR #35 |
 | 2 Pillars | `JEV-P2-*` | consent, sliding_scale, waist triage | `test_jev_triage`, `test_consent_confidence`, `test_min_confidence_gating` + hermetic lane parity + audit | **complete** — PR #36 `405bbc1`; jury deferred |
-| 3 Utilization | `JEV-P3-*` | orchestrator, routing, context, panel, calibration | `tests/test_jev_util_*.py` (route, triage-files, context-pack, claims, completion, calibration) | **open** |
+| 3 Utilization | `JEV-P3-*` | orchestrator, routing, context, panel, calibration | `tests/test_jev_util_*.py` (route, triage-files, context-pack, claims, completion, calibration) | **complete** — PR #43 `7eb18ea` |
 | 4 Ops | `JEV-P4-*` | workflows, analytics, docs | live acceptance checklist + dogfood with/without jev | **open** |
-| 5 Issue-sort | `JEV-P5-*` | `jev_policy` + planned pack module (name when shipped), waist/orchestrator/CLI/MCP | `tests/test_jev_issue_sort.py` (+ pack/orchestration) | **open** — operator bucket packs, 0 hallucination |
-| HUL-A | `HUL-A-*` | `harness/mission_record.py`, CLI `mission` | `tests/test_hul_mission_record.py` | **in progress** — PR #41 `feat/hul-a-mission-pack` |
+| 5 Issue-sort | `JEV-P5-*` | `jev_policy` + `harness/jev_packs.py`, waist/orchestrator/CLI/MCP | `tests/test_jev_issue_sort.py` (+ pack/orchestration) | **in progress** — PR #42 `feat/jev-p5-issue-sort`; operator bucket packs, 0 hallucination |
+| HUL-A | `HUL-A-*` | `harness/mission_record.py`, CLI `mission` | `tests/test_hul_mission_record.py` | **complete** — PR #41 `64e63a3` |
 | HUL-B | `HUL-B-*` | `spend.py` dual envelope | `tests/test_hul_budget_reserve.py` | **open** |
 | HUL-C | `HUL-C-*` | scope packs via `jev_policy.evaluate_scope` (pack module name when shipped) | `tests/test_hul_jev_scope_gate.py` | **open** |
 | HUL-D | `HUL-D-*` | mission driver + FINDINGS + resume | `tests/test_hul_driver_findings_resume.py` | **open** |
@@ -378,5 +376,6 @@ Write STATUS `blocked` + the **exact** failing command/output. No “will do”.
 - Endpoint (authoritative): `https://api.typesafe.ai/v1/systemone`
 - Models: alias `jev-latest` → `jev-1.13.0` (pin version id when calibrating thresholds)
 - Verification gates remain authoritative for code correctness; Jev is pre-gate triage and structural refusal, not a substitute for tests
+
 
 

@@ -1237,8 +1237,13 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                  chat_fn=None, max_cost=None, keep_going=False, out=None,
                  execute=False, root=None, max_tokens=None,
                  allow_escalation: bool = False,
+<<<<<<< HEAD
                  plan_consensus: bool = False,
                  jev_policy=None) -> Dict[str, Any]:
+=======
+                 jev_policy=None,
+                 issue_sort_pack=None) -> Dict[str, Any]:
+>>>>>>> origin/main
     """ONE owner of the plan-lane flow (CLI and MCP call this).
 
     Order: optional cheap-LLM decomposition (M1, condensed signatures) ->
@@ -1262,6 +1267,10 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     is what the CLI/MCP lanes edit); ``max_tokens`` is the lane's pinned
     output budget when it has one -- both feed the chunk policy's real
     per-pass budget, none of them add a budget of their own.
+
+    ``issue_sort_pack`` (optional operator bucket pack): when provided with
+    a ``jev_policy``, attach the issue-sort combo on the plan envelope as
+    ``issue_sort`` via the ONE policy owner (path_id from pack only).
     """
     if (decompose_llm or confirm or plan_consensus) and governor is None:
         raise HarnessError("LLM plan features require a governor")
@@ -1269,6 +1278,7 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     plan_goal = opts_goal
     plan_structural = None
     plan_triage = None
+    plan_issue_sort = None
     jev_route_feed = None
     repo_context = None
     if isinstance(jev_policy, JevPolicy):
@@ -1290,6 +1300,10 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                 f"{opts_goal}\n\n[STRUCTURAL GUIDELINE]: This goal requires iterative "
                 "control flow, conditional branching, or multi-step execution. "
                 "Represent those dependencies explicitly in the executable DAG.")
+        if issue_sort_pack is not None:
+            _sort_result, _sort_structural, plan_issue_sort = (
+                jev_policy.evaluate_issue_sort(
+                    {"issue": opts_goal}, issue_sort_pack, site="issue_sort"))
     # JEV-P3-context-pack: distilled decision-relevant state before generative
     # seats that lack a pack. Smallest seam — pass into LLM decompose.
     if decompose_llm and not repo_context:
@@ -1347,6 +1361,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         plan_result["triage"] = plan_triage
     if plan_structural is not None:
         plan_result["structural"] = plan_structural
+    if plan_issue_sort is not None:
+        plan_result["issue_sort"] = plan_issue_sort
     # Chunk anything that cannot fit ONE model pass before the gate sees it,
     # so the waist confirms the plan that will actually run.
     plan_result = _fit_plan_to_single_pass(
@@ -1356,6 +1372,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         allow_escalation=allow_escalation)
     if plan_structural is not None:
         plan_result["structural"] = plan_structural
+    if plan_issue_sort is not None:
+        plan_result["issue_sort"] = plan_issue_sort
 
     # HG-plan-consensus: optional cheap soundness check BEFORE the waist.
     # It always uses its OWN governed call (or an injected consensus seam),
@@ -1412,8 +1430,13 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             plan_result = plan_result_confirmed
             if plan_structural is not None:
                 plan_result["structural"] = plan_structural
+<<<<<<< HEAD
             if consensus is not None:
                 plan_result["consensus"] = consensus
+=======
+            if plan_issue_sort is not None:
+                plan_result["issue_sort"] = plan_issue_sort
+>>>>>>> origin/main
             # When in autonomous execution mode and the waist refused,
             # do not immediately halt. Attempt critique-driven re-planning if decomposition
             # was LLM-based, feeding the frontier's architectural critique back to the planner.

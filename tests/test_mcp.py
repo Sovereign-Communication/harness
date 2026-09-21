@@ -975,7 +975,8 @@ class LaneSchedulingTests(unittest.TestCase):
              "defer_work": "observe",
              "participation_report": "observe",
              "spend_status": "observe",
-             "trust_status": "observe"})
+             "trust_status": "observe",
+             "issue_sort": "observe"})
 
     def test_unknown_and_missing_names_ride_observe(self):
         self.assertEqual(lane_for("not_a_tool"), "observe")

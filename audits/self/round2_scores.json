@@ -1,4 +1,4 @@
-{
+﻿{
   "scores": {
     "A": 10.0,
     "R": 10.0,
@@ -163,7 +163,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 1343 tests in 76.522s\n\nOK"
+        "evidence": "unittest: Ran 1315 tests in 75.498s\n\nOK"
       },
       {
         "id": "R14",
@@ -207,7 +207,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "62/62 modules imported by tests"
+        "evidence": "61/61 modules imported by tests"
       },
       {
         "id": "S7",
@@ -227,7 +227,7 @@
         "id": "D1",
         "label": "MCP tool parity with README",
         "score": 1.0,
-        "evidence": "README documents all 9 MCP tools, no stale names"
+        "evidence": "README documents all 10 MCP tools, no stale names"
       },
       {
         "id": "D2",
@@ -245,7 +245,7 @@
         "id": "D4",
         "label": "config table keys real",
         "score": 1.0,
-        "evidence": "24 README config keys all resolve to real settings (42 configurable)"
+        "evidence": "24 README config keys all resolve to real settings (41 configurable)"
       },
       {
         "id": "D5",
