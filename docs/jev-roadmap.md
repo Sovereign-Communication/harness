@@ -168,7 +168,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `HUL-B` dual budget | **complete** | **PR #47 MERGED** `536e75c`; dual envelope + tests |
 | `HUL-C` Jev scope gate | **complete** | **PR #48 MERGED** `469f34f`; scope packs via `jev_policy.evaluate_scope` (site=`hul_scope`); unkeyed cannot alone complete |
 | `HUL-D` until-limits driver | **complete** | **PR #48 MERGED** `469f34f`; `mission run` until limits/stall + FINDINGS.md + interrupt-safe resume; D12 coverage honestly refreshed (`a3afc16`); dogfood follow-ups tracked as `DF-HUL-*` |
-| `HG-*` hourglass composition | **reopened / in progress** | **PR #44 MERGED** `f22accb`; Claude dogfood 2026-09-22 confirmed two HIGH defects in shipped items: `HG-composed-ceiling` ignores `--task-max-cost` (`DF-HG-1`) and `HG-pyramid-resume` cannot bootstrap from a cold start (`DF-HG-2`) |
+| `HG-*` hourglass composition | **complete** | **PR #44 MERGED** `f22accb`; repair **PR #68 MERGED** `4889776` (`DF-HG-1` composed ceiling, `DF-HG-2` cold-start pyramid resume, `DF-HG-3` preview decompose fallback; local audit BAR MET 10/10/10/10, CI green) |
 | `SITE-*` proof bench site | **complete** | **PR #60 MERGED** `a9ae53f`; `harness site-export` → bundle-v1 → aggregate/Worker; tiers page + router; sanitized opt-in only; dogfood follow-up tracked as `DF-SITE-1` |
 | `JEV-P6-*` repo summary A/B | **complete** | **PR #65 MERGED** `1936ed4`; 746/746 elements, $29.345862 exact, ledger chain verified (receipts in the JEV-P6 section); stage C = `JEV-P6-waist-brief` |
 | `CLAUDE-LANE` Claude Code migration | **complete** | **PR #66 MERGED** `6f00d38`; `CLAUDE.md` + tool-neutral `AGENTS.md`, `.claude/` skills (`/isolated-mission`, `/isolated-request`) + scout/implementer/verifier tiers + settings, docs migrated (`docs/claude-context.md`, `docs/jev-mission-prompt.md`), MCP version negotiation fix |
@@ -207,7 +207,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | HUL-B | `HUL-B-*` | `spend.py` dual envelope | `tests/test_hul_budget_reserve.py` | **complete** — PR #47 `536e75c` |
 | HUL-C | `HUL-C-*` | scope packs via `jev_policy.evaluate_scope` (`harness/jev_packs.py`, site=`hul_scope`) | `tests/test_hul_jev_scope_gate.py` | **complete** — PR #48 `469f34f` |
 | HUL-D | `HUL-D-*` | `harness/mission_driver.py` + FINDINGS + resume | `tests/test_hul_driver_findings_resume.py` | **complete** — PR #48 `469f34f` |
-| Hourglass | `HG-*` | waist/executor/spend/plan consensus/pyramid state | `tests/test_hg_*.py` | **reopened / in progress** — PR #44 merged; `DF-HG-1` ceiling + `DF-HG-2` cold-start resume |
+| Hourglass | `HG-*` | waist/executor/spend/plan consensus/pyramid state | `tests/test_hg_*.py` | **complete** — PR #44 + repair PR #68 `4889776` (`DF-HG-1/2/3` closed) |
 | SITE-1/2 | `SITE-*` | `site_export.py`, `route_pack.py`, `jev_policy.evaluate_model_route` | `tests/test_site_export.py`, `tests/test_route_pack.py` | **complete** — PR #60 MERGED `a9ae53f`; deny-by-default exporter + 0-hallucination router |
 | SITE-3..9 | `SITE-*` | `site_aggregate.py`, `site/` (pages+worker), `harness/server.py` site endpoints, `harness/ui/panes.js` | `tests/test_site_aggregate.py`, `tests/test_site_fold_parity.py`, `tests/test_site_parity_directives.py` | **complete** — PR #60 MERGED `a9ae53f`; 8 gated-run metrics, fold parity (py↔js), CI workflow, UI panes; Jev-directed escalation evidence (PR #58/#59) proven to reach the sanitized bundle + GUI |
 | 6 Repo summary | `JEV-P6-*` | `repo_items.py`, `repo_summary.py`, `jev_packs.py`, `jev_policy.evaluate_repo_summary` | `tests/test_repo_items.py`, `tests/test_jev_repo_{pack,judgment,envelope}.py` | **complete** — PR #65 MERGED `1936ed4` |
@@ -315,8 +315,8 @@ Run each item with `/isolated-mission --bar <ID>` (see [jev-mission-prompt.md](j
 
 1. ~~**`CLAUDE-LANE`**~~ — **complete** (PR #66 merged `6f00d38`).
 2. ~~**`JEV-BAR-*`**~~ — **complete** (PR #67 merged `a9b58ab`; audit BAR MET 10/10/10/10).
-3. **HG repair PR** — `DF-HG-1`, `DF-HG-2` (HIGH), `DF-HG-3`; HG row returns to complete only on bar pass + live plan dogfood.
-4. **Budget-honesty PR (`MS-*`)** — `DF-MS-1..3` alongside the open MS ladder work.
+3. ~~**HG repair PR**~~ — **complete** (PR #68 merged `4889776`; `DF-HG-1/2/3` closed, local audit BAR MET 10/10/10/10, CI green).
+4. **Budget-honesty PR (`MS-*`)** — `DF-MS-1..3` alongside the open MS ladder work (Jev model routing, no Ling defaults, auto paid failover).
 5. **Lane-correctness PR** — `DF-CLI-1`, `DF-APPLY-1`, `DF-SITE-1`.
 6. **HUL-D follow-up PR** — `DF-HUL-1..3`.
 7. **CI + docs hygiene PR** — `DF-CI-1..3`, `DF-DOCS-1..4`.
@@ -332,9 +332,9 @@ Claude-lane dogfood: 9 components audited by Sonnet agents on private ledgers, e
 
 | ID | Sev | Finding (confirmed) | Owner | Fix | Gate |
 |---|---|---|---|---|---|
-| `DF-HG-1` | high | `plan` composed-ceiling preflight ignores `--task-max-cost`; silently pinned to config `max_cost` | `HG-composed-ceiling` | plan governor honours the flag (or an explicit plan budget flag); envelope shows the number used | `tests/test_hg_composed_ceiling.py` CLI-face case |
-| `DF-HG-2` | high | `plan --resume PATH` cannot bootstrap a fresh pyramid state from a cold start | `HG-pyramid-resume` | missing state path = fresh run persisted there (or `--persist-state`) | `tests/test_hg_pyramid_resume.py` cold-start case |
-| `DF-HG-3` | med | default decompose seat intermittently returns unparseable JSON → plan-only preview FATAL (execute path already falls back) | `HG-condense-decompose` | one strict retry, then loud heuristic fallback in preview too | `tests/test_hg_condense_decompose.py` |
+| `DF-HG-1` | high | `plan` composed-ceiling preflight ignores `--task-max-cost`; silently pinned to config `max_cost` | `HG-composed-ceiling` | **fixed** (PR #68 `4889776`): plan governor honours the flag; envelope shows number used | `tests/test_hg_composed_ceiling.py` CLI-face case |
+| `DF-HG-2` | high | `plan --resume PATH` cannot bootstrap a fresh pyramid state from a cold start | `HG-pyramid-resume` | **fixed** (PR #68 `4889776`): missing state path bootstraps fresh run; `--persist-state` supported | `tests/test_hg_pyramid_resume.py` cold-start case |
+| `DF-HG-3` | med | default decompose seat intermittently returns unparseable JSON → plan-only preview FATAL (execute path already falls back) | `HG-condense-decompose` | **fixed** (PR #68 `4889776`): one strict retry, then loud heuristic fallback in preview too | `tests/test_hg_condense_decompose.py` |
 | `DF-SITE-1` | med | `/site/` pages unreachable in a browser when `HARNESS_UI_AUTH_TOKEN` is set (header-only guard on static assets) | `SITE-6..9` | do not header-gate static site assets (no secrets), keep JSON API guarded | `tests/test_site_server.py` |
 | `DF-CLI-1` | med | `harness ledger verify` exits 0 on a broken chain, contradicting the documented exit codes | `JEV-P1-ledger` | non-zero exit when `ok=false` | ledger CLI test |
 | `DF-APPLY-1` | med | `harness continue --instruction X` silently replays the stale continuation instruction | `JEV-P1-apply` (continuation) | new instruction reaches the batch options | continuation CLI test |
