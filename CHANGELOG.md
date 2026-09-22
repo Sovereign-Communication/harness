@@ -9,6 +9,10 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.4.0] — 2026-09-21
+
 ### Added
 
 - **SITE Proof Bench site + unified Jev-directed escalation evidence (PR #60).** The capability/$ proof surface: fail-closed `harness site-export` (consent gate, hash-chain verify, deny-by-default event allowlist, credential-shape scan before any byte lands; `bundle_id` binds the consent record so it cannot be swapped post-hoc); eight gated-runs-only metrics (`site_aggregate.py`: cost per gated task, run-depth histogram, frontier warrant rate, basis-labeled modeled hourglass savings, Jev leverage, cohorts); zero-hallucination router (`harness route` + MCP `route_query`, choice ⊆ declared rungs, unkeyed → honest tier-heuristic fallback); static six-page site with a free-plan Cloudflare Worker (D1 + KV rollup + native Rate Limiting binding) whose JS fold is pinned to the Python `fold_rollup` by shared fixture vectors; additive UI panes (Chat legacy untouched / Proof / Insights / Legacy API). The two sessions unified at the ledger: the CLI escalation executor's `escalate` provenance (`directed_by=jev`, confidence, target rung, condensed-context size) flows through the exporter allowlist into Jev-directed trace cards on the site traces page and the local UI Proof pane — the condensed context itself never crosses the sanitize boundary (`tests/test_site_parity_directives.py`). `harness serve` serves the site under `/site/` (traversal-guarded, extension-allowlisted, auth-guarded), making it the single local entrypoint for UI and site; `harness jev-phase --phase SITE` scores the slice through the standard completion gate.
