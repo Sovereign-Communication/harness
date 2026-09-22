@@ -131,8 +131,8 @@ def build_parser():
                     default=None,
                     help="author the DAG with the cheapest tier-appropriate model "
                          "(schema-validated; default: on when the hourglass is "
-                         "active; on --execute a decompose failure falls back to the "
-                         "heuristic with a loud note, a plan-only preview fails loudly)")
+                         "active; on failure, decompose retries once then falls "
+                         "back to the heuristic with a loud note and orchestration event)")
     pp.add_argument("--no-decompose-llm", dest="decompose_llm", action="store_false",
                     help="force heuristic decomposition even when the hourglass is on")
     pp.add_argument("--confirm", dest="confirm", action="store_true", default=None,
@@ -158,6 +158,8 @@ def build_parser():
     pp.add_argument("--resume", dest="resume", default=None,
                     help="path to a pyramid state JSON; re-dispatch only nodes "
                          "that are not already completed ok")
+    pp.add_argument("--persist-state", dest="persist_state", default=None,
+                    help="path to persist pyramid state JSON even if not resuming")
     pp.add_argument("--isolate", dest="isolate", action="store_true", default=None,
                     help="isolate parallel-stage nodes in git worktrees + local branches "
                          "(default: on; overlap-free concurrent nodes only -- nodes "
@@ -176,6 +178,8 @@ def build_parser():
                          "full test suite); a failing gate stops the run before "
                          "dependent stages start")
     pp.add_argument("--keep-going", dest="keep_going", action="store_true", default=False, help="continue past a failed subtask")
+    pp.add_argument("--max-cost", type=float, default=None,
+                    help="maximum spend ceiling for the entire plan run (alias: --task-max-cost)")
     _add_engine_flags(pp, max_tokens_default=4096)
     _add_output_flags(pp)
 

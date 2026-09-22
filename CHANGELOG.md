@@ -15,6 +15,10 @@ break APIs between minor versions).
 
 ### Fixed
 
+- **Hourglass repair (`DF-HG-1`, `DF-HG-2`, `DF-HG-3`)** — Fixed three confirmed dogfood defects in hourglass planning:
+  - `DF-HG-1`: `_cmd_plan` now honors `--task-max-cost` (and alias `--max-cost`) as the ceiling for the plan governor; `composed_worst_case` returns `plan_ceiling` in the envelope.
+  - `DF-HG-2`: `plan --resume PATH` supports cold-start bootstrapping when `PATH` does not exist yet (`load_state(..., allow_missing=True)`), persisting state on execution completion. Added `--persist-state` flag to CLI parser.
+  - `DF-HG-3`: LLM decomposition retries once on parse/transport failure and falls back loudly to the heuristic in preview mode too (`decomposition="heuristic"`) with an `orchestration_note` event instead of crashing FATAL.
 - **MCP** — `initialize` now negotiates the protocol version per the MCP lifecycle (echo supported, otherwise answer `2025-06-18`) instead of rejecting newer clients; Claude Code 2.1 (`2025-11-25`) could not connect. Non-string `protocolVersion` is still rejected (`-32602`). Tests in `tests/test_mcp.py`.
 
 ### Changed

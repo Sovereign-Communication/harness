@@ -43,8 +43,14 @@ def persist_state(path: str, *, goal: str, dag, node_results=None,
     return payload
 
 
-def load_state(path: str) -> Dict[str, Any]:
-    """Load a pyramid state envelope (fail-closed on unreadable/malformed)."""
+def load_state(path: str, *, allow_missing: bool = False) -> Optional[Dict[str, Any]]:
+    """Load a pyramid state envelope (fail-closed on unreadable/malformed).
+
+    If ``allow_missing=True`` and the file does not exist, returns ``None``
+    for cold-start bootstrapping (DF-HG-2).
+    """
+    if allow_missing and not os.path.exists(path):
+        return None
     try:
         with open(path, encoding="utf-8") as handle:
             data = json.load(handle)

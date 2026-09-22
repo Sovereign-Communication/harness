@@ -520,7 +520,7 @@ class AutonomousAgent:
                 self._orchestrator_chat_fn(gov)(prompt_text), 0.0),
             execute=True,
             allow_escalation=bool(getattr(self.settings, "allow_escalation", False)))
-        if plan.get("decomposition") == "heuristic":
+        if str(plan.get("decomposition", "")).startswith("heuristic"):
             # compose_plan degrades to the heuristic only after the LLM
             # decomposition failed (execute=True); the GUI needs that on the
             # event stream, not just on stderr.

@@ -79,6 +79,75 @@ class CondenseDecomposeTests(unittest.TestCase):
                 transport=None, api_key=None, governor=None, ledger=None,
                 opts_goal="g", decompose_llm=True, chat_fn=chat_fn)
 
+    def test_decompose_llm_failure_retries_and_falls_back_in_preview(self):
+        """DF-HG-3: preview mode retries once on decompose failure, then loudly
+        falls back to heuristic without crashing FATAL."""
+        from harness import events
+        from harness.spend import SpendGovernor
+
+        captured_events = []
+
+        def sink(ev):
+            captured_events.append(ev)
+
+        events.add_sink(sink)
+        try:
+            calls = []
+
+            def broken_chat(prompt):
+                calls.append(prompt)
+                return "this is not json at all", 0.0
+
+            fake = FakeTransport(models=[m("m/cheap")])
+            gov = SpendGovernor(fake, "sk-test", max_cost=1.0)
+            plan = compose_plan(
+                transport=fake, api_key="k",
+                governor=gov,
+                ledger=None,
+                opts_goal="Update the shipments helper",
+                candidate_files=["pkg/mod.py"],
+                decompose_llm=True,
+                chat_fn=broken_chat,
+                execute=False)
+
+            self.assertEqual(len(calls), 2)  # initial attempt + 1 retry
+            self.assertEqual(plan["decomposition"], "heuristic")
+            self.assertIn("dag", plan)
+            self.assertTrue(plan["dag"]["nodes"])
+            # Orchestration note emitted
+            notes = [e for e in captured_events if e.get("type") == "orchestration_note"]
+            self.assertTrue(any("LLM decomposition failed" in n.get("note", "") for n in notes))
+        finally:
+            events.remove_sink(sink)
+
+    def test_decompose_llm_transient_failure_succeeds_on_retry(self):
+        """DF-HG-3: LLM decomposition retry succeeds if second attempt returns valid JSON."""
+        from harness.spend import SpendGovernor
+
+        calls = []
+
+        def transient_chat(prompt):
+            calls.append(prompt)
+            if len(calls) == 1:
+                return "not json", 0.0
+            return DECOMP, 0.0
+
+        fake = FakeTransport(models=[m("m/cheap")])
+        gov = SpendGovernor(fake, "sk-test", max_cost=1.0)
+        plan = compose_plan(
+            transport=fake, api_key="k",
+            governor=gov,
+            ledger=None,
+            opts_goal="Update the shipments helper",
+            candidate_files=["pkg/mod.py"],
+            decompose_llm=True,
+            chat_fn=transient_chat,
+            execute=False)
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(plan["decomposition"], "llm:injected")
+        self.assertIn("dag", plan)
+
 
 if __name__ == "__main__":
     unittest.main()
