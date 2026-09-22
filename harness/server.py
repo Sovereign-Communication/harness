@@ -72,6 +72,17 @@ def load_chat_history(session_id: str, history_dir=None):
 
 
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+# SITE local mode: the static Proof Bench pages (site/public) served next to
+# the legacy UI, so `harness serve` is the single local entrypoint for both.
+SITE_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir,
+                         "site", "public")
+SITE_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+}
 MAX_EVENT_BUFFER = 4000
 
 # Rankings reports (advisory, read-only mirror): the `harness rankings`
@@ -528,6 +539,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         q = parse_qs(parsed.query)
         if path in STATIC_FILES:
             return self._static(STATIC_FILES[path])
+        if path.startswith("/site/"):
+            return self._site_static(path)
         if not self._guard():
             return
         try:
@@ -617,6 +630,38 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 body = f.read()
         except OSError:
             return self._error(500, f"UI file missing: {fname}")
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _site_static(self, path):
+        """SITE local mode: serve site/public assets under /site/.
+
+        Resolution is rooted at SITE_ROOT and the resolved path must stay
+        inside it (traversal guard); only known static extensions are
+        served. Same loopback+_guard policy as every other route: this runs
+        before the auth guard, matching the legacy UI's static handling.
+        """
+        if not self._guard():
+            return
+        rel = os.path.normpath(path[len("/site/"):]).lstrip("\\/")
+        if rel.startswith("..") or os.path.isabs(rel):
+            return self._error(404, "no such site file")
+        root = os.path.abspath(SITE_ROOT)
+        full = os.path.abspath(os.path.join(root, rel))
+        if not full.startswith(root + os.sep):
+            return self._error(404, "no such site file")
+        ext = os.path.splitext(full)[1].lower()
+        ctype = SITE_TYPES.get(ext)
+        if ctype is None:
+            return self._error(404, "no such site file")
+        try:
+            with open(full, "rb") as f:
+                body = f.read()
+        except OSError:
+            return self._error(404, "no such site file")
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
