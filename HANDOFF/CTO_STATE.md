@@ -7,17 +7,17 @@
 
 | Item | State |
 |---|---|
-| `origin/main` | `1936ed4` (PR #65 JEV-P6 merged); baseline 1781 tests OK, ruff clean, audit BAR MET 10/10/10/10 |
-| Open branch 1 | `chore/claude-lane` (worktree `Harness-claude-lane`) — **PR #66** (review); Claude lane migration + MCP negotiation fix + canon plan + seats. Merge on green CI (operator approval). |
-| Open branch 2 | `feat/jev-bar-sentiment` (worktree `Harness-jev-bar`) — **WIP commit**, **draft PR #67**; implementation partial (jev_completion/jev_packs/jev_policy/cli edits + pack JSON); `tests/test_jev_bar_sentiment.py` not written; gates not run. Spec = draft PR body. |
-| Local MCP | `harness` (local scope) fails until CLAUDE-LANE merges (protocol negotiation); `harness-dev` points at the claude-lane worktree and connects — remove it after merge: `claude mcp remove harness-dev -s local` |
+| `origin/main` | `a9b58ab` (PR #66 CLAUDE-LANE & PR #67 JEV-BAR merged); all tests OK, ruff clean, audit BAR MET 10/10/10/10 |
+| Shipped | **PR #66** (`CLAUDE-LANE`) merged `6f00d38`; **PR #67** (`JEV-BAR-*`) merged `a9b58ab` |
+| Current slice | Item 3: **HG repair PR** (`DF-HG-1`, `DF-HG-2` HIGH, `DF-HG-3`) |
+| Local MCP | `harness` (local scope) protocol negotiation fixed in PR #66; remove dev worktree pointer if present: `claude mcp remove harness-dev -s local` |
 | Operator one-time | accept the Claude Code workspace trust dialog in the repo (project allow rules are ignored until then) |
 
 ## Next actions (in order)
 
-1. Watch CI on the claude-lane PR; merge when green (merge commit, repo convention).
-2. Resume JEV-BAR: `/isolated-mission --bar JEV-BAR --rounds 3 Finish feat/jev-bar-sentiment per the spec in its draft PR` (Sonnet implementer, Sonnet verifier). Then `jev-phase --all --local-only`; triage `false_complete`.
-3. Continue "Next implementation slice" items 3–10 (HG repair first: `DF-HG-1/2` are HIGH).
+1. Drive HG repair PR: `DF-HG-1` (composed ceiling `--task-max-cost`), `DF-HG-2` (cold-start pyramid resume), `DF-HG-3` (decompose retry & preview fallback).
+2. Run gates and dogfood: `tests/test_hg_*.py`, audit BAR MET, live plan dogfood, `harness jev-phase --phase HG`.
+3. Continue "Next implementation slice" items 4–10.
 
 ## Blockers
 

@@ -171,8 +171,8 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `HG-*` hourglass composition | **reopened / in progress** | **PR #44 MERGED** `f22accb`; Claude dogfood 2026-09-22 confirmed two HIGH defects in shipped items: `HG-composed-ceiling` ignores `--task-max-cost` (`DF-HG-1`) and `HG-pyramid-resume` cannot bootstrap from a cold start (`DF-HG-2`) |
 | `SITE-*` proof bench site | **complete** | **PR #60 MERGED** `a9ae53f`; `harness site-export` → bundle-v1 → aggregate/Worker; tiers page + router; sanitized opt-in only; dogfood follow-up tracked as `DF-SITE-1` |
 | `JEV-P6-*` repo summary A/B | **complete** | **PR #65 MERGED** `1936ed4`; 746/746 elements, $29.345862 exact, ledger chain verified (receipts in the JEV-P6 section); stage C = `JEV-P6-waist-brief` |
-| `CLAUDE-LANE` Claude Code migration | **in progress** | this PR: `CLAUDE.md` + tool-neutral `AGENTS.md`, `.claude/` skills (`/isolated-mission`, `/isolated-request`) + scout/implementer/verifier tiers + settings, docs migrated (`docs/claude-context.md`, `docs/jev-mission-prompt.md`), MCP version negotiation fix (Claude Code 2.1 could not connect); live skill + MCP receipts below |
-| `JEV-BAR-*` sentiment-bucket bar | **in progress** | branch `feat/jev-bar-sentiment`: per-axis sentiment + declared improvement buckets drive bar pass; bar calls routed through `JevPolicy`; trivially-satisfiable contracts fixed |
+| `CLAUDE-LANE` Claude Code migration | **complete** | **PR #66 MERGED** `6f00d38`; `CLAUDE.md` + tool-neutral `AGENTS.md`, `.claude/` skills (`/isolated-mission`, `/isolated-request`) + scout/implementer/verifier tiers + settings, docs migrated (`docs/claude-context.md`, `docs/jev-mission-prompt.md`), MCP version negotiation fix |
+| `JEV-BAR-*` sentiment-bucket bar | **complete** | **PR #67 MERGED** `a9b58ab`; per-axis sentiment + declared improvement buckets drive bar pass; bar calls routed through `JevPolicy`; `packs/phase_completion.pack.json` |
 | `DF-*` dogfood follow-ups | **open** | 2026-09-22 audit (9 components, 32 findings, 31 confirmed by independent re-verification, $0.29 live spend) — rows in "Dogfood audit follow-ups" |
 | `MS-*` cheapest-capable + context | **open** | ad-hoc model strings → config/ladders; expensive seats get condensed state; budget-honesty findings `DF-MS-*` fold in here |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
@@ -211,8 +211,8 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | SITE-1/2 | `SITE-*` | `site_export.py`, `route_pack.py`, `jev_policy.evaluate_model_route` | `tests/test_site_export.py`, `tests/test_route_pack.py` | **complete** — PR #60 MERGED `a9ae53f`; deny-by-default exporter + 0-hallucination router |
 | SITE-3..9 | `SITE-*` | `site_aggregate.py`, `site/` (pages+worker), `harness/server.py` site endpoints, `harness/ui/panes.js` | `tests/test_site_aggregate.py`, `tests/test_site_fold_parity.py`, `tests/test_site_parity_directives.py` | **complete** — PR #60 MERGED `a9ae53f`; 8 gated-run metrics, fold parity (py↔js), CI workflow, UI panes; Jev-directed escalation evidence (PR #58/#59) proven to reach the sanitized bundle + GUI |
 | 6 Repo summary | `JEV-P6-*` | `repo_items.py`, `repo_summary.py`, `jev_packs.py`, `jev_policy.evaluate_repo_summary` | `tests/test_repo_items.py`, `tests/test_jev_repo_{pack,judgment,envelope}.py` | **complete** — PR #65 MERGED `1936ed4` |
-| Jev bar | `JEV-BAR-*` | `jev_completion.py`, `jev_packs.py` (completion pack), `jev_policy.evaluate_phase_completion`, `packs/phase_completion.pack.json` | `tests/test_jev_bar_sentiment.py`, `tests/test_jev_completion.py` | **in progress** — `feat/jev-bar-sentiment` |
-| Claude lane | `CLAUDE-LANE` | `CLAUDE.md`, `AGENTS.md`, `.claude/`, `harness/mcp.py` (negotiation) | `tests/test_mcp.py` + live skill/MCP receipts | **in progress** — `chore/claude-lane` |
+| Jev bar | `JEV-BAR-*` | `jev_completion.py`, `jev_packs.py` (completion pack), `jev_policy.evaluate_phase_completion`, `packs/phase_completion.pack.json` | `tests/test_jev_bar_sentiment.py`, `tests/test_jev_completion.py` | **complete** — PR #67 MERGED `a9b58ab` |
+| Claude lane | `CLAUDE-LANE` | `CLAUDE.md`, `AGENTS.md`, `.claude/`, `harness/mcp.py` (negotiation) | `tests/test_mcp.py` + live skill/MCP receipts | **complete** — PR #66 MERGED `6f00d38` |
 
 ### JEV-P3 patterns (implementer notes)
 
@@ -313,8 +313,8 @@ loosen the cap.
 
 Run each item with `/isolated-mission --bar <ID>` (see [jev-mission-prompt.md](jev-mission-prompt.md)); PRs are grouped by owning module so each lands once.
 
-1. **`CLAUDE-LANE`** — PR `chore/claude-lane` (this canon update rides on it): merge on green CI.
-2. **`JEV-BAR-*`** — finish `feat/jev-bar-sentiment` (WIP commit pushed 2026-09-22; spec in its draft PR body): tests `tests/test_jev_bar_sentiment.py`, audit BAR MET, then `harness jev-phase --all --local-only`. Every `false_complete` phase it reports jumps to the top of this list.
+1. ~~**`CLAUDE-LANE`**~~ — **complete** (PR #66 merged `6f00d38`).
+2. ~~**`JEV-BAR-*`**~~ — **complete** (PR #67 merged `a9b58ab`; audit BAR MET 10/10/10/10).
 3. **HG repair PR** — `DF-HG-1`, `DF-HG-2` (HIGH), `DF-HG-3`; HG row returns to complete only on bar pass + live plan dogfood.
 4. **Budget-honesty PR (`MS-*`)** — `DF-MS-1..3` alongside the open MS ladder work.
 5. **Lane-correctness PR** — `DF-CLI-1`, `DF-APPLY-1`, `DF-SITE-1`.
