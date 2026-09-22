@@ -22,6 +22,24 @@ def _unkeyed_settings():
     return settings
 
 
+class SiteGuardTests(ServerHarness):
+    token = "guard-token-1"
+
+    def test_site_routes_require_auth_like_api(self):
+        # /site/* is NOT in the unguarded static allowlist: a request with a
+        # wrong token is refused before any file read (line 647->648 branch).
+        conn = self._conn()
+        try:
+            status, _ = _request(conn, "GET", "/site/index.html",
+                                 headers={"X-Harness-Auth": "wrong"})
+            self.assertEqual(status, 401)
+            status, _ = _request(conn, "GET", "/site/index.html",
+                                 headers={"X-Harness-Auth": self.token})
+            self.assertEqual(status, 200)
+        finally:
+            conn.close()
+
+
 class SiteStaticAssetsTests(ServerHarness):
     def test_pane_assets_served(self):
         for path, marker in (("/panes.js", "pane-tabs"),
@@ -33,6 +51,81 @@ class SiteStaticAssetsTests(ServerHarness):
                 self.assertIn(marker, data.get("raw", ""))
             finally:
                 conn.close()
+
+
+class SitePageServingTests(ServerHarness):
+    """SITE local mode: `harness serve` is the single local entrypoint for
+    the legacy UI AND the Proof Bench pages (under /site/). Traversal and
+    unknown extensions are refused, not guessed."""
+
+    def test_site_index_served(self):
+        conn = self._conn()
+        try:
+            status, data = _request(conn, "GET", "/site/index.html")
+            self.assertEqual(status, 200)
+            self.assertIn("Proof Bench", data.get("raw", ""))
+        finally:
+            conn.close()
+
+    def test_site_asset_served(self):
+        conn = self._conn()
+        try:
+            status, data = _request(conn, "GET", "/site/assets/app.js")
+            self.assertEqual(status, 200)
+            self.assertIn("renderTraces", data.get("raw", ""))
+        finally:
+            conn.close()
+
+    def test_site_traversal_refused(self):
+        for evil in ("/site/../harness/server.py", "/site/..%2Fserver.py",
+                     "/site/....//server.py", "/site/\\..\\server.py"):
+            conn = self._conn()
+            try:
+                status, _ = _request(conn, "GET", evil)
+                self.assertEqual(status, 404, evil)
+            finally:
+                conn.close()
+
+    def test_site_prefix_stripping_cannot_escape(self):
+        # A path whose stripped remainder is absolute (drive letter) or
+        # normalizes outside SITE_ROOT is refused by the isabs / prefix
+        # guards, independent of the '..' check.
+        conn = self._conn()
+        try:
+            for evil in ("/site/C:/windows/win.ini", "/site//" + "a/" * 30 + "x.html"):
+                status, _ = _request(conn, "GET", evil)
+                self.assertEqual(status, 404, evil)
+        finally:
+            conn.close()
+
+    def test_site_unknown_extension_refused(self):
+        conn = self._conn()
+        try:
+            status, _ = _request(conn, "GET", "/site/data/demo/.gitignore")
+            self.assertEqual(status, 404)
+        finally:
+            conn.close()
+
+    def test_site_missing_known_type_refused(self):
+        # A known extension at a nonexistent path hits the OSError branch
+        # (a plain 404, never a traceback or a fabricated body).
+        for path in ("/site/assets/missing.js", "/site/nope/index.html"):
+            conn = self._conn()
+            try:
+                status, _ = _request(conn, "GET", path)
+                self.assertEqual(status, 404, path)
+            finally:
+                conn.close()
+
+    def test_site_index_redirect_free_paths_stay_404(self):
+        # Without the /site/ prefix these are legacy-UI routes, never the
+        # site pages (the two surfaces stay distinct).
+        conn = self._conn()
+        try:
+            status, _ = _request(conn, "GET", "/tiers/index.html")
+            self.assertEqual(status, 404)
+        finally:
+            conn.close()
 
 
 class DemoSnapshotTests(ServerHarness):

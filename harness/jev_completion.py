@@ -84,6 +84,24 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "required_tests": ["tests/test_jev_completion.py"],
         "required_files": ["harness/jev_completion.py"],
     },
+    "SITE": {
+        "pr_pattern": r"PR #60|a9ae53f",
+        "required_tests": [
+            "tests/test_site_export.py",
+            "tests/test_site_aggregate.py",
+            "tests/test_route_pack.py",
+            "tests/test_route_faces.py",
+            "tests/test_site_server.py",
+            "tests/test_site_cli_faces.py",
+            "tests/test_site_fold_parity.py",
+            "tests/test_site_parity_directives.py",
+        ],
+        "required_files": [
+            "harness/site_export.py",
+            "harness/site_aggregate.py",
+            "harness/route_pack.py",
+        ],
+    },
 }
 
 _COMPLETION_PACK = {
@@ -124,6 +142,7 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         "JEV-P3": re.compile(r"JEV-P3|3 Utilization|utilization", re.I),
         "JEV-P4": re.compile(r"JEV-P4|4 Ops|ops / exit", re.I),
         "JEV-COMPLETION": re.compile(r"JEV-COMPLETION|completion score|dogfood 0-100|Accountability", re.I),
+        "SITE": re.compile(r"SITE-\*|SITE-1|SITE-3\.\.9|proof bench site", re.I),
     }
     pat = needles.get(phase_id)
     if not pat or not roadmap_text:
