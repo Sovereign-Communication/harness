@@ -24,6 +24,18 @@ _OMIT = object()
 SUCCESS_STATUSES = frozenset({"ok", "preview"})
 
 
+def model_envelope(*, model_requested=None, model_observed=None):
+    """MS envelope: the model a run ASKED for vs the models that actually
+    served. Rotation, trust-step escalation, and the escalation ladder can all
+    make the two differ; consumers (CLI, MCP, GUI, agent, site export) read one
+    shape instead of re-deriving it from ``rounds``."""
+    observed = []
+    for model in model_observed or []:
+        if model and model not in observed:
+            observed.append(model)
+    return {"model_requested": model_requested, "model_observed": observed}
+
+
 def terminal_exit_code(status):
     """The interface exit-code policy for a run's terminal status. cli and the
     dogfood report both consume this; neither re-derives the meaning."""

@@ -63,6 +63,9 @@ class RunState:
     # for the escalation driver (ONE consumer); None = no Jev signal.
     pending_jev_directive: object = None
     structural: object = None
+    # MS envelope: the requested primary for this run (ApplyRequest.model).
+    # rounds[] already record every model that actually served (observed).
+    model_requested: object = None
 
 
 @dataclass

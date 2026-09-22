@@ -272,6 +272,10 @@ class TestAutonomousAgent(unittest.TestCase):
                 self.assertIn("harness/calc.py", res["target_files"])
                 self.assertIn("+def add(a: int, b: int) -> int:", res["diff"])
                 self.assertAlmostEqual(res["cost"], 0.002)
+                # MS envelope rides every agent edit envelope (children are
+                # mocked here, so requested/observed are honestly empty).
+                self.assertIn("model_requested", res)
+                self.assertIn("model_observed", res)
                 self.assertEqual(len(recording.diff_calls), 1)
                 kwargs = recording.diff_calls[0][1]
                 self.assertEqual(kwargs.get("candidate"),

@@ -7,7 +7,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 
 from .prompts import MAX_APPLY_ROUNDS, MAX_FILE_LINES
-from .results import SUCCESS_STATUSES
+from .results import SUCCESS_STATUSES, model_envelope
 from .continuation import validate_continuation
 from .validation import validate_batch_files
 from .jev_policy import aggregate_structural
@@ -132,4 +132,12 @@ def run_batch(engine, files, *, task_id=None, apply_pool=None,
     structural = aggregate_structural(results, site="batch")
     if structural is not None:
         envelope["structural"] = structural
+    # MS envelope: requested = the first child's requested primary; observed =
+    # every model that served across the batch (order preserved, deduped).
+    envelope.update(model_envelope(
+        model_requested=next((r.get("model_requested") for r in results
+                              if isinstance(r, dict) and r.get("model_requested")),
+                             None),
+        model_observed=[m for r in results if isinstance(r, dict)
+                        for m in (r.get("model_observed") or [])]))
     return envelope

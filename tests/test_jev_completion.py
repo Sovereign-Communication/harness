@@ -350,5 +350,130 @@ class CompletionScoreTests(unittest.TestCase):
             self.assertTrue(result2["can_mark_complete"])
 
 
+class ExtendedPhaseContractTests(unittest.TestCase):
+    """Contracts + STATUS-row needles for canon phases whose rows previously
+    had no way through the gate: JEV-P5, HUL-A..D, JEV-LOG-*, MS."""
+
+    def test_hul_row_with_merge_evidence_can_mark_complete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(
+                root,
+                "| HUL-A | mission pack | **complete** | "
+                "**PR #41 MERGED** `64e63a3`; CI green |",
+                tests=["tests/test_hul_mission_record.py"],
+                files=["harness/mission_record.py"],
+            )
+            result = score_phase_completion(
+                collect_phase_evidence(str(root), "HUL-A"))
+            self.assertTrue(result["hard_gates"]["pr_merged"])
+            self.assertTrue(result["can_mark_complete"])
+
+    def test_hul_open_row_cannot_mark_complete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(
+                root,
+                "| HUL-B | dual budget | **open** | PR #47 pending |",
+                tests=["tests/test_hul_budget_reserve.py"],
+                files=["harness/spend.py"],
+            )
+            result = score_phase_completion(
+                collect_phase_evidence(str(root), "HUL-B"))
+            self.assertFalse(result["hard_gates"]["pr_merged"])
+            self.assertFalse(result["can_mark_complete"])
+
+    def test_jev_log_needles_find_each_open_row(self):
+        rows = "\n".join([
+            "| `JEV-LOG-schema` | schema work | **open** |",
+            "| `JEV-LOG-parse` | parse work | **open** |",
+            "| `JEV-LOG-factor-pass` | factor work | **open** |",
+            "| `JEV-LOG-judgment` | judgment work | **open** |",
+            "| `JEV-LOG-envelope` | envelope work | **open** |",
+            "| `JEV-LOG-cli` | cli work | **open** |",
+            "| `JEV-LOG-dogfood` | dogfood work | **open** |",
+        ])
+        phases = ("JEV-LOG-SCHEMA", "JEV-LOG-PARSE", "JEV-LOG-FACTOR-PASS",
+                  "JEV-LOG-JUDGMENT", "JEV-LOG-ENVELOPE", "JEV-LOG-CLI",
+                  "JEV-LOG-DOGFOOD")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(root, rows)
+            for phase in phases:
+                evidence = collect_phase_evidence(str(root), phase)
+                self.assertIsNotNone(evidence["status_row"], phase)
+                self.assertFalse(
+                    score_phase_completion(evidence)["can_mark_complete"],
+                    f"open {phase} row must not gate complete")
+
+    def test_ms_row_needle_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(
+                root,
+                "| `MS-*` cheapest-capable + context | **open** | lanes still "
+                "ad-hoc |")
+            evidence = collect_phase_evidence(str(root), "MS")
+            self.assertIsNotNone(evidence["status_row"])
+            self.assertFalse(
+                score_phase_completion(evidence)["can_mark_complete"])
+
+    def test_rank_prefers_the_row_carrying_merge_proof(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = (
+                "| HUL-C | scope gate | **complete** — PR #48 `469f34f` |\n"
+                "| HUL-C | scope gate status | **complete** | "
+                "**PR #48 MERGED** `469f34f`; CI green |")
+            _write_repo(root, rows,
+                        tests=["tests/test_hul_jev_scope_gate.py"],
+                        files=["harness/jev_policy.py"])
+            evidence = collect_phase_evidence(str(root), "HUL-C")
+            self.assertIn("MERGED", evidence["status_row"])
+            self.assertTrue(score_phase_completion(evidence)["can_mark_complete"])
+
+    def test_p5_contract_requires_named_gate_test(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(
+                root,
+                "| `JEV-P5-*` issue-sort buckets | **complete** | "
+                "**PR #42 MERGED** `c9e1c67`; bucket packs |",
+                tests=[],  # gate test missing from the tree
+                files=["harness/jev_packs.py"],
+            )
+            result = score_phase_completion(
+                collect_phase_evidence(str(root), "JEV-P5"))
+            self.assertFalse(result["hard_gates"]["required_tests_present"])
+            self.assertFalse(result["can_mark_complete"])
+
+    def test_real_canon_complete_rows_gate_true(self):
+        """Integration: every canon STATUS row that claims complete with merge
+        evidence must pass the dogfood gate on this very tree."""
+        repo_root = Path(__file__).resolve().parents[1]
+        for phase in ("JEV-P0", "JEV-P1", "JEV-P2", "JEV-P3", "JEV-P4",
+                      "JEV-COMPLETION", "SITE", "JEV-P5",
+                      "HUL-A", "HUL-B", "HUL-C", "HUL-D"):
+            result = score_phase_completion(
+                collect_phase_evidence(str(repo_root), phase))
+            self.assertTrue(
+                result["can_mark_complete"],
+                f"{phase} claims complete but gates false: {result['blockers']}")
+
+    def test_real_canon_open_rows_are_found_but_not_complete(self):
+        """Open canon rows must be FOUND by the gate (honest `false`), not
+        invisible. Update the negatives here when those rows legitimately
+        flip to complete with evidence."""
+        repo_root = Path(__file__).resolve().parents[1]
+        for phase in ("JEV-LOG-SCHEMA", "JEV-LOG-PARSE",
+                      "JEV-LOG-FACTOR-PASS", "JEV-LOG-JUDGMENT",
+                      "JEV-LOG-ENVELOPE", "JEV-LOG-CLI", "JEV-LOG-DOGFOOD",
+                      "MS"):
+            evidence = collect_phase_evidence(str(repo_root), phase)
+            self.assertIsNotNone(evidence["status_row"], phase)
+            self.assertFalse(
+                score_phase_completion(evidence)["can_mark_complete"], phase)
+
+
 if __name__ == "__main__":
     unittest.main()
