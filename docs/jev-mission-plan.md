@@ -2,7 +2,7 @@
 
 **Canonical plan (only):** [jev-roadmap.md](jev-roadmap.md) — `Harness Mission Canon — Jev + Until-Limits`
 
-**Short Freebuff paste:** [jev-mission-prompt.md](jev-mission-prompt.md)
+**Mission prompt (Claude Code `/isolated-mission`):** [jev-mission-prompt.md](jev-mission-prompt.md)
 
 **Architecture only (non-operational):** [system-one-integration.md](system-one-integration.md)
 
@@ -11,7 +11,7 @@ If anything here ever disagrees with `docs/jev-roadmap.md`, **the canon wins**.
 
 ---
 
-## Freebuff Mission facts (context only — not a plan)
+## Freebuff Mission facts (legacy lane, retired 2026-09-22 — history only)
 
 Observed 2026-09-20 on this machine:
 
