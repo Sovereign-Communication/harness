@@ -564,3 +564,169 @@ def log_factor_question_pack(pack: Any) -> Dict[str, Dict[str, Any]]:
             "criteria": list(doc["score"]["levels"]),
         },
     }
+
+
+# --- JEV-P6 operator repo-summary pack (site=repo_summary) ---
+
+REPO_SUMMARY_SITE = "repo_summary"
+
+
+def validate_repo_summary_pack(pack: Any) -> Dict[str, Any]:
+    """Validate an operator repo-summary pack; return a clean copy.
+
+    Required shape::
+
+        {id: str,
+         axes: {axis_id: {instructions: str,
+                          criteria: {criterion_id: label}}},
+         score: {id: str, instructions: str, levels: [str, ...]},
+         nouls: {noul_id: {instructions: str, true: str, false: str}},
+         keywords: {axis_id: {criterion_id: [str, ...]}}}
+
+    ``nouls`` and ``keywords`` are optional. Question ids (axes + score id +
+    noul ids) must be unique so typed answers never collide; keywords exist
+    only for the code-owned unkeyed fallback and are never invented here.
+    """
+    if not isinstance(pack, dict):
+        raise ValueError("repo pack must be an object")
+    pack_id = pack.get("id")
+    if not isinstance(pack_id, str) or not pack_id:
+        raise ValueError("repo pack requires a non-empty string id")
+    axes = pack.get("axes")
+    if not isinstance(axes, dict) or not axes:
+        raise ValueError("repo pack requires a non-empty axes map")
+    out_axes: Dict[str, Dict[str, Any]] = {}
+    for axis, spec in axes.items():
+        if not isinstance(axis, str) or not axis:
+            raise ValueError("axis ids must be non-empty strings")
+        if not isinstance(spec, dict):
+            raise ValueError(f"axis {axis!r} must be an object")
+        instructions = spec.get("instructions")
+        if not isinstance(instructions, str) or not instructions:
+            raise ValueError(f"axis {axis!r} requires non-empty instructions")
+        criteria = spec.get("criteria")
+        if not isinstance(criteria, dict) or not criteria:
+            raise ValueError(f"axis {axis!r} requires a non-empty criteria map")
+        out_criteria: Dict[str, str] = {}
+        for criterion_id, label in criteria.items():
+            if not isinstance(criterion_id, str) or not criterion_id:
+                raise ValueError(f"axis {axis!r} criterion ids must be non-empty strings")
+            if not isinstance(label, str) or not label:
+                raise ValueError(f"axis {axis!r} criterion {criterion_id!r} requires a label")
+            out_criteria[criterion_id] = label
+        out_axes[axis] = {"instructions": instructions, "criteria": out_criteria}
+    score = pack.get("score")
+    if not isinstance(score, dict):
+        raise ValueError("repo pack requires a score block object")
+    score_id = score.get("id")
+    if not isinstance(score_id, str) or not score_id:
+        raise ValueError("repo pack score requires a non-empty string id")
+    score_instructions = score.get("instructions")
+    if not isinstance(score_instructions, str) or not score_instructions:
+        raise ValueError("repo pack score requires non-empty instructions")
+    levels = score.get("levels")
+    if (not isinstance(levels, list) or len(levels) < 2
+            or any(not isinstance(x, str) or not x for x in levels)):
+        raise ValueError("repo pack score levels must be at least two non-empty strings")
+    if len(set(levels)) != len(levels):
+        raise ValueError("repo pack score levels must be unique")
+    nouls_raw = pack.get("nouls")
+    if nouls_raw is None:
+        nouls_raw = {}
+    if not isinstance(nouls_raw, dict):
+        raise ValueError("repo pack nouls must be an object")
+    out_nouls: Dict[str, Dict[str, str]] = {}
+    for name, spec in nouls_raw.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("noul ids must be non-empty strings")
+        if not isinstance(spec, dict):
+            raise ValueError(f"noul {name!r} must be an object")
+        fields = {}
+        for field in ("instructions", "true", "false"):
+            value = spec.get(field)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"noul {name!r} requires non-empty {field}")
+            fields[field] = value
+        out_nouls[name] = fields
+    keywords_raw = pack.get("keywords")
+    if keywords_raw is None:
+        keywords_raw = {}
+    if not isinstance(keywords_raw, dict):
+        raise ValueError("repo pack keywords must be an object")
+    out_keywords: Dict[str, Dict[str, List[str]]] = {}
+    for axis, by_criterion in keywords_raw.items():
+        if axis not in out_axes:
+            raise ValueError(f"keywords reference unknown axis {axis!r}")
+        if not isinstance(by_criterion, dict):
+            raise ValueError(f"keywords for axis {axis!r} must be an object")
+        out_keywords[axis] = {}
+        for criterion_id, words in by_criterion.items():
+            if criterion_id not in out_axes[axis]["criteria"]:
+                raise ValueError(
+                    f"keywords reference unknown criterion {axis}.{criterion_id}")
+            if (not isinstance(words, list)
+                    or any(not isinstance(w, str) or not w for w in words)):
+                raise ValueError(
+                    f"keywords for {axis}.{criterion_id} must be non-empty strings")
+            out_keywords[axis][criterion_id] = list(words)
+    question_ids = list(out_axes) + [score_id] + list(out_nouls)
+    if len(set(question_ids)) != len(question_ids):
+        raise ValueError("repo pack question ids (axes, score, nouls) must be unique")
+    return {"id": pack_id, "axes": out_axes,
+            "score": {"id": score_id, "instructions": score_instructions,
+                      "levels": list(levels)},
+            "nouls": out_nouls, "keywords": out_keywords}
+
+
+def repo_summary_question_pack(pack: Any) -> Dict[str, Dict[str, Any]]:
+    """The TypeSafe question pack for one repo element (JEV-P6).
+
+    Choice criteria keys are operator axis ids, score criteria are the
+    operator level strings in declared order, noul criteria are the declared
+    true/false strings. Typed primitives only; nothing invented.
+    """
+    doc = validate_repo_summary_pack(pack)
+    questions: Dict[str, Dict[str, Any]] = {}
+    for axis, spec in doc["axes"].items():
+        questions[axis] = {
+            "type": "choice",
+            "instructions": spec["instructions"],
+            "criteria": dict(spec["criteria"]),
+        }
+    score = doc["score"]
+    questions[score["id"]] = {
+        "type": "score",
+        "instructions": score["instructions"],
+        "criteria": list(score["levels"]),
+    }
+    for name, spec in doc["nouls"].items():
+        questions[name] = {
+            "type": "noul",
+            "instructions": spec["instructions"],
+            "criteria": {"true": spec["true"], "false": spec["false"]},
+        }
+    return questions
+
+
+def heuristic_repo_axes(text: Any, pack: Any) -> Dict[str, Optional[str]]:
+    """Unkeyed fallback: operator-declared keywords only (JEV-P6).
+
+    Per axis: the criterion with the most keyword hits wins (ties keep the
+    lexicographically first criterion id); no hit yields ``None`` -- never a
+    guessed axis. Accepts a raw or already-validated pack.
+    """
+    doc = validate_repo_summary_pack(pack)
+    lowered = (text or "").lower() if isinstance(text, str) else ""
+    keywords = doc.get("keywords") or {}
+    out: Dict[str, Optional[str]] = {}
+    for axis, spec in doc["axes"].items():
+        axis_keywords = keywords.get(axis) or {}
+        best_id: Optional[str] = None
+        best_hits = 0
+        for criterion_id in sorted(spec["criteria"]):
+            hits = sum(1 for word in axis_keywords.get(criterion_id, [])
+                       if word and word.lower() in lowered)
+            if hits > best_hits:
+                best_id, best_hits = criterion_id, hits
+        out[axis] = best_id
+    return out

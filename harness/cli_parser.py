@@ -228,6 +228,36 @@ def build_parser():
                            "max_cost; hard cap applies)")
     _add_output_flags(plog)
 
+    prs = sub.add_parser(
+        "repo-summary",
+        help="Whole-repo element inventory judged against an operator pack "
+             "(JEV-P6; every keyed call is governed, billed, and ledgered)")
+    prs.add_argument("--pack", required=True,
+                     help="path to the operator repo-summary pack JSON")
+    prs.add_argument("--root", default=None,
+                     help="repo root to inventory (default: current directory)")
+    prs.add_argument("--save-to", default=None,
+                     help="write the aggregate envelope JSON to this path "
+                          "(recommended: enables resumable judgments)")
+    prs.add_argument("--map", default=None,
+                     help="write the REPO-MAP markdown render to this path")
+    prs.add_argument("--state", default=None,
+                     help="judgments JSONL resume state (default: "
+                          "<--save-to>.judgments.jsonl)")
+    prs.add_argument("--limit", type=int, default=None,
+                     help="judge only the first N file elements (pilot run)")
+    prs.add_argument("--symbols", type=int, default=200,
+                     help="max centrality-ranked symbol elements to judge "
+                          "after files (default 200; 0 disables)")
+    prs.add_argument("--run-budget", type=float, default=None,
+                     help="cumulative USD ceiling for this whole run across "
+                          "governor chunks (default: one governor at "
+                          "--max-cost; hard cap applies per governor)")
+    prs.add_argument("--max-cost", type=float, default=None,
+                     help="per-governor jev ceiling in dollars (default: "
+                          "configured max_cost; hard cap applies)")
+    _add_output_flags(prs)
+
     proute = sub.add_parser("route", help="Route a query onto the declared model ladder "
                                            "(cheapest capable rung; unkeyed = deterministic "
                                            "tier heuristic)")

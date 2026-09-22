@@ -270,6 +270,31 @@ Reuse `jev_policy` — no second Jev client. Stall default: 5 consecutive attemp
 | `HG-decompose-default` | CLI/MCP default decompose_llm follows `resolve_hourglass` (align with agent) |
 | `HG-ms-parity` | Remove lane-level ad-hoc model strings; ladders/config only; MS envelope requested vs observed |
 
+### Hourglass step A/B — repo summary (`JEV-P6-*`) — promoted 2026-09-22
+
+Operator mission: push the whole repo through the hourglass stage by stage.
+Step A/B (prep + condense): code-owned inventory of every tree element,
+Jev-classified against the operator pack at `packs/repo_summary.pack.json`
+(axes `stage`/`brief_treatment`/`handling`, score `attention`, nouls
+`waist_relevant`/`parallel_safe`), every keyed call governed + settled +
+ledgered `site=repo_summary`, aggregated to `docs/repo-summary/`
+(envelope JSON + `REPO-MAP.md`). REPO-MAP feeds step B→C (grounded waist
+brief → frontier confirm) next.
+
+| ID | Work | Primary modules | Gate tests | Status |
+|---|---|---|---|---|
+| `JEV-P6-extract` | code-owned inventory: files + AST symbols + imports + headings + gate facts + centrality + tallies; soft-skip enumeration flag (additive, default unchanged) | `harness/repo_items.py`, `harness/repo_scope.py` | `tests/test_repo_items.py` | **in progress — this PR** |
+| `JEV-P6-pack` | operator pack seed + validator + typed question pack + declared-keyword fallback | `harness/jev_packs.py`, `packs/repo_summary.pack.json` | `tests/test_jev_repo_pack.py` | **in progress — this PR** |
+| `JEV-P6-judgment` | `JevPolicy.evaluate_repo_summary`: preflight → typed call → settle + ONE `jev_eval` per element (`site=repo_summary`); declared ids only, shape-invalid answers never presented as live | `harness/jev_policy.py` | `tests/test_jev_repo_judgment.py` | **in progress — this PR** |
+| `JEV-P6-envelope` | envelope aggregated from persisted rows (fallbacks never smoothed, spend == Σ rows) + `REPO-MAP.md` renderer + resume/budget-stop contract | `harness/repo_summary.py` | `tests/test_jev_repo_envelope.py` | **in progress — this PR** |
+| `JEV-P6-cli` | `harness repo-summary` face: governor chunking under `HARD_MAX_COST`, explicit `--run-budget` cumulative bound, state/exclude/resume | `harness/cli.py`, `harness/cli_parser.py` | `tests/test_jev_repo_envelope.py` (CLI face + factory) | **in progress — this PR** |
+| `JEV-P6-dogfood` | keyed pilot (~10 elements) → full run under explicit `$10` run budget via dedicated TypeSafe key; artifacts committed under `docs/repo-summary/`; cost, tokens, fallback rate recorded; `harness ledger verify` green | artifacts + receipts | envelope `coverage`/`spend` + ledger chain | **open** |
+
+Rules: one policy owner (no second Jev client); operator declares buckets —
+Jev selects declared keys only (0-hallucination); hermetic tests never key;
+`HARD_MAX_COST` per governor is never raised — big runs chunk, they do not
+loosen the cap.
+
 ### Model selection + dogfood policy (all phases)
 
 - Hermetic tests stay hermetic (`test/model` doubles).

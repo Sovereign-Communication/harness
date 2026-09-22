@@ -163,7 +163,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 1668 tests in 106.234s\n\nOK"
+        "evidence": "unittest: Ran 1759 tests in 108.133s\n\nOK"
       },
       {
         "id": "R14",
@@ -207,7 +207,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "69/69 modules imported by tests"
+        "evidence": "71/71 modules imported by tests"
       },
       {
         "id": "S7",
@@ -251,7 +251,7 @@
         "id": "D5",
         "label": "version single-sourced",
         "score": 1.0,
-        "evidence": "pyproject=0.4.0 __version__=0.4.0 (one source)"
+        "evidence": "pyproject=0.4.1 __version__=0.4.1 (one source)"
       },
       {
         "id": "D6",

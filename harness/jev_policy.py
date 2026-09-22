@@ -19,6 +19,7 @@ from .route_pack import (ROUTE_QUERY_SITE, fallback_route, route_combo,
 from .jev_packs import (
     HUL_SCOPE_SITE,
     LOG_FACTOR_SITE,
+    REPO_SUMMARY_SITE,
     SCOPE_COVERAGE_HOLD,
     SCOPE_NOUL_HOLD,
     claim_support_question_pack,
@@ -27,6 +28,7 @@ from .jev_packs import (
     completion_question_pack,
     file_relevance_question_pack,
     heuristic_file_relevance,
+    heuristic_repo_axes,
     heuristic_requires_iteration,
     heuristic_route,
     hul_scope_question_pack,
@@ -36,11 +38,13 @@ from .jev_packs import (
     named_artifact_status,
     normalize_complexity_class,
     normalize_route,
+    repo_summary_question_pack,
     route_question_pack,
     scope_in_scope_holds,
     validate_candidates,
     validate_log_pack,
     validate_operator_pack,
+    validate_repo_summary_pack,
 )
 
 JEV_MAX_INPUT_TOKENS = 1024
@@ -144,6 +148,7 @@ class JevPolicy:
             "supported": result.supported,
             "cost": float(result.cost or 0.0),
             "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
             "is_fallback": result.is_fallback,
             "model": result.model,
             "site": site,
@@ -1334,6 +1339,184 @@ class JevPolicy:
             input_tokens=int(result.input_tokens or 0),
             output_tokens=int(result.output_tokens or 0),
             reservation=reservation)
+
+    @staticmethod
+    def _repo_element_text(state: Any) -> str:
+        """Bounded text view of one element state for keyword fallback."""
+        if isinstance(state, str):
+            return state[:1200]
+        if not isinstance(state, dict):
+            return str(state)[:1200]
+        parts = [str(state.get("path") or ""), str(state.get("kind") or ""),
+                 str(state.get("summary") or ""),
+                 " ".join(str(s) for s in (state.get("symbols") or [])[:18]),
+                 " ".join(str(h) for h in (state.get("headings") or [])[:12])]
+        if state.get("element_kind") == "symbol":
+            parts.append(str(state.get("symbol") or ""))
+            parts.append(str(state.get("module_summary") or ""))
+        return " ".join(p for p in parts if p)[:1200]
+
+    @staticmethod
+    def _repo_judgment(pack_doc, axes, level, value, confidence, nouls, *,
+                       is_fallback: bool, evidence) -> Dict[str, Any]:
+        """The stable JEV-P6 judgment shape (declared ids or None only)."""
+        pack_doc = pack_doc if isinstance(pack_doc, dict) else {}
+        score = pack_doc.get("score") if isinstance(pack_doc.get("score"), dict) else {}
+        return {
+            "pack_id": pack_doc.get("id"),
+            "axes": dict(axes or {}),
+            "attention": {"id": score.get("id"), "level": level,
+                          "value": value, "confidence": confidence},
+            "nouls": dict(nouls or {}),
+            "is_fallback": bool(is_fallback),
+            "evidence": list(evidence or []),
+        }
+
+    def evaluate_repo_summary(self, state, pack, *, site=REPO_SUMMARY_SITE,
+                              task_id: Optional[str] = None,
+                              node_id: Optional[str] = None,
+                              max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+        """Judge ONE repo element against the operator repo pack (JEV-P6).
+
+        0-hallucination contract (same class as ``evaluate_log_item``):
+        - every axis value \u2208 operator criteria keys, else ``None`` -- an
+          out-of-vocabulary choice is reported, never replaced by a guess;
+        - ``attention.level`` \u2208 operator score levels (via the official
+          legend), else ``None``; ``attention.value`` is the winning
+          probability;
+        - nouls ride as raw probabilities -- a low noul is an answer, not a
+          parse failure, so verdict thresholds never discard classifications;
+        - unkeyed / transport-fail / shape-invalid paths fall back to the
+          code-owned keyword matcher (``keywords`` in the pack only);
+        - ONE ledger ``jev_eval`` per call; ``structural.site=repo_summary``.
+        Returns ``(result, structural, judgment)``.
+        """
+        text = self._repo_element_text(state)
+        try:
+            pack_doc = validate_repo_summary_pack(pack)
+        except ValueError as exc:
+            result = JevEvaluationResult(
+                "fail", 0.0, 0.0, {}, [str(exc)], cost=0.0,
+                input_tokens=0, output_tokens=0, is_fallback=True,
+                model=self.evaluator.model)
+            structural = self._account(
+                result, site=site, task_id=task_id, node_id=node_id)
+            judgment = self._repo_judgment(
+                None, None, None, None, None, None,
+                is_fallback=True, evidence=result.reasons)
+            return result, structural, judgment
+
+        axis_ids = {axis: set(spec["criteria"])
+                    for axis, spec in pack_doc["axes"].items()}
+        level_ids = set(pack_doc["score"]["levels"])
+
+        def fallback_judgment(reasons, *, model=None, cost=0.0,
+                              input_tokens=0, output_tokens=0,
+                              reservation=None):
+            axes = heuristic_repo_axes(text, pack_doc)
+            matched = any(v for v in axes.values())
+            evidence = list(reasons or []) + [
+                f"{axis}:{value}" for axis, value in sorted(axes.items())
+                if value is not None]
+            result = JevEvaluationResult(
+                "pass" if matched else "fail", 0.0, 1.0 if matched else 0.0,
+                {"axes": axes}, evidence,
+                cost=cost, input_tokens=input_tokens,
+                output_tokens=output_tokens, is_fallback=True,
+                model=model or self.evaluator.model)
+            structural = self._account(
+                result, site=site, task_id=task_id, node_id=node_id,
+                reservation=reservation)
+            judgment = self._repo_judgment(
+                pack_doc, axes, None, None, None, None,
+                is_fallback=True, evidence=evidence)
+            return result, structural, judgment
+
+        if not self.keyed:
+            return fallback_judgment(
+                ["unkeyed: code-owned keyword fallback only"])
+
+        reservation = None
+        try:
+            questions = repo_summary_question_pack(pack_doc)
+            reservation = self._preflight(
+                site=site, max_input_tokens=max_input_tokens)
+            payload = state if isinstance(state, dict) else {"item": str(state)}
+            result = self.evaluator.evaluate(payload, questions)
+        except HarnessError as exc:
+            return fallback_judgment([str(exc)], reservation=reservation)
+
+        answers = result.answers if isinstance(result.answers, dict) else {}
+        if result.is_fallback or not answers:
+            # Transport fail or shape-invalid response: never present a
+            # heuristic classification as a live one.
+            return fallback_judgment(
+                list(result.reasons or ["invalid TypeSafe response"]),
+                model=result.model,
+                cost=float(result.cost or 0.0),
+                input_tokens=int(result.input_tokens or 0),
+                output_tokens=int(result.output_tokens or 0),
+                reservation=reservation)
+
+        axes: Dict[str, Optional[str]] = {}
+        evidence: List[str] = []
+        for axis in pack_doc["axes"]:
+            answer = answers.get(axis)
+            choice = answer.get("choice") if isinstance(answer, dict) else None
+            if isinstance(choice, str) and choice in axis_ids[axis]:
+                axes[axis] = choice
+                evidence.append(f"{axis}:{choice}")
+            else:
+                axes[axis] = None
+                evidence.append(f"{axis}:unmatched")
+
+        level = None
+        value = None
+        confidence = 0.0
+        score_id = pack_doc["score"]["id"]
+        score_answer = answers.get(score_id)
+        if isinstance(score_answer, dict):
+            probabilities = score_answer.get("probabilities")
+            legend = score_answer.get("legend")
+            if isinstance(probabilities, dict) and isinstance(legend, dict):
+                for anchor, label in legend.items():
+                    if not isinstance(label, str) or label not in level_ids:
+                        continue
+                    probability = probabilities.get(str(anchor))
+                    if isinstance(probability, (int, float)) and (
+                            value is None or float(probability) > value):
+                        level, value = label, float(probability)
+            raw_confidence = score_answer.get("confidence")
+            if isinstance(raw_confidence, (int, float)):
+                confidence = float(raw_confidence)
+        if level is None:
+            evidence.append("attention:unmatched")
+
+        nouls: Dict[str, Optional[float]] = {}
+        for name in pack_doc["nouls"]:
+            answer = answers.get(name)
+            raw = answer.get("noul") if isinstance(answer, dict) else None
+            nouls[name] = (float(raw)
+                           if isinstance(raw, (int, float))
+                           and not isinstance(raw, bool) else None)
+            if nouls[name] is None:
+                evidence.append(f"{name}:unmatched")
+
+        if not any(v is not None for v in axes.values()) and level is None:
+            return fallback_judgment(
+                evidence + list(result.reasons or []), model=result.model,
+                cost=float(result.cost or 0.0),
+                input_tokens=int(result.input_tokens or 0),
+                output_tokens=int(result.output_tokens or 0),
+                reservation=reservation)
+
+        structural = self._account(
+            result, site=site, task_id=task_id, node_id=node_id,
+            reservation=reservation)
+        judgment = self._repo_judgment(
+            pack_doc, axes, level, value, confidence, nouls,
+            is_fallback=False, evidence=evidence)
+        return result, structural, judgment
 
     @staticmethod
     def _route_query_text(state: Any) -> str:

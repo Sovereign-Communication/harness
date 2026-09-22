@@ -1,0 +1,79 @@
+{
+  "id": "harness-repo-summary-v1",
+  "axes": {
+    "stage": {
+      "instructions": "Choose the hourglass stage this element primarily serves. Select only from the declared criteria keys; do not invent categories.",
+      "criteria": {
+        "prep": "decomposition, inventory, enumeration, or routing inputs",
+        "condense": "brief, signature, or context-pack construction and token economy",
+        "waist": "frontier confirmation, plan verdicts, or escalation decisions",
+        "dispatch": "execution: apply, write, locks, isolation, batches",
+        "adjudicate": "verification, gates, tests, panels, ledger, audits, evidence",
+        "cross_cutting": "serves every stage: config, spend, trust, consent, surfaces"
+      }
+    },
+    "brief_treatment": {
+      "instructions": "Choose how this element should appear in a condensed brief for an expensive seat. Select only from the declared criteria keys.",
+      "criteria": {
+        "signature": "AST or interface signatures alone are sufficient context",
+        "cited_window": "a focused hash-pinned source window should be attached",
+        "failure_evidence": "its value is gate, test, or failure output, not structure",
+        "grounded_claim": "represent as a short grounded fact with sources",
+        "exclude_raw": "never ship raw content across boundaries; facts only"
+      }
+    },
+    "handling": {
+      "instructions": "Choose the least capable handling tier that can safely work on this element. Select only from the declared criteria keys.",
+      "criteria": {
+        "code_owned": "no model needed; counting, paths, or gates only",
+        "scout": "bounded mechanical edits at the cheap base tier",
+        "standard": "multi-file or moderately contextual work",
+        "frontier": "architectural, iterative, or waist-level attention"
+      }
+    }
+  },
+  "score": {
+    "id": "attention",
+    "instructions": "Rate how central this element is to the hourglass pipeline and to a condensed repo summary.",
+    "levels": [
+      "background detail - safe to omit from a tight brief",
+      "notable - include when the goal touches this area",
+      "central - must appear in the waist brief for any repo-wide goal"
+    ]
+  },
+  "nouls": {
+    "waist_relevant": {
+      "instructions": "Does the waist brief need to cite this element to confirm a repo-wide plan?",
+      "true": "A frontier confirmation would need this element's facts or a cited window.",
+      "false": "The plan can be confirmed without citing this element."
+    },
+    "parallel_safe": {
+      "instructions": "Can cheap parallel dispatch mutate this element without worktree isolation?",
+      "true": "Edits here are low-conflict or serialized by declared targets.",
+      "false": "Concurrent mutation risks semantic interference; isolate or serialize."
+    }
+  },
+  "keywords": {
+    "stage": {
+      "prep": ["decompose", "plan", "inventory", "enumerat", "router", "rank", "discover"],
+      "condense": ["condens", "brief", "distill", "signature", "token", "prune", "context"],
+      "waist": ["waist", "confirm", "verdict", "escalat", "frontier", "amend"],
+      "dispatch": ["apply", "write", "execut", "lock", "worktree", "batch", "candidate"],
+      "adjudicate": ["verif", "gate", "test", "audit", "ledger", "panel", "claim", "consent probe"],
+      "cross_cutting": ["config", "setting", "spend", "trust", "output", "render", "error"]
+    },
+    "brief_treatment": {
+      "signature": ["signature", "def ", "class ", "interface", "schema"],
+      "cited_window": ["window", "source", "protocol", "contract", "spec"],
+      "failure_evidence": ["test", "fixture", "assert", "failure", "gate output"],
+      "grounded_claim": ["claim", "evidence", "receipt", "report"],
+      "exclude_raw": ["ledger", "secret", "key", "credential", "raw"]
+    },
+    "handling": {
+      "code_owned": ["ledger", "config", "enum", "tally", "count"],
+      "scout": ["mechanical", "rename", "trivial", "typo"],
+      "standard": ["multi-file", "refactor", "parse", "format"],
+      "frontier": ["architect", "concurr", "protocol", "algorithm", "security"]
+    }
+  }
+}

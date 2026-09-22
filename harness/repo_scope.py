@@ -44,20 +44,36 @@ _REPO_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv",
                    "dist", "build", "audits", ".ruff_cache", "chat_history"}
 _REPO_SKIP_SUFFIXES = {".pyc", ".pyo", ".log", ".lock", ".jsonl"}
 
+# Soft skips are excluded from the relevance first pass but are real tracked
+# content a whole-repo inventory (JEV-P6 repo summary) must see; hard skips
+# stay excluded in every mode (caches, build output, VCS internals).
+_REPO_SOFT_DIRS = {"audits", "chat_history"}
+_REPO_SOFT_SUFFIXES = {".log", ".jsonl"}
 
-def enumerate_repo_files(root_dir: Optional[Path] = None, limit: int = 300) -> List[str]:
-    """The whole-repo listing for the relevance first pass (bounded, junk-free)."""
+
+def enumerate_repo_files(root_dir: Optional[Path] = None, limit: int = 300,
+                         *, include_soft_skipped: bool = False) -> List[str]:
+    """The whole-repo listing for the relevance first pass (bounded, junk-free).
+
+    ``include_soft_skipped`` widens the listing to soft-skipped content
+    (``audits/``, ``chat_history/``, ``*.log``, ``*.jsonl``) for inventories
+    that must cover the whole tree; the default keeps the historical
+    relevance-pass behavior byte-for-byte identical. ``limit=None`` caps nothing.
+    """
     root = (root_dir or Path.cwd()).resolve()
+    hard_dirs = _REPO_SKIP_DIRS - (_REPO_SOFT_DIRS if include_soft_skipped else set())
+    hard_suffixes = _REPO_SKIP_SUFFIXES - (
+        _REPO_SOFT_SUFFIXES if include_soft_skipped else set())
     files: List[str] = []
     for p in sorted(root.rglob("*")):
         if not p.is_file():
             continue
-        if any(part in _REPO_SKIP_DIRS for part in p.parts):
+        if any(part in hard_dirs for part in p.parts):
             continue
-        if p.suffix in _REPO_SKIP_SUFFIXES:
+        if p.suffix in hard_suffixes:
             continue
         files.append(p.relative_to(root).as_posix())
-        if len(files) >= limit:
+        if limit is not None and len(files) >= limit:
             break
     return files
 
