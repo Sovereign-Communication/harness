@@ -414,7 +414,7 @@ no narrative from Jev; 0-hallucination operator packs. Details:
 | `JEV-LOG-judgment` | `JevPolicy.evaluate_log_item` / batch: choice + score via packs | `harness/jev_policy.py` only | `tests/test_jev_log_judgment.py` — keyed/unkeyed, 0-hallucination, one ledger `jev_eval` per call | **complete** — **PR #56/#57 MERGED** `431836d`/`e15a723`; `tests/test_jev_log_judgment.py` green |
 | `JEV-LOG-envelope` | Aggregate JSON artifact + `structural.site=log_factor` | policy + thin CLI/MCP | envelope keys stable; cost honest | **complete** — **PR #57 MERGED** `e15a723`; `tests/test_jev_log_envelope.py` green |
 | `JEV-LOG-cli` | Thin `harness log-judgment --pack … --items …` | `harness/cli.py` | calls policy owner only | **complete** — **PR #57 MERGED** `e15a723`; governor parity `dd7fa45`; policy-owner-only face |
-| `JEV-LOG-dogfood` | Single-pass run on `C:\\temp\\logsSCMessenger.txt` | artifacts + receipts | JSON + cost + fallback rate recorded | **open** |
+| `JEV-LOG-dogfood` | Single-pass run on harness's own output (operator redirection 2026-09-22; old SCMessenger path retired unnecessary) | artifacts + receipts | JSON + cost + fallback rate recorded | **complete** — face capability **PR #57 MERGED** `e15a723`; self-dogfood executed 2026-09-22 on harness itself (receipt: `audits/self/dogfood/JEV_LOG_SELF_DOGFOOD.md`): serve-log leg 0 items/$0 honest, keyed fixture pass 1 live ($0.0205, conf 0.83) + 3 honest keyword fallbacks (TypeSafe score-shape refusal, 0-hallucination contract held) + 1 unmatched; ledger chain verified |
 
 ---
 

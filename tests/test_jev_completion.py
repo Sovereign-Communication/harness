@@ -455,7 +455,8 @@ class ExtendedPhaseContractTests(unittest.TestCase):
                       "JEV-COMPLETION", "SITE", "JEV-P5",
                       "HUL-A", "HUL-B", "HUL-C", "HUL-D",
                       "JEV-LOG-SCHEMA", "JEV-LOG-PARSE", "JEV-LOG-FACTOR-PASS",
-                      "JEV-LOG-JUDGMENT", "JEV-LOG-ENVELOPE", "JEV-LOG-CLI"):
+                      "JEV-LOG-JUDGMENT", "JEV-LOG-ENVELOPE", "JEV-LOG-CLI",
+                      "JEV-LOG-DOGFOOD"):
             result = score_phase_completion(
                 collect_phase_evidence(str(repo_root), phase))
             self.assertTrue(
@@ -467,9 +468,10 @@ class ExtendedPhaseContractTests(unittest.TestCase):
         invisible. Update the negatives here when those rows legitimately
         flip to complete with evidence."""
         repo_root = Path(__file__).resolve().parents[1]
-        # Six JEV-LOG rows legitimately flipped complete on PR #56/#57 merge
-        # evidence (2026-09-21); only the dogfood run and MS stay negative.
-        for phase in ("JEV-LOG-DOGFOOD", "MS"):
+        # Seven JEV-LOG rows legitimately flipped complete on PR #56/#57
+        # merge evidence + the 2026-09-22 self-dogfood receipts; only MS
+        # stays negative.
+        for phase in ("MS",):
             evidence = collect_phase_evidence(str(repo_root), phase)
             self.assertIsNotNone(evidence["status_row"], phase)
             self.assertFalse(

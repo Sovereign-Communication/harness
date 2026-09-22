@@ -2,6 +2,7 @@
   "_comment": "SHA-256 pin (LF-normalized) of the audit evidence corpus; regenerate only via refresh_corpus_manifest.py and commit as a reviewable diff.",
   "files": {
     "audits/self/audit_report.md": "e98765affe29d7d685b3313dd57149235d38707fe2134cdc756c55c93a0b249c",
+    "audits/self/dogfood/JEV_LOG_SELF_DOGFOOD.md": "53a315fce95aa47ffa86970c06e4108d0d51caaee84432cdc719714924e4e7e4",
     "audits/self/dogfood/item1-ledger-anchor.claims.json": "d055bdcabd1cb04487c9289d5da4b26c98c522c49e995a0dee32c3da35518bc9",
     "audits/self/dogfood/item1-ledger-anchor.defs.json": "1395b495a77aa7d6b1b0bfbf9bf70d135fc7e2ada15033a92a99c96b8417a485",
     "audits/self/dogfood/item1-ledger-anchor.window.txt": "9ab85dc251ef80dcd35369de80175a4a526b93909f169f719a0259c5d368d3b7",
@@ -39,6 +40,12 @@
     "audits/self/dogfood/item6b.json": "11f7e8ca4e41160fe20699630987693d608899a707c29b1d1b029264e9341886",
     "audits/self/dogfood/item7.apply.json": "d8dcd46518e344bf36179e70d8f82b7300722a5dde79ef1176966e189d9b0559",
     "audits/self/dogfood/item7.events.jsonl": "5d1eb4875affd03b418ec0b27bff9f2d5416f89a7bd1eb3ca79f3575a43ffc47",
+    "audits/self/dogfood/jev-log-fixture.analysis.json": "88b20c5ab021be80da00de02740395b19388ac8958b90d8062600a9668c341d4",
+    "audits/self/dogfood/jev-log-fixture.bounded005.analysis.json": "06d26735cc68275a9194e1dd0d5a53647ad2d8240c600c06984127abd758024e",
+    "audits/self/dogfood/jev-log-fixture.log": "9b436c1eca68409d22e1a7953db3815b73534e0257872410e06ba9fb70541901",
+    "audits/self/dogfood/jev-log-self-pack.json": "018c73c0c00572901901034405d83e4459ee0054550dcb756cd44a5c4f361352",
+    "audits/self/dogfood/jev-log-self-serve.analysis.json": "a9a10241815ffe9962ffcd0d961c6b31d5e351da8164f4be7f79154e9193e673",
+    "audits/self/dogfood/jev-log-self-serve.log": "9d57946ca264b6fc8d3622c9a2593380ca32794d92e42ae4ddce947b0688d76c",
     "audits/self/dogfood/ledger-curated.claims.json": "547a5d2b656c5f54c634b962fd4b7a4afc688aa271452f0f1cc0508d11fc9157",
     "audits/self/round2_report.md": "d3548a78a7607e5f1ee28757ea27b7db690f175d6511b2a2843498d163754dc5",
     "audits/self/round2_rubric.md": "43ac6b5b9ecedb50b6d5913ab3621058c3a12c30965a9c1aced8153cb52aa85c"

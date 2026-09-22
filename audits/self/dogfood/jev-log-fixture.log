@@ -1,0 +1,12 @@
+2026-09-21T00:37:24.469880Z  INFO scmessenger_cli: SCMessenger CLI starting up... (CLI Version: 0.4.0)
+[INFO] Bounded auto-reply ENABLED: one acknowledgement per unique text message
+  body: [auto-reply] Node is on but unattended - I will read your message when back.
+2026-09-21T00:37:26.567713Z  INFO scmessenger_core::store::ledger_entry: migrated ledger peer_id event="ledger_canonical_hex_migration"
+2026-09-21T00:37:26.714850Z  WARN scmessenger_cli::ble_daemon: btleplug BLE adapter probe route="ble_probe" terminal_result="unavailable" error=No Bluetooth adapter found
+  details: adapter probe failed twice
+2026-09-21T00:37:26.772270Z  WARN scmessenger_cli::ble_mesh: BLE central unavailable route="ble_gatt_central" terminal_result="no_adapter"
+2026-09-21T00:37:52.809649Z  INFO scmessenger_core::transport::swarm: [ERROR] Disconnected from 12D3KooWAHJRsbJekFW5WKTEo9DhmpD2vzdnLCdZFWv3Tp5daAQp
+2026-09-21T00:37:53.000000Z ERROR scmessenger_cli::ble_mesh: BLE: Windows GATT server error: Error { code: HRESULT(0x00000000) }
+  context line one
+  context line two
+2026-09-21T00:38:10.000000Z  WARN scmessenger_core::store::relay_custody: Custody retention sweep: expired 0 of 198 record(s)
