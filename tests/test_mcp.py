@@ -268,6 +268,22 @@ class McpProtocolTests(unittest.TestCase):
         _serve(server, feed)
         self.assertEqual(server.caller, "mcp")
 
+    def test_initialize_negotiates_newer_client_version_down(self):
+        """A newer client version gets the server's version back (MCP
+        lifecycle negotiation), not an error -- the client decides."""
+        feed = ('{"jsonrpc":"2.0","id":1,"method":"initialize",'
+                '"params":{"protocolVersion":"2025-11-25"}}\n')
+        _, lines = run(feed)
+        self.assertNotIn("error", lines[0])
+        self.assertEqual(lines[0]["result"]["protocolVersion"], "2025-06-18")
+
+    def test_initialize_rejects_non_string_version(self):
+        feed = ('{"jsonrpc":"2.0","id":1,"method":"initialize",'
+                '"params":{"protocolVersion":20250618}}\n')
+        _, lines = run(feed)
+        self.assertEqual(lines[0]["error"]["code"], -32602)
+        self.assertIn("protocolVersion", lines[0]["error"]["message"])
+
     def test_initialize_notification_has_no_response(self):
         feed = ('{"jsonrpc":"2.0","method":"initialize",'
                 '"params":{"protocolVersion":"2025-06-18"}}\n'

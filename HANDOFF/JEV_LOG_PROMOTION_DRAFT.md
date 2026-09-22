@@ -1,4 +1,6 @@
-﻿# JEV-LOG promotion draft (DO NOT OPEN AS PR until canon exit)
+# JEV-LOG promotion draft (DO NOT OPEN AS PR until canon exit)
+
+> **SUPERSEDED 2026-09-22** — historical Freebuff-lane handoff; every item here has merged (PRs #36–#65). Current truth: `docs/jev-roadmap.md` (canon STATUS). Agent lane: Claude Code (`CLAUDE.md`, `docs/claude-context.md`).
 
 Preconditions (operator ruling 2026-09-21, PR #50):
 1. Canon open product PRs merged with CI green: #39, #47, #48

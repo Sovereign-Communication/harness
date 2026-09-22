@@ -55,8 +55,11 @@ default 1800), tripped through the same `cancel_check` as
 next poll point. In-flight POSTs and subprocesses still run to their own
 timeouts -- the deadline bounds lane occupancy, not the transport.
 
-The supported protocol version is advertised during `initialize`; unsupported
-versions are rejected. Notifications, including `initialize` and `tools/call`,
+The supported protocol version (`2025-06-18`) is advertised during `initialize`.
+A client that requests a different version gets `2025-06-18` back (MCP version
+negotiation) and decides whether to proceed; a non-string `protocolVersion` is
+rejected with `-32602`. Current Claude Code (which requests `2025-11-25`)
+connects this way. Notifications, including `initialize` and `tools/call`,
 never receive response frames. Identified request IDs are rejected while
 already in flight and remain reserved until their response has been serialized;
 accepted requests drain after stdin reaches EOF. Cancellation notifications
