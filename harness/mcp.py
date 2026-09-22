@@ -303,13 +303,15 @@ class McpServer:
             pass
 
     def _negotiate_version(self, requested):
+        # MCP lifecycle: echo a supported version; otherwise answer with the
+        # version this server speaks and let the client decide to proceed or
+        # disconnect. Erroring here locked out newer clients (Claude Code
+        # 2.1 sends 2025-11-25) that happily speak 2025-06-18.
         if requested is None:
             return PROTOCOL_VERSION
-        if requested != PROTOCOL_VERSION:
-            raise HarnessError(
-                f"unsupported MCP protocol version {requested!r}; "
-                f"supported: {PROTOCOL_VERSION}")
-        return requested
+        if not isinstance(requested, str) or not requested:
+            raise HarnessError("protocolVersion must be a non-empty string")
+        return PROTOCOL_VERSION
 
     def _handle(self, msg):
         method = msg.get("method")

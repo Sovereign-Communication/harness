@@ -9,7 +9,13 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **MCP** — `initialize` now negotiates the protocol version per the MCP lifecycle (echo supported, otherwise answer `2025-06-18`) instead of rejecting newer clients; Claude Code 2.1 (`2025-11-25`) could not connect. Non-string `protocolVersion` is still rejected (`-32602`). Tests in `tests/test_mcp.py`.
+
+### Changed
+
+- **Agent lane** — Claude Code replaces the Freebuff lane: `CLAUDE.md`, tool-neutral `AGENTS.md`, `.claude/` skills (`/isolated-mission`, `/isolated-request`, seats `/cto` `/ceo` `/bod`), scout/implementer/verifier agent tiers, project settings; `docs/freebuff-context.md` → `docs/claude-context.md`; canon STATUS gains `CLAUDE-LANE`, `JEV-BAR-*`, `JEV-P6` and the `DF-*` dogfood follow-ups (HG reopened on two confirmed defects).
 
 ## [0.4.1] — 2026-09-21
 

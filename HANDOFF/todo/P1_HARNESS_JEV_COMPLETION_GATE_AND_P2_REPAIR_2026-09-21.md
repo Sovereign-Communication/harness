@@ -1,5 +1,7 @@
 # P1 — Harness Jev: completion dogfood gate + P2 repair
 
+> **SUPERSEDED 2026-09-22** — historical Freebuff-lane handoff; every item here has merged (PRs #36–#65). Current truth: `docs/jev-roadmap.md` (canon STATUS). Agent lane: Claude Code (`CLAUDE.md`, `docs/claude-context.md`).
+
 **Status:** OPEN  
 **Priority:** P1 (mission accountability; blocks P3/HUL)  
 **Filed:** 2026-09-21  

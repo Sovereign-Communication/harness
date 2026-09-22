@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python.exe -m unittest *)",
+      "Bash(.venv/Scripts/python.exe -W error::ResourceWarning -m unittest *)",
+      "Bash(.venv/Scripts/python.exe -m ruff check *)",
+      "Bash(.venv/Scripts/python.exe -m compileall *)",
+      "Bash(.venv/Scripts/python.exe audits/self/audit.py *)",
+      "Bash(.venv/Scripts/python.exe -m harness.cli jev-phase *--local-only*)",
+      "Bash(.venv/Scripts/python.exe -m harness.cli mission status *)",
+      "Bash(.venv/Scripts/python.exe -m harness.cli --help *)",
+      "Bash(.venv/Scripts/python.exe .claude/skills/isolated-mission/state.py *)",
+      "Bash(python .claude/skills/isolated-mission/state.py *)",
+      "Bash(python .claude/skills/isolated-request/run.py *)",
+      "Bash(python -m harness.cli jev-phase *--local-only*)",
+      "Bash(.venv/Scripts/python.exe .claude/skills/isolated-request/run.py *)",
+      "Bash(.venv/bin/python -m unittest *)",
+      "Bash(.venv/bin/python -m ruff check *)",
+      "Bash(.venv/bin/python audits/self/audit.py *)",
+      "Bash(.venv/bin/python -m harness.cli jev-phase *--local-only*)",
+      "Bash(.venv/bin/python .claude/skills/isolated-mission/state.py *)",
+      "Bash(.venv/bin/python .claude/skills/isolated-request/run.py *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git grep *)",
+      "Bash(git worktree list *)",
+      "Bash(git merge-base *)",
+      "Bash(git rev-parse *)",
+      "Bash(git fetch *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr list *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh run view *)",
+      "Bash(gh run list *)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(~/.config/harness/*.env)",
+      "Read(~/.config/scmorc/*.env)"
+    ]
+  }
+}

@@ -2,7 +2,7 @@
 
 **Canonical plan (only):** [jev-roadmap.md](jev-roadmap.md) — Track B `HUL-*` (mission record, dual budget, Jev scope gate, findings, resume, product phases A–D).
 
-**Short Freebuff paste:** [jev-mission-prompt.md](jev-mission-prompt.md)
+**Mission prompt (Claude Code `/isolated-mission`):** [jev-mission-prompt.md](jev-mission-prompt.md)
 
 This file is **not** a plan. It holds no STATUS, DoD, or schedule.  
 If anything here ever disagrees with `docs/jev-roadmap.md`, **the canon wins**.

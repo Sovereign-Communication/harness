@@ -1,5 +1,7 @@
 # Freebuff transition — Harness JEV + hourglass mission
 
+> **SUPERSEDED 2026-09-22** — historical Freebuff-lane handoff; every item here has merged (PRs #36–#65). Current truth: `docs/jev-roadmap.md` (canon STATUS). Agent lane: Claude Code (`CLAUDE.md`, `docs/claude-context.md`).
+
 **Canon:** `docs/jev-roadmap.md` only (trust `origin/main`, not dirty local STATUS).  
 **Order of operations:** already encoded on origin/main PR #50 (`7ed728f`).  
 **Exclusive implementer note:** this document is for **Freebuff/Freebuff Mission** to pick up remaining work after the operator session lands open PRs.
