@@ -167,7 +167,9 @@ statement covers the CI matrix by direct execution.
 | `harness/site_aggregate.py` | SITE-3 capability/$ metrics over exported bundles (gated-runs-only headlines, frontier warrant rate, modeled hourglass savings with stated basis) + KV rollup fold |
 | `harness/log_items.py` | JEV-LOG code-owned log item extraction + mechanical tallies ($0; header-token levels; bounded continuations) — judgment happens later via `jev_policy`, never here |
 | `harness/log_analysis.py` | JEV-LOG Stage D batch + Stage E aggregate artifact; Stage B draft prompt + operator freeze gate (a draft is never valid without explicit approval) — no second Jev client |
-| `harness/jev_policy.py` | `JevPolicy.evaluate_log_item`: JEV-LOG per-item bucket choice + score judgment (0-hallucination; one ledger `jev_eval` per call) |
+| `harness/repo_items.py` | JEV-P6 code-owned whole-repo inventory ($0): kinds, sizes, AST symbols, imports, headings, test/gate facts, import-graph centrality + mechanical tallies; bounded element state for typed calls — no judgments happen here |
+| `harness/repo_summary.py` | JEV-P6 batch driver + Stage E envelope aggregated from persisted rows (resume state, budget stops, output-path exclusion) + `REPO-MAP.md` renderer — no second Jev client |
+| `harness/jev_policy.py` | `JevPolicy.evaluate_log_item` / `evaluate_repo_summary`: JEV-LOG per-item and JEV-P6 per-element typed judgments (0-hallucination; one ledger `jev_eval` per call) |
 | `harness/mission_record.py` | HUL-A mission pack schema/layout/STATUS/receipts/budget/resume + `evaluate_scope_on_pack` storage (no second Jev client) |
 | `harness/mission_driver.py` | HUL-D until-limits driver: attempts until cost/token/error limits, honest HUL-C success, or stall; FINDINGS.md + interrupt-safe resume |
 | `harness/providers.py` | modular provider adapter interface and registry for external execution backends |

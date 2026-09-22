@@ -1,0 +1,89 @@
+{
+  "schema": "repo-summary-v1",
+  "generated_at": "2026-09-22T19:15:13Z",
+  "pack_id": "harness-repo-summary-v1",
+  "coverage": {
+    "files_listed": 546,
+    "candidates": 746,
+    "judged": 746,
+    "judged_files": 546,
+    "judged_symbols": 200,
+    "pending": 0,
+    "pending_sample": [],
+    "live_judged": 694,
+    "fallbacks": 52,
+    "ambiguous": 601,
+    "prior_rows": 0,
+    "judged_this_run": 740,
+    "live_this_run": 689,
+    "stop_reason": "complete"
+  },
+  "spend": {
+    "run_budget": 100.0,
+    "cost_usd": 29.345862,
+    "input_tokens": 698711,
+    "output_tokens": 169616,
+    "calls": 746,
+    "ledger_site": "repo_summary"
+  },
+  "axes": {
+    "stage": {
+      "prep": 49,
+      "condense": 67,
+      "waist": 19,
+      "dispatch": 30,
+      "adjudicate": 411,
+      "cross_cutting": 162,
+      "unmatched": 8
+    },
+    "brief_treatment": {
+      "signature": 266,
+      "cited_window": 15,
+      "failure_evidence": 31,
+      "grounded_claim": 18,
+      "exclude_raw": 388,
+      "unmatched": 28
+    },
+    "handling": {
+      "code_owned": 356,
+      "scout": 322,
+      "standard": 35,
+      "frontier": 4,
+      "unmatched": 29
+    }
+  },
+  "attention": {
+    "by_level": {
+      "background: omit from a tight brief": 175,
+      "notable: include when goal touches it": 344,
+      "central: in any repo-wide waist brief": 175,
+      "unmatched": 52
+    },
+    "mean_value": 0.58366
+  },
+  "nouls": {
+    "waist_relevant": {
+      "true": 1,
+      "false": 693,
+      "unanswered": 0
+    },
+    "parallel_safe": {
+      "true": 30,
+      "false": 664,
+      "unanswered": 0
+    }
+  },
+  "structural": {
+    "site": "repo_summary",
+    "verdict": "defer",
+    "cost": 29.345862,
+    "input_tokens": 698711,
+    "is_fallback": false,
+    "model": "jev-1.13.0"
+  },
+  "written": {
+    "envelope": "docs/repo-summary/envelope.json",
+    "map": "docs/repo-summary/REPO-MAP.md"
+  },
+  "state_path": "docs/repo-summary/envelope.json.judgments.jsonl"
+}

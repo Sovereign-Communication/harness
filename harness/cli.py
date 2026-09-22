@@ -45,9 +45,15 @@ from .route_pack import validate_route_pack
 from .site_export import export_bundle as _site_export_bundle
 from .site_export import write_bundle as _site_export_write
 from .waist import compose_plan as _compose_plan
-from .jev_policy import aggregate_structural, policy_for
+from .jev import jev_cost
+from .jev_policy import JEV_MAX_INPUT_TOKENS, aggregate_structural, policy_for
 from .jev_completion import dogfood_phase
-from .jev_packs import validate_log_pack, validate_operator_pack
+from .jev_packs import (validate_log_pack, validate_operator_pack,
+                        validate_repo_summary_pack)
+from .repo_summary import analyze_repo as _repo_analyze
+from .repo_summary import render_repo_map as _repo_render_map
+from .repo_summary import write_envelope as _repo_write_envelope
+from .repo_summary import write_map as _repo_write_map
 from .log_analysis import analyze_log as _log_analyze, load_log_text as _log_load_text, write_analysis as _log_write_analysis
 from .mission_driver import pack_probe_attempt as _mission_pack_probe
 from .mission_driver import run_mission as _mission_run
@@ -525,6 +531,82 @@ def _cmd_route(opts, settings):
         "cost_class": combo.get("cost_class"),
     }
     _emit(envelope, opts.out)
+
+
+def _repo_summary_policy_factory(settings, chunk_cap, run_budget, ledger):
+    """Compose the ONE policy owner for JEV-P6, chunked under HARD_MAX_COST.
+
+    Each governor this face composes is bounded by ``jev_face_governor``
+    (``settings.max_cost`` or ``--max-cost``; anything above HARD_MAX_COST
+    is refused fail-closed). The operator's explicit ``--run-budget`` bounds
+    the CUMULATIVE actual spend of the whole run across chunks: the factory
+    returns ``None`` when the budget cannot cover one more worst-case call
+    and the driver stops honestly with ``stop_reason=run_budget``. Unkeyed
+    runs compose a governor-free hermetic policy and never stop early.
+    """
+    state = {"gov": None, "policy": None}
+
+    def make_policy(cumulative: float):
+        if not getattr(settings, "jev_api_key", None):
+            if state["policy"] is None:
+                state["policy"] = policy_for(
+                    settings, transport=HttpTransport(), governor=None,
+                    ledger=ledger)
+            return state["policy"]
+        worst = jev_cost(JEV_MAX_INPUT_TOKENS)
+        if (run_budget is not None
+                and float(cumulative) + worst > float(run_budget)):
+            return None
+        if state["gov"] is None or state["gov"].remaining() < worst:
+            gov = jev_face_governor(settings, chunk_cap)
+            if gov is None:
+                return None
+            state["gov"] = gov
+            state["policy"] = policy_for(
+                settings, transport=HttpTransport(), governor=gov,
+                ledger=ledger)
+        return state["policy"]
+
+    return make_policy
+
+
+def _cmd_repo_summary(opts, settings):
+    """JEV-P6 face: whole-repo inventory ($0) + keyed element judgments via
+    the ONE policy owner (preflight -> typed call -> settle + one jev_eval
+    per element), aggregated to an envelope JSON and a REPO-MAP render."""
+    raw_pack = _read_json(opts.pack, "repo-summary pack")
+    try:
+        pack = validate_repo_summary_pack(raw_pack)
+    except ValueError as exc:
+        raise HarnessError(f"repo-summary pack invalid: {exc}") from exc
+    ledger = _ledger(settings)
+    run_budget = getattr(opts, "run_budget", None)
+    state_path = getattr(opts, "state", None)
+    if not state_path and getattr(opts, "save_to", None):
+        state_path = str(opts.save_to) + ".judgments.jsonl"
+    make_policy = _repo_summary_policy_factory(
+        settings, getattr(opts, "max_cost", None), run_budget, ledger)
+    envelope = _repo_analyze(
+        opts.root, pack, make_policy,
+        state_path=state_path,
+        file_limit=getattr(opts, "limit", None),
+        symbol_limit=int(getattr(opts, "symbols", 200) or 0),
+        run_budget=run_budget,
+        task_id="repo-summary",
+        exclude=[getattr(opts, "save_to", None),
+                 getattr(opts, "map", None), state_path],
+    )
+    written = {}
+    if getattr(opts, "save_to", None):
+        written["envelope"] = _repo_write_envelope(envelope, opts.save_to)
+    if getattr(opts, "map", None):
+        written["map"] = _repo_write_map(_repo_render_map(envelope), opts.map)
+    report = {key: envelope[key] for key in
+              ("schema", "generated_at", "pack_id", "coverage", "spend",
+               "axes", "attention", "nouls", "structural")}
+    report["written"] = written
+    report["state_path"] = state_path
+    _emit(report, opts.out)
 
 
 def _cmd_site_export(opts, settings):
@@ -1046,6 +1128,7 @@ _DISPATCH = {
     "defer": _cmd_defer,
     "issue-sort": _cmd_issue_sort,
     "log-judgment": _cmd_log_judgment,
+    "repo-summary": _cmd_repo_summary,
     "route": _cmd_route,
     "site-export": _cmd_site_export,
     "ledger": _cmd_ledger,

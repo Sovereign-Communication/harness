@@ -1,0 +1,620 @@
+# REPO-MAP — Harness through the hourglass
+
+- generated: 2026-09-22T19:15:13Z  |  pack: `harness-repo-summary-v1`  |  schema: repo-summary-v1
+- coverage: 746 judged (694 live / 52 fallback), 0 pending, stop=`complete`
+- spend: $29.345862 over 746 calls (698711 in / 169616 out tokens) of $100.0 run budget
+- every keyed call was preflighted, settled, and appended to the autonomy ledger at site=`repo_summary` (`harness ledger verify` proves the chain)
+- markers: **[fallback]** = keyword fallback (never presented as live) | **[?]** = an axis below 0.5 confidence (near-tie; the seat may flip it run to run)
+
+## Axis tallies (declared keys only; `unmatched` is honest, never smoothed)
+
+- **stage** (746): adjudicate=411, cross_cutting=162, condense=67, prep=49, dispatch=30, waist=19, unmatched=8
+- **brief_treatment** (746): exclude_raw=388, signature=266, failure_evidence=31, unmatched=28, grounded_claim=18, cited_window=15
+- **handling** (746): code_owned=356, scout=322, standard=35, unmatched=29, frontier=4
+
+## Attention
+
+- notable: include when goal touches it: 344
+- background: omit from a tight brief: 175
+- central: in any repo-wide waist brief: 175
+- unmatched: 52
+- mean winning probability: 0.58366
+
+## Nouls (threshold 0.5, code-owned)
+
+- parallel_safe: true=30 false=664 unanswered=0
+- waist_relevant: true=1 false=693 unanswered=0
+
+## Stage: prep
+
+- `harness/service.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=standard **[?]**
+- `harness/dag.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=standard **[?]**
+- `harness/router.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `harness/capability.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=standard **[?]**
+- `harness/sliding_scale.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/agent.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=standard **[?]**
+- `docs/repo-summary/pilot-REPO-MAP.md` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned
+- `bench/manifests/efficiency/dict-group/check.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `harness/local_fit/features.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/local_fit/extract.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=scout **[?]**
+- `harness/local_fit/model_loader.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `CONTRIBUTING.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout
+- `docs/hourglass-micro-requests.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/repo_scope.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=scout **[?]**
+- `harness/providers.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `docs/jev-roadmap.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/web.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `docs/jev-log-analysis-followup.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/rankings.py` — attention: central: in any repo-wide waist brief — brief_treatment=grounded_claim, handling=scout **[?]**
+- `bench/manifests/efficiency/import-order/order.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `.agents/skills/typesafe-ai/SKILL.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `docs/scmessenger-burndown.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/manifests/efficiency/demo_ledger.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `site/worker/migrations/0001_init.sql` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `site/worker/index.js` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `site/public/router/index.html` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+
+## Stage: condense
+
+- `harness/condenser.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=standard **[?]**
+- `bench/manifests/efficiency/docstring/docs.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout
+- `harness/apply_state.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/manifests/efficiency/typo-string/greet.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout
+- `bench/manifests/efficiency/unpack-args/dims.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `docs/jev-mission-plan.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout
+- `harness/results.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=scout **[?]**
+- `harness/brief.py` — attention: central: in any repo-wide waist brief — brief_treatment=cited_window, handling=standard **[?]**
+- `CHANGELOG.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout
+- `bench/manifests/efficiency/typo-string/check.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/manifests/efficiency/arg-default/retry.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout
+- `examples/too_hard/README.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `docs/hourglass-frontier-eval.md` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/manifests/efficiency/name-repair/check.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/manifests/efficiency/unpack-args/check.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/manifests/efficiency/lru-cache/slowmath.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `bench/manifests/efficiency/multi-round-tokens/parse_csv.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `bench/manifests/efficiency/docstring/check.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/tasks/add/adds.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout
+- `bench/manifests/efficiency/retry-backoff/retry2.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `bench/tasks/clamp/clamp.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `docs/site-proof-plan.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/mcp_schemas.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/manifests/efficiency/README.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/manifests/efficiency/dict-group/groups.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `bench/manifests/efficiency/name-repair/calc.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `bench/tasks/reverse/reverse.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout
+- `bench/tasks/balanced/balanced.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=code_owned **[?]**
+- `bench/tasks/leap/leap.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `harness/local_fit/README.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/tasks/fizz/fizz.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `docs/harness-mission-until-limits.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout
+- `docs/jev-mission-prompt.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `docs/releasing.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/self/dogfood/item3-caller-tag.defs.json` — attention: notable: include when goal touches it — brief_treatment=signature, handling=scout **[?]**
+- `docs/freebuff-context.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `site/public/index.html` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `HANDOFF/JEV_LOG_PROMOTION_DRAFT.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/dogfood/item3-caller-tag.window.txt` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/tasks/median/median.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `site/public/methodology/index.html` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/tasks/dedupe/dedupe.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=scout **[?]**
+- `bench/tasks/luhn/luhn.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=scout **[?]**
+- `docs/architecture.md` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `packs/repo_summary.pack.json` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `AGENTS.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `README.md` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=scout
+- `harness/ui.py` — attention: unmatched — brief_treatment=cited_window **[fallback]**
+
+## Stage: waist
+
+- `harness/waist.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=frontier **[?]**
+- `harness/orchestrator.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `harness/repo_summary.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `harness/mission_driver.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=standard **[?]**
+- `harness/convergence.py` — attention: central: in any repo-wide waist brief — brief_treatment=grounded_claim, handling=standard **[?]**
+- `harness/escalation.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=standard **[?]**
+- `harness/local_fit/infer.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `site/public/traces/index.html` — attention: notable: include when goal touches it — brief_treatment=grounded_claim, handling=scout **[?]**
+
+## Stage: dispatch
+
+- `harness/apply.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `harness/apply_policy.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `harness/worktree.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/executor.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=standard **[?]**
+- `harness/events.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=standard **[?]**
+- `harness/filesafety.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/prompts.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=scout **[?]**
+- `harness/batch.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=standard **[?]**
+- `harness/mcp.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=standard **[?]**
+- `harness/history.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/log_analysis.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=code_owned **[?]**
+- `harness/local_fit/dispatch.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `harness/local_fit/train.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/manifests/efficiency/race-guard/check.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `bench/manifests/efficiency/race-guard/counters.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `site/public/publish/index.html` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `docs/system-one-integration.md` — attention: unmatched — brief_treatment=exclude_raw, handling=frontier **[fallback]**
+
+## Stage: adjudicate
+
+- `harness/chat.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=standard **[?]**
+- `tests/__init__.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned
+- `harness/apply_gate.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `harness/validation.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=standard **[?]**
+- `tests/test_waist.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/dogfood/jev-log-fixture.log` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned
+- `harness/ledger.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=standard **[?]**
+- `audits/self/dogfood/jev-log-self-serve.log` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `harness/attest.py` — attention: central: in any repo-wide waist brief — brief_treatment=cited_window, handling=code_owned **[?]**
+- `harness/panel.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=standard **[?]**
+- `harness/jev.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_cli.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=code_owned **[?]**
+- `HANDOFF/FREEBUFF_TRANSITION.md` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `harness/claims.py` — attention: central: in any repo-wide waist brief — brief_treatment=grounded_claim, handling=standard **[?]**
+- `tests/_fake.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `tests/test_bench.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `examples/too_hard/crypto_verify.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/site_export.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_brief.py` — attention: central: in any repo-wide waist brief, waist_relevant=yes — brief_treatment=cited_window, handling=code_owned **[?]**
+- `tests/test_hg_pyramid_resume.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `harness/continuation.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=code_owned **[?]**
+- `tests/test_prompts.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_jev_triage.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_output.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=standard **[?]**
+- `audits/scmessenger/_runs/seat-gates/INVALID_PR305_STALE_WINDOWS.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/manifests/efficiency/arg-default/check.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/manifests/efficiency/multi-round-tokens/check.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_claims.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_jev_issue_sort.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/dogfood/item5.instruction.txt` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout
+- `bench/tasks/clamp/check.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_byok.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_hg_cli_resume_coverage.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_ledger.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_pool_visibility.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_mcp.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/round5/summary.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/manifests/efficiency/invariant-ledger/check.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_jev_log_pack.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_morph.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_worktree.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/manifests/efficiency/retry-backoff/check.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `tests/test_judge.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_route_faces.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/scmessenger/_runs/rule8-281/source_gate.txt` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned
+- `audits/self/refresh_coverage_baseline.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/manifests/efficiency/import-order/check.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `docs/ui-readiness.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_cost_cli.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_hardening.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_local_fit_package.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_specialist.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/scmessenger/_runs/readiness-20260911/smoke_prompt.txt` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/rule8-281/self_cell_claim.txt` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_hg_hybrid_isolate.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_jev_claims_support.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=code_owned **[?]**
+- `tests/test_jev_smoke.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_local_fit_infer.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_routing_table.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/scmessenger/_runs/rule8-281/source_swarm_excerpt.txt` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_reasoning_disable.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_site_fold_parity.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_tokens.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/seat-gates/lint_pr305_20260918.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/dogfood/item1b-ledger-anchor.claims.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/self/dogfood/item7.events.jsonl` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_executor.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_jev_completion.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_jev_policy.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=code_owned **[?]**
+- `tests/test_lane_policy.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/scmessenger/_runs/seat-gates/lint_20260918T015523Z.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/seat-gates/lint_pr305_custody_regate_20260918.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/seat-gates/lint_pr305_identity_20260918.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/seat-gates/lint_pr305_identity_regate_20260918.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/dogfood/item5-bench-schema.claims.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/self/dogfood/item6b.events.jsonl` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned
+- `bench/tasks/balanced/check.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `harness/saturation.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=scout **[?]**
+- `tests/test_consent_confidence.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_jev_triage_files.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=code_owned **[?]**
+- `tests/test_local_fit_model.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_settings_api.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/self/corpus_manifest.json` — attention: notable: include when goal touches it — brief_treatment=cited_window, handling=scout **[?]**
+- `audits/self/dogfood/item4-judge-trim.window.txt` — attention: notable: include when goal touches it — brief_treatment=cited_window, handling=code_owned **[?]**
+- `audits/self/refresh_corpus_manifest.py` — attention: notable: include when goal touches it — brief_treatment=cited_window, handling=scout **[?]**
+- `tests/test_chat.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_demotion_auth.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_local_fit_features.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=code_owned **[?]**
+- `tests/test_probe.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_safety_burndown.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_service_closeout.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_site_server.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/scmessenger/audit_report.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/tasks/add/check.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `docs/ledger.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `docs/site-proof-contract.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_escalation.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_events.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_hg_condense_decompose.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=code_owned **[?]**
+- `tests/test_jev_completion_nouls.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=code_owned **[?]**
+- `tests/test_reserve_call_parity.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_web.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/self/_runs/dogfood_negative_control.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/seat-gates/lint_pr305_custody_20260918.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/round2_scores.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/tasks/luhn/check.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/tasks/median/check.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_hg_hourglass_defaults.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_hg_waist_unreachable_refuses.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_hul_driver_findings_resume.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=scout **[?]**
+- `tests/test_jev_p4_ops_exit.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_jev_util_coverage.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_jev_util_paths.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=code_owned **[?]**
+- `tests/test_local_fit_extract.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_min_confidence_gating.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_model_slates.py` — attention: notable: include when goal touches it — brief_treatment=grounded_claim, handling=scout **[?]**
+- `tests/test_providers.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_release_driver.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_spend.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=scout **[?]**
+- `tests/test_validation.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=code_owned **[?]**
+- `audits/self/dogfood/item1-ledger-anchor.window.txt` — attention: notable: include when goal touches it — brief_treatment=cited_window, handling=code_owned **[?]**
+- `audits/self/dogfood/item4-judge-trim.claims.json` — attention: notable: include when goal touches it — brief_treatment=grounded_claim, handling=code_owned **[?]**
+- `docs/jev-completion-dogfood.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_agent.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_jev_escalation_driver.py` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `tests/test_jev_repo_pack.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=scout **[?]**
+- `tests/test_saturation.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=code_owned **[?]**
+- `tests/test_site_export.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/scmessenger/_runs/rule8-281/prompt.txt` — attention: notable: include when goal touches it — brief_treatment=cited_window, handling=code_owned **[?]**
+- `bench/tasks/fizz/check.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/tasks/reverse/check.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `docs/repo-summary/pilot-envelope.json.judgments.jsonl` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_hul_jev_scope_gate.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_jev_ledger_spend.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `tests/test_jev_util_route.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `tests/test_server.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `HANDOFF/todo/P1_HARNESS_JEV_COMPLETION_GATE_AND_P2_REPAIR_2026-09-21.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/_runs/r1_apply_final.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/audit_report.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/dogfood/item2-mcp-lanes.window.txt` — attention: notable: include when goal touches it — brief_treatment=cited_window, handling=code_owned **[?]**
+- `audits/self/dogfood/item6-ledger-split.claims.json` — attention: notable: include when goal touches it — brief_treatment=grounded_claim, handling=scout **[?]**
+- `audits/self/dogfood/item6-ledger-split.instruction.txt` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=standard **[?]**
+- `audits/self/dogfood/item6b.claims.json` — attention: notable: include when goal touches it — brief_treatment=grounded_claim, handling=scout **[?]**
+- `bench/tasks/leap/check.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_capability.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_condenser.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_dag.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_extra.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_hg_final_gate.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_http.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_hul_mission_record.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_jev.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_jev_calibration.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_model_envelope.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_rankings.py` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=scout **[?]**
+- `tests/test_sliding_scale.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/self/dogfood/JEV_LOG_SELF_DOGFOOD.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/dogfood/item4.verify.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned
+- `audits/self/dogfood/item5.state.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `docs/jev-dogfood.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_hg_ms_parity.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_jev_log_envelope.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_site_parity_directives.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_trust.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/readiness-20260911/smoke_verify.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/round5/13_mergeBootstrapCandidates.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/_runs/r1_apply_land.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/_runs/r2_tally.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/self/dogfood/item2.report.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/manifests/efficiency/invariant-ledger/task.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/tasks/dedupe/check.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `harness/jev_completion.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_apply_gate.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_attest.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_batch_burndown.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_consent.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_hul_budget_reserve.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_jev_context_pack.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_jev_escalation_lifecycle.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/scmessenger/_runs/09_verify_bundle_reaudit_v020.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/round7/01_shortfall_panel2.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/self/_runs/r1_apply_resume7.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/dogfood/ledger-curated.claims.json` — attention: notable: include when goal touches it — brief_treatment=grounded_claim, handling=scout **[?]**
+- `harness/local_fit/RE_MERGE_READINESS.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_burndown.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_convergence.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=code_owned **[?]**
+- `tests/test_hg_extra_coverage.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_jev_log_judgment.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=code_owned **[?]**
+- `tests/test_jev_repo_envelope.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=code_owned **[?]**
+- `tests/test_jev_repo_judgment.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=code_owned **[?]**
+- `tests/test_local_fit_guard.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/live-repro-w272-deferral.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/live-w267-addendum.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/live-w267-addendum2.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/round5/18_resolveShareTarget.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/round5/19_refreshInfoCounts.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/rule8-281/prompt_structured.txt` — attention: notable: include when goal touches it — brief_treatment=cited_window, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/seat-gates/verify_20260911T062049Z.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/seat-gates/verify_pr305_identity_20260918.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/self/_runs/r1_tally.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/self/dogfood/item1.apply2.json` — attention: background: omit from a tight brief — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/self/dogfood/item2.state.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `site/public/tiers/index.html` — attention: notable: include when goal touches it — brief_treatment=grounded_claim, handling=scout **[?]**
+- `tests/_applyfixture.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_repo_items.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_route_pack.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=code_owned **[?]**
+- `tests/test_router.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_site_cli_faces.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/scmessenger/_runs/seat-gates/verify_pr297_claims3_20260917.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned
+- `audits/scmessenger/_runs/v4/run_all.sh` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned
+- `tests/test_local_fit_wiring.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/scmessenger/_runs/live-rot-w267-addendum.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/live-rot-w272-deferral.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/seat-gates/verify_20260911T055551Z.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/seat-gates/verify_20260911T070220Z.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned
+- `audits/scmessenger/_runs/seat-gates/verify_20260911T175623Z.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned
+- `audits/scmessenger/_runs/seat-gates/verify_pr296_claims_20260917.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned
+- `audits/scmessenger/_runs/seat-gates/verify_pr297_claims_20260917.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned
+- `audits/scmessenger/_runs/seat-gates/verify_pr305_custody_fixed2_20260918.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/scmessenger/round7/17_shareDiagnosticsBundle.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/_runs/r1_apply_resume9.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/self/dogfood/item5-bench-schema.window.txt` — attention: notable: include when goal touches it — brief_treatment=cited_window, handling=code_owned **[?]**
+- `tests/test_planning_surface.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `HANDOFF/CTO_HANDOFF_HARNESS_JEV_FREEBUFF_AUDIT_2026-09-21.md` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/07b_peel_layer_consensus.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/live-w268.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/seat-gates/verify_pr296_rule8_20260917.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/seat-gates/verify_pr305_custody_20260918.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/seat-gates/verify_pr305_custody_regate_20260918.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/seat-gates/verify_pr305_custody_v2_20260918.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/seat-gates/verify_pr305_identity_fixed_20260918.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/seat-gates/verify_pr305_identity_regate_20260918.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned
+- `audits/scmessenger/_runs/v4/04_v3.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/v4/06_v3.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/round7/01_forced_shortfall.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/self/_runs/r1_apply_config.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/_runs/r1_apply_resume.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/dogfood/item2.apply2.json` — attention: background: omit from a tight brief — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/round5/17_shareDiagnosticsBundle.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/dogfood/item5.report.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/02b_decrypt_ratcheted_v2_consensus.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/03b_ratchet_encrypt_consensus_conv.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/04b_ratchet_decrypt_consensus.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/live-w267-addendum3.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/seat-gates/verify_20260911T055307Z.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/seat-gates/verify_20260911T062239Z.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/seat-gates/verify_pr297_claims5_20260917.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned
+- `audits/scmessenger/_runs/seat-gates/verify_pr305_custody_fixed3_20260918.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned
+- `audits/scmessenger/_runs/v4/05_v3.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/v4/08_v3.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/v4/09_v3.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/self/dogfood/item1.apply.json` — attention: background: omit from a tight brief — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/self/dogfood/item1.report.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/self/dogfood/item1b.report.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_hg_plan_consensus.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_orchestrator.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `tests/test_panel.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=scout **[?]**
+- `tests/test_site_aggregate.py` — attention: background: omit from a tight brief — brief_treatment=failure_evidence, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/04_ratchet_decrypt.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/04b_ratchet_decrypt_consensus_it2.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/09_verify_bundle_reaudit_v020_b.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/seat-gates/probe_tmp.json` — attention: background: omit from a tight brief — brief_treatment=failure_evidence, handling=code_owned
+- `audits/scmessenger/_runs/v4/01_v3.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/v4/03_v3.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/v4/07_v3.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/self/_runs/r1_apply_final2.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/_runs/r1_apply_resume2.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/round2_report.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `site/data/demo/demo-ledger.jsonl` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `tests/test_hg_composed_ceiling.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/scmessenger/_runs/02b_decrypt_ratcheted_v2_consensus_it2.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/03_ratchet_encrypt.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/04_ratchet_decrypt_v2.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/05b_decode_wire_signed_envelope_consensus_conv.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/08_safety_number.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/08c_safety_number_consensus_v2.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/09_verify_bundle.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/09b_verify_bundle_consensus_conv.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/round5/12_initializeWifiDirect.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/round5/14_recordConnectionFailure.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/round5/15_startAdvertisingInternal.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/v4/02_v3.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/round7/01_is_poison_circuit_listener.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/round7/12_initializeWifiDirect.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/_runs/r1_apply_resume8.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/manifests/efficiency/invariant-ledger/ledger2.py` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout
+- `tests/test_apply.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_dogfood.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/01b_negotiate_suite_consensus_conv.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/04b_ratchet_decrypt_consensus_nem.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/06b_construct_onion_consensus.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/06b_construct_onion_consensus_nem.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/06c_construct_onion_consensus_it3.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/07_peel_layer.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/08_safety_number_v2.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/09_verify_bundle_v2.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/09b_verify_bundle_conv.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/seat-gates/verify_pr296_claims3_20260917.json` — attention: notable: include when goal touches it — brief_treatment=failure_evidence, handling=code_owned
+- `tests/test_architecture.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/scmessenger/_runs/02_decrypt_ratcheted_v2.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/02b_decrypt_ratcheted_v2_consensus_nem.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/03_ratchet_encrypt_v2.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/05_decode_wire_signed_envelope.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/06_construct_onion.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/06_construct_onion_v2.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/08c_safety_number_consensus_conv.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/test_jev_lane_parity.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=code_owned **[?]**
+- `audits/scmessenger/CTO_REVIEW.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/07b_peel_layer_consensus_nem.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/06b_construct_onion_consensus_it2.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/07b_peel_layer_consensus_it2.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/07c_peel_layer_consensus_it3.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/07_peel_layer_v2.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `audits/self/audit.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/01_negotiate_suite.json` — attention: unmatched — handling=code_owned **[fallback]**
+- `audits/scmessenger/_runs/01_negotiate_suite_v2.json` — attention: unmatched — handling=code_owned **[fallback]**
+- `audits/scmessenger/_runs/02_decrypt_ratcheted_v2_v2.json` — attention: unmatched — handling=code_owned **[fallback]**
+- `audits/scmessenger/_runs/08b_safety_number_consensus_conv.json` — attention: unmatched — handling=code_owned **[fallback]**
+- `audits/scmessenger/_runs/round5/16_stopAdvertisingInternal.json` — attention: unmatched — handling=code_owned **[fallback]**
+- `audits/scmessenger/_runs/rule8-281/diff.txt` — attention: unmatched **[fallback]**
+- `audits/scmessenger/_runs/rule8-281/prompt_selfcontained.txt` — attention: unmatched **[fallback]**
+- `audits/scmessenger/_runs/rule8-281/stop_race_claim.txt` — attention: unmatched — brief_treatment=grounded_claim **[fallback]**
+- `audits/scmessenger/_runs/seat-gates/verify_pr305_claims_20260918.json` — attention: unmatched — brief_treatment=grounded_claim, handling=code_owned **[fallback]**
+- `audits/scmessenger/_runs/seat-gates/verify_pr305_custody_fixed_20260918.json` — attention: unmatched — handling=code_owned **[fallback]**
+- `audits/scmessenger/_runs/seat-gates/verify_pr305_identity_v2_20260918.json` — attention: unmatched — handling=code_owned **[fallback]**
+- `audits/scmessenger/round7/16_stopAdvertisingInternal.json` — attention: unmatched — handling=code_owned **[fallback]**
+- `audits/self/_runs/mcp_probe.jsonl` — attention: unmatched **[fallback]**
+- `audits/self/dogfood/item1-ledger-anchor.claims.json` — attention: unmatched — brief_treatment=grounded_claim, handling=code_owned **[fallback]**
+- `audits/self/dogfood/item3.verify.json` — attention: unmatched — handling=code_owned **[fallback]**
+- `audits/self/dogfood/item3b.verify.json` — attention: unmatched — handling=code_owned **[fallback]**
+- `audits/self/dogfood/item6b.json` — attention: unmatched — handling=code_owned **[fallback]**
+- `audits/self/dogfood/jev-log-fixture.analysis.json` — attention: unmatched — brief_treatment=failure_evidence, handling=code_owned **[fallback]**
+- `audits/self/release.py` — attention: unmatched **[fallback]**
+- `audits/self/round2_rubric.md` — attention: unmatched **[fallback]**
+- `harness/bench.py` — attention: unmatched — brief_treatment=exclude_raw, handling=code_owned **[fallback]**
+- `harness/cli.py` — attention: unmatched — brief_treatment=grounded_claim **[fallback]**
+- `harness/consent.py` — attention: unmatched — brief_treatment=exclude_raw **[fallback]**
+- `harness/jev_packs.py` — attention: unmatched — brief_treatment=grounded_claim **[fallback]**
+- `harness/jev_policy.py` — attention: unmatched — brief_treatment=exclude_raw, handling=code_owned **[fallback]**
+- `harness/local_fit/schema.py` — attention: unmatched — brief_treatment=signature **[fallback]**
+- `harness/repo_items.py` — attention: unmatched — brief_treatment=cited_window, handling=code_owned **[fallback]**
+- `harness/routing_table.py` — attention: unmatched **[fallback]**
+
+## Stage: cross_cutting
+
+- `harness/session.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=standard **[?]**
+- `harness/spend.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=scout **[?]**
+- `site/data/demo/.gitignore` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout
+- `.agents/skills/typesafe-ai/LICENSE` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/ui/app.css` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout
+- `LICENSE` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/local_fit/config.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `.gitignore` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout
+- `site/public/assets/site.css` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout
+- `harness/trust.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=code_owned **[?]**
+- `audits/scmessenger/_runs/v4/01_v3.log` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned
+- `harness/errors.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/mission_record.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=standard **[?]**
+- `audits/scmessenger/_runs/v4/04_v3.log` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/v4/07_v3.log` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/v4/06_v3.log` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/v4/09_v3.log` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned
+- `tests/fixtures/openrouter_models.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `MANIFEST.in` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout
+- `audits/scmessenger/_runs/v4/03_v3.log` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/v4/05_v3.log` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `harness/pyramid_state.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=scout **[?]**
+- `harness/local_fit/__init__.py` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned
+- `audits/scmessenger/_runs/v4/08_v3.log` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned
+- `harness/ledger_analytics.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=scout **[?]**
+- `harness/ui/panes.css` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `.github/workflows/ci.yml` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=scout
+- `audits/scmessenger/_runs/v4/02_v3.log` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned
+- `harness/cli_report.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/render.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `docs/MODEL_SELECTION_HANDOFF_2026-09-13.md` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `tests/fixtures/site_fold_vectors.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/output.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=scout **[?]**
+- `audits/self/dogfood/jev-log-self-serve.analysis.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/ui/panes.js` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/self/dogfood/item3b-caller-tag.claims.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/self/dogfood/item3-caller-tag.claims.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/config.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=standard **[?]**
+- `harness/server.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `site/data/demo/demo-consent.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/__init__.py` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/self/dogfood/jev-log-fixture.bounded005.analysis.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `docs/security.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout
+- `audits/self/dogfood/item5.apply2.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/dogfood/item5.apply3.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `site/data/demo/demo-pricing.json` — attention: background: omit from a tight brief — brief_treatment=signature, handling=code_owned **[?]**
+- `harness/ui/app.js` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `.gitattributes` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout
+- `audits/self/dogfood/item7.apply.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/manifests/efficiency/arg-default/task.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `docs/mcp.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `harness/tokens.py` — attention: central: in any repo-wide waist brief — brief_treatment=signature, handling=code_owned **[?]**
+- `bench/manifests/efficiency/typo-string/task.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/manifests/efficiency/unpack-args/task.json` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `harness/site_aggregate.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=code_owned **[?]**
+- `bench/tasks/dedupe/task.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `harness/cli_parser.py` — attention: notable: include when goal touches it — brief_treatment=signature, handling=scout **[?]**
+- `audits/self/dogfood/item1-ledger-anchor.defs.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/tasks/clamp/task.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `harness/_http.py` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `site/worker/wrangler.toml` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout
+- `audits/scmessenger/_runs/_consensus_summary.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/dogfood/item2.instruction.txt` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/self/dogfood/jev-log-self-pack.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout
+- `bench/manifests/efficiency/import-order/task.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `.github/workflows/rankings.yml` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `THREAT_MODEL.md` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/self/dogfood/item2-mcp-lanes.claims.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/manifests/efficiency/lru-cache/task.json` — attention: background: omit from a tight brief — brief_treatment=signature, handling=code_owned **[?]**
+- `bench/manifests/efficiency/name-repair/task.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/self/_runs/r1_apply_land2.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/_runs/r1_apply_resume5.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/coverage_baseline.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/manifests/efficiency/multi-round-tokens/task.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned
+- `bench/manifests/efficiency/retry-backoff/task.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `.github/workflows/site.yml` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `audits/scmessenger/_runs/rule8-281/claims.json` — attention: notable: include when goal touches it — brief_treatment=grounded_claim, handling=code_owned **[?]**
+- `audits/self/_runs/r1_apply_resume6.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/manifests/efficiency/race-guard/task.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/_runs/r1_apply_resume10.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/manifests/efficiency/dict-group/task.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/tasks/fizz/task.json` — attention: notable: include when goal touches it — brief_treatment=signature, handling=code_owned **[?]**
+- `bench/manifests/efficiency/docstring/task.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `audits/self/_runs/r1_apply_resume4.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/tasks/luhn/task.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `docs/trust.md` — attention: central: in any repo-wide waist brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `site/data/demo/snapshot.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=scout
+- `skills-lock.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout
+- `pyproject.toml` — attention: background: omit from a tight brief — brief_treatment=signature, handling=scout **[?]**
+- `audits/scmessenger/_runs/round5/11_initializeWifiAware.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/tasks/add/task.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `bench/tasks/leap/task.json` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/tasks/median/task.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/tasks/reverse/task.json` — attention: background: omit from a tight brief — brief_treatment=signature, handling=code_owned **[?]**
+- `harness/ui/index.html` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `site/public/assets/app.js` — attention: notable: include when goal touches it — brief_treatment=exclude_raw, handling=scout **[?]**
+- `site/data/demo/bundle.json` — attention: background: omit from a tight brief — brief_treatment=exclude_raw, handling=code_owned **[?]**
+- `bench/tasks/balanced/task.json` — attention: unmatched — handling=code_owned **[fallback]**
+- `docs/repo-summary/pilot-envelope.json` — attention: unmatched — handling=code_owned **[fallback]**
+- `harness/log_items.py` — attention: unmatched — brief_treatment=exclude_raw, handling=scout **[fallback]**
+- `harness/route_pack.py` — attention: unmatched — brief_treatment=grounded_claim **[fallback]**
+
+## Judged without a declared stage (honest unmatched)
+
+- `bench/manifests/efficiency/import-order/helper.py` — fallback
+- `bench/manifests/efficiency/lru-cache/check.py` — fallback
+- `docs/repo-summary/run.log` — fallback
+- `harness/mcp_lanes.py` — fallback
+
+## Central symbols (centrality-ranked, judged)
+
+- `harness/errors.py` — central: in any repo-wide waist brief / code_owned
+- `harness/errors.py` — notable: include when goal touches it / code_owned
+- `harness/config.py` — notable: include when goal touches it / scout
+- `harness/config.py` — notable: include when goal touches it / scout
+- `harness/config.py` — notable: include when goal touches it / scout
+- `harness/config.py` — central: in any repo-wide waist brief / code_owned
+- `harness/config.py` — notable: include when goal touches it / scout
+- `harness/config.py` — notable: include when goal touches it / scout
+- `harness/config.py` — notable: include when goal touches it / code_owned
+- `harness/config.py` — notable: include when goal touches it / scout
+- `harness/config.py` — notable: include when goal touches it / scout
+- `harness/config.py` — notable: include when goal touches it / scout
+- `harness/config.py` — notable: include when goal touches it / scout
+- `harness/config.py` — notable: include when goal touches it / scout
+- `harness/config.py` — notable: include when goal touches it / scout
+- `harness/config.py` — notable: include when goal touches it / scout
+- `harness/config.py` — central: in any repo-wide waist brief / scout
+- `harness/config.py` — central: in any repo-wide waist brief / code_owned
+- `harness/config.py` — notable: include when goal touches it / scout
+- `harness/config.py` — notable: include when goal touches it / scout
+
+## Mechanical totals (code-owned)
+
+- files=546 loc=99390 bytes=5444213 est_tokens=1368809 symbols=3873

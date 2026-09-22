@@ -1,0 +1,79 @@
+{
+  "id": "harness-repo-summary-v1",
+  "axes": {
+    "stage": {
+      "instructions": "Choose the hourglass stage this element serves. Declared keys only.",
+      "criteria": {
+        "prep": "inventory, decompose, route",
+        "condense": "brief, signature, or context construction",
+        "waist": "frontier confirm, verdicts, escalation",
+        "dispatch": "apply, write, locks, batches",
+        "adjudicate": "verify: gates, tests, ledger, audits",
+        "cross_cutting": "config, spend, trust, surfaces"
+      }
+    },
+    "brief_treatment": {
+      "instructions": "How should this element appear in a brief for an expensive seat? Declared keys only.",
+      "criteria": {
+        "signature": "signatures alone suffice",
+        "cited_window": "attach a hash-pinned window",
+        "failure_evidence": "value is gate or test output",
+        "grounded_claim": "grounded fact with sources",
+        "exclude_raw": "facts only, never raw content"
+      }
+    },
+    "handling": {
+      "instructions": "Least capable handling tier that can safely work on this element. Declared keys only.",
+      "criteria": {
+        "code_owned": "no model: paths, counts, gates",
+        "scout": "bounded mechanical edits",
+        "standard": "multi-file contextual work",
+        "frontier": "architectural or waist-level"
+      }
+    }
+  },
+  "score": {
+    "id": "attention",
+    "instructions": "How central is this element to the hourglass pipeline?",
+    "levels": [
+      "background: omit from a tight brief",
+      "notable: include when goal touches it",
+      "central: in any repo-wide waist brief"
+    ]
+  },
+  "nouls": {
+    "waist_relevant": {
+      "instructions": "Must the waist brief cite this element?",
+      "true": "Confirmation needs its facts or a window.",
+      "false": "Plan confirms without citing it."
+    },
+    "parallel_safe": {
+      "instructions": "Can parallel dispatch mutate this without isolation?",
+      "true": "Low-conflict or serialized edits.",
+      "false": "Concurrent edits interfere; isolate."
+    }
+  },
+  "keywords": {
+    "stage": {
+      "prep": ["decompose", "plan", "inventory", "enumerat", "router", "rank", "discover"],
+      "condense": ["condens", "brief", "distill", "signature", "token", "prune", "context"],
+      "waist": ["waist", "confirm", "verdict", "escalat", "frontier", "amend"],
+      "dispatch": ["apply", "write", "execut", "lock", "worktree", "batch", "candidate"],
+      "adjudicate": ["verif", "gate", "test", "audit", "ledger", "panel", "claim", "consent probe"],
+      "cross_cutting": ["config", "setting", "spend", "trust", "output", "render", "error"]
+    },
+    "brief_treatment": {
+      "signature": ["signature", "def ", "class ", "interface", "schema"],
+      "cited_window": ["window", "source", "protocol", "contract", "spec"],
+      "failure_evidence": ["test", "fixture", "assert", "failure", "gate output"],
+      "grounded_claim": ["claim", "evidence", "receipt", "report"],
+      "exclude_raw": ["ledger", "secret", "key", "credential", "raw"]
+    },
+    "handling": {
+      "code_owned": ["ledger", "config", "enum", "tally", "count"],
+      "scout": ["mechanical", "rename", "trivial", "typo"],
+      "standard": ["multi-file", "refactor", "parse", "format"],
+      "frontier": ["architect", "concurr", "protocol", "algorithm", "security"]
+    }
+  }
+}

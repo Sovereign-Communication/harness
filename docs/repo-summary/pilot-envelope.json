@@ -1,0 +1,423 @@
+{
+  "attention": {
+    "by_level": {
+      "background detail - safe to omit from a tight brief": 5,
+      "central - must appear in the waist brief for any repo-wide goal": 0,
+      "notable - include when the goal touches this area": 4,
+      "unmatched": 1
+    },
+    "mean_value": 0.677778
+  },
+  "axes": {
+    "brief_treatment": {
+      "cited_window": 0,
+      "exclude_raw": 9,
+      "failure_evidence": 0,
+      "grounded_claim": 0,
+      "signature": 0,
+      "unmatched": 1
+    },
+    "handling": {
+      "code_owned": 9,
+      "frontier": 0,
+      "scout": 0,
+      "standard": 0,
+      "unmatched": 1
+    },
+    "stage": {
+      "adjudicate": 4,
+      "condense": 1,
+      "cross_cutting": 2,
+      "dispatch": 2,
+      "prep": 1,
+      "unmatched": 0,
+      "waist": 0
+    }
+  },
+  "coverage": {
+    "candidates": 10,
+    "fallbacks": 1,
+    "files_listed": 10,
+    "judged": 10,
+    "judged_files": 10,
+    "judged_symbols": 0,
+    "judged_this_run": 10,
+    "live_judged": 9,
+    "live_this_run": 9,
+    "pending": 0,
+    "pending_sample": [],
+    "prior_rows": 0,
+    "stop_reason": "complete"
+  },
+  "declared": {
+    "axes": {
+      "brief_treatment": [
+        "signature",
+        "cited_window",
+        "failure_evidence",
+        "grounded_claim",
+        "exclude_raw"
+      ],
+      "handling": [
+        "code_owned",
+        "scout",
+        "standard",
+        "frontier"
+      ],
+      "stage": [
+        "prep",
+        "condense",
+        "waist",
+        "dispatch",
+        "adjudicate",
+        "cross_cutting"
+      ]
+    },
+    "nouls": [
+      "waist_relevant",
+      "parallel_safe"
+    ],
+    "score": {
+      "id": "attention",
+      "levels": [
+        "background detail - safe to omit from a tight brief",
+        "notable - include when the goal touches this area",
+        "central - must appear in the waist brief for any repo-wide goal"
+      ]
+    }
+  },
+  "elements": [
+    {
+      "attention": {
+        "confidence": 0.69,
+        "level": "background detail - safe to omit from a tight brief",
+        "value": 0.81
+      },
+      "axes": {
+        "brief_treatment": "exclude_raw",
+        "handling": "code_owned",
+        "stage": "cross_cutting"
+      },
+      "cost": 0.042336,
+      "element_kind": "file",
+      "est_tokens": 303,
+      "id": "file:.agents/skills/typesafe-ai/LICENSE",
+      "input_tokens": 1008,
+      "is_fallback": false,
+      "kind": "doc",
+      "loc": 21,
+      "model": "jev-1.13.0",
+      "nouls": {
+        "parallel_safe": 0.55,
+        "waist_relevant": 0.15
+      },
+      "output_tokens": 228,
+      "pack_id": "harness-repo-summary-v1",
+      "path": ".agents/skills/typesafe-ai/LICENSE",
+      "site": "repo_summary"
+    },
+    {
+      "attention": {
+        "confidence": null,
+        "level": null,
+        "value": null
+      },
+      "axes": {
+        "brief_treatment": null,
+        "handling": null,
+        "stage": "adjudicate"
+      },
+      "cost": 0.04389,
+      "element_kind": "file",
+      "est_tokens": 2547,
+      "id": "file:.agents/skills/typesafe-ai/SKILL.md",
+      "input_tokens": 1045,
+      "is_fallback": true,
+      "kind": "doc",
+      "loc": 149,
+      "model": "jev-latest",
+      "nouls": {},
+      "output_tokens": 228,
+      "pack_id": "harness-repo-summary-v1",
+      "path": ".agents/skills/typesafe-ai/SKILL.md",
+      "site": "repo_summary"
+    },
+    {
+      "attention": {
+        "confidence": 0.7,
+        "level": "background detail - safe to omit from a tight brief",
+        "value": 0.8
+      },
+      "axes": {
+        "brief_treatment": "exclude_raw",
+        "handling": "code_owned",
+        "stage": "cross_cutting"
+      },
+      "cost": 0.042756,
+      "element_kind": "file",
+      "est_tokens": 66,
+      "id": "file:.gitattributes",
+      "input_tokens": 1018,
+      "is_fallback": false,
+      "kind": "doc",
+      "loc": 2,
+      "model": "jev-1.13.0",
+      "nouls": {
+        "parallel_safe": 0.55,
+        "waist_relevant": 0.27
+      },
+      "output_tokens": 228,
+      "pack_id": "harness-repo-summary-v1",
+      "path": ".gitattributes",
+      "site": "repo_summary"
+    },
+    {
+      "attention": {
+        "confidence": 0.34,
+        "level": "notable - include when the goal touches this area",
+        "value": 0.56
+      },
+      "axes": {
+        "brief_treatment": "exclude_raw",
+        "handling": "code_owned",
+        "stage": "adjudicate"
+      },
+      "cost": 0.042378,
+      "element_kind": "file",
+      "est_tokens": 1060,
+      "id": "file:.github/workflows/ci.yml",
+      "input_tokens": 1009,
+      "is_fallback": false,
+      "kind": "config",
+      "loc": 112,
+      "model": "jev-1.13.0",
+      "nouls": {
+        "parallel_safe": 0.45,
+        "waist_relevant": 0.22
+      },
+      "output_tokens": 228,
+      "pack_id": "harness-repo-summary-v1",
+      "path": ".github/workflows/ci.yml",
+      "site": "repo_summary"
+    },
+    {
+      "attention": {
+        "confidence": 0.26,
+        "level": "notable - include when the goal touches this area",
+        "value": 0.51
+      },
+      "axes": {
+        "brief_treatment": "exclude_raw",
+        "handling": "code_owned",
+        "stage": "dispatch"
+      },
+      "cost": 0.042378,
+      "element_kind": "file",
+      "est_tokens": 578,
+      "id": "file:.github/workflows/rankings.yml",
+      "input_tokens": 1009,
+      "is_fallback": false,
+      "kind": "config",
+      "loc": 62,
+      "model": "jev-1.13.0",
+      "nouls": {
+        "parallel_safe": 0.45,
+        "waist_relevant": 0.21
+      },
+      "output_tokens": 226,
+      "pack_id": "harness-repo-summary-v1",
+      "path": ".github/workflows/rankings.yml",
+      "site": "repo_summary"
+    },
+    {
+      "attention": {
+        "confidence": 0.34,
+        "level": "notable - include when the goal touches this area",
+        "value": 0.56
+      },
+      "axes": {
+        "brief_treatment": "exclude_raw",
+        "handling": "code_owned",
+        "stage": "dispatch"
+      },
+      "cost": 0.042252,
+      "element_kind": "file",
+      "est_tokens": 760,
+      "id": "file:.github/workflows/site.yml",
+      "input_tokens": 1006,
+      "is_fallback": false,
+      "kind": "config",
+      "loc": 72,
+      "model": "jev-1.13.0",
+      "nouls": {
+        "parallel_safe": 0.42,
+        "waist_relevant": 0.23
+      },
+      "output_tokens": 226,
+      "pack_id": "harness-repo-summary-v1",
+      "path": ".github/workflows/site.yml",
+      "site": "repo_summary"
+    },
+    {
+      "attention": {
+        "confidence": 0.73,
+        "level": "background detail - safe to omit from a tight brief",
+        "value": 0.84
+      },
+      "axes": {
+        "brief_treatment": "exclude_raw",
+        "handling": "code_owned",
+        "stage": "prep"
+      },
+      "cost": 0.042168,
+      "element_kind": "file",
+      "est_tokens": 74,
+      "id": "file:.gitignore",
+      "input_tokens": 1004,
+      "is_fallback": false,
+      "kind": "doc",
+      "loc": 16,
+      "model": "jev-1.13.0",
+      "nouls": {
+        "parallel_safe": 0.57,
+        "waist_relevant": 0.17
+      },
+      "output_tokens": 226,
+      "pack_id": "harness-repo-summary-v1",
+      "path": ".gitignore",
+      "site": "repo_summary"
+    },
+    {
+      "attention": {
+        "confidence": 0.22,
+        "level": "notable - include when the goal touches this area",
+        "value": 0.48
+      },
+      "axes": {
+        "brief_treatment": "exclude_raw",
+        "handling": "code_owned",
+        "stage": "condense"
+      },
+      "cost": 0.044604,
+      "element_kind": "file",
+      "est_tokens": 1210,
+      "id": "file:AGENTS.md",
+      "input_tokens": 1062,
+      "is_fallback": false,
+      "kind": "doc",
+      "loc": 82,
+      "model": "jev-1.13.0",
+      "nouls": {
+        "parallel_safe": 0.31,
+        "waist_relevant": 0.4
+      },
+      "output_tokens": 227,
+      "pack_id": "harness-repo-summary-v1",
+      "path": "AGENTS.md",
+      "site": "repo_summary"
+    },
+    {
+      "attention": {
+        "confidence": 0.64,
+        "level": "background detail - safe to omit from a tight brief",
+        "value": 0.77
+      },
+      "axes": {
+        "brief_treatment": "exclude_raw",
+        "handling": "code_owned",
+        "stage": "adjudicate"
+      },
+      "cost": 0.042588,
+      "element_kind": "file",
+      "est_tokens": 2959,
+      "id": "file:audits/scmessenger/_runs/01_negotiate_suite.json",
+      "input_tokens": 1014,
+      "is_fallback": false,
+      "kind": "config",
+      "loc": 38,
+      "model": "jev-1.13.0",
+      "nouls": {
+        "parallel_safe": 0.44,
+        "waist_relevant": 0.22
+      },
+      "output_tokens": 228,
+      "pack_id": "harness-repo-summary-v1",
+      "path": "audits/scmessenger/_runs/01_negotiate_suite.json",
+      "site": "repo_summary"
+    },
+    {
+      "attention": {
+        "confidence": 0.62,
+        "level": "background detail - safe to omit from a tight brief",
+        "value": 0.77
+      },
+      "axes": {
+        "brief_treatment": "exclude_raw",
+        "handling": "code_owned",
+        "stage": "adjudicate"
+      },
+      "cost": 0.042672,
+      "element_kind": "file",
+      "est_tokens": 4216,
+      "id": "file:audits/scmessenger/_runs/01_negotiate_suite_v2.json",
+      "input_tokens": 1016,
+      "is_fallback": false,
+      "kind": "config",
+      "loc": 38,
+      "model": "jev-1.13.0",
+      "nouls": {
+        "parallel_safe": 0.44,
+        "waist_relevant": 0.24
+      },
+      "output_tokens": 228,
+      "pack_id": "harness-repo-summary-v1",
+      "path": "audits/scmessenger/_runs/01_negotiate_suite_v2.json",
+      "site": "repo_summary"
+    }
+  ],
+  "generated_at": "2026-09-22T12:00:19Z",
+  "mechanical": {
+    "by_kind": {
+      "config": 5,
+      "doc": 5
+    },
+    "totals": {
+      "bytes": 54851,
+      "est_tokens": 13773,
+      "files": 10,
+      "loc": 592,
+      "symbols": 0
+    }
+  },
+  "nouls": {
+    "parallel_safe": {
+      "false": 6,
+      "true": 3,
+      "unanswered": 0
+    },
+    "waist_relevant": {
+      "false": 9,
+      "true": 0,
+      "unanswered": 0
+    }
+  },
+  "pack_id": "harness-repo-summary-v1",
+  "schema": "repo-summary-v1",
+  "spend": {
+    "calls": 10,
+    "cost_usd": 0.428022,
+    "input_tokens": 10191,
+    "ledger_site": "repo_summary",
+    "output_tokens": 2273,
+    "run_budget": 1.0
+  },
+  "structural": {
+    "cost": 0.428022,
+    "input_tokens": 10191,
+    "is_fallback": false,
+    "model": "jev-1.13.0",
+    "site": "repo_summary",
+    "verdict": "defer"
+  },
+  "symbols": []
+}
