@@ -8,8 +8,8 @@
 | Item | State |
 |---|---|
 | `origin/main` | `1936ed4` (PR #65 JEV-P6 merged); baseline 1781 tests OK, ruff clean, audit BAR MET 10/10/10/10 |
-| Open branch 1 | `chore/claude-lane` (worktree `Harness-claude-lane`) — PR opened for review; Claude lane migration + MCP negotiation fix + canon plan + seats. Merge on green CI (operator approval). |
-| Open branch 2 | `feat/jev-bar-sentiment` (worktree `Harness-jev-bar`) — **WIP commit**, draft PR; implementation partial (jev_completion/jev_packs/jev_policy/cli edits + pack JSON); `tests/test_jev_bar_sentiment.py` not written; gates not run. Spec = draft PR body. |
+| Open branch 1 | `chore/claude-lane` (worktree `Harness-claude-lane`) — **PR #66** (review); Claude lane migration + MCP negotiation fix + canon plan + seats. Merge on green CI (operator approval). |
+| Open branch 2 | `feat/jev-bar-sentiment` (worktree `Harness-jev-bar`) — **WIP commit**, **draft PR #67**; implementation partial (jev_completion/jev_packs/jev_policy/cli edits + pack JSON); `tests/test_jev_bar_sentiment.py` not written; gates not run. Spec = draft PR body. |
 | Local MCP | `harness` (local scope) fails until CLAUDE-LANE merges (protocol negotiation); `harness-dev` points at the claude-lane worktree and connects — remove it after merge: `claude mcp remove harness-dev -s local` |
 | Operator one-time | accept the Claude Code workspace trust dialog in the repo (project allow rules are ignored until then) |
 
