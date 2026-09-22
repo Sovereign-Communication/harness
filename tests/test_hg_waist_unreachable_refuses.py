@@ -1,4 +1,9 @@
-"""HG: confirm-armed waist unreachable across the full ladder REFUSES execute."""
+"""HG: confirm-armed waist unreachable across the full ladder.
+
+Operator no-interruptions ruling (2026-09-22): execute mode DEGRADES to
+local-gate execution with unavailable-verdict provenance; plan-only mode
+still fails closed (nothing to protect by degrading there).
+"""
 import unittest
 from unittest.mock import patch
 
@@ -27,11 +32,15 @@ class WaistUnreachableRefusesTests(unittest.TestCase):
                 candidate_files=["harness/sync.py"],
                 confirm=True, execute=True, use_free=True)
 
-        self.assertEqual(plan["status"], "refused")
+        self.assertEqual(plan["status"], "planned")
         confirmation = plan.get("confirmation") or {}
-        self.assertEqual(confirmation.get("verdict"), "refused")
+        self.assertEqual(confirmation.get("verdict"), "unavailable")
         self.assertIn("unreachable", confirmation.get("reason", ""))
         self.assertIn("429", confirmation.get("evidence", ""))
+        # The degraded plan must still be executable: real nodes, real DAG,
+        # and a monetary ceiling the executor + composed-ceiling guard use.
+        self.assertGreaterEqual(plan["total_nodes"], 1)
+        self.assertTrue(plan.get("dag", {}).get("nodes"))
 
     def test_plan_only_unreachable_still_raises(self):
         fake = FakeTransport(models=[m("google/gemma-4-31b-it:free", "0", "0")])

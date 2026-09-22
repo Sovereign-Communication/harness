@@ -51,13 +51,30 @@
   <!-- Header -->
   <header>
     <div class="header-controls">
-      <div class="spend-badge" id="spend-meter" title="Current session spend / run ceiling">
+      <div class="spend-badge clickable" id="spend-meter" title="Current session spend / run ceiling — click to adjust the cap">
         <span class="dot"></span>
         <span id="spend-val">$0.0000</span>
         <span class="dim" id="spend-limit">/ $0.05</span>
       </div>
+      <div class="cap-popover" id="cap-popover" hidden>
+        <div class="cap-title">Run cost ceiling</div>
+        <div class="cap-row">
+          <input type="range" id="cap-slider" min="0.01" max="0.10" step="0.01" value="0.05"
+                 aria-label="Run cost ceiling slider">
+          <span class="cap-slider-val" id="cap-slider-val">$0.05</span>
+        </div>
+        <div class="cap-row">
+          <label class="cap-label" for="cap-text">Exact ($, up to <span id="cap-hard-max">$0.10</span>):</label>
+        </div>
+        <div class="cap-row">
+          <input type="text" id="cap-text" inputmode="decimal" placeholder="0.05" aria-label="Run cost ceiling exact value">
+          <button type="button" id="cap-save" class="cap-save">Set</button>
+        </div>
+        <div class="cap-error" id="cap-error" hidden></div>
+        <div class="cap-hint">Applies to new runs; per-task ceiling unchanged.</div>
+      </div>
       <button type="button" class="mode-badge route-badge" id="route-badge"
-              title="Click to toggle paid escalation on/off">
+              title="Click to switch primary route free/paid; Shift+click to arm or disarm paid escalation">
         <span id="route-icon">💳</span> <span id="route-text">Primary: free · paid escalation armed</span>
       </button>
       <button type="button" id="btn-mode-toggle" class="mode-badge" title="Click to toggle between autonomous execution and review-first preview">

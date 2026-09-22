@@ -595,10 +595,11 @@ class ComposePlanTests(_WaistFixture):
         self.assertEqual(plan["confirmation"]["model"], paid_model)
         self.assertEqual(plan["confirmation"]["verdict"], "approved")
 
-    def test_compose_plan_exhausted_ladder_refuses_execute(self):
-        """HG: confirm-armed waist unreachable across the full ladder REFUSES
-        execute (fail-closed). Proceeding under the local gate would spend an
-        unconfirmed pyramid."""
+    def test_compose_plan_exhausted_ladder_degrades_to_local_gate(self):
+        """HG: confirm-armed waist unreachable across the full ladder DEGRADES
+        to local-gate execution (operator no-interruptions ruling): an
+        unreachable seat is an availability failure, not a policy refusal.
+        The plan proceeds with explicit unavailable-verdict provenance."""
         def broken(transport, api_key, governor, model, prompt, tokens, label=None):
             raise HarnessError("HTTP 429: Provider returned error")
 
@@ -607,9 +608,13 @@ class ComposePlanTests(_WaistFixture):
                 transport=None, api_key="k", governor=self.gov, ledger=None,
                 opts_goal="Split the work", candidate_files=["harness/sync.py"],
                 confirm=True, execute=True)
-        self.assertEqual(plan["status"], "refused")
-        self.assertEqual(plan["confirmation"]["verdict"], "refused")
+        self.assertEqual(plan["status"], "planned")
+        self.assertEqual(plan["confirmation"]["verdict"], "unavailable")
         self.assertIn("unreachable", plan["confirmation"]["reason"])
+        self.assertIn("429", plan["confirmation"]["evidence"])
+        self.assertEqual(plan["confirmation"]["cost"], 0.0)
+        self.assertGreaterEqual(plan["total_nodes"], 1)
+        self.assertGreaterEqual(plan["total_cost_ceiling"], 0.0)
 
     def test_compose_plan_exhausted_ladder_plan_only_fails_closed(self):
         def broken(transport, api_key, governor, model, prompt, tokens, label=None):

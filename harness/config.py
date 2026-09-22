@@ -17,6 +17,7 @@ free router and serves as a final fallback lane.
 """
 import json
 import os
+import tempfile
 from dataclasses import dataclass
 
 from .errors import HarnessError
@@ -563,6 +564,55 @@ class Settings:
             "openrouter_floor_default",
             "max_price_prompt", "max_price_completion", "jev_api_key",
             "jev_endpoint", "jev_model", "min_confidence")}
+
+
+def update_config(values):
+    """Persist runtime-updatable settings into config.json (the ONE owner of
+    config I/O). Each value is validated by a full ``load_settings`` round
+    trip BEFORE any write: a hostile or out-of-range value raises and nothing
+    is written (fail closed). Reads honor the same precedence the loader
+    does -- an env-pinned variable always wins over config.json -- so the
+    returned settings are exactly what the next ``load_settings()`` yields.
+    The write is atomic (temp file + os.replace) and preserves every key the
+    file already carried.
+    """
+    unknown = set(values) - set(_ENV_NAMES)
+    if unknown:
+        raise HarnessError(
+            "unknown setting(s): " + ", ".join(sorted(unknown)))
+    allowed = {"use_free", "allow_escalation", "max_cost", "task_max_cost"}
+    disallowed = set(values) - allowed
+    if disallowed:
+        raise HarnessError(
+            "setting(s) not runtime-updatable: " + ", ".join(sorted(disallowed)))
+
+    cfg_path = os.path.join(CONFIG_DIR, "config.json")
+    cfg = {}
+    if os.path.exists(cfg_path):
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    cfg.update(values)
+
+    # Validate the merged config through the real loader before committing:
+    # out-of-range numbers or malformed booleans raise here and nothing is
+    # written (fail closed). The returned settings carry the same values the
+    # next load_settings() will read, modulo env precedence noted above.
+    updated = load_settings(overrides=dict(cfg))
+
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".config-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, sort_keys=True)
+            f.write("\n")
+        os.replace(tmp, cfg_path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return updated
 
 
 def load_settings(overrides=None):

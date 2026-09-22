@@ -35,7 +35,8 @@ from . import events as _events
 from .agent import AutonomousAgent, classify_prompt_intent
 import harness.history as _history
 from .batch import BatchOptions
-from .config import HARD_TASK_MAX_COST, HARD_MAX_COST, load_settings, resolve_api_key
+from .config import (HARD_MAX_COST, HARD_TASK_MAX_COST, load_settings,
+                     resolve_api_key, update_config)
 from .errors import HarnessError, ToolCancelled
 from .history import delete_chat_session, list_chat_sessions, load_chat_history as _history_load_chat_history
 from .session import (apply_session, governor_for, ledger_for, run_meta)
@@ -607,6 +608,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_dispatch({"kind": "chat", "args": body})
             if parsed.path == "/api/chat/session/delete":
                 return self._api_session_delete(body)
+            if parsed.path == "/api/settings":
+                return self._api_settings_update(body)
             if parsed.path == "/api/runs":
                 return self._api_dispatch(body)
             if parsed.path == "/api/route":
@@ -752,6 +755,24 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         except HarnessError as e:
             return self._error(400, str(e))
         return self._send_json({"ok": deleted, "session_id": sid})
+
+    def _api_settings_update(self, body):
+        """Persist runtime-updatable settings from the UI (POST /api/settings).
+
+        Delegates entirely to ``update_config`` -- the ONE config owner -- so
+        validation and precedence live in exactly one place. The response is
+        the post-write read-only view, so the UI re-renders from what the
+        server actually persisted rather than what the client hoped for.
+        """
+        if not isinstance(body, dict):
+            return self._error(400, "request body must be a JSON object")
+        if not body:
+            return self._error(400, "no settings to update")
+        try:
+            update_config(body)
+        except HarnessError as e:
+            return self._error(400, str(e))
+        return self._send_json({"settings": _settings_view()})
 
     def _api_spend(self):
         def build():
