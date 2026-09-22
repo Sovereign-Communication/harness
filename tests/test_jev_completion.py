@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from harness.errors import HarnessError
 from harness.jev_completion import (
+    DEFAULT_COMPLETION_PACK,
     PHASE_COMPLETE_MIN_SCORE,
     collect_phase_evidence,
     dogfood_phase,
@@ -34,7 +35,13 @@ def _write_repo(root: Path, status_line: str, tests=None, files=None):
     for rel in files or []:
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("# stub\n", encoding="utf-8")
+        if rel.replace("\\", "/").endswith("packs/phase_completion.pack.json"):
+            # The completion pack is a data file the loader parses as JSON --
+            # a "# stub" placeholder would make it an (honestly) invalid
+            # pack. Required-file presence tests still need real pack JSON.
+            path.write_text(json.dumps(DEFAULT_COMPLETION_PACK), encoding="utf-8")
+        else:
+            path.write_text("# stub\n", encoding="utf-8")
 
 
 class CompletionScoreTests(unittest.TestCase):
