@@ -495,14 +495,16 @@ class ComposePlanTests(_WaistFixture):
         self.assertEqual(plan["confirmation"]["model"], expected)
         self.assertEqual(plan["confirmation"]["verdict"], "approved")
 
-    def test_plan_only_llm_failure_fails_loudly(self):
+    def test_plan_only_llm_failure_falls_back_to_heuristic(self):
+        """DF-HG-3: plan-only preview falls back to heuristic after retry instead of raising."""
         def broken(prompt):
             raise HarnessError("HTTP 429: rate limited")
 
-        with self.assertRaises(HarnessError):
-            compose_plan(transport=None, api_key="k", governor=self.gov,
-                         ledger=self.ledger, opts_goal="Split the work",
-                         decompose_llm=True, execute=False, chat_fn=broken)
+        plan = compose_plan(transport=None, api_key="k", governor=self.gov,
+                            ledger=self.ledger, opts_goal="Split the work",
+                            decompose_llm=True, execute=False, chat_fn=broken)
+        self.assertEqual(plan["decomposition"], "heuristic")
+        self.assertEqual(plan["status"], "planned")
 
     def test_execute_falls_back_to_heuristic_with_note(self):
         def broken(prompt):

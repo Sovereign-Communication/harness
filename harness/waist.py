@@ -614,6 +614,12 @@ def composed_worst_case(
             remaining = float(governor.remaining())
         except Exception:
             remaining = None
+    plan_ceiling = None
+    if governor is not None and getattr(governor, "max_cost", None) is not None:
+        try:
+            plan_ceiling = round(float(governor.max_cost), 6)
+        except (TypeError, ValueError):
+            plan_ceiling = None
     return {
         "composed_worst_case": composed,
         "node_ceiling": round(node_ceiling, 6),
@@ -621,6 +627,7 @@ def composed_worst_case(
         "waist": round(waist_cost, 6),
         "consensus": round(consensus_cost, 6),
         "remaining": remaining,
+        "plan_ceiling": plan_ceiling,
         "exceeds_remaining": (
             None if remaining is None else bool(composed > remaining + 1e-12)),
     }
@@ -1246,11 +1253,9 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     tier classification -> single-pass chunking -> optional cheap plan
     consensus -> optional waist confirmation (M2) over the plan that will
     actually run -> composed pyramid ceiling check before execute spend.
-    Decomposition failures fall back to the heuristic only when ``execute``
-    is set (the run spends anyway, so a loud note + fallback keeps it
-    going); a plan-only preview fails loudly -- the operator asked for LLM
-    planning, and silently handing back the heuristic plan would be
-    dishonest.
+    Decomposition failures retry once, then fall back loudly to the
+    heuristic in both preview and execute modes (with an orchestration
+    event and decomposition='heuristic:llm_failed').
 
     Fail-closed rules (hourglass composition):
     * confirm=True and EVERY waist rung unreachable on execute -> REFUSE
@@ -1323,29 +1328,42 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             def chat_fn(prompt):
                 return governed_text(transport, api_key, governor, decompose_model,
                                      prompt, DECOMPOSE_MAX_TOKENS, label="decompose")
-        try:
-            # chat_fn's contract is (text, cost) -- decomposition consumes
-            # the text only; the cost stays on the governor/caller side.
-            # HG-condense-decompose + JEV-P3-context-pack: signatures AND
-            # decision pack; never raw file bodies; prompt still labels
-            # REPOSITORY CONTEXT: via build_decomposition_prompt.
-            sig_ctx = _decompose_repo_context(
-                plan_goal, candidate_files, root=root)
-            decision_ctx = build_context_pack(
-                opts_goal, candidate_files=candidate_files)
-            if sig_ctx and str(sig_ctx).strip():
-                repo_context = decision_ctx + "\n\n" + str(sig_ctx).strip()
-            else:
-                repo_context = decision_ctx
-            decomposed = decompose_via_llm(lambda p: chat_fn(p)[0], plan_goal,
-                                           candidate_files=candidate_files,
-                                           repo_context=repo_context)
-            decomposition = (f"llm:{decompose_model}"
-                             if decompose_model else "llm:injected")
-        except HarnessError as exc:
-            if not execute:
-                raise
-            eprint(f"[plan] LLM decomposition failed ({exc}); heuristic fallback")
+        # DF-HG-3: one strict retry on LLM decomposition failure, then loud heuristic fallback in preview too
+        last_exc = None
+        for attempt in (1, 2):
+            try:
+                # chat_fn's contract is (text, cost) -- decomposition consumes
+                # the text only; the cost stays on the governor/caller side.
+                # HG-condense-decompose + JEV-P3-context-pack: signatures AND
+                # decision pack; never raw file bodies; prompt still labels
+                # REPOSITORY CONTEXT: via build_decomposition_prompt.
+                sig_ctx = _decompose_repo_context(
+                    plan_goal, candidate_files, root=root)
+                decision_ctx = build_context_pack(
+                    opts_goal, candidate_files=candidate_files)
+                if sig_ctx and str(sig_ctx).strip():
+                    repo_context = decision_ctx + "\n\n" + str(sig_ctx).strip()
+                else:
+                    repo_context = decision_ctx
+                decomposed = decompose_via_llm(lambda p: chat_fn(p)[0], plan_goal,
+                                               candidate_files=candidate_files,
+                                               repo_context=repo_context)
+                decomposition = (f"llm:{decompose_model}"
+                                 if decompose_model else "llm:injected")
+                last_exc = None
+                break
+            except HarnessError as exc:
+                last_exc = exc
+                if attempt == 1:
+                    eprint(f"[plan] LLM decomposition attempt 1 failed ({exc}); retrying")
+        if last_exc is not None:
+            from . import events as _events
+            _events.emit(
+                "orchestration_note",
+                note=f"LLM decomposition failed ({last_exc}); loud heuristic fallback")
+            eprint(f"[plan] LLM decomposition failed ({last_exc}); loud heuristic fallback")
+            decomposition = "heuristic"
+            decomposed = None
 
     plan_result = plan_task(
         goal=plan_goal, candidate_files=candidate_files,

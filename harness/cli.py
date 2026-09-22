@@ -921,24 +921,32 @@ def _cmd_plan(opts, settings):
     plan_consensus = bool(getattr(opts, "plan_consensus", None))
     resume_path = getattr(opts, "resume", None)
 
+    # DF-HG-1: plan composed-ceiling preflight honors --task-max-cost as well
+    # as --max-cost (precedence: explicit flag; engine defaults apply if neither).
+    plan_ceiling = getattr(opts, "task_max_cost", None)
+    if plan_ceiling is None:
+        plan_ceiling = getattr(opts, "max_cost", None)
+
     # ONE governor for the whole run when it spends: decomposition,
     # confirmation, and node execution share a single ceiling (the engine's
     # when executing; a verified standalone governor for a plan-only LLM run).
     engine = None
     if execute:
-        engine = _session(settings, max_cost=getattr(opts, "max_cost", None))
+        engine = _session(settings, max_cost=plan_ceiling)
         gov, transport, api_key = engine.governor, engine.transport, engine.api_key
     elif decompose_llm or confirm or plan_consensus:
-        api_key, gov = _governor(settings, getattr(opts, "max_cost", None))
+        api_key, gov = _governor(settings, plan_ceiling)
         transport = HttpTransport()
     else:
         gov, transport, api_key = None, None, None
 
     # HG-pyramid-resume: a resume run re-plans only if no state was supplied;
     # with state, the stored DAG's pending nodes are the work.
+    # DF-HG-2: cold-start bootstrap allows a missing resume_path to start fresh
+    # and persist its state upon completion.
     pending_state = None
     if resume_path:
-        pending_state = load_state(resume_path)
+        pending_state = load_state(resume_path, allow_missing=True)
 
     plan_result = _plan_compose(
         settings, opts, gov, transport, api_key,

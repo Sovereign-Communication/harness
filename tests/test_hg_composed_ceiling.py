@@ -96,6 +96,79 @@ class ComposedCeilingTests(unittest.TestCase):
         self.assertEqual(gov.spent, 0.0)
         self.assertTrue(plan["composed_worst_case"]["exceeds_remaining"])
 
+    def test_composed_worst_case_carries_plan_ceiling(self):
+        fake = FakeTransport(models=[m("m/cheap", "0.0000001", "0.0000002")])
+        gov = SpendGovernor(fake, "sk-test", max_cost=0.05)
+        plan = {
+            "goal": "g",
+            "total_cost_ceiling": 0.01,
+            "nodes": [],
+        }
+        composed = composed_worst_case(plan, governor=gov)
+        self.assertEqual(composed["plan_ceiling"], 0.05)
+        self.assertEqual(composed["remaining"], 0.05)
+
+    def test_cli_plan_composed_ceiling_honors_task_max_cost(self):
+        """DF-HG-1: _cmd_plan honors --task-max-cost for the plan governor ceiling."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+        from harness.cli import _cmd_plan
+
+        opts = SimpleNamespace(
+            goal="Refactor concurrency architecture",
+            file=["harness/sync.py"],
+            frontier_model=None,
+            execute=True,
+            parallel=False,
+            max_workers=1,
+            max_cost=None,
+            task_max_cost=0.0001,
+            keep_going=False,
+            out=None,
+            model=None,
+            max_tokens=None,
+            allow_escalation=False,
+            reasoning_effort=None,
+            max_rotations=3,
+            decompose_llm=False,
+            confirm=False,
+            plan_consensus=False,
+            final_gate=False,
+            resume=None,
+            stage_gate=None,
+        )
+        settings = SimpleNamespace(
+            use_free=False,
+            frontier_model="m/front",
+            max_cost=10.0,
+            hourglass_confirm=False,
+            hourglass_parallel=False,
+            hourglass_isolate=False,
+            hourglass_require_attestation=False,
+            hourglass_decompose=False,
+        )
+
+        fake = FakeTransport(models=[
+            m("m/front", "0.001", "0.002"),
+        ])
+        gov = SpendGovernor(fake, "sk-test", max_cost=0.0001)
+        mock_engine = MagicMock()
+        mock_engine.governor = gov
+        mock_engine.transport = fake
+        mock_engine.api_key = "k"
+
+        emitted = {}
+        with patch("harness.cli._session", return_value=mock_engine) as mock_session, \
+             patch("harness.cli._emit_by_status", side_effect=lambda r, o=None: emitted.update(r)):
+            _cmd_plan(opts, settings)
+
+        # Verified that _session was passed task_max_cost as its max_cost ceiling
+        mock_session.assert_called_once_with(settings, max_cost=0.0001)
+        # Composed ceiling preflight refused because node cost exceeds the task_max_cost ceiling
+        self.assertEqual(emitted.get("status"), "refused")
+        self.assertEqual(emitted["composed_worst_case"]["plan_ceiling"], 0.0001)
+        self.assertTrue(emitted["composed_worst_case"]["exceeds_remaining"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -103,12 +103,48 @@ class TestPlanningSurface(unittest.TestCase):
 
     def test_cli_parser_plan_subcommand(self):
         p = build_parser()
-        opts = p.parse_args(["plan", "--goal", "Refactor X", "--execute", "--parallel", "--max-workers", "8"])
+        opts = p.parse_args([
+            "plan", "--goal", "Refactor X", "--execute", "--parallel",
+            "--max-workers", "8", "--max-cost", "0.5", "--persist-state", "p.json",
+        ])
         self.assertEqual(opts.command, "plan")
         self.assertEqual(opts.goal, "Refactor X")
         self.assertTrue(opts.execute)
         self.assertTrue(opts.parallel)
         self.assertEqual(opts.max_workers, 8)
+        self.assertEqual(opts.max_cost, 0.5)
+        self.assertEqual(opts.persist_state, "p.json")
+
+    def test_cli_cmd_plan_preview_with_governor(self):
+        from harness.cli import _cmd_plan
+        from types import SimpleNamespace
+        from unittest.mock import patch, MagicMock
+
+        opts = SimpleNamespace(
+            goal="1. Plan auth\n2. Plan tokens",
+            file=None,
+            frontier_model=None,
+            execute=False,
+            decompose_llm=True,
+            confirm=True,
+            plan_consensus=False,
+            out=None,
+            max_cost=1.0,
+            task_max_cost=None,
+        )
+        settings = SimpleNamespace(use_free=True, frontier_model=None,
+                                   hourglass_confirm=True,
+                                   hourglass_parallel=False,
+                                   hourglass_decompose=True)
+
+        mock_gov = MagicMock()
+        mock_gov.max_cost = 1.0
+        with patch("harness.cli._governor", return_value=("k", mock_gov)) as mock_g, \
+             patch("harness.cli._plan_compose", return_value={"status": "planned", "goal": "g"}), \
+             patch("harness.cli._emit") as mock_emit:
+            _cmd_plan(opts, settings)
+            mock_g.assert_called_once_with(settings, 1.0)
+            mock_emit.assert_called_once()
 
     def test_mcp_schemas_and_lanes_plan_and_execute(self):
         tool_names = [s["name"] for s in TOOL_SCHEMAS]
