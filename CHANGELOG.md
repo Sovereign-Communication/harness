@@ -9,16 +9,20 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
-Nothing yet.
-
-## [Unreleased]
-
 ### Added
 - GUI: runtime settings seam — `POST /api/settings` (via `update_config`, validated
   fail-closed through `load_settings` and written atomically) so the UI can switch
   the primary route (free/paid), arm/disarm paid escalation, and set the run cost
   ceiling without restarting. Route badge click = free/paid posture, Shift+click =
   escalation arm; spend meter click opens a slider+text price-cap popover.
+
+- **MS model envelope + keyed thin-face governor parity.** Every apply terminal,
+  the batch envelope, and the agent envelope carry `model_envelope`
+  (`model_requested` vs `model_observed`); the keyed thin faces (`issue-sort`,
+  `route`, `log-judgment`) compose the shared spend governor with `--max-cost`
+  bounds (fail-closed above `HARD_MAX_COST`), so keyed machines judge live
+  instead of silently degrading to keyword fallback -- unkeyed runs stay
+  governor-free and hermetic.
 
 ### Fixed
 - GUI route badge no longer flips a client-only localStorage flag that nothing
@@ -29,6 +33,22 @@ Nothing yet.
   local-gate execution with `verdict: unavailable` provenance instead of killing
   the run (operator no-interruptions ruling: only a monetary cap or required user
   input may stop a run). Plan-only mode still fails closed.
+
+- **`harness jev-phase` canon row coverage.** The completion gate now finds the
+  canon STATUS rows for `JEV-P5`, `HUL-A..D`, `JEV-LOG-*` and `MS-*` (rows that
+  carry MERGED rank higher), so phases whose canon rows already claim MERGED
+  can actually score `can_mark_complete` instead of failing closed on rows the
+  gate could not see.
+
+- **`harness serve` site: pretty URLs + honest local mode.** `/site/` and
+  `/site/<page>[/]` resolve to the page's `index.html` (directories without one
+  stay 404 -- the fallback never guesses), and `app.js` no longer gates local
+  mode on a hardcoded port `harness serve` never listens on, so the served Proof
+  Bench actually reaches `/api/snapshot` instead of always falling back to the
+  static demo (`?mode=public` stays the explicit worker view); `el()` now
+  appends child arrays as nodes, so `barChart` and the router reasons list
+  render instead of `"[object HTMLDivElement],..."` garbage. Regression tests
+  (source pins + real-JS probes via node) cover all three.
 
 ## [0.4.0] — 2026-09-21
 
