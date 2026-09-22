@@ -47,7 +47,7 @@ from .site_export import write_bundle as _site_export_write
 from .waist import compose_plan as _compose_plan
 from .jev import jev_cost
 from .jev_policy import JEV_MAX_INPUT_TOKENS, aggregate_structural, policy_for
-from .jev_completion import dogfood_phase
+from .jev_completion import dogfood_phase, score_all_phases
 from .jev_packs import (validate_log_pack, validate_operator_pack,
                         validate_repo_summary_pack)
 from .repo_summary import analyze_repo as _repo_analyze
@@ -1076,36 +1076,99 @@ def _cmd_plan(opts, settings):
     _emit_by_status(output, opts.out)
 
 
-def _cmd_jev_phase(opts, settings):
-    """Dogfood: score whether a mission phase may be marked complete."""
-    use_live = not getattr(opts, "local_only", False)
-    result = dogfood_phase(
-        opts.repo_root,
-        opts.phase,
-        evidence_path=getattr(opts, "evidence", None),
-        settings=settings if use_live else None,
-        use_live_jev=use_live,
-        min_score=float(getattr(opts, "min_score", 85.0)),
-    )
-    if getattr(opts, "json", False):
-        print(json.dumps(result, indent=2, default=str))
-    else:
-        print(f"phase={result['phase']} score={result['score']}/{result['min_score']} "
-              f"can_mark_complete={result['can_mark_complete']}")
-        print("hard_gates:", json.dumps(result["hard_gates"]))
-        if result.get("blockers"):
-            print("blockers:")
-            for b in result["blockers"]:
-                print(f"  - {b}")
-        sem = result.get("semantic") or {}
-        print(f"semantic: score={sem.get('score')} fallback={sem.get('is_fallback')} "
-              f"model={sem.get('model')} note={sem.get('note')}")
+def _write_jev_phase_out(opts, payload):
     if getattr(opts, "out", None):
         out_dir = os.path.dirname(opts.out)
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
         with open(opts.out, "w", encoding="utf-8") as fh:
-            json.dump(result, fh, indent=2, default=str)
+            json.dump(payload, fh, indent=2, default=str)
+
+
+def _print_jev_phase_result(result):
+    print(f"phase={result['phase']} score={result['score']}/{result['min_score']} "
+          f"can_mark_complete={result['can_mark_complete']}")
+    print("hard_gates:", json.dumps(result["hard_gates"]))
+    if result.get("blockers"):
+        print("blockers:")
+        for b in result["blockers"]:
+            print(f"  - {b}")
+    sem = result.get("semantic") or {}
+    print(f"semantic: score={sem.get('score')} fallback={sem.get('is_fallback')} "
+          f"model={sem.get('model')} note={sem.get('note')}")
+    sentiment = result.get("sentiment") or {}
+    axes = sentiment.get("axes") or {}
+    if axes:
+        print("sentiment:")
+        for axis in sorted(axes):
+            a = axes[axis]
+            print(f"  {axis}: {a.get('level')} (source={a.get('source')})")
+        overall = sentiment.get("overall") or {}
+        print(f"  overall: {overall.get('level')}")
+    improvements = result.get("improvements") or []
+    if improvements:
+        print("improvements:")
+        # Primary gap first for the human reading top-to-bottom; the stored
+        # order (ordinal asc, then axis id) is unchanged in the JSON.
+        for imp in sorted(improvements, key=lambda i: 0 if i.get("primary") else 1):
+            marker = "*" if imp.get("primary") else "-"
+            print(f"  {marker} [{imp.get('bucket')}] {imp.get('suggested_next_action')} "
+                  f"(axis={imp.get('axis')}, level={imp.get('level')}, "
+                  f"source={imp.get('source')})")
+
+
+def _cmd_jev_phase(opts, settings):
+    """Dogfood the JEV bar: hard gates + full sentiment buckets drive whether
+    a mission phase may be marked complete (JEV-BAR)."""
+    use_live = not getattr(opts, "local_only", False)
+    all_phases = bool(getattr(opts, "all", False))
+    phase = getattr(opts, "phase", None)
+    if not all_phases and not phase:
+        raise HarnessError("jev-phase requires --phase or --all")
+    pack_path = getattr(opts, "pack", None)
+    min_score = float(getattr(opts, "min_score", 85.0))
+
+    if all_phases:
+        jev_policy = None
+        if use_live and settings is not None:
+            from .jev_policy import policy_for
+            jev_policy = policy_for(settings)
+        board = score_all_phases(
+            opts.repo_root, jev_policy=jev_policy, min_score=min_score,
+            pack=pack_path)
+        if getattr(opts, "json", False):
+            print(json.dumps(board, indent=2, default=str))
+        else:
+            for phase_id in sorted(board["phases"]):
+                result = board["phases"][phase_id]
+                top = (result.get("improvements") or [None])[0]
+                top_desc = (f"{top['bucket']}: {top['suggested_next_action']}"
+                           if top else "-")
+                print(f"{phase_id} score={result['score']} "
+                      f"bar_pass={result['bar']['pass']} top_improvement={top_desc}")
+            if board.get("false_complete"):
+                print("false_complete:", ", ".join(board["false_complete"]))
+        _write_jev_phase_out(opts, board)
+        if board.get("false_complete"):
+            raise HarnessError(
+                "phases claim complete but fail the JEV bar: "
+                + ", ".join(board["false_complete"]))
+        return
+
+    result = dogfood_phase(
+        opts.repo_root,
+        phase,
+        evidence_path=getattr(opts, "evidence", None),
+        settings=settings if use_live else None,
+        use_live_jev=use_live,
+        min_score=min_score,
+        pack_path=pack_path,
+    )
+    if getattr(opts, "json", False):
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        _print_jev_phase_result(result)
+    _write_jev_phase_out(opts, result)
     if not result.get("can_mark_complete"):
         raise HarnessError(
             f"phase {result['phase']} completion score {result['score']} "

@@ -12,9 +12,13 @@ module never invents buckets, path_ids, or suggested actions. Unkeyed /
 transport-fail / out-of-pack paths use ``match_keywords`` against pack
 keywords only.
 """
+import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+from .errors import HarnessError
 
 # --- JEV-P3 utilization vocabulary / limits ---
 ROUTE_VOCABULARY = ("free-distill", "diff", "frontier")
@@ -730,3 +734,337 @@ def heuristic_repo_axes(text: Any, pack: Any) -> Dict[str, Optional[str]]:
                 best_id, best_hits = criterion_id, hits
         out[axis] = best_id
     return out
+
+
+# --- JEV-BAR phase-completion sentiment packs (site=phase_completion) ---
+
+PHASE_COMPLETION_SITE = "phase_completion"
+DEFAULT_PHASE_COMPLETION_PACK = "packs/phase_completion.pack.json"
+
+_COMPLETION_BLOCKER_PATTERNS = (
+    re.compile(r"in progress", re.I),
+    re.compile(r"\bblocked\b", re.I),
+    re.compile(r"\brepair\b", re.I),
+    re.compile(r"\bopen\b", re.I),
+    re.compile(r"\bfail(?:ed|ing|s)?\b", re.I),
+    re.compile(r"\bmissing\b", re.I),
+    re.compile(r"not complete", re.I),
+    re.compile(r"\bno pr\b", re.I),
+)
+_COMPLETION_RESIDUAL_PATTERNS = (
+    re.compile(r"\bresidual\b", re.I),
+    re.compile(r"\bdeferred\b", re.I),
+    re.compile(r"\bfollow-up\b", re.I),
+    re.compile(r"\bremaining\b", re.I),
+)
+_GENERIC_PR_MENTION_RE = re.compile(r"PR #\d+", re.I)
+_DOGFOOD_EVIDENCE_RE = re.compile(r"\b(?:dogfood|smoke|receipt|live)\b", re.I)
+
+
+def phase_status_has_blocker(text: Any) -> bool:
+    """Word-boundary blocker-marker match (JEV-BAR). Never a bare substring:
+    ``\\bopen\\b`` does not match ``OpenRouter``/``reopened``; ``deferred`` is
+    a residual marker, not a hard blocker (see ``phase_status_has_residual``).
+    """
+    if not isinstance(text, str) or not text:
+        return False
+    return any(p.search(text) for p in _COMPLETION_BLOCKER_PATTERNS)
+
+
+def phase_status_has_residual(text: Any) -> bool:
+    """Word-boundary residual/deferred marker match (not a hard blocker)."""
+    if not isinstance(text, str) or not text:
+        return False
+    return any(p.search(text) for p in _COMPLETION_RESIDUAL_PATTERNS)
+
+
+def phase_status_claims_complete(text: Any) -> bool:
+    if not isinstance(text, str) or not text:
+        return False
+    lowered = text.lower()
+    return "**complete**" in lowered or "| complete" in lowered
+
+
+def phase_status_mentions_pr(status_row: Any, pattern: Optional[str]) -> bool:
+    """Does the row mention the phase's PR? A declared ``pattern`` is used
+    verbatim; ``None`` falls back to the generic ``PR #<digits>`` rule (never
+    the bare ``\"PR #\"`` substring that let any PR mention pass)."""
+    if not isinstance(status_row, str) or not status_row:
+        return False
+    if pattern:
+        return bool(re.search(pattern, status_row))
+    return bool(_GENERIC_PR_MENTION_RE.search(status_row))
+
+
+def validate_completion_pack(pack: Any) -> Dict[str, Any]:
+    """Validate an operator phase-completion sentiment pack; return a clean
+    copy (JEV-BAR). Required shape::
+
+        {id: str,
+         sentiment: {levels: [str, ...>=2 unique],
+                     ordinals: [num, ...same length, non-decreasing, 0..100],
+                     blocking_max_index: int, improve_below_index: int},
+         axes: {axis_id: {authority: "code"|"jev", bucket: bucket_id,
+                          instructions: str}},
+         buckets: {bucket_id: {label, path_id, keywords: [str, ...],
+                               suggested_next_action: str}}}
+
+    Axis ids may not collide with the reserved question id ``primary_gap``;
+    bucket ids may not collide with the reserved choice value ``none``. The
+    model never invents buckets, path ids, actions, or levels.
+    """
+    if not isinstance(pack, dict):
+        raise ValueError("completion pack must be an object")
+    pack_id = pack.get("id")
+    if not isinstance(pack_id, str) or not pack_id:
+        raise ValueError("completion pack requires a non-empty string id")
+
+    sentiment = pack.get("sentiment")
+    if not isinstance(sentiment, dict):
+        raise ValueError("completion pack requires a sentiment block object")
+    levels = sentiment.get("levels")
+    if (not isinstance(levels, list) or len(levels) < 2
+            or any(not isinstance(x, str) or not x for x in levels)):
+        raise ValueError(
+            "completion pack sentiment levels must be at least two non-empty strings")
+    if len(set(levels)) != len(levels):
+        raise ValueError("completion pack sentiment levels must be unique")
+    ordinals = sentiment.get("ordinals")
+    if (not isinstance(ordinals, list) or len(ordinals) != len(levels)
+            or any(isinstance(o, bool) or not isinstance(o, (int, float))
+                   for o in ordinals)):
+        raise ValueError(
+            "completion pack sentiment ordinals must be numbers matching levels length")
+    if any(o < 0 or o > 100 for o in ordinals):
+        raise ValueError("completion pack sentiment ordinals must be within 0..100")
+    if any(ordinals[i] > ordinals[i + 1] for i in range(len(ordinals) - 1)):
+        raise ValueError("completion pack sentiment ordinals must be non-decreasing")
+    blocking_max_index = sentiment.get("blocking_max_index")
+    if (isinstance(blocking_max_index, bool)
+            or not isinstance(blocking_max_index, int)
+            or not (0 <= blocking_max_index < len(levels))):
+        raise ValueError(
+            "completion pack sentiment blocking_max_index must be an in-range int")
+    improve_below_index = sentiment.get("improve_below_index")
+    if (isinstance(improve_below_index, bool)
+            or not isinstance(improve_below_index, int)
+            or not (0 <= improve_below_index <= len(levels))):
+        raise ValueError(
+            "completion pack sentiment improve_below_index must be an in-range int")
+
+    buckets = pack.get("buckets")
+    if not isinstance(buckets, dict) or not buckets:
+        raise ValueError("completion pack requires a non-empty buckets map")
+    out_buckets: Dict[str, Dict[str, Any]] = {}
+    for bid, bucket in buckets.items():
+        if not isinstance(bid, str) or not bid:
+            raise ValueError("bucket ids must be non-empty strings")
+        if bid == "none":
+            raise ValueError("bucket id 'none' is reserved")
+        if not isinstance(bucket, dict):
+            raise ValueError(f"bucket {bid!r} must be an object")
+        label = bucket.get("label")
+        if not isinstance(label, str) or not label:
+            raise ValueError(f"bucket {bid!r} requires a non-empty label")
+        path_id = bucket.get("path_id")
+        if not isinstance(path_id, str) or not path_id:
+            raise ValueError(f"bucket {bid!r} requires a non-empty path_id")
+        keywords = bucket.get("keywords", [])
+        if not isinstance(keywords, list) or any(
+                not isinstance(k, str) or not k for k in keywords):
+            raise ValueError(
+                f"bucket {bid!r} keywords must be a list of non-empty strings")
+        action = bucket.get("suggested_next_action")
+        if not isinstance(action, str) or not action:
+            raise ValueError(
+                f"bucket {bid!r} requires a non-empty suggested_next_action")
+        out_buckets[bid] = {
+            "label": label, "path_id": path_id, "keywords": list(keywords),
+            "suggested_next_action": action,
+        }
+
+    axes = pack.get("axes")
+    if not isinstance(axes, dict) or not axes:
+        raise ValueError("completion pack requires a non-empty axes map")
+    out_axes: Dict[str, Dict[str, Any]] = {}
+    for axis, spec in axes.items():
+        if not isinstance(axis, str) or not axis:
+            raise ValueError("axis ids must be non-empty strings")
+        if axis == "primary_gap":
+            raise ValueError("axis id 'primary_gap' is reserved")
+        if not isinstance(spec, dict):
+            raise ValueError(f"axis {axis!r} must be an object")
+        authority = spec.get("authority")
+        if authority not in ("code", "jev"):
+            raise ValueError(f"axis {axis!r} authority must be 'code' or 'jev'")
+        bucket_id = spec.get("bucket")
+        if not isinstance(bucket_id, str) or bucket_id not in out_buckets:
+            raise ValueError(f"axis {axis!r} bucket must be a declared bucket id")
+        instructions = spec.get("instructions")
+        if not isinstance(instructions, str) or not instructions:
+            raise ValueError(f"axis {axis!r} requires non-empty instructions")
+        out_axes[axis] = {
+            "authority": authority, "bucket": bucket_id, "instructions": instructions,
+        }
+
+    return {
+        "id": pack_id,
+        "sentiment": {
+            "levels": list(levels),
+            "ordinals": [float(o) for o in ordinals],
+            "blocking_max_index": int(blocking_max_index),
+            "improve_below_index": int(improve_below_index),
+        },
+        "axes": out_axes,
+        "buckets": out_buckets,
+    }
+
+
+def load_completion_pack(repo_root: str, path: Optional[str] = None) -> Dict[str, Any]:
+    """Read + validate the operator completion pack from disk (utf-8-sig
+    tolerant); ``HarnessError`` on unreadable/invalid JSON or shape."""
+    root = os.path.abspath(repo_root or os.getcwd())
+    rel = path or DEFAULT_PHASE_COMPLETION_PACK
+    full = rel if os.path.isabs(rel) else os.path.join(root, rel.replace("/", os.sep))
+    try:
+        with open(full, "rb") as fh:
+            raw = fh.read()
+    except OSError as exc:
+        raise HarnessError(f"cannot read completion pack: {exc}") from exc
+    try:
+        data = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HarnessError(f"invalid completion pack JSON: {exc}") from exc
+    try:
+        return validate_completion_pack(data)
+    except ValueError as exc:
+        raise HarnessError(f"invalid completion pack: {exc}") from exc
+
+
+def completion_bar_question_pack(pack: Any) -> Dict[str, Dict[str, Any]]:
+    """The TypeSafe question pack for the JEV-BAR phase-completion judgment:
+    one ``score`` question per declared axis (criteria = the shared sentiment
+    levels, in declared order) plus one ``primary_gap`` choice (criteria keys
+    = declared bucket ids + the reserved ``none``). Typed primitives only;
+    nothing invented."""
+    doc = validate_completion_pack(pack)
+    levels = doc["sentiment"]["levels"]
+    questions: Dict[str, Dict[str, Any]] = {}
+    for axis, spec in doc["axes"].items():
+        questions[axis] = {
+            "type": "score",
+            "instructions": spec["instructions"],
+            "criteria": list(levels),
+        }
+    criteria = {bid: entry["label"] for bid, entry in doc["buckets"].items()}
+    criteria["none"] = "no improvement needed"
+    questions["primary_gap"] = {
+        "type": "choice",
+        "instructions": (
+            "Choose the single declared bucket that best represents the "
+            "primary gap blocking this phase from a confident bar pass, or "
+            "'none' when no improvement is needed. Select only from the "
+            "declared criteria keys; do not invent categories."),
+        "criteria": criteria,
+    }
+    return questions
+
+
+def match_completion_keywords(
+    text: Any, pack: Any
+) -> Tuple[Optional[str], int, List[str]]:
+    """Match phase evidence text against completion-bar bucket keywords only
+    (JEV-BAR unkeyed/fallback ``primary_gap``; never invents a bucket).
+    Deterministic: highest hit-count wins; ties keep the lexicographically
+    first bucket id."""
+    pack_doc = validate_completion_pack(pack)
+    lower = (text or "").lower() if isinstance(text, str) else ""
+    best_id: Optional[str] = None
+    best_score = 0
+    best_ev: List[str] = []
+    for bid in sorted(pack_doc["buckets"]):
+        keywords = pack_doc["buckets"][bid].get("keywords") or []
+        hits = [kw for kw in keywords if kw.lower() in lower]
+        score = len(hits)
+        if score > best_score:
+            best_id, best_score, best_ev = bid, score, hits
+    if best_score <= 0 or best_id is None:
+        return None, 0, []
+    return best_id, best_score, best_ev
+
+
+def heuristic_completion_sentiment(evidence: Any, pack: Any) -> Dict[str, int]:
+    """Code-owned deterministic sentiment fallback for JEV-BAR.
+
+    Answers every declared axis from the pack's own level count -- never a
+    live guess -- so an unkeyed run or a code-authority axis always has a
+    grounded floor to compare the live judgment against. Recognized axis ids
+    (``merge_evidence``, ``gate_tests``, ``verification``, ``status_honesty``,
+    ``residual_scope``, ``dogfood``) use the operator-approved rules below;
+    an operator-added axis this module does not recognize gets the neutral
+    ``mixed`` tier (index 2 in the canonical 5-level pack).
+    """
+    doc = validate_completion_pack(pack)
+    n_levels = len(doc["sentiment"]["levels"])
+
+    def clamp(idx: int) -> int:
+        return max(0, min(idx, n_levels - 1))
+
+    ev = evidence if isinstance(evidence, dict) else {}
+    status_row = ev.get("status_row")
+    status_row = status_row if isinstance(status_row, str) else ""
+
+    def axis_merge_evidence() -> int:
+        if ev.get("pr_merged"):
+            return 4
+        if status_row and phase_status_mentions_pr(status_row, ev.get("pr_pattern")):
+            return 1
+        return 0
+
+    def axis_gate_tests() -> int:
+        if ev.get("required_tests"):
+            return 0 if ev.get("tests_missing") else 4
+        return 2
+
+    def axis_verification() -> int:
+        if ev.get("tests_missing"):
+            return 0
+        if ((ev.get("gate_output") or ev.get("ci_run"))
+                and ev.get("local_gates_green") and ev.get("ci_green")):
+            return 4
+        if ev.get("local_gates_green") and ev.get("ci_green"):
+            return 3
+        return 1
+
+    def axis_status_honesty() -> int:
+        if not status_row:
+            return 0
+        if phase_status_claims_complete(status_row) and phase_status_has_blocker(status_row):
+            return 0
+        return 4
+
+    def axis_residual_scope() -> int:
+        if phase_status_has_residual(status_row):
+            return 2 if "not blocking" in status_row.lower() else 1
+        return 4
+
+    def axis_dogfood() -> int:
+        if not ev.get("user_facing"):
+            return 4
+        combined = " ".join(
+            str(part) for part in (
+                [status_row, ev.get("origin_evidence")] + list(ev.get("notes") or []))
+            if part)
+        return 3 if _DOGFOOD_EVIDENCE_RE.search(combined) else 1
+
+    axis_fns = {
+        "merge_evidence": axis_merge_evidence,
+        "gate_tests": axis_gate_tests,
+        "verification": axis_verification,
+        "status_honesty": axis_status_honesty,
+        "residual_scope": axis_residual_scope,
+        "dogfood": axis_dogfood,
+    }
+
+    return {axis: clamp(axis_fns[axis]() if axis in axis_fns else 2)
+            for axis in doc["axes"]}

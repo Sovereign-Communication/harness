@@ -1,0 +1,49 @@
+{
+  "id": "harness-phase-completion-v1",
+  "sentiment": {
+    "levels": [
+      "blocking — evidence contradicts completion",
+      "at_risk — open gap likely to fail review",
+      "mixed — evidence partial or ambiguous",
+      "confident — evidenced with minor gaps",
+      "proven — evidenced and consistent"
+    ],
+    "ordinals": [0, 35, 60, 85, 100],
+    "blocking_max_index": 0,
+    "improve_below_index": 3
+  },
+  "axes": {
+    "merge_evidence":  {"authority": "code", "bucket": "merge_pending",
+      "instructions": "Rate the merge evidence: the phase PR is merged, cited by PR number or merge SHA in the STATUS row."},
+    "gate_tests":      {"authority": "code", "bucket": "tests_missing",
+      "instructions": "Rate whether named hermetic gate tests exist for this phase and are cited."},
+    "verification":    {"authority": "code", "bucket": "gates_unverified",
+      "instructions": "Rate the verification evidence: local gates, CI, and the self-audit bar."},
+    "status_honesty":  {"authority": "jev", "bucket": "status_dishonest",
+      "instructions": "Rate whether the STATUS row is honest: no complete claim while open, repair, or failing language remains."},
+    "residual_scope":  {"authority": "jev", "bucket": "residual_untracked",
+      "instructions": "Rate whether residual or deferred work is tracked as its own row rather than hidden inside a complete claim."},
+    "dogfood":         {"authority": "jev", "bucket": "dogfood_missing",
+      "instructions": "Rate live dogfood evidence for user-facing lanes: receipts, cost, fallback rate."}
+  },
+  "buckets": {
+    "merge_pending":      {"label": "Merge evidence missing", "path_id": "bar/merge",
+      "keywords": ["no pr", "not merged", "this pr", "draft"],
+      "suggested_next_action": "Drive the PR to green CI, merge it, and cite PR #/merge SHA in the STATUS row."},
+    "tests_missing":      {"label": "Named gate tests missing", "path_id": "bar/tests",
+      "keywords": ["missing required tests", "no tests"],
+      "suggested_next_action": "Add the named hermetic gate tests to the phase contract and make them pass."},
+    "gates_unverified":   {"label": "Gates or CI unverified", "path_id": "bar/gates",
+      "keywords": ["audit", "coverage", "ci red", "bar not met"],
+      "suggested_next_action": "Run the local battery and audits/self/audit.py to BAR MET; cite the CI run."},
+    "status_dishonest":   {"label": "STATUS claim contradicts evidence", "path_id": "bar/status",
+      "keywords": ["in progress", "repair", "blocked"],
+      "suggested_next_action": "Correct the STATUS wording so the claim matches the evidence (no complete while open)."},
+    "residual_untracked": {"label": "Residual work hidden in a complete claim", "path_id": "bar/residual",
+      "keywords": ["residual", "deferred", "follow-up", "remaining"],
+      "suggested_next_action": "Split residual/deferred work into its own open STATUS row with an owner, or close it with evidence."},
+    "dogfood_missing":    {"label": "Live dogfood evidence missing", "path_id": "bar/dogfood",
+      "keywords": ["dogfood", "smoke", "receipt"],
+      "suggested_next_action": "Run paid-cheap live dogfood on the user-facing lane; record receipt, cost, and fallback rate."}
+  }
+}
