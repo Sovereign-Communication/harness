@@ -650,12 +650,19 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         if not self._guard():
             return
         rel = os.path.normpath(path[len("/site/"):]).lstrip("\\/")
+        if rel in (".", ""):
+            rel = "index.html"
         if rel.startswith("..") or os.path.isabs(rel):
             return self._error(404, "no such site file")
         root = os.path.abspath(SITE_ROOT)
         full = os.path.abspath(os.path.join(root, rel))
         if not full.startswith(root + os.sep):
             return self._error(404, "no such site file")
+        # Directory index: /site/ and /site/<page>[/] resolve to that page's
+        # index.html so the served Proof Bench has working pretty URLs; the
+        # explicit index.html links the pages use keep working unchanged.
+        if os.path.isdir(full):
+            full = os.path.join(full, "index.html")
         ext = os.path.splitext(full)[1].lower()
         ctype = SITE_TYPES.get(ext)
         if ctype is None:

@@ -1,8 +1,14 @@
 // Proof Bench shared app module. No build, no framework: ES modules + fetch.
 // Data source: local mode (harness serve /api/*) or public mode (worker).
 export const state = {
-  mode: (location.port === "8787" || location.hostname === "localhost") &&
-        !location.search.includes("mode=public") ? "local" : "public",
+  // Local mode = served by `harness serve` (any host/port; README default
+  // 127.0.0.1:8765). Detection must never guess ports -- the old gate hardcoded
+  // a port harness never serves, so local mode was dead and the site always
+  // fell back to the static snapshot (see the regression test in
+  // tests/test_site_server.py). Explicit ?mode=public selects the worker view;
+  // local mode tries /api/snapshot first and falls back to the static demo
+  // snapshot (the worker 404s /api/snapshot and lands on the same fallback).
+  mode: location.search.includes("mode=public") ? "public" : "local",
   snapshot: null,
 };
 
@@ -32,7 +38,10 @@ export function el(tag, attrs = {}, ...children) {
       node.addEventListener(k.slice(2), v);
     } else if (v !== null && v !== undefined) node.setAttribute(k, v);
   }
-  for (const child of children) {
+  // Child arrays must land as nodes, never stringified: append() coerces an
+  // array to "[object HTMLDivElement],...". barChart and the router reasons
+  // list pass arrays, so flatten before appending (nulls still skipped).
+  for (const child of children.flat(Infinity)) {
     if (child === null || child === undefined) continue;
     node.append(child);
   }
