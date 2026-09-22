@@ -28,7 +28,10 @@ let sessionId = localStorage.getItem("harness_session_id") || "sess_" + Math.ran
 localStorage.setItem("harness_session_id", sessionId);
 
 let autoApply = localStorage.getItem("harness_auto_apply") !== "false";
-let paidEnabled = localStorage.getItem("harness_paid_enabled") !== "false";
+// Mirror of the server-side ``allow_escalation`` setting (single source of
+// truth: /api/settings). The old localStorage flag is gone -- it desynced
+// from the server and clicking the route badge changed nothing real.
+let paidEnabled = true;
 let webEnabled = localStorage.getItem("harness_web_enabled") === "true";
 let workDir = localStorage.getItem("harness_workdir") || "";
 let currentRunId = null;
@@ -145,10 +148,68 @@ function setupHeaderControls() {
   const routeBtn = $("#route-badge");
   if (routeBtn) {
     updateRouteDisplay();
-    routeBtn.addEventListener("click", () => {
-      paidEnabled = !paidEnabled;
-      localStorage.setItem("harness_paid_enabled", paidEnabled ? "true" : "false");
+    // Persisted toggle (POST /api/settings -> config.json). Plain click
+    // switches the primary route posture (free <-> paid); Shift+click arms
+    // or disarms automatic paid escalation. The server's response is the
+    // new truth -- the UI re-renders from what was actually persisted.
+    routeBtn.addEventListener("click", async (ev) => {
+      if (!backendSettings || routeBtn.disabled) return;
+      const s = backendSettings;
+      const body = ev.shiftKey
+        ? { allow_escalation: !s.allow_escalation }
+        : { use_free: s.use_free === false };
+      routeBtn.disabled = true;
+      try {
+        const data = await api("/api/settings", {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        backendSettings = data.settings || backendSettings;
+        if (backendSettings && typeof backendSettings.allow_escalation === "boolean") {
+          paidEnabled = backendSettings.allow_escalation;
+        }
+      } catch (e) {
+        routeBtn.title = "Toggle failed: " + e.message;
+      } finally {
+        routeBtn.disabled = false;
+      }
       updateRouteDisplay();
+    });
+  }
+
+  // Price-cap popover: click the spend meter to adjust the run ceiling
+  // (slider for quick range, text input for exact values; server validates
+  // against the hard ceiling and refuses out-of-range values).
+  const meter = $("#spend-meter");
+  const capPop = $("#cap-popover");
+  if (meter && capPop) {
+    meter.classList.add("clickable");
+    meter.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (capPop.hidden) openCapPopover();
+      else closeCapPopover();
+    });
+    $("#cap-slider").addEventListener("input", () => {
+      const v = Number($("#cap-slider").value);
+      $("#cap-text").value = v.toFixed(2);
+      $("#cap-slider-val").textContent = fmtCost(v);
+    });
+    $("#cap-text").addEventListener("input", () => {
+      const v = Number($("#cap-text").value);
+      if (Number.isFinite(v) && v >= 0.01 && v <= 0.10) {
+        $("#cap-slider").value = String(v);
+        $("#cap-slider-val").textContent = fmtCost(v);
+      }
+    });
+    $("#cap-text").addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") $("#cap-save").click();
+    });
+    $("#cap-save").addEventListener("click", () => saveCap($("#cap-text").value));
+    document.addEventListener("click", (ev) => {
+      if (!capPop.hidden && !capPop.contains(ev.target)) closeCapPopover();
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && !capPop.hidden) closeCapPopover();
     });
   }
 
@@ -189,7 +250,8 @@ function updateRouteDisplay() {
     badge.classList.remove("disarmed");
     if (icon) icon.textContent = "💳";
     text.textContent = "Primary: paid";
-    badge.title = "Paid models configured as primary route. Click to toggle escalation setting.";
+    badge.title = "Paid primary route. Click to switch to free primary; Shift+click to arm/disarm paid escalation.";
+    if (s.allow_escalation === false) badge.classList.add("disarmed");
     return;
   }
 
@@ -205,12 +267,12 @@ function updateRouteDisplay() {
     badge.classList.remove("disarmed");
     if (icon) icon.textContent = "💳";
     text.textContent = "Primary: free · paid escalation armed";
-    badge.title = "Paid escalation ARMED: automatic fallback to cheapest capable paid model on limits (click to disarm)";
+    badge.title = "Paid escalation ARMED: automatic fallback to cheapest capable paid model on limits (Shift+click to disarm)";
   } else {
     badge.classList.add("disarmed");
     if (icon) icon.textContent = "💳";
     text.textContent = "Primary: free · escalation disarmed";
-    badge.title = "Paid escalation DISARMED: free tier only; ask before entering paid rungs (click to arm)";
+    badge.title = "Paid escalation DISARMED: free tier only; ask before entering paid rungs (Shift+click to arm)";
   }
 }
 
@@ -713,6 +775,60 @@ async function pollSpend() {
     $("#spend-val").textContent = fmtCost(s.spent || 0);
     $("#spend-limit").textContent = `/ ${fmtCost(s.ceiling || 0.05)}`;
   } catch (_e) {}
+}
+
+// ---- price-cap popover -----------------------------------------------------
+// The run ceiling lives in config (max_cost, hard-capped at 0.10); the
+// slider covers the practical chat range 0.01..0.10 and the text input
+// allows exact values, which the server validates fail-closed.
+const CAP_SLIDER_MIN = 0.01;
+const CAP_SLIDER_MAX = 0.10;
+
+function openCapPopover() {
+  const pop = $("#cap-popover");
+  const current = (backendSettings && backendSettings.max_cost) || 0.05;
+  $("#cap-text").value = current.toFixed(2);
+  $("#cap-slider").max = String(CAP_SLIDER_MAX);
+  $("#cap-slider").min = String(CAP_SLIDER_MIN);
+  $("#cap-slider").step = "0.01";
+  $("#cap-slider").value = String(Math.min(
+    CAP_SLIDER_MAX, Math.max(CAP_SLIDER_MIN, current)));
+  $("#cap-slider-val").textContent = fmtCost(current);
+  $("#cap-hard-max").textContent = fmtCost(CAP_SLIDER_MAX);
+  $("#cap-error").textContent = "";
+  $("#cap-error").hidden = true;
+  pop.hidden = false;
+  $("#cap-text").focus();
+  $("#cap-text").select();
+}
+
+function closeCapPopover() {
+  $("#cap-popover").hidden = true;
+}
+
+async function saveCap(raw) {
+  const errEl = $("#cap-error");
+  errEl.hidden = true;
+  const v = Number(raw);
+  if (!Number.isFinite(v) || v <= 0) {
+    errEl.textContent = "Enter a positive dollar amount";
+    errEl.hidden = false;
+    return;
+  }
+  try {
+    const data = await api("/api/settings", {
+      method: "POST",
+      body: JSON.stringify({ max_cost: v }),
+    });
+    backendSettings = data.settings || backendSettings;
+    if (backendSettings && typeof backendSettings.max_cost === "number") {
+      $("#spend-limit").textContent = `/ ${fmtCost(backendSettings.max_cost)}`;
+    }
+    closeCapPopover();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.hidden = false;
+  }
 }
 
 // ---- rankings (read-only mirror for contract pin) -------------------------

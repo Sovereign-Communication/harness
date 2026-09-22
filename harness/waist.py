@@ -1488,8 +1488,16 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                     run_gate=run_gate, max_tokens=max_tokens,
                     allow_escalation=allow_escalation)
         else:
-            # HG: Confirm-armed waist unreachable -> REFUSE execute (fail closed).
-            # Proceeding under the local gate would spend an unconfirmed pyramid.
+            # HG: Confirm-armed waist UNREACHABLE across the full ladder.
+            # Operator ruling (2026-09-22): an unreachable seat is an
+            # AVAILABILITY failure, not a policy refusal -- the only two
+            # things allowed to stop a run are the monetary cap and required
+            # user input. Degrade to executing under the local structural
+            # gate (which plan_task already ran) with explicit provenance:
+            # every downstream envelope records that NO model confirmed this
+            # plan. Plan-only mode (execute=False) still raises: there is no
+            # execution to protect there, and the caller asked a question
+            # whose honest answer is "the gate could not run".
             first_model = ladder[0] if ladder else (
                 frontier_model or resolve_frontier_model(None, use_free=use_free))
             message = (
@@ -1498,20 +1506,25 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             if not execute:
                 raise HarnessError(message) from last_exc
             from . import events as _events
-            _events.emit("orchestration_note",
-                         note=f"Waist confirmation unreachable across ladder ({last_exc}); REFUSING execute (fail-closed)")
-            eprint(f"[waist] Confirmation unreachable across ladder ({last_exc}); REFUSING execute (fail-closed)")
-            refused = dict(plan_result)
-            refused["status"] = "refused"
-            refused["confirmation"] = {
-                "verdict": "refused",
+            _events.emit(
+                "orchestration_note",
+                note=(f"Waist confirmation unreachable across ladder ({last_exc}); "
+                      "degrading to local-gate execution per operator "
+                      "no-interruptions ruling"))
+            eprint(f"[waist] Confirmation unreachable across ladder ({last_exc}); "
+                   f"degrading to local-gate execution (verdict=unavailable)")
+            degraded = dict(plan_result)
+            degraded["status"] = "planned"
+            degraded["confirmation"] = {
+                "verdict": "unavailable",
                 "model": first_model,
                 "rounds": 0,
-                "reason": "waist confirmation unreachable across the full ladder",
+                "reason": "waist confirmation unreachable across the full ladder; "
+                          "executing under local structural gate only",
                 "evidence": str(last_exc) if last_exc is not None else "",
                 "cost": 0.0,
             }
-            plan_result = refused
+            plan_result = degraded
 
     # HG-composed-ceiling: ALWAYS compute the pyramid envelope; refuse execute
     # when the composed worst case cannot fit the governor's remaining budget.

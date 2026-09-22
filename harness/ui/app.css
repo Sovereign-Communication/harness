@@ -251,6 +251,7 @@ header {
   display: flex;
   align-items: center;
   gap: 10px;
+  position: relative;
 }
 
 .spend-badge {
@@ -263,6 +264,90 @@ header {
   border-radius: 20px;
   font-family: var(--mono);
   font-size: 12px;
+}
+
+.spend-badge.clickable {
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.spend-badge.clickable:hover {
+  border-color: var(--cyan);
+}
+
+/* Price-cap popover (anchored under the header controls row, aligned to
+   the spend meter which sits first in that row). */
+.cap-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 1000;
+  width: 260px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  font-size: 12px;
+}
+
+.cap-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--fg);
+}
+
+.cap-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.cap-row input[type="range"] {
+  flex: 1;
+  accent-color: var(--cyan);
+}
+
+.cap-slider-val {
+  font-family: var(--mono);
+  color: var(--cyan);
+  min-width: 52px;
+  text-align: right;
+}
+
+.cap-label {
+  color: var(--dim);
+}
+
+.cap-row input[type="text"] {
+  flex: 1;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--fg);
+  font-family: var(--mono);
+}
+
+.cap-save {
+  padding: 4px 12px;
+  background: var(--cyan);
+  color: #0d1117;
+  border: none;
+  border-radius: 4px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cap-error {
+  color: var(--red);
+  margin-bottom: 6px;
+}
+
+.cap-hint {
+  color: var(--dim);
+  font-size: 11px;
 }
 
 .spend-badge .dot {

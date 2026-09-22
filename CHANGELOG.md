@@ -11,6 +11,25 @@ break APIs between minor versions).
 
 Nothing yet.
 
+## [Unreleased]
+
+### Added
+- GUI: runtime settings seam — `POST /api/settings` (via `update_config`, validated
+  fail-closed through `load_settings` and written atomically) so the UI can switch
+  the primary route (free/paid), arm/disarm paid escalation, and set the run cost
+  ceiling without restarting. Route badge click = free/paid posture, Shift+click =
+  escalation arm; spend meter click opens a slider+text price-cap popover.
+
+### Fixed
+- GUI route badge no longer flips a client-only localStorage flag that nothing
+  consumed; the toggle now persists server-side and the UI re-renders from the
+  server's response.
+- Spend meter reads the real configured ceiling instead of a hardcoded $0.05.
+- Waist confirmation unreachable across the full ladder now degrades to
+  local-gate execution with `verdict: unavailable` provenance instead of killing
+  the run (operator no-interruptions ruling: only a monetary cap or required user
+  input may stop a run). Plan-only mode still fails closed.
+
 ## [0.4.0] — 2026-09-21
 
 ### Added
