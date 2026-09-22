@@ -59,6 +59,19 @@ class MaxCostWiringTests(unittest.TestCase):
             cli.main(["verify", "--prompt", "hi"])
         self.assertIsNone(captured["override"])
 
+    def test_max_cost_help_documents_preflight_minimum_headroom(self):
+        """DF-MS-2: verify CLI documentation discloses minimum preflight reserve for paid verification."""
+        parser = cli.build_parser()
+        verify_sub = parser._subparsers._actions[1].choices.get("verify")
+        self.assertIsNotNone(verify_sub)
+        help_text = ""
+        for action in verify_sub._actions:
+            if "--max-cost" in action.option_strings:
+                help_text = action.help or ""
+                break
+        self.assertIn("0.036", help_text)
+
+
 
 class FriendlyInputErrorTests(unittest.TestCase):
     def test_read_json_missing(self):

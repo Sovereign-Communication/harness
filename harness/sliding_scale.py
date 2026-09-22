@@ -71,7 +71,8 @@ _TIER_2_MARKERS = (
 _TIER_1_MARKERS = (
     "implement", "refactor", "update", "fix", "add test", "handler",
     "endpoint", "dispatch", "parse", "validate", "convert", "transform",
-    "serialize", "deserialize", "cache", "retry",
+    "serialize", "deserialize", "cache", "retry", "decompose", "subtask",
+    "dag", "plan",
 )
 
 
@@ -243,7 +244,7 @@ def resolve_tier_recommended_model(tier: int, use_free: bool = True, custom_fron
     """Return the primary recommended model for a given tier."""
     if use_free:
         if tier == TIER_0_SCOUT:
-            return FREE_PANEL_POOL[1] if len(FREE_PANEL_POOL) > 1 else FREE_PANEL_POOL[0]
+            return FREE_PANEL_POOL[0]
         if tier == TIER_1_DISTILLER:
             return FREE_APPLY_POOL[0]
         return FREE_JUDGE
@@ -260,7 +261,7 @@ def tier_model_ladder(tier: int, use_free: bool = True, custom_frontier: Optiona
     out: List[str] = []
     if use_free:
         if tier == TIER_0_SCOUT:
-            for m in [FREE_PANEL_POOL[1], FREE_PANEL_POOL[2], FREE_PANEL_POOL[0], "openrouter/free"]:
+            for m in [FREE_PANEL_POOL[0], FREE_PANEL_POOL[1], "openrouter/free"]:
                 if m not in out:
                     out.append(m)
             if allow_escalation:

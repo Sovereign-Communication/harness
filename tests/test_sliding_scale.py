@@ -201,7 +201,107 @@ class TestSlidingScale(unittest.TestCase):
         dag = heuristic_decompose_goal("Refactor helper functions in utils.py")
         self.assertEqual(dag.nodes["task_1"].target_files, ("utils.py",))
 
+    def test_ling_excluded_from_free_apply_pool_and_scout_default(self):
+        from harness.config import FREE_APPLY_POOL, FREE_PANEL_POOL
+        # Ensure Ling is never in the default free apply pool (no incapable apply calls)
+        self.assertNotIn("inclusionai/ling-3.0-flash-fin:free", FREE_APPLY_POOL)
+        for model in FREE_APPLY_POOL:
+            self.assertNotIn("ling", model.lower())
+
+        # Scout tier recommended model must be capable (Gemma 4 31b), not Ling
+        scout_rec = resolve_tier_recommended_model(TIER_0_SCOUT, use_free=True)
+        self.assertEqual(scout_rec, FREE_PANEL_POOL[0])
+        self.assertNotIn("ling", scout_rec.lower())
+
+    def test_classify_task_tier_decomposition_markers(self):
+        # Tasks with planning / decomposition markers must classify as Tier 1 Distiller
+        c = classify_task_tier("decompose goal into subtasks dag", target_files=["plan.json"], use_free=True)
+        self.assertEqual(c.tier, TIER_1_DISTILLER)
+        self.assertTrue(any("decompose" in r for r in c.reasons))
+
+    def test_router_classify_and_route_with_jev_policy(self):
+        from unittest.mock import MagicMock
+        from harness.router import Router
+
+        mock_policy = MagicMock()
+        mock_policy.keyed = True
+        mock_res = MagicMock()
+        mock_res.answers = {"route": "frontier"}
+        mock_policy.evaluate_route.return_value = (mock_res, {})
+
+        router = Router(
+            apply_model="apply/m",
+            apply_pool=["apply/m"],
+            panel=["judge/m"],
+            judge="judge/m",
+            jev_policy=mock_policy,
+        )
+        spec = router.classify_and_route("Refactor module", ["harness/test.py"])
+        self.assertEqual(spec["classification"].tier, TIER_2_FRONTIER)
+        self.assertEqual(spec["jev_route"], "frontier")
+
+    def test_load_settings_auto_paid_failover_pools(self):
+        # When use_free is true and a paid key is present, paid pools are appended as failovers
+        s = load_settings({"use_free": True, "openrouter_api_key": "sk-or-paid-test"})
+        self.assertTrue(s.use_free)
+        # Verify paid rungs are present in the default pools for failover
+        self.assertIn("deepseek/deepseek-v4.1-flash", s.apply_pool)
+        self.assertIn("deepseek/deepseek-v4.1-flash", s.panel)
+        self.assertIn("z-ai/glm-5.3-flash", s.escalation_pool)
+
+    def test_router_classify_and_route_falls_back_when_jev_route_raises(self):
+        from unittest.mock import MagicMock
+        from harness.router import Router
+
+        mock_policy = MagicMock()
+        mock_policy.keyed = True
+        mock_policy.evaluate_route.side_effect = RuntimeError("network fail")
+
+        router = Router(
+            apply_model="apply/m",
+            apply_pool=["apply/m"],
+            panel=["judge/m"],
+            judge="judge/m",
+            jev_policy=mock_policy,
+        )
+        spec = router.classify_and_route("Fix typo in docstring", ["harness/util.py"])
+        self.assertEqual(spec["classification"].tier, TIER_0_SCOUT)
+
+    def test_engine_for_wires_cheap_judge_when_router_cheap_judge_is_none(self):
+        from harness.router import Router
+        from harness import session
+
+        settings = load_settings({"judge": "custom/judge-seat"})
+        router = Router(
+            apply_model="apply/m",
+            apply_pool=["apply/m"],
+            panel=["custom/judge-seat"],
+            judge="custom/judge-seat",
+        )
+        router.cheap_judge = None
+        session.engine_for(settings, "sk-key", object(), object(), router)
+        self.assertEqual(router.cheap_judge, "custom/judge-seat")
+
+    def test_hermetic_fake_transport_jev_integration(self):
+        from tests._fake import FakeTransport, JEV_URL, jev_resp
+        from harness.jev import JevEvaluator, diff_question_pack
+
+        fake = FakeTransport()
+        evaluator = JevEvaluator(api_key="sk-test", endpoint=JEV_URL, transport=fake)
+        res = evaluator.evaluate({"diff": "@@ -1 +1 @@\n-a\n+b\n"}, diff_question_pack())
+        self.assertEqual(res.verdict, "pass")
+        self.assertEqual(len(fake.jev_calls()), 1)
+
+        # Custom jev_posts
+        custom = jev_resp(noul=0.2, confidence=0.3)
+        fake_custom = FakeTransport(jev_posts=[(200, custom)])
+        evaluator_custom = JevEvaluator(api_key="sk-test", endpoint=JEV_URL, transport=fake_custom)
+        res_custom = evaluator_custom.evaluate({"diff": "@@ -1 +1 @@\n-a\n+b\n"}, diff_question_pack())
+        self.assertEqual(res_custom.verdict, "fail")
+        self.assertEqual(len(fake_custom.jev_calls()), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

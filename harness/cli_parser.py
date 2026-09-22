@@ -89,7 +89,10 @@ def build_parser():
     pv.add_argument("--panel")
     pv.add_argument("--judge")
     pv.add_argument("--max-tokens", type=int, default=None)
-    pv.add_argument("--max-cost", type=float, default=None)
+    pv.add_argument("--max-cost", type=float, default=None,
+                    help="per-run cost ceiling in USD (default: config max_cost; "
+                         "note: paid panel/judge verify preflight requires ~$0.036 minimum "
+                         "headroom to cover worst-case judge retry reservations)")
     pv.add_argument("--reasoning-effort", default=None,
                     choices=["auto", "off", "none", "low", "medium", "high", "on"])
     pv.add_argument("--converge", action="store_true",

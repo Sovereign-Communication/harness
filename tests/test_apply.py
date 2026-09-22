@@ -180,6 +180,25 @@ class ApplyTests(ApplyFixture):
         self.assertIn("defer_midtask", events)
         self.assertEqual(len(fake.chat_posts()), 2, "no apply model call after deferral")
 
+    def test_consent_renew_uses_cheap_judge_unless_escalation_allowed(self):
+        p = self.make_file()
+        fake, gov, ledger, _ = self.make_env(
+            posts=[consent("accept", "ok"), comp(CHANGED)],
+            models=[m("cheap/judge"), m("frontier/judge"), m(APPLY)],
+            renew=True)
+        router = Router(["cheap/judge"], "frontier/judge", APPLY,
+                        cheap_judge="cheap/judge")
+        engine = ApplyEngine(fake, "k", gov, ledger, router,
+                             default_require_consent=False,
+                             default_renew_consent=True)
+        engine.run_verify = scripted_run([(0, "")])
+
+        engine.apply_edit(task_id="t_cheap", file_path=p, instruction="fix",
+                          allow_escalation=False, verify_cmd="python -c pass")
+        posts = fake.chat_posts()
+        # First post is consent_renew; verify it called cheap/judge, not frontier/judge
+        self.assertEqual(posts[0][2]["model"].replace(":floor", ""), "cheap/judge")
+
     # ---- capability-blocker dovetail ----
     def test_capability_deferral_captures_prose_reason(self):
         p = self.make_file()
@@ -850,6 +869,18 @@ class BatchOptionsPinTests(ApplyFixture):
                   task_id="t9", continuation=cont)
         self.assertIs(seen["continuation"], cont)
         self.assertEqual(seen["file_path"], target)
+
+    def test_hermetic_make_env_with_jev(self):
+        """Hermetic apply run with Jev enabled produces governed Jev calls and succeeds."""
+        f = self.make_file()
+        fake, gov, ledger, engine = self.make_env(
+            posts=[comp(CHANGED)], run=scripted_run([(0, "")]),
+            default_consent=False, with_jev=True)
+        res = engine.apply_edit(file_path=f, instruction="add 0 to return",
+                                verify_cmd="python -m unittest")
+        self.assertEqual(res["status"], "ok")
+        self.assertIsNotNone(engine.jev_policy)
+        self.assertTrue(engine.jev_policy.keyed)
 
 
 if __name__ == "__main__":
