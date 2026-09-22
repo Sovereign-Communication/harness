@@ -9,6 +9,10 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
+### Added
+
+- **Jev bar sentiment buckets (`JEV-BAR`)** — `harness jev-phase` gate upgraded to full per-axis sentiment buckets (`packs/phase_completion.pack.json`, 5 levels, 6 axes) + operator improvement buckets (`merge_pending`, `tests_missing`, `gates_unverified`, `status_dishonest`, `residual_untracked`, `dogfood_missing`). Code-owned gates + Jev semantic judgment via `JevPolicy.evaluate_phase_completion` (site `phase_completion`), fail-closed (Jev may only lower code authority), 0-hallucination. CLI adds `--all` and prioritized `improvements:` output. Hermetic gate tests in `tests/test_jev_bar_sentiment.py`.
+
 ### Fixed
 
 - **MCP** — `initialize` now negotiates the protocol version per the MCP lifecycle (echo supported, otherwise answer `2025-06-18`) instead of rejecting newer clients; Claude Code 2.1 (`2025-11-25`) could not connect. Non-string `protocolVersion` is still rejected (`-32602`). Tests in `tests/test_mcp.py`.

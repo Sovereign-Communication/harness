@@ -418,18 +418,25 @@ def build_parser():
 
     pjphase = sub.add_parser(
         "jev-phase",
-        help="Dogfood Jev 0-100 phase completion score; STATUS complete only "
-             "if hard gates pass and score >= min-score")
-    pjphase.add_argument("--phase", required=True,
-                         help="phase id (JEV-P1, P2, JEV-COMPLETION, ...)")
+        help="Dogfood the JEV bar (JEV-BAR): hard gates + full sentiment "
+             "buckets; STATUS complete only if hard gates pass, score >= "
+             "min-score, and no sentiment axis is blocking")
+    pjphase.add_argument("--phase", default=None,
+                         help="phase id (JEV-P1, P2, JEV-COMPLETION, ...); "
+                              "required unless --all is given")
+    pjphase.add_argument("--all", action="store_true",
+                         help="score every declared phase contract in one pass")
     pjphase.add_argument("--repo-root", default=".",
                          help="repo root containing docs/jev-roadmap.md and tests")
     pjphase.add_argument("--evidence", default=None,
-                         help="optional JSON evidence overrides")
+                         help="optional JSON evidence overrides (single --phase only)")
+    pjphase.add_argument("--pack", default=None,
+                         help="operator completion-pack JSON path override "
+                              "(default packs/phase_completion.pack.json)")
     pjphase.add_argument("--min-score", type=float, default=85.0,
                          help="threshold for can_mark_complete (default 85)")
     pjphase.add_argument("--local-only", action="store_true",
-                         help="skip live Jev; use code gates + local semantic score")
+                         help="skip live Jev; use code gates + heuristic sentiment")
     pjphase.add_argument("--json", action="store_true", help="emit raw JSON only")
     _add_output_flags(pjphase)
 

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from harness.errors import HarnessError
 from harness.jev_completion import (
+    DEFAULT_COMPLETION_PACK,
     PHASE_COMPLETE_MIN_SCORE,
     collect_phase_evidence,
     dogfood_phase,
@@ -34,7 +35,13 @@ def _write_repo(root: Path, status_line: str, tests=None, files=None):
     for rel in files or []:
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("# stub\n", encoding="utf-8")
+        if rel.replace("\\", "/").endswith("packs/phase_completion.pack.json"):
+            # The completion pack is a data file the loader parses as JSON --
+            # a "# stub" placeholder would make it an (honestly) invalid
+            # pack. Required-file presence tests still need real pack JSON.
+            path.write_text(json.dumps(DEFAULT_COMPLETION_PACK), encoding="utf-8")
+        else:
+            path.write_text("# stub\n", encoding="utf-8")
 
 
 class CompletionScoreTests(unittest.TestCase):
@@ -254,21 +261,28 @@ class CompletionScoreTests(unittest.TestCase):
                 load_evidence_file(str(bad))
 
     def test_jev_semantic_score_with_mock_policy(self):
+        """score_phase_completion's semantic block is now sourced entirely
+        through JevPolicy.evaluate_phase_completion (JEV-BAR) -- no more
+        direct jev_policy.evaluator.evaluate call / _COMPLETION_PACK."""
         class _FakeResult:
-            def __init__(self):
-                self.answers = {"phase_evidence_quality": {"score": 0.92}}
-                self.is_fallback = False
-                self.model = "test/model"
-                self.verdict = "pass"
+            def __init__(self, model="test/model", verdict="pass"):
+                self.model = model
+                self.verdict = verdict
                 self.cost = 0.0
                 self.reasons = ["ok"]
 
-        class _FakeEval:
-            def evaluate(self, payload, pack):
-                return _FakeResult()
-
         class _FakePolicy:
-            evaluator = _FakeEval()
+            def evaluate_phase_completion(self, state, pack):
+                axes = pack["axes"] if isinstance(pack, dict) else {}
+                judgment = {
+                    "pack_id": pack.get("id") if isinstance(pack, dict) else None,
+                    "live_levels": {axis: 4 for axis in axes},  # proven
+                    "live_confidence": {axis: 0.95 for axis in axes},
+                    "primary_gap": None,
+                    "is_fallback": False,
+                    "evidence": [],
+                }
+                return _FakeResult(), {"site": "phase_completion"}, judgment
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -287,27 +301,30 @@ class CompletionScoreTests(unittest.TestCase):
             result = score_phase_completion(evidence, jev_policy=_FakePolicy())
             self.assertFalse(result["semantic"]["is_fallback"])
             self.assertEqual(result["semantic"]["model"], "test/model")
+            self.assertEqual(result["semantic"]["site"], "phase_completion")
             self.assertGreaterEqual(result["score"], PHASE_COMPLETE_MIN_SCORE)
             self.assertTrue(result["can_mark_complete"])
 
-            # Non-numeric jev answer falls back to local heuristic.
-            class _BadResult:
-                answers = {"phase_evidence_quality": {"score": None}}
-                is_fallback = True
-                model = "test/model"
-                verdict = "fallback"
-                cost = 0.0
-                reasons = []
-
-            class _BadEval:
-                def evaluate(self, payload, pack):
-                    return _BadResult()
-
+            # A fallback live judgment (every axis None) never fakes a live
+            # answer; jev-authority axes fall back to the code heuristic.
             class _BadPolicy:
-                evaluator = _BadEval()
+                def evaluate_phase_completion(self, state, pack):
+                    axes = pack["axes"] if isinstance(pack, dict) else {}
+                    judgment = {
+                        "pack_id": pack.get("id") if isinstance(pack, dict) else None,
+                        "live_levels": {axis: None for axis in axes},
+                        "live_confidence": {axis: None for axis in axes},
+                        "primary_gap": None,
+                        "is_fallback": True,
+                        "evidence": ["unkeyed"],
+                    }
+                    return (_FakeResult(verdict="fallback"),
+                            {"site": "phase_completion"}, judgment)
 
             result2 = score_phase_completion(evidence, jev_policy=_BadPolicy())
-            self.assertIn("heuristic", str(result2["semantic"].get("note", "")))
+            self.assertTrue(result2["semantic"]["is_fallback"])
+            self.assertEqual(
+                result2["sentiment"]["axes"]["status_honesty"]["source"], "code")
 
     def test_collect_phase_evidence_missing_roadmap_note(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -337,8 +354,8 @@ class CompletionScoreTests(unittest.TestCase):
             _write_repo(
                 root,
                 "| JEV-COMPLETION | **complete** — PR #39 MERGED | jev-phase gate |",
-                tests=["tests/test_jev_completion.py"],
-                files=["harness/jev_completion.py"],
+                tests=["tests/test_jev_completion.py", "tests/test_jev_bar_sentiment.py"],
+                files=["harness/jev_completion.py", "packs/phase_completion.pack.json"],
             )
             evidence2 = collect_phase_evidence(str(root), "JEV-COMPLETION")
             evidence2["pr_merged"] = True
