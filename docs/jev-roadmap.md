@@ -174,7 +174,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `CLAUDE-LANE` Claude Code migration | **complete** | **PR #66 MERGED** `6f00d38`; `CLAUDE.md` + tool-neutral `AGENTS.md`, `.claude/` skills (`/isolated-mission`, `/isolated-request`) + scout/implementer/verifier tiers + settings, docs migrated (`docs/claude-context.md`, `docs/jev-mission-prompt.md`), MCP version negotiation fix |
 | `JEV-BAR-*` sentiment-bucket bar | **complete** | **PR #67 MERGED** `a9b58ab`; per-axis sentiment + declared improvement buckets drive bar pass; bar calls routed through `JevPolicy`; `packs/phase_completion.pack.json` |
 | `DF-*` dogfood follow-ups | **open** | 2026-09-22 audit (9 components, 32 findings, 31 confirmed by independent re-verification, $0.29 live spend) — rows in "Dogfood audit follow-ups" |
-| `MS-*` cheapest-capable + context | **open** | ad-hoc model strings → config/ladders; expensive seats get condensed state; budget-honesty findings `DF-MS-*` fold in here |
+| `MS-*` cheapest-capable + context | **complete** | **PR #69 MERGED** `e47001a`; cheapest capable routing (no Ling defaults, Scout defaults to Gemma 4 31b, planning markers to Distiller Tier 1, router Jev route evaluation), auto paid failover (cheap paid pools appended, sorted cheapest first), hermetic Jev fake transport, `DF-MS-1..3` closed; local audit BAR MET 10/10/10/10, CI green |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
 | Exit | Jev P4 checklist all true on `origin/main` | **open** |
 | Exit | HUL A–D shipped **or** open-problem packs on HUL contract | **open** |
@@ -316,7 +316,7 @@ Run each item with `/isolated-mission --bar <ID>` (see [jev-mission-prompt.md](j
 1. ~~**`CLAUDE-LANE`**~~ — **complete** (PR #66 merged `6f00d38`).
 2. ~~**`JEV-BAR-*`**~~ — **complete** (PR #67 merged `a9b58ab`; audit BAR MET 10/10/10/10).
 3. ~~**HG repair PR**~~ — **complete** (PR #68 merged `4889776`; `DF-HG-1/2/3` closed, local audit BAR MET 10/10/10/10, CI green).
-4. **Budget-honesty PR (`MS-*`)** — `DF-MS-1..3` alongside the open MS ladder work (Jev model routing, no Ling defaults, auto paid failover).
+4. ~~**Budget-honesty PR (`MS-*`)**~~ — **complete** (PR #69 merged `e47001a`; `DF-MS-1..3` closed, cheapest-capable routing, auto paid failover, hermetic Jev fake, local audit BAR MET 10/10/10/10, CI green).
 5. **Lane-correctness PR** — `DF-CLI-1`, `DF-APPLY-1`, `DF-SITE-1`.
 6. **HUL-D follow-up PR** — `DF-HUL-1..3`.
 7. **CI + docs hygiene PR** — `DF-CI-1..3`, `DF-DOCS-1..4`.
@@ -338,9 +338,9 @@ Claude-lane dogfood: 9 components audited by Sonnet agents on private ledgers, e
 | `DF-SITE-1` | med | `/site/` pages unreachable in a browser when `HARNESS_UI_AUTH_TOKEN` is set (header-only guard on static assets) | `SITE-6..9` | do not header-gate static site assets (no secrets), keep JSON API guarded | `tests/test_site_server.py` |
 | `DF-CLI-1` | med | `harness ledger verify` exits 0 on a broken chain, contradicting the documented exit codes | `JEV-P1-ledger` | non-zero exit when `ok=false` | ledger CLI test |
 | `DF-APPLY-1` | med | `harness continue --instruction X` silently replays the stale continuation instruction | `JEV-P1-apply` (continuation) | new instruction reaches the batch options | continuation CLI test |
-| `DF-MS-1` | med | `apply --task-max-cost` excludes Jev structural cost; keyed applies exceed the stated ceiling | `MS-*` / `JEV-P1-spend` | fold Jev worst-case into apply preflight (as verify does) | `tests/test_jev_ledger_spend.py` |
-| `DF-MS-2` | med | `verify --max-cost` preflight needs ~$0.036 headroom for ~$0.0004 actual (3-panel + judge) | `MS-*` | size preflight to the retry plan actually used, or document the minimum | verify preflight test |
-| `DF-MS-3` | low | mid-task consent renewal silently uses the frontier judge instead of the declared cheap judge | `MS-*` | renewal uses `settings.judge` unless escalation allowed | consent renewal test |
+| `DF-MS-1` | med | `apply --task-max-cost` excludes Jev structural cost; keyed applies exceed the stated ceiling | `MS-*` / `JEV-P1-spend` | **fixed** (PR #69 `e47001a`): fold Jev worst-case into apply preflight (as verify does) | `tests/test_jev_ledger_spend.py` |
+| `DF-MS-2` | med | `verify --max-cost` preflight needs ~$0.036 headroom for ~$0.0004 actual (3-panel + judge) | `MS-*` | **fixed** (PR #69 `e47001a`): documented minimum headroom in `--max-cost` help | `tests/test_cli.py` |
+| `DF-MS-3` | low | mid-task consent renewal silently uses the frontier judge instead of the declared cheap judge | `MS-*` | **fixed** (PR #69 `e47001a`): renewal uses `settings.judge` unless escalation allowed | `tests/test_apply.py` |
 | `DF-HUL-1` | med | driver emits a stale "HUL-B dual-budget enforcement not present" note although `record_spend` enforces it | `HUL-D` | remove/replace the note | `tests/test_hul_driver_findings_resume.py` |
 | `DF-HUL-2` | med | `mission run` CLI has no paid attempt seat (library-only injection) — lane cannot be live-dogfooded via CLI | `HUL-D` | CLI seat resolved via MS ladder, or document library-only | driver CLI test |
 | `DF-HUL-3` | med | `mission resume` is a read-only status call, not a resume | `HUL-D` | resume invokes the driver when resumable (or rename) | `tests/test_hul_driver_findings_resume.py` |
