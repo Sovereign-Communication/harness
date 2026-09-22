@@ -119,6 +119,7 @@ def _stub_policy_factory(count=None, cost=0.001):
             judgment = {"pack_id": pack["id"],
                         "axes": {"stage": axes["stage"],
                                  "handling": axes["handling"]},
+                        "axis_confidence": {"stage": 0.9, "handling": 0.9},
                         "attention": {"id": "attention", "level": "central",
                                       "value": 0.8, "confidence": 0.9},
                         "nouls": nouls, "is_fallback": False,
@@ -174,6 +175,45 @@ class AnalyzeRepoTests(unittest.TestCase):
                          set(self.pack["axes"]["stage"]["criteria"]) | {"unmatched"})
         rows = load_judgment_rows(self.state_path)
         self.assertEqual(len(rows), env["coverage"]["judged"])
+        # confident axes stay settled: passthrough present, nothing flagged
+        self.assertEqual(env["coverage"]["ambiguous"], 0)
+        self.assertTrue(all(row["axis_confidence"]["stage"] == 0.9
+                            for row in rows))
+        self.assertTrue(all(not row["ambiguous"] for row in rows))
+
+    def test_low_axis_confidence_flags_ambiguous_rows_and_coverage(self):
+        class _Tender:
+            def evaluate_repo_summary(self, state_el, pack, task_id=None):
+                structural = {"verdict": "pass", "confidence": 0.5,
+                              "supported": 0.5, "cost": 0.001,
+                              "input_tokens": 700, "output_tokens": 50,
+                              "is_fallback": False, "model": "jev-test",
+                              "site": "repo_summary"}
+                judgment = {"pack_id": pack["id"],
+                            "axes": {"stage": "prep", "handling": "scout"},
+                            "axis_confidence": {"stage": 0.31,
+                                                "handling": 0.88},
+                            "attention": {"id": "attention",
+                                          "level": "notable",
+                                          "value": 0.5, "confidence": 0.5},
+                            "nouls": {}, "is_fallback": False,
+                            "evidence": ["stage:prep"]}
+                return (JevEvaluationResult(
+                    "pass", 0.5, 0.5, {}, [], cost=0.001,
+                    input_tokens=700, output_tokens=50, model="jev-test"),
+                    structural, judgment)
+
+        env = analyze_repo(self.tmp.name, self.pack, lambda c: _Tender(),
+                           state_path=self.state_path, symbol_limit=0)
+        rows = load_judgment_rows(self.state_path)
+        self.assertTrue(rows[0]["ambiguous"])
+        self.assertEqual(rows[0]["axis_confidence"]["stage"], 0.31)
+        self.assertFalse(rows[0]["ambiguous"] is not True)
+        self.assertEqual(env["coverage"]["ambiguous"],
+                         env["coverage"]["judged"])
+        md = render_repo_map(env)
+        self.assertIn("**[?]**", md)
+        self.assertIn("near-tie", md)
 
     def test_budget_stop_persists_progress_and_resumes(self):
         env1 = analyze_repo(self.tmp.name, self.pack,
@@ -241,6 +281,9 @@ class RenderAndWriteTests(unittest.TestCase):
             self.assertIn(header, md)
         self.assertIn("site=`repo_summary`", md)
         self.assertIn("ledger verify", md)
+        # the marker legend ships even when nothing is flagged
+        self.assertIn("near-tie", md)
+        self.assertIn("**[fallback]**", md)
         # declared vocabulary only: never an invented axis name in tallies
         self.assertNotIn("bogus", md)
 

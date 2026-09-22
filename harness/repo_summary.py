@@ -36,6 +36,10 @@ from .repo_items import (
 SCHEMA = "repo-summary-v1"
 NOUL_TRUE_AT = 0.5
 UNMATCHED = "unmatched"
+# Below this choice confidence the top option is a near-tie: an identical
+# input re-asked can flip (measured 2026-09-22 determinism probe, 4/6).
+# Flagged rows carry ``ambiguous`` so consumers never treat them as settled.
+AMBIGUOUS_CONFIDENCE = 0.5
 
 PolicyFactory = Callable[[float], Any]
 
@@ -83,6 +87,12 @@ def _row_for(element: Dict[str, Any], structural: Dict[str, Any],
              judgment: Dict[str, Any]) -> Dict[str, Any]:
     axes = judgment.get("axes") or {}
     attention = judgment.get("attention") or {}
+    axis_confidence = dict(judgment.get("axis_confidence") or {})
+    settled = [axis_confidence.get(axis) for axis, value in axes.items()
+               if value is not None
+               and isinstance(axis_confidence.get(axis), (int, float))
+               and not isinstance(axis_confidence.get(axis), bool)]
+    ambiguous = bool(settled) and min(settled) < AMBIGUOUS_CONFIDENCE
     return {
         "id": element.get("id"),
         "element_kind": element.get("element_kind"),
@@ -91,6 +101,8 @@ def _row_for(element: Dict[str, Any], structural: Dict[str, Any],
         "loc": int(element.get("loc") or element.get("module_loc") or 0),
         "est_tokens": int(element.get("est_tokens") or 0),
         "axes": dict(axes),
+        "axis_confidence": axis_confidence,
+        "ambiguous": ambiguous,
         "attention": {"level": attention.get("level"),
                       "value": attention.get("value"),
                       "confidence": attention.get("confidence")},
@@ -214,6 +226,7 @@ def aggregate_repo_summary(*, rows, pending_ids, pack_doc, elements, symbols,
     noul_tally = {name: {"true": 0, "false": 0, "unanswered": 0}
                   for name in pack_doc["nouls"]}
     live = fallbacks = 0
+    ambiguous_count = 0
     spend_cost = spend_input = spend_output = calls = 0
     # spend_output sums the policy's structural output_tokens (free, but
     # reported honestly rather than assumed zero)
@@ -249,6 +262,8 @@ def aggregate_repo_summary(*, rows, pending_ids, pack_doc, elements, symbols,
             fallbacks += 1
         else:
             live += 1
+        if row.get("ambiguous"):
+            ambiguous_count += 1
         spend_cost += float(row.get("cost") or 0.0)
         spend_input += int(row.get("input_tokens") or 0)
         spend_output += int(row.get("output_tokens") or 0)
@@ -277,6 +292,7 @@ def aggregate_repo_summary(*, rows, pending_ids, pack_doc, elements, symbols,
             "pending_sample": pending_ids[:20],
             "live_judged": live,
             "fallbacks": fallbacks,
+            "ambiguous": ambiguous_count,
             "prior_rows": prior_count,
             "judged_this_run": this_run,
             "live_this_run": live_this_run,
@@ -341,6 +357,9 @@ def render_repo_map(envelope: Dict[str, Any]) -> str:
         f"- every keyed call was preflighted, settled, and appended to the "
         f"autonomy ledger at site=`{spend.get('ledger_site')}` "
         f"(`harness ledger verify` proves the chain)",
+        f"- markers: **[fallback]** = keyword fallback (never presented as "
+        f"live) | **[?]** = an axis below {AMBIGUOUS_CONFIDENCE} confidence "
+        f"(near-tie; the seat may flip it run to run)",
         "",
         "## Axis tallies (declared keys only; `unmatched` is honest, never smoothed)",
         "",
@@ -389,6 +408,7 @@ def render_repo_map(envelope: Dict[str, Any]) -> str:
                 if axis != "stage" and value)
             level = (row.get("attention") or {}).get("level") or "unmatched"
             flag = " **[fallback]**" if row.get("is_fallback") else ""
+            flag += " **[?]**" if row.get("ambiguous") else ""
             waist = (row.get("nouls") or {}).get("waist_relevant")
             waist_part = (", waist_relevant=yes"
                           if isinstance(waist, (int, float))

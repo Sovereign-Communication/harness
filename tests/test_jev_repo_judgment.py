@@ -163,6 +163,32 @@ class KeyedLiveTests(unittest.TestCase):
         self.ledger = AutonomyLedger(os.path.join(self.tmp.name, "ledger.jsonl"))
         self.pack = repo_pack()
 
+    def test_axis_confidence_is_captured_from_live_answers(self):
+        transport = _JevTransport(_live_response(self.pack))
+        settings = load_settings({"jev_api_key": "jev-key"})
+        policy = policy_for(settings, transport=transport,
+                            governor=_CountingGovernor(), ledger=self.ledger)
+        _r, _s, judgment = policy.evaluate_repo_summary(STATE, self.pack)
+        self.assertFalse(judgment["is_fallback"])
+        self.assertEqual(set(judgment["axis_confidence"]),
+                         set(self.pack["axes"]))
+        self.assertEqual(judgment["axis_confidence"]["stage"], 0.9)
+
+    def test_axis_confidence_is_empty_on_unkeyed_fallback(self):
+        policy = policy_for(_unkeyed_settings(), transport=None,
+                            governor=None, ledger=self.ledger)
+        _r, _s, judgment = policy.evaluate_repo_summary(STATE, self.pack)
+        self.assertTrue(judgment["is_fallback"])
+        self.assertEqual(judgment["axis_confidence"], {})
+
+    def test_axis_confidence_coerces_non_numbers_to_none(self):
+        judgment = JevPolicy._repo_judgment(
+            {}, {"stage": "prep"}, None, None, None, None,
+            is_fallback=True, evidence=[],
+            axis_confidence={"stage": 0.4, "handling": "bad", "x": None})
+        self.assertEqual(judgment["axis_confidence"],
+                         {"stage": 0.4, "handling": None, "x": None})
+
     def test_live_axes_attention_nouls_and_one_ledger_event(self):
         transport = _JevTransport(_live_response(self.pack))
         gov = _CountingGovernor()

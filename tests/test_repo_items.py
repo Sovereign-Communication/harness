@@ -1,15 +1,19 @@
 """JEV-P6 extract gate tests (tests/test_repo_items.py).
 
 Code-owned inventory facts only: kinds, sizes, symbols, imports, headings,
-test/gate facts, centrality ranking, mechanical tallies, state bounds, and
-the additive soft-skip enumeration flag. No model, no network.
+test/gate facts, centrality ranking, mechanical tallies, state bounds,
+condense quality (noise-free summaries, kind-aware state, visible
+truncation, char budget), and the additive soft-skip enumeration flag.
+No model, no network.
 """
+import json
 import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
 
 from harness.repo_items import (
+    STATE_CHAR_BUDGET,
     build_elements,
     element_kind,
     element_state,
@@ -60,6 +64,9 @@ class ElementKindTests(unittest.TestCase):
         self.assertEqual(element_kind("packs/pack.json"), "config")
         self.assertEqual(element_kind("site/app.js"), "ui")
         self.assertEqual(element_kind("LICENSE"), "doc")
+        self.assertEqual(element_kind(".gitignore"), "config")
+        self.assertEqual(element_kind(".gitattributes"), "config")
+        self.assertEqual(element_kind("Makefile"), "config")
         self.assertEqual(element_kind("weird.bin"), "other")
 
 
@@ -166,14 +173,53 @@ class CentralityAndRankingTests(unittest.TestCase):
     def test_states_are_bounded(self):
         core = next(e for e in self.elements if e["path"] == "pkg/core.py")
         state = element_state(core)
-        self.assertLessEqual(len(state["symbols"]), 18)
+        self.assertLessEqual(len(state["symbols"]), 10)
+        self.assertTrue(all(len(s) <= 60 for s in state["symbols"]))
         self.assertLessEqual(len(state["summary"]), 200)
-        self.assertLessEqual(len(state["imports"]), 10)
+        self.assertEqual(state["symbol_count"], len(core["symbols"]))
+        # gate inventory never ships; unsaturated python adds import roots
+        self.assertNotIn("gate", state)
+        self.assertNotIn("headings", state)
+        self.assertLessEqual(len(state["imports"]), 3)
+        self.assertIn("os", state["imports"])
         ranked = rank_symbol_elements(self.elements, 3)
         if ranked:
             sym = symbol_state(ranked[0])
             self.assertLessEqual(len(sym["module_summary"]), 160)
             self.assertEqual(sym["element_kind"], "symbol")
+
+    def test_doc_state_carries_headings(self):
+        design = next(e for e in self.elements if e["path"] == "docs/design.md")
+        state = element_state(design)
+        self.assertEqual(state["headings"], ["Design", "Waist"])
+        self.assertEqual(state["symbols"], [])
+        self.assertNotIn("imports", state)
+
+    def test_config_state_carries_keys(self):
+        cfg = next(e for e in self.elements if e["path"] == "data.json")
+        self.assertEqual(cfg["keys"], ["k"])
+        state = element_state(cfg)
+        self.assertEqual(state["keys"], ["k"])
+        self.assertNotIn("headings", state)
+        # single structural line -> honest empty summary, keys carry signal
+        self.assertEqual(state["summary"], "")
+
+    def test_saturated_python_inventory_keeps_import_roots(self):
+        synth = {"path": "pkg/big.py", "kind": "python", "loc": 1,
+                 "est_tokens": 1, "summary": "big",
+                 "imports": [f"mod{i}" for i in range(9)],
+                 "symbols": [{"sig": f"s{i}"} for i in range(14)],
+                 "test": False}
+        state = element_state(synth)
+        # coupling signal survives symbol saturation, still capped
+        self.assertEqual(len(state["imports"]), 3)
+        self.assertEqual(len(state["symbols"]), 10)
+        self.assertEqual(state["symbol_count"], 14)
+
+    def test_every_fixture_state_respects_char_budget(self):
+        for element in self.elements:
+            self.assertLessEqual(len(json.dumps(element_state(element))),
+                                 STATE_CHAR_BUDGET, element["path"])
 
 
 class TalliesTests(unittest.TestCase):
@@ -216,15 +262,16 @@ class DefensivePathTests(unittest.TestCase):
         self.assertEqual(element["symbols"], [])
         self.assertEqual(element["imports"], [])
 
-    def test_empty_file_summary_is_empty_string(self):
+    def test_empty_file_summary_is_labeled_not_blank(self):
         rel = self._write("pkg/empty.py", "")
         element = build_elements(self.root, [rel])[0]
-        self.assertEqual(element["summary"], "")
+        self.assertEqual(element["summary"], "(empty file)")
 
-    def test_unreadable_path_yields_empty_facts(self):
+    def test_unreadable_path_yields_empty_facts_and_label(self):
         element = build_elements(self.root, ["missing/none.py"])[0]
         self.assertEqual(element["loc"], 0)
         self.assertEqual(element["bytes"], 0)
+        self.assertEqual(element["summary"], "(unreadable)")
 
     def test_dunder_methods_are_skipped_but_init_is_kept(self):
         rel = self._write(
@@ -272,6 +319,128 @@ class DefensivePathTests(unittest.TestCase):
     def test_empty_rel_path_has_no_test_counterpart(self):
         from harness.repo_items import _test_counterpart
         self.assertFalse(_test_counterpart("", self.root))
+
+
+class CondenseQualityTests(unittest.TestCase):
+    """Condense-phase quality contract: noise-free summaries, kind-aware
+    signal, visible truncation, and the hard state character budget."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+
+    def _write(self, rel, text):
+        path = Path(self.root) / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return rel
+
+    def test_summary_never_returns_structural_noise(self):
+        rel = self._write("cfg.json", '{"name": "x", "version": 1}')
+        element = build_elements(self.root, [rel])[0]
+        self.assertEqual(element["summary"], "")  # single structural line
+        self.assertEqual(element["keys"], ["name", "version"])
+        page = self._write("page.html",
+                           "<!DOCTYPE html>\n<html>\n<title>Doc</title>\n")
+        element2 = build_elements(self.root, [page])[0]
+        self.assertEqual(element2["summary"], "Doc")  # title, unwrapped
+        log = self._write("run.log", "[OK] started fine\n[ui] GET / 200\n")
+        element3 = build_elements(self.root, [log])[0]
+        self.assertEqual(element3["summary"], "[OK] started fine")
+
+    def test_bom_never_reaches_summary_or_breaks_heading_strip(self):
+        rel = self._write("agents.md", "\ufeff# Real Title\nbody\n")
+        element = build_elements(self.root, [rel])[0]
+        self.assertNotIn("\ufeff", element["summary"])
+        self.assertEqual(element["summary"], "Real Title")
+
+    def test_frontmatter_and_heading_markers_are_clean(self):
+        rel = self._write("note.md", "---\ntitle: X\n---\n# Real Title\nbody\n")
+        element = build_elements(self.root, [rel])[0]
+        self.assertEqual(element["summary"], "Real Title")
+        self.assertIn("Real Title", element["headings"])
+
+    def test_python_docstring_summary_for_test_kind(self):
+        rel = self._write("tests/test_thing.py",
+                          '"""Does the helpful thing."""\nimport os\n')
+        element = build_elements(self.root, [rel])[0]
+        self.assertEqual(element["kind"], "test")
+        self.assertEqual(element["summary"], "Does the helpful thing.")
+
+    def test_config_key_hints_for_yaml_toml_and_malformed_json(self):
+        yml = self._write("cfg.yml", "name: x\nnested:\n  a: 1\n")
+        self.assertEqual(build_elements(self.root, [yml])[0]["keys"][:1],
+                         ["name"])
+        toml = self._write("cfg.toml", "[tool.things]\nflag = 1\n")
+        self.assertIn("tool.things",
+                      build_elements(self.root, [toml])[0]["keys"])
+        bad = self._write("bad.json", '{"alpha": 1,}')  # malformed
+        self.assertEqual(build_elements(self.root, [bad])[0]["keys"],
+                         ["alpha"])
+
+    def test_long_signature_truncation_is_visible(self):
+        args = ", ".join(f"arg_{i}=None" for i in range(20))
+        rel = self._write("pkg/long.py", f"def sprawling({args}):\n    return 1\n")
+        element = build_elements(self.root, [rel])[0]
+        sig = element["symbols"][0]["sig"]
+        self.assertLessEqual(len(sig), 90)
+        self.assertTrue(sig.endswith("\u2026"))
+        state_sig = element_state(element)["symbols"][0]
+        self.assertLessEqual(len(state_sig), 60)
+        self.assertTrue(state_sig.endswith("\u2026"))
+
+    def test_long_summary_truncation_is_visible_not_midword(self):
+        rel = self._write("doc.md", "word " * 120 + "tail\n")
+        element = build_elements(self.root, [rel])[0]
+        summary = element["summary"]
+        self.assertLessEqual(len(summary), 200)
+        self.assertTrue(summary.endswith("\u2026"), summary[-20:])
+
+    def test_state_char_budget_holds_on_worst_case(self):
+        worst = {
+            "path": "a/very/long/path/to/enclosing/module_name.py",
+            "kind": "python", "loc": 99999, "est_tokens": 123456,
+            "summary": "x" * 200,
+            "symbols": [{"sig": "s" * 60} for _ in range(12)],
+            "imports": [f"mod{i}" for i in range(10)],
+            "headings": ["h" * 70 for _ in range(6)],
+            "test": True,
+        }
+        state = element_state(worst)
+        self.assertLessEqual(len(json.dumps(state)), STATE_CHAR_BUDGET)
+
+    def test_every_noise_rule_path_is_exercised(self):
+        # blank line -> bare punctuation -> tag-only -> hr prefix -> fence
+        blob = "\n===\n</div>\n---\n```\nend content\n"
+        rel = self._write("mixed.txt", blob)
+        element = build_elements(self.root, [rel])[0]
+        self.assertEqual(element["summary"], "end content")
+        # closing-brace prefix reached before any content line
+        braces = self._write("brace.txt", "{\n}\nreal\n")
+        self.assertEqual(build_elements(self.root, [braces])[0]["summary"],
+                         "real")
+        # leading frontmatter with no closing delimiter falls through
+        unclosed = self._write("open.md", "---\nonly line\n")
+        self.assertEqual(build_elements(self.root, [unclosed])[0]["summary"],
+                         "only line")
+
+    def test_css_block_opener_is_not_a_summary(self):
+        rel = self._write("site.css", "/* palette */\n:root {\n  color: red;\n}\n")
+        element = build_elements(self.root, [rel])[0]
+        self.assertEqual(element["summary"], "color: red;")
+
+    def test_xml_declaration_and_titleless_html_reach_content(self):
+        xml = self._write("s.xml", "<?xml version=\"1.0\"?>\n<root>ok</root>\n")
+        self.assertTrue(build_elements(self.root, [xml])[0]["summary"])
+        html = self._write("plain.html", "<html lang='en'>\n<body>plain</body>\n")
+        summary = build_elements(self.root, [html])[0]["summary"]
+        self.assertEqual(summary, "<body>plain</body>")  # tag line skipped
+
+    def test_jsonl_first_record_keys_with_malformed_first_line(self):
+        rel = self._write("events.jsonl", "not-json\n{\"event\": \"call\"}\n")
+        element = build_elements(self.root, [rel])[0]
+        self.assertEqual(element["keys"], ["event"])
 
 
 if __name__ == "__main__":

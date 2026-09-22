@@ -1,10 +1,13 @@
 """JEV-P6 pack gate tests (tests/test_jev_repo_pack.py).
 
 Operator pack validation (declared axes/score/nouls/keywords only), the
-typed question pack (criteria == declared keys, nothing invented), and the
-code-owned keyword fallback.
+typed question pack (criteria == declared keys, nothing invented), the
+code-owned keyword fallback, and the shipped seed's economy contract
+(every keyed call's question floor stays condensed).
 """
+import json
 import unittest
+from pathlib import Path
 
 from harness.jev_packs import (
     heuristic_repo_axes,
@@ -222,6 +225,30 @@ class ValidatorEdgeTests(unittest.TestCase):
         self._refuse(
             lambda p: p["keywords"]["stage"].update(adjudicate="ledger"),
             "must be non-empty strings")
+
+
+class SeedEconomyContractTests(unittest.TestCase):
+    """The shipped seed is part of the condense contract: its question
+    floor is pinned so wording edits cannot silently re-inflate the price
+    of every keyed call."""
+
+    SEED_MAX_QUESTION_CHARS = 1900
+
+    def _seed(self):
+        path = (Path(__file__).resolve().parent.parent
+                / "packs" / "repo_summary.pack.json")
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_seed_validates_against_the_schema(self):
+        doc = validate_repo_summary_pack(self._seed())
+        self.assertEqual(doc["id"], "harness-repo-summary-v1")
+
+    def test_seed_questions_stay_condensed(self):
+        questions = repo_summary_question_pack(validate_repo_summary_pack(
+            self._seed()))
+        size = len(json.dumps(questions))
+        self.assertLessEqual(size, self.SEED_MAX_QUESTION_CHARS,
+                             f"seed question floor grew to {size} chars")
 
 
 if __name__ == "__main__":

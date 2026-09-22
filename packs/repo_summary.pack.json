@@ -2,55 +2,55 @@
   "id": "harness-repo-summary-v1",
   "axes": {
     "stage": {
-      "instructions": "Choose the hourglass stage this element primarily serves. Select only from the declared criteria keys; do not invent categories.",
+      "instructions": "Choose the hourglass stage this element serves. Declared keys only.",
       "criteria": {
-        "prep": "decomposition, inventory, enumeration, or routing inputs",
-        "condense": "brief, signature, or context-pack construction and token economy",
-        "waist": "frontier confirmation, plan verdicts, or escalation decisions",
-        "dispatch": "execution: apply, write, locks, isolation, batches",
-        "adjudicate": "verification, gates, tests, panels, ledger, audits, evidence",
-        "cross_cutting": "serves every stage: config, spend, trust, consent, surfaces"
+        "prep": "inventory, decompose, route",
+        "condense": "brief, signature, or context construction",
+        "waist": "frontier confirm, verdicts, escalation",
+        "dispatch": "apply, write, locks, batches",
+        "adjudicate": "verify: gates, tests, ledger, audits",
+        "cross_cutting": "config, spend, trust, surfaces"
       }
     },
     "brief_treatment": {
-      "instructions": "Choose how this element should appear in a condensed brief for an expensive seat. Select only from the declared criteria keys.",
+      "instructions": "How should this element appear in a brief for an expensive seat? Declared keys only.",
       "criteria": {
-        "signature": "AST or interface signatures alone are sufficient context",
-        "cited_window": "a focused hash-pinned source window should be attached",
-        "failure_evidence": "its value is gate, test, or failure output, not structure",
-        "grounded_claim": "represent as a short grounded fact with sources",
-        "exclude_raw": "never ship raw content across boundaries; facts only"
+        "signature": "signatures alone suffice",
+        "cited_window": "attach a hash-pinned window",
+        "failure_evidence": "value is gate or test output",
+        "grounded_claim": "grounded fact with sources",
+        "exclude_raw": "facts only, never raw content"
       }
     },
     "handling": {
-      "instructions": "Choose the least capable handling tier that can safely work on this element. Select only from the declared criteria keys.",
+      "instructions": "Least capable handling tier that can safely work on this element. Declared keys only.",
       "criteria": {
-        "code_owned": "no model needed; counting, paths, or gates only",
-        "scout": "bounded mechanical edits at the cheap base tier",
-        "standard": "multi-file or moderately contextual work",
-        "frontier": "architectural, iterative, or waist-level attention"
+        "code_owned": "no model: paths, counts, gates",
+        "scout": "bounded mechanical edits",
+        "standard": "multi-file contextual work",
+        "frontier": "architectural or waist-level"
       }
     }
   },
   "score": {
     "id": "attention",
-    "instructions": "Rate how central this element is to the hourglass pipeline and to a condensed repo summary.",
+    "instructions": "How central is this element to the hourglass pipeline?",
     "levels": [
-      "background detail - safe to omit from a tight brief",
-      "notable - include when the goal touches this area",
-      "central - must appear in the waist brief for any repo-wide goal"
+      "background: omit from a tight brief",
+      "notable: include when goal touches it",
+      "central: in any repo-wide waist brief"
     ]
   },
   "nouls": {
     "waist_relevant": {
-      "instructions": "Does the waist brief need to cite this element to confirm a repo-wide plan?",
-      "true": "A frontier confirmation would need this element's facts or a cited window.",
-      "false": "The plan can be confirmed without citing this element."
+      "instructions": "Must the waist brief cite this element?",
+      "true": "Confirmation needs its facts or a window.",
+      "false": "Plan confirms without citing it."
     },
     "parallel_safe": {
-      "instructions": "Can cheap parallel dispatch mutate this element without worktree isolation?",
-      "true": "Edits here are low-conflict or serialized by declared targets.",
-      "false": "Concurrent mutation risks semantic interference; isolate or serialize."
+      "instructions": "Can parallel dispatch mutate this without isolation?",
+      "true": "Low-conflict or serialized edits.",
+      "false": "Concurrent edits interfere; isolate."
     }
   },
   "keywords": {

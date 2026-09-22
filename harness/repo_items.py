@@ -9,6 +9,8 @@ bound keeps one element's state small enough that a keyed call stays under
 the worst-case reserve (JEV_MAX_INPUT_TOKENS).
 """
 import ast
+import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -16,10 +18,22 @@ from .repo_scope import enumerate_repo_files, gate_for_targets
 from .tokens import estimate_prompt_tokens
 
 SUMMARY_MAX_SUMMARY_CHARS = 200
-SUMMARY_MAX_SYMBOLS = 18
+SUMMARY_MAX_SYMBOLS = 10
 SUMMARY_MAX_IMPORTS = 10
 SUMMARY_MAX_HEADINGS = 12
 SUMMARY_MAX_SYMBOL_SIG_CHARS = 90
+# Condensed state caps (JEV-P6): the keyed call sees short sigs only --
+# extraction keeps the full lists for centrality ranking and tallies.
+SUMMARY_STATE_SIG_CHARS = 60
+# Kind-aware condensed-state caps (JEV-P6): docs carry structure, config
+# carries keys, unsaturated python carries import roots -- every optional
+# field exists only when its signal exists, so no state pays for noise.
+STATE_HEADING_LIMIT = 4
+STATE_KEY_LIMIT = 6
+STATE_IMPORT_LIMIT = 3
+# The construction bound every state respects; pinned by test so the
+# priced seat never sees an unbounded payload.
+STATE_CHAR_BUDGET = 1400
 
 _KIND_BY_SUFFIX = {
     ".py": "python", ".md": "doc", ".json": "config", ".yml": "config",
@@ -28,9 +42,14 @@ _KIND_BY_SUFFIX = {
     ".html": "ui",
 }
 _SUFFIX_BY_SUFFIX = set(_KIND_BY_SUFFIX)
-# Extensionless tracked files (LICENSE, .gitignore-style names carry their
-# own suffix via Path.suffix == '' only for truly extensionless names).
+# Extensionless tracked files (LICENSE-style names) are docs; these known
+# basenames are configuration despite having no suffix (Path.suffix == '').
 _NO_SUFFIX_KIND = "doc"
+_EXTENSIONLESS_CONFIG = frozenset((
+    ".gitignore", ".gitattributes", ".editorconfig", ".flake8",
+    ".npmrc", ".nvmrc", ".python-version", ".env",
+    "makefile", "gnumakefile", "dockerfile", "procfile",
+))
 
 
 def element_kind(rel_path: str) -> str:
@@ -50,29 +69,139 @@ def element_kind(rel_path: str) -> str:
             return "audit"
         return kind
     if not suffix:
-        return _NO_SUFFIX_KIND
+        name = posix.rsplit("/", 1)[-1].lower()
+        return "config" if name in _EXTENSIONLESS_CONFIG else _NO_SUFFIX_KIND
     return "other"
 
 
 def _one_line(text: Any, limit: int) -> str:
+    """Whitespace-collapsed single line, visibly clipped at ``limit``."""
     line = " ".join(str(text or "").split())
-    return line[:limit]
+    return _clip(line, limit)
+
+
+def _clip(text: str, limit: int) -> str:
+    """Bounded text with an ellipsis so truncation is visible, never silent."""
+    return text if len(text) <= limit else text[: max(limit - 1, 0)] + "…"
+
+
+_NOISE_LINE_PREFIXES = ("{", "}", "<!", "<?", "---", "/*",
+                        "*/", "``")
+_BRACKET_ONLY_RE = re.compile(r"\[[^\]]{1,60}\]")
+_TAG_ONLY_RE = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(\s[^<>]*)?/?>\s*$")
+_TITLE_RE = re.compile(r"<title>([^<]{2,120})</title>",
+                       re.IGNORECASE | re.DOTALL)
+
+
+def _is_noise_line(stripped: str, suffix: str = "") -> bool:
+    """Structural/punctuation lines that carry no semantic signal.
+
+    Bracketed log prefixes (``[OK] ...``) are signal, not noise -- only a
+    line that is nothing but a bracketed token (TOML section, array item)
+    qualifies. A CSS block opener is structural; a JS function head is not.
+    """
+    if not stripped:
+        return True
+    if stripped.startswith(_NOISE_LINE_PREFIXES):
+        return True
+    if _TAG_ONLY_RE.fullmatch(stripped) or _BRACKET_ONLY_RE.fullmatch(stripped):
+        return True
+    if suffix == ".css" and stripped.endswith("{"):
+        return True
+    if not any(ch.isalnum() for ch in stripped):
+        return True
+    return False
+
+
+def _strip_frontmatter(lines: List[str]) -> List[str]:
+    """Drop a leading YAML frontmatter block (``--- ... ---``) if present."""
+    if lines and lines[0].strip() == "---":
+        for index in range(1, min(len(lines), 40)):
+            if lines[index].strip() == "---":
+                return lines[index + 1:]
+    return lines
 
 
 def _module_summary(source: str, rel_path: str) -> str:
-    """First docstring line (py), first heading/text line (text), bounded."""
-    if element_kind(rel_path) == "python":
+    """Best bounded one-line summary, noise-stripped (JEV-P6 condense).
+
+    Python sources: module docstring first (any ``.py`` -- tests and
+    audits included, not just kind=python). HTML: the ``<title>`` inner
+    text (the page's actual name). Everything else (and the python
+    fallback): first non-noise line after frontmatter, with ATX heading
+    markers stripped -- never ``{``, ``<!DOCTYPE``, or ``---``.
+    An empty/whitespace-only source is labeled, never an unlabeled ``""``.
+    """
+    if not source.strip():
+        return "(empty file)"
+    suffix = Path(rel_path).suffix.lower()
+    if suffix == ".py":
         try:
             doc = ast.get_docstring(ast.parse(source))
         except SyntaxError:
             doc = None
         if doc:
             return _one_line(doc, SUMMARY_MAX_SUMMARY_CHARS)
-    for raw in source.splitlines():
+    if suffix in (".html", ".htm"):
+        title = _TITLE_RE.search(source)
+        if title:
+            return _one_line(title.group(1), SUMMARY_MAX_SUMMARY_CHARS)
+    lines = _strip_frontmatter(source.splitlines())
+    for raw in lines[:40]:
         stripped = raw.strip()
-        if stripped:
-            return _one_line(stripped, SUMMARY_MAX_SUMMARY_CHARS)
+        if stripped.startswith("#") and not stripped.startswith("#!"):
+            stripped = stripped.lstrip("#").strip()
+        if _is_noise_line(stripped, suffix):
+            continue
+        return _one_line(stripped, SUMMARY_MAX_SUMMARY_CHARS)
     return ""
+
+
+_KEY_SUFFIXES = frozenset((".json", ".jsonl", ".yml", ".yaml", ".toml"))
+_KEY_LINE_RE = re.compile(
+    r"^[\{\[]?\s*\"?([A-Za-z_][\w.\-/ ]{0,39})\"?\s*[:=]")
+_SECTION_RE = re.compile(r"^\[([A-Za-z_][\w.\-]{0,39})\]\s*$")
+
+
+def config_keys(source: str, rel_path: str) -> List[str]:
+    """Top-level key/section hints for structured config and data files.
+
+    Mechanical only: strict JSON parse when possible, then line-anchored
+    regex hints (YAML, TOML sections, JSONL records, malformed JSON).
+    Never raises; bounded to ``STATE_KEY_LIMIT``.
+    """
+    if Path(rel_path).suffix.lower() not in _KEY_SUFFIXES:
+        return []
+    keys: List[str] = []
+    if Path(rel_path).suffix.lower() == ".json" and len(source) <= 400_000:
+        try:
+            doc = json.loads(source)
+        except Exception:
+            doc = None
+        if isinstance(doc, dict):
+            keys = [str(k)[:40] for k in list(doc)[:STATE_KEY_LIMIT]]
+    if Path(rel_path).suffix.lower() == ".jsonl":
+        for raw in source.splitlines()[:5]:
+            try:
+                record = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(record, dict):
+                keys = [str(k)[:40] for k in list(record)[:STATE_KEY_LIMIT]]
+                break
+    if keys:
+        return keys[:STATE_KEY_LIMIT]
+    seen: List[str] = []
+    for raw in source.splitlines()[:200]:
+        line = raw.strip()
+        match = _SECTION_RE.match(line) or _KEY_LINE_RE.match(line)
+        if match:
+            key = match.group(1).strip()
+            if key and key not in seen:
+                seen.append(key)
+        if len(seen) >= STATE_KEY_LIMIT:
+            break
+    return seen
 
 
 def _symbol_records(source: str) -> List[Dict[str, Any]]:
@@ -93,7 +222,7 @@ def _symbol_records(source: str) -> List[Dict[str, Any]]:
             "name": node.name,
             "kind": kind,
             "line": int(getattr(node, "lineno", 0) or 0),
-            "sig": sig[:SUMMARY_MAX_SYMBOL_SIG_CHARS],
+            "sig": _clip(sig, SUMMARY_MAX_SYMBOL_SIG_CHARS),
         })
 
     for node in tree.body:
@@ -104,7 +233,7 @@ def _symbol_records(source: str) -> List[Dict[str, Any]]:
                 "name": node.name,
                 "kind": "class",
                 "line": int(getattr(node, "lineno", 0) or 0),
-                "sig": f"class {node.name}"[:SUMMARY_MAX_SYMBOL_SIG_CHARS],
+                "sig": _clip(f"class {node.name}", SUMMARY_MAX_SYMBOL_SIG_CHARS),
             })
             for item in node.body:
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -162,11 +291,15 @@ def build_elements(root_dir: Any, rel_paths: Sequence[str]) -> List[Dict[str, An
     elements: List[Dict[str, Any]] = []
     for rel in rel_paths:
         path = root / rel
+        read_ok = True
         try:
             raw = path.read_bytes()
             text = raw.decode("utf-8", errors="replace")
         except OSError:
-            raw, text = b"", ""
+            raw, text, read_ok = b"", "", False
+        # A UTF-8 BOM would masquerade as content (and defeat the `#`
+        # heading / `---` frontmatter checks on line 1): strip it at source.
+        text = text.lstrip("\ufeff")
         kind = element_kind(rel)
         is_py = kind in ("python", "test", "audit")
         element: Dict[str, Any] = {
@@ -177,10 +310,12 @@ def build_elements(root_dir: Any, rel_paths: Sequence[str]) -> List[Dict[str, An
             "bytes": len(raw),
             "loc": len(text.splitlines()),
             "est_tokens": int(estimate_prompt_tokens(text)) if text else 0,
-            "summary": _module_summary(text, rel) if text else "",
+            # Unreadable never masquerades as empty: distinct honest labels.
+            "summary": _module_summary(text, rel) if read_ok else "(unreadable)",
             "symbols": _symbol_records(text) if is_py else [],
             "imports": _module_import_roots(text) if is_py else [],
             "headings": _headings(text) if kind in ("doc", "audit") else [],
+            "keys": config_keys(text, rel),
         }
         element["test"] = _test_counterpart(rel, root) if kind == "python" else (
             kind == "test")
@@ -253,19 +388,40 @@ def mechanical_tallies(elements: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def element_state(element: Dict[str, Any]) -> Dict[str, Any]:
-    """The compact state one Jev call sees for a file element (bounded)."""
-    return {
+    """The condensed state one Jev call sees for a file element (bounded).
+
+    Kind-aware signal within a construction budget (``STATE_CHAR_BUDGET``):
+    every element carries path/kind/size/summary/symbols; docs add their
+    headings, structured config/data adds key hints, and python sources
+    add capped import roots (the coupling signal).
+    ``gate`` and other code-owned inventory facts never ship -- the
+    hourglass condenses before it dispatches.
+    """
+    symbols = element.get("symbols") or []
+    headings = element.get("headings") or []
+    keys = element.get("keys") or []
+    imports = element.get("imports") or []
+    state: Dict[str, Any] = {
         "path": element.get("path"),
         "kind": element.get("kind"),
         "loc": int(element.get("loc") or 0),
         "est_tokens": int(element.get("est_tokens") or 0),
         "summary": element.get("summary") or "",
-        "symbols": [s.get("sig") for s in (element.get("symbols") or [])][:SUMMARY_MAX_SYMBOLS],
-        "imports": list(element.get("imports") or [])[:SUMMARY_MAX_IMPORTS],
-        "headings": list(element.get("headings") or [])[:SUMMARY_MAX_HEADINGS],
+        "symbols": [_clip(str(s.get("sig") or ""), SUMMARY_STATE_SIG_CHARS)
+                    for s in symbols][:SUMMARY_MAX_SYMBOLS],
+        "symbol_count": len(symbols),
         "test": bool(element.get("test")),
-        "gate": element.get("gate"),
     }
+    if headings:
+        state["headings"] = list(headings)[:STATE_HEADING_LIMIT]
+    elif keys:
+        state["keys"] = list(keys)[:STATE_KEY_LIMIT]
+    if imports:
+        # Import roots stay even when the symbol inventory saturates: they
+        # are the module's coupling signal (fidelity probe 2026-09-22:
+        # dropping them flipped stage on harness/jev_policy.py).
+        state["imports"] = list(imports)[:STATE_IMPORT_LIMIT]
+    return state
 
 
 def rank_symbol_elements(elements: Sequence[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:

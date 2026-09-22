@@ -1358,13 +1358,25 @@ class JevPolicy:
 
     @staticmethod
     def _repo_judgment(pack_doc, axes, level, value, confidence, nouls, *,
-                       is_fallback: bool, evidence) -> Dict[str, Any]:
-        """The stable JEV-P6 judgment shape (declared ids or None only)."""
+                       is_fallback: bool, evidence,
+                       axis_confidence=None) -> Dict[str, Any]:
+        """The stable JEV-P6 judgment shape (declared ids or None only).
+
+        ``axis_confidence`` carries each choice's distribution confidence
+        (TypeSafe-derived) so consumers can tell a settled axis from a
+        near-tie that the seat may flip run-to-run (measured non-zero on
+        identical input; see the 2026-09-22 determinism probe).
+        """
         pack_doc = pack_doc if isinstance(pack_doc, dict) else {}
         score = pack_doc.get("score") if isinstance(pack_doc.get("score"), dict) else {}
         return {
             "pack_id": pack_doc.get("id"),
             "axes": dict(axes or {}),
+            "axis_confidence": {
+                axis: (float(value)
+                       if isinstance(value, (int, float))
+                       and not isinstance(value, bool) else None)
+                for axis, value in (axis_confidence or {}).items()},
             "attention": {"id": score.get("id"), "level": level,
                           "value": value, "confidence": confidence},
             "nouls": dict(nouls or {}),
@@ -1459,10 +1471,17 @@ class JevPolicy:
                 reservation=reservation)
 
         axes: Dict[str, Optional[str]] = {}
+        axis_confidence: Dict[str, Optional[float]] = {}
         evidence: List[str] = []
         for axis in pack_doc["axes"]:
             answer = answers.get(axis)
             choice = answer.get("choice") if isinstance(answer, dict) else None
+            raw_axis_conf = (answer.get("confidence")
+                             if isinstance(answer, dict) else None)
+            axis_confidence[axis] = (
+                float(raw_axis_conf)
+                if isinstance(raw_axis_conf, (int, float))
+                and not isinstance(raw_axis_conf, bool) else None)
             if isinstance(choice, str) and choice in axis_ids[axis]:
                 axes[axis] = choice
                 evidence.append(f"{axis}:{choice}")
@@ -1515,7 +1534,8 @@ class JevPolicy:
             reservation=reservation)
         judgment = self._repo_judgment(
             pack_doc, axes, level, value, confidence, nouls,
-            is_fallback=False, evidence=evidence)
+            is_fallback=False, evidence=evidence,
+            axis_confidence=axis_confidence)
         return result, structural, judgment
 
     @staticmethod
