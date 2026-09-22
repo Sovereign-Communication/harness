@@ -33,9 +33,12 @@ class Router:
     def __init__(self, panel, judge, apply_model, escalation_model=None,
                  allow_escalation=False, panel_pool=None, apply_pool=None,
                  specialist_pool=None, convergence_model=None,
-                 escalation_pool=None, frontier_model=None, use_free=True):
+                 escalation_pool=None, frontier_model=None, use_free=True,
+                 cheap_judge=None, jev_policy=None):
         self.panel = list(panel)
         self.judge = judge
+        self.cheap_judge = cheap_judge or judge
+        self.jev_policy = jev_policy
         self.apply_model = apply_model
         # Single escalation_model retained for backward-compat (single-rung mode).
         self.escalation_model = escalation_model
@@ -67,8 +70,16 @@ class Router:
 
     def classify_and_route(self, instruction, target_files=None,
                            diff_size=None, dependency_depth=0, is_leaf=True,
-                           previous_failures=0):
+                           previous_failures=0, jev_route=None):
         # Classify task complexity and produce a routed execution spec.
+        if jev_route is None and self.jev_policy is not None:
+            try:
+                if getattr(self.jev_policy, "keyed", False):
+                    eval_res, _ = self.jev_policy.evaluate_route(
+                        instruction, list(target_files or []), site="router")
+                    jev_route = eval_res.answers.get("route")
+            except Exception:
+                pass
         classification = classify_task_tier(
             instruction=instruction,
             target_files=target_files,
@@ -78,9 +89,12 @@ class Router:
             previous_failures=previous_failures,
             use_free=self.use_free,
             custom_frontier=self.frontier_model,
+            jev_route=jev_route,
         )
         spec = self.route_tier(classification.tier)
         spec["classification"] = classification
+        if jev_route is not None:
+            spec["jev_route"] = jev_route
         return spec
 
     def route(self, task_type):

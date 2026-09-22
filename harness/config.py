@@ -197,8 +197,8 @@ def save_byok_prefixes(path, prefixes):
 # refresh against the live list.
 FREE_PANEL_POOL = [
     "google/gemma-4-31b-it:free",
-    "inclusionai/ling-3.0-flash-fin:free",
     "google/gemma-4-26b-a4b-it:free",
+    "inclusionai/ling-3.0-flash-fin:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "cohere/north-mini-code:free",
     "openrouter/free",
@@ -210,7 +210,6 @@ FREE_JUDGE = "google/gemma-4-31b-it:free"
 FREE_APPLY_POOL = [
     "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
-    "inclusionai/ling-3.0-flash-fin:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "cohere/north-mini-code:free",
     "openrouter/free",
@@ -641,19 +640,28 @@ def load_settings(overrides=None):
     # rung instead of failing the task. An explicit allow_escalation=false
     # (config/env/overrides) still disarms it, and with no paid key there
     # is nothing to walk into -- the default stays off.
-    paid_key = resolve_api_key()
+    paid_key = (
+        (overrides or {}).get("openrouter_api_key")
+        or (overrides or {}).get("api_key")
+        or resolve_api_key()
+    )
     if use_free:
-        default_panel = FREE_PANEL_POOL
+        default_panel = list(FREE_PANEL_POOL)
         default_judge = FREE_JUDGE
         default_judge_top = FREE_JUDGE
-        default_apply_pool = FREE_APPLY_POOL
-        default_specialist_pool = SPECIALIST_POOL_FREE
-        default_escalation_pool = ESCALATION_POOL_FREE
+        default_apply_pool = list(FREE_APPLY_POOL)
+        default_specialist_pool = list(SPECIALIST_POOL_FREE)
+        default_escalation_pool = list(ESCALATION_POOL_FREE)
         # Saturation ladder: free rungs first (they cost nothing), then the
         # paid ladder cheapest-first -- a busy free rung rotates onward.
+        # Auto paid failover: when free tier exhausts (429 across pool),
+        # rotate seamlessly into the cheapest capable paid models.
         if paid_key:
             default_escalation_pool = (ESCALATION_POOL_FREE
                                        + ESCALATION_POOL_PAID)
+            default_apply_pool = list(FREE_APPLY_POOL) + list(DEFAULT_APPLY_POOL_PAID)
+            default_panel = list(FREE_PANEL_POOL) + list(DEFAULT_PANEL_PAID)
+            default_specialist_pool = list(SPECIALIST_POOL_FREE) + list(SPECIALIST_POOL_PAID)
     else:
         default_panel = DEFAULT_PANEL_PAID
         default_judge = DEFAULT_JUDGE_PAID

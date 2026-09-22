@@ -49,15 +49,30 @@ class ApplyFixture(unittest.TestCase):
         return p
 
     def make_env(self, posts=None, run=None, router_kw=None, default_consent=True,
-                 renew=False, models=None):
+                 renew=False, models=None, jev_posts=None, with_jev=False,
+                 jev_policy=None):
         fake = FakeTransport(models=models or [m(APPLY), m(JUDGE), m(ESC),
-                                               m(CODER_A), m(CODER_B)], posts=posts)
+                                               m(CODER_A), m(CODER_B)],
+                             posts=posts, jev_posts=jev_posts)
         gov = SpendGovernor(fake, "sk-test")
         ledger = AutonomyLedger(self.ledger_path)
-        router = Router(["a", "b"], JUDGE, APPLY, **(router_kw or {}))
+        if with_jev and jev_policy is None:
+            from harness.config import load_settings
+            from harness.jev_policy import policy_for
+            from harness.jev import JevEvaluator
+            jev_settings = load_settings()
+            jev_settings.jev_api_key = "sk-jev-test"
+            evaluator = JevEvaluator(api_key="sk-jev-test", transport=fake)
+            jev_policy = policy_for(jev_settings, transport=fake, governor=gov,
+                                    ledger=ledger, evaluator=evaluator)
+        router_args = dict(router_kw or {})
+        if jev_policy is not None and "jev_policy" not in router_args:
+            router_args["jev_policy"] = jev_policy
+        router = Router(["a", "b"], JUDGE, APPLY, **router_args)
         engine = ApplyEngine(fake, "k", gov, ledger, router,
                              default_require_consent=default_consent,
-                             default_renew_consent=renew)
+                             default_renew_consent=renew,
+                             jev_policy=jev_policy)
         if run:
             engine.run_verify = run
         return fake, gov, ledger, engine

@@ -505,6 +505,9 @@ class AutonomousAgent:
         so there is no second plan lane to keep in sync. A confirmation
         failure raises (fail-closed): an unconfirmed plan never executes.
         """
+        jev_policy = policy_for(
+            self.settings, transport=self.transport, governor=gov,
+            ledger=ledger_for(self.settings, caller="agent"))
         plan = compose_plan(
             transport=self.transport, api_key=resolve_api_key(),
             governor=gov, ledger=ledger_for(self.settings),
@@ -519,7 +522,8 @@ class AutonomousAgent:
             chat_fn=lambda prompt_text: (
                 self._orchestrator_chat_fn(gov)(prompt_text), 0.0),
             execute=True,
-            allow_escalation=bool(getattr(self.settings, "allow_escalation", False)))
+            allow_escalation=bool(getattr(self.settings, "allow_escalation", False)),
+            jev_policy=jev_policy)
         if str(plan.get("decomposition", "")).startswith("heuristic"):
             # compose_plan degrades to the heuristic only after the LLM
             # decomposition failed (execute=True); the GUI needs that on the

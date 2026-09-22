@@ -110,7 +110,7 @@ def attest_model_for(settings):
         else settings.judge
 
 
-def router_for(settings):
+def router_for(settings, *, jev_policy=None):
     """The lane router from the settings' curated pools.
 
     Legacy single ``escalation_model`` keeps precedence over the multi-rung
@@ -129,7 +129,9 @@ def router_for(settings):
                   convergence_model=settings.convergence_model or judge,
                   escalation_pool=ladder,
                   frontier_model=getattr(settings, "frontier_model", None),
-                  use_free=settings.use_free)
+                  use_free=settings.use_free,
+                  cheap_judge=settings.judge,
+                  jev_policy=jev_policy)
 
 
 def engine_for(settings, api_key, gov, ledger, router, transport=None):
@@ -137,10 +139,15 @@ def engine_for(settings, api_key, gov, ledger, router, transport=None):
     per-request knobs (instruction, ceilings for THIS task) are passed at
     the engine call site -- construction-level policy lives here."""
     wire = transport or HttpTransport()
+    policy = policy_for(settings, transport=wire, governor=gov, ledger=ledger)
+    if router is not None:
+        if getattr(router, "jev_policy", None) is None:
+            router.jev_policy = policy
+        if getattr(router, "cheap_judge", None) is None:
+            router.cheap_judge = settings.judge
     return ApplyEngine(
         wire, api_key=api_key, governor=gov, ledger=ledger, router=router,
-        jev_policy=policy_for(settings, transport=wire,
-                              governor=gov, ledger=ledger),
+        jev_policy=policy,
         default_require_consent=settings.default_require_consent,
         default_renew_consent=settings.renew_consent,
         reasoning_effort=settings.reasoning_effort,

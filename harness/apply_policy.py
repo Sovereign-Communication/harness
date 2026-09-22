@@ -202,11 +202,16 @@ class ApplyEngineMixin:
             if a.get("status") == "error"}
         renew_pool = [m_ for m_ in self.router.panel_pool
                       if m_ not in consent_unusable]
+        renew_model = (
+            getattr(self.router, "cheap_judge", None)
+            if getattr(self.router, "cheap_judge", None) and not req.allow_escalation
+            else self.router.judge
+        )
         cr = consent_renew(
             transport=self.transport, api_key=self.api_key, governor=self.governor,
             task_id=req.task_id, task=consent_mechanics_text(
                 req.file_path, state.current_content, req.instruction),
-            model=self.router.judge, ledger=self.ledger, required=True,
+            model=renew_model, ledger=self.ledger, required=True,
             fallback_pool=renew_pool, min_confidence=req.min_confidence)
         if self.governor.spent - req.task_start_spent > req.task_max_cost:
             raise HarnessError(
@@ -214,7 +219,7 @@ class ApplyEngineMixin:
         if cr["decision"] != "accept":
             self.ledger.append("defer_midtask", task_id=req.task_id, category="consent",
                                reason=cr["reason"], confidence=cr.get("confidence"),
-                               model=self.router.judge)
+                               model=renew_model)
             return _defer_result(
                 task_id=req.task_id, file_path=req.file_path, category="consent",
                 reason=cr["reason"], remaining_scope=req.instruction,
@@ -296,11 +301,18 @@ class ApplyEngineMixin:
             est = estimate_prompt_tokens(prompt)
             slots = _chat_reservation_slots(attempt_model, req.reasoning, 0)
             per_call_estimate = slots * (est * a_pp + req.max_tokens * a_cp)
+            jev_worst = 0.0
+            if getattr(self, "jev_policy", None) is not None and getattr(self.jev_policy, "keyed", False):
+                from .jev import jev_cost
+                from .jev_policy import JEV_MAX_INPUT_TOKENS
+                jev_worst = jev_cost(JEV_MAX_INPUT_TOKENS)
             if (self.governor.spent - req.task_start_spent
-                    + per_call_estimate > req.task_max_cost):
+                    + per_call_estimate + jev_worst > req.task_max_cost):
                 raise HarnessError(
-                    f"task worst-case ${self.governor.spent - req.task_start_spent + per_call_estimate:.6f} "
+                    f"task worst-case ${self.governor.spent - req.task_start_spent + per_call_estimate + jev_worst:.6f} "
                     f"exceeds --task-max-cost ${req.task_max_cost:.6f}. Refusing.")
+            if jev_worst > 0.0 and hasattr(self.governor, "preflight_jev"):
+                self.governor.preflight_jev(JEV_MAX_INPUT_TOKENS, label="apply_candidate")
             # This reservation is made immediately before every candidate,
             # including dynamically rotated models and reasoning fallbacks.
             # The actual-cost guard in _record_billable remains authoritative
@@ -603,6 +615,21 @@ class ApplyEngineMixin:
                                     state.current_content, round_ctx, req.continuation,
                                     backend=req.backend)
         esc_slots = _chat_reservation_slots(esc["model"], "high", 0)
+        e_pp, e_cp = self.governor.fetch_pricing([esc["model"]])[esc["model"]]
+        est = estimate_prompt_tokens(prompt)
+        esc_estimate = esc_slots * (est * e_pp + req.max_tokens * e_cp)
+        jev_worst = 0.0
+        if getattr(self, "jev_policy", None) is not None and getattr(self.jev_policy, "keyed", False):
+            from .jev import jev_cost
+            from .jev_policy import JEV_MAX_INPUT_TOKENS
+            jev_worst = jev_cost(JEV_MAX_INPUT_TOKENS)
+        if (self.governor.spent - req.task_start_spent
+                + esc_estimate + jev_worst > req.task_max_cost):
+            raise HarnessError(
+                f"task worst-case ${self.governor.spent - req.task_start_spent + esc_estimate + jev_worst:.6f} "
+                f"exceeds --task-max-cost ${req.task_max_cost:.6f}. Refusing.")
+        if jev_worst > 0.0 and hasattr(self.governor, "preflight_jev"):
+            self.governor.preflight_jev(JEV_MAX_INPUT_TOKENS, label="apply_escalation")
         self.governor.preflight(
             prompt,
             [(f"escalation attempt {i + 1}/{esc_slots}", esc["model"], req.max_tokens, 0)

@@ -681,12 +681,15 @@ def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=No
         if profile is not None and info["capability"] <= 0:
             continue  # hard gate
         price = (profile.prompt_price + profile.completion_price) if profile else 0.0
-        scored.append((m, info["reliability"], info["capability"], price))
+        is_free = (profile.free if profile is not None
+                   else (m.endswith(":free") or m == "openrouter/free"))
+        is_paid = 0 if is_free else 1
+        scored.append((m, info["reliability"], info["capability"], price, is_paid))
     if free_tier:
-        scored.sort(key=lambda x: (demotion(x[0]), -x[1], -x[2]))
+        scored.sort(key=lambda x: (demotion(x[0]), x[4], -x[1], -x[2], x[3]))
     else:
         scored.sort(key=lambda x: (demotion(x[0]), x[3], -x[1], -x[2]))
-    ordered = [m for m, _, _, _ in scored]
+    ordered = [m for m, _, _, _, _ in scored]
 
     # Advisory local-fit hook (opt-in, off by default; see harness/local_fit/).
     # Flag-gated inside; never raises. OFF: returns the baseline order untouched.
@@ -701,9 +704,9 @@ def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=No
         if not _flag_on:
             return ordered
         from .local_fit.dispatch import maybe_order_pool
-        by_model = {x[0]: (x[1], x[2], x[3]) for x in scored}
+        by_model = {x[0]: (x[1], x[2], x[3], x[4]) for x in scored}
         if free_tier:
-            baseline_keys = {m: (demotion(m), -v[0], -v[1])
+            baseline_keys = {m: (demotion(m), v[3], -v[0], -v[1], v[2])
                              for m, v in by_model.items()}
         else:
             baseline_keys = {m: (demotion(m), v[2], -v[0], -v[1])
