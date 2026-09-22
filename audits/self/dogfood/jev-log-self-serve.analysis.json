@@ -1,0 +1,27 @@
+{
+  "buckets": {},
+  "coverage": {
+    "bucketed": 0,
+    "fallbacks": 0,
+    "live_judged": 0,
+    "total_items": 0,
+    "unmatched": 0
+  },
+  "declared_buckets": [
+    "ble",
+    "delivery",
+    "transport"
+  ],
+  "items": [],
+  "mechanical": {
+    "by_level": {},
+    "selected_items": 0,
+    "top_modules": [],
+    "total_lines": 6
+  },
+  "pack_id": "scmessenger-ops-log-v1",
+  "scores": {
+    "by_level": {},
+    "mean_value": null
+  }
+}

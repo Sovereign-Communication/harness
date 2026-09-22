@@ -1,0 +1,56 @@
+{
+  "id": "scmessenger-ops-log-v1",
+  "buckets": {
+    "transport": {
+      "label": "Transport / swarm health",
+      "kind": "trouble_area",
+      "path_id": "log/transport",
+      "keywords": [
+        "dial",
+        "swarm",
+        "listener",
+        "negotiation",
+        "yamux",
+        "disconnected"
+      ],
+      "suggested_next_action": "review dial/relay policy",
+      "attention": "high"
+    },
+    "delivery": {
+      "label": "Outbox / inbox delivery",
+      "kind": "trouble_area",
+      "path_id": "log/delivery",
+      "keywords": [
+        "outbox",
+        "inbox",
+        "delivered",
+        "history"
+      ],
+      "suggested_next_action": "trace message lifecycle",
+      "attention": "medium"
+    },
+    "ble": {
+      "label": "Bluetooth adapter",
+      "kind": "trouble_area",
+      "path_id": "log/ble",
+      "keywords": [
+        "ble",
+        "bluetooth",
+        "btleplug",
+        "gatt"
+      ],
+      "suggested_next_action": null,
+      "attention": "low"
+    }
+  },
+  "score": {
+    "id": "sentiment",
+    "instructions": "Rate operational severity/attention for this log item from the stated levels only.",
+    "levels": [
+      "benign \u2014 routine info, no operator attention",
+      "elevated \u2014 degraded but bounded behavior",
+      "actionable \u2014 likely defect or policy issue",
+      "critical \u2014 security, data loss, or hard outage signal"
+    ]
+  }
+}

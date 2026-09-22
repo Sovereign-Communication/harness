@@ -1,0 +1,6 @@
+[OK] harness UI serving at http://127.0.0.1:8776/ (Ctrl-C to stop)
+[ui] "GET /api/snapshot HTTP/1.1" 200 -
+[ui] "GET /api/site/demo-snapshot HTTP/1.1" 200 -
+[ui] "GET /site/ HTTP/1.1" 200 -
+[ui] "GET /site/methodology HTTP/1.1" 200 -
+[ui] "GET /site/assets/app.js HTTP/1.1" 200 -

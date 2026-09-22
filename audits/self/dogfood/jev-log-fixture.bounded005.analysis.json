@@ -1,0 +1,116 @@
+{
+  "buckets": {
+    "ble": 3
+  },
+  "coverage": {
+    "bucketed": 3,
+    "fallbacks": 3,
+    "live_judged": 1,
+    "total_items": 4,
+    "unmatched": 1
+  },
+  "declared_buckets": [
+    "ble",
+    "delivery",
+    "transport"
+  ],
+  "items": [
+    {
+      "bucket": "ble",
+      "evidence": "line 5 [warn] scmessenger_cli::ble_daemon",
+      "id": "item-000001",
+      "is_fallback": false,
+      "level": "warn",
+      "line_index": 5,
+      "module": "scmessenger_cli::ble_daemon",
+      "path_id": "log/ble",
+      "score": {
+        "confidence": 0.81,
+        "id": "sentiment",
+        "level": "actionable \u2014 likely defect or policy issue",
+        "value": 0.81
+      },
+      "suggested_next_action": null
+    },
+    {
+      "bucket": "ble",
+      "evidence": "line 7 [warn] scmessenger_cli::ble_mesh",
+      "id": "item-000002",
+      "is_fallback": true,
+      "level": "warn",
+      "line_index": 7,
+      "module": "scmessenger_cli::ble_mesh",
+      "path_id": "log/ble",
+      "score": {
+        "confidence": 0.0,
+        "id": "sentiment",
+        "level": null,
+        "value": null
+      },
+      "suggested_next_action": null
+    },
+    {
+      "bucket": "ble",
+      "evidence": "line 9 [error] scmessenger_cli::ble_mesh",
+      "id": "item-000003",
+      "is_fallback": true,
+      "level": "error",
+      "line_index": 9,
+      "module": "scmessenger_cli::ble_mesh",
+      "path_id": "log/ble",
+      "score": {
+        "confidence": 0.0,
+        "id": "sentiment",
+        "level": null,
+        "value": null
+      },
+      "suggested_next_action": null
+    },
+    {
+      "bucket": null,
+      "evidence": "line 12 [warn] scmessenger_core::store::relay_custody",
+      "id": "item-000004",
+      "is_fallback": true,
+      "level": "warn",
+      "line_index": 12,
+      "module": "scmessenger_core::store::relay_custody",
+      "path_id": null,
+      "score": {
+        "confidence": 0.0,
+        "id": "sentiment",
+        "level": null,
+        "value": null
+      },
+      "suggested_next_action": null
+    }
+  ],
+  "mechanical": {
+    "by_level": {
+      "error": 1,
+      "warn": 3
+    },
+    "selected_items": 4,
+    "top_modules": [
+      {
+        "count": 2,
+        "module": "scmessenger_cli::ble_mesh"
+      },
+      {
+        "count": 1,
+        "module": "scmessenger_cli::ble_daemon"
+      },
+      {
+        "count": 1,
+        "module": "scmessenger_core::store::relay_custody"
+      }
+    ],
+    "total_lines": 12
+  },
+  "pack_id": "scmessenger-ops-log-v1",
+  "scores": {
+    "by_level": {
+      "actionable \u2014 likely defect or policy issue": 1
+    },
+    "mean_value": 0.81
+  }
+}
