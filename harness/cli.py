@@ -1131,7 +1131,6 @@ def _cmd_jev_phase(opts, settings):
     if all_phases:
         jev_policy = None
         if use_live and settings is not None:
-            from .jev_policy import policy_for
             jev_policy = policy_for(settings)
         board = score_all_phases(
             opts.repo_root, jev_policy=jev_policy, min_score=min_score,

@@ -742,7 +742,7 @@ def load_evidence_file(path: str) -> Dict[str, Any]:
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-    except OSError as exc:
+    except (OSError, json.JSONDecodeError) as exc:
         raise HarnessError(f"cannot read evidence file: {exc}") from exc
     if not isinstance(data, dict):
         raise HarnessError("evidence file must contain a JSON object")
