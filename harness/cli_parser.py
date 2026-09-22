@@ -206,6 +206,9 @@ def build_parser():
                      help="issue or deferral note text to sort")
     pis.add_argument("--pack", required=True,
                      help="path to the operator bucket pack JSON")
+    pis.add_argument("--max-cost", type=float, default=None,
+                     help="jev run ceiling in dollars (default: configured "
+                          "max_cost; hard cap applies)")
     _add_output_flags(pis)
 
     plog = sub.add_parser(
@@ -220,6 +223,9 @@ def build_parser():
                       help="also judge every Nth INFO record (default: WARN/ERROR only)")
     plog.add_argument("--save-to", default=None,
                       help="also write the aggregate JSON artifact to this path")
+    plog.add_argument("--max-cost", type=float, default=None,
+                      help="jev run ceiling in dollars (default: configured "
+                           "max_cost; hard cap applies)")
     _add_output_flags(plog)
 
     proute = sub.add_parser("route", help="Route a query onto the declared model ladder "
@@ -230,6 +236,9 @@ def build_parser():
     proute.add_argument("--pack", required=True,
                         help="operator route pack: {id, rungs: [{rung_id, tier, model, "
                              "cost_class, observed_success?, samples?, guidance?, notes?}]}")
+    proute.add_argument("--max-cost", type=float, default=None,
+                        help="jev run ceiling in dollars (default: configured "
+                             "max_cost; hard cap applies)")
     _add_output_flags(proute)
 
     psite = sub.add_parser("site-export", help="Verified ledger -> sanitized site-bundle-v1 "

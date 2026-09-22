@@ -162,7 +162,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | Track / phase | Status | PR / evidence |
 |---|---|---|
 | Preflight sync `main`↔`origin` P0 | **complete** | `origin/main` includes P0 `d042d70` |
-| `JEV-P0-*` contract truth | **complete** | PR #34 / `d042d70`; live smoke OK |
+| `JEV-P0-*` contract truth | **complete** | **PR #34 MERGED** `d042d70`; live smoke OK |
 | `JEV-P1-*` one owner + lanes | **complete** | **PR #35 MERGED** → `origin/main` `9d5ff14` |
 | `JEV-P2-*` System One pillars | **complete** | **PR #36 MERGED** → `origin/main` `405bbc1`; hermetic lane-parity; D12 executed; local audit BAR MET; CI green on PR tip **and** post-merge `main`; live Jev smoke OK; **`JEV-P2-jury` deferred** (follow-up, not blocking P2 complete) |
 | `JEV-P3-*` utilization | **complete** | **PR #43 MERGED** `7eb18ea`; route/triage/context/claims/completion/calibration |

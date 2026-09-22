@@ -6,6 +6,7 @@ Covers the three faces the site/UI consume: the local-mode proof snapshot
 pane assets being served (SITE-8) and the fail-closed behaviors (broken
 chain refuses the snapshot; unroutable/invalid packs return honest 400s).
 """
+import unittest
 from unittest import mock
 
 from harness.config import load_settings
@@ -66,6 +67,43 @@ class SitePageServingTests(ServerHarness):
             self.assertIn("Proof Bench", data.get("raw", ""))
         finally:
             conn.close()
+
+    def test_site_directory_index_resolves(self):
+        """Pretty URLs: /site/ and /site/<page>[/] serve that page's
+        index.html instead of dead-ending on `no such site file`."""
+        for path in ("/site/", "/site/methodology", "/site/methodology/"):
+            conn = self._conn()
+            try:
+                status, data = _request(conn, "GET", path)
+                self.assertEqual(status, 200, path)
+                self.assertIn("Proof Bench", data.get("raw", ""), path)
+            finally:
+                conn.close()
+
+    def test_site_directory_index_still_refuses_misses(self):
+        """A directory without an index.html (or a missing directory) stays
+        an honest 404 -- the index fallback never guesses."""
+        for path in ("/site/assets/", "/site/nope/"):
+            conn = self._conn()
+            try:
+                status, _ = _request(conn, "GET", path)
+                self.assertEqual(status, 404, path)
+            finally:
+                conn.close()
+
+    def test_site_local_mode_never_guesses_serve_port(self):
+        """Regression: app.js once gated local mode on port 8787 -- a port
+        `harness serve` never serves (README default 8765, desktop 8766) --
+        so under the documented local entrypoint the site never tried
+        /api/snapshot and rendered 'No snapshot available yet' forever.
+        Mode is now an explicit ?mode=public opt-out, never a port guess."""
+        with open("site/public/assets/app.js", encoding="utf-8") as handle:
+            src = handle.read()
+        self.assertNotIn("8787", src)
+        self.assertNotIn("location.port", src)
+        self.assertNotIn("location.hostname", src)
+        self.assertIn("mode=public", src)
+        self.assertIn("/api/snapshot", src)
 
     def test_site_asset_served(self):
         conn = self._conn()
@@ -220,3 +258,71 @@ class RouteEndpointTests(ServerHarness):
         self.assertIn(data.get("status"), ("ok", "unroutable"))
         self.assertTrue(data.get("is_fallback"),
                         "unkeyed route must never present itself as a live Jev answer")
+
+
+class SiteAppJsElTests(unittest.TestCase):
+    """Real-JS behavioral pin (node when present, skipped cleanly when not):
+    el() must append child ARRAYS as nodes. The dogfood regression -- barChart
+    and the router reasons list pass arrays; Element.append() stringifies an
+    array to "[object HTMLDivElement],..." so Proof Bench charts silently
+    rendered garbage. Identity checks make the pin vacuity-proof: a
+    stringifying el() leaves strings in kids and fails."""
+
+    def _run_app(self, body):
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("platform: node not available; JS behavior asserted in CI")
+        uri = Path("site/public/assets/app.js").resolve().as_uri()
+        script = (
+            "globalThis.location = { search: '' };\n"
+            "const mk = (tag) => ({ tag, kids: [],\n"
+            "  append(...xs) { this.kids.push(...xs); },\n"
+            "  setAttribute() {}, addEventListener() {} });\n"
+            "globalThis.document = { createElement: mk };\n"
+            "const { el } = await import('" + uri + "');\n" + body)
+        with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as f:
+            f.write(script)
+            path = f.name
+        try:
+            proc = subprocess.run([node, path], capture_output=True, text=True,
+                                  timeout=30)
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        self.assertEqual(proc.returncode, 0, proc.stderr[-300:])
+        return proc.stdout
+
+    def test_el_appends_child_arrays_as_nodes(self):
+        import json
+        out = self._run_app(
+            "const a = mk('li'), b = mk('li');\n"
+            "const ul = el('ul', {}, [a, b]);\n"
+            "const c = mk('span'), d = mk('span');\n"
+            "const div = el('div', {}, [[c], [d]]);\n"
+            "process.stdout.write(JSON.stringify({\n"
+            "  ul: ul.kids.length, div: div.kids.length,\n"
+            "  same: ul.kids[0] === a && ul.kids[1] === b\n"
+            "    && div.kids[0] === c && div.kids[1] === d,\n"
+            "  nodesOnly: [...ul.kids, ...div.kids]\n"
+            "    .every((k) => typeof k === 'object' && k !== null),\n"
+            "}));\n")
+        data = json.loads(out)
+        self.assertEqual(data["ul"], 2, "flat child array must append both nodes")
+        self.assertEqual(data["div"], 2, "nested child arrays must flatten")
+        self.assertTrue(data["same"], "kids must be the node objects, not strings")
+        self.assertTrue(data["nodesOnly"])
+
+    def test_el_still_skips_null_children_in_arrays(self):
+        import json
+        out = self._run_app(
+            "const a = mk('li');\n"
+            "const ul = el('ul', {}, [null, a, undefined]);\n"
+            "process.stdout.write(JSON.stringify({ n: ul.kids.length }));\n")
+        self.assertEqual(json.loads(out)["n"], 1)

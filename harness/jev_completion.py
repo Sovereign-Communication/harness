@@ -102,6 +102,77 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "harness/route_pack.py",
         ],
     },
+    "JEV-P5": {
+        "pr_pattern": r"PR #42|c9e1c67",
+        "required_tests": ["tests/test_jev_issue_sort.py"],
+        "required_files": ["harness/jev_packs.py"],
+    },
+    "HUL-A": {
+        "pr_pattern": r"PR #41|64e63a3",
+        "required_tests": ["tests/test_hul_mission_record.py"],
+        "required_files": ["harness/mission_record.py"],
+    },
+    "HUL-B": {
+        "pr_pattern": r"PR #47|536e75c",
+        "required_tests": ["tests/test_hul_budget_reserve.py"],
+        "required_files": ["harness/spend.py"],
+    },
+    "HUL-C": {
+        "pr_pattern": r"PR #48|469f34f",
+        "required_tests": ["tests/test_hul_jev_scope_gate.py"],
+        "required_files": ["harness/jev_policy.py"],
+    },
+    "HUL-D": {
+        "pr_pattern": r"PR #48|469f34f",
+        "required_tests": ["tests/test_hul_driver_findings_resume.py"],
+        "required_files": ["harness/mission_driver.py"],
+    },
+    "JEV-LOG-SCHEMA": {
+        "pr_pattern": r"PR #56|431836d",
+        "required_tests": ["tests/test_jev_log_pack.py"],
+        "required_files": ["harness/jev_packs.py"],
+    },
+    "JEV-LOG-PARSE": {
+        "pr_pattern": r"PR #56|431836d",
+        "required_tests": [
+            "tests/test_jev_log_pack.py",
+            "tests/test_jev_log_envelope.py",
+        ],
+        "required_files": ["harness/log_items.py"],
+    },
+    "JEV-LOG-FACTOR-PASS": {
+        "pr_pattern": r"PR #57|e15a723",
+        "required_tests": ["tests/test_jev_log_envelope.py"],
+        "required_files": ["harness/log_analysis.py"],
+    },
+    "JEV-LOG-JUDGMENT": {
+        "pr_pattern": r"PR #56|PR #57|431836d|e15a723",
+        "required_tests": ["tests/test_jev_log_judgment.py"],
+        "required_files": ["harness/jev_policy.py"],
+    },
+    "JEV-LOG-ENVELOPE": {
+        "pr_pattern": r"PR #57|e15a723",
+        "required_tests": ["tests/test_jev_log_envelope.py"],
+        "required_files": ["harness/log_analysis.py"],
+    },
+    "JEV-LOG-CLI": {
+        "pr_pattern": r"PR #57|e15a723",
+        "required_tests": ["tests/test_jev_log_envelope.py"],
+        "required_files": ["harness/cli.py"],
+    },
+    "JEV-LOG-DOGFOOD": {
+        "pr_pattern": r"PR #57|e15a723",
+        "required_tests": ["tests/test_jev_log_envelope.py"],
+        "required_files": [],
+    },
+    "MS": {
+        "pr_pattern": r"PR #",
+        "required_tests": [
+            "tests/test_hg_ms_parity.py",
+            "tests/test_model_envelope.py",
+        ],
+        "required_files": ["harness/config.py"],
+    },
 }
 
 _COMPLETION_PACK = {
@@ -143,6 +214,19 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         "JEV-P4": re.compile(r"JEV-P4|4 Ops|ops / exit", re.I),
         "JEV-COMPLETION": re.compile(r"JEV-COMPLETION|completion score|dogfood 0-100|Accountability", re.I),
         "SITE": re.compile(r"SITE-\*|SITE-1|SITE-3\.\.9|proof bench site", re.I),
+        "JEV-P5": re.compile(r"JEV-P5|issue-sort buckets", re.I),
+        "HUL-A": re.compile(r"\bHUL-A\b", re.I),
+        "HUL-B": re.compile(r"\bHUL-B\b", re.I),
+        "HUL-C": re.compile(r"\bHUL-C\b", re.I),
+        "HUL-D": re.compile(r"\bHUL-D\b", re.I),
+        "JEV-LOG-SCHEMA": re.compile(r"JEV-LOG-schema", re.I),
+        "JEV-LOG-PARSE": re.compile(r"JEV-LOG-parse", re.I),
+        "JEV-LOG-FACTOR-PASS": re.compile(r"JEV-LOG-factor-pass", re.I),
+        "JEV-LOG-JUDGMENT": re.compile(r"JEV-LOG-judgment", re.I),
+        "JEV-LOG-ENVELOPE": re.compile(r"JEV-LOG-envelope", re.I),
+        "JEV-LOG-CLI": re.compile(r"JEV-LOG-cli", re.I),
+        "JEV-LOG-DOGFOOD": re.compile(r"JEV-LOG-dogfood", re.I),
+        "MS": re.compile(r"`MS-\*`|cheapest-capable", re.I),
     }
     pat = needles.get(phase_id)
     if not pat or not roadmap_text:
@@ -171,6 +255,10 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
             score += 10
         if "pr #" in low or "merged" in low:
             score += 5
+        # The canonical STATUS row spells out the merge; the tracker row often
+        # cites only "PR #NN <sha>". Prefer the row that carries merge proof.
+        if "merged" in low:
+            score += 3
         if phase_id.lower() in low or "pillar" in low or "owner" in low or "accountability" in low:
             score += 2
         if re.search(r"policy|consent-confidence|min-confidence|triage|apply\|", low):

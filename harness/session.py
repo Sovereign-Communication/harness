@@ -46,6 +46,33 @@ def governor_for(settings, max_cost_override=None):
     return api_key, gov
 
 
+def jev_face_governor(settings, max_cost_override=None):
+    """Spend governor for the Jev-only CLI faces (issue-sort, route,
+    log-judgment).
+
+    Keyed Jev dispatch always requires the shared spend governor
+    (``JevPolicy._preflight`` refuses to reserve against nothing), so these
+    faces must compose one or they silently degrade to keyword fallback on a
+    keyed machine -- the MCP server and the web UI already pass their session
+    governor. Same ceiling rule as :func:`governor_for`: ``settings.max_cost``
+    by default, and an explicit override above ``HARD_MAX_COST`` is refused
+    fail-closed (never silently clamped), but no OpenRouter key
+    verification: these faces dispatch TypeSafe Jev calls only, and
+    ``SpendGovernor.reserve``/``reconcile`` are pure USD arithmetic. Returns
+    ``None`` when no Jev key resolves -- unkeyed runs never preflight, so they
+    need no governor and must keep their hermetic behavior.
+    """
+    if not getattr(settings, "jev_api_key", None):
+        return None
+    if max_cost_override is None:
+        max_cost = settings.max_cost
+    else:
+        max_cost = finite_number(max_cost_override, "max_cost", 0.0,
+                                 HARD_MAX_COST)
+    return SpendGovernor(HttpTransport(), resolve_api_key(),
+                         settings.expect_key_label, max_cost)
+
+
 def ledger_for(settings, caller="cli"):
     """The run's autonomy ledger (hash-chained JSONL at the configured path).
 

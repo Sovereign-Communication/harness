@@ -23,7 +23,7 @@ from .repo_scope import (
     discover_verification_gate,
     enumerate_repo_files,
 )
-from .results import SUCCESS_STATUSES, _http_error
+from .results import SUCCESS_STATUSES, _http_error, model_envelope
 from .session import apply_session, attest_model_for, governor_for, jev_for, ledger_for
 from .jev_policy import JevPolicy, aggregate_structural, policy_for
 from .waist import compose_plan, resolve_scout_ladder
@@ -908,6 +908,16 @@ class AutonomousAgent:
                if plan.get("confirmation") else {}),
             **({"structural": agent_structural}
                if agent_structural is not None else {}),
+            # MS envelope: requested = first child's requested primary;
+            # observed = every model that served across the run.
+            **model_envelope(
+                model_requested=next((r.get("model_requested") for r in
+                                      all_results.values()
+                                      if isinstance(r, dict)
+                                      and r.get("model_requested")), None),
+                model_observed=[m for r in all_results.values()
+                                if isinstance(r, dict)
+                                for m in (r.get("model_observed") or [])]),
             "cost": round(total_cost, 6),
             **engine.governor.snapshot(),
             "results": list(all_results.values()),

@@ -15,7 +15,8 @@ from .prompts import (
     CAPABILITY_MARKER,
     _extract_file_content, _parse_ready, _apply_unified_diff,
 )
-from .results import (_defer_result, _http_error, _round_entry)
+from .results import (_defer_result, _http_error, _round_entry,
+                       model_envelope)
 from .chat import (
     chat, extract_content_and_cost, _extract_json,
     REASONING_FALLBACK_PREFIX, _reported_cost, _chat_reservation_slots,
@@ -36,10 +37,17 @@ class ApplyEngineMixin:
     """Mixin: the apply engine's per-round machinery (see module docstring)."""
 
     @staticmethod
-    def _attach_structural(result, state):
-        """Keep the shared structural envelope on every apply terminal."""
-        if isinstance(result, dict) and state.structural is not None:
-            result.setdefault("structural", state.structural)
+    def _attach_envelopes(result, state):
+        """Keep the shared structural + model-selection (MS) envelopes on
+        every apply terminal -- one seam, both envelopes."""
+        if isinstance(result, dict):
+            if state.structural is not None:
+                result.setdefault("structural", state.structural)
+            rounds = result.get("rounds") or state.rounds
+            result.update(model_envelope(
+                model_requested=state.model_requested,
+                model_observed=[r.get("model") for r in rounds
+                                if isinstance(r, dict)]))
         return result
 
     def _record_billable(self, req, model_id, amount, status, **fields):
@@ -82,6 +90,7 @@ class ApplyEngineMixin:
         gate -- then gated escalation and the honest terminal assembly.
         Single exit per outcome; every mutation lives in ``state``."""
         state = RunState(
+            model_requested=req.model,
             rounds=list(req.continuation.get("history") or []),
             history=list(req.continuation.get("history") or []),
             # Capability deferrals keep un-gated partial output out of the
@@ -105,7 +114,7 @@ class ApplyEngineMixin:
             if req.renew:
                 deferral = self._renew_consent(req, state)
                 if deferral is not None:
-                    return self._attach_structural(deferral, state)
+                    return self._attach_envelopes(deferral, state)
 
             state.round_ctx, state.gate_broken = self._round_context(req, state)
             if state.gate_broken:
@@ -132,7 +141,7 @@ class ApplyEngineMixin:
                     escalated = self._escalate(req, state)
                     if escalated is not None:
                         return escalated
-                    return self._attach_structural(
+                    return self._attach_envelopes(
                         self._readiness_deferral(req, state, outcome), state)
                 state.rounds.append(_round_entry(
                     round_no, req.model or outcome.model, "api_error",
@@ -143,7 +152,7 @@ class ApplyEngineMixin:
             if CAPABILITY_MARKER in outcome.content:
                 deferred = self._capability_deferral(req, state, outcome)
                 escalated = self._escalate(req, state)
-                return self._attach_structural(escalated or deferred, state)
+                return self._attach_envelopes(escalated or deferred, state)
 
             if req.backend == "diff":
                 # Strict-match merge (#11): a non-matching or malformed diff is
@@ -157,10 +166,10 @@ class ApplyEngineMixin:
                 new_content = _extract_file_content(outcome.content)
             result = self.gate.apply_candidate(req, state, outcome, new_content)
             if result is not None:
-                return self._attach_structural(result, state)
+                return self._attach_envelopes(result, state)
 
         result = self._escalate(req, state) or self.gate.terminal_failure(req, state)
-        return self._attach_structural(result, state)
+        return self._attach_envelopes(result, state)
 
     # ---------------- phases ----------------------------------------------
 

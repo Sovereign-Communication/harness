@@ -34,6 +34,7 @@ from .spend import discover_free_models
 from .filesafety import VERIFY_TIMEOUT, validate_target_file, validate_verify_command
 from .output import eprint
 from .session import (apply_session as _session, governor_for as _governor,
+                      jev_face_governor,
                       ledger_for as _ledger,
                       run_meta as _session_run_meta)
 from .service import prepare_verify as _prepare_verify
@@ -442,10 +443,13 @@ def _cmd_issue_sort(opts, settings):
     raw_pack = _read_json(opts.pack, "issue-sort pack")
     pack = validate_operator_pack(raw_pack)
     ledger = _ledger(settings)
-    # Hermetic-friendly composition: policy + ledger only. Keyed live calls
-    # still require the shared spend governor (evaluate_issue_sort falls back
-    # honestly with is_fallback=true when the governor is absent).
-    jev_policy = policy_for(settings, transport=HttpTransport(), ledger=ledger)
+    # CLI/MCP/GUI parity: a keyed face composes the shared spend governor
+    # (session.jev_face_governor) so preflight can reserve, instead of
+    # silently degrading to keyword fallback on a keyed machine. Unkeyed
+    # runs stay governor-free and hermetic.
+    gov = jev_face_governor(settings, getattr(opts, "max_cost", None))
+    jev_policy = policy_for(settings, transport=HttpTransport(),
+                            governor=gov, ledger=ledger)
     result, structural, combo = jev_policy.evaluate_issue_sort(
         {"issue": opts.issue}, pack, site="issue_sort")
     envelope = {
@@ -472,10 +476,12 @@ def _cmd_log_judgment(opts, settings):
     except ValueError as exc:
         raise HarnessError(f"log pack invalid: {exc}") from exc
     log_text = _log_load_text(opts.log)
-    # Hermetic-friendly composition: policy + ledger only (same as issue-sort;
-    # keyed calls fall back honestly with is_fallback=true without a governor).
+    # Same composition as issue-sort/route: keyed runs get the shared spend
+    # governor (CLI/MCP/GUI parity) so the JEV-LOG dogfood can judge live;
+    # --max-cost bounds the run, unkeyed stays hermetic with no governor.
+    gov = jev_face_governor(settings, getattr(opts, "max_cost", None))
     jev_policy = policy_for(settings, transport=HttpTransport(),
-                            ledger=_ledger(settings))
+                            governor=gov, ledger=_ledger(settings))
     analysis = _log_analyze(
         log_text, pack, jev_policy,
         info_sample=int(getattr(opts, "info_sample", 0) or 0),
@@ -498,7 +504,11 @@ def _cmd_route(opts, settings):
     except ValueError as exc:
         raise HarnessError(f"route pack invalid: {exc}") from exc
     ledger = _ledger(settings)
-    jev_policy = policy_for(settings, transport=HttpTransport(), ledger=ledger)
+    # CLI/MCP/GUI parity: keyed runs compose the shared spend governor so
+    # preflight can reserve (see session.jev_face_governor).
+    gov = jev_face_governor(settings, getattr(opts, "max_cost", None))
+    jev_policy = policy_for(settings, transport=HttpTransport(),
+                            governor=gov, ledger=ledger)
     result, structural, combo = jev_policy.evaluate_model_route(
         {"goal": opts.goal}, pack, site="model_route")
     envelope = {
