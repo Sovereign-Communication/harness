@@ -8,7 +8,7 @@ from pathlib import Path
 
 # Only used when neither installed-dist metadata nor pyproject.toml is
 # reachable (should not happen in practice).
-_FALLBACK_VERSION = "0.4.0"
+_FALLBACK_VERSION = "0.4.1"
 
 
 def _detect_version() -> str:

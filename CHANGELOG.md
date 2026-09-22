@@ -9,6 +9,10 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.4.1] — 2026-09-21
+
 ### Added
 - GUI: runtime settings seam — `POST /api/settings` (via `update_config`, validated
   fail-closed through `load_settings` and written atomically) so the UI can switch
