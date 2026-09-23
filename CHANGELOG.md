@@ -24,6 +24,7 @@ break APIs between minor versions).
   - `DF-HG-2`: `plan --resume PATH` supports cold-start bootstrapping when `PATH` does not exist yet (`load_state(..., allow_missing=True)`), persisting state on execution completion. Added `--persist-state` flag to CLI parser.
   - `DF-HG-3`: LLM decomposition retries once on parse/transport failure and falls back loudly to the heuristic in preview mode too (`decomposition="heuristic"`) with an `orchestration_note` event instead of crashing FATAL.
 - **MCP** — `initialize` now negotiates the protocol version per the MCP lifecycle (echo supported, otherwise answer `2025-06-18`) instead of rejecting newer clients; Claude Code 2.1 (`2025-11-25`) could not connect. Non-string `protocolVersion` is still rejected (`-32602`). Tests in `tests/test_mcp.py`.
+- **Ling judge parsing (`DF-LING-1`)** — `_extract_json` now advances to the next `{` candidate instead of giving up when the first balanced span fails to parse, so think/prose-wrapped judge output (`<think>{draft}</think>{"verdict":"allow"}`) still yields the real verdict; `_REASONING_HINTS` gains an `inclusionai/ling` entry so `looks_reasoning` recognizes the Ling family. Tests in `tests/test_chat.py`, `tests/test_extra.py`.
 
 ### Changed
 

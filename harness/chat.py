@@ -18,36 +18,43 @@ REASONING_FALLBACK_PREFIX = "[NOTE] model returned no content"
 
 
 def _extract_json(text):
-    """Extract the first balanced {...} object from arbitrary model output."""
+    """Extract the first balanced {...} object from arbitrary model output.
+
+    Reasoning-style models (e.g. the Ling family) prose/think-wrap their
+    answer -- ``<think>{draft notes}</think>{"verdict":"allow"}`` -- so the
+    first ``{`` is not necessarily the payload. Advance to the next ``{``
+    candidate whenever the current one fails to parse (or never closes)
+    instead of giving up on the first miss.
+    """
     if not text:
         return None
     start = text.find("{")
-    if start == -1:
-        return None
-    depth = 0
-    in_str = False
-    esc = False
-    for i in range(start, len(text)):
-        c = text[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif c == "\\":
-                esc = True
-            elif c == '"':
-                in_str = False
-            continue
-        if c == '"':
-            in_str = True
-        elif c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(text[start:i + 1])
-                except json.JSONDecodeError:
-                    return None
+    while start != -1:
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(text)):
+            c = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+                continue
+            if c == '"':
+                in_str = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start:i + 1])
+                    except json.JSONDecodeError:
+                        break
+        start = text.find("{", start + 1)
     return None
 
 
@@ -161,7 +168,13 @@ def looks_truncated(text):
 
 _REASONING_HINTS = ("reason", "thinking", "inkling", "qwq", "r1", "o3", "o4",
                     "o1", "gpt-5", "deepseek", "kimi", "glm-4.6", "glm-5.2", "glm-5.3",
-                    "glm-5.6", "minimax-reason", "nemotron", "openrouter/free")
+                    "glm-5.6", "minimax-reason", "nemotron", "openrouter/free",
+                    # Ling 3.x think/prose-wraps its answer (DF-LING-1); no
+                    # bare "ling" (would false-positive on unrelated ids) and
+                    # no vendor-prefixed "inclusionai/ling-3" (chat.py's own
+                    # hardcoded-model-id guard bans "/"-qualified vendor
+                    # strings here -- see test_hg_ms_parity).
+                    "ling-3")
 _EFFORT_VALUES = ("auto", "off", "none", "low", "medium", "high", "on")
 # Hints matched against a provider's error body when the reasoning parameter
 # may have caused the rejection. "mandatory" covers the mandatory-reasoning

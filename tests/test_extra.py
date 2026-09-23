@@ -25,6 +25,7 @@ class ReasoningTests(unittest.TestCase):
         self.assertTrue(looks_reasoning("deepseek/deepseek-r1"))
         self.assertTrue(looks_reasoning("thinkingmachines/inkling-small:free"))
         self.assertTrue(looks_reasoning("nvidia/nemotron-3-nano-reasoning:free"))
+        self.assertTrue(looks_reasoning("inclusionai/ling-3.0-flash"))
         self.assertFalse(looks_reasoning("cohere/north-mini-code:free"))
 
     def test_effort_to_send(self):

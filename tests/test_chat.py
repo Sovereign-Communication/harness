@@ -1,7 +1,8 @@
 """Response extraction: content/cost pulls and the reasoning-only fallback."""
 import unittest
 
-from harness.chat import chat, extract_content_and_cost, governed_text
+from harness.chat import (_extract_json, chat, extract_content_and_cost,
+                          governed_text)
 from harness.errors import HarnessError
 from harness.spend import SpendGovernor
 from tests._fake import FakeTransport, comp, m
@@ -18,6 +19,14 @@ class ExtractionTests(unittest.TestCase):
         content, finish, cost, is_byok = extract_content_and_cost({})
         self.assertIsNone(content)
         self.assertIsNone(finish)
+
+    def test_extract_json_skips_unparseable_think_wrapped_object(self):
+        """DF-LING-1: Ling-family judges wrap the verdict in a think/prose
+        preamble -- ``<think>{draft}</think>{"verdict":"allow"}`` -- whose
+        first ``{...}`` span is not valid JSON. The extractor must move on
+        to the next ``{`` candidate instead of giving up."""
+        result = _extract_json('<think>{draft}</think>{"verdict": "allow"}')
+        self.assertEqual(result, {"verdict": "allow"})
 
 
 def _resp(*, cost="omit", prompt_tokens=0, completion_tokens=0,
