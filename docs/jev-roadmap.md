@@ -174,7 +174,9 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `CLAUDE-LANE` Claude Code migration | **complete** | **PR #66 MERGED** `6f00d38`; `CLAUDE.md` + tool-neutral `AGENTS.md`, `.claude/` skills (`/isolated-mission`, `/isolated-request`) + scout/implementer/verifier tiers + settings, docs migrated (`docs/claude-context.md`, `docs/jev-mission-prompt.md`), MCP version negotiation fix |
 | `JEV-BAR-*` sentiment-bucket bar | **complete** | **PR #67 MERGED** `a9b58ab`; per-axis sentiment + declared improvement buckets drive bar pass; bar calls routed through `JevPolicy`; `packs/phase_completion.pack.json` |
 | `DF-*` dogfood follow-ups | **open** | 2026-09-22 audit (9 components, 32 findings, 31 confirmed by independent re-verification, $0.29 live spend) — rows in "Dogfood audit follow-ups" |
-| `MS-*` cheapest-capable + context | **complete** | **PR #69 MERGED** `e47001a`; cheapest capable routing (no Ling defaults, Scout defaults to Gemma 4 31b, planning markers to Distiller Tier 1, router Jev route evaluation), auto paid failover (cheap paid pools appended, sorted cheapest first), hermetic Jev fake transport, `DF-MS-1..3` closed; local audit BAR MET 10/10/10/10, CI green |
+| `MS-*` cheapest-capable routing + failover | **complete** | **PR #69 MERGED** `e47001a`; cheapest capable routing (no Ling defaults, Scout defaults to Gemma 4 31b, planning markers to Distiller Tier 1, router Jev route evaluation), auto paid failover (cheap paid pools appended, sorted cheapest first), hermetic Jev fake transport, `DF-MS-1` + `DF-MS-3` closed (`DF-MS-2` documentation-only, see `DF-MS-2b`); local audit BAR MET 10/10/10/10, CI green. Scope note (Claude audit 2026-09-22): the routing/failover slice is complete; the "context" half moved to `MS-context` |
+| `MS-context` condensed state for expensive seats | **open** | split from `MS-*` on 2026-09-22 — PR #69 did not touch context condensation; owner `condenser`/`brief` + MS ladders |
+| `JEV-AUDIT-GATE` Jev 4-dimension self-audit gate | **open** | WIP from the Antigravity session preserved on branch `feat/jev-audit-gate` (not merged): `audits/self/audit.py` gate + `JevPolicy.evaluate_audit_dimensions` + `tests/test_audit_dimensions.py`; needs a hermetic keyed-path test (D12) and the partial-run "not evaluated" scoring fix before PR |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
 | Exit | Jev P4 checklist all true on `origin/main` | **open** |
 | Exit | HUL A–D shipped **or** open-problem packs on HUL contract | **open** |
@@ -317,12 +319,17 @@ Run each item with `/isolated-mission --bar <ID>` (see [jev-mission-prompt.md](j
 2. ~~**`JEV-BAR-*`**~~ — **complete** (PR #67 merged `a9b58ab`; audit BAR MET 10/10/10/10).
 3. ~~**HG repair PR**~~ — **complete** (PR #68 merged `4889776`; `DF-HG-1/2/3` closed, local audit BAR MET 10/10/10/10, CI green).
 4. ~~**Budget-honesty PR (`MS-*`)**~~ — **complete** (PR #69 merged `e47001a`; `DF-MS-1..3` closed, cheapest-capable routing, auto paid failover, hermetic Jev fake, local audit BAR MET 10/10/10/10, CI green).
-5. **Lane-correctness PR** — `DF-CLI-1`, `DF-APPLY-1`, `DF-SITE-1`.
-6. **HUL-D follow-up PR** — `DF-HUL-1..3`.
-7. **CI + docs hygiene PR** — `DF-CI-1..3`, `DF-DOCS-1..4`.
-8. **`JEV-P4` residuals** — dogfood A/B pass-rate + cost delta, `jev_model` freeze persistence (closes Exit row 1).
-9. **`JEV-P6` stage C** — `JEV-P6-waist-brief` (grounded waist brief from REPO-MAP → frontier confirm), `JEV-P6-noul-audit` (all-false `waist_relevant` before reuse), `JEV-P6-freshness` (scheduled REPO-MAP freshness check in CI).
-10. **Exit** — Jev P4 checklist all true + HUL shipped → canon exit.
+5. **Lane-correctness PR** — `DF-CLI-1`, `DF-APPLY-1`, `DF-SITE-1` + the MS canary fix that turns `main` green again (`DF-GOV-1`) — this PR.
+6. **`/bod` rulings** — `DF-HG-3` preview policy, `DF-LING-2` Ling pool, STATUS-via-PR rule, auto paid failover disclosure.
+7. **`JEV-AUDIT-GATE` PR** — land the preserved gate with keyed-path test + partial-run fix.
+8. **`DF-LING-1` PR** — `chat._extract_json` + reasoning hint (then `DF-LING-2` per ruling).
+9. **HUL-D follow-up PR** — `DF-HUL-1..3`.
+10. **CI + docs hygiene PR** — `DF-CI-1..3`, `DF-DOCS-1..5`, `DF-HG-4`, `DF-AUDIT-1`.
+11. **`MS-context`** + `DF-MS-2b`.
+12. **UI parity** — `DF-UI-1..3`.
+13. **`JEV-P4` residuals** — dogfood A/B pass-rate + cost delta, `jev_model` freeze persistence (closes Exit row 1).
+14. **`JEV-P6` stage C** — `JEV-P6-waist-brief` (grounded waist brief from REPO-MAP → frontier confirm), `JEV-P6-noul-audit` (all-false `waist_relevant` before reuse), `JEV-P6-freshness` (scheduled REPO-MAP freshness check in CI).
+15. **Exit** — Jev P4 checklist all true + HUL shipped → canon exit.
 
 **Do not mark any row complete without:** named tests green + audit BAR MET on PR tip + Jev bar pass (`jev-phase`) + honest STATUS + merge CI green + live dogfood where the lane is user-facing.
 
@@ -334,12 +341,12 @@ Claude-lane dogfood: 9 components audited by Sonnet agents on private ledgers, e
 |---|---|---|---|---|---|
 | `DF-HG-1` | high | `plan` composed-ceiling preflight ignores `--task-max-cost`; silently pinned to config `max_cost` | `HG-composed-ceiling` | **fixed** (PR #68 `4889776`): plan governor honours the flag; envelope shows number used | `tests/test_hg_composed_ceiling.py` CLI-face case |
 | `DF-HG-2` | high | `plan --resume PATH` cannot bootstrap a fresh pyramid state from a cold start | `HG-pyramid-resume` | **fixed** (PR #68 `4889776`): missing state path bootstraps fresh run; `--persist-state` supported | `tests/test_hg_pyramid_resume.py` cold-start case |
-| `DF-HG-3` | med | default decompose seat intermittently returns unparseable JSON → plan-only preview FATAL (execute path already falls back) | `HG-condense-decompose` | **fixed** (PR #68 `4889776`): one strict retry, then loud heuristic fallback in preview too | `tests/test_hg_condense_decompose.py` |
-| `DF-SITE-1` | med | `/site/` pages unreachable in a browser when `HARNESS_UI_AUTH_TOKEN` is set (header-only guard on static assets) | `SITE-6..9` | do not header-gate static site assets (no secrets), keep JSON API guarded | `tests/test_site_server.py` |
-| `DF-CLI-1` | med | `harness ledger verify` exits 0 on a broken chain, contradicting the documented exit codes | `JEV-P1-ledger` | non-zero exit when `ok=false` | ledger CLI test |
-| `DF-APPLY-1` | med | `harness continue --instruction X` silently replays the stale continuation instruction | `JEV-P1-apply` (continuation) | new instruction reaches the batch options | continuation CLI test |
+| `DF-HG-3` | med | default decompose seat intermittently returns unparseable JSON → plan-only preview FATAL (execute path already falls back) | `HG-condense-decompose` | **fixed** (PR #68 `4889776`): one strict retry, then loud heuristic fallback in preview too. Audit 2026-09-22: this reverses the prior fail-closed preview guarantee (its pinning test was inverted) — **pending `/bod` ruling** (see `HANDOFF/BOD_STATE.md`) | `tests/test_hg_condense_decompose.py` |
+| `DF-SITE-1` | med | `/site/` pages unreachable in a browser when `HARNESS_UI_AUTH_TOKEN` is set (header-only guard on static assets) | `SITE-6..9` | **fixed** (lane-correctness PR): static `/site/` assets no longer need `X-Harness-Auth`; JSON API still guarded | `tests/test_site_server.py` |
+| `DF-CLI-1` | med | `harness ledger verify` exits 0 on a broken chain, contradicting the documented exit codes | `JEV-P1-ledger` | **fixed** (lane-correctness PR): `ledger verify` exits 2 on a broken chain | `tests/test_cli.py` |
+| `DF-APPLY-1` | med | `harness continue --instruction X` silently replays the stale continuation instruction | `JEV-P1-apply` (continuation) | **fixed** (lane-correctness PR): `--instruction` overrides the saved `remaining_scope` without mutating the continuation | `tests/test_apply_instruction_override.py`, `tests/test_cli.py` |
 | `DF-MS-1` | med | `apply --task-max-cost` excludes Jev structural cost; keyed applies exceed the stated ceiling | `MS-*` / `JEV-P1-spend` | **fixed** (PR #69 `e47001a`): fold Jev worst-case into apply preflight (as verify does) | `tests/test_jev_ledger_spend.py` |
-| `DF-MS-2` | med | `verify --max-cost` preflight needs ~$0.036 headroom for ~$0.0004 actual (3-panel + judge) | `MS-*` | **fixed** (PR #69 `e47001a`): documented minimum headroom in `--max-cost` help | `tests/test_cli.py` |
+| `DF-MS-2` | med | `verify --max-cost` preflight needs ~$0.036 headroom for ~$0.0004 actual (3-panel + judge) | `MS-*` | **documented only** (PR #69 `e47001a`): `--max-cost` help states the minimum headroom; the over-reservation itself is unchanged → `DF-MS-2b` | `tests/test_cli.py` |
 | `DF-MS-3` | low | mid-task consent renewal silently uses the frontier judge instead of the declared cheap judge | `MS-*` | **fixed** (PR #69 `e47001a`): renewal uses `settings.judge` unless escalation allowed | `tests/test_apply.py` |
 | `DF-HUL-1` | med | driver emits a stale "HUL-B dual-budget enforcement not present" note although `record_spend` enforces it | `HUL-D` | remove/replace the note | `tests/test_hul_driver_findings_resume.py` |
 | `DF-HUL-2` | med | `mission run` CLI has no paid attempt seat (library-only injection) — lane cannot be live-dogfooded via CLI | `HUL-D` | CLI seat resolved via MS ladder, or document library-only | driver CLI test |
@@ -355,7 +362,22 @@ Claude-lane dogfood: 9 components audited by Sonnet agents on private ledgers, e
 | `DF-MCP-1` | high | MCP server rejected Claude Code 2.1's `initialize` (`2025-11-25`) instead of negotiating, so no connection | `CLAUDE-LANE` | **fixed in this PR** (spec negotiation) | `tests/test_mcp.py` (+2 tests) |
 | `DF-CANON-1` | med | canon drift: stale AGENTS.md mission/worktrees, JEV-P6 rows "this PR", obsolete P2 playbook + Freebuff prompts | `CLAUDE-LANE` | **fixed in this PR** | Jev bar `JEV-P6` |
 
+| `DF-MS-2b` | med | verify preflight still reserves every configured retry (~90x the actual spend) — PR #69 took the documentation branch only | `MS-context` / `panel` | size the reservation to the judge/retry plan actually used | `tests/test_panel.py` |
+| `DF-LING-1` | high | `[judge] inclusionai/ling-*: unparseable` root cause (picked-up Antigravity research, reproduced): `chat._extract_json` gives up after the first `{` fails to parse (think/prose-wrapped JSON), and `_REASONING_HINTS` lacks `ling` so Ling never gets reasoning handling | `chat` (one owner) | loop over successive `{` candidates; add the `ling` hint | `tests/test_chat.py`, `tests/test_extra.py` |
+| `DF-LING-2` | med | PR #69 removed Ling from `FREE_APPLY_POOL` on an unevidenced capability claim, without the operator sign-off its own plan required | `MS-*` | re-evaluate after `DF-LING-1` with live evidence; **pending `/bod` ruling** | pool tests + dogfood receipt |
+| `DF-HG-4` | low | `waist.compose_plan` docstring promises `decomposition='heuristic:llm_failed'` but code emits `'heuristic'`; `plan --task-max-cost` is called an alias of `--max-cost` but has its own precedence | `HG-condense-decompose` | align docstring + help text | `tests/test_hg_condense_decompose.py` |
+| `DF-DOCS-5` | low | README free-tier text does not disclose that a configured paid key now gives automatic (ledgered, ceiling-bounded) paid fallback across apply/panel/specialist pools | docs / `MS-*` | disclose in README + `--help` | audit D1/D2 |
+| `DF-AUDIT-1` | low | `audits/self/audit.py` R14 self-check makes one small live paid call when a key is present (observed $0.0009) — local audit runs are not hermetic by default | audits | make the live probe opt-in (flag/env) | audit R14 |
+| `DF-UI-1` | high | server supports `verify` / `continue` / `bench` run kinds but the GUI only wires `chat` | UI (`harness/ui/panes.js`, `server.py`) | add form panes or document as API-only in `docs/ui-readiness.md` | `tests/test_server.py` |
+| `DF-UI-2` | med | 13 of 24 CLI subcommands have no HTTP API or MCP tool (priority: `plan` HTTP/GUI, `mission`, `cost`, `dogfood`, `jev-phase`) | UI / MCP | add thin faces over the existing owners | server + MCP tests |
+| `DF-UI-3` | low | MCP exposes 12 tools vs 24 CLI subcommands (`continue`, `mission` first) | MCP | thin tool faces over existing owners | `tests/test_mcp.py` |
+| `DF-GOV-1` | high | three STATUS-only commits were pushed directly to `main` (427bcde, 858f90e, 0a7a6fb); two left `main` CI red (0a7a6fb flipped MS without updating its regression canary) | process | every change to `main`, STATUS included, lands via a PR with green CI (AGENTS.md rule 7); **fixed** by the lane-correctness PR (canary updated) | CI on `main` |
+
 Refuted by the verifier (not a row): concurrent `mission run` on one pack (process had already exited). Historical note: baseline commits `b3960e7`/`a591739`/`b6fa945` are not ancestors of `origin/main`; their content landed through the P0 branch (`feat/jev-p0` → PR #34 `d042d70`).
+
+### Antigravity session audit (2026-09-22)
+
+Antigravity session a4439ee2 ("Fix CI And Continue Work") ran while the Claude session was paused and stalled on `429 RESOURCE_EXHAUSTED`. Claude audit: 9 Sonnet auditors + 9 Haiku skeptics (54/56 findings confirmed). Verdict: PRs #66–#69 were CI-gated and sound (#67 matches the JEV-BAR spec; #68/#69 coverage refreshes legitimate), with caveats `DF-HG-3`, `DF-MS-2b`, `DF-LING-2`, `MS-context`; three direct STATUS pushes to `main` broke CI (`DF-GOV-1`). Its uncommitted lane-correctness work was valid and lands here; its out-of-scope audit-gate work is preserved as `JEV-AUDIT-GATE`; its two stalled research tasks were picked up (`DF-LING-1`, `DF-UI-1..3`). Incidents: one Claude research probe hit a live POST route (`$0.000162`) and one audit run triggered `DF-AUDIT-1` (`$0.0009`).
 
 ### Claude lane receipts (2026-09-22)
 

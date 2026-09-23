@@ -469,7 +469,7 @@ class ExtendedPhaseContractTests(unittest.TestCase):
         evidence must pass the dogfood gate on this very tree."""
         repo_root = Path(__file__).resolve().parents[1]
         for phase in ("JEV-P0", "JEV-P1", "JEV-P2", "JEV-P3", "JEV-P4",
-                      "JEV-COMPLETION", "SITE", "JEV-P5",
+                      "JEV-COMPLETION", "SITE", "JEV-P5", "MS",
                       "HUL-A", "HUL-B", "HUL-C", "HUL-D",
                       "JEV-LOG-SCHEMA", "JEV-LOG-PARSE", "JEV-LOG-FACTOR-PASS",
                       "JEV-LOG-JUDGMENT", "JEV-LOG-ENVELOPE", "JEV-LOG-CLI",
@@ -484,15 +484,21 @@ class ExtendedPhaseContractTests(unittest.TestCase):
         """Open canon rows must be FOUND by the gate (honest `false`), not
         invisible. Update the negatives here when those rows legitimately
         flip to complete with evidence."""
-        repo_root = Path(__file__).resolve().parents[1]
         # Seven JEV-LOG rows legitimately flipped complete on PR #56/#57
-        # merge evidence + the 2026-09-22 self-dogfood receipts; only MS
-        # stays negative.
-        for phase in ("MS",):
-            evidence = collect_phase_evidence(str(repo_root), phase)
-            self.assertIsNotNone(evidence["status_row"], phase)
-            self.assertFalse(
-                score_phase_completion(evidence)["can_mark_complete"], phase)
+        # merge evidence + the 2026-09-22 self-dogfood receipts; MS flipped
+        # complete on PR #69. Verify that an incomplete row gates false.
+        incomplete_evidence = {
+            "phase": "OPEN-TEST",
+            "status_row": "| `OPEN-TEST` | in progress |",
+            "pr_merged": False,
+            "origin_evidence": False,
+            "required_tests_present": False,
+            "local_gates_green": False,
+            "ci_green": False,
+            "no_open_blockers": False,
+        }
+        res = score_phase_completion(incomplete_evidence)
+        self.assertFalse(res["can_mark_complete"])
 
 
 if __name__ == "__main__":

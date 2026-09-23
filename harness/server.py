@@ -647,7 +647,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         served. Same loopback+_guard policy as every other route: this runs
         before the auth guard, matching the legacy UI's static handling.
         """
-        if not self._guard():
+        if not self._host_ok():
+            self._error(403, "forbidden host (loopback only)")
             return
         rel = os.path.normpath(path[len("/site/"):]).lstrip("\\/")
         if rel in (".", ""):

@@ -26,15 +26,34 @@ def _unkeyed_settings():
 class SiteGuardTests(ServerHarness):
     token = "guard-token-1"
 
-    def test_site_routes_require_auth_like_api(self):
-        # /site/* is NOT in the unguarded static allowlist: a request with a
-        # wrong token is refused before any file read (line 647->648 branch).
+    def test_site_static_does_not_require_auth_header(self):
+        # DF-SITE-1: /site/* static assets carry no secrets and must be reachable
+        # in a standard browser without custom X-Harness-Auth headers, even when
+        # HARNESS_UI_AUTH_TOKEN is configured.
         conn = self._conn()
         try:
+            status, data = _request(conn, "GET", "/site/index.html")
+            self.assertEqual(status, 200)
+            self.assertIn("Proof Bench", data.get("raw", ""))
+            # Wrong or absent token still serves static assets cleanly
+            status, data = _request(conn, "GET", "/site/index.html",
+                                 headers={"X-Harness-Auth": "wrong"})
+            self.assertEqual(status, 200)
+            # Rebinding protection still guards host
             status, _ = _request(conn, "GET", "/site/index.html",
+                                 headers={"Host": "attacker.com"})
+            self.assertEqual(status, 403)
+        finally:
+            conn.close()
+
+    def test_api_routes_still_require_auth_when_token_set(self):
+        # JSON API routes remain strictly guarded by X-Harness-Auth token
+        conn = self._conn()
+        try:
+            status, _ = _request(conn, "GET", "/api/snapshot",
                                  headers={"X-Harness-Auth": "wrong"})
             self.assertEqual(status, 401)
-            status, _ = _request(conn, "GET", "/site/index.html",
+            status, _ = _request(conn, "GET", "/api/snapshot",
                                  headers={"X-Harness-Auth": self.token})
             self.assertEqual(status, 200)
         finally:

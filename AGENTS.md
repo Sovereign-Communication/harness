@@ -76,3 +76,4 @@ coding agent's own tiers (Opus orchestrates; Haiku/Sonnet do the work) is in `CL
 4. No provider brand hardcoding in phase code PRs — resolve via ladders / `MS-*`.
 5. Do not game `audits/self/coverage_baseline.json` to hide untested new lines; refresh only after real tests execute those lines.
 6. Report blocked with exact command/output — never “will do”.
+7. Every change to `main` — STATUS and docs included — lands through a PR with green CI; never push directly to `main` (2026-09-22: direct STATUS pushes left `main` red, `DF-GOV-1`).

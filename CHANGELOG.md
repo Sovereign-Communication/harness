@@ -15,6 +15,8 @@ break APIs between minor versions).
 
 ### Fixed
 
+- **Lane correctness (`DF-CLI-1`, `DF-APPLY-1`, `DF-SITE-1`)** — `harness ledger verify` exits 2 on a broken chain (documented exit codes); `harness continue --instruction X` now overrides the saved continuation scope instead of replaying it; static `/site/` assets no longer require the UI auth header (JSON API stays guarded). Tests: `tests/test_apply_instruction_override.py`, `tests/test_cli.py`, `tests/test_site_server.py`.
+- **Canon regression canary (`DF-GOV-1`)** — `tests/test_jev_completion.py` no longer pins `MS` as open after PR #69 completed its routing slice; the undelivered context half is tracked as `MS-context`.
 - **Hourglass repair (`DF-HG-1`, `DF-HG-2`, `DF-HG-3`)** — Fixed three confirmed dogfood defects in hourglass planning:
   - `DF-HG-1`: `_cmd_plan` now honors `--task-max-cost` (and alias `--max-cost`) as the ceiling for the plan governor; `composed_worst_case` returns `plan_ceiling` in the envelope.
   - `DF-HG-2`: `plan --resume PATH` supports cold-start bootstrapping when `PATH` does not exist yet (`load_state(..., allow_missing=True)`), persisting state on execution completion. Added `--persist-state` flag to CLI parser.
