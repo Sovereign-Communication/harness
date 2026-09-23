@@ -8,7 +8,8 @@ harness.service or any face module (it is the bottom of the cli stack).
 import argparse
 
 
-def _add_engine_flags(p, *, max_tokens_default, verify_required=False):
+def _add_engine_flags(p, *, max_tokens_default, verify_required=False,
+                      task_max_cost_help=None):
     """Flags shared by apply, continue, and dogfood -- the dispatches into the
     apply engine. One definition keeps the surfaces in lockstep (the historical
     bug class: a flag or default fixed on one but not the others)."""
@@ -27,7 +28,10 @@ def _add_engine_flags(p, *, max_tokens_default, verify_required=False):
     p.add_argument("--renew-consent", dest="renew_consent", action="store_true", default=None)
     p.add_argument("--no-renew-consent", dest="renew_consent", action="store_false")
     p.add_argument("--max-tokens", type=int, default=max_tokens_default)
-    p.add_argument("--task-max-cost", type=float, default=None)
+    p.add_argument("--task-max-cost", type=float, default=None,
+                   help=task_max_cost_help or
+                   "per-task spend ceiling in USD (default: the session's "
+                   "configured/engine ceiling)")
     p.add_argument("--allow-escalation", dest="allow_escalation", action="store_true", default=None)
     p.add_argument("--reasoning-effort", default=None,
                    choices=["auto", "off", "none", "low", "medium", "high", "on"])
@@ -86,7 +90,10 @@ def build_parser():
                     help="JSON map identifier -> verbatim definition for auto-expansion")
     pv.add_argument("--claim-context", default=None,
                     help="context prose naming identifiers; overrides the manifest 'context' key")
-    pv.add_argument("--panel")
+    pv.add_argument("--panel",
+                    help="comma-separated panel model ids, strongest/preferred "
+                         "first (default: configured panel_pool); forwarded "
+                         "to the verify service as the candidate pool")
     pv.add_argument("--judge")
     pv.add_argument("--max-tokens", type=int, default=None)
     pv.add_argument("--max-cost", type=float, default=None,
@@ -182,8 +189,27 @@ def build_parser():
                          "dependent stages start")
     pp.add_argument("--keep-going", dest="keep_going", action="store_true", default=False, help="continue past a failed subtask")
     pp.add_argument("--max-cost", type=float, default=None,
-                    help="maximum spend ceiling for the entire plan run (alias: --task-max-cost)")
-    _add_engine_flags(pp, max_tokens_default=4096)
+                    help="maximum spend ceiling for the entire plan run; "
+                         "NOT an alias of --task-max-cost -- when both are "
+                         "given, --task-max-cost takes precedence and this "
+                         "flag is ignored (see --task-max-cost)")
+    _add_engine_flags(
+        pp, max_tokens_default=4096,
+        task_max_cost_help="maximum spend ceiling for the entire plan run; "
+                           "when given, OVERRIDES --max-cost for this run "
+                           "(precedence: --task-max-cost, then --max-cost, "
+                           "then the session default) rather than aliasing it")
+    pp.add_argument("--allow-heuristic-preview", dest="allow_heuristic_preview",
+                    action="store_true", default=False,
+                    help="DF-HG-3b: permit a plan-only preview (no --execute) "
+                         "to degrade to heuristic decomposition when LLM "
+                         "decomposition fails twice, instead of the fail-closed "
+                         "default (a non-zero exit). The degraded preview is "
+                         "labeled decomposition='heuristic', prints a loud "
+                         "stderr note, and is never reported as confirmed "
+                         "(waist confirmation is skipped on the degraded path). "
+                         "--execute is unaffected: it always falls back to the "
+                         "heuristic on decomposition failure, opt-in or not.")
     _add_output_flags(pp)
 
     pc = sub.add_parser("continue", help="Continue a deferred/incomplete apply task")

@@ -12,6 +12,154 @@ from harness.errors import HarnessError
 from harness.router import Router
 
 
+class PanelWiringTests(unittest.TestCase):
+    def test_verify_panel_flag_reaches_run_verify(self):
+        """DF-CLI-2: ``harness verify --panel`` was declared in cli_parser.py
+        but cli.py never read opts.panel -- the flag was a no-op. The
+        comma-separated ids must reach service.panel_judge as a list, in
+        order, through the ONE owner (service.run_verify)."""
+        captured = {}
+
+        def fake_governor(settings, max_cost_override=None):
+            gov = mock.Mock()
+            gov.verify_key.return_value = None
+            gov.max_cost = max_cost_override or settings.max_cost
+            gov.spent = 0.0
+            gov.preflight.return_value = (0.0, [])
+            gov.check_byok.return_value = None
+            gov.learned_blocked.return_value = False
+            gov.record_actual.return_value = None
+            gov.cost_by_model.return_value = {}
+            gov.is_free.return_value = True
+            return "key", gov
+
+        def fake_panel_judge(**kwargs):
+            captured["panel"] = kwargs.get("panel")
+            return {}
+
+        with mock.patch.object(service, "governor_for",
+                               side_effect=fake_governor), \
+             mock.patch.object(service, "panel_judge",
+                               side_effect=fake_panel_judge), \
+             mock.patch.object(service, "HttpTransport"):
+            cli.main(["verify", "--prompt", "hi",
+                     "--panel", "model/one, model/two ,model/three"])
+        self.assertEqual(captured["panel"],
+                         ["model/one", "model/two", "model/three"])
+
+    def test_verify_without_panel_flag_uses_configured_default(self):
+        """No --panel given: run_verify falls back to the configured/router
+        default pool (None reaches ResolvedVerifyInputs, not an empty list
+        that would starve the panel)."""
+        captured = {}
+
+        def fake_governor(settings, max_cost_override=None):
+            gov = mock.Mock()
+            gov.verify_key.return_value = None
+            gov.max_cost = max_cost_override or settings.max_cost
+            gov.spent = 0.0
+            gov.preflight.return_value = (0.0, [])
+            gov.check_byok.return_value = None
+            gov.learned_blocked.return_value = False
+            gov.record_actual.return_value = None
+            gov.cost_by_model.return_value = {}
+            gov.is_free.return_value = True
+            return "key", gov
+
+        def fake_panel_judge(**kwargs):
+            captured["panel"] = kwargs.get("panel")
+            return {}
+
+        with mock.patch.object(service, "governor_for",
+                               side_effect=fake_governor), \
+             mock.patch.object(service, "panel_judge",
+                               side_effect=fake_panel_judge), \
+             mock.patch.object(service, "HttpTransport"):
+            cli.main(["verify", "--prompt", "hi"])
+        self.assertNotEqual(captured["panel"], [])
+
+
+class PlanAllowHeuristicPreviewWiringTests(unittest.TestCase):
+    """DF-HG-3b: --allow-heuristic-preview must reach compose_plan's
+    allow_heuristic_preview kwarg through the ONE owner (_plan_compose),
+    and default to False when the flag is absent."""
+
+    def _settings(self):
+        from types import SimpleNamespace
+        # Plain namespace (not Mock): hasattr(settings, "ledger_path") /
+        # hasattr(settings, "jev_api_key") must be False here, exactly as a
+        # real plan-only, non-ledgered settings object would be -- a Mock
+        # auto-creates every attribute and would wrongly take the ledger/
+        # jev_policy branches in _plan_compose.
+        return SimpleNamespace(use_free=True, allow_escalation=False)
+
+    def test_flag_true_reaches_compose_plan(self):
+        from types import SimpleNamespace
+        captured = {}
+
+        def fake_compose_plan(**kwargs):
+            captured.update(kwargs)
+            return {}
+
+        opts = SimpleNamespace(goal="g", allow_escalation=None,
+                              max_tokens=None, plan_consensus=False)
+        with mock.patch.object(cli, "_compose_plan",
+                               side_effect=fake_compose_plan):
+            cli._plan_compose(
+                self._settings(), opts, None, None, None,
+                candidate_files=None, frontier_model=None, execute=False,
+                confirm=False, decompose_llm=False, plan_consensus=False,
+                hourglass={"confirm": False, "decompose": False},
+                allow_heuristic_preview=True)
+        self.assertTrue(captured["allow_heuristic_preview"])
+
+    def test_flag_defaults_false_when_omitted(self):
+        from types import SimpleNamespace
+        captured = {}
+
+        def fake_compose_plan(**kwargs):
+            captured.update(kwargs)
+            return {}
+
+        opts = SimpleNamespace(goal="g", allow_escalation=None,
+                              max_tokens=None, plan_consensus=False)
+        with mock.patch.object(cli, "_compose_plan",
+                               side_effect=fake_compose_plan):
+            cli._plan_compose(
+                self._settings(), opts, None, None, None,
+                candidate_files=None, frontier_model=None, execute=False,
+                confirm=False, decompose_llm=False, plan_consensus=False,
+                hourglass={"confirm": False, "decompose": False})
+        self.assertFalse(captured["allow_heuristic_preview"])
+
+    def test_cmd_plan_reads_opts_flag_into_plan_compose(self):
+        """The CLI entry (_cmd_plan) must read opts.allow_heuristic_preview
+        (set by --allow-heuristic-preview) and forward it into
+        _plan_compose, not just _plan_compose's own default."""
+        from types import SimpleNamespace
+        captured = {}
+
+        def fake_plan_compose(settings, opts, gov, transport, api_key, **kwargs):
+            captured.update(kwargs)
+            return {"status": "planned", "decomposition": "heuristic",
+                   "nodes": []}
+
+        opts = SimpleNamespace(
+            goal="g", file=None, frontier_model=None, execute=False,
+            plan_consensus=False, resume=None, task_max_cost=None,
+            max_cost=None, allow_heuristic_preview=True,
+            decompose_llm=None, confirm=None, out=None,
+            allow_escalation=None, max_tokens=None)
+        settings = SimpleNamespace(
+            use_free=True, allow_escalation=False,
+            hourglass_confirm=False, hourglass_parallel=False)
+        with mock.patch.object(cli, "_plan_compose",
+                               side_effect=fake_plan_compose), \
+             mock.patch.object(cli, "_emit_by_status"):
+            cli._cmd_plan(opts, settings)
+        self.assertTrue(captured["allow_heuristic_preview"])
+
+
 class MaxCostWiringTests(unittest.TestCase):
     def test_verify_max_cost_reaches_governor(self):
         """Regression: verify --max-cost was parsed but never wired, so the

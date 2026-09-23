@@ -1246,16 +1246,29 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                  allow_escalation: bool = False,
                  plan_consensus: bool = False,
                  jev_policy=None,
-                 issue_sort_pack=None) -> Dict[str, Any]:
+                 issue_sort_pack=None,
+                 allow_heuristic_preview: bool = False) -> Dict[str, Any]:
     """ONE owner of the plan-lane flow (CLI and MCP call this).
 
     Order: optional cheap-LLM decomposition (M1, condensed signatures) ->
     tier classification -> single-pass chunking -> optional cheap plan
     consensus -> optional waist confirmation (M2) over the plan that will
     actually run -> composed pyramid ceiling check before execute spend.
-    Decomposition failures retry once, then fall back loudly to the
-    heuristic in both preview and execute modes (with an orchestration
-    event and decomposition='heuristic:llm_failed').
+
+    Decomposition failures retry once, then:
+    * ``execute=True`` -- always fall back loudly to the heuristic
+      (decomposition='heuristic'; an orchestration event + stderr note).
+      The run spends anyway, so a loud fallback keeps it going.
+    * ``execute=False`` (plan-only preview) -- FAILS CLOSED by default: the
+      operator asked for LLM planning, and silently handing back the
+      heuristic plan would be dishonest (raises HarnessError, non-zero
+      exit). Passing ``allow_heuristic_preview=True`` (CLI:
+      ``--allow-heuristic-preview``) opts into the same loud heuristic
+      fallback as execute mode instead -- decomposition='heuristic', a
+      loud stderr note, and the waist confirmation step (``confirm``) is
+      skipped rather than confirming a plan the operator never got the
+      LLM decomposition they asked for: the envelope's ``confirmation``
+      is explicitly ``verdict: "skipped"``, never ``"approved"``.
 
     Fail-closed rules (hourglass composition):
     * confirm=True and EVERY waist rung unreachable on execute -> REFUSE
@@ -1319,6 +1332,11 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
 
     decomposed = None
     decomposition = "heuristic"
+    # DF-HG-3b: set only when a plan-only preview degraded to the heuristic
+    # after an opted-in LLM decomposition failure -- the waist confirmation
+    # step is then skipped rather than confirming (and reporting as
+    # approved) a plan the operator never got the LLM decomposition for.
+    _degraded_preview_heuristic = False
     if decompose_llm:
         if chat_fn is None:
             if not decompose_model:
@@ -1357,6 +1375,19 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                 if attempt == 1:
                     eprint(f"[plan] LLM decomposition attempt 1 failed ({exc}); retrying")
         if last_exc is not None:
+            # DF-HG-3b (Board ruling on PR #68): a plan-only preview stays
+            # FAIL-CLOSED by default -- the operator asked for LLM planning,
+            # and silently handing back the heuristic plan would misreport
+            # what actually ran. --execute always falls back loudly (the
+            # run spends anyway); a preview only degrades when the operator
+            # opted in with allow_heuristic_preview.
+            if not execute and not allow_heuristic_preview:
+                raise HarnessError(
+                    f"LLM decomposition failed twice ({last_exc}); refusing "
+                    "to silently degrade a plan-only preview to the "
+                    "heuristic decomposition. Pass --allow-heuristic-preview "
+                    "to opt into a loud heuristic fallback, or rerun with "
+                    "--execute.") from last_exc
             from . import events as _events
             _events.emit(
                 "orchestration_note",
@@ -1364,6 +1395,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             eprint(f"[plan] LLM decomposition failed ({last_exc}); loud heuristic fallback")
             decomposition = "heuristic"
             decomposed = None
+            if not execute:
+                _degraded_preview_heuristic = True
 
     plan_result = plan_task(
         goal=plan_goal, candidate_files=candidate_files,
@@ -1417,7 +1450,22 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         if consensus is not None:
             plan_result["consensus"] = consensus
 
-    if confirm:
+    if confirm and _degraded_preview_heuristic:
+        # DF-HG-3b: the operator opted into a heuristic-degraded preview,
+        # which never ran the LLM decomposition the waist would confirm.
+        # Report the skip explicitly -- never "approved" for a plan that
+        # was not actually reviewed against the requested decomposition.
+        plan_result["confirmation"] = {
+            "verdict": "skipped",
+            "model": None,
+            "rounds": 0,
+            "reason": "plan-only preview degraded to heuristic decomposition "
+                      "via --allow-heuristic-preview; waist confirmation "
+                      "over an LLM decomposition never happened, so it is "
+                      "skipped rather than confirming an unreviewed plan.",
+            "cost": 0.0,
+        }
+    elif confirm:
         ladder = resolve_waist_ladder(
             use_free=use_free, custom_frontier=frontier_model,
             allow_escalation=allow_escalation)

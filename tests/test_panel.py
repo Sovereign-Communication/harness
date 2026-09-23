@@ -143,6 +143,58 @@ class PanelJudgeTests(unittest.TestCase):
         self.assertIn("NOTE: cut off by token limit", judge_user)
 
 
+class PanelSeatingVisibilityTests(unittest.TestCase):
+    """DF-BOD-1: a requested panelist the capability hard gate (or the
+    catalog-unknown / learned-BYOK filters) drops BEFORE dispatch must be
+    reported in ``panel_failures`` -- never silently absent from the seat
+    count. ``max_panelists=N`` with fewer than N eligible models must seat
+    exactly the eligible count, and say why the rest are missing."""
+
+    GOOD = ["provider-a/capable-1", "provider-b/capable-2",
+           "provider-c/capable-3", "provider-d/capable-4"]
+    DROPPED = "google/gemini-3.8-flash"
+
+    @staticmethod
+    def _capable(model_id):
+        # context_length + a declared JSON capability -> capability_score > 0
+        # (harness/capability.py capability_score/context_score).
+        return {"id": model_id,
+                "pricing": {"prompt": "0.000001", "completion": "0.000002"},
+                "context_length": 128000,
+                "supported_parameters": ["structured_outputs"]}
+
+    @staticmethod
+    def _uncapable(model_id):
+        # No context_length, no declared JSON support -> capability_score
+        # == 0 -> order_pool's hard capability gate drops it entirely
+        # (harness/capability.py order_pool: "capability <= 0) are dropped").
+        return {"id": model_id,
+                "pricing": {"prompt": "0.000001", "completion": "0.000002"}}
+
+    def test_hard_gated_panelist_is_reported_not_silently_dropped(self):
+        models = [self._capable(mid) for mid in self.GOOD] + [self._uncapable(self.DROPPED)]
+        judge = self.GOOD[0]
+        fake = FakeTransport(
+            models=models,
+            posts=[comp(f"vote {i}") for i in range(len(self.GOOD))] + [comp("verdict")])
+        gov = _gov(fake, max_cost=1.0)
+        panel = self.GOOD + [self.DROPPED]
+        result = panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",
+                             panel=panel, judge=judge, max_panelists=5)
+        # 5 requested, only 4 eligible (capability hard gate drops the 5th):
+        # max_panelists=N with fewer than N eligible models must seat exactly
+        # the eligible count.
+        self.assertEqual(result["required_panelists"], len(self.GOOD))
+        self.assertEqual(len(result["panel_results"]), len(self.GOOD))
+        seated = {r["model"] for r in result["panel_results"]}
+        self.assertNotIn(self.DROPPED, seated)
+        # The dropped panelist must be visible in panel_failures, not silent.
+        failure_models = {f["model"] for f in result["panel_failures"]}
+        self.assertIn(self.DROPPED, failure_models,
+                     "a requested panelist removed pre-dispatch by the "
+                     "capability hard gate must be reported in panel_failures")
+
+
 class VoteFidelityTests(unittest.TestCase):
     """#14: panel votes must reach the judge/specialist untruncated."""
 
