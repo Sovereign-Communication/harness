@@ -576,6 +576,15 @@ class CliParserSurfaceTests(unittest.TestCase):
         registered = set(sub_action.choices)
         self.assertEqual(registered, set(_DISPATCH) | {"serve", "desktop"})
 
+    def test_apply_can_disable_escalation_explicitly(self):
+        from harness.cli_parser import build_parser
+
+        opts = build_parser().parse_args([
+            "apply", "--file", "target.py", "--verify", "python -c pass",
+            "--no-escalation",
+        ])
+        self.assertIs(opts.allow_escalation, False)
+
     def test_handler_seams_stay_importable_from_cli(self):
         import harness.cli as cli
 

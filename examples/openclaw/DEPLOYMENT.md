@@ -29,6 +29,8 @@ HARNESS_JEV_DISABLE=1 python -m harness.cli apply \
 
 Do not rerun this paid command until its budget behavior is reviewed. It returned `verify_failed`, persisted no source edit, observed DeepSeek and GLM, and reported OpenRouter cost `$0.01297081764` despite the requested `$0.01` ceiling. Two prior Ling attempts deferred; total reported OpenRouter cost was `$0.01415811573`. This is structured run evidence, not an independently reconciled provider invoice. Native Jev was not run for this worker attempt. Disabling Jev here separated paid accounting for the bounded attempt; native Jev must still pass before any production worker deployment.
 
+The continuation adds `--no-escalation`, independently checked to forward `allow_escalation=False` while preserving the previous default and explicit opt-in. `--max-rotations 0` alone does not disable this separate escalation path. This switch controls model selection; it does not turn estimated cost preflight into a hard invoice ceiling. Conservative input/output bounds and provider price restrictions remain necessary before resuming paid work.
+
 ## Needle reproduction
 
 The existing `cactus-needle` package is version `3.0.4`. Its Python 3.9 environment fails to import; the observed workaround uses `/usr/bin/python3.12` with `PYTHONPATH=/home/ec2-user/needle-venv/lib/python3.9/site-packages`.

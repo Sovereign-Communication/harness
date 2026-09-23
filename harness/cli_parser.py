@@ -29,6 +29,8 @@ def _add_engine_flags(p, *, max_tokens_default, verify_required=False):
     p.add_argument("--max-tokens", type=int, default=max_tokens_default)
     p.add_argument("--task-max-cost", type=float, default=None)
     p.add_argument("--allow-escalation", dest="allow_escalation", action="store_true", default=None)
+    p.add_argument("--no-escalation", dest="allow_escalation", action="store_false",
+                   help="disable the separate escalation model after apply fails")
     p.add_argument("--reasoning-effort", default=None,
                    choices=["auto", "off", "none", "low", "medium", "high", "on"])
     p.add_argument("--max-rotations", type=int, default=None)
