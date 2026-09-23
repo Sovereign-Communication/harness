@@ -13,9 +13,13 @@ Iterates attempts against a HUL-A mission pack until one of:
 After every attempt the pack resume state is rewritten (interrupt-safe).
 Terminal outcomes write ``FINDINGS.md`` via ``mission_record.mark_terminal``.
 
-Dual-budget enforcement (attempts never eat ``terminal_reserve``) is HUL-B.
-Until that lands, this driver uses the honest ``working_remaining`` formula
-already stored by ``mission_record``::
+Dual-budget enforcement (attempts never eat ``terminal_reserve``) is HUL-B
+and is live: ``mission_record.record_spend`` enforces it via
+``spend.assert_spend_allowed`` before any attempt spend is recorded — a
+spend that would eat ``terminal_reserve`` raises and this driver terminates
+the mission ``blocked`` instead of writing it. This driver also uses the
+honest ``working_remaining`` formula already stored by ``mission_record`` as
+its own cost-limit ceiling::
 
     working_remaining = max_cost_usd - spent - terminal_reserve.cost_usd
 
@@ -32,11 +36,16 @@ from .errors import HarnessError
 from . import mission_record as mr
 
 DEFAULT_STALL_LIMIT = 5
-# HUL-B dual budget not on this tree by default — working_remaining formula
-# from mission budget is the reserve-aware ceiling used for cost limits.
+# HUL-B dual-budget enforcement is live in mission_record.record_spend (via
+# spend.assert_spend_allowed, DF-HUL-1): attempt-phase spend that would eat
+# terminal_reserve is refused before it lands. This note documents that plus
+# the working_remaining ceiling this driver also uses for cost limits.
 HUL_B_DUAL_BUDGET_NOTE = (
-    "HUL-B dual-budget enforcement not present; using mission_record "
-    "working_remaining (max - spent - terminal_reserve)."
+    "HUL-B dual-budget enforcement is active: mission_record.record_spend "
+    "enforces the envelope via spend.assert_spend_allowed, refusing "
+    "attempt-phase spend before it can eat terminal_reserve; this driver "
+    "uses the same working_remaining ceiling (max - spent - "
+    "terminal_reserve) for its own cost limits."
 )
 
 

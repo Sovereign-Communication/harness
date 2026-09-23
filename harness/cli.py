@@ -755,6 +755,50 @@ def _cmd_cost(opts, settings):
     _emit(report, opts.out)
 
 
+# DF-HUL-2: the CLI's default attempt seat (harness.mission_driver's code-
+# owned pack probe) makes no model call and spends nothing. It is
+# deliberately unkeyed/local-only -- CLI `mission run` / `mission resume
+# --run` never dispatch a paid model. A caller that wants a paid attempt
+# seat is a *library* caller: inject a callable into
+# ``harness.mission_driver.run_mission(..., attempt_fn=...)`` yourself, for
+# example one built from ``harness.session.apply_session`` / ``engine_for``
+# (resolves models through the existing Router/pool ladders -- no second
+# model client, no brand strings here). See README.md "CLI" / `harness
+# mission --help`.
+_MISSION_ATTEMPT_SEAT_NOTE = (
+    "attempt seat: unkeyed/local-only pack probe "
+    "(harness.mission_driver.pack_probe_attempt); no model call, no spend. "
+    "CLI `mission run`/`mission resume --run` cannot select a paid seat. "
+    "Library callers get one by injecting attempt_fn into "
+    "harness.mission_driver.run_mission (e.g. an apply-lane callable from "
+    "harness.session.apply_session, routed via the existing Router/ladders)."
+)
+
+
+def _run_mission_driver(pack, opts):
+    """Shared HUL-D driver call for `mission run` and `mission resume --run`
+    (DF-HUL-3: one driver, no second loop). Adds the CLI attempt-seat note
+    (DF-HUL-2) to the returned summary."""
+    run_settings = load_settings()
+    run_settings.jev_api_key = None
+    try:
+        scope_policy = policy_for(run_settings)
+    except HarnessError:
+        scope_policy = None
+    stall_limit = getattr(opts, "stall_limit", None)
+    result = _mission_run(
+        pack,
+        attempt_fn=_mission_pack_probe,
+        scope_policy=scope_policy,
+        stall_limit=int(stall_limit) if stall_limit else 5,
+        max_attempts=getattr(opts, "max_attempts", None),
+        max_tokens=getattr(opts, "max_tokens", None),
+        max_errors=getattr(opts, "max_errors", None),
+    )
+    result["attempt_seat"] = _MISSION_ATTEMPT_SEAT_NOTE
+    return result
+
+
 def _cmd_mission(opts, settings):
     """HUL-A/D mission pack CLI: init | status | resume | findings | run."""
     from . import mission_record as mr
@@ -779,22 +823,7 @@ def _cmd_mission(opts, settings):
     if cmd == "run":
         # HUL-D until-limits driver. CLI scope seat unkeyed by default.
         pack = mr.load_mission_pack(opts.root, opts.mission_id)
-        run_settings = load_settings()
-        run_settings.jev_api_key = None
-        try:
-            scope_policy = policy_for(run_settings)
-        except HarnessError:
-            scope_policy = None
-        stall_limit = getattr(opts, "stall_limit", None)
-        result = _mission_run(
-            pack,
-            attempt_fn=_mission_pack_probe,
-            scope_policy=scope_policy,
-            stall_limit=int(stall_limit) if stall_limit else 5,
-            max_attempts=getattr(opts, "max_attempts", None),
-            max_tokens=getattr(opts, "max_tokens", None),
-            max_errors=getattr(opts, "max_errors", None),
-        )
+        result = _run_mission_driver(pack, opts)
         _emit(result, opts.out)
         return
     pack = mr.load_mission_pack(opts.root, opts.mission_id)
@@ -804,13 +833,33 @@ def _cmd_mission(opts, settings):
         _emit(mr.pack_summary(pack), opts.out)
         return
     if cmd == "resume":
+        # DF-HUL-3: plain `mission resume` stays a read-only status call
+        # (it never mutates progress) but is honest that it did not
+        # continue anything and says how to. `--run` continues the SAME
+        # HUL-D until-limits driver `mission run` uses (no second loop).
+        if getattr(opts, "run", False):
+            terminal_before = mr.is_terminal(pack)
+            result = _run_mission_driver(pack, opts)
+            result["resumed"] = not terminal_before
+            _emit(result, opts.out)
+            return
         state = mr.load_resume(pack)
         validated = mr.validate_resume(state, expected_id=pack.id)
         mr.write_resume(pack, validated)
         mr.write_status(pack)
         out = mr.pack_summary(pack)
         out["resume"] = validated
-        out["resumable"] = validated["status"] not in ("terminal", "complete", "failed")
+        resumable = validated["status"] not in ("terminal", "complete", "failed")
+        out["resumable"] = resumable
+        out["resumed"] = False
+        out["how_to_continue"] = (
+            f"read-only status only -- nothing was continued; pass --run to "
+            f"continue the until-limits driver from resume.json "
+            f"(harness mission resume --id {pack.id} --root {opts.root} --run)"
+        ) if resumable else (
+            "mission is already terminal; resume --run will not continue it "
+            "(see mission findings for the terminal outcome)"
+        )
         _emit(out, opts.out)
         return
     if cmd == "findings":

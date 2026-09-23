@@ -520,12 +520,32 @@ def build_parser():
     pmi.add_argument("--verifier-kind", default="unspecified",
                      help="verifier.kind recorded in mission.yaml")
     _add_output_flags(pmi)
-    for _sub in ("status", "resume", "findings"):
+    for _sub in ("status", "findings"):
         _p = pms.add_parser(_sub, help=f"mission {_sub}")
         _p.add_argument("--id", dest="mission_id", required=True, help="mission id")
         _p.add_argument("--root", default="missions",
                         help="pack parent directory (default: missions)")
         _add_output_flags(_p)
+    presume = pms.add_parser(
+        "resume",
+        help="mission resume: read-only status by default; --run continues "
+             "the HUL-D until-limits driver from resume.json")
+    presume.add_argument("--id", dest="mission_id", required=True, help="mission id")
+    presume.add_argument("--root", default="missions",
+                         help="pack parent directory (default: missions)")
+    presume.add_argument("--run", action="store_true",
+                         help="DF-HUL-3: continue the until-limits driver "
+                              "(same driver as `mission run`) instead of "
+                              "only reporting status")
+    presume.add_argument("--max-attempts", dest="max_attempts", type=int, default=None,
+                         help="only with --run")
+    presume.add_argument("--stall-limit", dest="stall_limit", type=int, default=5,
+                         help="only with --run")
+    presume.add_argument("--max-tokens", dest="max_tokens", type=int, default=None,
+                         help="only with --run")
+    presume.add_argument("--max-errors", dest="max_errors", type=int, default=None,
+                         help="only with --run")
+    _add_output_flags(presume)
     prun = pms.add_parser(
         "run",
         help="HUL-D until-limits driver: attempts until limits/stall/success")

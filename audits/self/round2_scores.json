@@ -222,7 +222,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 1907 tests in 120.403s\n\nOK"
+        "evidence": "unittest: Ran 1913 tests in 106.099s\n\nOK"
       },
       {
         "id": "R14",
@@ -352,7 +352,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "no executable harness changes since the coverage baseline bcd507ce58"
+        "evidence": "no executable harness changes since the coverage baseline 8fb7a4c7c6"
       }
     ]
   }
