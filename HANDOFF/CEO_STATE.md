@@ -3,6 +3,22 @@
 **Updated:** 2026-09-22
 **Audit basis:** fresh commands + disk artifacts; canon `docs/jev-roadmap.md`.
 
+## Audit — 2026-09-22 15:30 HST: Antigravity session a4439ee2 ("Fix CI And Continue Work")
+
+Method: session trajectory decoded (2,567 steps) + 9 Sonnet auditors + 9 Haiku skeptics (54/56 findings confirmed); all read-only.
+
+| Claim / action | Verdict | Evidence |
+|---|---|---|
+| PR #67 JEV-BAR matches the operator spec | PASS | spec sections 1–8 verified; tests exercise the real `JevPolicy` via fakes; coverage refresh legitimate |
+| PR #68 HG repair (DF-HG-1/2/3) | PASS with caveat | DF-HG-1/2 solid; DF-HG-3 inverted a fail-closed preview test → Board rejected acceptance → fail-closed default restored in `fix/verify-panel-hg-preview` |
+| PR #69 MS routing (DF-MS-1..3) | PASS with caveats | DF-MS-1/3 fixed; DF-MS-2 documentation-only (`DF-MS-2b`); "context" half undelivered (`MS-context`); Ling removed from free apply pool without evidence/sign-off (`DF-LING-2`); paid failover bounded + ledgered but undisclosed (`DF-DOCS-5`) |
+| Three direct STATUS pushes to `main` | **FAIL** | `858f90e`, `0a7a6fb` left CI red; fixed by PR #70; AGENTS rule 7 now forbids direct pushes (`DF-GOV-1`) |
+| Uncommitted lane-correctness WIP | PASS (split) | DF fixes valid → PR #70; out-of-scope audit gate preserved → `feat/jev-audit-gate` |
+| Stalled research tasks | picked up | Ling "unparseable" root cause (`DF-LING-1`, reproduced); GUI/CLI parity gaps (`DF-UI-1..3`) |
+| Claude-side incidents | disclosed | one research probe hit a live POST route ($0.000162); one audit run triggered R14's live probe ($0.0009) → `DF-AUDIT-1` |
+
+Open escalations to the operator: `DF-LING-2` (Ling pool), DF-HG-3 default, Board mechanics (`DF-BOD-1`), workspace trust dialog.
+
 ## Audit results this session
 
 | Claim | Verdict | Evidence |

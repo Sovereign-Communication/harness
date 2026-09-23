@@ -3,6 +3,26 @@
 **Updated:** 2026-09-22 (Claude Code session; operator API limit at ~20%, session parked safely)
 **Canon:** `docs/jev-roadmap.md` — STATUS, "Next implementation slice", `DF-*` rows. This file is seat state, not a plan.
 
+## RESUME HERE — 2026-09-22 15:30 HST (Claude, post-reset; Antigravity session audited and picked up)
+
+| Item | State |
+|---|---|
+| `origin/main` | `412f7e1` (PR #70 merged) — **green again** (CI 5/5); it had been red since direct STATUS push `0a7a6fb` |
+| Merged while Claude was paused (Antigravity) | #66 CLAUDE-LANE `6f00d38`, #67 JEV-BAR `a9b58ab`, #68 HG repair `4889776`, #69 MS routing `e47001a` — all CI-green at merge; audited sound with caveats (see CEO_STATE) |
+| Merged this session | **#70** lane-correctness `412f7e1`: DF-CLI-1, DF-APPLY-1, DF-SITE-1, MS canary (`DF-GOV-1`), canon honesty, AGENTS rule 7 |
+| In flight (parallel worktrees, merge one at a time on green) | `feat/jev-audit-gate` (JEV-AUDIT-GATE, preserved Antigravity WIP `a9bfbc3`), `fix/verify-panel-hg-preview` (DF-CLI-2, DF-BOD-1, DF-HG-3b fail-closed preview + opt-in, DF-HG-4), `fix/hul-d-followups` (DF-HUL-1..3), `chore/ci-docs-hygiene` (DF-CI-1..3, DF-DOCS-1..5, DF-AUDIT-1), `fix/ling-parse` (DF-LING-1, via headless `/isolated-mission`) |
+| Board | convened 2026-09-22 — no resolution passed strict 5/5 (see BOD_STATE); DF-HG-3 acceptance rejected → default preview restored to fail-closed in `fix/verify-panel-hg-preview` |
+| Local MCP | `harness` entry connects (fix merged in #66); temporary `harness-dev` removed |
+| Operator one-time | accept the Claude Code workspace trust dialog (headless runs still ignore project allow rules) |
+
+### Next actions (in order)
+
+1. Merge the in-flight PRs one at a time as CI turns green (rebase + coverage refresh between merges); flip their `DF-*` rows via a docs PR.
+2. Operator decisions routed from the Board: Ling in the free apply pool (`DF-LING-2`), DF-HG-3 default (fail-closed restored unless overruled), Board mechanics (`DF-BOD-1`).
+3. Then slice items: `MS-context` + `DF-MS-2b`, UI parity `DF-UI-1..3`, `JEV-P4` residuals, `JEV-P6` stage C, Exit.
+
+### Prior snapshot (kept for history)
+
 ## Live state at park
 
 | Item | State |
