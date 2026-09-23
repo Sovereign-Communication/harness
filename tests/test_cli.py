@@ -323,6 +323,34 @@ class LedgerTailCountTests(unittest.TestCase):
         self.assertIn("positive", err.getvalue())
         ledger.assert_not_called()
 
+    def test_ledger_verify_exits_zero_on_valid_chain(self):
+        ledger = mock.Mock()
+        ledger.verify.return_value = (True, None)
+        ledger.chain_status.return_value = {"ok": True, "entries": 10}
+        out = io.StringIO()
+        with mock.patch.object(cli, "_ledger", return_value=ledger), \
+             mock.patch.object(cli, "_emit",
+                               side_effect=lambda p, o: out.write(json.dumps(p))):
+            cli.main(["ledger", "verify"])
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["verified"])
+
+    def test_ledger_verify_exits_2_on_broken_chain(self):
+        # DF-CLI-1: harness ledger verify exits 2 on broken chain
+        ledger = mock.Mock()
+        ledger.verify.return_value = (False, 4)
+        ledger.chain_status.return_value = {"ok": False, "first_bad_seq": 4}
+        out = io.StringIO()
+        with mock.patch.object(cli, "_ledger", return_value=ledger), \
+             mock.patch.object(cli, "_emit",
+                               side_effect=lambda p, o: out.write(json.dumps(p))):
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(["ledger", "verify"])
+        self.assertEqual(ctx.exception.code, 2)
+        payload = json.loads(out.getvalue())
+        self.assertFalse(payload["verified"])
+        self.assertEqual(payload["first_bad_seq"], 4)
+
     def test_models_rejects_nonpositive_limit(self):
         """Playtest finding: --limit -5 silently mis-sliced the catalog."""
         err = io.StringIO()
@@ -517,6 +545,19 @@ class CliResumeE2eTests(unittest.TestCase):
             seen, result = self._run(d, target, ["continue"])
             self.assertEqual(seen["task_id"], "orig-task")
             self.assertEqual(seen["continuation"]["task_id"], "orig-task")
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["task_id"], "orig-task")
+
+    def test_continue_face_with_instruction_overrides_continuation_scope(self):
+        # DF-APPLY-1: harness continue --instruction X overrides continuation remaining_scope
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "math.py")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("def add(a, b):\n    return a + b\n")
+            seen, result = self._run(d, target, ["continue", "--instruction", "refactor add cleanly"])
+            self.assertEqual(seen["task_id"], "orig-task")
+            self.assertEqual(seen["instruction"], "refactor add cleanly")
+            self.assertEqual(seen["continuation"]["remaining_scope"], "refactor add cleanly")
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["task_id"], "orig-task")
 

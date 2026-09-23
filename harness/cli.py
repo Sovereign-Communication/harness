@@ -370,8 +370,12 @@ def _cmd_lint_claims(opts, settings=None):
 
 def _batch_options(opts, continuation=None):
     """The per-file session options for apply and continue, built once."""
+    instruction = getattr(opts, "instruction", None)
+    if continuation and instruction:
+        continuation = dict(continuation)
+        continuation["remaining_scope"] = instruction
     return BatchOptions(
-        instruction=opts.instruction, edit_snippet=opts.edit_snippet,
+        instruction=instruction, edit_snippet=opts.edit_snippet,
         verify_cmd=opts.verify, max_rounds=opts.max_rounds,
         require_consent=opts.require_consent, model=opts.model,
         max_tokens=opts.max_tokens, task_max_cost=opts.task_max_cost,
@@ -645,6 +649,8 @@ def _cmd_ledger(opts, settings):
         ok, bad = ledger.verify()
         _emit({"verified": ok, "first_bad_seq": bad,
                "chain": ledger.chain_status()}, opts.out)
+        if not ok:
+            sys.exit(2)
     elif opts.ledger_cmd == "repair":
         kept, dropped = ledger.repair()
         _emit({"repaired": dropped > 0, "kept": kept, "dropped": dropped},

@@ -194,6 +194,9 @@ class ApplyEngine(ApplyEngineMixin):
         request and never re-derive defaults."""
         continuation = validate_continuation(kwargs.get("continuation"))
         resumed = bool(continuation)
+        if resumed and kwargs.get("instruction"):
+            continuation = dict(continuation)
+            continuation["remaining_scope"] = kwargs["instruction"]
         # Per-request state must never leak across applies on a shared engine
         # (the MCP server keeps one engine for its whole lifetime): a resume
         # pins this request's gate below, a fresh apply must start unpinned.
