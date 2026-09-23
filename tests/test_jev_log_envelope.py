@@ -259,6 +259,31 @@ class LogJudgmentCliTests(unittest.TestCase):
         self.assertEqual(data["buckets"], {"ble": 2, "transport": 1})
         self.assertEqual(data["coverage"]["fallbacks"], 5)
 
+    def test_cli_warns_on_zero_matched_items(self):
+        # DF-DOCS-3: a log dump with lines but none matching the documented
+        # `tracing` header shape must print an honest stderr note instead of
+        # silently emitting an empty-looking analysis.
+        import contextlib
+        import io
+        from harness import cli
+        nonmatching_log = os.path.join(self.tmp.name, "nonmatching.log")
+        with open(nonmatching_log, "w", encoding="utf-8") as handle:
+            handle.write("this is not a tracing-shaped log line\n"
+                         "neither is this one\n")
+        settings = load_settings()
+        settings.jev_api_key = None
+        settings.ledger_path = os.path.join(self.tmp.name, "ledger2.jsonl")
+        stderr = io.StringIO()
+        with mock.patch("harness.cli.load_settings", return_value=settings):
+            with contextlib.redirect_stderr(stderr):
+                cli.main(["log-judgment", "--log", nonmatching_log,
+                          "--pack", self.pack_path,
+                          "--save-to", self.out_path])
+        self.assertIn("matched 0 log items", stderr.getvalue())
+        with open(self.out_path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        self.assertEqual(data["coverage"]["total_items"], 0)
+
     def test_cli_requires_valid_pack(self):
         from harness import cli
         settings = load_settings()

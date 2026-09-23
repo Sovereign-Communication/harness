@@ -497,6 +497,18 @@ def _cmd_log_judgment(opts, settings):
         log_text, pack, jev_policy,
         info_sample=int(getattr(opts, "info_sample", 0) or 0),
     )
+    # Honest silence check: a log dump that has lines but extracted zero
+    # items almost always means the header format didn't match the
+    # expected `tracing` shape (--help documents it), not that the run
+    # genuinely saw no WARN/ERROR -- flag it instead of emitting a
+    # quietly-empty analysis that looks like a clean log.
+    if (analysis.get("coverage", {}).get("total_items") == 0
+            and log_text.strip()):
+        eprint("[log-judgment] read {} line(s) but matched 0 log items; "
+               "check the log header format matches "
+               "'<ISO-8601 ts>Z  LEVEL module::path: message' "
+               "(see `harness log-judgment --help`)"
+               .format(len(log_text.splitlines())))
     if getattr(opts, "save_to", None):
         _log_write_analysis(analysis, opts.save_to)
     _emit(analysis, opts.out)

@@ -16,7 +16,13 @@ SCMessenger project that repeatedly did real verification work for a fraction
 of a cent. Its defining discipline — cost ceilings that are *guarantees*, not
 hopes — is carried over wholesale, and the **free tier is now the default**:
 it runs on a free OpenRouter key using the best current free models, rotating
-and deferring instead of failing. On top of FusionLite's engine it adds:
+and deferring instead of failing. **With a paid key configured**, that
+default extends rather than changes: `allow_escalation` turns on
+automatically, so a free-tier run that saturates (429s across the pool) or
+exhausts its verify budget fails over — with no flag needed — to the
+cheapest capable paid rung, still bounded by the run's cost ceiling and
+recorded in the autonomy ledger like every other spend. On top of
+FusionLite's engine it adds:
 
 1. **Coding, not just verdicts** — a scoped apply-and-verify loop that edits a
    single <500-line file, runs your gate, feeds failures back, and retries.
@@ -265,6 +271,25 @@ harness jev-phase --phase JEV-P1 --repo-root . --local-only --json --out phase.j
 harness log-judgment --log C:/temp/logsSCMessenger.txt --pack log-pack.json --out analysis.json
 harness log-judgment --log runtime.log --pack log-pack.json --info-sample 5   # also every 5th INFO
 
+# JEV-P5: sort an issue/deferral note into an operator-declared bucket pack
+# (never invents buckets or actions; unmatched stays unmatched)
+harness issue-sort --issue "verify gate flaked twice on the same PR" --pack bucket-pack.json
+
+# JEV-P6: whole-repo element inventory judged against an operator pack
+# (every keyed call is governed, billed, and ledgered; --limit for a pilot run)
+harness repo-summary --pack repo-summary-pack.json --root . --save-to summary.json --map REPO-MAP.md
+harness repo-summary --pack repo-summary-pack.json --limit 25   # pilot: first 25 file elements only
+
+# MR-8: build a grounded, hermetic context pack for a goal (no network) --
+# cites source windows verbatim; --validate runs the grounding lint over it
+harness brief "add retry to the outbox flush path" --file core/src/store/outbox.rs --validate
+
+# HUL-A/D mission pack: init a pack, then let the until-limits driver attempt
+# it (init/status/resume/findings/run subcommands; findings never fabricated)
+harness mission init --id fix-outbox-flush --request "add retry to outbox flush" \
+  --success "flush_on_connect persists all peers" --max-cost 0.50
+harness mission run --id fix-outbox-flush --max-attempts 5 --stall-limit 2
+
 # Proof Bench (SITE-*): verified ledger -> sanitized site-bundle-v1 JSON for
 # the public capability/$ site. Fail-closed end to end: refuses without the
 # explicit public-release affirmation (--yes + a consent record), refuses on
@@ -326,8 +351,9 @@ Wire into any MCP host (Claude Code, Cursor, your own agents):
 { "mcpServers": { "harness": { "command": "harness-mcp" } } }
 ```
 
-Tools: `panel_verify`, `apply_edit`, `plan_and_execute`, `offer_work`, `defer_work`,
-`issue_sort`, `route_query`, `ledger_status`, `participation_report`, `spend_status`, `trust_status`.
+Tools (`tools/list` order): `panel_verify`, `apply_edit`, `offer_work`, `defer_work`,
+`ledger_status`, `participation_report`, `spend_status`, `trust_status`, `plan_and_execute`,
+`issue_sort`, `route_query`, `log_judgment`.
 `route_query` takes a user request plus an operator-declared model-ladder pack and
 returns the cheapest capable declared rung (choice ⊆ declared rungs only;
 unkeyed/failed → code-owned tier heuristic with `is_fallback=true`).
@@ -600,11 +626,15 @@ yes. Harness treats that as a bug to design around:
   rates per model and flags near-100% acceptance as *degenerate consent*.
 - The **checkbox** is `require_consent` — per dispatch and globally.
 
-## Multi-rung apply escalation (opt-in)
+## Multi-rung apply escalation
 
-When the cheap apply lane exhausts its verify budget and `allow_escalation`
-is set, harness walks an ordered ladder (`HARNESS_ESCALATION_POOL`) from
-cheapest to most capable. Each rung:
+When the cheap/free apply lane exhausts its verify budget or saturates and
+`allow_escalation` is set, harness walks an ordered ladder
+(`HARNESS_ESCALATION_POOL`) from cheapest to most capable. This is opt-in
+(`--allow-escalation`) on a free-tier-only key, but **on automatically** the
+moment a paid OpenRouter key is configured — a free-tier run then fails over
+to the cheapest capable paid rung with no flag needed, still bounded by the
+run's cost ceiling. Each rung:
 
 1. Builds the same COMPLETE-file apply prompt (optional judge condensed
    context for rungs after the first).

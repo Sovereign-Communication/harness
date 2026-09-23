@@ -104,6 +104,54 @@ jobs:
           cd "$HOME"  # outside the repo so `import harness` resolves to the wheel
           "$GITHUB_WORKSPACE/.smoke-venv/bin/python" -c "import harness; print(harness.__version__)"
           "$GITHUB_WORKSPACE/.smoke-venv/bin/harness" --help > /dev/null
+      - name: DF-CI-3 -- serve + MCP stdio smoke test (installed wheel, no network)
+        run: |
+          set -e
+          cd "$HOME"  # outside the repo, same as the install-smoke step above
+          BIN="$GITHUB_WORKSPACE/.smoke-venv/bin"
+          # -- harness serve: bind an OS-assigned free port (--port 0), pull
+          # the actual port back out of the startup line it prints on stderr.
+          "$BIN/harness" serve --port 0 > serve.out 2> serve.err &
+          SERVE_PID=$!
+          PORT=""
+          for _ in $(seq 1 30); do
+            PORT=$(grep -oE 'http://[0-9.]+:[0-9]+/' serve.err | tail -1 | sed -E 's#.*:([0-9]+)/#\1#' || true)
+            [ -n "$PORT" ] && break
+            sleep 0.5
+          done
+          if [ -z "$PORT" ]; then
+            echo "::error::harness serve never printed its bound port"; cat serve.err; kill "$SERVE_PID" 2>/dev/null || true; exit 1
+          fi
+          curl -sS -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:$PORT/" | grep -qx 200
+          curl -sS -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:$PORT/app.js" | grep -qx 200
+          kill "$SERVE_PID" 2>/dev/null || true
+          wait "$SERVE_PID" 2>/dev/null || true
+          # -- harness-mcp: one JSON-RPC `initialize` frame over stdio. A
+          # dummy key is enough: server construction and the handshake
+          # response never call out to OpenRouter -- only a chat completion
+          # would, and none happens here.
+          OPENROUTER_API_KEY=sk-ci-smoke-dummy python3 - "$BIN/harness-mcp" <<'PY'
+          import json
+          import subprocess
+          import sys
+
+          proc = subprocess.Popen(
+              [sys.argv[1]], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+              stderr=subprocess.PIPE, text=True, bufsize=1)
+          req = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+          proc.stdin.write(json.dumps(req) + "\n")
+          proc.stdin.flush()
+          line = proc.stdout.readline()
+          proc.terminate()
+          try:
+              proc.wait(timeout=5)
+          except subprocess.TimeoutExpired:
+              proc.kill()
+          resp = json.loads(line)
+          name = resp["result"]["serverInfo"]["name"]
+          assert name == "harness", f"serverInfo.name was {name!r}, expected 'harness'"
+          print(f"MCP initialize OK: serverInfo.name == {name!r}")
+          PY
           rm -rf "$GITHUB_WORKSPACE/.smoke-venv"
       - name: Upload dist artifacts
         uses: actions/upload-artifact@v4
