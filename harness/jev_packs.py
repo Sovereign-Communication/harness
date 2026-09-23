@@ -1068,3 +1068,131 @@ def heuristic_completion_sentiment(evidence: Any, pack: Any) -> Dict[str, int]:
 
     return {axis: clamp(axis_fns[axis]() if axis in axis_fns else 2)
             for axis in doc["axes"]}
+
+
+# --- JEV 4-Dimension Self-Audit Question Pack ---
+AUDIT_DIMENSIONS_SITE = "audit_dimensions"
+
+DEFAULT_AUDIT_DIMENSIONS_PACK: Dict[str, Any] = {
+    "id": "harness-audit-dimensions-v1",
+    "sentiment": {
+        "levels": [
+            "failing — severe defect or broken guarantee (<7.0)",
+            "at_risk — partial satisfaction with significant gaps (7.0-8.4)",
+            "approaching — minor non-safety gap below threshold (8.5-9.4)",
+            "bar_met — satisfies the 95%+ audit bar (9.5-9.9)",
+            "exemplary — 100% defect-free across all checks (10.0)",
+        ],
+        "ordinals": [5.0, 7.5, 9.0, 9.6, 10.0],
+        "bar_met_index": 3,
+    },
+    "dimensions": {
+        "A": {
+            "name": "Security",
+            "instructions": (
+                "Assess whether security controls, trust boundaries, fail-closed guarantees, "
+                "spend preflights, and file mutation safety are fully satisfied without bypass."
+            ),
+        },
+        "R": {
+            "name": "Reliability",
+            "instructions": (
+                "Assess whether transient fault tolerance (429/5xx), rotation, output usability, "
+                "concurrency guards, and ledger integrity hold under all conditions."
+            ),
+        },
+        "SM": {
+            "name": "Structural hygiene & maintainability",
+            "instructions": (
+                "Assess whether architectural layering, single-ownership of policies, "
+                "no facade re-exports, and test-mirror symmetry are maintained."
+            ),
+        },
+        "SD": {
+            "name": "Documentation & release integrity",
+            "instructions": (
+                "Assess whether documentation, CLI surfaces, exit codes, MCP parity, versioning, "
+                "and release changelog discipline are accurately preserved."
+            ),
+        },
+    },
+}
+
+
+def validate_audit_pack(pack: Any) -> Dict[str, Any]:
+    if pack is None:
+        return DEFAULT_AUDIT_DIMENSIONS_PACK
+    if isinstance(pack, str):
+        pack = json.loads(pack)
+    if not isinstance(pack, dict):
+        raise HarnessError("audit pack must be a JSON object")
+    if "dimensions" not in pack or "sentiment" not in pack:
+        raise HarnessError("audit pack missing required keys 'dimensions' or 'sentiment'")
+    return pack
+
+
+def audit_dimensions_question_pack(pack: Any = None) -> Dict[str, Dict[str, Any]]:
+    """The TypeSafe question pack for the 4-dimension audit judgment."""
+    doc = validate_audit_pack(pack)
+    levels = doc["sentiment"]["levels"]
+    questions: Dict[str, Dict[str, Any]] = {}
+    for dim, spec in doc["dimensions"].items():
+        questions[f"dim_{dim}"] = {
+            "type": "score",
+            "instructions": spec["instructions"],
+            "criteria": list(levels),
+        }
+    return questions
+
+
+def heuristic_audit_dimensions(
+    dimension_evidence: Any, pack: Any = None
+) -> Dict[str, Any]:
+    """Code-owned fallback/hermetic sentiment for the 4-dimension audit.
+
+    A dimension key ABSENT from a real ``dimension_evidence`` mapping (a
+    partial ``--dim`` run) is reported ``not_evaluated`` -- ``level_index``
+    and ``score`` are ``None`` and ``bar_met`` is ``False`` -- never a false
+    0.0/"failing" score standing in for a check that never ran. When no
+    evidence mapping is supplied at all (``None`` / non-dict), every
+    declared dimension keeps the historical all-zero fallback, since there
+    is nothing in that shape to distinguish "not run" from "run with no
+    evidence".
+    """
+    doc = validate_audit_pack(pack)
+    levels = doc["sentiment"]["levels"]
+    ordinals = doc["sentiment"]["ordinals"]
+    evidence_is_dict = isinstance(dimension_evidence, dict)
+    out = {}
+    for dim in doc["dimensions"]:
+        if evidence_is_dict and dim not in dimension_evidence:
+            out[dim] = {
+                "name": doc["dimensions"][dim]["name"],
+                "level_index": None,
+                "level": "not_evaluated",
+                "score": None,
+                "bar_met": False,
+                "evaluated": False,
+            }
+            continue
+        ev = dimension_evidence.get(dim, {}) if evidence_is_dict else {}
+        score_val = float(ev.get("score", 0.0)) if isinstance(ev, dict) else 0.0
+        if score_val >= 9.99:
+            idx = 4
+        elif score_val >= 9.5:
+            idx = 3
+        elif score_val >= 8.5:
+            idx = 2
+        elif score_val >= 7.0:
+            idx = 1
+        else:
+            idx = 0
+        out[dim] = {
+            "name": doc["dimensions"][dim]["name"],
+            "level_index": idx,
+            "level": levels[idx],
+            "score": round(score_val if 0.0 <= score_val <= 10.0 else ordinals[idx], 2),
+            "bar_met": idx >= doc["sentiment"].get("bar_met_index", 3),
+            "evaluated": True,
+        }
+    return out

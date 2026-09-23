@@ -17,6 +17,7 @@ from .route_pack import (ROUTE_QUERY_SITE, fallback_route, route_combo,
                          route_question_pack as route_query_pack,
                          validate_route_pack)
 from .jev_packs import (
+    AUDIT_DIMENSIONS_SITE,
     HUL_SCOPE_SITE,
     LOG_FACTOR_SITE,
     PHASE_COMPLETION_SITE,
@@ -1853,6 +1854,226 @@ class JevPolicy:
             pack_doc, live_levels, live_confidence, primary_gap,
             is_fallback=False, evidence=evidence)
         return result, structural, judgment
+
+    @staticmethod
+    def _audit_dimension_text(dimension_evidence: Any) -> str:
+        lines = ["Harness 4-Dimensional Self-Audit Evidence:"]
+        for dim in ("A", "R", "SM", "SD"):
+            ev = (dimension_evidence or {}).get(dim, {})
+            score = ev.get("score", 0.0) if isinstance(ev, dict) else 0.0
+            satisfied = ev.get("checks_satisfied", 0)
+            total = ev.get("checks_count", 0)
+            lines.append(f"Dimension {dim}: score={score:.2f}/10 ({satisfied}/{total} checks fully satisfied)")
+            for ch in (ev.get("checks") or [])[:5]:
+                cid = ch.get("id", "")
+                mark = "pass" if ch.get("score", 0) >= 1 else "part"
+                label = ch.get("label", "")
+                lines.append(f"  [{cid}] {mark} {label}")
+        return "\n".join(lines)
+
+    def evaluate_audit_dimensions(
+        self,
+        dimension_evidence: Dict[str, Any],
+        pack: Any = None,
+        *,
+        site: str = AUDIT_DIMENSIONS_SITE,
+        task_id: Optional[str] = "audit",
+    ) -> Dict[str, Any]:
+        """Evaluate the 4 self-audit dimensions with Jev as the authoritative gate.
+
+        0-hallucination / honesty contract (same class as
+        ``evaluate_log_item`` / ``evaluate_phase_completion``):
+
+        - a dimension ABSENT from ``dimension_evidence`` (a partial ``--dim``
+          run) is reported ``not_evaluated`` -- ``level_index``/``score`` are
+          ``None`` -- never a false 0.0/"failing" score for a check that
+          never ran;
+        - a live ``dim_<id>`` answer resolves to a level via the official
+          legend (anchor -> declared level string) + highest probability,
+          exactly like every other score-typed site in this module -- never
+          a raw score-as-index guess. An unmatched/invalid live answer for
+          one EVALUATED dimension falls back to that dimension's own
+          evidence-calibrated heuristic; if every evaluated dimension is
+          unmatched, the whole call is presented as a fallback rather than a
+          live judgment with nothing actually declared by Jev;
+        - ``bar_95_pass`` is true only when ALL FOUR declared dimensions
+          were evaluated AND every one scores >= 9.5 -- fail closed, never a
+          false PASS on a partial run;
+        - preflight reservation + EXACTLY ONE ledger ``jev_eval`` per call
+          (``structural.site=audit_dimensions``) on every path -- unkeyed,
+          governor-missing, transport-error, and invalid-response fallbacks
+          included -- via the shared ``_account`` accounting helper (never a
+          bare ``jev_refusal`` standing in for the one required
+          ``jev_eval``).
+        """
+        from .jev_packs import (
+            audit_dimensions_question_pack,
+            heuristic_audit_dimensions,
+            validate_audit_pack,
+        )
+
+        pack_doc = validate_audit_pack(pack)
+        questions = audit_dimensions_question_pack(pack_doc)
+        levels = pack_doc["sentiment"]["levels"]
+        ordinals = pack_doc["sentiment"]["ordinals"]
+        bar_idx = pack_doc["sentiment"].get("bar_met_index", 3)
+        dim_ids = list(pack_doc["dimensions"])
+        evidence_is_dict = isinstance(dimension_evidence, dict)
+
+        model_name = getattr(self.evaluator, "model", "jev-latest")
+
+        def dim_evaluated(dim: str) -> bool:
+            return (not evidence_is_dict) or (dim in dimension_evidence)
+
+        def bar_pass(dim_results: Dict[str, Any]) -> bool:
+            if set(dim_results) != set(dim_ids):
+                return False
+            if any(not d.get("evaluated") for d in dim_results.values()):
+                return False
+            scores = [d.get("score") for d in dim_results.values()]
+            if any(s is None for s in scores):
+                return False
+            return all(float(s) >= 9.5 for s in scores)
+
+        def fallback_judgment(reasons, *, model=None, cost=0.0, input_tokens=0,
+                              output_tokens=0, reservation=None):
+            dim_results = heuristic_audit_dimensions(dimension_evidence, pack_doc)
+            scores = {dim: d.get("score") for dim, d in dim_results.items()}
+            evaluated_scores = [s for s in scores.values() if s is not None]
+            passed = bar_pass(dim_results)
+            fallback_result = JevEvaluationResult(
+                "pass" if passed else "fail", 0.0,
+                1.0 if evaluated_scores else 0.0,
+                {f"dim_{dim}": dim_results[dim] for dim in dim_ids},
+                list(reasons), cost=cost, input_tokens=input_tokens,
+                output_tokens=output_tokens, is_fallback=True,
+                model=model or model_name)
+            self._account(fallback_result, site=site, task_id=task_id,
+                          reservation=reservation)
+            return {
+                "dimensions": dim_results,
+                "scores": scores,
+                "bar_95_pass": passed,
+                "min_score": min(evaluated_scores) if evaluated_scores else 0.0,
+                "is_fallback": True,
+                "reasons": list(reasons),
+                "model": model or model_name,
+                "cost": cost,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }
+
+        if not self.keyed or self.governor is None:
+            return fallback_judgment(["unkeyed" if not self.keyed else "governor_not_provided"])
+
+        text = self._audit_dimension_text(dimension_evidence)
+        reservation = None
+        try:
+            reservation = self._preflight(site=site, max_input_tokens=JEV_MAX_INPUT_TOKENS)
+            payload = {"evidence": text, "pack_id": pack_doc["id"]}
+            result = self.evaluator.evaluate(payload, questions)
+        except HarnessError as exc:
+            return fallback_judgment(
+                [f"transport_error: {exc}"], reservation=reservation)
+        except Exception as exc:  # unexpected transport failure -- fail closed
+            return fallback_judgment(
+                [f"transport_error: {exc}"], reservation=reservation)
+
+        answers = result.answers if isinstance(result.answers, dict) else {}
+        if result.is_fallback or not answers:
+            return fallback_judgment(
+                list(result.reasons or ["invalid TypeSafe response"]),
+                model=result.model or model_name,
+                cost=float(result.cost or 0.0),
+                input_tokens=int(result.input_tokens or 0),
+                output_tokens=int(result.output_tokens or 0),
+                reservation=reservation,
+            )
+
+        dim_results = {}
+        any_dim_valid = False
+        evaluated_dim_ids = []
+        for dim, spec in pack_doc["dimensions"].items():
+            if not dim_evaluated(dim):
+                dim_results[dim] = {
+                    "name": spec["name"],
+                    "level_index": None,
+                    "level": "not_evaluated",
+                    "score": None,
+                    "bar_met": False,
+                    "confidence": None,
+                    "evaluated": False,
+                }
+                continue
+            evaluated_dim_ids.append(dim)
+            ans = answers.get(f"dim_{dim}")
+            level = None
+            value = None
+            conf = None
+            if isinstance(ans, dict):
+                probs = ans.get("probabilities")
+                legend = ans.get("legend")
+                if isinstance(probs, dict) and isinstance(legend, dict):
+                    for anchor, lvl in legend.items():
+                        if not isinstance(lvl, str) or lvl not in levels:
+                            continue
+                        prob = probs.get(str(anchor))
+                        if isinstance(prob, (int, float)) and (
+                                value is None or float(prob) > value):
+                            level, value = lvl, float(prob)
+                raw_conf = ans.get("confidence")
+                if isinstance(raw_conf, (int, float)) and not isinstance(raw_conf, bool):
+                    conf = float(raw_conf)
+            if level is not None:
+                idx = levels.index(level)
+                any_dim_valid = True
+            else:
+                # Declared answer missing/invalid: fall back to this ONE
+                # dimension's own evidence-calibrated index -- never an
+                # invented level.
+                ev = dimension_evidence.get(dim) if evidence_is_dict else None
+                ev_score = float(ev.get("score", 0.0)) if isinstance(ev, dict) else 0.0
+                idx = (4 if ev_score >= 9.99 else
+                      3 if ev_score >= 9.5 else
+                      2 if ev_score >= 8.5 else
+                      1 if ev_score >= 7.0 else 0)
+            dim_results[dim] = {
+                "name": spec["name"],
+                "level_index": idx,
+                "level": levels[idx],
+                "score": round(ordinals[idx], 2),
+                "bar_met": idx >= bar_idx,
+                "confidence": conf,
+                "evaluated": True,
+            }
+
+        if evaluated_dim_ids and not any_dim_valid:
+            # Every evaluated dimension's live answer was unmatched/invalid:
+            # present the whole call as a fallback rather than a live
+            # judgment with nothing actually declared by Jev.
+            return fallback_judgment(
+                [f"dim_{dim}: unmatched" for dim in evaluated_dim_ids]
+                + list(result.reasons or []),
+                model=result.model, cost=float(result.cost or 0.0),
+                input_tokens=int(result.input_tokens or 0),
+                output_tokens=int(result.output_tokens or 0),
+                reservation=reservation)
+
+        self._account(result, site=site, task_id=task_id, reservation=reservation)
+        scores = {dim: d.get("score") for dim, d in dim_results.items()}
+        evaluated_scores = [s for s in scores.values() if s is not None]
+        return {
+            "dimensions": dim_results,
+            "scores": scores,
+            "bar_95_pass": bar_pass(dim_results),
+            "min_score": min(evaluated_scores) if evaluated_scores else 0.0,
+            "is_fallback": False,
+            "reasons": [],
+            "model": result.model or model_name,
+            "cost": float(result.cost or 0.0),
+            "input_tokens": int(result.input_tokens or 0),
+            "output_tokens": int(result.output_tokens or 0),
+        }
 
     @staticmethod
     def attach(envelope: Dict[str, Any], structural: Optional[Dict[str, Any]]):
