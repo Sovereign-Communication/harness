@@ -126,28 +126,53 @@ jobs:
           curl -sS -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:$PORT/app.js" | grep -qx 200
           kill "$SERVE_PID" 2>/dev/null || true
           wait "$SERVE_PID" 2>/dev/null || true
-          # -- harness-mcp: one JSON-RPC `initialize` frame over stdio. A
-          # dummy key is enough: server construction and the handshake
-          # response never call out to OpenRouter -- only a chat completion
-          # would, and none happens here.
-          OPENROUTER_API_KEY=sk-ci-smoke-dummy python3 - "$BIN/harness-mcp" <<'PY'
+          # -- harness-mcp: one JSON-RPC `initialize` frame through the real
+          # server construction path in the installed wheel. Startup calls
+          # SpendGovernor.verify_key(), which DOES call out to OpenRouter --
+          # a dummy key alone 401s and crashes main() before anything
+          # reaches stdout (that combination made this step flaky/red).
+          # Running in-process against "$BIN/python" (so it is the wheel's
+          # harness, not the source tree) with HttpTransport.get faked
+          # exercises the handshake with genuinely no network.
+          OPENROUTER_API_KEY=sk-ci-smoke-dummy "$BIN/python" <<'PY'
+          import io
           import json
-          import subprocess
-          import sys
+          from unittest import mock
 
-          proc = subprocess.Popen(
-              [sys.argv[1]], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-              stderr=subprocess.PIPE, text=True, bufsize=1)
-          req = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
-          proc.stdin.write(json.dumps(req) + "\n")
-          proc.stdin.flush()
-          line = proc.stdout.readline()
-          proc.terminate()
-          try:
-              proc.wait(timeout=5)
-          except subprocess.TimeoutExpired:
-              proc.kill()
-          resp = json.loads(line)
+          import harness._http as _http
+
+          def fake_get(self, url, api_key):
+              return {"data": {"limit": 1, "limit_remaining": 1, "label": "ci-smoke"}}
+
+          with mock.patch.object(_http.HttpTransport, "get", fake_get):
+              from harness import session as composition
+              from harness.config import load_settings, resolve_hourglass
+              from harness.mcp import McpServer
+
+              settings = load_settings()
+              transport = composition.HttpTransport()
+              api_key, governor = composition.governor_for(settings)
+              ledger = composition.ledger_for(settings, caller="mcp")
+              router = composition.router_for(settings)
+              engine = composition.engine_for(settings, api_key, governor, ledger, router)
+              req = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+              out = io.StringIO()
+              server = McpServer(
+                  transport=transport, api_key=api_key, governor=governor,
+                  ledger=ledger, router=router, engine=engine,
+                  max_panelists=settings.max_panelists, use_free=settings.use_free,
+                  allow_write=settings.mcp_allow_write,
+                  allow_verify=settings.mcp_allow_verify,
+                  allowed_roots=settings.mcp_allowed_roots,
+                  tool_timeout=settings.mcp_tool_timeout,
+                  auth_token=settings.mcp_auth_token,
+                  hourglass=resolve_hourglass(settings),
+                  stdin=io.StringIO(json.dumps(req) + "\n"),
+                  stdout=out,
+              )
+              server.serve_forever()
+
+          resp = json.loads(out.getvalue().strip().splitlines()[0])
           name = resp["result"]["serverInfo"]["name"]
           assert name == "harness", f"serverInfo.name was {name!r}, expected 'harness'"
           print(f"MCP initialize OK: serverInfo.name == {name!r}")
