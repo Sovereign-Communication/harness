@@ -16,35 +16,40 @@ The complete flow has three regions:
 
 ```text
 Broad source context
-        │
         ▼
-┌──────────────────────────────────┐
-│ CONTEXT INTAKE                   │
-│ lower cost · larger token budget │
-│ inspect, extract, condense        │
-└────────────────┬─────────────────┘
-                 │ grounded brief; less context per handoff
-                 ▼
-          ╲      │      ╱
-           ╲     ▼     ╱
-            ╲ PLANNING╱
-             ╲ WAIST ╱
-              ╲     ╱
-               ╲   ╱
-                ╲ ╱
-                 │ answer or bounded plan
-                 ▼
-┌──────────────────────────────────┐
-│ EXECUTION                        │
-│ capable, lower-cost workers      │
-│ token allowance opens for work   │
-└────────────────┬─────────────────┘
-                 │
-                 ▼
-         verify · report · resume
+   ╭────────────────────────────────────────╮
+   │ CONTEXT INTAKE                         │
+   │ lower-cost capable models               │
+   │ broad source coverage · broad allowance │
+   ╰──────────────────╮  ╭──────────────────╯
+                       ╲╱
+                       ╱╲
+                  ╭───╯  ╰───╮
+                  │ PLANNING  │  increasingly capable models
+                  │   WAIST   │  curated context · tighter tokens
+                  ╰───╮  ╭───╯
+                       ╲╱
+                       ╱╲
+   ╭──────────────────╯  ╰──────────────────╮
+   │ EXECUTION                               │
+   │ capable, cost-effective worker pool    │
+   │ work-package context · allowance widens │
+   ╰──────────────────┬─────────────────────╯
+                      ▼
+          JEV completion alignment check
+          full request + relevant source context
+                      │
+             complete ─┴─ needs iteration
+                │                 │
+                ▼                 ▼
+             report      JEV selects phase target
+                          │       │       │
+                    context   planning  execution
+                          ╲       │       ╱
+                           ╰── restart at target
 ```
 
-The diagram is conceptual: token limits, context size, capability, and price are distinct dimensions. A model’s token allowance is not inferred from its price, and a dollar ceiling is never replaced by a token limit.
+The diagram is conceptual: token limits, context size, capability, and price are distinct dimensions. A model’s token allowance is not inferred from its price, and a dollar ceiling is never replaced by a token limit. The upper chamber widens after the planning waist: it represents an expansion of available execution tokens and parallel worker capacity, not a reversal of the information flow or a return to planning. Verification returns a decision to a named stage only when the original request is not yet satisfied.
 
 ## 2. Modularity is a product requirement
 
@@ -81,7 +86,9 @@ Token allowances tighten toward the capable planner. The waist has explicit per-
 **Work:** open token allowance relative to the waist so execution can include necessary local detail. Route work to the least costly capable executor. Parallelize only where the plan and isolation rules make it safe. Each executor may accept, decline, redirect, or defer. Verification remains independent of the builder and remains the authority for completion.  
 **Output:** artifacts or changes, per-package verification evidence, spend/token accounting, and resumable handoffs for incomplete work.
 
-Execution does not reopen broad planning or rewrite the approved plan silently. If evidence shows that the plan is invalid or incomplete, execution stops at a defined checkpoint and returns a structured issue to planning for a bounded amendment decision.
+At completion, JEV checks alignment and completeness against the original user request and the relevant source context needed to interpret it. This verification input is not passed through another generative condensation step: code supplies the original request and retained source/context references, with any bounded excerpting or chunking made explicit. JEV can report which requirement or evidence is still missing; independent code-owned tests and verification continue to decide whether the work is actually complete.
+
+If the result is incomplete, JEV may select a declared restart target: **context intake** when source coverage or grounding is missing; **planning waist** when the evidence is sufficient but the plan or acceptance criteria need revision; or **execution** when the plan remains valid and a bounded work package needs correction. Code validates this choice against declared targets, preserved evidence, policy, current limits, and renewed consent where the assignment changed. JEV cannot directly dispatch, rewrite state, or bypass a stage contract. The run records the target, reason, requirement references, and completed work so iteration does not repeat finished work. A sufficient result exits with its alignment and independent-verification evidence.
 
 ## 4. Policy boundaries and invariants
 

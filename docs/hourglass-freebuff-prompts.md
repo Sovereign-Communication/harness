@@ -40,11 +40,13 @@ Reuse `JevPolicy` / `jev_packs`; create the smallest typed, versioned assessment
 
 **Goal:** Apply the shared `HV-0` JEV contract to independently selectable Hourglass judgments.
 
-Cover context relevance/coverage/conflict; planning sufficiency, soundness, and evidence requests; execution package suitability/checkpoints; consent freshness, defer, and escalation signals; and verification-claim support. For every capability, state what code owns versus JEV judges, define the versioned typed pack and declared outcomes, explicit confidence/abstention/fallback behavior, budget/preflight, and ledger evidence. Do not call JEV where no decision is needed. Do not let JEV grant consent, alter budgets, dispatch work, or certify completion.
+Cover context relevance/coverage/conflict; planning sufficiency, soundness, and evidence requests; execution package suitability/checkpoints; consent freshness, defer, and escalation signals; final completeness/alignment against the original request and relevant retained source context; and verification-claim support. Do not run another generative condensation pass before the final alignment judgment. Where payload bounds require chunking or excerpts, make that transformation explicit and preserve source references. Add a typed JEV restart-target judgment with only declared choices: context intake, planning waist, execution, or no iteration. For every capability, state what code owns versus JEV judges, define the versioned typed pack and declared outcomes, explicit confidence/abstention/fallback behavior, budget/preflight, and ledger evidence. Do not call JEV where no decision is needed. Do not let JEV grant consent, alter budgets, dispatch work, or certify completion.
+
+The final JEV judgment may recommend a phase target and cite unmet requirements, but code validates the transition and re-enters the corresponding stage through its normal contract. Preserve completed work, source/evidence identity, budget history, and handoff state; do not repeat completed packages. Renew Sovereign Harness consent if the target requires a materially changed assignment or limits. Independent verification remains the completion authority.
 
 Own JEV policy/packs and the integration matrix only. Do not edit condenser/brief, token accounting/config, waist composition, or CLI/MCP surfaces. Publish stable APIs for later lanes. Tests: `tests/test_hourglass_jev_integrations.py` plus relevant JEV pack/policy tests and repo gates.
 
-**Done when:** each named capability can be selected independently through the shared owner; keyed and degraded behavior is truthful and bounded; invalid/unavailable results cannot authorize a protected action; event evidence identifies capability and outcome; and the named gates pass.
+**Done when:** each named capability, including final alignment and restart-target selection, can be selected independently through the shared owner; keyed and degraded behavior is truthful and bounded; invalid/unavailable results cannot authorize a protected action; event evidence identifies capability and outcome; and the named gates pass.
 
 ## `HV-2` — Evidence-bearing context brief
 
@@ -84,7 +86,7 @@ Dispatch work packages to the least-cost capable workers that meet task requirem
 
 Own agent/apply/consent continuation seams identified by the roadmap. Consume the shared APIs; do not edit shared owners from `HV-1` through `HV-4`. Tests: `tests/test_hourglass_execution_budget.py` and `tests/test_hourglass_consent_handoff.py` plus repo gates.
 
-**Done when:** every dispatch is authorized for the exact current work and limits; decline/defer prevents continued work; resumption is evidence-preserving and does not duplicate completed actions; and completion requires independent verification.
+**Done when:** every dispatch is authorized for the exact current work and limits; decline/defer prevents continued work; resumption is evidence-preserving and does not duplicate completed actions; final alignment compares against the original request and relevant retained source context without a new generative condensation pass; any requested iteration re-enters only a declared stage and preserves completed work; and completion requires independent verification.
 
 ## `HV-6` — Surface parity, observability, and acceptance
 
