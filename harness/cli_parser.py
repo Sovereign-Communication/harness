@@ -32,7 +32,15 @@ def _add_engine_flags(p, *, max_tokens_default, verify_required=False,
                    help=task_max_cost_help or
                    "per-task spend ceiling in USD (default: the session's "
                    "configured/engine ceiling)")
-    p.add_argument("--allow-escalation", dest="allow_escalation", action="store_true", default=None)
+    p.add_argument("--allow-escalation", dest="allow_escalation", action="store_true", default=None,
+                   help="walk the paid escalation ladder when the cheap/free "
+                        "lane exhausts its verify budget or saturates (429s). "
+                        "Default: on automatically when a paid OpenRouter key "
+                        "is configured (free-tier runs then fail over to the "
+                        "cheapest capable paid rung with no flag needed), off "
+                        "on a free-tier-only key. Every rung is preflighted "
+                        "against the run's cost ceiling and billed + ledgered "
+                        "per attempt, never silently.")
     p.add_argument("--reasoning-effort", default=None,
                    choices=["auto", "off", "none", "low", "medium", "high", "on"])
     p.add_argument("--max-rotations", type=int, default=None)
@@ -246,8 +254,23 @@ def build_parser():
 
     plog = sub.add_parser(
         "log-judgment",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         help="JEV-LOG single-pass log analysis against a frozen operator "
-             "pack (never invents buckets, levels, or actions)")
+             "pack (never invents buckets, levels, or actions)",
+        description=(
+            "JEV-LOG single-pass log analysis against a frozen operator "
+            "pack (never invents buckets, levels, or actions).\n\n"
+            "Expected log line format (Rust `tracing`-style header; only "
+            "lines matching it become items -- everything else attaches as "
+            "continuation text to the previous matched item):\n\n"
+            "  <ISO-8601 timestamp>Z  LEVEL  module::path: message\n\n"
+            "example:\n"
+            "  2026-09-21T00:37:26.567713Z  WARN "
+            "scmessenger_core::store::relay_custody: msg\n\n"
+            "LEVEL is one of INFO|WARN|ERROR|DEBUG|TRACE. If a log dump has "
+            "lines but 0 items match this header shape, the run prints a "
+            "stderr note ('matched 0 log items') instead of emitting a "
+            "silently-empty analysis."))
     plog.add_argument("--log", required=True,
                       help="path to the raw runtime log dump")
     plog.add_argument("--pack", required=True,

@@ -247,6 +247,25 @@ A traced run costs roughly a minute; do it when landing substantive
 harness changes, not per commit. Missing data is a visible SKIP, never
 a silent pass.
 
+## Version bump
+
+D5 (`sd_version_single_source`) compares `pyproject.toml`'s `version` against
+`harness.__version__`, and that attribute prefers **installed distribution
+metadata** (`importlib.metadata.version("sovereign-harness")`) over a fresh
+parse of `pyproject.toml` -- authoritative once the package is installed, but
+static: an editable install's `METADATA` file is written once at install
+time and does not track later edits to `pyproject.toml` on its own. Bump the
+version in `pyproject.toml` and then reinstall so the installed metadata
+(and therefore `harness.__version__`, and D5) actually reflects it:
+
+  python -m pip install -e .[dev]
+
+Skipping the reinstall leaves D5 comparing the new `pyproject.toml` version
+against the stale installed one and failing the audit, or comparing two
+stale reads and passing for the wrong reason. `audits/self/release.py`'s
+driver already does this reinstall-with-metadata-check step for you; it
+only needs calling out here for a manual version bump outside that driver.
+
 ## Release driver
 
 audits/self/release.py mechanizes docs/releasing.md's mechanical steps in

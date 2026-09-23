@@ -31,7 +31,11 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 PKG = ROOT / "harness"
 TESTS = ROOT / "tests"
-LIVE = os.environ.get("HARD_AUDIT_LIVE", "") not in ("", "0")
+# DF-AUDIT-1: the flag name must match the docstring/D8 message and
+# round2_report.md exactly, or the opt-in silently never opts in (a stray
+# "HARD_AUDIT_LIVE" here made every live-gated check permanently hermetic
+# regardless of this var -- accidentally safe, but not what the name says).
+LIVE = os.environ.get("HARNESS_AUDIT_LIVE", "") not in ("", "0")
 
 sys.path.insert(0, str(ROOT))
 

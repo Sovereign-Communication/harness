@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from harness.apply import ApplyEngine
 from harness.spend import SpendGovernor
@@ -999,6 +1000,65 @@ class LaneSchedulingTests(unittest.TestCase):
     def test_unknown_and_missing_names_ride_observe(self):
         self.assertEqual(lane_for("not_a_tool"), "observe")
         self.assertEqual(lane_for(None), "observe")
+
+
+class MainCliFlagsTests(unittest.TestCase):
+    """DF-DOCS-2: --help/--version must answer and return without ever
+    reaching stdio-serve mode, and stdio mode (no recognized flag) must
+    fall through untouched -- a regression here either hangs an operator's
+    `harness-mcp --version` check on stdin, or makes a real client's
+    argv-less launch print help instead of serving."""
+
+    def test_version_flag_prints_version_and_returns_exit_code(self):
+        from harness.mcp import _handle_cli_flags, __version__
+
+        out = io.StringIO()
+        code = _handle_cli_flags(["--version"], stdout=out)
+        self.assertEqual(code, 0)
+        self.assertIn(__version__, out.getvalue())
+
+    def test_help_flag_prints_usage_and_returns_exit_code(self):
+        from harness.mcp import _handle_cli_flags
+
+        out = io.StringIO()
+        code = _handle_cli_flags(["--help"], stdout=out)
+        self.assertEqual(code, 0)
+        self.assertIn("usage: harness-mcp", out.getvalue())
+
+        out2 = io.StringIO()
+        self.assertEqual(_handle_cli_flags(["-h"], stdout=out2), 0)
+        self.assertIn("usage: harness-mcp", out2.getvalue())
+
+    def test_no_args_falls_through_to_serve(self):
+        from harness.mcp import _handle_cli_flags
+
+        out = io.StringIO()
+        self.assertIsNone(_handle_cli_flags([], stdout=out))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_unrecognized_args_fall_through_to_serve(self):
+        from harness.mcp import _handle_cli_flags
+
+        out = io.StringIO()
+        self.assertIsNone(_handle_cli_flags(["--some-other-flag"], stdout=out))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_main_returns_early_on_version_without_touching_serve_setup(self):
+        # main() itself must short-circuit on a handled flag before its
+        # lazy `from .config import load_settings` -- calling it with
+        # --version must never require an API key or settings to load.
+        from harness import mcp
+
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(mcp.main(["--version"]), 0)
+            self.assertIn(mcp.__version__, out.getvalue())
+
+    def test_main_returns_early_on_help(self):
+        from harness import mcp
+
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(mcp.main(["--help"]), 0)
+            self.assertIn("usage: harness-mcp", out.getvalue())
 
 
 if __name__ == "__main__":
