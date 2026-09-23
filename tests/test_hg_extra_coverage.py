@@ -31,6 +31,40 @@ class ExtraCoverageTests(unittest.TestCase):
         self.assertIs(opts.final_gate, False)
         self.assertEqual(opts.resume, "state.json")
 
+    def test_parser_allow_heuristic_preview_flag_defaults_off(self):
+        """DF-HG-3b: --allow-heuristic-preview is plan-only, opt-in, off by
+        default (the fail-closed preview stays the default)."""
+        parser = build_parser()
+        opts = parser.parse_args(["plan", "--goal", "g"])
+        self.assertFalse(opts.allow_heuristic_preview)
+        opts_on = parser.parse_args(
+            ["plan", "--goal", "g", "--allow-heuristic-preview"])
+        self.assertTrue(opts_on.allow_heuristic_preview)
+
+    @staticmethod
+    def _subparser(parser, name):
+        import argparse
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                return action.choices[name]
+        raise AssertionError(f"no subparsers action found for {name!r}")
+
+    def test_task_max_cost_help_states_real_precedence_over_max_cost(self):
+        """DF-HG-4: plan --task-max-cost is NOT an alias of --max-cost (it
+        has its own precedence); the help text must say so plainly rather
+        than call it an alias, and --max-cost's help must not claim
+        --task-max-cost is merely another name for it."""
+        plan_parser = self._subparser(build_parser(), "plan")
+        plan_help = plan_parser.format_help()
+        self.assertIn("--task-max-cost", plan_help)
+        max_cost_idx = plan_help.index("--max-cost MAX_COST")
+        task_max_cost_idx = plan_help.index("--task-max-cost TASK_MAX_COST")
+        max_cost_help = plan_help[max_cost_idx:task_max_cost_idx]
+        self.assertNotIn("alias: --task-max-cost", max_cost_help)
+        task_max_cost_help = plan_help[task_max_cost_idx:]
+        self.assertIn("precedence", task_max_cost_help)
+        self.assertIn("--max-cost", task_max_cost_help)
+
     def test_resolve_frontier_paid_constant(self):
         self.assertEqual(resolve_frontier_model(None, use_free=False),
                          DEFAULT_FRONTIER_PAID)

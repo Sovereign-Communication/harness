@@ -185,6 +185,7 @@ def _cmd_verify(opts, settings):
         max_tokens=opts.max_tokens, reasoning_effort=opts.reasoning_effort,
         converge=opts.converge, judge=opts.judge,
         convergence_model=opts.convergence_model,
+        panel=(_split_opt_list(opts.panel) if opts.panel else None),
         specialist_pool=(_split_opt_list(opts.specialist_pool)
                          if opts.specialist_pool else None),
         reassurance_claims=opts.reassurance_claims, max_cost=opts.max_cost)
@@ -876,7 +877,8 @@ def _capabilities_payload(settings, gov, api_key=None, refresh=False,
 
 def _plan_compose(settings, opts, gov, transport, api_key, *,
                   candidate_files, frontier_model, execute, confirm=None,
-                  decompose_llm=None, plan_consensus=None, hourglass=None):
+                  decompose_llm=None, plan_consensus=None, hourglass=None,
+                  allow_heuristic_preview=False):
     """Plan-lane flow via the ONE owner (harness/waist.py): heuristic or
     cheap-LLM decomposition, then (hourglass default: on) waist
     confirmation."""
@@ -906,7 +908,11 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
         jev_policy=jev_policy,
         # The same pinned output budget the nodes will run with, so the
         # chunk policy measures each pass against the real one.
-        max_tokens=getattr(opts, "max_tokens", None))
+        max_tokens=getattr(opts, "max_tokens", None),
+        # DF-HG-3b: opt-in only (CLI: --allow-heuristic-preview); the
+        # default stays fail-closed for a plan-only preview whose LLM
+        # decomposition fails.
+        allow_heuristic_preview=allow_heuristic_preview)
 
 
 def _resolve_hourglass(opts, settings):
@@ -958,7 +964,9 @@ def _cmd_plan(opts, settings):
         settings, opts, gov, transport, api_key,
         candidate_files=candidate_files, frontier_model=frontier_model,
         execute=execute, confirm=confirm, decompose_llm=decompose_llm,
-        plan_consensus=plan_consensus, hourglass=hourglass)
+        plan_consensus=plan_consensus, hourglass=hourglass,
+        allow_heuristic_preview=bool(
+            getattr(opts, "allow_heuristic_preview", False)))
     if plan_result.get("status") == "refused":
         # The waist refused (or the composed ceiling / unreachable waist
         # fail-closed fired); execution must not start (exit code 2).

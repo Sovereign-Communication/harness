@@ -79,9 +79,39 @@ class CondenseDecomposeTests(unittest.TestCase):
                 transport=None, api_key=None, governor=None, ledger=None,
                 opts_goal="g", decompose_llm=True, chat_fn=chat_fn)
 
-    def test_decompose_llm_failure_retries_and_falls_back_in_preview(self):
-        """DF-HG-3: preview mode retries once on decompose failure, then loudly
-        falls back to heuristic without crashing FATAL."""
+    def test_decompose_llm_failure_retries_then_fails_closed_in_preview(self):
+        """DF-HG-3b (Board ruling on PR #68): preview mode retries once on
+        decompose failure, then FAILS CLOSED by default -- it must never
+        silently hand back the heuristic plan for an operator who asked
+        for LLM decomposition."""
+        from harness.errors import HarnessError
+        from harness.spend import SpendGovernor
+
+        calls = []
+
+        def broken_chat(prompt):
+            calls.append(prompt)
+            return "this is not json at all", 0.0
+
+        fake = FakeTransport(models=[m("m/cheap")])
+        gov = SpendGovernor(fake, "sk-test", max_cost=1.0)
+        with self.assertRaises(HarnessError):
+            compose_plan(
+                transport=fake, api_key="k",
+                governor=gov,
+                ledger=None,
+                opts_goal="Update the shipments helper",
+                candidate_files=["pkg/mod.py"],
+                decompose_llm=True,
+                chat_fn=broken_chat,
+                execute=False)
+        self.assertEqual(len(calls), 2)  # initial attempt + 1 retry
+
+    def test_decompose_llm_failure_optin_falls_back_loudly_in_preview(self):
+        """DF-HG-3b: --allow-heuristic-preview (allow_heuristic_preview=True)
+        opts a plan-only preview into the same loud heuristic fallback as
+        --execute, with an orchestration note and a skipped (never
+        approved) waist confirmation."""
         from harness import events
         from harness.spend import SpendGovernor
 
@@ -108,7 +138,8 @@ class CondenseDecomposeTests(unittest.TestCase):
                 candidate_files=["pkg/mod.py"],
                 decompose_llm=True,
                 chat_fn=broken_chat,
-                execute=False)
+                execute=False,
+                allow_heuristic_preview=True)
 
             self.assertEqual(len(calls), 2)  # initial attempt + 1 retry
             self.assertEqual(plan["decomposition"], "heuristic")

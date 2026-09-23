@@ -495,16 +495,35 @@ class ComposePlanTests(_WaistFixture):
         self.assertEqual(plan["confirmation"]["model"], expected)
         self.assertEqual(plan["confirmation"]["verdict"], "approved")
 
-    def test_plan_only_llm_failure_falls_back_to_heuristic(self):
-        """DF-HG-3: plan-only preview falls back to heuristic after retry instead of raising."""
+    def test_plan_only_llm_failure_fails_closed_by_default(self):
+        """DF-HG-3b (Board ruling on PR #68): plan-only preview must fail
+        closed by default when LLM decomposition fails -- never silently
+        hand back the heuristic plan (restores the original fail-loud
+        contract PR #68 regressed; see git log -p -S 'fails_lo' -- tests)."""
+        def broken(prompt):
+            raise HarnessError("HTTP 429: rate limited")
+
+        with self.assertRaises(HarnessError):
+            compose_plan(transport=None, api_key="k", governor=self.gov,
+                         ledger=self.ledger, opts_goal="Split the work",
+                         decompose_llm=True, execute=False, chat_fn=broken)
+
+    def test_plan_only_heuristic_preview_optin_degrades_loudly(self):
+        """DF-HG-3b: allow_heuristic_preview=True (CLI:
+        --allow-heuristic-preview) opts a plan-only preview into the same
+        loud heuristic fallback --execute always used, but the plan is
+        never reported as waist-confirmed for a decomposition the LLM
+        never actually produced."""
         def broken(prompt):
             raise HarnessError("HTTP 429: rate limited")
 
         plan = compose_plan(transport=None, api_key="k", governor=self.gov,
                             ledger=self.ledger, opts_goal="Split the work",
-                            decompose_llm=True, execute=False, chat_fn=broken)
+                            decompose_llm=True, execute=False, confirm=True,
+                            chat_fn=broken, allow_heuristic_preview=True)
         self.assertEqual(plan["decomposition"], "heuristic")
         self.assertEqual(plan["status"], "planned")
+        self.assertEqual(plan["confirmation"]["verdict"], "skipped")
 
     def test_execute_falls_back_to_heuristic_with_note(self):
         def broken(prompt):

@@ -157,6 +157,12 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                              reasoning_effort=reasoning_effort,
                              run_convergence=run_convergence)
     panel_pool = list(panel)
+    # Declared once, up front: every rotation/filtering step below (BYOK,
+    # capability hard gate, catalog-unknown) that removes a REQUESTED
+    # panelist before dispatch appends here too, not just the live dispatch
+    # loop's HTTP/output failures. DF-BOD-1: a panelist silently vanishing
+    # pre-dispatch made `max_panelists=5` seat only 4 with no evidence why.
+    panel_failures = []
 
     claim_support = None
     if jev_policy is not None and jev_claim_support:
@@ -178,23 +184,35 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     # when capability data is unavailable or ordering empties the pool (e.g.
     # all hard-gated out). call_lane="panel" distinguishes this internal
     # request from an engine's apply-lane request.
+    _pre_order_pool = panel_pool
     ordered, _profiles = ordered_pool(
         panel_pool, governor=governor, ledger=ledger,
         task="structured" if run_convergence else "default",
         free_tier=bool(free_tier), call_lane="panel")
     if _profiles is not None:
         panel_pool = ordered
-    # Strike/demotion visibility: order_pool demotes (and hard-gates) members
-    # on ledger evidence; the dispatch log names every demoted id so callers
-    # can reconcile "why did my pool lose/reorder members?" (2026-09-13
-    # handoff, section 4.2: strike gating must not be opaque).
-    _demoted = [m_ for m_ in panel_pool
-                if ordered and m_ not in ordered] if _profiles is not None else []
+    # Strike/demotion visibility: order_pool drops (hard capability gate,
+    # catalog-unknown id) or demotes members on ledger evidence; the dispatch
+    # log names every dropped id so callers can reconcile "why did my pool
+    # lose/reorder members?" (2026-09-13 handoff, section 4.2: strike gating
+    # must not be opaque). DF-BOD-1: this must compare the pool BEFORE
+    # ordered_pool ran against its result -- comparing the already-reassigned
+    # `panel_pool` (== `ordered`) against itself always yields an empty diff,
+    # which is exactly how a requested panelist (e.g. a hard-gated or
+    # catalog-unknown model) vanished from `max_panelists` seating with zero
+    # evidence in panel_failures.
+    _demoted = ([m_ for m_ in _pre_order_pool if m_ not in ordered]
+                if _profiles is not None else [])
     if _demoted:
         eprint("[panel] strike/demotion gating removed from dispatch: "
                + ", ".join(_demoted))
         _events.emit("pool_filtered", task_id=task_id, lane="panel",
                      reason="demotion_strike", models=_demoted)
+        panel_failures.extend(
+            {"model": m_, "reason": "removed pre-dispatch: hard capability "
+                                     "gate or not in the live model catalog",
+             "status": "pool_filtered"}
+            for m_ in _demoted)
 
     # Rotate out any org-prefix previously observed routing via BYOK (paid).
     # VISIBLE (2026-09-13 handoff, section 4.1): silent filtering shrank a
@@ -206,6 +224,11 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                " -- widen the pool or clear byok_prefixes.json to restore.")
         _events.emit("pool_filtered", task_id=task_id, lane="panel",
                      reason="learned_byok", models=_byok_removed)
+        panel_failures.extend(
+            {"model": m_, "reason": "removed pre-dispatch: learned-BYOK "
+                                     "org filter (paid route)",
+             "status": "pool_filtered"}
+            for m_ in _byok_removed)
     panel_pool = [m_ for m_ in panel_pool if not governor.learned_blocked(m_)]
     judge_blocked = governor.learned_blocked(judge)
     if not panel_pool:
@@ -399,7 +422,8 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     # the same attribute so their canned ordering stays deterministic.
     _parallel = bool(getattr(transport, 'parallel_safe', False))
     panel_results = []
-    panel_failures = []
+    # panel_failures was declared up top (pre-dispatch filtering populates it
+    # too; this loop's HTTP/output failures append to the same list).
     candidates = iter(panel_pool)
     tried = 0
     _futures = set()
