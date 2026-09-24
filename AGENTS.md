@@ -20,12 +20,14 @@ lane) loads this via `CLAUDE.md`; any other agent reads it directly.
 If a local `docs/jev-roadmap.md` disagrees with `origin/main`, **fetch origin** —
 origin wins. The operator tree (`main`) may lag; reconcile before trusting STATUS.
 
-## Current mission (truth 2026-09-22 — details in canon STATUS)
+## Current mission (truth 2026-09-24 — details in canon STATUS)
+
+Claude, Codex, and Freebuff use `docs/jev-roadmap.md` as the shared operational canon. Lane-specific handoffs are seat state, not parallel plans. Every change, including STATUS and docs, goes through a reviewed PR with local gates and green CI; keep one phase PR active at a time and never push directly to `main`.
 
 | Item | Truth |
 |---|---|
-| Shipped | JEV-P0..P6, JEV-COMPLETION, JEV-P5, JEV-LOG-*, HUL-A..D, HG-*, SITE-* — all merged (HG reopened by dogfood: `DF-HG-1/2`) (latest PR #65 `1936ed4`); `main` CI + local audit BAR MET |
-| Open | rows marked **open** in canon STATUS (MS-*, Exit rows, the Claude-lane/Jev-bar rows, dogfood follow-ups) — take the first one in "Next implementation slice" |
+| Shipped | Existing Jev/HUL/HG/SITE work plus PR #86 Ling rotation (`a2cbb21859dcc7c95f1bc8deef168ccb246cede2`), PR #87 media adapter (`8631ecad17d72ec62b1fae5f26ed31ed9fd5c210`), and PR #88 Freebuff answer lifecycle (`65da7b13dbe546238268bd986457b0dc96af4766`) are merged; PR #88 is only a partial `HV-1` slice. See the dated integration audit and exact scope in the canon. |
+| Open | Rows marked open in canon STATUS — take the first item in Next implementation slice; HV-0 remains next, ahead of partial HV-1. PR #73 is the in-scope experimental OC handoff lane (OC-HANDOFF); Harness-owned changes may write findings only to HANDOFF/OC_FINDINGS.md. Keep all work inside this Harness repository; do not change external instances or configuration. |
 | Completion rule | STATUS may say complete only when `harness jev-phase --phase <ID>` passes the bar (hard gates + sentiment buckets) **and** CI is green on the merge |
 | `JEV-P2-jury` | **deferred** by operator ruling — do not invent it to look complete |
 | Do not | redo shipped phases; mark complete while audit/CI red; merge red CI; hardcode provider brands in phase code |
