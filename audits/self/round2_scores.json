@@ -5,6 +5,65 @@
     "SM": 10.0,
     "SD": 10.0
   },
+  "jev_scores": {
+    "A": 10.0,
+    "R": 10.0,
+    "SM": 10.0,
+    "SD": 10.0
+  },
+  "jev_gate_pass": true,
+  "jev_eval": {
+    "dimensions": {
+      "A": {
+        "name": "Security",
+        "level_index": 4,
+        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
+        "score": 10.0,
+        "bar_met": true,
+        "evaluated": true
+      },
+      "R": {
+        "name": "Reliability",
+        "level_index": 4,
+        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
+        "score": 10.0,
+        "bar_met": true,
+        "evaluated": true
+      },
+      "SM": {
+        "name": "Structural hygiene & maintainability",
+        "level_index": 4,
+        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
+        "score": 10.0,
+        "bar_met": true,
+        "evaluated": true
+      },
+      "SD": {
+        "name": "Documentation & release integrity",
+        "level_index": 4,
+        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
+        "score": 10.0,
+        "bar_met": true,
+        "evaluated": true
+      }
+    },
+    "scores": {
+      "A": 10.0,
+      "R": 10.0,
+      "SM": 10.0,
+      "SD": 10.0
+    },
+    "bar_95_pass": true,
+    "min_score": 10.0,
+    "is_fallback": true,
+    "reasons": [
+      "governor_not_provided"
+    ],
+    "model": "jev-latest",
+    "cost": 0.0,
+    "input_tokens": 0,
+    "output_tokens": 0
+  },
   "checks": {
     "A": [
       {
@@ -163,7 +222,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 1862 tests in 129.341s\n\nOK"
+        "evidence": "unittest: Ran 1907 tests in 218.874s\n\nOK"
       },
       {
         "id": "R14",
@@ -263,7 +322,7 @@
         "id": "D7",
         "label": "docs reference only real modules",
         "score": 1.0,
-        "evidence": "all module references across 23 docs resolve to real files"
+        "evidence": "all module references across 26 docs resolve to real files"
       },
       {
         "id": "D8",
@@ -293,7 +352,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "no executable harness changes since the coverage baseline 31e6493959"
+        "evidence": "no executable harness changes since the coverage baseline bcd507ce58"
       }
     ]
   }

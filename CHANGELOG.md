@@ -11,6 +11,8 @@ break APIs between minor versions).
 
 ### Added
 
+- **Jev self-audit gate (`JEV-AUDIT-GATE`)** — `JevPolicy.evaluate_audit_dimensions` (site `audit_dimensions`) now resolves each of the 4 dimensions from declared legend/probability answers only (never a raw score-as-index guess), settles preflight + exactly one ledger `jev_eval` per call on every path (unkeyed, governor-missing, transport-error, invalid-response, and partial-unmatched fallbacks included), and reports a dimension absent from a partial `--dim` run as honest `not_evaluated` (`level_index`/`score` `None`) rather than a false 0.0 — `jev_gate_pass`/`bar_95_pass` is true only when all four declared dimensions were evaluated and score >= 9.5. `audits/self/audit.py` prints `[N/E]` for unevaluated dimensions. Hermetic keyed-path tests (fake transport/evaluator + governor + ledger) in `tests/test_audit_dimensions.py`.
+
 - **Jev bar sentiment buckets (`JEV-BAR`)** — `harness jev-phase` gate upgraded to full per-axis sentiment buckets (`packs/phase_completion.pack.json`, 5 levels, 6 axes) + operator improvement buckets (`merge_pending`, `tests_missing`, `gates_unverified`, `status_dishonest`, `residual_untracked`, `dogfood_missing`). Code-owned gates + Jev semantic judgment via `JevPolicy.evaluate_phase_completion` (site `phase_completion`), fail-closed (Jev may only lower code authority), 0-hallucination. CLI adds `--all` and prioritized `improvements:` output. Hermetic gate tests in `tests/test_jev_bar_sentiment.py`.
 
 ### Fixed

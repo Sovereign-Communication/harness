@@ -1197,10 +1197,87 @@ def main():
     out = HERE / "round2_scores.json"
     summary = {d: round(sum(r["score"] for r in rows) / len(rows) * 10, 2)
                for d, rows in results.items()}
-    out.write_text(json.dumps({"scores": summary, "checks": results}, indent=2),
-                   encoding="utf-8")
-    print(f"scores: {summary}  (written to {out.relative_to(ROOT)})")
-    print("verdict:", "ALL DIMENSIONS >= 9.5 — bar met" if total_ok
+
+    # --- JEV 4-Dimension Authoritative Gate (95%+ on ALL 4 dimensions) ---
+    from harness.config import load_settings
+    from harness.jev_policy import policy_for
+
+    dimension_evidence = {
+        dim: {
+            "score": summary.get(dim, 0.0),
+            "checks_count": len(rows),
+            "checks_satisfied": sum(r["score"] >= 1 for r in rows),
+            "checks": rows,
+        }
+        for dim, rows in results.items()
+    }
+
+    settings = load_settings()
+    jev_policy = policy_for(settings)
+    jev_gate = jev_policy.evaluate_audit_dimensions(dimension_evidence)
+
+    print("=" * 65)
+    print("JEV 4-DIMENSION TRUE GATE (authoritative bar >= 9.50/10 on ALL 4 dimensions):")
+    for dim in ("A", "R", "SM", "SD"):
+        d = jev_gate["dimensions"].get(dim, {})
+        s = jev_gate["scores"].get(dim)
+        if s is None:
+            print(f"  [N/E] {dim} — {d.get('name', dim)}: not_evaluated")
+            continue
+        bar_mark = "OK " if s >= 9.5 else "LOW"
+        pct = (s / 10.0) * 100
+        print(f"  [{bar_mark}] {dim} — {d.get('name', dim)}: {s:.2f}/10 ({pct:.1f}%) [{d.get('level', 'evaluated')}]")
+    dims_evaluated = list(dims.keys())
+    bar_met_for_dims = all(
+        (jev_gate["scores"].get(d) or 0.0) >= 9.5 for d in dims_evaluated)
+    if args.dim:
+        print(f"  Jev Gate Result ({args.dim}): {'PASS (>=95%)' if bar_met_for_dims else 'FAIL (<95%)'} "
+              f"(is_fallback={jev_gate['is_fallback']}, model={jev_gate.get('model')})")
+    else:
+        print(f"  Jev Gate Result: {'PASS (>=95% on all 4 dimensions)' if jev_gate['bar_95_pass'] else 'FAIL (<95% on one or more dimensions)'} "
+              f"(is_fallback={jev_gate['is_fallback']}, model={jev_gate.get('model')})")
+    print("=" * 65)
+    print()
+
+    # Gating rule: evaluated dimensions must average >= 9.5 and pass Jev 95%+ gate
+    total_ok = total_ok and bar_met_for_dims
+
+    if args.dim and out.exists():
+        try:
+            prior = json.loads(out.read_text(encoding="utf-8"))
+            saved_scores = prior.get("scores", {})
+            saved_scores.update(summary)
+            saved_jev = prior.get("jev_scores", {})
+            saved_jev.update({d: jev_gate["scores"][d] for d in dims_evaluated if d in jev_gate["scores"]})
+            saved_checks = prior.get("checks", {})
+            saved_checks.update(results)
+            payload = {
+                "scores": saved_scores,
+                "jev_scores": saved_jev,
+                "jev_gate_pass": all(saved_jev.get(d, 0.0) >= 9.5 for d in ("A", "R", "SM", "SD")),
+                "jev_eval": jev_gate,
+                "checks": saved_checks,
+            }
+        except Exception:
+            payload = {
+                "scores": summary,
+                "jev_scores": jev_gate["scores"],
+                "jev_gate_pass": jev_gate["bar_95_pass"],
+                "jev_eval": jev_gate,
+                "checks": results,
+            }
+    else:
+        payload = {
+            "scores": summary,
+            "jev_scores": jev_gate["scores"],
+            "jev_gate_pass": jev_gate["bar_95_pass"],
+            "jev_eval": jev_gate,
+            "checks": results,
+        }
+
+    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(f"scores: {payload['scores']}  (written to {out.relative_to(ROOT)})")
+    print("verdict:", "ALL EVALUATED DIMENSIONS >= 9.5 (JEV 95%+ TRUE GATE MET) — bar met" if total_ok
           else "BAR NOT MET — iterate on the failing checks above")
     return 0 if total_ok else 1
 
