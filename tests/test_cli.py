@@ -726,7 +726,7 @@ class CliParserSurfaceTests(unittest.TestCase):
         sub_action = next(a for a in build_parser()._actions
                           if isinstance(a, argparse._SubParsersAction))
         registered = set(sub_action.choices)
-        self.assertEqual(registered, set(_DISPATCH) | {"serve", "desktop"})
+        self.assertEqual(registered, set(_DISPATCH) | {"serve", "desktop", "media"})
 
     def test_handler_seams_stay_importable_from_cli(self):
         import harness.cli as cli

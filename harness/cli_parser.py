@@ -81,6 +81,11 @@ def build_parser():
         description="Cost-bounded multi-model verification & coding harness with AI sovereignty.")
     sub = ap.add_subparsers(dest="command", required=True)
 
+    # Media generation via the sovereign-media service (adapter in
+    # harness/media_client.py; parses its own subarguments).
+    sub.add_parser("media", help="Image/video generation via sovereign-media "
+                                 "(cost-bounded, credentials stay service-side)")
+
     # Structured so --help lists the UI faces alongside the data commands.
     sub.add_parser("serve", help="Local web UI + JSON API over the core (loopback; "
                                  "--auth-token optional, HARNESS_UI_AUTH_TOKEN)")
