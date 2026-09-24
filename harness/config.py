@@ -207,9 +207,21 @@ FREE_PANEL_POOL = [
 # live runs (structured claims, consent, and specialist lanes all included);
 # a reasoning-heavy judge burns its budget on hidden thinking instead.
 FREE_JUDGE = "google/gemma-4-31b-it:free"
+#
+# DF-LING-2 (operator ruling 2026-09-23): Ling may be in rotation but never
+# the default. PR #69 dropped Ling from this pool entirely on an unevidenced
+# capability claim without the sign-off its own plan required (DF-LING-1
+# fixed the actual root cause: chat._extract_json now walks successive `{`
+# candidates and _REASONING_HINTS covers `ling`). Ling is restored here at a
+# non-first position -- it rotates in after the proven default, never ahead
+# of it. Keep it out of index 0; resolve_tier_recommended_model,
+# tier_model_ladder and the apply_model default all key off index 0/leading
+# entries and must keep returning a non-Ling model as the first/default
+# choice (pinned in tests/test_sliding_scale.py).
 FREE_APPLY_POOL = [
     "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
+    "inclusionai/ling-3.0-flash-fin:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "cohere/north-mini-code:free",
     "openrouter/free",
