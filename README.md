@@ -380,7 +380,11 @@ Wire into any MCP host (Claude Code, Cursor, your own agents):
 
 Tools (`tools/list` order): `panel_verify`, `apply_edit`, `offer_work`, `defer_work`,
 `ledger_status`, `participation_report`, `spend_status`, `trust_status`, `plan_and_execute`,
-`issue_sort`, `route_query`, `mission_status`, `continue_work`, `log_judgment`.
+`issue_sort`, `route_query`, `mission_status`, `continue_work`, `log_judgment`, `jev_phase`.
+`jev_phase` is a thin, always-local-only face over `harness.jev_completion` (the
+same engine `harness jev-phase --local-only` runs): hard gates + sentiment
+buckets score one phase (`phase`) or the whole board (`all: true`). It never
+builds a live Jev policy and never mutates `STATUS.md` or the repo.
 `mission_status` is a thin, read-only face over the HUL-A mission pack
 (`harness.mission_record`): regenerates `STATUS.md`/`INDEX.md` from on-disk pack
 state and returns the same machine-readable summary `harness mission status`

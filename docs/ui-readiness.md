@@ -60,6 +60,29 @@ no new server-side validation or runner -- `validate_dispatch` and
 `RUNNERS["verify"/"continue"]` are the same code path the CLI and chat
 lane already exercise.
 
+## DF-UI-2: read-mostly HTTP/MCP faces
+
+Thin faces over existing owners -- no second implementation, same auth
+guard (`X-Harness-Auth` / loopback) as every other `/api` route.
+
+| Face | Owner | Notes |
+|---|---|---|
+| `GET /api/jev-phase[?phase=ID][&repo_root=.][&min_score=85]` | `harness.jev_completion` (`dogfood_phase`/`score_all_phases`) | Always local-only: `settings=None`, `use_live_jev=False` -- same guarantee `harness jev-phase --local-only` and the MCP `jev_phase` tool give (never a live Jev judge). No `phase` scores the whole board. |
+| `GET /api/cost[?last=][&by_tier=][&by_model=][&savings=]` | `AutonomyLedger.cost_report` | Same call `harness cost` makes; flags mirror the CLI's `--last`/`--by-tier`/`--by-model`/`--savings`. |
+| `GET /api/missions[?root=missions]` | `harness.mission_record` | Read-only summaries of every pack under `root` (`load_mission_pack` + `pack_summary`, no writes); missing/empty root is `{"missions": []}`, not an error. |
+| `GET /api/missions/<id>[?root=missions]` | `harness.mission_record` | Same regenerate-and-summarize semantics as `harness mission status` / the MCP `mission_status` tool (refreshes `STATUS.md`/`INDEX.md`, never mutates budget/receipts/resume). |
+| MCP `jev_phase` | `harness.jev_completion` | Same local-only semantics as the HTTP face above; `{repo_root, phase, all, min_score}`. |
+
+**`plan` stays CLI/MCP-only.** `plan_and_execute` (MCP) and the DAG planner
+have no server `RUNNERS` entry to reuse: the HTTP dispatch lane's four run
+kinds (`apply`/`verify`/`continue`/`bench`) are each one call into an
+existing engine method, but planning is a multi-node executor with its own
+confirmation/waist flow that no existing server runner shape fits. Wiring
+it over HTTP would mean writing a second `plan` implementation, which is
+exactly the one-owner rule this document exists to keep. Use `harness plan`
+(CLI) or the MCP `plan_and_execute` tool until a server runner kind that
+actually fits shows up.
+
 ## Deliberate non-goals in Phase 1
 
 - MCP `tools/call` streaming: the MCP lane keeps its ledger-based reporting;

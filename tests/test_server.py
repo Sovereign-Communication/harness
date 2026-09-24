@@ -1200,5 +1200,174 @@ class SessionSurfaceUnitTests(unittest.TestCase):
         return DirectHandler(ui, path, method, body)
 
 
+def _write_jev_repo(root, status_line):
+    """Minimal fixture harness.jev_completion.collect_phase_evidence can
+    read (same shape as tests/test_jev_completion.py): STATUS row only."""
+    from harness.jev_completion import DEFAULT_COMPLETION_PACK
+    docs = os.path.join(root, "docs")
+    os.makedirs(docs, exist_ok=True)
+    with open(os.path.join(docs, "jev-roadmap.md"), "w", encoding="utf-8") as f:
+        f.write("## Canonical STATUS\n\n"
+                "| Track | Phase | Status | Evidence |\n"
+                "|---|---|---|---|\n"
+                f"{status_line}\n")
+    pack_dir = os.path.join(root, "packs")
+    os.makedirs(pack_dir, exist_ok=True)
+    with open(os.path.join(pack_dir, "phase_completion.pack.json"), "w",
+             encoding="utf-8") as f:
+        json.dump(DEFAULT_COMPLETION_PACK, f)
+
+
+class JevPhaseEndpointTests(ServerHarness):
+    """GET /api/jev-phase: always local-only (harness.jev_completion, same
+    engine `harness jev-phase --local-only` / the MCP jev_phase tool use).
+    Never calls a live Jev judge -- these tests carry no settings/key at
+    all, so a live call would error, not silently pass."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = tempfile.TemporaryDirectory()
+        self.addCleanup(self.repo.cleanup)
+
+    def test_one_phase_scores_without_any_key_or_network(self):
+        _write_jev_repo(
+            self.repo.name,
+            "| 2 Pillars `JEV-P2-*` | **in progress / repair** | PR OPEN |")
+        conn = self._conn()
+        try:
+            status, data = _request(
+                conn, "GET",
+                f"/api/jev-phase?phase=JEV-P2&repo_root={self.repo.name}")
+        finally:
+            conn.close()
+        self.assertEqual(status, 200)
+        self.assertEqual(data["phase"], "JEV-P2")
+        self.assertFalse(data["can_mark_complete"])
+        self.assertIn("hard_gates", data)
+
+    def test_no_phase_scores_the_whole_board(self):
+        _write_jev_repo(
+            self.repo.name,
+            "| 2 Pillars `JEV-P2-*` | **in progress / repair** | PR OPEN |")
+        conn = self._conn()
+        try:
+            status, data = _request(
+                conn, "GET", f"/api/jev-phase?repo_root={self.repo.name}")
+        finally:
+            conn.close()
+        self.assertEqual(status, 200)
+        self.assertIn("phases", data)
+        self.assertIn("false_complete", data)
+
+class JevPhaseAuthTests(ServerHarness):
+    """Same X-Harness-Auth guard as every other /api route (TokenAuthTests
+    pattern), pinned for this new endpoint specifically."""
+    token = "s3cret-token"
+
+    def test_missing_token_401(self):
+        conn = self._conn()
+        try:
+            status, _ = _request(conn, "GET", "/api/jev-phase?phase=X")
+        finally:
+            conn.close()
+        self.assertEqual(status, 401)
+
+
+class CostEndpointTests(ServerHarness):
+    """GET /api/cost: the ONE cost-observability owner
+    (AutonomyLedger.cost_report), same call `harness cost` makes."""
+
+    def test_cost_report_shape(self):
+        report = {"total_cost": 0.0, "entries": 0}
+        ledger = mock.Mock(cost_report=mock.Mock(return_value=report))
+        with mock.patch.object(ui_server, "load_settings"), \
+             mock.patch.object(ui_server, "ledger_for", return_value=ledger):
+            conn = self._conn()
+            try:
+                status, data = _request(conn, "GET",
+                                        "/api/cost?by_tier=true&last=24h")
+            finally:
+                conn.close()
+        self.assertEqual(status, 200)
+        self.assertEqual(data, report)
+        ledger.cost_report.assert_called_once_with(
+            window="24h", by_tier=True, by_model=False, savings=False)
+
+
+class MissionsEndpointTests(ServerHarness):
+    """GET /api/missions and /api/missions/<id>: read-only faces over the
+    HUL-A mission pack (harness.mission_record) -- same owner the
+    mission_status MCP tool and `harness mission status` use."""
+
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = os.path.join(self.tmp.name, "missions")
+
+    def _init_pack(self, mission_id):
+        from harness import mission_record as mr
+        spec = mr.build_mission_spec(
+            mission_id=mission_id,
+            request="Exercise the missions HTTP faces",
+            success_definition="GET /api/missions returns the pack summary",
+            max_cost_usd=0.50,
+            terminal_reserve_cost_usd=0.05,
+            in_scope=["harness/server.py"],
+            out_of_scope=["live network calls"],
+            persistence_root=self.root,
+            verifier_kind="hermetic-local",
+        )
+        return mr.init_mission_pack(self.root, spec)
+
+    def test_list_is_empty_when_root_is_missing(self):
+        conn = self._conn()
+        try:
+            status, data = _request(
+                conn, "GET", f"/api/missions?root={self.root}")
+        finally:
+            conn.close()
+        self.assertEqual(status, 200)
+        self.assertEqual(data["missions"], [])
+
+    def test_list_returns_every_pack_summary(self):
+        self._init_pack("m-http-1")
+        self._init_pack("m-http-2")
+        conn = self._conn()
+        try:
+            status, data = _request(
+                conn, "GET", f"/api/missions?root={self.root}")
+        finally:
+            conn.close()
+        self.assertEqual(status, 200)
+        ids = sorted(m["id"] for m in data["missions"])
+        self.assertEqual(ids, ["m-http-1", "m-http-2"])
+
+    def test_detail_returns_pack_summary_and_refreshes_status_md(self):
+        self._init_pack("m-http-3")
+        conn = self._conn()
+        try:
+            status, data = _request(
+                conn, "GET", f"/api/missions/m-http-3?root={self.root}")
+        finally:
+            conn.close()
+        self.assertEqual(status, 200)
+        self.assertEqual(data["id"], "m-http-3")
+        self.assertIn("dual_budget", data)
+        self.assertTrue(os.path.exists(
+            os.path.join(self.root, "m-http-3", "STATUS.md")))
+
+    def test_detail_unknown_id_is_400(self):
+        os.makedirs(self.root, exist_ok=True)
+        conn = self._conn()
+        try:
+            status, data = _request(
+                conn, "GET", f"/api/missions/does-not-exist?root={self.root}")
+        finally:
+            conn.close()
+        self.assertEqual(status, 400)
+        self.assertIn("mission pack not found", data["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

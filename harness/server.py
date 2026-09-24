@@ -95,6 +95,11 @@ RANKINGS_REPORT_DIR = "rankings"
 RANKINGS_REPORT_RE = re.compile(r"^rankings-\d{4}-\d{2}-\d{2}.*\.json$")
 RUN_ID_RE = re.compile(r"^/api/runs/([A-Za-z0-9_-]{1,64})$")
 RUN_SUB_RE = re.compile(r"^/api/runs/([A-Za-z0-9_-]{1,64})/(result|events|cancel)$")
+# DF-UI-2: mission id grammar mirrors mission_record._MISSION_ID_RE (the one
+# owner for what a valid pack directory name is); an id this fails to match
+# cannot exist as a pack, so load_mission_pack raises a clean 400/404 either
+# way -- this regex only needs to isolate the path segment.
+MISSION_ID_PATH_RE = re.compile(r"^/api/missions/([^/]+)$")
 
 
 def _rankings_reports():
@@ -487,6 +492,49 @@ def _site_demo_snapshot():
                 "sessions": [], "error": f"demo snapshot unavailable: {exc}"}
 
 
+# DF-UI-2: read-mostly faces over existing owners --------------------------
+# jev-phase (harness.jev_completion), cost (ledger.cost_report), missions
+# (harness.mission_record). Each is a thin composition of the same calls
+# the CLI already makes; no new policy lives here.
+
+def _api_jev_phase_payload(repo_root, phase, min_score=85.0):
+    """Score one phase, or the whole board when ``phase`` is falsy. Always
+    local-only: never builds a live Jev policy (settings=None), so this
+    endpoint can never place a network call -- the same guarantee
+    `harness jev-phase --local-only` and the MCP `jev_phase` tool give."""
+    from .jev_completion import dogfood_phase, score_all_phases
+    if not phase:
+        return score_all_phases(repo_root, jev_policy=None, min_score=min_score)
+    return dogfood_phase(repo_root, phase, settings=None, use_live_jev=False,
+                         min_score=min_score)
+
+
+def _list_missions(root):
+    """Read-only mission summaries under ``root`` (one owner per pack:
+    harness.mission_record). A missing/empty root is an empty list, not an
+    error -- the same "normal empty state" the rankings endpoint uses.
+    Never writes STATUS.md/INDEX.md (unlike the single-mission GET, which
+    matches the established mission_status regenerate-and-summarize
+    semantics); listing many packs on every dashboard poll must stay a
+    pure read."""
+    from . import mission_record as mr
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return []
+    out = []
+    for name in names:
+        pack_dir = os.path.join(root, name)
+        if not os.path.isfile(os.path.join(pack_dir, "mission.yaml")):
+            continue
+        try:
+            pack = mr.load_mission_pack(root, name)
+            out.append(mr.pack_summary(pack))
+        except HarnessError:
+            continue  # corrupt pack: skip it rather than fail the whole list
+    return out
+
+
 class UiRequestHandler(BaseHTTPRequestHandler):
     server_version = "harness-ui/0.1"
     protocol_version = "HTTP/1.1"
@@ -586,6 +634,15 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._send_json({"session_id": sid, "history": load_chat_history(sid)})
             if path == "/api/chat/sessions":
                 return self._send_json({"sessions": _list_chat_sessions()})
+            if path == "/api/jev-phase":
+                return self._api_jev_phase(q)
+            if path == "/api/cost":
+                return self._api_cost(q)
+            if path == "/api/missions":
+                return self._api_missions_list(q)
+            m = MISSION_ID_PATH_RE.match(path)
+            if m:
+                return self._api_mission_detail(m.group(1), q)
             return self._error(404, f"no such endpoint: {path}")
         except HarnessError as e:
             return self._error(400, str(e))
@@ -929,6 +986,50 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             "latest": os.path.basename(latest),
             "available": True, "report": report,
         })
+
+    def _api_jev_phase(self, q):
+        """GET /api/jev-phase[?phase=ID]: the JEV completion bar, always
+        local-only (harness.jev_completion, same engine `harness jev-phase
+        --local-only` and the MCP `jev_phase` tool use). No ``phase`` scores
+        the whole board (JEV-BAR ``--all``). Never calls a live Jev judge."""
+        phase = (q.get("phase") or [None])[0]
+        min_score = _finite_float((q.get("min_score") or ["85.0"])[0],
+                                  "min_score", 0.0, 100.0)
+        repo_root = (q.get("repo_root") or ["."])[0]
+        return self._send_json(_api_jev_phase_payload(repo_root, phase, min_score))
+
+    def _api_cost(self, q):
+        """GET /api/cost: the ONE cost-observability owner
+        (AutonomyLedger.cost_report -- the same call `harness cost` makes),
+        with the same window/breakdown flags."""
+        def _flag(name):
+            return str((q.get(name) or ["0"])[0]).lower() in ("1", "true", "yes")
+        ledger = ledger_for(load_settings())
+        report = ledger.cost_report(
+            window=(q.get("last") or [None])[0],
+            by_tier=_flag("by_tier"), by_model=_flag("by_model"),
+            savings=_flag("savings"))
+        return self._send_json(report)
+
+    def _api_missions_list(self, q):
+        """GET /api/missions[?root=missions]: read-only summaries of every
+        mission pack under ``root`` (harness.mission_record). Never writes;
+        a missing/empty root is an empty list, not an error."""
+        root = (q.get("root") or ["missions"])[0]
+        return self._send_json({"root": root, "missions": _list_missions(root)})
+
+    def _api_mission_detail(self, mission_id, q):
+        """GET /api/missions/<id>[?root=missions]: same regenerate-and-
+        summarize semantics as `harness mission status` / the MCP
+        ``mission_status`` tool -- refreshes STATUS.md/INDEX.md from
+        on-disk pack state and returns the pack summary. Never mutates
+        budget, receipts, or resume state."""
+        from . import mission_record as mr
+        root = (q.get("root") or ["missions"])[0]
+        pack = mr.load_mission_pack(root, mission_id)
+        mr.write_status(pack)
+        mr.write_index(pack)
+        return self._send_json(mr.pack_summary(pack))
 
 
 def make_server(host="127.0.0.1", port=8765, auth_token=None):

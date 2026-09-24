@@ -259,4 +259,23 @@ TOOL_SCHEMAS = [
             "task_id": {"type": "string"},
         }, "required": ["log_text", "pack"]},
     },
+    {
+        "name": "jev_phase",
+        "title": "JEV completion bar (local-only, read-only)",
+        "description": "Thin face over harness.jev_completion (the same engine "
+                       "`harness jev-phase --local-only` runs): hard gates + "
+                       "sentiment buckets score one phase or the whole board. "
+                       "Always local-only -- never calls a live Jev judge and "
+                       "never mutates STATUS or the repo.",
+        "inputSchema": {"type": "object", "properties": {
+            "repo_root": {"type": "string", "default": ".",
+                          "description": "Repo root to read STATUS/evidence from"},
+            "phase": {"type": "string", "description": "Phase id, e.g. DF-UI-2 "
+                     "(required unless 'all' is set)"},
+            "all": {"type": "boolean", "default": False,
+                    "description": "Score every declared phase contract"},
+            "min_score": {"type": "number", "minimum": 0, "maximum": 100,
+                          "description": "Completion score threshold (default 85.0)"},
+        }},
+    },
 ]
