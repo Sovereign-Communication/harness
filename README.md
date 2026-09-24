@@ -311,6 +311,33 @@ harness capabilities --check-shipped   # CI-able freshness gate for shipped pool
 # each candidate through a billable one-vote probe (reasoning disabled).
 harness rankings --top 15
 harness rankings --probe --max-cost 0.05 --out rankings.json
+
+# Mission pack (HUL-A/D): an operator request run as missions/<id>/ with an
+# explicit success_definition, cost/token limits, a terminal reserve, and
+# receipts + resume.json every step. `run` drives the until-limits loop:
+# attempts continue until honest success (HUL-C scope determination),
+# limits, or stall -- never because a model "feels done".
+harness mission init --id fix-outbox --request "..." --success "..." \
+  --max-cost 0.50 --terminal-reserve 0.05 --root missions
+harness mission run --id fix-outbox --root missions --stall-limit 5
+harness mission status --id fix-outbox --root missions
+harness mission findings --id fix-outbox --root missions
+
+# `mission resume` alone is READ-ONLY: it revalidates resume.json and
+# reports resumed=false plus how_to_continue -- it never restarts the
+# driver. Add --run to actually continue the SAME until-limits driver
+# `mission run` uses (no second loop) from resume.json's saved state.
+harness mission resume --id fix-outbox --root missions            # status only
+harness mission resume --id fix-outbox --root missions --run      # continues
+
+# Attempt seat: CLI `mission run`/`mission resume --run` always use the
+# code-owned, unkeyed/local-only pack probe (no model call, no spend) --
+# every result carries an `attempt_seat` field saying so. A paid attempt
+# seat is a LIBRARY integration: inject your own `attempt_fn` into
+# `harness.mission_driver.run_mission(...)` (e.g. an apply-lane callable
+# built from `harness.session.apply_session`, which already resolves
+# models through the Router/pool ladders -- never a new model client, and
+# never a hardcoded provider brand).
 ```
 
 Exit codes: `0` ok, `1` fatal, `2` verify/lint failure (or unconfirmed run),

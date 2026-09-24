@@ -210,6 +210,44 @@ class DriverStallAndLimitTests(unittest.TestCase):
         budget = mr.load_budget(pack)
         self.assertGreaterEqual(budget["spent"], 0.40)
 
+    def test_dual_budget_envelope_pinned_attempt_cannot_eat_reserve(self):
+        """DF-HUL-1: the driver's terminal path really enforces HUL-B (not
+        just an honest-sounding note). A single attempt whose cost would eat
+        terminal_reserve must be refused by mission_record.record_spend
+        (via spend.assert_spend_allowed) and turned into an honest `blocked`
+        terminal outcome that names terminal_reserve -- pinning the envelope,
+        not merely its description."""
+        pack = _init_pack(self.root, mid="m-reserve-pin", max_cost=0.10, reserve=0.05)
+        calls = {"n": 0}
+
+        def eats_reserve(ctx):
+            calls["n"] += 1
+            # First attempt fits inside working_remaining (0.05); the second
+            # would push spent to 0.07 > max_cost - reserve (0.05).
+            cost = 0.03 if calls["n"] == 1 else 0.04
+            return {
+                "ok": True,
+                "cost_usd": cost,
+                "verifier_holds": True,
+                "artifacts": [f"note-{ctx['attempt']}.md"],
+                "evidence_summary": f"attempt {ctx['attempt']} spent {cost}",
+            }
+
+        summary = run_mission(pack, attempt_fn=eats_reserve,
+                              stall_limit=10, max_attempts=10)
+        self.assertEqual(calls["n"], 2)
+        self.assertTrue(summary["terminal"])
+        self.assertEqual(summary["driver"]["status"], "blocked")
+        self.assertIn("terminal_reserve", summary["driver"]["reason"])
+        # The refused second attempt's cost never landed.
+        budget = mr.load_budget(pack)
+        self.assertAlmostEqual(budget["spent"], 0.03)
+        self.assertGreaterEqual(budget["terminal_reserve_cost_usd"], 0.05)
+        body = pack.findings_md.read_text(encoding="utf-8")
+        self.assertIn(HUL_B_DUAL_BUDGET_NOTE, body)
+        self.assertIn("enforcement is active", HUL_B_DUAL_BUDGET_NOTE)
+        self.assertNotIn("not present", HUL_B_DUAL_BUDGET_NOTE)
+
     def test_max_attempts_limit(self):
         pack = _init_pack(self.root, mid="m-maxatt")
         summary = run_mission(pack, attempt_fn=_empty_attempt,
@@ -470,6 +508,101 @@ class DriverResumeInterruptTests(unittest.TestCase):
         self.assertTrue(result["terminal"])
         self.assertEqual(result["driver"]["status"], "stalled")
         self.assertTrue(pack.findings_md.is_file())
+
+
+class CliMissionResumeRunTests(unittest.TestCase):
+    """DF-HUL-2/DF-HUL-3: CLI `mission run` / `mission resume --run` share
+    the one HUL-D driver, plain `resume` stays read-only and honest about
+    it, and both driver call sites carry the unkeyed/local-only attempt-seat
+    note (CLI has no paid seat; library callers inject attempt_fn)."""
+
+    def setUp(self):
+        from harness import cli, output as _output
+        self.cli = cli
+        self.addCleanup(setattr, _output, "QUIET", False)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = str(Path(self.tmp.name) / "missions")
+        os.makedirs(self.root, exist_ok=True)
+        self.out = str(Path(self.tmp.name) / "out.json")
+        self.cli.main([
+            "mission", "init",
+            "--id", "m-resume-run",
+            "--request", "r",
+            "--success", "s",
+            "--max-cost", "0.1",
+            "--root", self.root,
+            "--out", self.out,
+            "--quiet",
+        ])
+
+    def _read_out(self):
+        import json as _json
+        with open(self.out, encoding="utf-8") as f:
+            return _json.load(f)
+
+    def test_plain_resume_is_read_only_and_says_how_to_continue(self):
+        self.cli.main([
+            "mission", "resume", "--id", "m-resume-run",
+            "--root", self.root, "--out", self.out, "--quiet",
+        ])
+        out = self._read_out()
+        self.assertIs(out["resumed"], False)
+        self.assertTrue(out["resumable"])
+        self.assertIn("--run", out["how_to_continue"])
+        # Nothing actually ran: still zero receipts, still non-terminal.
+        pack = mr.load_mission_pack(self.root, "m-resume-run")
+        self.assertEqual(len(mr.load_receipts(pack)), 0)
+        self.assertFalse(mr.is_terminal(pack))
+
+    def test_resume_run_continues_the_same_driver_as_run(self):
+        self.cli.main([
+            "mission", "resume", "--id", "m-resume-run", "--run",
+            "--root", self.root, "--stall-limit", "2",
+            "--out", self.out, "--quiet",
+        ])
+        out = self._read_out()
+        self.assertIs(out["resumed"], True)
+        self.assertTrue(out["terminal"])
+        self.assertEqual(out["driver"]["status"], "stalled")
+        self.assertIn("unkeyed", out["attempt_seat"])
+        self.assertIn("attempt_fn", out["attempt_seat"])
+        pack = mr.load_mission_pack(self.root, "m-resume-run")
+        self.assertTrue(mr.is_terminal(pack))
+        self.assertTrue(pack.findings_md.is_file())
+
+    def test_resume_run_on_already_terminal_pack_is_not_resumed(self):
+        pack = mr.load_mission_pack(self.root, "m-resume-run")
+        mr.mark_terminal(pack, outcome="stalled", findings="# FINDINGS\n\nx\n")
+        self.cli.main([
+            "mission", "resume", "--id", "m-resume-run", "--run",
+            "--root", self.root, "--out", self.out, "--quiet",
+        ])
+        out = self._read_out()
+        self.assertIs(out["resumed"], False)
+        self.assertIn("already terminal", out["driver"]["reason"])
+
+    def test_plain_resume_on_terminal_pack_says_it_will_not_continue(self):
+        pack = mr.load_mission_pack(self.root, "m-resume-run")
+        mr.mark_terminal(pack, outcome="complete", findings="# FINDINGS\n\nok.\n")
+        self.cli.main([
+            "mission", "resume", "--id", "m-resume-run",
+            "--root", self.root, "--out", self.out, "--quiet",
+        ])
+        out = self._read_out()
+        self.assertIs(out["resumed"], False)
+        self.assertFalse(out["resumable"])
+        self.assertIn("will not continue", out["how_to_continue"])
+
+    def test_run_command_also_carries_attempt_seat_note(self):
+        self.cli.main([
+            "mission", "run", "--id", "m-resume-run",
+            "--root", self.root, "--stall-limit", "2",
+            "--out", self.out, "--quiet",
+        ])
+        out = self._read_out()
+        self.assertIn("unkeyed", out["attempt_seat"])
+        self.assertIn("harness.session.apply_session", out["attempt_seat"])
 
 
 class DriverValidationTests(unittest.TestCase):
