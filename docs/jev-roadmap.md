@@ -156,7 +156,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 
 ### Lane-unification integration audit — 2026-09-24
 
-The 23-item lane inventory accounts for **19 superseded**, **3 integrated**, and **1 excluded by user scope**. Integrated items: PR #86 Ling rotation — merged `a2cbb21859dcc7c95f1bc8deef168ccb246cede2`; PR #87 media adapter — merged `8631ecad17d72ec62b1fae5f26ed31ed9fd5c210`; PR #88 Freebuff answer lifecycle — merged `65da7b13dbe546238268bd986457b0dc96af4766`. PR #88 supplies only part of `HV-1`; no `HV-*` roadmap row is complete, and `HV-0` remains the next implementation slice. OpenClaw (PR #73) is the one item excluded by user scope and is not included in the product.
+The original `wf_1c82997e-f19` lane inventory has **23 items: 19 superseded and four non-superseded**. Of those four: OpenClaw/PR #73 is excluded by user scope; `operator_tree_main` has only its media portion integrated by PR #87 (`8631ecad17d72ec62b1fae5f26ed31ed9fd5c210`); `worktree_ui_faces` / `DF-UI-2` remains open; and PR #88 (`65da7b13dbe546238268bd986457b0dc96af4766`) partially integrates the answer-lifecycle portion of `worktree_jev_hourglass`. PR #86 Ling rotation (`a2cbb21859dcc7c95f1bc8deef168ccb246cede2`) is a separate integration outside this 23-item inventory. PR #88 is only a partial `HV-1` slice; no `HV-*` roadmap row is complete, and `HV-0` remains the next implementation slice.
 
 | Track / phase | Status | PR / evidence |
 |---|---|---|

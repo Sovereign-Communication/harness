@@ -1,6 +1,6 @@
 # CTO_STATE — Harness
 
-**Updated:** 2026-09-22 (Claude Code session; operator API limit at ~20%, session parked safely)
+**Updated:** 2026-09-24 (lane-unification canon correction)
 **Canon:** `docs/jev-roadmap.md` — STATUS, "Next implementation slice", `DF-*` rows. This file is seat state, not a plan.
 
 ## RESUME HERE — 2026-09-22 15:30 HST (Claude, post-reset; Antigravity session audited and picked up)
@@ -19,13 +19,11 @@
 
 **2026-09-23/24 (Claude, resumed after operator usage-limit reset — status-sync slice 2):** four more phase PRs merged since the note above, each already CI-green before this docs pass: **#78** `fix/hul-d-followups` → `dd431c33` (`DF-HUL-1..3` fixed: honest budget note, `mission resume --run`, CLI attempt-seat clarity); **#81** `fix/ledger-segments-audit-r13` → `361aa6cb` (`DF-LEDGER-1` segment-glob fix, `DF-AUDIT-2` unique R13 worktree branches); **#82** `fix/ms-2b-verify-preflight` → `6d5a2f81` (`DF-MS-2b` verify preflight sized to the retry plan actually used); **#83** `feat/ui-mcp-parity` → `bf2024f9` (`DF-UI-1` verify/continue GUI panes, `DF-UI-3` `mission_status`/`continue_work` MCP tools). Docs-only PR (`docs/status-sync-slice-2`) flips the corresponding `docs/jev-roadmap.md` rows and strikes "Next implementation slice" item 11 (HUL-D follow-ups) and the DF-MS-2b/DF-UI-1/DF-UI-3 portions of item 15; `DF-UI-2` remains open.
 
-**2026-09-24 (lane-unification canon audit):** PR #86 Ling rotation (`a2cbb21859dcc7c95f1bc8deef168ccb246cede2`), #87 media adapter (`8631ecad17d72ec62b1fae5f26ed31ed9fd5c210`), and #88 Freebuff answer lifecycle (`65da7b13dbe546238268bd986457b0dc96af4766`) are integrated; #88 is partial `HV-1` only. The 23-item inventory is 19 superseded, 3 integrated, 1 excluded by user scope (OpenClaw/PR #73); `HV-0` remains next per canon.
+**2026-09-24 (lane-unification canon audit):** PR #86 Ling rotation (`a2cbb21859dcc7c95f1bc8deef168ccb246cede2`), #87 media adapter (`8631ecad17d72ec62b1fae5f26ed31ed9fd5c210`), and #88 Freebuff answer lifecycle (`65da7b13dbe546238268bd986457b0dc96af4766`) are integrated; #88 is partial `HV-1` only. The original `wf_1c82997e-f19` inventory is 19 superseded plus four non-superseded: PR #73 excluded by user scope; the `operator_tree_main` media portion integrated by #87; `worktree_ui_faces` / `DF-UI-2` open; and the `worktree_jev_hourglass` answer-lifecycle portion partially integrated by #88. PR #86 is outside this inventory. `HV-0` remains next per canon.
 
-### Next actions (in order)
+### Current resume state — 2026-09-24
 
-1. Merge the in-flight PRs one at a time as CI turns green (rebase + coverage refresh between merges); flip their `DF-*` rows via a docs PR.
-2. Operator decisions routed from the Board: Ling in the free apply pool (`DF-LING-2`), DF-HG-3 default (fail-closed restored unless overruled), Board mechanics (`DF-BOD-1`).
-3. Then slice items: `MS-context` + `DF-MS-2b`, UI parity `DF-UI-1..3`, `JEV-P4` residuals, `JEV-P6` stage C, Exit.
+PR #89 is awaiting independent review and CI. After the docs integration, `HV-0` remains the first canon implementation slice. The later sequence is `HV-1..3`, then `HV-4` → `HV-5` → `HV-6`, followed by the remaining work already ordered in the canon: `DF-UI-2`, `JEV-P4` dogfood A/B and freeze persistence, `JEV-P6` stage C, then Exit rows. `DF-UI-2` remains open.
 
 ### Prior snapshot (kept for history)
 

@@ -3,7 +3,7 @@
 **Updated:** 2026-09-24
 **Audit basis:** fresh commands + disk artifacts through the lane-unification canon audit; canon `docs/jev-roadmap.md`.
 
-**2026-09-24 lane-unification canon audit:** reconciled 23 inventory items (19 superseded, 3 integrated as PRs #86–#88, 1 excluded by user scope: OpenClaw/PR #73); PR #88 is only a partial `HV-1` slice, and `HV-0` remains next.
+**2026-09-24 lane-unification canon audit:** the original `wf_1c82997e-f19` inventory has 23 items: 19 superseded and four non-superseded—OpenClaw/PR #73 excluded by user scope; `operator_tree_main` media portion integrated by PR #87; `worktree_ui_faces` / `DF-UI-2` remains open; and the answer-lifecycle portion of `worktree_jev_hourglass` partially integrated by PR #88. PR #86 Ling rotation is a separate integration outside this inventory. PR #88 is only a partial `HV-1` slice, and `HV-0` remains next.
 
 ## Audit — 2026-09-22 15:30 HST: Antigravity session a4439ee2 ("Fix CI And Continue Work")
 
