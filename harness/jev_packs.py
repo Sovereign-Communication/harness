@@ -131,6 +131,42 @@ def completion_question_pack() -> Dict[str, Dict[str, Any]]:
     }
 
 
+# Stable metadata for the answer-loop contract.  The values are deliberately
+# separate: ``answer_sufficient`` is evidence of alignment, while the two
+# action nouls are advisory signals that code turns into a bounded transition.
+ANSWER_PACK_VERSION = "answer-sufficiency-v1"
+
+
+def answer_question_pack() -> Dict[str, Dict[str, Any]]:
+    """Typed Jev signals for the bounded answer/reiterate loop.
+
+    Jev judges only the bounded request, retained context, and candidate answer
+    supplied by the agent.  It does not grant completion, choose a model, or
+    authorize a plan.  The agent owns those transitions and the caller
+    threshold; this pack exposes the underlying probabilities honestly.
+    """
+    return {
+        "answer_sufficient": _noul(
+            "Does the candidate answer directly and sufficiently answer the "
+            "user's request using the supplied retained context?",
+            "The candidate answer is sufficiently complete, relevant, and "
+            "grounded in the request and retained context.",
+            "The candidate answer is incomplete, irrelevant, unsupported, or "
+            "otherwise not sufficient to answer the request."),
+        "iteration_required": _noul(
+            "Is another answer attempt needed before safely returning a result?",
+            "Another answer attempt is needed to improve alignment, grounding, "
+            "or completeness.",
+            "The candidate can be returned without another answer attempt."),
+        "plan_required": _noul(
+            "Does the request require a multi-step execution plan rather than "
+            "a direct answer?",
+            "The request needs a bounded plan and execution before it can be "
+            "completed.",
+            "A direct answer is sufficient; no execution plan is required."),
+    }
+
+
 def normalize_route(value: Any) -> Optional[str]:
     """Return a vocabulary route id, or None when the value is not a route."""
     if not isinstance(value, str):
