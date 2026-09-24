@@ -27,7 +27,7 @@ Claude, Codex, and Freebuff use `docs/jev-roadmap.md` as the shared operational 
 | Item | Truth |
 |---|---|
 | Shipped | Existing Jev/HUL/HG/SITE work plus PR #86 Ling rotation (`a2cbb21859dcc7c95f1bc8deef168ccb246cede2`), PR #87 media adapter (`8631ecad17d72ec62b1fae5f26ed31ed9fd5c210`), and PR #88 Freebuff answer lifecycle (`65da7b13dbe546238268bd986457b0dc96af4766`) are merged; PR #88 is only a partial `HV-1` slice. See the dated integration audit and exact scope in the canon. |
-| Open | Rows marked **open** in canon STATUS — take the first item in "Next implementation slice"; `HV-0` remains next, ahead of the partial `HV-1` work. |
+| Open | Rows marked **open** in canon STATUS — take the first item in "Next implementation slice"; `HV-0` remains next, ahead of the partial `HV-1` work. OpenClaw/PR #73 is in scope as experimental but gated handoff-only dogfood (`OPENCLAW-HANDOFF`); use only its proposed findings target after the repository root and worker-enforced controls are approved. |
 | Completion rule | STATUS may say complete only when `harness jev-phase --phase <ID>` passes the bar (hard gates + sentiment buckets) **and** CI is green on the merge |
 | `JEV-P2-jury` | **deferred** by operator ruling — do not invent it to look complete |
 | Do not | redo shipped phases; mark complete while audit/CI red; merge red CI; hardcode provider brands in phase code |
