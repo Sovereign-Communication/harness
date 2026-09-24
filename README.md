@@ -346,7 +346,7 @@ harness mission resume --id fix-outbox --root missions --run      # continues
 # hardcoded in harness/media_client.py. See docs/media.md for setup + the
 # honest-failure/budget-refusal contract.
 harness media image "a cabin in snowy woods" --project scmessenger --quality low
-harness media video "ocean waves" --provider higgsfield --model kling-3.0 --seconds 4 --project scmessenger
+harness media video "ocean waves" --provider your-video-provider --model your-model --seconds 4 --project scmessenger
 harness media jobs --project scmessenger
 harness media balance --project scmessenger
 ```
