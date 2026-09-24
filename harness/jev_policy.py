@@ -17,6 +17,7 @@ from .route_pack import (ROUTE_QUERY_SITE, fallback_route, route_combo,
                          route_question_pack as route_query_pack,
                          validate_route_pack)
 from .jev_packs import (
+    ANSWER_PACK_VERSION,
     AUDIT_DIMENSIONS_SITE,
     HUL_SCOPE_SITE,
     LOG_FACTOR_SITE,
@@ -24,6 +25,7 @@ from .jev_packs import (
     REPO_SUMMARY_SITE,
     SCOPE_COVERAGE_HOLD,
     SCOPE_NOUL_HOLD,
+    answer_question_pack,
     claim_support_question_pack,
     claims_from_payload,
     completion_bar_question_pack,
@@ -231,6 +233,134 @@ class JevPolicy:
                     pass
             return self._record_refusal(
                 str(exc), site=site, task_id=task_id, node_id=node_id)
+
+    def evaluate_answer(
+            self, prompt: str, answer: str, context: str = "", *,
+            site: str = "answer", task_id: Optional[str] = None,
+            max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+        """Assess a candidate answer and expose explicit loop signals.
+
+        This is deliberately a narrow Jev capability rather than a second
+        completion engine.  The caller owns model selection, retries, the
+        confidence threshold, and any plan transition; Jev only judges the
+        bounded candidate state.  A fallback or malformed response is never
+        allowed to look like a sufficient/native answer.
+        """
+        state = {
+            "request": str(prompt or "")[:1400],
+            "candidate_answer": str(answer or "")[:1800],
+            "retained_context": str(context or "")[:1400],
+        }
+        questions = answer_question_pack()
+
+        def probability(answers, key):
+            value = (answers or {}).get(key)
+            if isinstance(value, dict) and "noul" in value:
+                value = value.get("noul")
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            value = float(value)
+            if value < 0.0 or value > 1.0:
+                return None
+            return value
+
+        def normalize(result):
+            raw = result.answers if isinstance(result.answers, dict) else {}
+            values = {key: probability(raw, key) for key in questions}
+            valid = not result.is_fallback and all(v is not None for v in values.values())
+            if not valid:
+                reasons = list(result.reasons or [])
+                if not reasons:
+                    reasons = ["answer judgment unavailable or malformed"]
+                fallback = JevEvaluationResult(
+                    "fail", 0.0, 0.0,
+                    {**{key: None for key in questions}, "pack_version": ANSWER_PACK_VERSION},
+                    reasons, cost=result.cost, input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    # A malformed live response is not a heuristic fallback,
+                    # but it is still not a usable native judgment. Preserve
+                    # this distinction so reported provider usage is settled.
+                    is_fallback=bool(result.is_fallback),
+                    model=result.model,
+                )
+                return fallback, values, False
+            normalized = {
+                "answer_sufficient": values["answer_sufficient"],
+                "iteration_required": values["iteration_required"] >= 0.5,
+                "plan_required": values["plan_required"] >= 0.5,
+                "raw": raw,
+                "pack_version": ANSWER_PACK_VERSION,
+            }
+            verdict = result.verdict if result.verdict in ("pass", "fail") else "fail"
+            return JevEvaluationResult(
+                verdict, float(result.confidence or 0.0),
+                min(values.values()), normalized, list(result.reasons or []),
+                cost=result.cost, input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens, is_fallback=False,
+                model=result.model,
+            ), values, True
+
+        if not self.keyed:
+            fallback = JevEvaluationResult(
+                "fail", 0.0, 0.0,
+                {key: None for key in questions} | {"pack_version": ANSWER_PACK_VERSION},
+                ["unkeyed Jev cannot establish answer sufficiency"],
+                is_fallback=True, model=self.evaluator.model,
+            )
+            structural = self._account(fallback, site=site, task_id=task_id)
+            structural.update({
+                "capability": "answer",
+                "pack_version": ANSWER_PACK_VERSION,
+                "native": False,
+                "answer_sufficient": None,
+                "iteration_required": True,
+                "plan_required": None,
+            })
+            return fallback, structural
+
+        reservation = None
+        try:
+            reservation = self._preflight(site=site, max_input_tokens=max_input_tokens)
+            raw_result = self.evaluator.evaluate(state, questions)
+            result, values, live = normalize(raw_result)
+            structural = self._account(
+                result, site=site, task_id=task_id, reservation=reservation)
+            reservation = None
+            structural.update({
+                "capability": "answer",
+                "pack_version": ANSWER_PACK_VERSION,
+                "native": bool(live),
+                "answer_sufficient": values.get("answer_sufficient"),
+                "iteration_required": (
+                    True if values.get("iteration_required") is None
+                    else values["iteration_required"] >= 0.5),
+                "plan_required": (
+                    None if values.get("plan_required") is None
+                    else values["plan_required"] >= 0.5),
+            })
+            return result, structural
+        except HarnessError as exc:
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            refusal, structural = self._record_refusal(
+                str(exc), site=site, task_id=task_id)
+            refusal = JevEvaluationResult(
+                "fail", 0.0, 0.0,
+                {key: None for key in questions} | {"pack_version": ANSWER_PACK_VERSION},
+                list(refusal.reasons), is_fallback=True, model=refusal.model,
+            )
+            structural.update({
+                "capability": "answer",
+                "pack_version": ANSWER_PACK_VERSION,
+                "native": False,
+                "answer_sufficient": None,
+                "iteration_required": True,
+                "plan_required": None,
+            })
+            return refusal, structural
 
     def evaluate_candidate(self, original: str, candidate: str, instruction: str,
                            file_path: str, *, site: str = "apply",

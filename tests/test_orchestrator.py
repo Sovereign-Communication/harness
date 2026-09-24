@@ -8,6 +8,36 @@ import unittest
 
 from harness import orchestrator as orch
 from harness.errors import HarnessError
+from harness.jev import JevEvaluationResult
+
+
+class ResultProbabilityTests(unittest.TestCase):
+    def test_non_dict_answers_is_none(self):
+        result = JevEvaluationResult("pass", 0.0, 1.0, None, [])
+        self.assertIsNone(orch._result_probability(result, "goal_achieved"))
+
+    def test_noul_wrapped_and_bare_values(self):
+        wrapped = JevEvaluationResult(
+            "pass", 0.0, 1.0, {"goal_achieved": {"noul": 0.75}}, [])
+        self.assertAlmostEqual(
+            orch._result_probability(wrapped, "goal_achieved"), 0.75)
+        bare = JevEvaluationResult(
+            "pass", 0.0, 1.0, {"goal_achieved": 0.4}, [])
+        self.assertAlmostEqual(
+            orch._result_probability(bare, "goal_achieved"), 0.4)
+
+    def test_non_numeric_or_bool_value_is_none(self):
+        boolean = JevEvaluationResult(
+            "pass", 0.0, 1.0, {"goal_achieved": True}, [])
+        self.assertIsNone(orch._result_probability(boolean, "goal_achieved"))
+        stringy = JevEvaluationResult(
+            "pass", 0.0, 1.0, {"goal_achieved": "yes"}, [])
+        self.assertIsNone(orch._result_probability(stringy, "goal_achieved"))
+
+    def test_value_is_clamped_to_unit_range(self):
+        over = JevEvaluationResult(
+            "pass", 0.0, 1.0, {"goal_achieved": 1.5}, [])
+        self.assertEqual(orch._result_probability(over, "goal_achieved"), 1.0)
 
 
 class AssessCompletionTests(unittest.TestCase):
@@ -51,6 +81,67 @@ class DriveTruthTests(unittest.TestCase):
             emit=lambda *args, **kwargs: None)
         self.assertFalse(driven["final_all_ok"])
         self.assertIn("did not complete", driven["remaining_scope"])
+
+    def test_jev_completion_threshold_requires_another_round(self):
+        plan = {"total_nodes": 1, "total_cost_ceiling": 0.0,
+                "nodes": [{"node_id": "n1", "instruction": "edit",
+                            "target_files": ["a.py"]}],
+                "dag": {"nodes": [{"node_id": "n1"}]}}
+
+        class _FakeJevPolicy:
+            def evaluate_completion_nouls(self, goal, state_summary, *,
+                                          named_artifacts=None, root_dir=None,
+                                          site="completion"):
+                result = JevEvaluationResult(
+                    "pass", 0.0, 0.5, {"goal_achieved": 0.5}, [],
+                    is_fallback=False, model="jev-test")
+                return result, {"cannot_complete": False,
+                               "missing_artifacts": []}
+
+        events = []
+        driven = orch.drive(
+            goal="edit a.py", target_files=[], initial_plan=plan,
+            root_dir=".", plan_round=lambda goal: plan,
+            execute_plan=lambda current: {"n1": {"status": "ok"}},
+            completion_chat=lambda prompt: '{"complete": true}',
+            emit=lambda *args, **kwargs: events.append((args, kwargs)),
+            jev_policy=_FakeJevPolicy(), jev_completion_threshold=0.99,
+            max_rounds=1)
+
+        self.assertFalse(driven["final_all_ok"])
+        self.assertIn("Jev completion support 0.500", driven["remaining_scope"])
+        self.assertIn("below the required 0.990", driven["remaining_scope"])
+        self.assertEqual(driven["rounds_history"][-1]["jev"],
+                         {"native": True, "supported": 0.5,
+                          "cannot_complete": False,
+                          "reason": "completion nouls passed"})
+
+    def test_jev_native_support_at_threshold_falls_through_to_judge(self):
+        plan = {"total_nodes": 1, "total_cost_ceiling": 0.0,
+                "nodes": [{"node_id": "n1", "instruction": "edit",
+                            "target_files": ["a.py"]}],
+                "dag": {"nodes": [{"node_id": "n1"}]}}
+
+        class _FakeJevPolicy:
+            def evaluate_completion_nouls(self, goal, state_summary, *,
+                                          named_artifacts=None, root_dir=None,
+                                          site="completion"):
+                result = JevEvaluationResult(
+                    "pass", 0.0, 0.995, {"goal_achieved": 0.995}, [],
+                    is_fallback=False, model="jev-test")
+                return result, {"cannot_complete": False,
+                               "missing_artifacts": []}
+
+        driven = orch.drive(
+            goal="improve the widget", target_files=[], initial_plan=plan,
+            root_dir=".", plan_round=lambda goal: plan,
+            execute_plan=lambda current: {"n1": {"status": "ok"}},
+            completion_chat=lambda prompt: '{"complete": true}',
+            emit=lambda *args, **kwargs: None,
+            jev_policy=_FakeJevPolicy(), jev_completion_threshold=0.99,
+            max_rounds=1)
+
+        self.assertTrue(driven["final_all_ok"])
 
 
 class TriageFilesTests(unittest.TestCase):
