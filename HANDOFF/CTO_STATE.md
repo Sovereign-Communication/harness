@@ -19,6 +19,8 @@
 
 **2026-09-23/24 (Claude, resumed after operator usage-limit reset — status-sync slice 2):** four more phase PRs merged since the note above, each already CI-green before this docs pass: **#78** `fix/hul-d-followups` → `dd431c33` (`DF-HUL-1..3` fixed: honest budget note, `mission resume --run`, CLI attempt-seat clarity); **#81** `fix/ledger-segments-audit-r13` → `361aa6cb` (`DF-LEDGER-1` segment-glob fix, `DF-AUDIT-2` unique R13 worktree branches); **#82** `fix/ms-2b-verify-preflight` → `6d5a2f81` (`DF-MS-2b` verify preflight sized to the retry plan actually used); **#83** `feat/ui-mcp-parity` → `bf2024f9` (`DF-UI-1` verify/continue GUI panes, `DF-UI-3` `mission_status`/`continue_work` MCP tools). Docs-only PR (`docs/status-sync-slice-2`) flips the corresponding `docs/jev-roadmap.md` rows and strikes "Next implementation slice" item 11 (HUL-D follow-ups) and the DF-MS-2b/DF-UI-1/DF-UI-3 portions of item 15; `DF-UI-2` remains open.
 
+**2026-09-24 (lane-unification canon audit):** PR #86 Ling rotation (`a2cbb21859dcc7c95f1bc8deef168ccb246cede2`), #87 media adapter (`8631ecad17d72ec62b1fae5f26ed31ed9fd5c210`), and #88 Freebuff answer lifecycle (`65da7b13dbe546238268bd986457b0dc96af4766`) are integrated; #88 is partial `HV-1` only. The 23-item inventory is 19 superseded, 3 integrated, 1 excluded by user scope (OpenClaw/PR #73); `HV-0` remains next per canon.
+
 ### Next actions (in order)
 
 1. Merge the in-flight PRs one at a time as CI turns green (rebase + coverage refresh between merges); flip their `DF-*` rows via a docs PR.

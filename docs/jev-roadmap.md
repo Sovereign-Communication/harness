@@ -1,7 +1,7 @@
 # Jev Full-Functionality Roadmap
 
 **Status:** active tracking doc  
-**Implementer lane:** Claude Code (`CLAUDE.md`, `/isolated-mission`) — migrated 2026-09-22 from the Freebuff / Buffy lane, which landed the baseline (PR-Jev-Live `b6fa945`, waist pre-plan `a591739`, cost foundation `b3960e7`)  
+**Implementer lanes:** Claude Code (`CLAUDE.md`, `/isolated-mission`), Codex, and Freebuff share this canon; use lane-specific handoffs as seat state, not parallel plans.
 **Audit date:** 2026-09-22 (Claude dogfood audit: 9 components, 31 confirmed findings — see `DF-*` below)  
 **Live probe:** TypeSafe `POST https://api.typesafe.ai/v1/systemone` succeeded with key at `~/.config/harness/jev.env`
 
@@ -152,7 +152,11 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 
 ---
 
-## Canonical STATUS (update here only — truth as of 2026-09-22 post PR #65 + Claude dogfood audit)
+## Canonical STATUS (update here only — truth as of 2026-09-24 post PR #88)
+
+### Lane-unification integration audit — 2026-09-24
+
+The 23-item lane inventory accounts for **19 superseded**, **3 integrated**, and **1 excluded by user scope**. Integrated items: PR #86 Ling rotation — merged `a2cbb21859dcc7c95f1bc8deef168ccb246cede2`; PR #87 media adapter — merged `8631ecad17d72ec62b1fae5f26ed31ed9fd5c210`; PR #88 Freebuff answer lifecycle — merged `65da7b13dbe546238268bd986457b0dc96af4766`. PR #88 supplies only part of `HV-1`; no `HV-*` roadmap row is complete, and `HV-0` remains the next implementation slice. OpenClaw (PR #73) is the one item excluded by user scope and is not included in the product.
 
 | Track / phase | Status | PR / evidence |
 |---|---|---|
@@ -177,7 +181,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 | `MS-*` cheapest-capable routing + failover | **complete** | **PR #69 MERGED** `e47001a`; cheapest capable routing (no Ling defaults, Scout defaults to Gemma 4 31b, planning markers to Distiller Tier 1, router Jev route evaluation), auto paid failover (cheap paid pools appended, sorted cheapest first), hermetic Jev fake transport, `DF-MS-1` + `DF-MS-3` closed (`DF-MS-2` documentation-only, see `DF-MS-2b`); local audit BAR MET 10/10/10/10, CI green. Scope note (Claude audit 2026-09-22): the routing/failover slice is complete; the "context" half moved to `MS-context` |
 | `MS-context` condensed state for expensive seats | **open** | split from `MS-*` on 2026-09-22 — PR #69 did not touch context condensation; owner `condenser`/`brief` + MS ladders |
 | `JEV-AUDIT-GATE` Jev 4-dimension self-audit gate | **complete** | **PR #79 MERGED** `d3994e9`; `audits/self/audit.py` gate + `JevPolicy.evaluate_audit_dimensions` + `tests/test_audit_dimensions.py`; hermetic keyed-path test (D12) added, partial-run "not evaluated" scoring fixed; local audit BAR MET 10/10/10/10, CI green |
-| `MEDIA-1` `harness media` adapter | **complete** | integrated from operator-tree lane work (untracked `harness/media_client.py` + `docs/media.md`, `cli.py`/`cli_parser.py` hunks); owner `harness/media_client.py` (`MediaAdapter` + `run_cli`, thin stdlib client for the sovereign-media sibling service — image/video generation, honest `MediaUnavailable` failures, budget-refusal envelopes, config/env-resolved endpoint, no provider brand strings); hermetic tests `tests/test_media_client.py`; documented in `docs/media.md` + README CLI section |
+| `MEDIA-1` `harness media` adapter | **complete** | **PR #87 MERGED** `8631ecad17d72ec62b1fae5f26ed31ed9fd5c210`; owner `harness/media_client.py` (`MediaAdapter` + `run_cli`, thin stdlib client for the sovereign-media sibling service — image/video generation, honest `MediaUnavailable` failures, budget-refusal envelopes, config/env-resolved endpoint, no provider brand strings); hermetic tests `tests/test_media_client.py`; documented in `docs/media.md` + README CLI section |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
 | Exit | Jev P4 checklist all true on `origin/main` | **open** |
 | Exit | HUL A–D shipped **or** open-problem packs on HUL contract | **open** |
