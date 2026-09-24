@@ -15,6 +15,8 @@
 | Local MCP | `harness` entry connects (fix merged in #66); temporary `harness-dev` removed |
 | Operator one-time | accept the Claude Code workspace trust dialog (headless runs still ignore project allow rules) |
 
+**2026-09-24 (Claude, docs sync after resuming from usage limit):** merged and flipped canon rows for four in-flight PRs: **#72** `fix/verify-panel-hg-preview` → `42bac790` (DF-CLI-2, DF-BOD-1, DF-HG-3b, DF-HG-4 fixed); **#74** `chore/ci-docs-hygiene` → `718a87dc` (DF-CI-1..3, DF-DOCS-1..5, DF-AUDIT-1 fixed); **#76** `fix/ling-parse` → `c5c4180e` (DF-LING-1 fixed); **#79** `feat/jev-audit-gate` → `d3994e97` (JEV-AUDIT-GATE STATUS row now complete). `fix/hul-d-followups` (PR #78, DF-HUL-1..3) remains open/unmerged — not flipped. All four merges pre-verified green on GitHub CI before this docs pass; `docs/jev-roadmap.md` "Next implementation slice" items 7-10 struck.
+
 ### Next actions (in order)
 
 1. Merge the in-flight PRs one at a time as CI turns green (rebase + coverage refresh between merges); flip their `DF-*` rows via a docs PR.
