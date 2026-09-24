@@ -29,9 +29,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e '.[dev]'
       - name: Lint (ruff)
-        run: python -m ruff check harness tests
+        run: python -m ruff check harness tests examples/oc_handoff
       - name: Compile
-        run: python -m compileall -q harness tests
+        run: python -m compileall -q harness tests examples/oc_handoff
       - name: Run tests (hermetic, no network, warnings clean)
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
 
