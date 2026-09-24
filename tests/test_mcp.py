@@ -33,7 +33,7 @@ _TMP = tempfile.TemporaryDirectory()
 atexit.register(_TMP.cleanup)
 
 
-def make_server(posts=None):
+def make_server(posts=None, allow_write=True):
     transport = FakeTransport(models=[m(JUDGE), m(P1), m(P2), m(APPLY)], posts=posts)
     governor = SpendGovernor(transport, "sk-test")
     ledger = AutonomyLedger(os.path.join(_TMP.name, f"ledger-{os.urandom(4).hex()}.jsonl"))
@@ -42,7 +42,7 @@ def make_server(posts=None):
                          default_require_consent=True)
     return transport, McpServer(transport=transport, api_key="sk-test", governor=governor,
                                 ledger=ledger, router=router, engine=engine,
-                                allow_write=True, allowed_roots=[_TMP.name])
+                                allow_write=allow_write, allowed_roots=[_TMP.name])
 
 
 def consent_json(decision, reason="ok"):
@@ -246,6 +246,8 @@ class McpProtocolTests(unittest.TestCase):
         self.assertIn("ledger_status", tools)
         self.assertIn("participation_report", tools)
         self.assertIn("spend_status", tools)
+        self.assertIn("mission_status", tools)
+        self.assertIn("continue_work", tools)
         self.assertTrue(tools["panel_verify"]["inputSchema"]["properties"]["prompt"])
         # ping
         self.assertEqual(lines[2]["id"], 3)
@@ -986,6 +988,7 @@ class LaneSchedulingTests(unittest.TestCase):
              (t["name"] for t in TOOL_SCHEMAS)},
             {"apply_edit": "mutation",
              "plan_and_execute": "mutation",
+             "continue_work": "mutation",
              "panel_verify": "spendy",
              "offer_work": "spendy",
              "log_judgment": "spendy",
@@ -995,7 +998,8 @@ class LaneSchedulingTests(unittest.TestCase):
              "participation_report": "observe",
              "spend_status": "observe",
              "trust_status": "observe",
-             "issue_sort": "observe"})
+             "issue_sort": "observe",
+             "mission_status": "observe"})
 
     def test_unknown_and_missing_names_ride_observe(self):
         self.assertEqual(lane_for("not_a_tool"), "observe")
@@ -1059,6 +1063,251 @@ class MainCliFlagsTests(unittest.TestCase):
         with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
             self.assertEqual(mcp.main(["--help"]), 0)
             self.assertIn("usage: harness-mcp", out.getvalue())
+
+
+class MissionStatusToolTests(unittest.TestCase):
+    """DF-UI-3: mission_status is a thin, read-only face over the HUL-A
+    mission pack (harness.mission_record) -- same regenerate-and-summarize
+    semantics as `harness mission status`, no second implementation."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_mission_status_returns_pack_summary(self):
+        from harness import mission_record as mr
+
+        root = os.path.join(self.tmp.name, "missions")
+        spec = mr.build_mission_spec(
+            mission_id="m-mcp-1",
+            request="Exercise mission_status over MCP",
+            success_definition="mission_status returns the pack summary",
+            max_cost_usd=0.50,
+            terminal_reserve_cost_usd=0.05,
+            in_scope=["harness/mcp.py"],
+            out_of_scope=["live network calls"],
+            persistence_root=root,
+            verifier_kind="hermetic-local",
+        )
+        mr.init_mission_pack(root, spec)
+
+        _, server = make_server()
+        result = server._invoke("mission_status", {"mission_id": "m-mcp-1", "root": root})
+
+        self.assertEqual(result["id"], "m-mcp-1")
+        self.assertIn("dual_budget", result)
+        self.assertIn("resume", result)
+        self.assertTrue(os.path.exists(os.path.join(root, "m-mcp-1", "STATUS.md")))
+
+    def test_mission_status_unknown_id_raises(self):
+        root = os.path.join(self.tmp.name, "missions")
+        os.makedirs(root, exist_ok=True)
+        _, server = make_server()
+        with self.assertRaisesRegex(Exception, "mission pack not found"):
+            server._invoke("mission_status", {"mission_id": "does-not-exist", "root": root})
+
+
+class ContinueWorkToolTests(unittest.TestCase):
+    """DF-UI-3: continue_work is a thin face over the same
+    engine.apply_batch(continuation=...) path `harness continue` and the
+    UI's Continue pane use, write-gated exactly like apply_edit."""
+
+    def test_continue_work_refuses_without_allow_write(self):
+        target = os.path.join(_TMP.name, "cw_gate.py")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        _, server = make_server(allow_write=False)
+        continuation = {"file_path": target, "verify_only": False,
+                        "verification_required": False}
+        with self.assertRaisesRegex(Exception, "allow_write"):
+            server._invoke("continue_work", {"continuation": continuation})
+
+    def test_continue_work_resumes_as_a_preview_without_allow_write(self):
+        """A verify_only continuation is a preview, not a write, so it rides
+        the same exemption apply_edit gives verify_only -- no allow_write
+        needed, and the target file is left untouched."""
+        target = os.path.join(_TMP.name, "cw_preview.py")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        transport, server = make_server(
+            posts=[comp(consent_json("accept")), comp(CHANGED)], allow_write=False)
+        continuation = {"file_path": target, "verify_only": True,
+                        "remaining_scope": "add zero"}
+        result = server._invoke("continue_work", {"continuation": continuation})
+
+        self.assertEqual(result["status"], "preview")
+        with open(target, encoding="utf-8") as f:
+            self.assertEqual(f.read(), ORIGINAL)
+
+    def test_continue_work_resumes_a_gated_write(self):
+        from harness.continuation import gate_id
+
+        target = os.path.join(_TMP.name, "cw_resume.py")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        verify_cmd = 'python -c "pass"'
+        transport, server = make_server(
+            posts=[comp(consent_json("accept")),
+                   comp("HARNESS_READY: confident\n" + CHANGED),
+                   comp("verify ok")])
+        continuation = {"file_path": target, "verify_only": False,
+                        "verification_required": True,
+                        "verify_cmd": verify_cmd, "verify_gate_id": gate_id(verify_cmd),
+                        "remaining_scope": "add zero"}
+        result = server._invoke("continue_work", {
+            "continuation": continuation, "allow_write": True, "allow_verify": True,
+        })
+
+        self.assertNotIn("error", result if isinstance(result, dict) else {})
+        with open(target, encoding="utf-8") as f:
+            self.assertEqual(f.read(), CHANGED)
+
+    def test_continue_work_explicit_verify_cmd_matching_gate(self):
+        """An explicit args['verify_cmd'] is validated (harness/mcp.py's
+        `effective_verify_cmd` override branch) and, when it matches the
+        continuation's own authoritative gate, the resume proceeds. (The
+        engine independently rejects a *mismatched* explicit verify_cmd as
+        a gate-bypass attempt -- that path is exercised by
+        test_continue_work_rejects_mismatched_explicit_verify_cmd.)"""
+        from harness.continuation import gate_id
+
+        target = os.path.join(_TMP.name, "cw_explicit_verify.py")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        verify_cmd = 'python -c "pass"'
+        transport, server = make_server(
+            posts=[comp(consent_json("accept")),
+                   comp("HARNESS_READY: confident\n" + CHANGED),
+                   comp("verify ok")])
+        continuation = {"file_path": target, "verify_only": False,
+                        "verification_required": True,
+                        "verify_cmd": verify_cmd, "verify_gate_id": gate_id(verify_cmd),
+                        "remaining_scope": "add zero"}
+        result = server._invoke("continue_work", {
+            "continuation": continuation, "verify_cmd": verify_cmd,
+            "allow_write": True, "allow_verify": True,
+        })
+
+        self.assertNotIn("error", result if isinstance(result, dict) else {})
+        with open(target, encoding="utf-8") as f:
+            self.assertEqual(f.read(), CHANGED)
+
+    def test_continue_work_rejects_mismatched_explicit_verify_cmd(self):
+        """An explicit verify_cmd that disagrees with the continuation's own
+        authoritative gate is rejected, not silently substituted -- the
+        engine's anti-bypass check, reached through mcp.py's validated
+        `effective_verify_cmd`."""
+        from harness.continuation import gate_id
+
+        target = os.path.join(_TMP.name, "cw_mismatched_verify.py")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        embedded_cmd = 'python -c "pass"'
+        override_cmd = 'python -c "import sys; sys.exit(1)"'
+        transport, server = make_server(
+            posts=[comp(consent_json("accept")),
+                   comp("HARNESS_READY: confident\n" + CHANGED)])
+        continuation = {"file_path": target, "verify_only": False,
+                        "verification_required": True,
+                        "verify_cmd": embedded_cmd, "verify_gate_id": gate_id(embedded_cmd),
+                        "remaining_scope": "add zero"}
+        with self.assertRaisesRegex(Exception, "does not match its authoritative verification gate"):
+            server._invoke("continue_work", {
+                "continuation": continuation, "verify_cmd": override_cmd,
+                "allow_write": True, "allow_verify": True,
+            })
+
+    def test_continue_work_rejects_oversized_explicit_verify_cmd(self):
+        """The explicit verify_cmd override is validated (length-bounded)
+        before use, not passed through unchecked."""
+        target = os.path.join(_TMP.name, "cw_verify_too_long.py")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        _, server = make_server(allow_write=True)
+        continuation = {"file_path": target, "verify_only": False,
+                        "verification_required": False,
+                        "remaining_scope": "add zero"}
+        with self.assertRaisesRegex(Exception, "exceeds 10000 chars"):
+            server._invoke("continue_work", {
+                "continuation": continuation,
+                "verify_cmd": "x" * 10001,
+                "allow_write": True, "allow_verify": True,
+            })
+
+    def test_continue_work_requires_continuation(self):
+        _, server = make_server(allow_write=True)
+        with self.assertRaisesRegex(Exception, "continue_work requires 'continuation'"):
+            server._invoke("continue_work", {})
+
+    def test_continue_work_refuses_verify_cmd_without_allow_verify(self):
+        """A verify_cmd is present (from the continuation's own gate) but
+        neither the session nor the call enabled allow_verify -- refused
+        before any write happens."""
+        from harness.continuation import gate_id
+
+        target = os.path.join(_TMP.name, "cw_no_allow_verify.py")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        verify_cmd = 'python -c "pass"'
+        _, server = make_server(allow_write=True)
+        continuation = {"file_path": target, "verify_only": False,
+                        "verification_required": True,
+                        "verify_cmd": verify_cmd, "verify_gate_id": gate_id(verify_cmd),
+                        "remaining_scope": "add zero"}
+        with self.assertRaisesRegex(Exception, "allow_verify"):
+            server._invoke("continue_work", {
+                "continuation": continuation, "allow_write": True,
+            })
+
+    def test_continue_work_refuses_with_no_allowed_roots_configured(self):
+        target = os.path.join(_TMP.name, "cw_no_roots.py")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        transport = FakeTransport(models=[m(JUDGE), m(P1), m(P2), m(APPLY)])
+        governor = SpendGovernor(transport, "sk-test")
+        ledger = AutonomyLedger(os.path.join(_TMP.name, f"ledger-{os.urandom(4).hex()}.jsonl"))
+        router = Router([P1, P2], JUDGE, APPLY)
+        engine = ApplyEngine(transport, "sk-test", governor, ledger, router,
+                             default_require_consent=True)
+        server = McpServer(transport=transport, api_key="sk-test", governor=governor,
+                           ledger=ledger, router=router, engine=engine,
+                           allow_write=True, allowed_roots=[])
+        continuation = {"file_path": target, "verify_only": False,
+                        "verification_required": False,
+                        "remaining_scope": "add zero"}
+        with self.assertRaisesRegex(Exception, "requires at least one configured allowed root"):
+            server._invoke("continue_work", {
+                "continuation": continuation, "allow_write": True,
+            })
+
+    def test_continue_work_refuses_target_outside_allowed_roots(self):
+        with tempfile.TemporaryDirectory() as outside:
+            target = os.path.join(outside, "cw_outside.py")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(ORIGINAL)
+            _, server = make_server(allow_write=True)
+            continuation = {"file_path": target, "verify_only": False,
+                            "verification_required": False,
+                            "remaining_scope": "add zero"}
+            with self.assertRaisesRegex(Exception, "outside every allowed root"):
+                server._invoke("continue_work", {
+                    "continuation": continuation, "allow_write": True,
+                })
+
+    def test_continue_work_validates_explicit_instruction(self):
+        """A caller-supplied instruction (overriding remaining_scope) is
+        validated through validate_mcp_prompt, not passed through raw."""
+        target = os.path.join(_TMP.name, "cw_instruction.py")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        transport, server = make_server(
+            posts=[comp(consent_json("accept")), comp("HARNESS_READY: confident\n" + CHANGED)])
+        continuation = {"file_path": target, "verify_only": True,
+                        "remaining_scope": "add zero"}
+        result = server._invoke("continue_work", {
+            "continuation": continuation, "instruction": "add zero explicitly",
+        })
+        self.assertEqual(result["status"], "preview")
 
 
 if __name__ == "__main__":

@@ -203,6 +203,44 @@ TOOL_SCHEMAS = [
         }, "required": ["goal", "pack"]},
     },
     {
+        "name": "mission_status",
+        "title": "Mission pack status (read-only)",
+        "description": "Thin face over the HUL-A mission pack (harness.mission_record): "
+                       "regenerates STATUS.md/INDEX.md from on-disk pack state and returns "
+                       "the machine-readable summary (phase, dual budget, receipts, resume "
+                       "state). Read-only -- never mutates mission progress, spend, or "
+                       "resume status (same semantics as `harness mission status`).",
+        "inputSchema": {"type": "object", "properties": {
+            "mission_id": {"type": "string", "description": "Mission id (pack directory name)"},
+            "root": {"type": "string", "default": "missions",
+                     "description": "Mission pack root directory"},
+        }, "required": ["mission_id"]},
+    },
+    {
+        "name": "continue_work",
+        "title": "Resume a deferred/failed apply from its continuation state",
+        "description": "Thin face over the existing continue lane (the same "
+                       "engine.apply_batch(continuation=...) path `harness continue` and "
+                       "the UI's Continue pane use): resumes a gated apply from its saved "
+                       "continuation state. Write-gated exactly like apply_edit -- refuses "
+                       "without allow_write, and the continuation's target file must be "
+                       "inside an allowed root.",
+        "inputSchema": {"type": "object", "properties": {
+            "continuation": {"type": "object", "description": "Saved continuation state "
+                             "from a deferred/failed apply_edit or `harness apply`"},
+            "instruction": {"type": "string", "description": "Instruction override (<=1000 chars)"},
+            "verify_cmd": {"type": "string", "description": "Verify command override "
+                          "(requires server allow_verify; defaults to the continuation's own gate)"},
+            "allow_verify": {"type": "boolean", "description": "Explicit confirmation to run a "
+                             "verify gate in this request (required when allow_verify is not "
+                             "enabled server-side)"},
+            "max_rounds": {"type": "integer", "default": 3, "minimum": 1, "maximum": 20},
+            "allow_write": {"type": "boolean", "description": "Explicit confirmation that this "
+                            "MCP request may write files"},
+            "task_id": {"type": "string"},
+        }, "required": ["continuation"]},
+    },
+    {
         "name": "log_judgment",
         "title": "Single-pass log-factor analysis against a frozen operator pack",
         "description": "JEV-LOG: code extracts log items ($0), the ONE Jev policy "
