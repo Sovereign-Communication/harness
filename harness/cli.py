@@ -1300,6 +1300,11 @@ def main(argv=None):
     if args[:1] == ["desktop"]:
         from .ui import main as _desktop
         return _desktop(args[1:])
+    if args[:1] == ["media"]:
+        # Media generation via sovereign-media (adapter parses its own
+        # subarguments; mirrors the serve/desktop early-intercept pattern).
+        from .media_client import run_cli as _media_cli
+        return _media_cli(args[1:])
     ap = build_parser()
     opts = ap.parse_args(args)
     import harness.output as _output

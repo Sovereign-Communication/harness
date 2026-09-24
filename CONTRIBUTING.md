@@ -184,6 +184,7 @@ statement covers the CI matrix by direct execution.
 | `harness/cli.py` | handlers + dispatch + CLI bootstrap (exit codes, color/events policy); presentation re-exports (`_emit`, `_emit_by_status`, `_print_capabilities_table`) kept as patch points; session aliases (`_governor`/`_engine`/...) kept as test seams |
 | `harness/cli_report.py` | the ONE result-rendering owner (`_emit`, `_emit_by_status`, `_print_capabilities_table`): --out files, machine JSON vs TTY pretty mode, exit-code surfacing -- moved verbatim from cli.py |
 | `harness/cli_parser.py` | the argparse surface as pure construction (`build_parser`, flag builders) — handlers live in cli.py, flags in exactly one owner |
+| `harness/media_client.py` | MEDIA-1: `MediaAdapter`, a thin stdlib-only client for the sovereign-media sibling service (image/video generation) -- honest `MediaUnavailable` failures, budget-refusal envelopes, config/env-resolved endpoint (no provider brand strings); `run_cli` is the `harness media ...` face |
 | `harness/consent.py` | the consent probe (sovereignty) |
 | `harness/ledger.py` | autonomy ledger storage/integrity lifecycle: append, hash chain, rotation, repair, verify |
 | `harness/ledger_analytics.py` | read-only ledger analytics (participation_report, defer_stats calibration) -- mixed into `AutonomyLedger` verbatim |
