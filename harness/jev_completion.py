@@ -8,9 +8,18 @@ when every hard gate passes AND the combined score clears the threshold.
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
+import math
 import os
 import re
+import sqlite3
+import subprocess
+import threading
+from contextlib import closing
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from .errors import HarnessError
 from .jev_packs import (
@@ -26,12 +35,21 @@ from .jev_packs import (
 
 PHASE_COMPLETE_MIN_SCORE = 85.0
 COMPLETION_SCORE_MAX = 100.0
+# Keep these limits aligned with examples/oc_handoff/worker.py. Reads below are
+# capped as well as preflighted so a concurrent size change cannot expand them.
+_OC_HANDOFF_MAX_BYTES = 1_000_000
+_OC_MANIFEST_MAX_BYTES = 16_384
+_OC_RECEIPT_MAX_BYTES = 16_384
+_OC_RECEIPT_ROW_LIMIT = 128
+_OC_STATE_MAX_BYTES = 64 * 1024 * 1024
 
 # Mechanical points when hard gates pass. Sum == 100.
 _HARD_GATE_POINTS = {
     "pr_merged": 25,
     "origin_evidence": 10,
     "required_tests_present": 20,
+    "required_files_present": 0,
+    "oc_handoff_verified": 0,
     "local_gates_green": 15,
     "ci_green": 15,
     "no_open_blockers": 15,
@@ -98,6 +116,8 @@ _HARD_GATE_BUCKETS = {
     "pr_merged": "merge_pending",
     "origin_evidence": "merge_pending",
     "required_tests_present": "tests_missing",
+    "required_files_present": "gates_unverified",
+    "oc_handoff_verified": "dogfood_missing",
     "local_gates_green": "gates_unverified",
     "ci_green": "gates_unverified",
     "no_open_blockers": "status_dishonest",
@@ -297,7 +317,310 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         ],
         "user_facing": True,
     },
+    "OC-HANDOFF": {
+        "pr_pattern": r"PR #90|6aea14b",
+        "required_tests": ["tests/test_oc_handoff_worker.py"],
+        "required_files": [
+            "examples/oc_handoff/worker.py",
+            "docs/jev-roadmap.md",
+            "HANDOFF/OC_FINDINGS.md",
+        ],
+    },
 }
+
+
+def _canonical_json(value: Any) -> bytes:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def _sha256(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _safe_repo_file(root: Path, relative: str) -> Optional[Path]:
+    """Resolve one file under root without following symlinks."""
+    try:
+        cursor = root
+        for part in Path(relative).parts:
+            cursor = cursor / part
+            if cursor.is_symlink():
+                return None
+        resolved = cursor.resolve(strict=True)
+        if not resolved.is_relative_to(root):
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return resolved if resolved.is_file() else None
+
+
+def _read_bounded(path: Path, limit: int) -> Optional[bytes]:
+    """Read at most limit bytes, refusing oversized files and growth races."""
+    try:
+        if path.stat().st_size > limit:
+            return None
+        with path.open("rb") as handle:
+            value = handle.read(limit + 1)
+    except (OSError, RuntimeError):
+        return None
+    return value if len(value) <= limit else None
+
+
+def _git_bytes(root: Path, *args: str, max_bytes: int = 1_000_000) -> Optional[bytes]:
+    """Run a Git query while keeping captured stdout within a fixed bound."""
+    if max_bytes < 0:
+        return None
+    try:
+        process = subprocess.Popen(
+            ["git", "-C", str(root), *args], stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, shell=False,
+        )
+    except OSError:
+        return None
+    if process.stdout is None:
+        process.kill()
+        process.wait()
+        return None
+
+    captured = bytearray()
+    oversized = threading.Event()
+
+    def drain_stdout() -> None:
+        while True:
+            remaining = max_bytes + 1 - len(captured)
+            reader = getattr(process.stdout, "read1", None) or process.stdout.read
+            chunk = reader(min(65_536, remaining))
+            if not chunk:
+                return
+            captured.extend(chunk)
+            if len(captured) > max_bytes:
+                oversized.set()
+                process.kill()
+                return
+
+    reader = threading.Thread(target=drain_stdout, daemon=True)
+    reader.start()
+    try:
+        returncode = process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        returncode = None
+    reader.join(timeout=1)
+    if reader.is_alive():
+        process.kill()
+        process.stdout.close()
+        reader.join(timeout=1)
+        return None
+    process.stdout.close()
+    if oversized.is_set() or returncode != 0:
+        return None
+    return bytes(captured)
+
+
+def _valid_oc_handoff_receipt(root_value: str) -> bool:
+    """Require the worker's signed-manifest receipt and audited commit.
+
+    The worker only creates a receipt after native Jev passes and the isolated
+    commit changes exactly HANDOFF/OC_FINDINGS.md. Recheck the persisted
+    receipt, archived manifest digest, commit parent/diff, and current output
+    here so STATUS or --evidence overrides cannot manufacture completion.
+    """
+    try:
+        root = Path(root_value).resolve(strict=True)
+        output = _safe_repo_file(root, "HANDOFF/OC_FINDINGS.md")
+        db_path = _safe_repo_file(root, ".harness/oc_handoff/state.sqlite3")
+        if output is None or db_path is None:
+            return False
+        output_bytes = _read_bounded(output, _OC_HANDOFF_MAX_BYTES)
+        if output_bytes is None:
+            return False
+        output_hash = _sha256(output_bytes)
+        if db_path.stat().st_size > _OC_STATE_MAX_BYTES:
+            return False
+        db_wal = db_path.with_name(db_path.name + "-wal")
+        if (db_wal.is_symlink()
+                or (db_wal.exists() and db_wal.stat().st_size > _OC_STATE_MAX_BYTES)):
+            return False
+        key_hex = os.environ.get("HARNESS_OC_HANDOFF_HMAC_KEY", "")
+        if not re.fullmatch(r"[0-9a-f]{64}", key_hex):
+            return False
+        key = bytes.fromhex(key_hex)
+        db_uri = "file:" + quote(db_path.as_posix(), safe="/:") + "?mode=ro"
+        with closing(sqlite3.connect(db_uri, uri=True, timeout=2)) as db:
+            rows = db.execute(
+                "SELECT t.task_id, t.state, t.phase, t.repo_sha, t.commit_sha, "
+                "t.manifest_sha256, t.receipt_json, o.receipt_json, o.state "
+                "FROM tasks AS t JOIN outbox AS o ON o.task_id=t.task_id "
+                "WHERE t.state='complete' AND t.phase='complete' "
+                "AND length(CAST(t.receipt_json AS BLOB)) BETWEEN 1 AND ? "
+                "AND length(CAST(o.receipt_json AS BLOB)) BETWEEN 1 AND ? "
+                "ORDER BY t.updated_at DESC, t.task_id DESC LIMIT ?",
+                (_OC_RECEIPT_MAX_BYTES, _OC_RECEIPT_MAX_BYTES,
+                 _OC_RECEIPT_ROW_LIMIT),
+            ).fetchall()
+    except (OSError, RuntimeError, sqlite3.Error, ValueError, TypeError):
+        return False
+
+    for (task_id, task_state, phase, base, commit, manifest_hash,
+         task_receipt, outbox_receipt, outbox_state) in rows:
+        try:
+            receipt = json.loads(task_receipt)
+            outbox_doc = json.loads(outbox_receipt)
+            if (not isinstance(receipt, dict) or not isinstance(outbox_doc, dict)
+                    or receipt != outbox_doc):
+                continue
+            receipt_hmac = receipt.pop("receipt_hmac_sha256", None)
+            if (not isinstance(receipt_hmac, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", receipt_hmac)):
+                continue
+            expected_hmac = hmac.new(
+                key, _canonical_json(receipt), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(expected_hmac, receipt_hmac):
+                continue
+            checksum = receipt.pop("receipt_sha256", None)
+            if not isinstance(checksum, str) or _sha256(_canonical_json(receipt)) != checksum:
+                continue
+            receipt["receipt_sha256"] = checksum
+            receipt["receipt_hmac_sha256"] = receipt_hmac
+            base = str(base or "")
+            commit = str(commit or "")
+            manifest_hash = str(manifest_hash or "")
+            if (not isinstance(task_id, str)
+                    or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,63}", task_id)
+                    or task_state != "complete" or phase != "complete"
+                    or outbox_state not in {"pending", "delivered"}
+                    or receipt.get("task_id") != task_id
+                    or receipt.get("state") != "committed_for_review"
+                    or receipt.get("output") != "HANDOFF/OC_FINDINGS.md"
+                    or receipt.get("base_commit") != base
+                    or receipt.get("commit") != commit
+                    or receipt.get("manifest_sha256") != manifest_hash
+                    or not re.fullmatch(r"[0-9a-f]{40}", base)
+                    or not re.fullmatch(r"[0-9a-f]{40}", commit)
+                    or not re.fullmatch(r"[0-9a-f]{64}", manifest_hash)
+                    or not isinstance(receipt.get("branch"), str)
+                    or not receipt["branch"].strip()):
+                continue
+
+            jev = receipt.get("jev")
+            if (not isinstance(jev, dict) or jev.get("verdict") != "pass"
+                    or jev.get("is_fallback") is not False
+                    or jev.get("site") != "oc-handoff"
+                    or not isinstance(jev.get("model"), str) or not jev["model"].strip()):
+                continue
+            confidence = jev.get("confidence")
+            supported = jev.get("supported")
+            cost = jev.get("cost")
+            min_confidence = jev.get("min_confidence")
+            input_tokens = jev.get("input_tokens")
+            if any(isinstance(value, bool) or not isinstance(value, (int, float))
+                   for value in (confidence, supported, cost, min_confidence)):
+                continue
+            try:
+                confidence_value = float(confidence)
+                supported_value = float(supported)
+                cost_value = float(cost)
+                threshold_value = float(min_confidence)
+            except (OverflowError, ValueError):
+                continue
+            if (not all(math.isfinite(value) for value in (
+                        confidence_value, supported_value, cost_value, threshold_value))
+                    or not 0.0 <= confidence_value <= 1.0
+                    or not 0.0 <= supported_value <= 1.0
+                    or not 0.0 <= threshold_value <= 1.0
+                    or supported_value < threshold_value
+                    or (confidence_value > 0.0 and confidence_value < threshold_value)
+                    or not 0.0 <= cost_value <= 0.05
+                    or isinstance(input_tokens, bool)
+                    or not isinstance(input_tokens, int)
+                    or not 0 <= input_tokens <= 1024):
+                continue
+
+            archive_path = _safe_repo_file(
+                root, ".harness/oc_handoff/archive/" + str(task_id) + ".json")
+            if archive_path is None:
+                continue
+            manifest_bytes = _read_bounded(archive_path, _OC_MANIFEST_MAX_BYTES)
+            if manifest_bytes is None:
+                continue
+            manifest = json.loads(manifest_bytes.decode("utf-8"))
+            payload_keys = (
+                "version", "task_id", "repo_sha", "approved_by", "approved_at",
+                "nonce", "expires_at", "findings",
+            )
+            if not isinstance(manifest, dict) or any(key not in manifest for key in payload_keys):
+                continue
+            payload = {key: manifest[key] for key in payload_keys}
+            attestation = manifest.get("attestation")
+            if (payload["task_id"] != task_id or payload["repo_sha"] != base
+                    or not isinstance(payload["approved_by"], str)
+                    or not payload["approved_by"].strip()
+                    or isinstance(payload["version"], bool)
+                    or payload["version"] != 1
+                    or isinstance(payload["approved_at"], bool)
+                    or not isinstance(payload["approved_at"], int)
+                    or isinstance(payload["expires_at"], bool)
+                    or not isinstance(payload["expires_at"], int)
+                    or not payload["approved_at"] < payload["expires_at"]
+                    or payload["expires_at"] - payload["approved_at"] > 900
+                    or not isinstance(payload["nonce"], str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", payload["nonce"])
+                    or not isinstance(payload["findings"], list)
+                    or not 1 <= len(payload["findings"]) <= 4
+                    or _sha256(_canonical_json(payload)) != manifest_hash
+                    or not isinstance(attestation, dict)
+                    or attestation.get("verifier_id") != payload["approved_by"]
+                    or attestation.get("expires_at") != payload["expires_at"]):
+                continue
+            from .attest import compute_diff_sha256, parse_attestation
+
+            def verify_signature(signed_payload: bytes, signature: str) -> bool:
+                expected = hmac.new(key, signed_payload, hashlib.sha512).hexdigest()
+                return hmac.compare_digest(expected, signature)
+
+            try:
+                parse_attestation(
+                    json.dumps(attestation, sort_keys=True),
+                    diff_sha256=compute_diff_sha256(_canonical_json(payload)),
+                    base_sha256=_sha256(base.encode("ascii")),
+                    round_nonce=payload["nonce"],
+                    now=payload["approved_at"] + 1,
+                    verify_signature=verify_signature,
+                )
+            except (HarnessError, ValueError, TypeError, KeyError):
+                continue
+
+            marker = ("## Approved OC handoff " + str(task_id) + "\n").encode("utf-8")
+            manifest_marker = ("\"manifest_sha256\": \"" + manifest_hash + "\"").encode("ascii")
+            if (receipt.get("output_sha256") != output_hash
+                    or marker not in output_bytes or manifest_marker not in output_bytes):
+                continue
+
+            parent_line = _git_bytes(
+                root, "rev-list", "--parents", "-n", "1", commit, max_bytes=128)
+            if parent_line is None or parent_line.decode("ascii", "ignore").split() != [commit, base]:
+                continue
+            changed = _git_bytes(
+                root, "diff-tree", "--no-commit-id", "--name-only", "-r", base,
+                commit, max_bytes=256)
+            if changed is None or changed.decode("utf-8", "replace").splitlines() != [
+                    "HANDOFF/OC_FINDINGS.md"]:
+                continue
+            committed_output = _git_bytes(
+                root, "show", commit + ":HANDOFF/OC_FINDINGS.md",
+                max_bytes=_OC_HANDOFF_MAX_BYTES)
+            if committed_output is None or _sha256(committed_output) != output_hash:
+                continue
+            if _git_bytes(
+                    root, "merge-base", "--is-ancestor", commit, "HEAD",
+                    max_bytes=0) is None:
+                continue
+            return True
+        except (OSError, RuntimeError, sqlite3.Error, OverflowError,
+                ValueError, TypeError, KeyError, UnicodeError):
+            continue
+    return False
 
 
 def _norm_phase(phase_id: str) -> str:
@@ -337,6 +660,7 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         "HG": re.compile(r"HG-\*|hourglass composition", re.I),
         "JEV-BAR": re.compile(r"JEV-BAR", re.I),
         "CLAUDE-LANE": re.compile(r"CLAUDE-LANE", re.I),
+        "OC-HANDOFF": re.compile(r"OC-HANDOFF", re.I),
     }
     pat = needles.get(phase_id)
     if not pat or not roadmap_text:
@@ -435,7 +759,11 @@ def collect_phase_evidence(repo_root: str, phase_id: str,
         pattern = contract.get("pr_pattern")
         lowered = status_row.lower()
         mentions_pr = phase_status_mentions_pr(status_row, pattern)
-        open_pr = bool(re.search(r"\bopen\b", lowered) or re.search(r"\bno pr\b", lowered))
+        open_pr = bool(
+            re.search(r"\b(?:PR|pull request)\s*(?:#\d+)?\s*(?:is\s+)?open\b", lowered)
+            or re.search(r"\bopen\s+(?:PR|pull request)(?:\s+#\d+)?\b", lowered)
+            or re.search(r"\bno pr\b", lowered)
+        )
         merged_word = "merged" in lowered or "merge" in lowered
         # Presence of a PR id is not merge evidence while the row still says open.
         evidence["pr_merged"] = bool(mentions_pr and merged_word and not open_pr)
@@ -461,6 +789,15 @@ def collect_phase_evidence(repo_root: str, phase_id: str,
         evidence["ci_green"] = False
     if files_missing:
         evidence["open_blockers"].append("missing required files: " + ", ".join(files_missing))
+
+    if phase == "OC-HANDOFF":
+        evidence["oc_handoff_verified"] = _valid_oc_handoff_receipt(root)
+        if not evidence["oc_handoff_verified"]:
+            evidence["open_blockers"].append(
+                "no verified signed OC handoff receipt with a passing native Jev result "
+                "and exact-file audited commit")
+    else:
+        evidence["oc_handoff_verified"] = True
 
     if extra:
         for key in ("pr_merged", "local_gates_green", "ci_green", "origin_evidence"):
@@ -488,21 +825,18 @@ def collect_phase_evidence(repo_root: str, phase_id: str,
 
 
 def _hard_gates(evidence: Dict[str, Any]) -> Dict[str, bool]:
-    tests_ok = not evidence.get("tests_missing") and bool(evidence.get("required_tests") or evidence.get("tests_present") is not None)
-    if evidence.get("required_tests") and evidence.get("tests_missing"):
-        tests_ok = False
-    elif evidence.get("required_tests") and not evidence.get("tests_missing"):
-        tests_ok = True
-    else:
-        tests_ok = not bool(evidence.get("files_missing")) and not bool(evidence.get("tests_missing"))
+    tests_ok = not bool(evidence.get("tests_missing"))
+    files_ok = not bool(evidence.get("files_missing"))
+    phase = str(evidence.get("phase") or "").upper()
+    oc_handoff_ok = (phase != "OC-HANDOFF"
+                     or evidence.get("oc_handoff_verified") is True)
     blockers = list(evidence.get("open_blockers") or [])
-    # A phase with no required tests can still pass presence if files exist.
-    if not evidence.get("required_tests") and not evidence.get("files_missing"):
-        tests_ok = True
     return {
         "pr_merged": bool(evidence.get("pr_merged")),
         "origin_evidence": bool(str(evidence.get("origin_evidence") or "").strip()),
         "required_tests_present": tests_ok,
+        "required_files_present": files_ok,
+        "oc_handoff_verified": oc_handoff_ok,
         "local_gates_green": bool(evidence.get("local_gates_green")),
         "ci_green": bool(evidence.get("ci_green")),
         "no_open_blockers": not blockers,
@@ -628,6 +962,10 @@ def score_phase_completion(
         blockers.append("hard gate failed: origin_evidence")
     if not gates.get("required_tests_present"):
         blockers.append("hard gate failed: required_tests_present")
+    if not gates.get("required_files_present"):
+        blockers.append("hard gate failed: required_files_present")
+    if not gates.get("oc_handoff_verified"):
+        blockers.append("hard gate failed: oc_handoff_verified")
     if not gates.get("local_gates_green"):
         blockers.append("hard gate failed: local_gates_green")
     if not gates.get("ci_green"):

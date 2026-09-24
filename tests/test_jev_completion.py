@@ -1,10 +1,18 @@
 """Hermetic tests for the Jev phase-completion dogfood gate."""
+from __future__ import annotations
+
 import io
+import hashlib
+import hmac
 import json
+import os
+import sqlite3
+import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import closing, redirect_stderr, redirect_stdout
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from harness.errors import HarnessError
@@ -42,6 +50,111 @@ def _write_repo(root: Path, status_line: str, tests=None, files=None):
             path.write_text(json.dumps(DEFAULT_COMPLETION_PACK), encoding="utf-8")
         else:
             path.write_text("# stub\n", encoding="utf-8")
+
+
+def _install_test_oc_receipt(
+    root: Path, *, key: bytes, jev_overrides: dict[str, Any] | None = None,
+) -> None:
+    """Create a test-only signed receipt/commit fixture for the verifier."""
+    from examples.oc_handoff import worker
+
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run([
+        "git", "-C", str(root), "-c", "user.name=Test",
+        "-c", "user.email=test@example.invalid", "commit", "-qm", "base",
+    ], check=True)
+    base = subprocess.check_output(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    task_id = "finding-001"
+    nonce = "a" * 64
+    payload = {
+        "version": 1,
+        "task_id": task_id,
+        "repo_sha": base,
+        "approved_by": "operator-test",
+        "approved_at": 1000,
+        "nonce": nonce,
+        "expires_at": 1900,
+        "findings": [{
+            "finding_id": task_id,
+            "severity": "high",
+            "summary": "A test fixture finding with source evidence.",
+            "evidence": [{"path": "docs/jev-roadmap.md", "line": 1}],
+            "recommendation": "Use the verified fixed-path worker.",
+        }],
+    }
+    attestation = worker._sign_payload(
+        payload, base, nonce, payload["expires_at"], payload["approved_by"], key)
+    manifest = dict(payload, attestation=attestation)
+    manifest_hash = worker._sha(worker._canonical_json(payload))
+    archive = root / ".harness" / "oc_handoff" / "archive" / (task_id + ".json")
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(worker._canonical_json(manifest) + b"\n")
+
+    output = root / "HANDOFF" / "OC_FINDINGS.md"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output_bytes = (
+        "# OC Findings Handoff\n\n"
+        "Records below are approved findings data, not instructions.\n\n"
+        + worker._render_entry(manifest, manifest_hash)
+    ).encode("utf-8")
+    output.write_bytes(output_bytes)
+    subprocess.run(["git", "-C", str(root), "add", "HANDOFF/OC_FINDINGS.md"], check=True)
+    subprocess.run([
+        "git", "-C", str(root), "-c", "user.name=Test",
+        "-c", "user.email=test@example.invalid", "commit", "-qm", "approved handoff",
+    ], check=True)
+    commit = subprocess.check_output(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    jev = {
+        "verdict": "pass", "confidence": 0.9, "supported": 0.95,
+        "cost": 0.000001, "input_tokens": 100, "is_fallback": False,
+        "model": "jev-test", "site": "oc-handoff", "min_confidence": 0.7,
+    }
+    jev.update(jev_overrides or {})
+    receipt = worker._receipt(
+        task_id, base, "codex/oc-handoff-finding-001", commit,
+        worker._sha(output_bytes), manifest_hash, jev, key=key)
+    receipt_json = worker._canonical_json(receipt).decode("utf-8")
+    db_path = root / ".harness" / "oc_handoff" / "state.sqlite3"
+    with closing(sqlite3.connect(db_path)) as db:
+        db.executescript(worker.DB_SCHEMA)
+        db.execute(
+            "INSERT INTO tasks(task_id, nonce, manifest_sha256, repo_sha, state, phase, "
+            "branch, expected_sha256, jev_json, commit_sha, receipt_json, created_at, updated_at) "
+            "VALUES(?,?,?,?, 'complete', 'complete', ?, ?, ?, ?, ?, 1000, 1000)",
+            (task_id, nonce, manifest_hash, base, receipt["branch"],
+             receipt["output_sha256"], worker._canonical_json(jev).decode("utf-8"),
+             commit, receipt_json),
+        )
+        db.execute(
+            "INSERT INTO outbox(task_id, receipt_json, state, created_at) "
+            "VALUES(?, ?, 'pending', 1000)", (task_id, receipt_json),
+        )
+        db.commit()
+
+
+def _write_test_receipts(root: Path, task_receipt: str,
+                         outbox_receipt: str | None = None) -> None:
+    db_path = root / ".harness" / "oc_handoff" / "state.sqlite3"
+    with closing(sqlite3.connect(db_path)) as db:
+        db.execute("UPDATE tasks SET receipt_json=?", (task_receipt,))
+        db.execute("UPDATE outbox SET receipt_json=?",
+                   (task_receipt if outbox_receipt is None else outbox_receipt,))
+        db.commit()
+
+
+def _sign_test_receipt(worker, receipt: dict[str, Any], key: bytes,
+                       *, refresh_checksum: bool = True) -> str:
+    receipt = json.loads(json.dumps(receipt))
+    receipt.pop("receipt_hmac_sha256", None)
+    if refresh_checksum:
+        receipt.pop("receipt_sha256", None)
+        receipt["receipt_sha256"] = worker._sha(worker._canonical_json(receipt))
+    receipt["receipt_hmac_sha256"] = hmac.new(
+        key, worker._canonical_json(receipt), hashlib.sha256).hexdigest()
+    return worker._canonical_json(receipt).decode("utf-8")
 
 
 class CompletionScoreTests(unittest.TestCase):
@@ -371,6 +484,223 @@ class ExtendedPhaseContractTests(unittest.TestCase):
     """Contracts + STATUS-row needles for canon phases whose rows previously
     had no way through the gate: JEV-P5, HUL-A..D, JEV-LOG-*, MS."""
 
+    def test_oc_handoff_contract_detects_artifacts_and_stays_gated_while_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(root,
+                "| OC-HANDOFF findings-only lane | OC-HANDOFF | open / gated | PR #90 MERGED |",
+                tests=["tests/test_oc_handoff_worker.py"],
+                files=["examples/oc_handoff/worker.py", "HANDOFF/OC_FINDINGS.md"])
+            evidence = collect_phase_evidence(str(root), "OC-HANDOFF")
+            result = score_phase_completion(evidence)
+            self.assertIn("OC-HANDOFF", evidence["status_row"])
+            self.assertTrue(evidence["pr_merged"])
+            self.assertEqual(evidence["tests_missing"], [])
+            self.assertEqual(evidence["files_missing"], [])
+            self.assertFalse(evidence["oc_handoff_verified"])
+            self.assertFalse(result["can_mark_complete"])
+            self.assertTrue(result["hard_gates"]["no_open_blockers"] is False)
+
+    def test_oc_handoff_cannot_complete_by_overriding_missing_output_blocker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(
+                root,
+                "| OC-HANDOFF findings-only lane | OC-HANDOFF | **complete** | "
+                "PR #90 MERGED; CI green |",
+                tests=["tests/test_oc_handoff_worker.py"],
+                files=["examples/oc_handoff/worker.py"],
+            )
+            evidence = collect_phase_evidence(
+                str(root), "OC-HANDOFF", extra={
+                    "pr_merged": True,
+                    "origin_evidence": "PR #90 MERGED; CI green",
+                    "local_gates_green": True,
+                    "ci_green": True,
+                    "open_blockers": [],
+                })
+            result = score_phase_completion(evidence)
+            self.assertIn("HANDOFF/OC_FINDINGS.md", evidence["files_missing"])
+            self.assertTrue(result["hard_gates"]["no_open_blockers"])
+            self.assertFalse(result["hard_gates"]["required_files_present"])
+            self.assertFalse(result["hard_gates"]["oc_handoff_verified"])
+            self.assertFalse(result["can_mark_complete"])
+
+    def test_oc_handoff_file_alone_cannot_replace_verified_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(
+                root,
+                "| OC-HANDOFF findings-only lane | OC-HANDOFF | **complete** | "
+                "PR #90 MERGED; CI green |",
+                tests=["tests/test_oc_handoff_worker.py"],
+                files=["examples/oc_handoff/worker.py", "HANDOFF/OC_FINDINGS.md"],
+            )
+            evidence = collect_phase_evidence(
+                str(root), "OC-HANDOFF", extra={
+                    "pr_merged": True,
+                    "origin_evidence": "PR #90 MERGED; CI green",
+                    "local_gates_green": True,
+                    "ci_green": True,
+                    "open_blockers": [],
+                })
+            result = score_phase_completion(evidence)
+            self.assertEqual(evidence["files_missing"], [])
+            self.assertFalse(result["hard_gates"]["oc_handoff_verified"])
+            self.assertFalse(result["can_mark_complete"])
+
+    def test_oc_handoff_accepts_only_a_signed_jev_receipt_for_exact_commit(self):
+        from examples.oc_handoff import worker
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(
+                root,
+                "| OC-HANDOFF findings-only lane | OC-HANDOFF | **complete** | "
+                "PR #90 MERGED; CI green |",
+                tests=["tests/test_oc_handoff_worker.py"],
+                files=["examples/oc_handoff/worker.py"],
+            )
+            key = b"k" * 32
+            _install_test_oc_receipt(root, key=key)
+            with patch.dict(os.environ, {worker.KEY_ENV: key.hex()}):
+                evidence = collect_phase_evidence(str(root), "OC-HANDOFF")
+            result = score_phase_completion(evidence)
+            self.assertTrue(evidence["oc_handoff_verified"])
+            self.assertTrue(result["hard_gates"]["required_files_present"])
+            self.assertTrue(result["hard_gates"]["oc_handoff_verified"])
+            self.assertTrue(result["can_mark_complete"])
+
+    def test_oc_handoff_rejects_tampered_signature_and_changed_output(self):
+        from examples.oc_handoff import worker
+
+        for tamper in ("signature", "output"):
+            with self.subTest(tamper=tamper), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                _write_repo(
+                    root,
+                    "| OC-HANDOFF findings-only lane | OC-HANDOFF | **complete** | "
+                    "PR #90 MERGED; CI green |",
+                    tests=["tests/test_oc_handoff_worker.py"],
+                    files=["examples/oc_handoff/worker.py"],
+                )
+                key = b"k" * 32
+                _install_test_oc_receipt(root, key=key)
+                if tamper == "signature":
+                    archive = root / ".harness" / "oc_handoff" / "archive" / "finding-001.json"
+                    manifest = json.loads(archive.read_text(encoding="utf-8"))
+                    manifest["attestation"]["signature"] = "0" * 128
+                    archive.write_text(json.dumps(manifest), encoding="utf-8")
+                else:
+                    output = root / "HANDOFF" / "OC_FINDINGS.md"
+                    output.write_text(output.read_text(encoding="utf-8") + "tampered\n",
+                                      encoding="utf-8")
+                with patch.dict(os.environ, {worker.KEY_ENV: key.hex()}):
+                    evidence = collect_phase_evidence(str(root), "OC-HANDOFF")
+                self.assertFalse(evidence["oc_handoff_verified"])
+
+    def test_oc_handoff_rejects_receipt_rewritten_with_only_plain_checksum(self):
+        from examples.oc_handoff import worker
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(root, "| OC-HANDOFF | **complete** | PR #90 MERGED; CI green |",
+                        tests=["tests/test_oc_handoff_worker.py"],
+                        files=["examples/oc_handoff/worker.py"])
+            key = b"k" * 32
+            _install_test_oc_receipt(root, key=key)
+            db_path = root / ".harness" / "oc_handoff" / "state.sqlite3"
+            with closing(sqlite3.connect(db_path)) as db:
+                row = db.execute("SELECT receipt_json FROM tasks").fetchone()
+                receipt = json.loads(row[0])
+                receipt.pop("receipt_hmac_sha256")
+                receipt["jev"]["supported"] = 0.1
+                receipt.pop("receipt_sha256")
+                receipt["receipt_sha256"] = worker._sha(worker._canonical_json(receipt))
+                rewritten = worker._canonical_json(receipt).decode("utf-8")
+                db.execute("UPDATE tasks SET receipt_json=?", (rewritten,))
+                db.execute("UPDATE outbox SET receipt_json=?", (rewritten,))
+                db.commit()
+            with patch.dict(os.environ, {worker.KEY_ENV: key.hex()}):
+                evidence = collect_phase_evidence(str(root), "OC-HANDOFF")
+            self.assertFalse(evidence["oc_handoff_verified"])
+
+    def test_oc_handoff_rejects_result_below_recorded_jev_threshold(self):
+        from examples.oc_handoff import worker
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(root, "| OC-HANDOFF | **complete** | PR #90 MERGED; CI green |",
+                        tests=["tests/test_oc_handoff_worker.py"],
+                        files=["examples/oc_handoff/worker.py"])
+            key = b"k" * 32
+            _install_test_oc_receipt(
+                root, key=key, jev_overrides={"confidence": 0.69, "supported": 0.69})
+            with patch.dict(os.environ, {worker.KEY_ENV: key.hex()}):
+                evidence = collect_phase_evidence(str(root), "OC-HANDOFF")
+            self.assertFalse(evidence["oc_handoff_verified"])
+
+    def test_oc_handoff_accepts_result_at_recorded_jev_threshold(self):
+        from examples.oc_handoff import worker
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(root, "| OC-HANDOFF | **complete** | PR #90 MERGED; CI green |",
+                        tests=["tests/test_oc_handoff_worker.py"],
+                        files=["examples/oc_handoff/worker.py"])
+            key = b"k" * 32
+            _install_test_oc_receipt(
+                root, key=key, jev_overrides={"confidence": 0.7, "supported": 0.7})
+            with patch.dict(os.environ, {worker.KEY_ENV: key.hex()}):
+                evidence = collect_phase_evidence(str(root), "OC-HANDOFF")
+            self.assertTrue(evidence["oc_handoff_verified"])
+
+    def test_oc_handoff_huge_numeric_jev_value_fails_closed(self):
+        from examples.oc_handoff import worker
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(root, "| OC-HANDOFF | **complete** | PR #90 MERGED; CI green |",
+                        tests=["tests/test_oc_handoff_worker.py"],
+                        files=["examples/oc_handoff/worker.py"])
+            key = b"k" * 32
+            _install_test_oc_receipt(
+                root, key=key, jev_overrides={"supported": 10 ** 400})
+            with patch.dict(os.environ, {worker.KEY_ENV: key.hex()}):
+                evidence = collect_phase_evidence(str(root), "OC-HANDOFF")
+            self.assertFalse(evidence["oc_handoff_verified"])
+
+    def test_oc_handoff_rejects_oversized_output_and_manifest(self):
+        from examples.oc_handoff import worker
+
+        for oversized in ("output", "manifest"):
+            with self.subTest(oversized=oversized), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                _write_repo(root, "| OC-HANDOFF | **complete** | PR #90 MERGED; CI green |",
+                            tests=["tests/test_oc_handoff_worker.py"],
+                            files=["examples/oc_handoff/worker.py"])
+                key = b"k" * 32
+                _install_test_oc_receipt(root, key=key)
+                if oversized == "output":
+                    target = root / "HANDOFF" / "OC_FINDINGS.md"
+                    limit = worker.MAX_HANDOFF_BYTES
+                else:
+                    target = (root / ".harness" / "oc_handoff" / "archive"
+                              / "finding-001.json")
+                    limit = worker.MAX_MANIFEST_BYTES
+                target.write_bytes(b"x" * (limit + 1))
+                with patch.dict(os.environ, {worker.KEY_ENV: key.hex()}):
+                    evidence = collect_phase_evidence(str(root), "OC-HANDOFF")
+                self.assertFalse(evidence["oc_handoff_verified"])
+
+    def test_oc_handoff_path_resolution_errors_fail_closed(self):
+        from harness.jev_completion import _valid_oc_handoff_receipt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("harness.jev_completion.Path.resolve",
+                       side_effect=RuntimeError("symlink loop")):
+                self.assertFalse(_valid_oc_handoff_receipt(tmp))
+
     def test_hul_row_with_merge_evidence_can_mark_complete(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -499,6 +829,243 @@ class ExtendedPhaseContractTests(unittest.TestCase):
         }
         res = score_phase_completion(incomplete_evidence)
         self.assertFalse(res["can_mark_complete"])
+
+
+class OcHandoffVerifierFailurePathTests(unittest.TestCase):
+    def test_safe_path_read_and_git_errors_fail_closed(self):
+        from harness.jev_completion import (
+            _git_bytes, _read_bounded, _safe_repo_file,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "item.json"
+            target.write_text("{}", encoding="utf-8")
+            with patch.object(Path, "is_symlink", return_value=True):
+                self.assertIsNone(_safe_repo_file(root, "item.json"))
+            with patch.object(Path, "is_symlink", return_value=False):
+                with patch.object(Path, "resolve", return_value=root.parent / "escaped"):
+                    self.assertIsNone(_safe_repo_file(root, "item.json"))
+            with patch.object(Path, "open", side_effect=OSError("read denied")):
+                self.assertIsNone(_read_bounded(target, 16))
+            self.assertIsNone(_git_bytes(root, "status", max_bytes=-1))
+            with patch("harness.jev_completion.subprocess.Popen",
+                       side_effect=OSError("git unavailable")):
+                self.assertIsNone(_git_bytes(root, "status"))
+
+            class MissingStdoutProcess:
+                stdout = None
+
+                def __init__(self):
+                    self.killed = False
+                    self.waited = False
+
+                def wait(self):
+                    self.waited = True
+
+                def kill(self):
+                    self.killed = True
+
+            missing_stdout = MissingStdoutProcess()
+            with patch("harness.jev_completion.subprocess.Popen",
+                       return_value=missing_stdout):
+                self.assertIsNone(_git_bytes(root, "show", "missing:stdout"))
+            self.assertTrue(missing_stdout.killed)
+            self.assertTrue(missing_stdout.waited)
+
+            class CountingBytesIO(io.BytesIO):
+                def __init__(self, value):
+                    super().__init__(value)
+                    self.bytes_read = 0
+
+                def read1(self, size=-1):
+                    value = super().read(size)
+                    self.bytes_read += len(value)
+                    return value
+
+            class FakeProcess:
+                def __init__(self):
+                    self.stdout = CountingBytesIO(b"0123456789")
+                    self.killed = False
+
+                def wait(self, timeout=None):
+                    return 0
+
+                def kill(self):
+                    self.killed = True
+
+            process = FakeProcess()
+            with patch("harness.jev_completion.subprocess.Popen", return_value=process):
+                self.assertIsNone(_git_bytes(root, "show", "large:file", max_bytes=4))
+            self.assertTrue(process.killed)
+            self.assertEqual(process.stdout.bytes_read, 5)
+
+            class TimeoutProcess:
+                def __init__(self):
+                    self.stdout = io.BytesIO(b"")
+                    self.killed = False
+                    self.wait_calls = 0
+
+                def wait(self, timeout=None):
+                    self.wait_calls += 1
+                    if timeout is not None:
+                        raise subprocess.TimeoutExpired("git", timeout)
+                    return -9
+
+                def kill(self):
+                    self.killed = True
+
+            timed_out = TimeoutProcess()
+            with patch("harness.jev_completion.subprocess.Popen", return_value=timed_out):
+                self.assertIsNone(_git_bytes(root, "show", "slow:file", max_bytes=4))
+            self.assertTrue(timed_out.killed)
+            self.assertEqual(timed_out.wait_calls, 2)
+            self.assertTrue(timed_out.stdout.closed)
+
+            import threading
+
+            class BlockingPipe:
+                def __init__(self):
+                    self.started = threading.Event()
+                    self.closed_event = threading.Event()
+                    self.closed = False
+
+                def read1(self, _size):
+                    self.started.set()
+                    self.closed_event.wait()
+                    return b""
+
+                def close(self):
+                    self.closed = True
+                    self.closed_event.set()
+
+            class StuckReaderProcess:
+                def __init__(self):
+                    self.stdout = BlockingPipe()
+                    self.killed = False
+
+                def wait(self, timeout=None):
+                    if timeout is not None:
+                        self.assert_reader_started = self.stdout.started.wait(2)
+                        return 0
+                    return -9
+
+                def kill(self):
+                    self.killed = True
+
+            stuck_reader = StuckReaderProcess()
+            with patch("harness.jev_completion.subprocess.Popen",
+                       return_value=stuck_reader):
+                self.assertIsNone(_git_bytes(root, "show", "blocked:pipe"))
+            self.assertTrue(stuck_reader.killed)
+            self.assertTrue(stuck_reader.stdout.closed)
+            self.assertTrue(stuck_reader.assert_reader_started)
+
+    def test_receipt_linkage_authentication_and_jev_shape_fail_closed(self):
+        from examples.oc_handoff import worker
+        from harness.jev_completion import _valid_oc_handoff_receipt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(root, "| OC-HANDOFF | **complete** | PR #90 MERGED; CI green |",
+                        tests=["tests/test_oc_handoff_worker.py"],
+                        files=["examples/oc_handoff/worker.py"])
+            key = b"k" * 32
+            _install_test_oc_receipt(root, key=key)
+            db_path = root / ".harness" / "oc_handoff" / "state.sqlite3"
+            with closing(sqlite3.connect(db_path)) as db:
+                original = db.execute("SELECT receipt_json FROM tasks").fetchone()[0]
+            original_doc = json.loads(original)
+
+            variants = []
+            variants.append(("outbox mismatch", original, "{}"))
+
+            bad_hmac = dict(original_doc, receipt_hmac_sha256="0" * 64)
+            variants.append(("receipt HMAC", worker._canonical_json(bad_hmac).decode(), None))
+
+            bad_checksum = dict(original_doc, receipt_sha256="0" * 64)
+            variants.append(("receipt checksum",
+                             _sign_test_receipt(worker, bad_checksum, key,
+                                                refresh_checksum=False), None))
+
+            bad_link = json.loads(original)
+            bad_link["branch"] = ""
+            variants.append(("receipt linkage", _sign_test_receipt(worker, bad_link, key), None))
+
+            bad_verdict = json.loads(original)
+            bad_verdict["jev"]["verdict"] = "fallback"
+            variants.append(("jev verdict", _sign_test_receipt(worker, bad_verdict, key), None))
+
+            bad_shape = json.loads(original)
+            bad_shape["jev"]["supported"] = "0.95"
+            variants.append(("jev number type", _sign_test_receipt(worker, bad_shape, key), None))
+            variants.append(("unparseable receipt", "{", "{"))
+
+            with patch.dict(os.environ, {worker.KEY_ENV: key.hex()}):
+                for label, task_receipt, outbox_receipt in variants:
+                    with self.subTest(label=label):
+                        _write_test_receipts(root, task_receipt, outbox_receipt)
+                        self.assertFalse(_valid_oc_handoff_receipt(str(root)))
+
+    def test_missing_and_malformed_archive_fail_closed(self):
+        from examples.oc_handoff import worker
+        from harness.jev_completion import _valid_oc_handoff_receipt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(root, "| OC-HANDOFF | **complete** | PR #90 MERGED; CI green |",
+                        tests=["tests/test_oc_handoff_worker.py"],
+                        files=["examples/oc_handoff/worker.py"])
+            key = b"k" * 32
+            _install_test_oc_receipt(root, key=key)
+            archive = root / ".harness" / "oc_handoff" / "archive" / "finding-001.json"
+            original = archive.read_bytes()
+            with patch.dict(os.environ, {worker.KEY_ENV: key.hex()}):
+                archive.unlink()
+                self.assertFalse(_valid_oc_handoff_receipt(str(root)))
+                archive.write_text("{}", encoding="utf-8")
+                self.assertFalse(_valid_oc_handoff_receipt(str(root)))
+                malformed_manifest = json.loads(original)
+                malformed_manifest["version"] = 2
+                archive.write_bytes(worker._canonical_json(malformed_manifest) + b"\n")
+                self.assertFalse(_valid_oc_handoff_receipt(str(root)))
+
+    def test_git_parent_diff_content_and_ancestry_checks(self):
+        from examples.oc_handoff import worker
+        from harness.jev_completion import _valid_oc_handoff_receipt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(root, "| OC-HANDOFF | **complete** | PR #90 MERGED; CI green |",
+                        tests=["tests/test_oc_handoff_worker.py"],
+                        files=["examples/oc_handoff/worker.py"])
+            key = b"k" * 32
+            _install_test_oc_receipt(root, key=key)
+            db_path = root / ".harness" / "oc_handoff" / "state.sqlite3"
+            with closing(sqlite3.connect(db_path)) as db:
+                base, commit = db.execute(
+                    "SELECT repo_sha, commit_sha FROM tasks").fetchone()
+            output = (root / "HANDOFF" / "OC_FINDINGS.md").read_bytes()
+
+            for mode in ("parent", "diff", "content", "ancestor"):
+                def fake_git_bytes(_root, *args, max_bytes=1_000_000):
+                    if args[0] == "rev-list":
+                        parent = "f" * 40 if mode == "parent" else base
+                        return f"{commit} {parent}".encode("ascii")
+                    if args[0] == "diff-tree":
+                        return (b"HANDOFF/OC_FINDINGS.md\nextra.txt\n" if mode == "diff"
+                                else b"HANDOFF/OC_FINDINGS.md\n")
+                    if args[0] == "show":
+                        return b"altered" if mode == "content" else output
+                    if args[0] == "merge-base":
+                        return None if mode == "ancestor" else b""
+                    return None
+
+                with self.subTest(mode=mode), \
+                        patch.dict(os.environ, {worker.KEY_ENV: key.hex()}), \
+                        patch("harness.jev_completion._git_bytes",
+                              side_effect=fake_git_bytes):
+                    self.assertFalse(_valid_oc_handoff_receipt(str(root)))
 
 
 if __name__ == "__main__":

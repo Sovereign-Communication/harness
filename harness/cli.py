@@ -1212,9 +1212,9 @@ def _cmd_jev_phase(opts, settings):
     min_score = float(getattr(opts, "min_score", 85.0))
 
     if all_phases:
+        # --all is a local accounting pass; one live judgment per phase could
+        # multiply spend unexpectedly.
         jev_policy = None
-        if use_live and settings is not None:
-            jev_policy = policy_for(settings)
         board = score_all_phases(
             opts.repo_root, jev_policy=jev_policy, min_score=min_score,
             pack=pack_path)
@@ -1242,6 +1242,10 @@ def _cmd_jev_phase(opts, settings):
         phase,
         evidence_path=getattr(opts, "evidence", None),
         settings=settings if use_live else None,
+        transport=HttpTransport() if use_live and settings is not None else None,
+        governor=(jev_face_governor(settings, min(settings.max_cost, 0.05))
+                  if use_live and settings is not None else None),
+        ledger=(_ledger(settings) if use_live and settings is not None else None),
         use_live_jev=use_live,
         min_score=min_score,
         pack_path=pack_path,
