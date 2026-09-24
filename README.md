@@ -380,7 +380,18 @@ Wire into any MCP host (Claude Code, Cursor, your own agents):
 
 Tools (`tools/list` order): `panel_verify`, `apply_edit`, `offer_work`, `defer_work`,
 `ledger_status`, `participation_report`, `spend_status`, `trust_status`, `plan_and_execute`,
-`issue_sort`, `route_query`, `log_judgment`.
+`issue_sort`, `route_query`, `mission_status`, `continue_work`, `log_judgment`.
+`mission_status` is a thin, read-only face over the HUL-A mission pack
+(`harness.mission_record`): regenerates `STATUS.md`/`INDEX.md` from on-disk pack
+state and returns the same machine-readable summary `harness mission status`
+prints (phase, dual budget, receipts, resume state); it never mutates mission
+progress, spend, or resume state.
+`continue_work` is a thin face over the existing continue lane — the same
+`engine.apply_batch(continuation=...)` path `harness continue` and the UI's
+Continue pane use — to resume a deferred/failed apply from its saved
+continuation state. It is write-gated exactly like `apply_edit` (refuses
+without `allow_write`, honors a `verify_only` continuation as a gate-free
+preview) and the continuation's target file must be inside an allowed root.
 `route_query` takes a user request plus an operator-declared model-ladder pack and
 returns the cheapest capable declared rung (choice ⊆ declared rungs only;
 unkeyed/failed → code-owned tier heuristic with `is_fallback=true`).

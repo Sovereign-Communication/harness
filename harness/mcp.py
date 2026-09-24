@@ -646,6 +646,63 @@ class McpServer:
                     verify_only=verify_only, max_lines=max_lines,
                     continuation=continuation))
 
+        if name == "continue_work":
+            # Thin face over the existing continue lane (apply_edit's own
+            # continuation path, harness.cli._cmd_continue, and the UI's
+            # Continue pane all resume through the SAME
+            # engine.apply_batch(continuation=...) call -- no second
+            # resume implementation). Write-gated exactly like apply_edit:
+            # refuses without allow_write, and the continuation's target
+            # must be inside an allowed root.
+            continuation = validate_continuation(args.get("continuation"))
+            if not continuation:
+                raise HarnessError("continue_work requires 'continuation'")
+            effective_verify_cmd = args.get("verify_cmd")
+            if effective_verify_cmd is not None:
+                effective_verify_cmd = validate_text(
+                    effective_verify_cmd, "verify_cmd", 10000, required=True)
+            if not effective_verify_cmd and continuation.get("verify_cmd"):
+                effective_verify_cmd = continuation["verify_cmd"]
+            allow_verify = validate_mcp_bool(args.get("allow_verify", False), "allow_verify")
+            allow_write = validate_mcp_bool(args.get("allow_write", False), "allow_write")
+            verify_only = bool(continuation.get("verify_only", False))
+            if effective_verify_cmd and not verify_only and not (self.allow_verify or allow_verify):
+                self._refuse(
+                    "mcp verify gate without allow_verify",
+                    "verify_cmd was supplied but verify gates are not enabled for this MCP "
+                    "session; re-send with allow_verify=true to confirm, or configure the "
+                    "server with allow_verify=True",
+                    task_id=args.get("task_id"))
+            if not verify_only and not (self.allow_write or allow_write):
+                self._refuse(
+                    "mcp file write without allow_write",
+                    "MCP file writes are disabled for this session; re-send with "
+                    "allow_write=true or configure allow_write=True explicitly",
+                    task_id=args.get("task_id"))
+            if not self.allowed_roots:
+                self._refuse(
+                    "mcp continue with no allowed roots configured",
+                    "MCP continue_work requires at least one configured allowed root",
+                    task_id=args.get("task_id"))
+            target = os.path.realpath(os.path.abspath(continuation["file_path"]))
+            if not any(target == root or target.startswith(root + os.sep)
+                       for root in self.allowed_roots):
+                self._refuse(
+                    "mcp file outside allowed roots",
+                    "continuation target is outside every allowed root for this MCP session",
+                    task_id=args.get("task_id"), severity="hostile")
+            instruction = args.get("instruction")
+            if instruction is not None:
+                instruction = validate_mcp_prompt(instruction)
+            max_rounds = bounded_int(args.get("max_rounds", 3), "max_rounds", 1, MAX_ROUNDS)
+            task_id_arg = (validate_mcp_task_id(args.get("task_id"))
+                           if args.get("task_id") is not None else None)
+            return self.engine.apply_batch(
+                [None], task_id=task_id_arg, cancel_check=cancel_check,
+                options=BatchOptions(
+                    instruction=instruction, verify_cmd=effective_verify_cmd,
+                    max_rounds=max_rounds, continuation=continuation))
+
         if name == "offer_work":
             task = validate_mcp_task(args.get("task"))
             model_arg = validate_mcp_model(args.get("model"))
@@ -769,6 +826,19 @@ class McpServer:
                 "pack_id": analysis.get("pack_id"),
                 "coverage": analysis.get("coverage"),
             }
+        if name == "mission_status":
+            # Thin face over the HUL-A mission pack (harness.mission_record):
+            # same read-only refresh `harness mission status` runs
+            # (regenerate STATUS.md/INDEX.md, return pack_summary). Never
+            # mutates budget, receipts, or resume state.
+            from . import mission_record as mr
+            mission_id = validate_text(args.get("mission_id"), "mission_id", 256,
+                                       required=True)
+            root = validate_text(args.get("root"), "root", 4096) or "missions"
+            pack = mr.load_mission_pack(root, mission_id)
+            mr.write_status(pack)
+            mr.write_index(pack)
+            return mr.pack_summary(pack)
         if name == "ledger_status":
             limit = validate_mcp_limit(args.get("limit"))
             ok, bad_seq = self.ledger.verify()

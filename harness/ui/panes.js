@@ -20,10 +20,39 @@ const money = (v) => v === null || v === undefined ? "—"
   : v < 1 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`;
 const pct = (v) => v === null || v === undefined ? "—" : `${Math.round(v * 100)}%`;
 
-async function api(path) {
-  const res = await fetch(path, { headers: { accept: "application/json" } });
-  if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}`);
-  return res.json();
+async function api(path, opts) {
+  const res = await fetch(path, Object.assign(
+    { headers: { accept: "application/json" } }, opts));
+  let body = null;
+  try { body = await res.json(); } catch (_e) { /* no body */ }
+  if (!res.ok) {
+    const msg = (body && body.error) ? body.error : `${path} -> HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return body;
+}
+
+async function postJson(path, payload) {
+  return api(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+// Poll a dispatched /api/runs/{id} until it stops running (simple pane
+// forms don't need the live event stream the chat tab uses -- just the
+// terminal result).
+async function pollRunResult(runId, { intervalMs = 400, timeoutMs = 120000 } = {}) {
+  const started = Date.now();
+  for (;;) {
+    const res = await api(`/api/runs/${runId}/result`);
+    if (res.status !== "running") return res;
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(`run ${runId} still running after ${timeoutMs}ms`);
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
 }
 
 function table(headers, rows) {
@@ -158,6 +187,102 @@ async function renderInsights(root) {
   }
 }
 
+// ---- Dispatch-form panes (verify / continue) -----------------------------
+// DF-UI-1: the server already runs "verify" and "continue" run kinds
+// (harness/server.py RUNNERS + validate_dispatch); these panes are minimal
+// forms over the SAME POST /api/runs -> GET /api/runs/{id}/result contract
+// the chat tab uses -- no new server logic. "bench" stays API-only (it
+// takes a manifest path with no UI concept of "pick a manifest yet"; see
+// docs/ui-readiness.md).
+
+function field(label, attrs = {}) {
+  const input = $("input", Object.assign({ class: "pane-input" }, attrs));
+  return { row: $("label", { class: "pane-field" }, $("span", {}, label), input),
+           input };
+}
+
+async function runDispatchForm(root, { kind, fields, buildArgs, resultLabel }) {
+  const built = {};
+  const rows = fields.map(([key, label, attrs]) => {
+    const f = field(label, attrs);
+    built[key] = f.input;
+    return f.row;
+  });
+  const status = $("p", { class: "muted small" }, "");
+  const out = $("pre", { class: "pane-json", hidden: true });
+  const btn = $("button", { class: "pane-fetch", type: "button" }, `Run ${kind}`);
+  const form = $("div", { class: "pane-section" }, ...rows, btn, status, out);
+  root.append(form);
+
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    out.hidden = true;
+    status.textContent = "Dispatching…";
+    try {
+      const args = buildArgs(built);
+      const run = await postJson("/api/runs", { kind, args });
+      status.textContent = `Run ${run.id} started; waiting…`;
+      const final = await pollRunResult(run.id);
+      status.textContent = `${resultLabel || "Result"}: ${final.status}`;
+      out.textContent = JSON.stringify(final.result ?? final, null, 2).slice(0, 20000);
+      out.hidden = false;
+    } catch (err) {
+      status.textContent = `Error: ${err.message}`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+async function renderVerify(root) {
+  root.append($("h2", {}, "Verify"),
+    $("p", { class: "muted" },
+      "Panel-verify a self-contained prompt (same run kind the CLI's ",
+      $("code", {}, "harness verify"), " uses)."));
+  await runDispatchForm(root, {
+    kind: "verify",
+    resultLabel: "Verify",
+    fields: [
+      ["prompt", "Prompt", { placeholder: "Self-contained question + context" }],
+      ["judge", "Judge model (optional)", { placeholder: "default judge" }],
+      ["panel", "Panel (comma-separated, optional)", { placeholder: "default panel" }],
+      ["max_cost", "Max cost USD (optional)", { placeholder: "0.05", type: "number", step: "0.01" }],
+    ],
+    buildArgs: (f) => {
+      const args = { prompt: f.prompt.value.trim() };
+      if (f.judge.value.trim()) args.judge = f.judge.value.trim();
+      if (f.panel.value.trim()) args.panel = f.panel.value.trim();
+      if (f.max_cost.value) args.max_cost = Number(f.max_cost.value);
+      return args;
+    },
+  });
+}
+
+async function renderContinue(root) {
+  root.append($("h2", {}, "Continue"),
+    $("p", { class: "muted" },
+      "Resume a deferred/failed apply from its saved continuation state ",
+      "file (same run kind the CLI's ", $("code", {}, "harness continue"),
+      " uses)."));
+  await runDispatchForm(root, {
+    kind: "continue",
+    resultLabel: "Continue",
+    fields: [
+      ["state", "State file path", { placeholder: "/path/to/state.json" }],
+      ["instruction", "Instruction override (optional)", {}],
+      ["verify", "Verify command (optional)", { placeholder: "e.g. pytest -q" }],
+      ["max_rounds", "Max rounds (optional)", { placeholder: "3", type: "number", min: "1", max: "8" }],
+    ],
+    buildArgs: (f) => {
+      const args = { state: f.state.value.trim() };
+      if (f.instruction.value.trim()) args.instruction = f.instruction.value.trim();
+      if (f.verify.value.trim()) args.verify = f.verify.value.trim();
+      if (f.max_rounds.value) args.max_rounds = Number(f.max_rounds.value);
+      return args;
+    },
+  });
+}
+
 // ---- Legacy API pane (the consolidated manual-fetch directory) ----------
 
 const LEGACY_ENDPOINTS = [
@@ -213,6 +338,8 @@ async function renderLegacy(root) {
 const PANES = [
   ["proof", "Proof", renderProof],
   ["insights", "Insights", renderInsights],
+  ["verify", "Verify", renderVerify],
+  ["continue", "Continue", renderContinue],
   ["legacy", "Legacy API", renderLegacy],
 ];
 

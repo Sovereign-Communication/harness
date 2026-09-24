@@ -96,3 +96,21 @@
 .pane-fetch:disabled { opacity: 0.5; cursor: wait; }
 .muted { color: var(--muted); }
 .small { font-size: 0.8rem; }
+
+.pane-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  max-width: 480px;
+  margin-bottom: 0.6rem;
+  font-size: 0.85rem;
+}
+.pane-input {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  font: inherit;
+}
+.pane-input:focus { outline: none; border-color: var(--accent); }

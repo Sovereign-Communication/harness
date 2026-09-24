@@ -39,6 +39,27 @@ Sink policy: `--events FILE` (JSONL, lazy-open, per-line flush). In-process
 `add_sink` is what the Phase 2 server registers. A broken sink is dropped with
 one warning, never raised into a lane.
 
+## Run kind coverage (DF-UI-1)
+
+The server (`harness/server.py` `RUNNERS`) supports four dispatchable run
+kinds over `POST /api/runs` -- `apply`, `verify`, `continue`, `bench` --
+plus the dedicated `chat` entry point at `POST /api/chat`. The GUI
+(`harness/ui/panes.js`) now wires:
+
+| Kind | Surface | Notes |
+|---|---|---|
+| `chat` | Chat tab (default) | full stepper/event UI, unchanged |
+| `verify` | Verify pane | minimal form (prompt, judge, panel, max_cost) -> `POST /api/runs {"kind":"verify", ...}` -> polls `/api/runs/{id}/result` |
+| `continue` | Continue pane | minimal form (state file path, instruction, verify, max_rounds) -> `POST /api/runs {"kind":"continue", ...}` -> polls `/api/runs/{id}/result` |
+| `apply` | *API-only* | no dedicated pane yet; `harness apply` (CLI) or a direct `POST /api/runs {"kind":"apply", ...}` |
+| `bench` | *API-only* | `manifest` is a filesystem path with no UI file-picker concept yet; use `harness bench <manifest>` (CLI) or `POST /api/runs {"kind":"bench","args":{"manifest": "..."}}` directly. Results are the same structured bench envelope the CLI prints. |
+
+The verify/continue panes reuse the existing pane patterns (a form row
+list + `POST` + `pollRunResult` waiting on `/api/runs/{id}/result`) and add
+no new server-side validation or runner -- `validate_dispatch` and
+`RUNNERS["verify"/"continue"]` are the same code path the CLI and chat
+lane already exercise.
+
 ## Deliberate non-goals in Phase 1
 
 - MCP `tools/call` streaming: the MCP lane keeps its ledger-based reporting;
