@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.harness/
 build/
 dist/
 .harness-backups/
