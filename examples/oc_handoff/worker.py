@@ -374,7 +374,7 @@ def _validate_manifest(raw: Any, *, root: Path, key: bytes,
         raise ValueError("manifest_fields_invalid")
     if raw["version"] != 1 or isinstance(raw["version"], bool):
         raise ValueError("manifest_version_invalid")
-    task_id = _validate_task_id(raw["task_id"])
+    _validate_task_id(raw["task_id"])
     repo_sha = raw["repo_sha"]
     if not isinstance(repo_sha, str) or not HEX_40_RE.fullmatch(repo_sha):
         raise ValueError("repo_sha_invalid")
@@ -671,8 +671,6 @@ def _recover(root: Path, db, now: int) -> list[dict[str, Any]]:
         "SELECT task_id, repo_sha, manifest_sha256, phase, worktree_path, "
         "branch, expected_sha256, jev_json FROM tasks WHERE state='processing'"
     ).fetchall()
-    from harness.worktree import WorktreeIsolation
-
     receipts = []
     for task_id, base, manifest_sha, phase, wt_path, branch, expected, jev_json in rows:
         recovered = False
