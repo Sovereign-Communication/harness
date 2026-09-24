@@ -32,11 +32,12 @@ from .tokens import estimate_prompt_tokens
 def _judge_fallback_candidates(pool, judge, governor, *, exclude=()):
     """Judge-rotation candidates from the panel pool, in pool order.
 
-    ONE predicate for two consumers: the preflight reserve (one judge-sized
-    call per candidate keeps the worst-case ceiling a guarantee) and the
-    runtime rotation. exclude drops models that may not be called again
-    (panelists who already voted or failed a seat). Free-only keeps the
-    reserve $0 on free pools and keeps paid members single-attempt.
+    ONE predicate for two consumers: the preflight reserve (sized to the
+    dispatch tail that can actually go unattempted -- see
+    :func:`_judge_fallback_reserve`) and the runtime rotation, where
+    ``exclude`` is every panelist that already voted or failed a seat.
+    Free-only keeps the reserve $0 on free pools and keeps paid members
+    single-attempt.
     """
     blocked = set(exclude)
     return [m_ for m_ in pool
@@ -45,15 +46,31 @@ def _judge_fallback_candidates(pool, judge, governor, *, exclude=()):
 
 
 def _judge_fallback_reserve(pool, judge, governor, judge_reserve_tokens,
-                            extra_tokens, judge_effort="auto"):
-    """Preflight reserve rows for the judge rotation (same predicate).
+                            extra_tokens, target, judge_effort="auto"):
+    """Preflight reserve rows for the judge rotation (DF-MS-2b sizing).
+
+    Panel dispatch (see the ``candidates = iter(panel_pool)`` loop below)
+    always consumes ``pool`` as a *prefix*: the first ``target`` members are
+    submitted immediately, and every subsequent failure pulls the next
+    member in order. So the set of panelists a run can leave completely
+    untried is always a suffix of ``pool`` and is largest -- a fail-closed
+    worst case -- when every one of the first ``target`` members succeeds on
+    the first try, leaving exactly ``pool[target:]`` never dispatched.
+    A member that WAS dispatched (voted or failed) can never also be a judge
+    fallback candidate (the runtime rotation's own ``exclude`` set drops it),
+    so reserving fallback attempts for anything in ``pool[:target]`` reserves
+    a call that can never happen. Slicing to the tail here is the fix: it
+    keeps the reserve a guaranteed ceiling for every candidate the rotation
+    can actually reach, without carrying dead worst-case for the panelists
+    that dispatch is guaranteed to have already used.
 
     Slot count comes from the same owner as every other reserve: each
     candidate carries its own reasoning-param-rejection slots, exactly like
     the primary seat above (a non-reasoning candidate is one call; a
     reasoning candidate may draw the 400-and-retry pair)."""
     rows = []
-    for c in _judge_fallback_candidates(pool, judge, governor):
+    tail = list(pool)[target:]
+    for c in _judge_fallback_candidates(tail, judge, governor):
         slots = _chat_reservation_slots(c, judge_effort)
         for i in range(slots):
             rows.append((f"{c} (judge fallback reserve {i + 1}/{slots})", c,
@@ -257,13 +274,16 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     # attempt turned one bad judge body (truncation, http_502, reasoning-only)
     # into a lost verdict despite a converged panel -- three proven modes in
     # the SCMessenger handoff. Same predicate the rotation uses, so the
-    # worst-case ceiling always covers every call rotation can make. The
-    # reserve names the whole pool (over-covering models the exclude set will
-    # drop at runtime) -- deliberate, so an envelope can never under-price a
-    # rotation the ceiling was supposed to guarantee.
+    # worst-case ceiling always covers every call rotation can make.
+    # DF-MS-2b: sized to the dispatch tail (``pool[target:]``) that can
+    # actually go undispatched, not the whole pool -- when the pool is no
+    # bigger than ``target`` (the common 3-panel/max_panelists=3 shape),
+    # every panelist is guaranteed to be attempted as a vote, so none of them
+    # can ever also be a judge fallback candidate and the reserve is $0.
     calls.extend(_judge_fallback_reserve(
         panel_pool, judge, governor, judge_reserve_tokens,
-        target * policy.vote.tokens + 100, judge_effort=policy.judge.effort))
+        target * policy.vote.tokens + 100, target,
+        judge_effort=policy.judge.effort))
     if run_convergence:
         # Reserve what the call can actually spend (the specialist lane's own
         # lane's own resolved budget), not the judge synthesis budget -- a

@@ -48,8 +48,11 @@ class PanelReserveParityTests(unittest.TestCase):
     def _run(self, posts, panel=("x/a",), judge="x/j", **kw):
         with tempfile.TemporaryDirectory() as td:
             fake = FakeTransport(
-                models=[m("x/a"), m("x/j"), m("deepseek/deepseek-r1:free",
-                                              prompt="0", completion="0")],
+                models=[m("x/a"), m("x/j"),
+                        m("x/b", prompt="0", completion="0"),
+                        m("x/c", prompt="0", completion="0"),
+                        m("deepseek/deepseek-r1:free",
+                          prompt="0", completion="0")],
                 posts=list(posts))
             gov = SpendGovernor(fake, "sk-test", byok_prefixes_path=os.path.join(
                 td, "byok.json"))
@@ -104,6 +107,61 @@ class PanelReserveParityTests(unittest.TestCase):
         self.assertEqual(len(candidate_rows), expected)
         for row in candidate_rows:
             self.assertEqual(row[2], 8192 + 200)
+        # DF-MS-2b: "x/a" is dispatched as the (only) panel seat -- it is
+        # guaranteed to end up voted or failed, so it can never also be an
+        # untried judge-fallback candidate. Reserving it would be dead
+        # worst-case that inflates the ceiling for a call that cannot happen.
+        self.assertFalse([r for r in fb_rows if r[1] == "x/a"],
+                         "a dispatched panelist must not also carry a "
+                         "judge-fallback reserve row")
+
+    def test_pool_no_larger_than_max_panelists_reserves_no_fallback(self):
+        # DF-MS-2b regression: the common shape (a 3-model pool with
+        # max_panelists=3) guarantees every panelist is dispatched as a vote,
+        # so none of them can ever be reached as an untried judge-fallback
+        # candidate. Before the fix, the reserve priced a full judge-sized
+        # fallback call for every one of them anyway (~90x the real worst
+        # case for a 3-panel + judge run).
+        _result, fake, rows = self._run(
+            [comp('{"c1": {"real": false}}'), comp('{"c1": {"real": false}}'),
+             comp('{"c1": {"real": false}}'), comp("prose judge")],
+            panel=("x/a", "x/b", "x/c"), max_panelists=3)
+        fb_rows = [c for c in rows if "judge fallback reserve" in c[0]]
+        self.assertEqual(fb_rows, [],
+                         "pool size == max_panelists leaves nothing "
+                         "undispatched; the judge-fallback reserve must be "
+                         "empty, not one row per panelist")
+
+    def test_fallback_reserve_sized_to_undispatched_tail_only(self):
+        # A pool with 2 more members than max_panelists can leave at most 2
+        # models completely untried (the tail beyond `target`); the reserve
+        # must cover exactly that tail, not the whole pool.
+        _result, fake, rows = self._run(
+            [comp('{"c1": {"real": false}}'), comp("prose judge"),
+             comp('{"verdict": "APPROVE", "agreement": "high", '
+                  '"confidence": 0.9, "disagreements": [], "defer": false}')],
+            panel=("x/a", "x/b", "x/c"), max_panelists=1)
+        fb_rows = [c for c in rows if "judge fallback reserve" in c[0]]
+        fb_models = {r[1] for r in fb_rows}
+        self.assertEqual(fb_models, {"x/b", "x/c"})
+        self.assertNotIn("x/a", fb_models)
+
+    def test_over_ceiling_plan_still_refuses(self):
+        # DF-MS-2b must not weaken the fail-closed guarantee: a plan whose
+        # correctly-sized worst case still exceeds the ceiling is refused,
+        # same as before the fix.
+        from harness.errors import HarnessError
+        with tempfile.TemporaryDirectory() as td:
+            fake = FakeTransport(
+                models=[m("x/a", prompt="1", completion="1"),
+                        m("x/j", prompt="1", completion="1")],
+                posts=[comp('{"c1": {"real": false}}'), comp("prose judge")])
+            gov = SpendGovernor(fake, "sk-test", max_cost=0.0001,
+                                byok_prefixes_path=os.path.join(td, "byok.json"))
+            with self.assertRaises(HarnessError):
+                panel_judge(transport=fake, api_key="k", governor=gov,
+                           prompt="Q?", panel=["x/a"], judge="x/j",
+                           max_panelists=1)
 
     def test_specialist_reserve_equals_specialist_call(self):
         # Regression: the specialist preflight reserved judge_max_tokens
