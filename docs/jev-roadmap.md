@@ -156,7 +156,7 @@ Use TypeSafe skill patterns *inside* Harness (code owns exact work; Jev owns bou
 
 ### Lane-unification integration audit — 2026-09-24
 
-The original `wf_1c82997e-f19` lane inventory has **23 items: 19 superseded and four non-superseded**. Of those four: OpenClaw/PR #73 is in scope but open and gated under `OPENCLAW-HANDOFF`; `operator_tree_main` has only its media portion integrated by PR #87 (`8631ecad17d72ec62b1fae5f26ed31ed9fd5c210`); `worktree_ui_faces` / `DF-UI-2` remains open; and PR #88 (`65da7b13dbe546238268bd986457b0dc96af4766`) partially integrates the answer-lifecycle portion of `worktree_jev_hourglass`. PR #86 Ling rotation (`a2cbb21859dcc7c95f1bc8deef168ccb246cede2`) is a separate integration outside this 23-item inventory. PR #88 is only a partial `HV-1` slice; no `HV-*` roadmap row is complete, and `HV-0` remains the next implementation slice.
+The original wf_1c82997e-f19 lane inventory has 23 items: 19 superseded and four non-superseded. Of those four: PR #73 is in scope but open and gated under OC-HANDOFF; operator_tree_main has only its media portion integrated by PR #87 (8631ecad17d72ec62b1fae5f26ed31ed9fd5c210); worktree_ui_faces / DF-UI-2 remains open; and PR #88 (65da7b13dbe546238268bd986457b0dc96af4766) partially integrates the answer-lifecycle portion of worktree_jev_hourglass. PR #86 Ling rotation (a2cbb21859dcc7c95f1bc8deef168ccb246cede2) is separate from this inventory. PR #88 is only a partial HV-1 slice; no HV row is complete, and HV-0 remains next.
 
 | Track / phase | Status | PR / evidence |
 |---|---|---|
@@ -182,26 +182,26 @@ The original `wf_1c82997e-f19` lane inventory has **23 items: 19 superseded and 
 | `MS-context` condensed state for expensive seats | **open** | split from `MS-*` on 2026-09-22 — PR #69 did not touch context condensation; owner `condenser`/`brief` + MS ladders |
 | `JEV-AUDIT-GATE` Jev 4-dimension self-audit gate | **complete** | **PR #79 MERGED** `d3994e9`; `audits/self/audit.py` gate + `JevPolicy.evaluate_audit_dimensions` + `tests/test_audit_dimensions.py`; hermetic keyed-path test (D12) added, partial-run "not evaluated" scoring fixed; local audit BAR MET 10/10/10/10, CI green |
 | `MEDIA-1` `harness media` adapter | **complete** | **PR #87 MERGED** `8631ecad17d72ec62b1fae5f26ed31ed9fd5c210`; owner `harness/media_client.py` (`MediaAdapter` + `run_cli`, thin stdlib client for the sovereign-media sibling service — image/video generation, honest `MediaUnavailable` failures, budget-refusal envelopes, config/env-resolved endpoint, no provider brand strings); hermetic tests `tests/test_media_client.py`; documented in `docs/media.md` + README CLI section |
-| `OPENCLAW-HANDOFF` findings-only OpenClaw dogfood | **open / gated** | PR #73 remains experimental and in scope only for findings-to-handoff writes. Operator reports that the AWS instance is limited to this task; static audit found the worker does not enforce the boundary, and no independent AWS state is verified here. The fixed repository root remains to be named; proposed repository-relative allowlist is only `HANDOFF/OPENCLAW_FINDINGS.md`. Never infer or write seat-owned `HANDOFF/*_STATE.md` files; see the gate contract below. |
+| OC-HANDOFF findings-only lane | open / gated | PR #73 remains an experimental Harness integration for findings-to-handoff writes. The operator reports that the remote lane may write findings only to handoff files; this is context only and is not independently verified here. The worker root is its executing Harness checkout, and its sole repository output is HANDOFF/OC_FINDINGS.md. No external instance/config work is part of this scope; never target seat-owned HANDOFF/*_STATE.md files. See the gate contract below. |
 | Dogfood / paid smoke | **ongoing** | every phase: hermetic gates + operator live smoke when client/lane changes; paid cheap rungs (`HARNESS_USE_FREE=false`) |
 | Exit | Jev P4 checklist all true on `origin/main` | **open** |
 | Exit | HUL A–D shipped **or** open-problem packs on HUL contract | **open** |
 
-### `OPENCLAW-HANDOFF` — gated findings-only dogfood
+### OC-HANDOFF — findings-only Harness lane
 
-This task is in scope but not ready to execute. PR #73 remains experimental. The operator reports that the AWS instance is limited to writing handoff files from findings; a static audit found that the worker does not enforce this limit. This canon does not claim independently verified AWS deployment, configuration, identity, or runtime state. The repository root must be named before execution. The proposed repository-relative output allowlist is exactly `HANDOFF/OPENCLAW_FINDINGS.md`; do not infer or write any seat-owned `HANDOFF/*_STATE.md` path. This task does not add worker code in Harness.
+This Harness-owned OC handoff task is in scope but remains gated. PR #73 remains experimental. The operator reports that the remote lane may write findings only to handoff files; this is context only and is not independently verified or changed here. The worker root is fixed to its executing Harness checkout, and its sole repository output is HANDOFF/OC_FINDINGS.md. Never infer or target seat-owned HANDOFF/*_STATE.md files. All implementation, tests, and documentation changes stay in this repository; no external instance/config changes are included. PR #89 itself is documentation-only.
 
 Before any worker execution or live dogfood, the worker must enforce all of these controls:
 
-- Pin one operator-named repository root and allow only the proposed findings handoff path; reject other roots, paths, and manifest-supplied path changes.
-- Require authenticated identity and explicit operator approval for signed manifests; validate signatures, expiry, and replay protection before work starts.
-- Use fixed, predeclared database, lock, and outbox locations plus one fixed verification command; never accept these paths or commands from a manifest.
-- Enforce the write boundary at the process/OS level, including child processes. Repository writes may update only `HANDOFF/OPENCLAW_FINDINGS.md`; internal worker state may use only the separately fixed state locations.
-- Define and enforce explicit egress and spend policies before dispatch.
+- Pin the worker root to the executing Harness checkout; do not accept a repository root from a manifest. Use Harness WorktreeIsolation, allow only HANDOFF/OC_FINDINGS.md, reject manifest-supplied path changes, and audit the exact changed-file set before merge.
+- Require locally authenticated identity and explicit operator approval for signed manifests; validate signatures, expiry, and replay protection before work starts.
+- Use locally fixed database, lock, and outbox roots plus a Harness-owned fixed verification function; never accept paths, commands, or arbitrary executables from a manifest.
+- Run edits in the isolated worktree and audit committed plus uncommitted changes against the exact one-file allowlist before merge. Repository writes may update only HANDOFF/OC_FINDINGS.md; worker state may use only separately fixed local state roots.
+- Define the Harness worker egress and spend policy in repository-owned configuration and tests. No live provider or external-system calls are part of this repo change.
 - Reconcile database, lock, and outbox state after crashes/restarts without duplicate, lost, or unverified handoff writes.
-- Add hermetic tests for fixed root/path allowlisting; manifest authentication, approval, expiry, and replay rejection; fixed state paths and verification command; process write boundaries; egress/spend limits; and crash/restart/outbox reconciliation. Closure also requires operator-supplied live evidence for the reported AWS instance; documentation and CI alone do not establish AWS state.
+- Add hermetic tests for fixed root/path allowlisting; manifest authentication, approval, expiry, and replay rejection; fixed state roots and verifier; rejection of manifest-controlled executables; exact-file diff auditing; egress/spend policy; and crash/restart/outbox reconciliation.
 
-Keep `OPENCLAW-HANDOFF` **open / gated** until the root and policies are named, worker enforcement and hermetic tests pass, and the operator provides the required live evidence. It does not displace `HV-0` as the first canon implementation slice.
+Keep OC-HANDOFF open / gated until worker enforcement, hermetic tests, exact-file diff audit, independent review, required Jev gates, and green CI pass. It does not displace HV-0 as the first canon implementation slice.
 
 
 **P2 done when (all true):** … → PR #36 merged → post-merge `main` CI green → STATUS P2 `complete`. **TRUE on 2026-09-21.**
@@ -237,7 +237,7 @@ Keep `OPENCLAW-HANDOFF` **open / gated** until the root and policies are named, 
 | 6 Repo summary | `JEV-P6-*` | `repo_items.py`, `repo_summary.py`, `jev_packs.py`, `jev_policy.evaluate_repo_summary` | `tests/test_repo_items.py`, `tests/test_jev_repo_{pack,judgment,envelope}.py` | **complete** — PR #65 MERGED `1936ed4` |
 | Jev bar | `JEV-BAR-*` | `jev_completion.py`, `jev_packs.py` (completion pack), `jev_policy.evaluate_phase_completion`, `packs/phase_completion.pack.json` | `tests/test_jev_bar_sentiment.py`, `tests/test_jev_completion.py` | **complete** — PR #67 MERGED `a9b58ab` |
 | Claude lane | `CLAUDE-LANE` | `CLAUDE.md`, `AGENTS.md`, `.claude/`, `harness/mcp.py` (negotiation) | `tests/test_mcp.py` + live skill/MCP receipts | **complete** — PR #66 MERGED `6f00d38` |
-| OpenClaw findings handoff | `OPENCLAW-HANDOFF` | OpenClaw worker; repository root not yet named; proposed output `HANDOFF/OPENCLAW_FINDINGS.md` | `test_fixed_root_and_handoff_allowlist`; `test_signed_manifest_approval_expiry_replay`; `test_fixed_state_paths_and_verification_command`; `test_process_write_boundary`; `test_egress_spend_policy`; `test_crash_restart_outbox_reconciliation`; operator-supplied live evidence | **open / gated** — PR #73 experimental; worker enforcement not present per static audit |
+| OC findings handoff | OC-HANDOFF | Harness-owned worker; root pinned to its executing checkout; output HANDOFF/OC_FINDINGS.md | test_fixed_root_and_handoff_allowlist; test_signed_manifest_approval_expiry_replay; test_fixed_state_roots_and_verifier; test_no_manifest_executable; test_egress_spend_policy; test_crash_restart_outbox_reconciliation; exact-file diff audit | open / gated — PR #73 experimental; worker enforcement not present per static audit |
 
 ### JEV-P3 patterns (implementer notes)
 
