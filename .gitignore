@@ -18,3 +18,4 @@ audits/scmessenger/round6/
 # Claude Code local state (skill scratch + HUL mission packs live under tmp/claude/, already ignored)
 
 .claude/settings.local.json
+.venv/
