@@ -21,6 +21,7 @@ degrade, spending may not (no cost semantics live here).
 """
 import os
 import subprocess
+import uuid
 
 from .errors import HarnessError
 
@@ -89,8 +90,19 @@ class WorktreeIsolation:
     def create(self, node_id):
         """Isolated worktree + branch for one node. Returns the handle
         (``base`` pins the branch point so the audit sees committed work
-        relative to it, not just a post-commit-clean status)."""
-        safe_id = "".join(c if c.isalnum() or c in "-_" else "-" for c in node_id)
+        relative to it, not just a post-commit-clean status).
+
+        DF-AUDIT-2: node ids are caller-supplied and often reused across
+        runs (e.g. the default DAG names its nodes ``task_1``, ``task_2``,
+        ...), so the branch/path name carries a per-call unique suffix
+        (pid + short uuid) on top of the node id. Two concurrent processes
+        isolating a node with the same id -- concurrent audit/plan runs
+        against the same repo -- then never collide on the same worktree
+        path or branch name, and a crashed run's leftover branch never
+        blocks a later run that reuses the same node id.
+        """
+        clean_id = "".join(c if c.isalnum() or c in "-_" else "-" for c in node_id)
+        safe_id = f"{clean_id}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         branch = f"harness/{safe_id}"
         path = os.path.join(self.repo, ".harness", "wt", safe_id)
         os.makedirs(os.path.dirname(path), exist_ok=True)
