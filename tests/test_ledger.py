@@ -540,6 +540,77 @@ class LedgerSegmentAnchorTests(unittest.TestCase):
             self.assertFalse(ok)
 
 
+class LedgerSegmentDiscoveryTests(unittest.TestCase):
+    """DF-LEDGER-1: segment discovery must match ONLY the rotator's own
+    suffix format, never any file that merely shares the ledger's prefix
+    (a human backup like 'ledger.jsonl.bak-20260918-dogfood' was loaded as
+    a chain segment, quarantining every one of its lines and reporting the
+    chain broken)."""
+
+    def test_decoy_backup_ignored_chain_ok_zero_quarantined(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "ledger.jsonl")
+            led = AutonomyLedger(path)
+            led.append("offer", task_id="t1", model="m")
+            led.append("offer", task_id="t2", model="m")
+            # A real rotated segment (rotator's exact suffix format).
+            real_segment = path + ".20260918T101500.123456"
+            with open(real_segment, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"seq": 0, "event": "offer",
+                                     "task_id": "old", "prev_hash": None,
+                                     "hash": "0" * 64}) + "\n")
+            # A human backup sharing the same prefix, NOT a rotation name.
+            decoy = path + ".bak-20260918-dogfood"
+            with open(decoy, "w", encoding="utf-8") as f:
+                f.write("not even valid jsonl, and must never be read\n")
+
+            rotated = led._rotated_paths()
+            self.assertIn(real_segment, rotated)
+            self.assertNotIn(decoy, rotated)
+
+            fresh = AutonomyLedger(path)
+            ok, bad = fresh.verify()
+            # The bogus planted "real" segment (bad hash) is expected to be
+            # quarantined; the decoy must contribute nothing at all.
+            self.assertEqual(fresh.quarantined, 1)
+            self.assertFalse(ok)
+
+    def test_decoy_alone_never_loaded_clean_chain(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "ledger.jsonl")
+            led = AutonomyLedger(path)
+            led.append("offer", task_id="t1", model="m")
+            decoy = path + ".bak-20260918-dogfood"
+            with open(decoy, "w", encoding="utf-8") as f:
+                f.write("garbage\n")
+            fresh = AutonomyLedger(path)
+            self.assertEqual(fresh.quarantined, 0)
+            ok, bad = fresh.verify()
+            self.assertTrue(ok)
+            self.assertIsNone(bad)
+
+    def test_various_non_rotation_suffixes_all_ignored(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "ledger.jsonl")
+            AutonomyLedger(path)
+            for suffix in (".bak", ".old", ".swp", ".orig",
+                           ".bak-20260918-dogfood", ".2026-09-18",
+                           ".20260918", ".20260918T101500"):
+                with open(path + suffix, "w", encoding="utf-8") as f:
+                    f.write("x\n")
+            led = AutonomyLedger(path)
+            self.assertEqual(led._rotated_paths(), [])
+
+    def test_real_rotation_suffix_still_recognized(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "ledger.jsonl")
+            rotated_name = path + ".20260101T000000.000001"
+            with open(rotated_name, "w", encoding="utf-8") as f:
+                f.write("")
+            led = AutonomyLedger(path)
+            self.assertEqual(led._rotated_paths(), [rotated_name])
+
+
 class LedgerLockTests(unittest.TestCase):
     def test_contended_lock_fails_closed_fast_not_forever(self):
         """Regression: the POSIX acquire used blocking flock, so a wedged

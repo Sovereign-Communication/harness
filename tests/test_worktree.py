@@ -110,6 +110,30 @@ class WorktreeIsolationTests(unittest.TestCase):
         self.iso.discard(h)
         self.assertFalse(os.path.isdir(path))
 
+    def test_same_node_id_gets_unique_branch_and_path(self):
+        # DF-AUDIT-2: concurrent runs (or a crashed run's leftover) reusing
+        # the same node id must never collide on worktree path or branch --
+        # two isolators (standing in for two concurrent processes) creating
+        # "task_1" against the same repo get distinct handles, and both
+        # worktrees coexist on disk simultaneously.
+        other = WorktreeIsolation(repo=self.repo)
+        h1 = self.iso.create("task_1")
+        h2 = other.create("task_1")
+        self.assertNotEqual(h1["path"], h2["path"])
+        self.assertNotEqual(h1["branch"], h2["branch"])
+        self.assertTrue(os.path.isdir(h1["path"]))
+        self.assertTrue(os.path.isdir(h2["path"]))
+        other.discard(h2)
+
+    def test_leftover_branch_never_blocks_a_later_create(self):
+        # A crashed run that left its worktree/branch behind (no discard())
+        # must not block a fresh create() for the same node id -- the fixed
+        # "harness/task_N" name is exactly what used to collide.
+        leftover = self.iso.create("task_1")
+        again = self.iso.create("task_1")  # must not raise
+        self.assertNotEqual(leftover["branch"], again["branch"])
+        self.iso.discard(again)
+
 
 @unittest.skipUnless(GIT, "optional deps: git not available")
 class ExecutorIsolationTests(WorktreeIsolationTests):

@@ -10,6 +10,7 @@ acceptance is a warning, not a success).
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from collections import defaultdict
@@ -26,6 +27,12 @@ def _canon(entry):
 
 LEDGER_MAX_BYTES = 10 * 1024 * 1024  # rotate the JSONL at 10 MB
 LEDGER_KEEP_ROTATIONS = 3
+# Matches ONLY the suffix _rotate_if_needed writes -- "%Y%m%dT%H%M%S.%f"
+# (e.g. "20260923T123456.789012") appended after "<path>." -- so a human
+# backup like "ledger.jsonl.bak-20260918-dogfood" is never mistaken for a
+# chain segment (DF-LEDGER-1: such a file was loaded, its lines quarantined
+# wholesale, and the chain reported broken).
+_ROTATION_SUFFIX_RE = re.compile(r"^\d{8}T\d{6}\.\d{6}$")
 # Contended-append retry budget: an append holds the lock for well under a
 # millisecond, so 100 x 20ms only ever trips if a peer process is wedged.
 _LOCK_ATTEMPTS = 100
@@ -64,14 +71,33 @@ class AutonomyLedger(LedgerAnalytics):
     def _rotated_paths(self):
         """Return retained ledger segments oldest-first, excluding the active
         file. Segment names are deliberately opaque to callers; the active
-        file is always the final segment."""
+        file is always the final segment.
+
+        Only names matching the exact rotation suffix the rotator writes
+        qualify -- any other file sharing the ledger's prefix (a human
+        backup, an editor swap file, an unrelated ``.jsonl.old``) is left
+        alone rather than swept in as chain evidence (DF-LEDGER-1)."""
         directory = os.path.dirname(self.path) or "."
-        prefix = os.path.basename(self.path) + "."
+        base = os.path.basename(self.path)
+        prefix = base + "."
         try:
-            names = sorted(fn for fn in os.listdir(directory) if fn.startswith(prefix)
-                           and not fn.endswith(".lock") and not fn.endswith(".repair.tmp"))
+            entries = os.listdir(directory)
         except OSError:
-            names = []
+            entries = []
+        names = []
+        skipped = []
+        for fn in sorted(entries):
+            if not fn.startswith(prefix):
+                continue
+            suffix = fn[len(prefix):]
+            if _ROTATION_SUFFIX_RE.match(suffix):
+                names.append(fn)
+            else:
+                skipped.append(fn)
+        if skipped:
+            eprint(f"[ledger] ignoring {len(skipped)} non-segment file(s) "
+                   f"matching '{prefix}*' (not a rotation name): "
+                   f"{', '.join(skipped)}")
         return [os.path.join(directory, fn) for fn in names]
 
     def _ledger_paths(self):
