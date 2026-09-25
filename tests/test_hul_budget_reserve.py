@@ -136,8 +136,9 @@ class GovernorAttemptPreflightTests(unittest.TestCase):
         self.assertAlmostEqual(gov.spent, 0.04)
 
     def test_attempt_preflight_jev_refused_when_eats_reserve(self):
-        gov = _gov(FakeTransport(), max_cost=0.01, terminal_reserve=0.005)
-        # jev_cost(200) = 200 * 42 / 1e6 = 0.0084 > working remaining 0.005
+        gov = _gov(FakeTransport(), max_cost=0.000001,
+                   terminal_reserve=0.0000005)
+        # jev_cost(200) = $0.00000084 > working remaining $0.0000005.
         worst = jev_cost(200)
         self.assertGreater(worst, gov.working_remaining())
         with self.assertRaises(HarnessError):

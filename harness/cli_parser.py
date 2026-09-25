@@ -505,6 +505,18 @@ def build_parser():
     pjphase.add_argument("--json", action="store_true", help="emit raw JSON only")
     _add_output_flags(pjphase)
 
+    pvision = sub.add_parser(
+        "jev-vision-assessment",
+        help="Assess the Hourglass vision with one bounded, typed Jev request")
+    pvision.add_argument("--repo-root", default=".",
+                         help="repo root containing the Hourglass vision and canon")
+    pvision.add_argument("--max-cost", type=float, default=None,
+                         help="per-call spend ceiling (hard-capped by Harness)")
+    pvision.add_argument("--preflight-only", action="store_true",
+                         help="measure the sanitized request without key use or dispatch")
+    pvision.add_argument("--json", action="store_true", help="emit raw JSON only")
+    _add_output_flags(pvision)
+
     # HUL-A/D mission pack surface (run = HUL-D until-limits driver).
     pmiss = sub.add_parser(
         "mission",

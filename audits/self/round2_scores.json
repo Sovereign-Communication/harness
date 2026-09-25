@@ -222,7 +222,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 2022 tests in 153.480s\n\nOK"
+        "evidence": "unittest: Ran 2079 tests in 171.473s\n\nOK"
       },
       {
         "id": "R14",
@@ -286,7 +286,7 @@
         "id": "D1",
         "label": "MCP tool parity with README",
         "score": 1.0,
-        "evidence": "README documents all 14 MCP tools, no stale names"
+        "evidence": "README documents all 15 MCP tools, no stale names"
       },
       {
         "id": "D2",

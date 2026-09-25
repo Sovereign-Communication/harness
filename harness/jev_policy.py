@@ -11,6 +11,7 @@ import os
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from .errors import HarnessError
+from .config import HARD_MAX_COST
 from .jev import (JevEvaluationResult, JevEvaluator, jev_cost,
                   triage_question_pack)
 from .route_pack import (ROUTE_QUERY_SITE, fallback_route, route_combo,
@@ -23,6 +24,13 @@ from .jev_packs import (
     LOG_FACTOR_SITE,
     PHASE_COMPLETION_SITE,
     REPO_SUMMARY_SITE,
+    VISION_ASSESSMENT_SITE,
+    VISION_ASSESSMENT_MAX_REQUEST_TOKENS,
+    VISION_ASSESSMENT_MAX_STATE_QUESTION_TOKENS,
+    VISION_ASSESSMENT_PACK_ID,
+    VISION_ASSESSMENT_PACK_VERSION,
+    VisionAssessmentEnvelope,
+    VisionCategoryAssessment,
     SCOPE_COVERAGE_HOLD,
     SCOPE_NOUL_HOLD,
     answer_question_pack,
@@ -46,6 +54,12 @@ from .jev_packs import (
     normalize_route,
     repo_summary_question_pack,
     route_question_pack,
+    DEFAULT_VISION_ASSESSMENT_PACK,
+    validate_vision_assessment_answers,
+    validate_vision_assessment_pack,
+    vision_assessment_preflight,
+    vision_assessment_question_pack,
+    sanitize_vision_state,
     scope_in_scope_holds,
     validate_candidates,
     validate_completion_pack,
@@ -163,7 +177,8 @@ class JevPolicy:
 
     def _record_refusal(self, reason: str, *, site: str,
                         task_id: Optional[str] = None,
-                        node_id: Optional[str] = None):
+                        node_id: Optional[str] = None,
+                        event_metadata: Optional[Dict[str, Any]] = None):
         result = JevEvaluationResult(
             "fail", 0.0, 0.0, {}, [reason], cost=0.0,
             input_tokens=0, output_tokens=0, is_fallback=False,
@@ -171,34 +186,54 @@ class JevPolicy:
         )
         structural = self._structural(result, site)
         if self.ledger is not None:
+            metadata = event_metadata or {}
             self.ledger.append(
                 "jev_refusal", task_id=task_id, node_id=node_id, site=site,
-                model=result.model, reason=reason, cost=0.0,
+                model=metadata.get("observed_model", result.model),
+                reason=reason, cost=0.0,
                 input_tokens=0, is_fallback=False,
+                **metadata,
             )
         return result, structural
 
     def _account(self, result: JevEvaluationResult, *, site: str,
                  task_id: Optional[str] = None,
                  node_id: Optional[str] = None,
-                 reservation=None) -> Dict[str, Any]:
+                 reservation=None,
+                 settlement_cost: Optional[float] = None,
+                 event_metadata: Optional[Dict[str, Any]] = None,
+                 preserve_event_on_settlement_error: bool = False) -> Dict[str, Any]:
         """Settle live spend and append exactly one hash-chained jev_eval."""
-        cost = float(result.cost or 0.0)
-        if reservation is not None and self.governor is not None:
-            self.governor.reconcile(
-                reservation, 0.0 if result.is_fallback else cost)
-        elif self.governor is not None and not result.is_fallback:
-            # A governor without reservations still gets one actual settlement,
-            # including a zero-cost response.
-            self.governor.record_actual(cost, result.model or "jev")
+        cost = (float(result.cost or 0.0) if settlement_cost is None
+                else float(settlement_cost))
+        settlement_error = None
+        try:
+            if reservation is not None and self.governor is not None:
+                self.governor.reconcile(
+                    reservation, 0.0 if result.is_fallback else cost)
+            elif self.governor is not None and not result.is_fallback:
+                # A governor without reservations still gets one actual
+                # settlement, including a zero-cost response.
+                self.governor.record_actual(cost, result.model or "jev")
+        except Exception as exc:
+            if not preserve_event_on_settlement_error:
+                raise
+            settlement_error = "{}: {}".format(type(exc).__name__, exc)
         structural = self._structural(result, site)
+        metadata = event_metadata or {}
+        if settlement_error is not None:
+            metadata["result_state"] = "unassessed"
+            metadata["settlement_error"] = settlement_error
         if self.ledger is not None:
             self.ledger.append(
                 "jev_eval", task_id=task_id, node_id=node_id, site=site,
-                model=result.model, verdict=result.verdict,
-                supported=result.supported, confidence=result.confidence,
+                model=metadata.get("observed_model", result.model),
+                verdict="fail" if settlement_error is not None else result.verdict,
+                supported=0.0 if settlement_error is not None else result.supported,
+                confidence=0.0 if settlement_error is not None else result.confidence,
                 input_tokens=result.input_tokens, output_tokens=result.output_tokens,
                 cost=cost, is_fallback=result.is_fallback,
+                **metadata,
             )
         return structural
 
@@ -2204,6 +2239,229 @@ class JevPolicy:
             "input_tokens": int(result.input_tokens or 0),
             "output_tokens": int(result.output_tokens or 0),
         }
+
+    def evaluate_vision_assessment(
+            self, state: Any, *, task_id: Optional[str] = None, pack: Any = None):
+        """Run the one-request HV-0 assessment through the shared policy owner.
+
+        The result is advisory design evidence only. It has no phase,
+        readiness, or completion authority. Any preflight or response failure
+        leaves every category unassessed.
+        """
+        pack_doc = validate_vision_assessment_pack(
+            DEFAULT_VISION_ASSESSMENT_PACK if pack is None else pack)
+        questions = vision_assessment_question_pack(pack_doc)
+        model_name = getattr(self.evaluator, "model", None)
+        if not isinstance(model_name, str) or not model_name.strip():
+            model_name = "jev-latest"
+        try:
+            sanitized_state = sanitize_vision_state(state)
+            metrics = vision_assessment_preflight(
+                sanitized_state, model_name, pack_doc)
+        except (TypeError, ValueError) as exc:
+            metrics = {
+                "payload_outline": {}, "payload_utf8_bytes": 0,
+                "estimated_input_tokens": 0,
+                "estimated_state_longest_question_tokens": 0,
+                "request_margin_tokens": VISION_ASSESSMENT_MAX_REQUEST_TOKENS,
+                "state_longest_question_margin_tokens": VISION_ASSESSMENT_MAX_STATE_QUESTION_TOKENS,
+                "fits_context": False,
+            }
+            refusal_reason = "assessment state is invalid: " + str(exc)
+        else:
+            refusal_reason = None
+
+        category_ids = list(pack_doc["categories"])
+        categories: Dict[str, Optional[VisionCategoryAssessment]] = {
+            category_id: None for category_id in category_ids
+        }
+        threshold = float(pack_doc["confidence_threshold"])
+
+        def usage_source(result=None):
+            if result is None:
+                return "unavailable"
+            if result.input_tokens_observed and result.output_tokens_observed:
+                return "actual"
+            if result.input_tokens_observed or result.output_tokens_observed:
+                return "actual_partial"
+            return "unavailable"
+
+        def event_metadata(result_state: str, fallback_state: str,
+                           result=None) -> Dict[str, Any]:
+            return {
+                "capability": VISION_ASSESSMENT_SITE,
+                "pack_id": VISION_ASSESSMENT_PACK_ID,
+                "pack_version": VISION_ASSESSMENT_PACK_VERSION,
+                "result_state": result_state,
+                "fallback_state": fallback_state,
+                "observed_model": (result.model if result
+                                   and result.model_observed else None),
+                "model_observed": bool(result and result.model_observed),
+                "usage_source": usage_source(result),
+                "cost_source": ("actual_input" if result
+                                and result.input_tokens_observed else
+                                "estimated_input" if result else "unavailable"),
+                "input_tokens_observed": bool(
+                    result and result.input_tokens_observed),
+                "output_tokens_observed": bool(
+                    result and result.output_tokens_observed),
+                "estimated_input_tokens": int(metrics["estimated_input_tokens"]),
+                "payload_utf8_bytes": int(metrics["payload_utf8_bytes"]),
+                "question_count": len(questions),
+                "request_margin_tokens": int(metrics["request_margin_tokens"]),
+                "state_longest_question_margin_tokens": int(
+                    metrics["state_longest_question_margin_tokens"]),
+            }
+
+        def make_envelope(status: str, *, result=None,
+                          reasons: Optional[List[str]] = None,
+                          perfect: bool = False) -> VisionAssessmentEnvelope:
+            source = usage_source(result)
+            return VisionAssessmentEnvelope(
+                status=status,
+                pack_id=VISION_ASSESSMENT_PACK_ID,
+                pack_version=VISION_ASSESSMENT_PACK_VERSION,
+                confidence_threshold=threshold,
+                model=(result.model if result and result.model_observed else None),
+                model_observed=bool(result and result.model_observed),
+                fallback_state=("not_dispatched" if result is None else
+                                "not_used" if not result.is_fallback else "fallback"),
+                usage_source=source,
+                input_tokens=(int(result.input_tokens)
+                              if result and result.input_tokens_observed else None),
+                output_tokens=(int(result.output_tokens)
+                               if result and result.output_tokens_observed else None),
+                estimated_input_tokens=int(metrics["estimated_input_tokens"]),
+                estimated_state_longest_question_tokens=int(
+                    metrics["estimated_state_longest_question_tokens"]),
+                payload_utf8_bytes=int(metrics["payload_utf8_bytes"]),
+                request_margin_tokens=int(metrics["request_margin_tokens"]),
+                state_longest_question_margin_tokens=int(
+                    metrics["state_longest_question_margin_tokens"]),
+                cost_usd=(float(result.cost or 0.0) if result
+                          and result.input_tokens_observed else
+                          jev_cost(int(metrics["estimated_input_tokens"]))
+                          if result else 0.0),
+                cost_source=("actual_input" if result
+                             and result.input_tokens_observed else
+                             "estimated_input" if result else "unavailable"),
+                perfect=perfect,
+                categories=categories,
+                payload_outline=dict(metrics["payload_outline"]),
+                reasons=list(reasons or []),
+            )
+
+        def refuse(reason: str):
+            self._record_refusal(
+                reason, site=VISION_ASSESSMENT_SITE, task_id=task_id,
+                event_metadata=event_metadata("unassessed", "not_dispatched"))
+            return make_envelope("unassessed", reasons=[reason])
+
+        if refusal_reason:
+            return refuse(refusal_reason)
+        if not metrics["fits_context"]:
+            return refuse("full assessment request exceeds a published context limit")
+        if self.ledger is None:
+            return refuse("autonomy ledger unavailable; assessment not dispatched")
+        if not self.keyed:
+            return refuse("TypeSafe key unavailable; assessment not dispatched")
+        if not callable(getattr(self.evaluator, "evaluate_once", None)):
+            return refuse("one-attempt TypeSafe evaluator is unavailable")
+        transport = getattr(self.evaluator, "transport", None)
+        if not callable(getattr(transport, "post_once", None)):
+            return refuse("one-attempt TypeSafe transport is unavailable")
+        reserve_cost = jev_cost(int(metrics["estimated_input_tokens"]))
+        if reserve_cost > HARD_MAX_COST:
+            return refuse("estimated assessment reserve exceeds HARD_MAX_COST")
+
+        reservation = None
+        try:
+            reservation = self._preflight(
+                site=VISION_ASSESSMENT_SITE,
+                max_input_tokens=int(metrics["estimated_input_tokens"]))
+        except HarnessError as exc:
+            return refuse(str(exc))
+
+        try:
+            result = self.evaluator.evaluate_once(sanitized_state, questions)
+        except Exception as exc:
+            # An injected evaluator should not turn an exception into an
+            # implicit fallback score; record the dispatched attempt once.
+            result = JevEvaluationResult(
+                "fail", 0.0, 0.0, {},
+                ["TypeSafe evaluation failed (" + type(exc).__name__ + ")"],
+                cost=0.0, input_tokens=0, output_tokens=0,
+                is_fallback=False, model=None)
+
+        assessed = False
+        reasons = list(result.reasons or [])
+        if result.is_fallback:
+            reasons = ["fallback result cannot assess the vision"]
+        elif not result.model_observed:
+            reasons = ["response did not include an observed model identity"]
+        elif not result.usage_observed:
+            reasons = ["response did not include complete observed token usage"]
+        else:
+            try:
+                validated = validate_vision_assessment_answers(
+                    result.answers, pack_doc)
+            except (TypeError, ValueError) as exc:
+                reasons = ["assessment response is invalid: " + str(exc)]
+            else:
+                assessed = True
+                for category_id, spec in pack_doc["categories"].items():
+                    answer = validated[category_id]
+                    probabilities = answer["probabilities"]
+                    top_probability = max(probabilities.values())
+                    # A tie deliberately chooses the lower level ordinal.
+                    selected = min(
+                        int(level) for level, probability in probabilities.items()
+                        if probability == top_probability)
+                    review_required = answer["confidence"] < threshold
+                    buckets = spec["improvement_buckets"]
+                    actions = spec["improvement_actions"]
+                    bucket = buckets[selected] if selected < len(buckets) else None
+                    action = actions[selected] if selected < len(actions) else None
+                    categories[category_id] = VisionCategoryAssessment(
+                        score=answer["score"], selected_level=selected,
+                        selected_score_10=round(
+                            10.0 * selected / (len(spec["levels"]) - 1), 2),
+                        probabilities=probabilities,
+                        confidence=answer["confidence"],
+                        evidence_refs=list(spec["evidence_refs"]),
+                        improvement_bucket=bucket,
+                        suggested_next_action=action,
+                        review_required=review_required)
+                perfect = all(
+                    category is not None
+                    and category.selected_level == len(
+                        pack_doc["categories"][category_id]["levels"]) - 1
+                    and category.confidence >= threshold
+                    and category.improvement_bucket is None
+                    and not category.review_required
+                    for category_id, category in categories.items())
+
+        metadata = event_metadata(
+            "assessed" if assessed else "unassessed",
+            "not_used" if not result.is_fallback else "fallback", result)
+        settlement_cost = (
+            float(result.cost or 0.0) if result.input_tokens_observed
+            else jev_cost(int(metrics["estimated_input_tokens"]))
+        )
+        self._account(
+            result, site=VISION_ASSESSMENT_SITE, task_id=task_id,
+            reservation=reservation, settlement_cost=settlement_cost,
+            event_metadata=metadata,
+            preserve_event_on_settlement_error=True)
+        settlement_error = metadata.get("settlement_error")
+        if settlement_error:
+            assessed = False
+            perfect = False
+            reasons = ["spend settlement failed after dispatch: " + settlement_error]
+            categories = {category_id: None for category_id in category_ids}
+        return make_envelope(
+            "assessed" if assessed else "unassessed", result=result,
+            reasons=reasons, perfect=bool(assessed and perfect))
 
     @staticmethod
     def attach(envelope: Dict[str, Any], structural: Optional[Dict[str, Any]]):

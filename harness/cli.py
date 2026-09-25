@@ -28,7 +28,12 @@ import subprocess
 import tempfile
 import time
 from .consent import probe_consent
-from .config import resolve_hourglass
+from .config import (
+    DEFAULT_MAX_COST,
+    HARD_MAX_COST,
+    load_vision_preflight_settings,
+    resolve_hourglass,
+)
 from .errors import HarnessError
 from .spend import discover_free_models
 from .filesafety import VERIFY_TIMEOUT, validate_target_file, validate_verify_command
@@ -48,8 +53,15 @@ from .waist import compose_plan as _compose_plan
 from .jev import jev_cost
 from .jev_policy import JEV_MAX_INPUT_TOKENS, aggregate_structural, policy_for
 from .jev_completion import dogfood_phase, score_all_phases
-from .jev_packs import (validate_log_pack, validate_operator_pack,
-                        validate_repo_summary_pack)
+from .jev_packs import (
+    VISION_ASSESSMENT_PACK_ID,
+    VISION_ASSESSMENT_PACK_VERSION,
+    build_vision_assessment_state,
+    validate_log_pack,
+    validate_operator_pack,
+    validate_repo_summary_pack,
+    vision_assessment_preflight,
+)
 from .repo_summary import analyze_repo as _repo_analyze
 from .repo_summary import render_repo_map as _repo_render_map
 from .repo_summary import write_envelope as _repo_write_envelope
@@ -65,6 +77,7 @@ from .pyramid_state import (
     dag_for_pending, load_state, node_routes_for_pending, persist_state)
 from .results import terminal_exit_code
 from .saturation import advise
+from .validation import finite_number
 import sys
 import uuid
 
@@ -1261,6 +1274,48 @@ def _cmd_jev_phase(opts, settings):
             f"< {result['min_score']} or hard gates failed — do not mark complete")
 
 
+def _cmd_jev_vision_assessment(opts, settings):
+    """Run the bounded HV-0 vision assessment or a no-dispatch preflight."""
+    state = build_vision_assessment_state(opts.repo_root)
+    model = getattr(settings, "jev_model", None) or "jev-latest"
+    preflight = vision_assessment_preflight(state, model)
+    reserve = jev_cost(preflight["estimated_input_tokens"])
+    configured_limit = finite_number(
+        getattr(settings, "max_cost", DEFAULT_MAX_COST),
+        "max_cost", 0.0, HARD_MAX_COST)
+    override = getattr(opts, "max_cost", None)
+    effective_limit = (configured_limit if override is None else
+                       finite_number(override, "max_cost", 0.0, HARD_MAX_COST))
+    if getattr(opts, "preflight_only", False):
+        report = {
+            "status": "preflight_only",
+            "pack_id": VISION_ASSESSMENT_PACK_ID,
+            "pack_version": VISION_ASSESSMENT_PACK_VERSION,
+            "preflight": preflight,
+            "worst_case_reserve_usd": reserve,
+            "effective_max_cost_usd": effective_limit,
+            "hard_max_cost_usd": HARD_MAX_COST,
+            "dispatch_attempts": 0,
+        }
+        _emit(report, opts.out, force_json=getattr(opts, "json", False))
+        if not preflight["fits_context"] or reserve > effective_limit:
+            raise HarnessError("vision assessment preflight refused; no request was sent")
+        return
+
+    policy = policy_for(
+        settings,
+        transport=HttpTransport(),
+        governor=jev_face_governor(settings, getattr(opts, "max_cost", None)),
+        ledger=_ledger(settings),
+    )
+    envelope = policy.evaluate_vision_assessment(
+        state, task_id="hv-0-vision-assessment")
+    _emit(envelope.to_dict(), opts.out,
+          force_json=getattr(opts, "json", False))
+    if envelope.status != "assessed":
+        raise HarnessError("vision assessment is unassessed; see the emitted reason")
+
+
 # Command -> handler. `required=True` subparsers make an unknown command
 # unreachable here, so the table has no default arm; every handler takes
 # (opts, settings), so a signature drift fails loudly at dispatch instead of
@@ -1289,6 +1344,7 @@ _DISPATCH = {
     "trust": _cmd_trust,
     "rankings": _cmd_rankings,
     "jev-phase": _cmd_jev_phase,
+    "jev-vision-assessment": _cmd_jev_vision_assessment,
     "mission": _cmd_mission,
 }
 
@@ -1324,7 +1380,12 @@ def main(argv=None):
         not getattr(opts, "no_color", False)
         and not os.environ.get("NO_COLOR"))
     try:
-        settings = load_settings()
+        if (opts.command == "jev-vision-assessment"
+                and getattr(opts, "preflight_only", False)):
+            settings = load_vision_preflight_settings(
+                max_cost_override=getattr(opts, "max_cost", None))
+        else:
+            settings = load_settings()
         _DISPATCH[opts.command](opts, settings)
     except HarnessError as e:
         print(f"[FATAL] {e}", file=sys.stderr)

@@ -42,7 +42,7 @@ class JevLedgerSpendTests(unittest.TestCase):
             self._diff(), "change x", "x.py", site="agent-apply",
             task_id="task-1", node_id="node-1")
 
-        expected = 120 * 42 / 1_000_000
+        expected = 120 * 0.0042 / 1_000_000
         self.assertEqual(result.cost, expected)
         self.assertEqual(governor.spent, expected)
         events = [entry for entry in ledger.entries()
@@ -115,10 +115,10 @@ class JevLedgerSpendTests(unittest.TestCase):
                              jev_policy=policy, default_require_consent=False,
                              default_renew_consent=False)
 
-        # When task_max_cost is smaller than Jev worst-case (~$0.043), preflight must refuse
+        # A task ceiling below the Jev worst-case must refuse preflight.
         with self.assertRaises(HarnessError) as ctx:
             engine.apply_edit(file_path=target, instruction="edit x",
-                              task_max_cost=0.001, require_consent=False,
+                              task_max_cost=0.000001, require_consent=False,
                               renew_consent=False)
         self.assertIn("exceeds --task-max-cost", str(ctx.exception))
 
@@ -167,11 +167,11 @@ class JevLedgerSpendTests(unittest.TestCase):
                              jev_policy=policy, default_require_consent=False,
                              default_renew_consent=False)
 
-        # 1. When task_max_cost is small during escalation (0.046), lines 623-628 execute and raise
+        # 1. A task ceiling below the Jev reserve refuses during escalation.
         with self.assertRaises(HarnessError) as ctx:
             engine.apply_edit(file_path=target, instruction="edit x",
                               verify_cmd="python -c exit(1)", max_rounds=1,
-                              task_max_cost=0.046, require_consent=False,
+                              task_max_cost=0.000001, require_consent=False,
                               renew_consent=False)
         self.assertIn("exceeds --task-max-cost", str(ctx.exception))
 

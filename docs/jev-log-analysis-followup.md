@@ -166,7 +166,7 @@ A **successful jev-side single pass** on the SCMessenger log means all of the fo
 3. **Fallback honesty:** `is_fallback` counts reported; unkeyed runs never claim live judgment.
 4. **Evidence:** each item keeps code-owned refs (line index / module / event name); Jev reasons are advisory only.
 5. **Mechanical baseline:** code-owned tallies (level counts, top modules, event histogram) present **without** model spend — Jev adds judgment on top, not instead.
-6. **Cost envelope:** input tokens + `$ = tokens * 42 / 1e6` recorded; preflight respected (chunking if items exceed ceiling).
+6. **Cost envelope:** historical receipts used `$ = tokens * 42 / 1e6`; HV-0 corrects subsequent Jev pricing to the operator-verified account rate. Preflight must respect the resulting ceiling (chunking if items exceed ceiling).
 7. **FRP-swap-grade:** pack draft from the cheap seat is **not** self-approved; operator or independent inspect freezes the pack before Stage D.
 
 **Not required for “jev single-pass value”:** narrative report, HUL complete flag, multi-round until-limits loop, or panel/judge synthesis.

@@ -13,7 +13,10 @@ from typing import Any, Dict, List, Optional
 
 from ._http import HttpTransport
 
-JEV_INPUT_PRICE_PER_MILLION = 42.0
+# Operator-verified account rate recorded in docs/jev-roadmap.md (2026-09-24).
+# The public list price is different; all Harness preflight and settlement
+# paths use this shared account-specific owner.
+JEV_INPUT_PRICE_PER_MILLION = 0.0042
 _PRIMITIVES = frozenset(("noul", "choice", "score"))
 
 
@@ -40,6 +43,10 @@ class JevEvaluationResult:
     output_tokens: int = 0
     is_fallback: bool = False
     model: Optional[str] = None
+    usage_observed: bool = False
+    model_observed: bool = False
+    input_tokens_observed: bool = False
+    output_tokens_observed: bool = False
 
     def is_passing(self, min_confidence: float = 0.70) -> bool:
         """Apply the configured action threshold without conflating signals."""
@@ -209,12 +216,123 @@ class JevEvaluator:
                 pass
         return self._local_structural_eval(state if isinstance(state, dict) else {"content": str(state)})
 
+    def evaluate_once(self, state: Any,
+                      questions: Dict[str, Any]) -> JevEvaluationResult:
+        """Make one strict, no-fallback TypeSafe request.
+
+        This path is for assessments where a heuristic answer would be
+        misleading. It dispatches through ``post_once`` when the transport
+        supports it, rejects missing or extra answer ids and missing model
+        identity, and never retries or converts failure into local approval.
+        """
+        try:
+            active = _validate_questions(questions)
+        except (TypeError, ValueError) as exc:
+            return self._failure("invalid TypeSafe question pack: " + str(exc),
+                                 fallback=False)
+        if not self.api_key:
+            return self._failure("TypeSafe key unavailable", fallback=True)
+
+        payload = {"model": self.model, "state": state,
+                   "questions": active}
+        post_once = getattr(self.transport, "post_once", None)
+        if not callable(post_once):
+            return self._failure(
+                "TypeSafe transport does not support a one-attempt request",
+                fallback=False)
+        try:
+            status, response = post_once(
+                self.endpoint, self.api_key, payload)
+        except Exception as exc:
+            return self._failure(
+                "TypeSafe transport failed (" + type(exc).__name__ + ")",
+                fallback=False)
+
+        usage = response.get("usage") if isinstance(response, dict) else None
+        (input_tokens, output_tokens, input_observed,
+         output_observed) = self._observed_usage(usage)
+        usage_observed = input_observed and output_observed
+        model = response.get("model") if isinstance(response, dict) else None
+        model_observed = isinstance(model, str) and bool(model.strip())
+        if status != 200:
+            return self._failure(
+                "TypeSafe request failed (HTTP {})".format(status),
+                fallback=False, input_tokens=input_tokens,
+                output_tokens=output_tokens, usage_observed=usage_observed,
+                model=model if model_observed else self.model,
+                model_observed=model_observed,
+                input_tokens_observed=input_observed,
+                output_tokens_observed=output_observed)
+        if not isinstance(response, dict):
+            return self._failure(
+                "invalid TypeSafe response: expected an object",
+                fallback=False, input_tokens=input_tokens,
+                output_tokens=output_tokens, usage_observed=usage_observed,
+                input_tokens_observed=input_observed,
+                output_tokens_observed=output_observed)
+        if not model_observed:
+            return self._failure(
+                "invalid TypeSafe response: missing observed model identity",
+                fallback=False, input_tokens=input_tokens,
+                output_tokens=output_tokens, usage_observed=usage_observed,
+                input_tokens_observed=input_observed,
+                output_tokens_observed=output_observed)
+        answers = response.get("answers")
+        if not isinstance(answers, dict) or set(answers) != set(active):
+            return self._failure(
+                "invalid TypeSafe response: answer ids do not match the pack",
+                fallback=False, input_tokens=input_tokens,
+                output_tokens=output_tokens, usage_observed=usage_observed,
+                model=model, model_observed=True,
+                input_tokens_observed=input_observed,
+                output_tokens_observed=output_observed)
+        try:
+            result = self._parse_jev_response(response, active)
+        except (KeyError, TypeError, ValueError) as exc:
+            return self._failure(
+                "invalid TypeSafe response: " + str(exc), fallback=False,
+                input_tokens=input_tokens, output_tokens=output_tokens,
+                usage_observed=usage_observed, model=model,
+                model_observed=True,
+                input_tokens_observed=input_observed,
+                output_tokens_observed=output_observed)
+        # _parse_jev_response already returns a frozen result with these
+        # observed flags set after validating both usage fields and the
+        # response model. Do not mutate the frozen dataclass here.
+        return result
+
+    @staticmethod
+    def _observed_usage(usage):
+        if not isinstance(usage, dict):
+            return 0, 0, False, False
+        values = []
+        observed = []
+        for usage_field in ("input_tokens", "output_tokens"):
+            value = usage.get(usage_field)
+            if (isinstance(value, bool) or not isinstance(value, int)
+                    or value < 0):
+                values.append(None)
+                observed.append(False)
+            else:
+                values.append(value)
+                observed.append(True)
+        return (values[0] or 0, values[1] or 0,
+                observed[0], observed[1])
+
     def _failure(self, reason: str, fallback: bool, input_tokens: int = 0,
-                 output_tokens: int = 0) -> JevEvaluationResult:
+                 output_tokens: int = 0, usage_observed: bool = False,
+                 model: Optional[str] = None,
+                 model_observed: bool = False,
+                 input_tokens_observed: bool = False,
+                 output_tokens_observed: bool = False) -> JevEvaluationResult:
         return JevEvaluationResult(
             "fail", 0.0, 0.0, {}, [reason],
             cost=jev_cost(input_tokens), input_tokens=input_tokens,
-            output_tokens=output_tokens, is_fallback=fallback, model=self.model)
+            output_tokens=output_tokens, is_fallback=fallback,
+            model=model or self.model, usage_observed=usage_observed,
+            model_observed=model_observed,
+            input_tokens_observed=input_tokens_observed,
+            output_tokens_observed=output_tokens_observed)
 
     def _parse_jev_response(self, resp: Dict[str, Any], questions: Dict[str, Any]) -> JevEvaluationResult:
         if not isinstance(resp.get("answers"), dict) or not isinstance(resp.get("usage"), dict):
@@ -250,7 +368,12 @@ class JevEvaluator:
                 reasons.append(f"{key} (score): {answer['score']} (conf: {answer['confidence']})")
         return JevEvaluationResult(verdict, confidence, supported, answers, reasons,
                                    cost=jev_cost(input_tokens), input_tokens=input_tokens,
-                                   output_tokens=output_tokens, model=resp.get("model", self.model))
+                                   output_tokens=output_tokens, model=resp.get("model", self.model),
+                                   usage_observed=True,
+                                   model_observed=(isinstance(resp.get("model"), str)
+                                                   and bool(resp.get("model", "").strip())),
+                                   input_tokens_observed=True,
+                                   output_tokens_observed=True)
 
     def _local_structural_eval(self, state: Dict[str, Any], fallback: bool = True) -> JevEvaluationResult:
         code = state.get("code") or state.get("content") or ""

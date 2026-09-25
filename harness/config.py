@@ -19,6 +19,7 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from .errors import HarnessError
 from .output import eprint
@@ -768,6 +769,35 @@ def load_settings(overrides=None):
         jev_model=str(get("jev_model", "jev-latest")),
         min_confidence=_num("min_confidence", float, 0.0, 1.0, 0.70),
     )
+
+
+def load_vision_preflight_settings(*, max_cost_override=None):
+    """Load only the fields required by HV-0's no-dispatch preflight.
+
+    This path does not resolve, inspect, or use provider credentials. The
+    normal settings loader remains for commands that may dispatch work.
+    """
+    cfg_path = os.path.join(CONFIG_DIR, "config.json")
+    cfg = {}
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, encoding="utf-8") as f:
+                cfg = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            raise HarnessError(
+                "could not read no-key vision preflight settings") from None
+        if not isinstance(cfg, dict):
+            raise HarnessError("config.json must contain a JSON object")
+
+    model = os.environ.get("HARNESS_JEV_MODEL", cfg.get("jev_model", "jev-latest"))
+    model = str(model or "jev-latest").strip() or "jev-latest"
+    raw_limit = os.environ.get(
+        "HARNESS_MAX_COST", cfg.get("max_cost", DEFAULT_MAX_COST))
+    max_cost = finite_number(raw_limit, "max_cost", 0.0, HARD_MAX_COST)
+    if max_cost_override is not None:
+        max_cost = finite_number(
+            max_cost_override, "max_cost", 0.0, HARD_MAX_COST)
+    return SimpleNamespace(jev_model=model, max_cost=max_cost)
 
 
 def freeze_jev_settings(settings, *, jev_model=None, min_confidence=None):

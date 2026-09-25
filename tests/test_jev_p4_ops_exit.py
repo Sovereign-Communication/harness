@@ -172,7 +172,7 @@ class TestEnvelopeCostAndPreflightStillHold(unittest.TestCase):
         })
         governor = SpendGovernor(
             FakeTransport(models=[m("jev-test", prompt="0", completion="0")]),
-            "sk-test", max_cost=0.001)
+            "sk-test", max_cost=0.000001)
         settings = load_settings({"jev_api_key": "jev-key"})
         policy = policy_for(settings, transport=transport, governor=governor)
         result, structural = policy.evaluate_diff(
@@ -182,7 +182,7 @@ class TestEnvelopeCostAndPreflightStillHold(unittest.TestCase):
         self.assertEqual(result.cost, 0.0)
         self.assertEqual(transport.calls, [])
         self.assertEqual(jev_cost_ceiling(),
-                         JEV_MAX_INPUT_TOKENS * 42 / 1_000_000)
+                         JEV_MAX_INPUT_TOKENS * 0.0042 / 1_000_000)
 
 
 class TestLedgerAnalyticsJevSurface(unittest.TestCase):
