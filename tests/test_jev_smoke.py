@@ -25,7 +25,7 @@ class LiveJevSmokeTests(unittest.TestCase):
             self.assertFalse(checked.is_fallback)
             self.assertGreater(checked.input_tokens, 0)
             self.assertGreater(checked.cost, 0)
-            self.assertAlmostEqual(checked.cost, checked.input_tokens * 42 / 1_000_000)
+            self.assertAlmostEqual(checked.cost, checked.input_tokens * 0.0042 / 1_000_000)
             self.assertNotIn(checked.verdict, ("transport_error",))
         print(json.dumps({
             "generic": {"model": result.model, "verdict": result.verdict,

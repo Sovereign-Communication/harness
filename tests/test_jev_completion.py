@@ -484,6 +484,24 @@ class ExtendedPhaseContractTests(unittest.TestCase):
     """Contracts + STATUS-row needles for canon phases whose rows previously
     had no way through the gate: JEV-P5, HUL-A..D, JEV-LOG-*, MS."""
 
+    def test_hv0_contract_finds_open_row_and_requires_its_named_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(
+                root,
+                "| `HV-0` JEV integration foundation + vision assessment | "
+                "**in progress** | PR #123 OPEN |",
+                tests=[],
+                files=[],
+            )
+            evidence = collect_phase_evidence(str(root), "HV-0")
+            result = score_phase_completion(evidence)
+            self.assertIn("HV-0", evidence["status_row"])
+            self.assertFalse(evidence["pr_merged"])
+            self.assertTrue(evidence["tests_missing"])
+            self.assertTrue(evidence["files_missing"])
+            self.assertFalse(result["can_mark_complete"])
+
     def test_oc_handoff_contract_detects_artifacts_and_stays_gated_while_open(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

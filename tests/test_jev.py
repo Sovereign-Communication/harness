@@ -27,7 +27,7 @@ def live_response(answers=None, input_tokens=100, output_tokens=20):
 
 class JevP0Tests(unittest.TestCase):
     def test_cost_is_input_only_and_exposed(self):
-        self.assertEqual(jev_cost(1_000_000), 42.0)
+        self.assertEqual(jev_cost(1_000_000), 0.0042)
         self.assertEqual(jev_cost(0), 0.0)
         transport = FakeTransport(response=live_response(input_tokens=250))
         result = JevEvaluator(api_key="key", transport=transport).evaluate(
@@ -35,7 +35,7 @@ class JevP0Tests(unittest.TestCase):
                        "confidence": {"type": "score", "instructions": "Rate x", "criteria": ["low", "high"]}})
         self.assertEqual(result.input_tokens, 250)
         self.assertEqual(result.output_tokens, 20)
-        self.assertAlmostEqual(result.cost, 250 * 42 / 1_000_000)
+        self.assertAlmostEqual(result.cost, 250 * 0.0042 / 1_000_000)
 
     def test_official_shapes_parse_and_noul_is_not_confidence(self):
         result = JevEvaluator()._parse_jev_response(live_response(), {
@@ -118,7 +118,7 @@ class JevP0Tests(unittest.TestCase):
         self.assertFalse(result.is_fallback)
         self.assertEqual(result.input_tokens, 250)
         self.assertEqual(result.output_tokens, 7)
-        self.assertAlmostEqual(result.cost, 250 * 42 / 1_000_000)
+        self.assertAlmostEqual(result.cost, 250 * 0.0042 / 1_000_000)
 
     def test_candidate_ast_fact_is_computed_at_agent_boundary(self):
         evaluator = JevEvaluator()

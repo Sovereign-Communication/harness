@@ -38,6 +38,11 @@ class HttpTransport(Transport):
 
     MAX_RETRIES = 3
 
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        """Keep one-attempt calls from silently becoming multiple requests."""
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
     def _retry_delay(self, attempt, retry_after):
         if retry_after:
             try:
@@ -136,3 +141,31 @@ class HttpTransport(Transport):
                     continue
                 return e.code, self._carry_retry_cost(parsed, dropped)
         raise OSError("unreachable: retries exhausted without a response")
+
+    def post_once(self, url, api_key, payload, timeout=120):
+        """POST exactly once, including on transient HTTP failures.
+
+        Most Harness lanes deliberately use :meth:`post`, whose bounded
+        retry behavior is useful for their idempotent/explicit retry policy.
+        HV-0's live assessment contract instead permits one request only, so
+        it uses this method and treats every transport/status failure as an
+        unassessed result.
+        """
+        req = urllib.request.Request(
+            url, data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            opener = urllib.request.build_opener(self._NoRedirect())
+            with opener.open(req, timeout=timeout) as resp:
+                return resp.getcode(), json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            exc.close()
+            try:
+                parsed = json.loads(body)
+            except json.JSONDecodeError:
+                parsed = {"error": {"message": body}}
+            return exc.code, parsed

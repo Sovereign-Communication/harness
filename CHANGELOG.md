@@ -11,6 +11,8 @@ break APIs between minor versions).
 
 ### Added
 
+- **HV-0 JEV vision assessment** — adds the immutable ten-category Hourglass assessment pack, canonical-source state builder and sanitizer, measured token/context preflight, and a typed `jev-vision-assessment` CLI preflight surface. The policy path uses one no-retry dispatch, exact Score/legend/probability validation, one reservation/settlement/metadata event, and leaves malformed or unavailable responses unassessed. The shared Jev input price now uses the operator-verified account rate of $0.0042/Mtok; missing input usage conservatively settles at the measured request estimate and is labeled estimated. The earlier `$42/Mtok` entry below describes the original P0 implementation rate and is superseded by this shared correction.
+
 - DF-UI-2 mission HTTP safety — mission-list responses now use bounded pagination and compact summaries without receipt/evaluation histories; the single-mission HTTP GET no longer rewrites generated status/index files.
 
 - **`harness media` adapter (`MEDIA-1`)** — integrated from the operator-tree lane's in-progress work: `harness/media_client.py` is a thin, stdlib-only `MediaAdapter` for the sovereign-media sibling service (image/video generation), giving honest `MediaUnavailable` failures on an unreachable/down service and structured budget-refusal envelopes (with the math) instead of a silent empty result — credentials and the provider catalog stay entirely service-side. Endpoint/token resolve from `~/.config/harness/media.json` or `MEDIA_BASE_URL`/`MEDIA_TOKEN`/`MEDIA_CONFIG_PATH` env vars, with no provider or service brand strings hardcoded in the adapter or its `harness media {image,video,job,jobs,balance}` CLI face (wired in `harness/cli.py`/`harness/cli_parser.py`, dispatched before `build_parser()`). Hermetic tests (injectable `opener` transport seam, no network) cover success, service-unavailable, budget refusal, and the CLI face in `tests/test_media_client.py`; documented in `docs/media.md` and the README CLI section.
@@ -104,7 +106,7 @@ break APIs between minor versions).
 
 - **JEV-P1 shared structural policy and lane evidence.** CLI, MCP, waist, batch, and agent paths now share one Jev policy owner with preflighted input-token spend, hash-chained `jev_eval` records, and stable structural envelopes; the verification gate remains code-authoritative and unkeyed runs remain explicit local fallback.
 
-- **JEV-P0 contract-truth adapter.** TypeSafe System One answers now use only official Noul/Choice/Score shapes, input-token pricing (`$42/Mtok`, output free), configured model/threshold settings, per-call question packs, and honest code-owned local structural fallback. Optional live smoke is operator-gated; CLI/MCP/waist wiring remains P1.
+- **JEV-P0 contract-truth adapter.** TypeSafe System One answers now use only official Noul/Choice/Score shapes, input-token pricing (original implementation rate `$42/Mtok`, output free; corrected for the operator-verified account rate in HV-0 above), configured model/threshold settings, per-call question packs, and honest code-owned local structural fallback. Optional live smoke is operator-gated; CLI/MCP/waist wiring remains P1.
 
 ### Fixed
 

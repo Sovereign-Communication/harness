@@ -1,0 +1,246 @@
+{
+  "id": "harness-hourglass-vision-assessment-v1",
+  "version": "1.0.0",
+  "confidence_threshold": 0.8,
+  "categories": {
+    "modularity": {
+      "instructions": "Rate whether Hourglass stages are independently selectable and compose without hidden activation.",
+      "levels": [
+        "The design has no usable stage boundaries, or omitted stages still run implicitly.",
+        "Stages are named, but their inputs, outputs, or omission behavior are unclear.",
+        "Each stage has an input/output contract and most subsets avoid hidden work; a material composition case remains unspecified.",
+        "Each stage has a clear contract; any supported subset composes without activating omitted stages, with tests and limits stated."
+      ],
+      "evidence_refs": [
+        "vision.modularity",
+        "roadmap.HV-4",
+        "roadmap.HV-6"
+      ],
+      "improvement_buckets": [
+        "modularity_absent",
+        "modularity_partial",
+        "modularity_contract_gap"
+      ],
+      "improvement_actions": [
+        "Define explicit stage boundaries and prevent implicit activation.",
+        "Specify stage inputs, outputs, and bypass behavior.",
+        "Add the missing subset-composition contract and test."
+      ]
+    },
+    "token_shape": {
+      "instructions": "Rate whether token allowances narrow through planning and widen for execution while remaining separate from monetary ceilings.",
+      "levels": [
+        "Token limits are absent or confused with dollars, and no hourglass shape is defined.",
+        "The broad-to-narrow-to-wide shape is described, but limits or actual-versus-estimated usage are vague.",
+        "Per-call and aggregate token limits are defined, but composition or failure accounting has a material gap.",
+        "Context, planning, and execution allowances compose explicitly; usage truth is labeled and token ceilings remain independent from cost limits."
+      ],
+      "evidence_refs": [
+        "vision.hourglass_shape",
+        "roadmap.HV-0",
+        "roadmap.HV-3",
+        "roadmap.HV-4"
+      ],
+      "improvement_buckets": [
+        "token_shape_absent",
+        "token_shape_partial",
+        "token_accounting_gap"
+      ],
+      "improvement_actions": [
+        "Define separate token and cost limits for each stage.",
+        "State exact per-call and aggregate allowance behavior.",
+        "Close the remaining composition or failure-accounting gap."
+      ]
+    },
+    "grounding": {
+      "instructions": "Rate whether condensed context preserves source identity, evidence references, uncertainty, conflicts, and visible omissions.",
+      "levels": [
+        "The design permits unsupported claims or silently discards decision-relevant source material.",
+        "Grounding is a goal, but source identity, uncertainty, or omitted material is not represented.",
+        "Evidence and omissions are represented, but freshness, conflict, or pruning guarantees are incomplete.",
+        "Portable briefs retain source identity, grounded references, uncertainty, conflicts, and explicit exclusions or truncation."
+      ],
+      "evidence_refs": [
+        "vision.context_intake",
+        "vision.grounding_invariant",
+        "roadmap.HV-2"
+      ],
+      "improvement_buckets": [
+        "grounding_absent",
+        "grounding_partial",
+        "brief_evidence_gap"
+      ],
+      "improvement_actions": [
+        "Require source-linked claims and fail closed on missing evidence.",
+        "Define brief identity, uncertainty, and omission fields.",
+        "Complete freshness, conflict, and pruning coverage."
+      ]
+    },
+    "planning": {
+      "instructions": "Rate whether the planning waist produces bounded, evidence-backed answers, plans, requests, or deferrals without increasing its own limits.",
+      "levels": [
+        "Planning is unbounded or can expand its own cost, token, scope, or permission limits.",
+        "A planning waist is described, but outcomes or ceilings are not validated.",
+        "Plans and limits are bounded, but a supplied-artifact or evidence-request path is underspecified.",
+        "Planning outcomes validate as bounded answers, plans, evidence requests, or defer; supplied artifacts bypass omitted stages and limits cannot rise."
+      ],
+      "evidence_refs": [
+        "vision.planning_waist",
+        "roadmap.HV-4"
+      ],
+      "improvement_buckets": [
+        "planning_unbounded",
+        "planning_contract_partial",
+        "planning_subset_gap"
+      ],
+      "improvement_actions": [
+        "Make planning authority subordinate to code-owned limits.",
+        "Define and validate each planning outcome.",
+        "Specify supplied-artifact bypass and evidence-request bounds."
+      ]
+    },
+    "execution_boundary": {
+      "instructions": "Rate whether execution receives validated bounded work packages and cannot silently replan or exceed limits.",
+      "levels": [
+        "Execution has no reliable package boundary, or workers can silently change scope or limits.",
+        "Work packages are proposed, but dispatch authority, consent, or re-planning is ambiguous.",
+        "Packages and limits are checked, but material plan changes or independent verification have a gap.",
+        "Execution consumes validated packages under composed limits; material changes re-enter planning and independent verification owns completion."
+      ],
+      "evidence_refs": [
+        "vision.execution",
+        "vision.plan_authority",
+        "roadmap.HV-5"
+      ],
+      "improvement_buckets": [
+        "execution_boundary_absent",
+        "execution_boundary_partial",
+        "execution_replan_gap"
+      ],
+      "improvement_actions": [
+        "Define an immutable bounded work-package boundary.",
+        "Bind dispatch, consent, and limits to each package.",
+        "Close re-planning or independent-verification gaps."
+      ]
+    },
+    "jev_coverage": {
+      "instructions": "Rate whether Jev capabilities are typed, selectable, versioned, bounded, ledgered, and unable to bypass code-owned authority.",
+      "levels": [
+        "Jev has no declared boundaries, or model output can directly authorize protected actions.",
+        "Several judgments are named, but they lack stable schemas, fallback rules, or clear ownership.",
+        "Most integrations are typed and bounded, but independent selection, degraded behavior, or evidence has a gap.",
+        "Each needed judgment is independently selectable with a versioned contract, explicit degradation, shared preflight, metadata evidence, and code-owned authority."
+      ],
+      "evidence_refs": [
+        "vision.jev_layer",
+        "roadmap.HV-0",
+        "roadmap.HV-1"
+      ],
+      "improvement_buckets": [
+        "jev_authority_gap",
+        "jev_contract_partial",
+        "jev_selection_gap"
+      ],
+      "improvement_actions": [
+        "Keep protected decisions in code and define a typed Jev boundary.",
+        "Add versioned schemas, fallback rules, and accounting evidence.",
+        "Make remaining capabilities independently selectable and test degraded paths."
+      ]
+    },
+    "sovereignty": {
+      "instructions": "Rate whether consent follows the exact assignment and whether decline, defer, handoff, and resume stop safely and preserve completed evidence.",
+      "levels": [
+        "Work can dispatch without valid consent, or decline/defer does not stop it.",
+        "Consent and handoff are described, but assignment identity or restart behavior is not bound.",
+        "Consent and resumable deferral are bounded, but changed assignments, preserved work, or renewed consent have a gap.",
+        "Consent binds package/context/model/limits; decline and defer stop dispatch; resume preserves evidence and renews consent when scope changes."
+      ],
+      "evidence_refs": [
+        "vision.consent",
+        "roadmap.HV-5"
+      ],
+      "improvement_buckets": [
+        "sovereignty_absent",
+        "sovereignty_binding_partial",
+        "handoff_resume_gap"
+      ],
+      "improvement_actions": [
+        "Require consent before every protected dispatch.",
+        "Bind consent to the exact assignment and its limits.",
+        "Close changed-assignment, evidence-preservation, or renewal gaps."
+      ]
+    },
+    "observability": {
+      "instructions": "Rate whether the run and ledger expose stage, model, limits, token usage source, spend, Jev outcome, consent, handoff, and verification without storing sensitive payloads.",
+      "levels": [
+        "The workflow is materially opaque or records sensitive payloads instead of bounded evidence.",
+        "Some outputs are visible, but usage truth, stage decisions, or fallback state is missing.",
+        "Most decisions and budgets are recorded, but failure/defer or estimated-versus-actual reporting has a gap.",
+        "Every stage reports selected/skipped work, actual/estimated/unavailable usage, spend, fallback, consent, handoff, and verification using metadata-only events."
+      ],
+      "evidence_refs": [
+        "vision.evidence_invariant",
+        "roadmap.HV-0",
+        "roadmap.HV-6"
+      ],
+      "improvement_buckets": [
+        "observability_absent",
+        "observability_partial",
+        "usage_truth_gap"
+      ],
+      "improvement_actions": [
+        "Define privacy-safe stage and budget evidence.",
+        "Label fallback and actual-versus-estimated usage.",
+        "Complete failure, defer, and cross-surface reporting."
+      ]
+    },
+    "verification_alignment": {
+      "instructions": "Rate whether final alignment compares the result to the original request and relevant retained source context while independent verification remains authoritative.",
+      "levels": [
+        "A model completion claim can substitute for evidence, or original requirements are not checked.",
+        "Final review is described, but it relies on a lossy summary or conflates semantic advice with completion authority.",
+        "Original requirements and retained evidence are checked, but restart selection or independent verification has a gap.",
+        "Alignment uses the original request plus cited retained context without another generative condensation; code validates restart and independent verification decides completion."
+      ],
+      "evidence_refs": [
+        "vision.execution_verification",
+        "roadmap.HV-1",
+        "roadmap.HV-5"
+      ],
+      "improvement_buckets": [
+        "verification_authority_gap",
+        "alignment_context_gap",
+        "restart_or_verification_gap"
+      ],
+      "improvement_actions": [
+        "Keep completion authority with independent code-owned checks.",
+        "Retain original requirements and source evidence for alignment.",
+        "Define validated restart targets and finish independent verification."
+      ]
+    },
+    "cost_bounds": {
+      "instructions": "Rate whether full payloads and reservations are measured before dispatch and whether token and monetary limits remain independent and concurrency-safe.",
+      "levels": [
+        "Calls can dispatch without bounded preflight, or token limits substitute for monetary ceilings.",
+        "Limits are stated, but payload size, account pricing, or reservation behavior is inaccurate or implicit.",
+        "Payload and cost preflights are bounded, but failure settlement, concurrency, or usage uncertainty has a gap.",
+        "The dispatched serialization is measured; context margins and verified shared pricing drive one reservation, one call, honest settlement, and independent hard token/dollar limits."
+      ],
+      "evidence_refs": [
+        "vision.policy_boundaries",
+        "roadmap.HV-0",
+        "roadmap.HV-3"
+      ],
+      "improvement_buckets": [
+        "cost_preflight_absent",
+        "cost_preflight_partial",
+        "accounting_concurrency_gap"
+      ],
+      "improvement_actions": [
+        "Enforce token and dollar ceilings before network dispatch.",
+        "Measure the dispatched payload and use the shared verified rate.",
+        "Close concurrency, failure-settlement, or usage-uncertainty gaps."
+      ]
+    }
+  }
+}

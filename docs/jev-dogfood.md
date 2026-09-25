@@ -156,7 +156,7 @@ multi-run comparison is recorded. These are the minimal operator probes.
 ```
 
 - Non-fallback keyed path; observed model **`jev-1.13.0`** (alias resolved).
-- Cost = `input_tokens * 42 / 1e6` (394→0.016548, 313→0.013146).
+- Historical cost used the then-configured `input_tokens * 42 / 1e6` rate (394→0.016548, 313→0.013146). HV-0 corrects subsequent Jev estimates and settlements to the operator-verified account rate; these historical receipts are not recalculated.
 
 ### Tiny paid plan dogfood (keyed Jev + cheap apply rung)
 

@@ -305,6 +305,29 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "required_tests": ["tests/test_jev_bar_sentiment.py"],
         "required_files": ["packs/phase_completion.pack.json", "harness/jev_completion.py"],
     },
+    "HV-0": {
+        # The row must cite a real merged PR before the phase can pass.
+        "pr_pattern": None,
+        "required_tests": [
+            "tests/test_jev_vision_assessment.py",
+            "tests/test_jev.py",
+            "tests/test_jev_policy.py",
+            "tests/test_jev_ledger_spend.py",
+            "tests/test_jev_p4_ops_exit.py",
+            "tests/test_jev_smoke.py",
+            "tests/test_hul_budget_reserve.py",
+        ],
+        "required_files": [
+            "harness/_http.py",
+            "harness/jev.py",
+            "harness/jev_packs.py",
+            "harness/jev_policy.py",
+            "harness/cli.py",
+            "harness/cli_parser.py",
+            "packs/hourglass_vision_assessment.pack.json",
+        ],
+        "user_facing": True,
+    },
     "CLAUDE-LANE": {
         # PR lands in a sibling PR; missing files must fail the bar honestly
         # until both PRs merge (operator ruling, JEV-BAR spec).
@@ -664,6 +687,7 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         "JEV-P6": re.compile(r"JEV-P6", re.I),
         "HG": re.compile(r"HG-\*|hourglass composition", re.I),
         "JEV-BAR": re.compile(r"JEV-BAR", re.I),
+        "HV-0": re.compile(r"\bHV-0\b|vision-assessment pilot|vision assessment", re.I),
         "CLAUDE-LANE": re.compile(r"CLAUDE-LANE", re.I),
         "OC-HANDOFF": re.compile(r"OC-HANDOFF", re.I),
     }
