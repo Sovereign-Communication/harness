@@ -29,6 +29,7 @@ import io
 import json
 import os
 import tempfile
+from types import SimpleNamespace
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -730,6 +731,59 @@ class TestCliJevPhase(unittest.TestCase):
         self.assertIn("false_complete", board)
         # Should not raise HarnessError unless false_complete is non-empty
         self.assertEqual(board["false_complete"], [])
+
+    def test_cli_all_stays_local_even_when_settings_are_available(self):
+        opts = self.parser.parse_args(["jev-phase", "--all", "--json"])
+        board = {"phases": {}, "passing": [], "failing": [], "false_complete": []}
+        with patch("harness.cli.score_all_phases", return_value=board) as score, \
+             patch("harness.cli.policy_for", side_effect=AssertionError("provider path")):
+            with redirect_stdout(io.StringIO()):
+                _cmd_jev_phase(opts, settings=SimpleNamespace(max_cost=1.0))
+        self.assertIsNone(score.call_args.kwargs["jev_policy"])
+
+    def test_single_phase_composes_bounded_governor_and_ledger(self):
+        opts = self.parser.parse_args(["jev-phase", "--phase", "JEV-P1", "--json"])
+        settings = SimpleNamespace(max_cost=0.02)
+        governor, ledger = object(), object()
+        result = {"phase": "JEV-P1", "score": 0, "min_score": 85,
+                  "can_mark_complete": True}
+        with patch("harness.cli.jev_face_governor", return_value=governor) as make_gov, \
+             patch("harness.cli._ledger", return_value=ledger) as make_ledger, \
+             patch("harness.cli.dogfood_phase", return_value=result) as dogfood:
+            with redirect_stdout(io.StringIO()):
+                _cmd_jev_phase(opts, settings=settings)
+        make_gov.assert_called_once_with(settings, 0.02)
+        make_ledger.assert_called_once_with(settings)
+        kwargs = dogfood.call_args.kwargs
+        self.assertIs(kwargs["governor"], governor)
+        self.assertIs(kwargs["ledger"], ledger)
+        self.assertIsNotNone(kwargs["transport"])
+
+    def test_single_phase_caps_high_configured_cost_at_jev_ceiling(self):
+        opts = self.parser.parse_args(["jev-phase", "--phase", "JEV-P1", "--json"])
+        settings = SimpleNamespace(max_cost=0.10)
+        result = {"phase": "JEV-P1", "score": 0, "min_score": 85,
+                  "can_mark_complete": True}
+        with patch("harness.cli.jev_face_governor") as make_gov, \
+             patch("harness.cli._ledger", return_value=object()), \
+             patch("harness.cli.dogfood_phase", return_value=result):
+            with redirect_stdout(io.StringIO()):
+                _cmd_jev_phase(opts, settings=settings)
+        make_gov.assert_called_once_with(settings, 0.05)
+
+    def test_single_phase_local_only_does_not_compose_provider(self):
+        opts = self.parser.parse_args(["jev-phase", "--phase", "JEV-P1", "--local-only", "--json"])
+        result = {"phase": "JEV-P1", "score": 0, "min_score": 85,
+                  "can_mark_complete": True}
+        with patch("harness.cli.jev_face_governor", side_effect=AssertionError("provider path")), \
+             patch("harness.cli._ledger", side_effect=AssertionError("ledger path")), \
+             patch("harness.cli.dogfood_phase", return_value=result) as dogfood:
+            with redirect_stdout(io.StringIO()):
+                _cmd_jev_phase(opts, settings=SimpleNamespace(max_cost=2.0))
+        kwargs = dogfood.call_args.kwargs
+        self.assertIsNone(kwargs["settings"])
+        self.assertIsNone(kwargs["governor"])
+        self.assertIsNone(kwargs["ledger"])
 
     def test_cli_all_phases_raises_on_false_complete(self):
         fake_board = {

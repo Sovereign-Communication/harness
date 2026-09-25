@@ -91,7 +91,7 @@ def interpreters(full=False):
     if full:
         try:
             out = capture(["uv", "python", "list", "--only-installed"])
-        except FileNotFoundError:
+        except (FileNotFoundError, PermissionError):
             out = None
         for line in (out.stdout.splitlines() if out is not None else []):
             m = re.match(r"cpython-(\d+)\.(\d+)\.\d+", line.strip())
@@ -102,8 +102,8 @@ def interpreters(full=False):
     for ver in ("3.9", "3.11", "3.13"):
         try:
             p = capture(["uv", "python", "find", ver])
-        except FileNotFoundError:
-            p = None  # uv not installed here: fall through to PATH, then the honest note
+        except (FileNotFoundError, PermissionError):
+            p = None  # uv unavailable here: fall through to PATH, then the honest note
         path = (p.stdout.strip()
                 if p is not None and p.returncode == 0 and p.stdout.strip()
                 else None)

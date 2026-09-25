@@ -57,7 +57,7 @@
     "min_score": 10.0,
     "is_fallback": true,
     "reasons": [
-      "governor_not_provided"
+      "unkeyed"
     ],
     "model": "jev-latest",
     "cost": 0.0,
@@ -222,7 +222,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 1983 tests in 110.100s\n\nOK"
+        "evidence": "unittest: Ran 2022 tests in 153.480s\n\nOK"
       },
       {
         "id": "R14",

@@ -603,12 +603,12 @@ def _evaluate_jev(policy, manifest: dict[str, Any], task_id: str) -> dict[str, A
         raise RuntimeError("native_jev_refused")
     return {key: structural.get(key) for key in (
         "verdict", "confidence", "supported", "cost", "input_tokens",
-        "is_fallback", "model", "site")}
+        "is_fallback", "model", "site")} | {"min_confidence": threshold}
 
 
 def _receipt(task_id: str, base: str, branch: str, commit: str,
              output_sha: str, manifest_sha: str,
-             jev: dict[str, Any]) -> dict[str, Any]:
+             jev: dict[str, Any], *, key: bytes) -> dict[str, Any]:
     body = {
         "task_id": task_id,
         "state": "committed_for_review",
@@ -621,13 +621,16 @@ def _receipt(task_id: str, base: str, branch: str, commit: str,
         "jev": jev,
     }
     body["receipt_sha256"] = _sha(_canonical_json(body))
+    body["receipt_hmac_sha256"] = hmac.new(
+        key, _canonical_json(body), hashlib.sha256).hexdigest()
     return body
 
 
 def _finish(db, *, task_id: str, base: str, branch: str, commit: str,
-            output_sha: str, manifest_sha: str, jev: dict[str, Any], now: int):
+            output_sha: str, manifest_sha: str, jev: dict[str, Any],
+            key: bytes, now: int):
     receipt = _receipt(task_id, base, branch, commit, output_sha,
-                       manifest_sha, jev)
+                       manifest_sha, jev, key=key)
     receipt_json = _canonical_json(receipt).decode("utf-8")
     db.execute(
         "UPDATE tasks SET state='complete', phase='complete', commit_sha=?, "
@@ -666,7 +669,7 @@ def _verify_commit(root: Path, handle: dict[str, Any], expected_sha: str) -> str
     return commit
 
 
-def _recover(root: Path, db, now: int) -> list[dict[str, Any]]:
+def _recover(root: Path, db, now: int, *, key: bytes) -> list[dict[str, Any]]:
     rows = db.execute(
         "SELECT task_id, repo_sha, manifest_sha256, phase, worktree_path, "
         "branch, expected_sha256, jev_json FROM tasks WHERE state='processing'"
@@ -686,7 +689,8 @@ def _recover(root: Path, db, now: int) -> list[dict[str, Any]]:
                     receipts.append(_finish(
                         db, task_id=task_id, base=base, branch=branch,
                         commit=commit, output_sha=expected,
-                        manifest_sha=manifest_sha, jev=json.loads(jev_json), now=now,
+                        manifest_sha=manifest_sha, jev=json.loads(jev_json),
+                        key=key, now=now,
                     ))
                 except (RuntimeError, ValueError, OSError):
                     recovered = False
@@ -864,7 +868,7 @@ def _process_manifest(root: Path, paths: dict[str, Path], db,
         db, task_id=validated["task_id"], base=head,
         branch=handle["branch"], commit=commit,
         output_sha=expected_sha, manifest_sha=manifest_sha,
-        jev=jev, now=now,
+        jev=jev, key=key, now=now,
     )
     db.commit()
     return receipt
@@ -881,7 +885,7 @@ def run_once(*, root: Path = REPO_ROOT, key: bytes | None = None,
                          else expected_approver)
     current = int(time.time()) if now is None else int(now)
     with _single_flight(paths["lock"]), _connect(paths["db"]) as db:
-        recovered = _recover(root, db, current)
+        recovered = _recover(root, db, current, key=key)
         if recovered:
             return recovered[-1]
         _assert_ready_for_new_task(root, db)

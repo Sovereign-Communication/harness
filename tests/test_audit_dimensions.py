@@ -23,6 +23,8 @@ import json
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from harness.config import load_settings
 from harness.errors import HarnessError
@@ -593,6 +595,36 @@ class EvaluateAuditDimensionsKeyedTests(unittest.TestCase):
         self.assertNotIn(
             "JevEvaluator(",
             inspect.getsource(JevPolicy.evaluate_audit_dimensions))
+
+
+class AuditCompositionTests(unittest.TestCase):
+    def test_audit_uses_shared_bounded_composition(self):
+        from audits.self import audit
+
+        settings = SimpleNamespace(max_cost=0.02)
+        governor, ledger, transport = object(), object(), object()
+        with patch("harness.session.jev_face_governor", return_value=governor) as make_gov, \
+             patch("harness.session.ledger_for", return_value=ledger) as make_ledger, \
+             patch("harness._http.HttpTransport", return_value=transport), \
+             patch("harness.jev_policy.policy_for", return_value="policy") as policy_for:
+            self.assertEqual(audit._compose_audit_jev_policy(settings), "policy")
+        make_gov.assert_called_once_with(settings, 0.02)
+        make_ledger.assert_called_once_with(settings, caller="self-audit")
+        self.assertIs(policy_for.call_args.kwargs["governor"], governor)
+        self.assertIs(policy_for.call_args.kwargs["ledger"], ledger)
+        self.assertIs(policy_for.call_args.kwargs["transport"], transport)
+
+    def test_audit_caps_high_configured_cost_at_jev_ceiling(self):
+        from audits.self import audit
+
+        settings = SimpleNamespace(max_cost=0.10)
+        governor, ledger, transport = object(), object(), object()
+        with patch("harness.session.jev_face_governor", return_value=governor) as make_gov, \
+             patch("harness.session.ledger_for", return_value=ledger), \
+             patch("harness._http.HttpTransport", return_value=transport), \
+             patch("harness.jev_policy.policy_for", return_value="policy"):
+            audit._compose_audit_jev_policy(settings)
+        make_gov.assert_called_once_with(settings, 0.05)
 
 
 if __name__ == "__main__":

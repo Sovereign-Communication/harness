@@ -27,6 +27,20 @@ import tempfile
 import threading
 from pathlib import Path
 
+
+def _compose_audit_jev_policy(settings):
+    """Compose the audit gate through Harness's shared Jev owners."""
+    from harness._http import HttpTransport
+    from harness.jev_policy import policy_for
+    from harness.session import jev_face_governor, ledger_for
+
+    return policy_for(
+        settings,
+        transport=HttpTransport(),
+        governor=jev_face_governor(settings, min(settings.max_cost, 0.05)),
+        ledger=ledger_for(settings, caller="self-audit"),
+    )
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 PKG = ROOT / "harness"
@@ -1200,7 +1214,6 @@ def main():
 
     # --- JEV 4-Dimension Authoritative Gate (95%+ on ALL 4 dimensions) ---
     from harness.config import load_settings
-    from harness.jev_policy import policy_for
 
     dimension_evidence = {
         dim: {
@@ -1213,7 +1226,7 @@ def main():
     }
 
     settings = load_settings()
-    jev_policy = policy_for(settings)
+    jev_policy = _compose_audit_jev_policy(settings)
     jev_gate = jev_policy.evaluate_audit_dimensions(dimension_evidence)
 
     print("=" * 65)

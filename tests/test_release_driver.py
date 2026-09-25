@@ -36,6 +36,17 @@ class ReleaseDriverContractTests(unittest.TestCase):
             for _, label in release.interpreters(full=True):
                 self.assertNotIn("uv-managed", label)
 
+    def test_interpreter_matrix_degrades_when_uv_is_inaccessible(self):
+        from unittest.mock import patch
+
+        with patch.object(release, "capture",
+                          side_effect=PermissionError("uv launch denied")) as capture:
+            default = release.interpreters()
+            full = release.interpreters(full=True)
+        self.assertEqual(default[0][1], "local default")
+        self.assertEqual(full[0][1], "local default")
+        self.assertEqual(capture.call_count, 4)
+
     def test_battery_step_invokes_audit_and_leak_scan(self):
         src = _RELEASE.read_text(encoding="utf-8")
         tree = ast.parse(src)
