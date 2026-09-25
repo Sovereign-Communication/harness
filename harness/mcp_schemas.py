@@ -276,6 +276,10 @@ TOOL_SCHEMAS = [
                     "description": "Score every declared phase contract"},
             "min_score": {"type": "number", "minimum": 0, "maximum": 100,
                           "description": "Completion score threshold (default 85.0)"},
-        }},
+        }, "anyOf": [
+            {"required": ["phase"]},
+            {"required": ["all"],
+             "properties": {"all": {"const": True}}},
+        ]},
     },
 ]

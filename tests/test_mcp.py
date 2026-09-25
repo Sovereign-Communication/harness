@@ -1146,6 +1146,11 @@ class JevPhaseToolTests(unittest.TestCase):
         properties = schema["properties"]
 
         self.assertEqual(schema["type"], "object")
+        self.assertEqual(schema["anyOf"], [
+            {"required": ["phase"]},
+            {"required": ["all"],
+             "properties": {"all": {"const": True}}},
+        ])
         self.assertEqual(set(properties),
                          {"repo_root", "phase", "all", "min_score"})
         self.assertEqual(properties["repo_root"]["type"], "string")
