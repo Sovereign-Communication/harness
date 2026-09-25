@@ -27,6 +27,7 @@ from .errors import HarnessError, ToolCancelled
 from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
 from .mcp_lanes import LANES, lane_for
 from .mcp_schemas import TOOL_SCHEMAS
+from .jev_completion import dogfood_phase, score_all_phases
 from .jev_policy import aggregate_structural, policy_for
 from .jev_packs import validate_log_pack, validate_operator_pack
 from .route_pack import validate_route_pack
@@ -839,6 +840,20 @@ class McpServer:
             mr.write_status(pack)
             mr.write_index(pack)
             return mr.pack_summary(pack)
+        if name == "jev_phase":
+            # Thin face over harness.jev_completion (the same engine
+            # `harness jev-phase --local-only` runs). Always local-only:
+            # never builds a live Jev policy, never mutates STATUS/the repo.
+            repo_root = validate_text(args.get("repo_root"), "repo_root", 4096) or "."
+            all_phases = validate_mcp_bool(args.get("all", False), "all")
+            min_score = finite_number(args.get("min_score", 85.0), "min_score",
+                                      0.0, 100.0)
+            if all_phases:
+                return score_all_phases(repo_root, jev_policy=None,
+                                        min_score=min_score)
+            phase = validate_text(args.get("phase"), "phase", 256, required=True)
+            return dogfood_phase(repo_root, phase, settings=None,
+                                 use_live_jev=False, min_score=min_score)
         if name == "ledger_status":
             limit = validate_mcp_limit(args.get("limit"))
             ok, bad_seq = self.ledger.verify()

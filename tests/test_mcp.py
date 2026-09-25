@@ -248,6 +248,7 @@ class McpProtocolTests(unittest.TestCase):
         self.assertIn("spend_status", tools)
         self.assertIn("mission_status", tools)
         self.assertIn("continue_work", tools)
+        self.assertIn("jev_phase", tools)
         self.assertTrue(tools["panel_verify"]["inputSchema"]["properties"]["prompt"])
         # ping
         self.assertEqual(lines[2]["id"], 3)
@@ -999,7 +1000,8 @@ class LaneSchedulingTests(unittest.TestCase):
              "spend_status": "observe",
              "trust_status": "observe",
              "issue_sort": "observe",
-             "mission_status": "observe"})
+             "mission_status": "observe",
+             "jev_phase": "observe"})
 
     def test_unknown_and_missing_names_ride_observe(self):
         self.assertEqual(lane_for("not_a_tool"), "observe")
@@ -1105,6 +1107,92 @@ class MissionStatusToolTests(unittest.TestCase):
         _, server = make_server()
         with self.assertRaisesRegex(Exception, "mission pack not found"):
             server._invoke("mission_status", {"mission_id": "does-not-exist", "root": root})
+
+
+def _write_jev_repo(root, status_line):
+    """Minimal repo fixture jev_completion.collect_phase_evidence can read
+    (same shape tests/test_jev_completion.py uses): STATUS row only, no
+    tests/files -- enough to exercise a hard-gate-failing, honest score."""
+    import json as _json
+    from pathlib import Path as _Path
+    from harness.jev_completion import DEFAULT_COMPLETION_PACK
+
+    docs = _Path(root) / "docs"
+    docs.mkdir(parents=True, exist_ok=True)
+    (docs / "jev-roadmap.md").write_text(
+        "## Canonical STATUS\n\n"
+        "| Track | Phase | Status | Evidence |\n"
+        "|---|---|---|---|\n"
+        f"{status_line}\n",
+        encoding="utf-8")
+    pack = _Path(root) / "packs" / "phase_completion.pack.json"
+    pack.parent.mkdir(parents=True, exist_ok=True)
+    pack.write_text(_json.dumps(DEFAULT_COMPLETION_PACK), encoding="utf-8")
+
+
+class JevPhaseToolTests(unittest.TestCase):
+    """DF-UI-2: jev_phase is a thin, always-local-only face over
+    harness.jev_completion (the same engine `harness jev-phase
+    --local-only` runs) -- never a live Jev call, never a repo mutation."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_jev_phase_schema_exposes_conditional_local_only_inputs(self):
+        tool = next(tool for tool in TOOL_SCHEMAS
+                    if tool["name"] == "jev_phase")
+        schema = tool["inputSchema"]
+        properties = schema["properties"]
+
+        self.assertEqual(schema["type"], "object")
+        self.assertEqual(schema["anyOf"], [
+            {"required": ["phase"]},
+            {"required": ["all"],
+             "properties": {"all": {"const": True}}},
+        ])
+        self.assertEqual(set(properties),
+                         {"repo_root", "phase", "all", "min_score"})
+        self.assertEqual(properties["repo_root"]["type"], "string")
+        self.assertEqual(properties["repo_root"]["default"], ".")
+        self.assertEqual(properties["phase"]["type"], "string")
+        self.assertIn("required unless 'all' is set",
+                      properties["phase"]["description"])
+        self.assertEqual(properties["all"]["type"], "boolean")
+        self.assertFalse(properties["all"]["default"])
+        self.assertEqual(properties["min_score"]["type"], "number")
+        self.assertEqual((properties["min_score"]["minimum"],
+                          properties["min_score"]["maximum"]), (0, 100))
+
+    def test_jev_phase_one_phase_never_calls_live_jev(self):
+        _write_jev_repo(
+            self.tmp.name,
+            "| 2 Pillars `JEV-P2-*` | **in progress / repair** | PR OPEN |")
+        _, server = make_server()
+        # A live Jev call would need a settings object; jev_phase never
+        # builds one (settings=None, use_live_jev=False), so this must
+        # succeed even though nothing here can reach the network.
+        result = server._invoke("jev_phase", {"repo_root": self.tmp.name,
+                                               "phase": "JEV-P2"})
+        self.assertEqual(result["phase"], "JEV-P2")
+        self.assertFalse(result["can_mark_complete"])
+        self.assertIn("hard_gates", result)
+
+    def test_jev_phase_all_scores_the_board(self):
+        _write_jev_repo(
+            self.tmp.name,
+            "| 2 Pillars `JEV-P2-*` | **in progress / repair** | PR OPEN |")
+        _, server = make_server()
+        board = server._invoke("jev_phase", {"repo_root": self.tmp.name, "all": True})
+        self.assertIn("phases", board)
+        self.assertIn("false_complete", board)
+
+    def test_jev_phase_requires_phase_unless_all(self):
+        from harness.errors import HarnessError
+
+        _, server = make_server()
+        with self.assertRaises(HarnessError):
+            server._invoke("jev_phase", {"repo_root": self.tmp.name})
 
 
 class ContinueWorkToolTests(unittest.TestCase):

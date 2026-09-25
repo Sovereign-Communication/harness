@@ -707,7 +707,7 @@ def load_resume(pack: MissionPack) -> Dict[str, Any]:
         body = json.loads(pack.resume_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         raise HarnessError(f"resume.json unreadable for mission {pack.id}: {e}") from e
-    return body
+    return validate_resume(body, expected_id=pack.id)
 
 
 def validate_resume(state: Any, *, expected_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1037,4 +1037,29 @@ def pack_summary(pack: MissionPack) -> Dict[str, Any]:
         "resume": resume,
         "status_md_path": str(pack.status_md),
         "findings_md_path": str(pack.findings_md),
+    }
+
+
+
+def pack_list_summary(pack: MissionPack) -> Dict[str, Any]:
+    """Return a compact summary for paginated mission-list responses.
+
+    Unlike pack_summary, this does not load append-only receipts or Jev
+    evaluations and omits variable-length request, scope, and resume data.
+    """
+    spec = pack.spec()
+    budget = load_budget(pack)
+    resume = load_resume(pack)
+    return {
+        "id": pack.id,
+        "phase": resume.get("status", "in_progress"),
+        "terminal": is_terminal(pack),
+        "dual_budget": {
+            "working_remaining": budget.get("working_remaining", 0.0),
+            "terminal_reserve_cost_usd": budget.get(
+                "terminal_reserve_cost_usd",
+                spec["terminal_reserve"]["cost_usd"]),
+            "terminal_available": budget.get("terminal_available", 0.0),
+            "phase": budget.get("phase", PHASE_ATTEMPT),
+        },
     }

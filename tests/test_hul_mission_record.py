@@ -520,6 +520,11 @@ class MissionErrorPathTests(unittest.TestCase):
             mr.load_resume(self.pack)
         self.assertFalse(mr.is_terminal(self.pack))
 
+    def test_load_resume_rejects_non_mapping_json(self):
+        self.pack.resume_path.write_text("[]\n", encoding="utf-8")
+        with self.assertRaisesRegex(HarnessError, "resume state must be a mapping"):
+            mr.load_resume(self.pack)
+
     def test_write_findings_rejects_empty(self):
         with self.assertRaises(HarnessError):
             mr.write_findings(self.pack, "   ")
