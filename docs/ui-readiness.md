@@ -69,8 +69,8 @@ guard (`X-Harness-Auth` / loopback) as every other `/api` route.
 |---|---|---|
 | `GET /api/jev-phase[?phase=ID][&repo_root=.][&min_score=85]` | `harness.jev_completion` (`dogfood_phase`/`score_all_phases`) | Always local-only: `settings=None`, `use_live_jev=False` -- same guarantee `harness jev-phase --local-only` and the MCP `jev_phase` tool give (never a live Jev judge). No `phase` scores the whole board. |
 | `GET /api/cost[?last=][&by_tier=][&by_model=][&savings=]` | `AutonomyLedger.cost_report` | Same call `harness cost` makes; flags mirror the CLI's `--last`/`--by-tier`/`--by-model`/`--savings`. |
-| `GET /api/missions[?root=missions]` | `harness.mission_record` | Read-only summaries of every pack under `root` (`load_mission_pack` + `pack_summary`, no writes); missing/empty root is `{"missions": []}`, not an error. |
-| `GET /api/missions/<id>[?root=missions]` | `harness.mission_record` | Same regenerate-and-summarize semantics as `harness mission status` / the MCP `mission_status` tool (refreshes `STATUS.md`/`INDEX.md`, never mutates budget/receipts/resume). |
+| `GET /api/missions[?root=missions][&limit=25][&offset=0]` | `harness.mission_record` | Compact summaries, stable offset pagination, `limit` 1–100; each page omits receipt/evaluation history and variable-length resume/request fields. `total` counts pack directories containing `mission.yaml`; corrupt selected packs are skipped. Missing/empty root returns an empty page. |
+| `GET /api/missions/<id>[?root=missions]` | `harness.mission_record` | Read-only full pack summary; does not regenerate `STATUS.md` or `INDEX.md`. The CLI/MCP `mission_status` commands retain their existing refresh behavior. |
 | MCP `jev_phase` | `harness.jev_completion` | Same local-only semantics as the HTTP face above; `{repo_root, phase, all, min_score}`. |
 
 **`plan` stays CLI/MCP-only.** `plan_and_execute` (MCP) and the DAG planner

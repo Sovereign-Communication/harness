@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.harness/
 build/
 dist/
 .harness-backups/
@@ -18,3 +19,4 @@ audits/scmessenger/round6/
 # Claude Code local state (skill scratch + HUL mission packs live under tmp/claude/, already ignored)
 
 .claude/settings.local.json
+.venv/

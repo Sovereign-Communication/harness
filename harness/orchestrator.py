@@ -46,6 +46,19 @@ At most {max_n} paths, all copied exactly from the repository list above.
 """
 
 
+def _result_probability(result, key):
+    """Read a typed noul probability without treating it as confidence."""
+    answers = getattr(result, "answers", None)
+    if not isinstance(answers, dict):
+        return None
+    value = answers.get(key)
+    if isinstance(value, dict):
+        value = value.get("noul")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return max(0.0, min(1.0, float(value)))
+
+
 def _extract_json_blob(text):
     """The first balanced {...} block in the response, or None."""
     if not text:
@@ -160,6 +173,8 @@ def assess_completion_nouls(goal, state_summary, *, jev_policy=None,
             "reason": "completion nouls passed",
             "structural": structural,
             "result": result,
+            "jev_native": not bool(getattr(result, "is_fallback", True)),
+            "jev_supported": _result_probability(result, "goal_achieved"),
         }
     # Pure code-owned path when no policy is attached.
     from .jev_packs import missing_named_artifacts, named_artifact_status
@@ -225,7 +240,7 @@ def drive(*, goal: str, target_files: List[str], initial_plan: Dict,
           execute_plan: Callable[[Dict], Dict],
           completion_chat: Callable[[str], str], emit: Callable[..., None],
           cancel_check=None, refused=None, max_rounds=MAX_ORCH_ROUNDS,
-          jev_policy=None):
+          jev_policy=None, jev_completion_threshold=None):
     """Run plan -> execute -> judge until complete or the round budget ends.
 
     ``execute_plan`` is the only execution seam: the caller supplies the
@@ -321,6 +336,12 @@ def drive(*, goal: str, target_files: List[str], initial_plan: Dict,
                 goal, summary, jev_policy=jev_policy,
                 named_artifacts=list(seen_paths) if seen_paths else None,
                 root_dir=root_dir)
+            rounds_history[-1]["jev"] = {
+                "native": bool(pre_judge.get("jev_native")),
+                "supported": pre_judge.get("jev_supported"),
+                "cannot_complete": bool(pre_judge.get("cannot_complete")),
+                "reason": pre_judge.get("reason"),
+            }
             if pre_judge["cannot_complete"]:
                 emit("orchestration_note",
                      note=f"completion nouls refuse complete: {pre_judge['reason']}"
@@ -333,6 +354,22 @@ def drive(*, goal: str, target_files: List[str], initial_plan: Dict,
                     current_goal = remaining_scope or goal
                     # Code-owned fail: do not spend the generative judge.
                     continue
+            # A live Jev completion signal can require another round before
+            # the generative judge is allowed to spend.  The threshold is
+            # opt-in so existing library callers retain their historical
+            # contract; the agent lane supplies the operator's confidence gate.
+            jev_supported = pre_judge.get("jev_supported")
+            if (pre_judge.get("jev_native")
+                    and jev_completion_threshold is not None
+                    and isinstance(jev_supported, (int, float))
+                    and float(jev_supported) < float(jev_completion_threshold)):
+                final_all_ok = False
+                remaining_scope = (
+                    f"Jev completion support {float(jev_supported):.3f} is below "
+                    f"the required {float(jev_completion_threshold):.3f}")
+                current_goal = remaining_scope
+                emit("orchestration_note", note=remaining_scope)
+                continue
         try:
             verdict = assess_completion(goal, summary, completion_chat)
         except HarnessError as exc:

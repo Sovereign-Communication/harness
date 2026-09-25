@@ -201,12 +201,35 @@ class TestSlidingScale(unittest.TestCase):
         dag = heuristic_decompose_goal("Refactor helper functions in utils.py")
         self.assertEqual(dag.nodes["task_1"].target_files, ("utils.py",))
 
-    def test_ling_excluded_from_free_apply_pool_and_scout_default(self):
-        from harness.config import FREE_APPLY_POOL, FREE_PANEL_POOL
-        # Ensure Ling is never in the default free apply pool (no incapable apply calls)
-        self.assertNotIn("inclusionai/ling-3.0-flash-fin:free", FREE_APPLY_POOL)
-        for model in FREE_APPLY_POOL:
-            self.assertNotIn("ling", model.lower())
+    def test_ling_in_rotation_but_never_default(self):
+        """DF-LING-2 (operator ruling 2026-09-23): Ling may rotate in, but it
+        must never be the first/default pick for any lane. DF-LING-1 already
+        fixed the actual parsing defect (chat._extract_json / reasoning
+        hints); this pins the pool-ordering half of the ruling."""
+        from harness.config import (FREE_APPLY_POOL, FREE_PANEL_POOL,
+                                     DEFAULT_APPLY_POOL_PAID)
+
+        # In rotation: still present in the free apply pool...
+        self.assertIn("inclusionai/ling-3.0-flash-fin:free", FREE_APPLY_POOL)
+        # ...but never leading it.
+        self.assertNotIn("ling", FREE_APPLY_POOL[0].lower())
+
+        # Never the default apply model.
+        apply_model = str(load_settings(
+            overrides={"use_free": True}).apply_model)
+        self.assertNotIn("ling", apply_model.lower())
+
+        # Never the Tier-1 recommended model (free or paid).
+        tier1_free = resolve_tier_recommended_model(TIER_1_DISTILLER, use_free=True)
+        self.assertNotIn("ling", tier1_free.lower())
+        self.assertNotIn("ling", DEFAULT_APPLY_POOL_PAID[0].lower())
+
+        # Never the leading rung of the Tier-1 free ladder.
+        ladder = tier_model_ladder(TIER_1_DISTILLER, use_free=True)
+        self.assertNotIn("ling", ladder[0].lower())
+        # ...but Ling still shows up somewhere in the ladder, i.e. it rotates
+        # in after the default rather than being dropped outright.
+        self.assertTrue(any("ling" in m.lower() for m in ladder))
 
         # Scout tier recommended model must be capable (Gemma 4 31b), not Ling
         scout_rec = resolve_tier_recommended_model(TIER_0_SCOUT, use_free=True)

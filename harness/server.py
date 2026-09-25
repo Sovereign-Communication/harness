@@ -509,30 +509,31 @@ def _api_jev_phase_payload(repo_root, phase, min_score=85.0):
                          min_score=min_score)
 
 
-def _list_missions(root):
-    """Read-only mission summaries under ``root`` (one owner per pack:
-    harness.mission_record). A missing/empty root is an empty list, not an
-    error -- the same "normal empty state" the rankings endpoint uses.
-    Never writes STATUS.md/INDEX.md (unlike the single-mission GET, which
-    matches the established mission_status regenerate-and-summarize
-    semantics); listing many packs on every dashboard poll must stay a
-    pure read."""
+def _list_missions(root, *, limit=25, offset=0):
+    """Return one bounded page of compact mission summaries.
+
+    Directory names are ordered for stable offset pagination. Only the
+    selected page is loaded, and each result omits append-only history.
+    Missing roots are the normal empty state.
+    """
     from . import mission_record as mr
     try:
         names = sorted(os.listdir(root))
     except OSError:
-        return []
+        names = []
+    candidates = [
+        name for name in names
+        if os.path.isfile(os.path.join(root, name, "mission.yaml"))
+    ]
+    total = len(candidates)
     out = []
-    for name in names:
-        pack_dir = os.path.join(root, name)
-        if not os.path.isfile(os.path.join(pack_dir, "mission.yaml")):
-            continue
+    for name in candidates[offset:offset + limit]:
         try:
             pack = mr.load_mission_pack(root, name)
-            out.append(mr.pack_summary(pack))
+            out.append(mr.pack_list_summary(pack))
         except HarnessError:
             continue  # corrupt pack: skip it rather than fail the whole list
-    return out
+    return {"missions": out, "total": total, "limit": limit, "offset": offset}
 
 
 class UiRequestHandler(BaseHTTPRequestHandler):
@@ -1012,24 +1013,27 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         return self._send_json(report)
 
     def _api_missions_list(self, q):
-        """GET /api/missions[?root=missions]: read-only summaries of every
-        mission pack under ``root`` (harness.mission_record). Never writes;
-        a missing/empty root is an empty list, not an error."""
-        root = (q.get("root") or ["missions"])[0]
-        return self._send_json({"root": root, "missions": _list_missions(root)})
+        """GET /api/missions: compact summaries with bounded pagination."""
+        root = (q.get("root") or ["missions"])[0] or "missions"
+        limit_raw = (q.get("limit") or ["25"])[0] or "25"
+        offset_raw = (q.get("offset") or ["0"])[0] or "0"
+        limit = _opt_int({"limit": limit_raw}, "limit", 1, 100, 25)
+        offset = _opt_int({"offset": offset_raw}, "offset", 0, 1000000, 0)
+        return self._send_json({
+            "root": root, **_list_missions(root, limit=limit, offset=offset)
+        })
 
     def _api_mission_detail(self, mission_id, q):
-        """GET /api/missions/<id>[?root=missions]: same regenerate-and-
-        summarize semantics as `harness mission status` / the MCP
-        ``mission_status`` tool -- refreshes STATUS.md/INDEX.md from
-        on-disk pack state and returns the pack summary. Never mutates
-        budget, receipts, or resume state."""
+        """GET /api/missions/<id>: read the existing pack summary only.
+
+        This route never regenerates STATUS.md or INDEX.md. The CLI and MCP
+        mission_status commands retain their established refresh behavior.
+        """
         from . import mission_record as mr
-        root = (q.get("root") or ["missions"])[0]
+        root = (q.get("root") or ["missions"])[0] or "missions"
         pack = mr.load_mission_pack(root, mission_id)
-        mr.write_status(pack)
-        mr.write_index(pack)
         return self._send_json(mr.pack_summary(pack))
+
 
 
 def make_server(host="127.0.0.1", port=8765, auth_token=None):

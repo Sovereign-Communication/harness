@@ -1329,22 +1329,69 @@ class MissionsEndpointTests(ServerHarness):
             conn.close()
         self.assertEqual(status, 200)
         self.assertEqual(data["missions"], [])
+        self.assertEqual(data["total"], 0)
+        self.assertEqual(data["limit"], 25)
+        self.assertEqual(data["offset"], 0)
 
-    def test_list_returns_every_pack_summary(self):
-        self._init_pack("m-http-1")
-        self._init_pack("m-http-2")
+    def test_list_returns_paginated_bounded_summaries(self):
+        for mission_id in ("m-http-1", "m-http-2", "m-http-3"):
+            self._init_pack(mission_id)
         conn = self._conn()
         try:
             status, data = _request(
-                conn, "GET", f"/api/missions?root={self.root}")
+                conn, "GET",
+                f"/api/missions?root={self.root}&limit=2&offset=1")
         finally:
             conn.close()
         self.assertEqual(status, 200)
-        ids = sorted(m["id"] for m in data["missions"])
-        self.assertEqual(ids, ["m-http-1", "m-http-2"])
+        self.assertEqual([m["id"] for m in data["missions"]],
+                         ["m-http-2", "m-http-3"])
+        self.assertEqual((data["total"], data["limit"], data["offset"]),
+                         (3, 2, 1))
+        for summary in data["missions"]:
+            self.assertIn("dual_budget", summary)
+            self.assertNotIn("receipts", summary)
+            self.assertNotIn("jev_evals", summary)
+            self.assertNotIn("resume", summary)
 
-    def test_detail_returns_pack_summary_and_refreshes_status_md(self):
-        self._init_pack("m-http-3")
+    def test_list_does_not_load_append_only_histories(self):
+        from harness import mission_record as mr
+
+        self._init_pack("m-http-4")
+        with mock.patch.object(mr, "load_receipts",
+                               side_effect=AssertionError("history loaded")):
+            with mock.patch.object(
+                    mr, "load_jev_evals",
+                    side_effect=AssertionError("history loaded")):
+                conn = self._conn()
+                try:
+                    status, data = _request(
+                        conn, "GET", f"/api/missions?root={self.root}")
+                finally:
+                    conn.close()
+        self.assertEqual(status, 200)
+        self.assertEqual([m["id"] for m in data["missions"]],
+                         ["m-http-4"])
+
+    def test_list_rejects_invalid_pagination(self):
+        for query in ("limit=0", "limit=101", "offset=-1", "offset=bad"):
+            with self.subTest(query=query):
+                conn = self._conn()
+                try:
+                    status, _ = _request(
+                        conn, "GET", f"/api/missions?root={self.root}&{query}")
+                finally:
+                    conn.close()
+                self.assertEqual(status, 400)
+
+    def test_detail_returns_pack_summary_without_writing_projection_files(self):
+        pack = self._init_pack("m-http-3")
+        status_path = str(pack.status_md)
+        index_path = str(pack.index_md)
+        for path, content in ((status_path, "operator status sentinel\n"),
+                              (index_path, "operator index sentinel\n")):
+            with open(path, "w", encoding="utf-8") as stream:
+                stream.write(content)
         conn = self._conn()
         try:
             status, data = _request(
@@ -1354,8 +1401,10 @@ class MissionsEndpointTests(ServerHarness):
         self.assertEqual(status, 200)
         self.assertEqual(data["id"], "m-http-3")
         self.assertIn("dual_budget", data)
-        self.assertTrue(os.path.exists(
-            os.path.join(self.root, "m-http-3", "STATUS.md")))
+        for path, expected in ((status_path, "operator status sentinel\n"),
+                               (index_path, "operator index sentinel\n")):
+            with open(path, encoding="utf-8") as stream:
+                self.assertEqual(stream.read(), expected)
 
     def test_detail_unknown_id_is_400(self):
         os.makedirs(self.root, exist_ok=True)

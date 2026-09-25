@@ -57,7 +57,7 @@
     "min_score": 10.0,
     "is_fallback": true,
     "reasons": [
-      "governor_not_provided"
+      "unkeyed"
     ],
     "model": "jev-latest",
     "cost": 0.0,
@@ -222,7 +222,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 1948 tests in 124.537s\n\nOK"
+        "evidence": "unittest: Ran 2022 tests in 153.480s\n\nOK"
       },
       {
         "id": "R14",
@@ -266,7 +266,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "71/71 modules imported by tests"
+        "evidence": "72/72 modules imported by tests"
       },
       {
         "id": "S7",
@@ -286,7 +286,7 @@
         "id": "D1",
         "label": "MCP tool parity with README",
         "score": 1.0,
-        "evidence": "README documents all 15 MCP tools, no stale names"
+        "evidence": "README documents all 14 MCP tools, no stale names"
       },
       {
         "id": "D2",
@@ -322,7 +322,7 @@
         "id": "D7",
         "label": "docs reference only real modules",
         "score": 1.0,
-        "evidence": "all module references across 26 docs resolve to real files"
+        "evidence": "all module references across 27 docs resolve to real files"
       },
       {
         "id": "D8",

@@ -338,6 +338,17 @@ harness mission resume --id fix-outbox --root missions --run      # continues
 # built from `harness.session.apply_session`, which already resolves
 # models through the Router/pool ladders -- never a new model client, and
 # never a hardcoded provider brand).
+
+# MEDIA-1: image/video generation via the sovereign-media sibling service.
+# Credentials and the provider catalog stay service-side; the adapter only
+# ever sees job envelopes (status, cost, artifact paths). Endpoint/token are
+# config- or env-resolved (MEDIA_BASE_URL, MEDIA_TOKEN) -- no brand strings
+# hardcoded in harness/media_client.py. See docs/media.md for setup + the
+# honest-failure/budget-refusal contract.
+harness media image "a cabin in snowy woods" --project scmessenger --quality low
+harness media video "ocean waves" --provider your-video-provider --model your-model --seconds 4 --project scmessenger
+harness media jobs --project scmessenger
+harness media balance --project scmessenger
 ```
 
 Exit codes: `0` ok, `1` fatal, `2` verify/lint failure (or unconfirmed run),
