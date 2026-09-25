@@ -1047,7 +1047,8 @@ class OcHandoffVerifierFailurePathTests(unittest.TestCase):
                     "SELECT repo_sha, commit_sha FROM tasks").fetchone()
             output = (root / "HANDOFF" / "OC_FINDINGS.md").read_bytes()
 
-            for mode in ("parent", "diff", "content", "ancestor"):
+            for mode in ("parent", "diff", "content", "ancestor",
+                         "head-content", "head-missing"):
                 def fake_git_bytes(_root, *args, max_bytes=1_000_000):
                     if args[0] == "rev-list":
                         parent = "f" * 40 if mode == "parent" else base
@@ -1056,6 +1057,12 @@ class OcHandoffVerifierFailurePathTests(unittest.TestCase):
                         return (b"HANDOFF/OC_FINDINGS.md\nextra.txt\n" if mode == "diff"
                                 else b"HANDOFF/OC_FINDINGS.md\n")
                     if args[0] == "show":
+                        if args[1] == "HEAD:HANDOFF/OC_FINDINGS.md":
+                            if mode == "head-content":
+                                return b"descendant HEAD changed the output"
+                            if mode == "head-missing":
+                                return None
+                            return output
                         return b"altered" if mode == "content" else output
                     if args[0] == "merge-base":
                         return None if mode == "ancestor" else b""

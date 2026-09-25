@@ -612,6 +612,11 @@ def _valid_oc_handoff_receipt(root_value: str) -> bool:
                 max_bytes=_OC_HANDOFF_MAX_BYTES)
             if committed_output is None or _sha256(committed_output) != output_hash:
                 continue
+            head_output = _git_bytes(
+                root, "show", "HEAD:HANDOFF/OC_FINDINGS.md",
+                max_bytes=_OC_HANDOFF_MAX_BYTES)
+            if head_output is None or _sha256(head_output) != output_hash:
+                continue
             if _git_bytes(
                     root, "merge-base", "--is-ancestor", commit, "HEAD",
                     max_bytes=0) is None:
