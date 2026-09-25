@@ -707,7 +707,7 @@ def load_resume(pack: MissionPack) -> Dict[str, Any]:
         body = json.loads(pack.resume_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         raise HarnessError(f"resume.json unreadable for mission {pack.id}: {e}") from e
-    return body
+    return validate_resume(body, expected_id=pack.id)
 
 
 def validate_resume(state: Any, *, expected_id: Optional[str] = None) -> Dict[str, Any]:
