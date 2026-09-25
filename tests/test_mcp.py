@@ -1139,6 +1139,26 @@ class JevPhaseToolTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
+    def test_jev_phase_schema_exposes_conditional_local_only_inputs(self):
+        tool = next(tool for tool in TOOL_SCHEMAS
+                    if tool["name"] == "jev_phase")
+        schema = tool["inputSchema"]
+        properties = schema["properties"]
+
+        self.assertEqual(schema["type"], "object")
+        self.assertEqual(set(properties),
+                         {"repo_root", "phase", "all", "min_score"})
+        self.assertEqual(properties["repo_root"]["type"], "string")
+        self.assertEqual(properties["repo_root"]["default"], ".")
+        self.assertEqual(properties["phase"]["type"], "string")
+        self.assertIn("required unless 'all' is set",
+                      properties["phase"]["description"])
+        self.assertEqual(properties["all"]["type"], "boolean")
+        self.assertFalse(properties["all"]["default"])
+        self.assertEqual(properties["min_score"]["type"], "number")
+        self.assertEqual((properties["min_score"]["minimum"],
+                          properties["min_score"]["maximum"]), (0, 100))
+
     def test_jev_phase_one_phase_never_calls_live_jev(self):
         _write_jev_repo(
             self.tmp.name,

@@ -1354,6 +1354,33 @@ class MissionsEndpointTests(ServerHarness):
             self.assertNotIn("jev_evals", summary)
             self.assertNotIn("resume", summary)
 
+    def test_list_skips_corrupt_pack_without_failing_page(self):
+        from harness import mission_record as mr
+
+        os.makedirs(os.path.join(self.root, "m-http-bad"), exist_ok=True)
+        with open(os.path.join(self.root, "m-http-bad", "mission.yaml"),
+                  "w", encoding="utf-8") as stream:
+            stream.write("invalid fixture\n")
+        self._init_pack("m-http-good")
+        load_mission_pack = mr.load_mission_pack
+
+        def load_or_fail(root, mission_id):
+            if mission_id == "m-http-bad":
+                raise HarnessError("corrupt mission pack")
+            return load_mission_pack(root, mission_id)
+
+        with mock.patch.object(mr, "load_mission_pack", side_effect=load_or_fail):
+            conn = self._conn()
+            try:
+                status, data = _request(
+                    conn, "GET", f"/api/missions?root={self.root}")
+            finally:
+                conn.close()
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], 2)
+        self.assertEqual([mission["id"] for mission in data["missions"]],
+                         ["m-http-good"])
+
     def test_list_does_not_load_append_only_histories(self):
         from harness import mission_record as mr
 
