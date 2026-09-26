@@ -26,6 +26,7 @@ from harness.jev_packs import (
     validate_vision_assessment_pack,
     vision_assessment_preflight,
     vision_assessment_question_pack,
+    vision_score_identity_tolerance,
 )
 from harness.jev_policy import policy_for
 from harness.ledger import AutonomyLedger
@@ -218,6 +219,64 @@ class VisionAssessmentPackTests(unittest.TestCase):
         response["answers"]["planning"]["score"] = 0.0
         with self.assertRaisesRegex(ValueError, "differs from its probability"):
             validate_vision_assessment_answers(response["answers"])
+
+    def test_score_identity_tolerance_is_derived_from_declared_precision(self):
+        # DF-JEV-2: the bound comes from the pack's declared output precision,
+        # not a magic epsilon. Four declared levels at two decimals is
+        # 0.005 * (1 + 0+1+2+3) = 0.035.
+        self.assertAlmostEqual(vision_score_identity_tolerance(4, 2), 0.035)
+        # Tighter precision is a tighter bound; it is not a constant.
+        self.assertLess(vision_score_identity_tolerance(4, 4),
+                        vision_score_identity_tolerance(4, 2))
+        # More levels means more weighted terms, so a wider bound.
+        self.assertGreater(vision_score_identity_tolerance(6, 2),
+                           vision_score_identity_tolerance(4, 2))
+        for bad in (True, -1, 1.5):
+            with self.assertRaises(ValueError):
+                vision_score_identity_tolerance(4, bad)
+        with self.assertRaises(ValueError):
+            vision_score_identity_tolerance(1, 2)
+
+    def test_answer_accepts_provider_score_rounded_to_declared_precision(self):
+        # The measured 2026-09-25 live failure: the provider reports the score
+        # at two decimals while its probabilities carry more precision, so
+        # |score - sum(level*p)| is a rounding artefact. This response was
+        # billed, non-fallback, and discarded as unassessed before the fix.
+        response = _response()
+        planning = response["answers"]["planning"]
+        planning["probabilities"] = {
+            "0": 0.0245, "1": 0.0755, "2": 0.1, "3": 0.8}
+        planning["score"] = 2.68  # round(2.6755, 2)
+        self.assertAlmostEqual(
+            sum(int(k) * v for k, v in planning["probabilities"].items()),
+            2.6755, places=6)
+        clean = validate_vision_assessment_answers(response["answers"])
+        self.assertEqual(clean["planning"]["score"], 2.68)
+
+    def test_answer_still_rejects_an_inconsistency_above_the_tolerance(self):
+        # The relaxation must not become a blanket accept: a genuine
+        # distribution/score disagreement is still refused.
+        response = _response()
+        planning = response["answers"]["planning"]
+        planning["probabilities"] = {
+            "0": 0.0245, "1": 0.0755, "2": 0.1, "3": 0.8}
+        # A whole level away from the distribution's expectation of 2.6755.
+        planning["score"] = 1.0
+        with self.assertRaisesRegex(ValueError, "differs from its probability"):
+            validate_vision_assessment_answers(response["answers"])
+
+    def test_pack_declares_the_precision_the_tolerance_derives_from(self):
+        self.assertEqual(
+            DEFAULT_VISION_ASSESSMENT_PACK["score_probability_precision"], 2)
+        bad = json.loads(json.dumps(DEFAULT_VISION_ASSESSMENT_PACK))
+        bad["score_probability_precision"] = 9
+        with self.assertRaisesRegex(ValueError, "score_probability_precision"):
+            validate_vision_assessment_pack(bad)
+        for invalid in (True, -1, 1.5):
+            bad = json.loads(json.dumps(DEFAULT_VISION_ASSESSMENT_PACK))
+            bad["score_probability_precision"] = invalid
+            with self.assertRaisesRegex(ValueError, "score_probability_precision"):
+                validate_vision_assessment_pack(bad)
 
     def test_state_sanitizer_redacts_key_ip_and_home_path(self):
         state = sanitize_vision_state({
@@ -414,6 +473,40 @@ class VisionAssessmentPolicyTests(unittest.TestCase):
         envelope = policy.evaluate_vision_assessment(
             {"assessment": "hourglass"} if state is None else state)
         return envelope, ledger
+
+    def test_live_shaped_rounded_response_is_assessed_not_discarded(self):
+        # DF-JEV-2 end to end: the exact shape the 2026-09-25 pilot received
+        # (billed, non-fallback, usage_source=actual) came back unassessed and
+        # threw the answer away. It must now be a normal assessed call.
+        response = _response()
+        for answer in response["answers"].values():
+            answer["probabilities"] = {
+                "0": 0.0245, "1": 0.0755, "2": 0.1, "3": 0.8}
+            answer["score"] = 2.68  # round(2.6755, 2)
+            answer["confidence"] = 0.9
+        transport = RecordingTransport(response=response)
+        envelope, ledger = self._run(transport, governor=RecordingGovernor())
+        self.assertEqual(envelope.status, "assessed")
+        self.assertEqual(envelope.usage_source, "actual")
+        self.assertEqual(envelope.model, "jev-1.13.0")
+        self.assertEqual(len(envelope.categories), 10)
+        self.assertTrue(all(item.score == 2.68
+                            for item in envelope.categories.values()))
+        self.assertTrue(all(item.selected_level == 3
+                            for item in envelope.categories.values()))
+        # The improvement bucket is chosen from the declared buckets, never
+        # invented: selected level 3 is the top level, so no bucket applies.
+        self.assertTrue(all(item.improvement_bucket is None
+                            for item in envelope.categories.values()))
+        # Perfect is defined as all ten top levels at or above the declared
+        # confidence threshold with no improvement or review bucket -- which
+        # is exactly this response.
+        self.assertTrue(envelope.perfect)
+        self.assertEqual(len(transport.calls), 1)
+        event = ledger.entries()[0]
+        self.assertEqual(event["result_state"], "assessed")
+        self.assertEqual(event["cost_source"], "actual_input")
+        self.assertEqual(event["input_tokens"], 321)
 
     def test_assessment_refuses_to_dispatch_without_ledger(self):
         transport = RecordingTransport()

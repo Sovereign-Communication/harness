@@ -137,6 +137,88 @@ def _stub_policy_factory(count=None, cost=0.001):
     return factory
 
 
+def _discarding_policy_factory(discarded_every=1):
+    """A policy whose calls are billed but whose answers cannot be used.
+
+    DF-JEV-3: this is the shape the 2026-09-25 audit measured -- the call is
+    settled, the keyword matcher supplies the axes, and unless the loss is
+    counted the run reads as clean fallback coverage.
+    """
+    state = {"n": 0}
+
+    class _DiscardingPolicy:
+        def evaluate_repo_summary(self, state_el, pack, task_id=None):
+            state["n"] += 1
+            discarded = state["n"] % discarded_every == 0
+            structural = {"verdict": "fail", "confidence": 0.0,
+                          "supported": 0.0, "cost": 0.0001,
+                          "input_tokens": 1400, "output_tokens": 0,
+                          "is_fallback": True, "model": "jev-test",
+                          "site": "repo_summary",
+                          "discarded": discarded}
+            judgment = {"pack_id": pack["id"],
+                        "axes": {"stage": None, "handling": None},
+                        "axis_confidence": {}, "attention": {},
+                        "nouls": {}, "is_fallback": True,
+                        "evidence": ["invalid TypeSafe response: score"]}
+            result = JevEvaluationResult(
+                "fail", 0.0, 0.0, {}, ["invalid TypeSafe response"],
+                cost=0.0001, input_tokens=1400, output_tokens=0,
+                is_fallback=True, model="jev-test", discarded=discarded)
+            return result, structural, judgment
+
+    return lambda cumulative: _DiscardingPolicy()
+
+
+class BilledButDiscardedCoverageTests(unittest.TestCase):
+    """DF-JEV-3 regression floor at the envelope level."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        _tree(self.tmp.name)
+        self.pack = validate_repo_summary_pack(repo_pack())
+        self.state_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.state_dir.cleanup)
+        self.state_path = os.path.join(self.state_dir.name, "judged.jsonl")
+
+    def test_envelope_reports_its_own_billed_but_discarded_rate(self):
+        env = analyze_repo(self.tmp.name, self.pack,
+                           _discarding_policy_factory(),
+                           state_path=self.state_path, symbol_limit=5,
+                           generated_at="T")
+        judged = env["coverage"]["judged"]
+        discarded = env["coverage"]["billed_but_discarded"]
+        self.assertGreater(discarded, 0)
+        self.assertEqual(discarded, judged)
+        # The loss is priced, not just counted: the operator can see what the
+        # unusable calls cost.
+        self.assertAlmostEqual(env["spend"]["discarded_cost_usd"],
+                               round(0.0001 * judged, 6))
+        self.assertEqual(env["spend"]["discarded_input_tokens"], 1400 * judged)
+        # Cost stays honest: the discarded spend is still inside the total.
+        self.assertAlmostEqual(env["spend"]["cost_usd"],
+                               round(0.0001 * judged, 6))
+        # Discarded rows are fallback rows, never live coverage.
+        self.assertEqual(env["coverage"]["live_judged"], 0)
+        self.assertEqual(env["coverage"]["fallbacks"], judged)
+        # Every persisted row carries the flag, so a resumed run does not lose
+        # the history of what was paid for and thrown away.
+        rows = load_judgment_rows(self.state_path)
+        self.assertEqual(len(rows), judged)
+        self.assertTrue(all(row["discarded"] for row in rows))
+
+    def test_a_clean_run_reports_zero_discarded(self):
+        env = analyze_repo(self.tmp.name, self.pack, _stub_policy_factory(),
+                           state_path=self.state_path, symbol_limit=5,
+                           generated_at="T")
+        self.assertEqual(env["coverage"]["billed_but_discarded"], 0)
+        self.assertEqual(env["spend"]["discarded_cost_usd"], 0.0)
+        self.assertEqual(env["spend"]["discarded_input_tokens"], 0)
+        self.assertIn("billed but discarded: 0 calls",
+                      render_repo_map(env))
+
+
 class AnalyzeRepoTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

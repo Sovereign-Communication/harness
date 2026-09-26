@@ -39,7 +39,7 @@ MAX_CONTEXT_PACK_CHARS = 1200
 # packs/ and is checked against this runtime contract by tests.
 VISION_ASSESSMENT_SITE = "hourglass_vision_assessment"
 VISION_ASSESSMENT_PACK_ID = "harness-hourglass-vision-assessment-v1"
-VISION_ASSESSMENT_PACK_VERSION = "1.0.0"
+VISION_ASSESSMENT_PACK_VERSION = "1.1.0"
 VISION_ASSESSMENT_CONFIDENCE_THRESHOLD = 0.80
 VISION_ASSESSMENT_MAX_REQUEST_TOKENS = 64_000
 VISION_ASSESSMENT_MAX_STATE_QUESTION_TOKENS = 32_000
@@ -90,6 +90,11 @@ DEFAULT_VISION_ASSESSMENT_PACK: Dict[str, Any] = {
     "id": VISION_ASSESSMENT_PACK_ID,
     "version": VISION_ASSESSMENT_PACK_VERSION,
     "confidence_threshold": VISION_ASSESSMENT_CONFIDENCE_THRESHOLD,
+    # DF-JEV-2: the provider reports both `score` and each probability rounded
+    # to this many decimals, so the identity score == sum(level * p) cannot
+    # hold exactly on a real response. Declared here, not hardcoded, so the
+    # tolerance is derived from an operator-visible fact.
+    "score_probability_precision": 2,
     "categories": {
         "modularity": {
             "instructions": "Rate whether Hourglass stages are independently selectable and compose without hidden activation.",
@@ -243,6 +248,11 @@ def validate_vision_assessment_pack(pack: Any) -> Dict[str, Any]:
     if (isinstance(threshold, bool) or not isinstance(threshold, (int, float))
             or not math.isfinite(float(threshold)) or not 0.0 <= threshold <= 1.0):
         raise ValueError("vision pack confidence threshold must be finite in [0, 1]")
+    precision = pack.get("score_probability_precision")
+    if (isinstance(precision, bool) or not isinstance(precision, int)
+            or not 0 <= precision <= 6):
+        raise ValueError(
+            "vision pack score_probability_precision must be 0 to 6 decimals")
     categories = pack.get("categories")
     if not isinstance(categories, dict) or set(categories) != set(DEFAULT_VISION_ASSESSMENT_PACK["categories"]):
         raise ValueError("vision pack must declare exactly the ten fixed categories")
@@ -292,6 +302,36 @@ def vision_assessment_question_pack(pack: Any = None) -> Dict[str, Dict[str, Any
     }
 
 
+def vision_score_identity_tolerance(level_count: int, precision: int) -> float:
+    """Worst-case rounding error of the Score/expectation identity (DF-JEV-2).
+
+    The provider reports ``score`` and every probability rounded to
+    ``precision`` decimals, so the reported score can differ from
+    ``sum(level * p)`` without the model being wrong. Each reported number
+    carries at most half a quantum of error, and the expectation weights the
+    probabilities by their level ordinal, so the bound is one half-quantum for
+    the score plus one half-quantum per weighted term, with the level sum
+    bounded by the worst case of the declared legend 0..L-1.
+
+    The old fixed ``1e-4`` epsilon ignored the provider's output precision
+    entirely and rejected correct live answers: the 2026-09-25 pilot on
+    ``2cf24b5`` returned ``status=unassessed`` with
+    "assessment Score differs from its probability distribution: modularity"
+    from a billed, non-fallback ``jev-1.13.0`` call. This derives the bound
+    from a declared fact instead, and it stays far tighter than a genuine
+    inconsistency: a level or two off is ~1.0, three orders of magnitude
+    above the bound.
+    """
+    if isinstance(precision, bool) or not isinstance(precision, int) or precision < 0:
+        raise ValueError("score precision must be a non-negative integer")
+    if (isinstance(level_count, bool) or not isinstance(level_count, int)
+            or level_count < 2):
+        raise ValueError("a Score legend needs at least two levels")
+    half_quantum = 0.5 * (10.0 ** -precision)
+    level_sum = (level_count - 1) * level_count / 2.0
+    return half_quantum * (1.0 + level_sum)
+
+
 def validate_vision_assessment_answers(answers: Any, pack: Any = None) -> Dict[str, Dict[str, Any]]:
     """Validate every wire Score against the declared legend, atomically."""
     doc = validate_vision_assessment_pack(
@@ -325,7 +365,9 @@ def validate_vision_assessment_answers(answers: Any, pack: Any = None) -> Dict[s
             raise ValueError("assessment probabilities do not sum to one: " + category_id)
         expected_score = sum(int(key) * probability
                              for key, probability in parsed.items())
-        if abs(float(score) - expected_score) > 1e-4:
+        tolerance = vision_score_identity_tolerance(
+            len(spec["levels"]), doc["score_probability_precision"])
+        if abs(float(score) - expected_score) > tolerance:
             raise ValueError(
                 "assessment Score differs from its probability distribution: "
                 + category_id)

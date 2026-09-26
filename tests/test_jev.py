@@ -169,5 +169,93 @@ class JevP0Tests(unittest.TestCase):
                 self.assertEqual(resolve_jev_key(), "test-key")
 
 
+class JevChoiceRecoverabilityTests(unittest.TestCase):
+    """DF-JEV-3: a choice subset is recoverable; an out-of-vocabulary one is not.
+
+    Measured 2026-09-25 over 7,279 keyed calls: the old exact-key-set reject
+    discarded 4.6% of answers overall and 94.1% (48 of 51) on a single axis of
+    seven criteria -- the stricter the declared vocabulary, the more reliably
+    the tool paid for answers it threw away.
+    """
+
+    CRITERIA = {"type": "choice", "instructions": "bucket it",
+                "criteria": {"a": "first", "b": "second", "c": "third",
+                             "d": "fourth", "e": "fifth", "f": "sixth",
+                             "g": "seventh"}}
+
+    def _answer(self, probabilities, choice):
+        return {"model": "jev-1.13.0", "usage": {"input_tokens": 1000,
+                                                "output_tokens": 0},
+                "answers": {"bucket": {"type": "choice", "choice": choice,
+                                       "probabilities": probabilities,
+                                       "confidence": 0.8}}}
+
+    def test_subset_recovers_and_records_unmatched_options_as_none(self):
+        result = JevEvaluator(api_key="key", transport=FakeTransport(
+            response=self._answer({"d": 0.55, "e": 0.45}, "d"))).evaluate(
+                {"x": 1}, {"bucket": self.CRITERIA})
+        self.assertFalse(result.is_fallback)
+        self.assertFalse(result.discarded)
+        self.assertEqual(result.answers["bucket"]["choice"], "d")
+        self.assertEqual(
+            result.answers["bucket"]["unmatched_options"],
+            ["a", "b", "c", "f", "g"])
+        probs = result.answers["bucket"]["probabilities"]
+        self.assertEqual(probs["d"], 0.55)
+        # The omitted options are recorded, never invented.
+        for option in ("a", "b", "c", "f", "g"):
+            self.assertIsNone(probs[option])
+
+    def test_exact_criteria_set_reports_no_unmatched_options(self):
+        result = JevEvaluator(api_key="key", transport=FakeTransport(
+            response=self._answer(
+                {"a": 0.1, "b": 0.1, "c": 0.1, "d": 0.1, "e": 0.1, "f": 0.1,
+                 "g": 0.4}, "g"))).evaluate({"x": 1}, {"bucket": self.CRITERIA})
+        self.assertEqual(result.answers["bucket"]["unmatched_options"], [])
+
+    def test_undeclared_option_is_still_fatal(self):
+        result = JevEvaluator(api_key="key", transport=FakeTransport(
+            response=self._answer({"d": 0.5, "e": 0.3, "zzz": 0.2}, "d"))).evaluate(
+                {"x": 1}, {"bucket": self.CRITERIA})
+        # A shape refusal is a hard fail that never becomes a local fallback.
+        self.assertEqual(result.verdict, "fail")
+        self.assertFalse(result.is_fallback)
+        self.assertTrue(result.discarded)
+        self.assertIn("undeclared options", result.reasons[0])
+
+    def test_subset_that_does_not_normalize_is_still_rejected(self):
+        result = JevEvaluator(api_key="key", transport=FakeTransport(
+            response=self._answer({"d": 0.55, "e": 0.45}, "d"))).evaluate(
+                {"x": 1}, {"bucket": self.CRITERIA})
+        # Sanity: the recoverable path above really does sum to one.
+        probs = result.answers["bucket"]["probabilities"]
+        self.assertAlmostEqual(sum(v for v in probs.values() if v is not None), 1.0)
+        bad = JevEvaluator(api_key="key", transport=FakeTransport(
+            response=self._answer({"d": 0.55, "e": 0.2}, "d"))).evaluate(
+                {"x": 1}, {"bucket": self.CRITERIA})
+        self.assertEqual(bad.verdict, "fail")
+        self.assertFalse(bad.is_fallback)
+        self.assertIn("must sum to 1", bad.reasons[0])
+
+    def test_billed_but_unusable_response_is_marked_discarded_and_still_settled(self):
+        response = self._answer({"d": 0.55, "e": 0.45}, "d")
+        response["answers"]["bucket"]["probabilities"] = {"d": 0.5, "e": 0.9}
+        result = JevEvaluator(api_key="key", transport=FakeTransport(
+            response=response)).evaluate({"x": 1}, {"bucket": self.CRITERIA})
+        self.assertEqual(result.verdict, "fail")
+        # The provider billed it, so the spend is settled honestly...
+        self.assertEqual(result.input_tokens, 1000)
+        self.assertAlmostEqual(result.cost, 1000 * 0.0042 / 1_000_000)
+        # ...and the loss is named instead of degrading silently.
+        self.assertTrue(result.discarded)
+
+    def test_unbilled_failure_is_not_reported_as_discarded(self):
+        result = JevEvaluator(api_key="key", transport=FakeTransport(
+            status=500, response={})).evaluate({"x": 1}, {"bucket": self.CRITERIA})
+        self.assertEqual(result.verdict, "fail")
+        self.assertFalse(result.discarded)
+        self.assertEqual(result.cost, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

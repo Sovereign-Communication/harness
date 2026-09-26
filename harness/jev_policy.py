@@ -173,6 +173,9 @@ class JevPolicy:
             "is_fallback": result.is_fallback,
             "model": result.model,
             "site": site,
+            # DF-JEV-3: a billed call whose answer could not be used. Carried
+            # in the structural envelope so a run can total its own losses.
+            "discarded": bool(result.discarded),
         }
 
     def _record_refusal(self, reason: str, *, site: str,
@@ -1594,7 +1597,7 @@ class JevPolicy:
 
         def fallback_judgment(reasons, *, model=None, cost=0.0,
                               input_tokens=0, output_tokens=0,
-                              reservation=None):
+                              reservation=None, discarded=False):
             axes = heuristic_repo_axes(text, pack_doc)
             matched = any(v for v in axes.values())
             evidence = list(reasons or []) + [
@@ -1605,7 +1608,7 @@ class JevPolicy:
                 {"axes": axes}, evidence,
                 cost=cost, input_tokens=input_tokens,
                 output_tokens=output_tokens, is_fallback=True,
-                model=model or self.evaluator.model)
+                model=model or self.evaluator.model, discarded=discarded)
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id,
                 reservation=reservation)
@@ -1631,14 +1634,17 @@ class JevPolicy:
         answers = result.answers if isinstance(result.answers, dict) else {}
         if result.is_fallback or not answers:
             # Transport fail or shape-invalid response: never present a
-            # heuristic classification as a live one.
+            # heuristic classification as a live one. ``discarded`` rides
+            # through so the run can report the paid calls it could not use
+            # (DF-JEV-3) instead of presenting them as clean fallback rows.
             return fallback_judgment(
                 list(result.reasons or ["invalid TypeSafe response"]),
                 model=result.model,
                 cost=float(result.cost or 0.0),
                 input_tokens=int(result.input_tokens or 0),
                 output_tokens=int(result.output_tokens or 0),
-                reservation=reservation)
+                reservation=reservation,
+                discarded=bool(result.discarded))
 
         axes: Dict[str, Optional[str]] = {}
         axis_confidence: Dict[str, Optional[float]] = {}

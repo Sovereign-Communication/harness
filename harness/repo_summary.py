@@ -108,6 +108,10 @@ def _row_for(element: Dict[str, Any], structural: Dict[str, Any],
                       "confidence": attention.get("confidence")},
         "nouls": dict(judgment.get("nouls") or {}),
         "is_fallback": bool(judgment.get("is_fallback")),
+        # DF-JEV-3: this element's answer was billed and could not be used, so
+        # its axes came from the keyword matcher instead of the model. Never
+        # smoothed into live coverage.
+        "discarded": bool(structural.get("discarded")),
         "cost": float(structural.get("cost") or 0.0),
         "input_tokens": int(structural.get("input_tokens") or 0),
         "output_tokens": int(structural.get("output_tokens") or 0),
@@ -228,6 +232,11 @@ def aggregate_repo_summary(*, rows, pending_ids, pack_doc, elements, symbols,
     live = fallbacks = 0
     ambiguous_count = 0
     spend_cost = spend_input = spend_output = calls = 0
+    # DF-JEV-3: paid calls whose answer could not be used. Counted separately
+    # from `fallbacks` because a discarded row looks identical to any other
+    # fallback row unless the loss is reported explicitly.
+    discarded_calls = 0
+    discarded_cost = discarded_input = 0
     # spend_output sums the policy's structural output_tokens (free, but
     # reported honestly rather than assumed zero)
     element_rows: List[Dict[str, Any]] = []
@@ -262,6 +271,10 @@ def aggregate_repo_summary(*, rows, pending_ids, pack_doc, elements, symbols,
             fallbacks += 1
         else:
             live += 1
+        if row.get("discarded"):
+            discarded_calls += 1
+            discarded_cost += float(row.get("cost") or 0.0)
+            discarded_input += int(row.get("input_tokens") or 0)
         if row.get("ambiguous"):
             ambiguous_count += 1
         spend_cost += float(row.get("cost") or 0.0)
@@ -292,6 +305,7 @@ def aggregate_repo_summary(*, rows, pending_ids, pack_doc, elements, symbols,
             "pending_sample": pending_ids[:20],
             "live_judged": live,
             "fallbacks": fallbacks,
+            "billed_but_discarded": discarded_calls,
             "ambiguous": ambiguous_count,
             "prior_rows": prior_count,
             "judged_this_run": this_run,
@@ -304,6 +318,8 @@ def aggregate_repo_summary(*, rows, pending_ids, pack_doc, elements, symbols,
             "input_tokens": spend_input,
             "output_tokens": spend_output,
             "calls": calls,
+            "discarded_cost_usd": round(discarded_cost, 6),
+            "discarded_input_tokens": discarded_input,
             "ledger_site": REPO_SUMMARY_SITE,
         },
         "axes": axes_tally,
@@ -357,6 +373,13 @@ def render_repo_map(envelope: Dict[str, Any]) -> str:
         f"- every keyed call was preflighted, settled, and appended to the "
         f"autonomy ledger at site=`{spend.get('ledger_site')}` "
         f"(`harness ledger verify` proves the chain)",
+        # DF-JEV-3: never let a paid call that produced nothing read as clean
+        # coverage. The line is absent-free: it states 0 when there were none.
+        f"- billed but discarded: {coverage.get('billed_but_discarded', 0)} calls "
+        f"(${spend.get('discarded_cost_usd', 0.0):.6f}, "
+        f"{spend.get('discarded_input_tokens', 0)} input tokens) were settled "
+        f"but their answers could not be used; those rows are fallback rows, "
+        f"not live coverage",
         f"- markers: **[fallback]** = keyword fallback (never presented as "
         f"live) | **[?]** = an axis below {AMBIGUOUS_CONFIDENCE} confidence "
         f"(near-tie; the seat may flip it run to run)",
