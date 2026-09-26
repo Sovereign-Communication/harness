@@ -633,6 +633,235 @@ def answer_question_pack() -> Dict[str, Dict[str, Any]]:
     }
 
 
+# Stable metadata for the answer-loop contract.  The values are deliberately
+# separate: ``answer_sufficient`` is evidence of alignment, while the two
+# action nouls are advisory signals that code turns into a bounded transition.
+ANSWER_PACK_VERSION = "answer-sufficiency-v1"
+
+
+# --------------------------------------------------------------------------
+# HV-1 -- selectable stage-specific Jev integrations.
+#
+# One versioned pack declares every Hourglass judgment point as a named
+# DIMENSION with its own typed questions.  The contract is deliberately
+# narrow and uniform:
+#
+# - the operator declares the dimensions and, for ``restart_target``, the
+#   complete set of selectable targets; Jev may only return a declared key;
+# - every signal is a typed noul/choice read through the official shapes, so
+#   a malformed or unkeyed result is ``None`` -- reported, never smoothed;
+# - Jev RECOMMENDS. ``validate_restart_request`` (code) decides whether the
+#   recommendation is an allowed transition, preserves completed work, and
+#   forces consent renewal when the assignment changed;
+# - a fallback, transport failure, or malformed response is never promoted
+#   to a native judgment, and never a completion or readiness signal.
+# --------------------------------------------------------------------------
+HOURGLASS_STAGE_PACK_ID = "harness-hourglass-stage-v1"
+HOURGLASS_STAGE_PACK_VERSION = "hourglass-stage-v1"
+HOURGLASS_STAGE_SITE = "hourglass_stage"
+
+# The ONLY stages a restart may target.  Declared once, reused by the pack
+# validator, the question pack, and the code-owned transition guard, so the
+# three can never drift into disagreeing about the vocabulary.
+HOURGLASS_STAGES = ("context", "planning", "execution")
+
+# Order matters: a restart is a walk back down this list, never forward.
+HOURGLASS_STAGE_ORDER = {name: index for index, name in enumerate(
+    HOURGLASS_STAGES)}
+
+HOURGLASS_STAGE_DIMENSIONS: Dict[str, Dict[str, Any]] = {
+    "context_intake": {
+        "description": "Is the retained context relevant, sufficient, and conflict-free?",
+        "signals": (
+            "context_relevant",
+            "context_coverage_sufficient",
+            "context_conflict_present",
+        ),
+        "questions": {
+            "context_relevant": _noul(
+                "Is the retained context relevant to the stated request?",
+                "The retained context bears directly on the request.",
+                "The retained context is off-topic for the request."),
+            "context_coverage_sufficient": _noul(
+                "Does the retained context cover the request well enough to act on?",
+                "The retained context covers what acting on the request needs.",
+                "The retained context is missing material needed for the request."),
+            "context_conflict_present": _noul(
+                "Does the retained context contain conflicting or contradictory facts?",
+                "The retained context contains conflicting or contradictory facts.",
+                "The retained context is internally consistent."),
+        },
+    },
+    "plan_soundness": {
+        "description": "Is the plan sound, and does it need a bounded evidence request?",
+        "signals": (
+            "plan_sound",
+            "plan_evidence_requested",
+        ),
+        "questions": {
+            "plan_sound": _noul(
+                "Is the proposed plan a sound way to achieve the stated goal?",
+                "The plan is a sound route to the goal with no unsafe step.",
+                "The plan is unsound, incomplete, or contains an unsafe step."),
+            "plan_evidence_requested": _noul(
+                "Does the plan need additional evidence before it can be trusted?",
+                "Additional bounded evidence is required before the plan is trusted.",
+                "The plan can proceed on the evidence already supplied."),
+        },
+    },
+    "execution": {
+        "description": "Is this work package suitable to execute, and does it need a checkpoint?",
+        "signals": (
+            "execution_suitable",
+            "checkpoint_required",
+        ),
+        "questions": {
+            "execution_suitable": _noul(
+                "Is this work package well-specified enough to execute now?",
+                "The package is sufficiently specified to execute as written.",
+                "The package is underspecified or unsafe to execute as written."),
+            "checkpoint_required": _noul(
+                "Should execution stop at a human checkpoint before continuing?",
+                "Execution should pause for a human checkpoint before continuing.",
+                "Execution can continue without a human checkpoint."),
+        },
+    },
+    "consent": {
+        "description": "Is consent still fresh, and should this defer or escalate?",
+        "signals": (
+            "consent_fresh",
+            "consent_defer_required",
+            "escalation_justified",
+        ),
+        "questions": {
+            "consent_fresh": _noul(
+                "Does the recorded consent still cover the exact assignment, "
+                "context, selected model, and limits now proposed?",
+                "The recorded consent still covers this exact assignment.",
+                "The consent does not cover this exact assignment and must be renewed."),
+            "consent_defer_required": _noul(
+                "Should this assignment be deferred rather than dispatched?",
+                "The assignment should be deferred; dispatch is not appropriate now.",
+                "The assignment may proceed without deferral."),
+            "escalation_justified": _noul(
+                "Is escalation to a more capable rung justified for this step?",
+                "Escalation is justified because the current rung cannot succeed.",
+                "Escalation is not justified; the current rung is adequate."),
+        },
+    },
+    "restart_target": {
+        "description": "Which declared stage should the workflow restart from?",
+        "signals": ("restart_target",),
+        "questions": {
+            "restart_target": {
+                "type": "choice",
+                "instructions": (
+                    "Which stage should the workflow restart from to make "
+                    "progress on the original request?"),
+                "criteria": {name: (
+                    "Restart from {0}: the {0} stage is where the remaining "
+                    "gap originates.".format(name)) for name in HOURGLASS_STAGES},
+            },
+        },
+    },
+}
+
+
+def hourglass_stage_question_pack(
+        dimension: Any) -> Dict[str, Dict[str, Any]]:
+    """Return the typed questions for ONE declared stage dimension.
+
+    An unknown dimension is a hard error: a caller may not invent an
+    integration, and Jev may not be asked a question this pack does not
+    declare (the 0-hallucination rule every other site obeys).
+    """
+    if not isinstance(dimension, str) or dimension not in HOURGLASS_STAGE_DIMENSIONS:
+        raise ValueError(
+            "unknown hourglass stage dimension: " + repr(dimension))
+    spec = HOURGLASS_STAGE_DIMENSIONS[dimension]
+    return copy.deepcopy(spec["questions"])
+
+
+def declared_restart_targets() -> List[str]:
+    """The complete, operator-declared restart vocabulary."""
+    return list(HOURGLASS_STAGES)
+
+
+def normalize_restart_target(value: Any) -> Optional[str]:
+    """Return a declared restart target, or None when it is not one.
+
+    Out-of-vocabulary values are reported as None, never snapped to the
+    nearest declared stage and never invented.
+    """
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().lower().replace("_", "-").replace(" ", "-")
+    return cleaned if cleaned in HOURGLASS_STAGE_ORDER else None
+
+
+def validate_restart_request(current_stage: Any, requested_target: Any, *,
+                             completed_stages: Optional[Any] = None,
+                             consent_fresh: Optional[bool] = None) -> Dict[str, Any]:
+    """Code-owned guard for a Jev-recommended restart (HV-1).
+
+    Jev recommends a declared target; THIS function decides whether the
+    transition is allowed.  It never trusts a recommendation into an action,
+    and it never discards completed work:
+
+    - the target must be a declared stage, else ``allowed=False``;
+    - a restart may not re-enter a stage that is already recorded complete --
+      completed work and its evidence are preserved, so the operator resumes
+      rather than repeating;
+    - a forward move (execution -> nothing later) is not a restart and is
+      refused; the workflow may only walk back down
+      context -> planning -> execution;
+    - when consent is known stale (``consent_fresh=False``) the restart is
+      permitted but ``consent_renewal_required`` is set, because a changed
+      assignment must re-derive consent before any dispatch.
+
+    Returns a typed decision dict; it never raises, so a caller can report
+    the refusal instead of crashing a run.
+    """
+    reasons: List[str] = []
+    target = normalize_restart_target(requested_target)
+    current = normalize_restart_target(current_stage)
+    if target is None:
+        return {
+            "allowed": False,
+            "target": None,
+            "current_stage": current,
+            "consent_renewal_required": False,
+            "preserved_stages": list(completed_stages or []),
+            "reasons": ["restart target is not a declared stage: "
+                        + repr(requested_target)],
+        }
+    done = [normalize_restart_target(stage) for stage in (completed_stages or [])]
+    preserved = [stage for stage in done if stage is not None]
+    consent_renewal = consent_fresh is False
+
+    if current is not None and HOURGLASS_STAGE_ORDER[target] >= \
+            HOURGLASS_STAGE_ORDER[current]:
+        reasons.append(
+            "restart target {0} is not earlier than the current stage {1}"
+            .format(target, current))
+    if target in preserved:
+        reasons.append(
+            "restart target {0} is already recorded complete; its work and "
+            "evidence are preserved and the run resumes instead".format(target))
+    if consent_renewal:
+        reasons.append(
+            "consent no longer covers this assignment and must be renewed "
+            "before any dispatch")
+    return {
+        "allowed": not reasons,
+        "target": target,
+        "current_stage": current,
+        "consent_renewal_required": consent_renewal,
+        "preserved_stages": preserved,
+        "reasons": reasons,
+    }
+
+
 def normalize_route(value: Any) -> Optional[str]:
     """Return a vocabulary route id, or None when the value is not a route."""
     if not isinstance(value, str):

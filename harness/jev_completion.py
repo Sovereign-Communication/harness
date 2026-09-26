@@ -305,6 +305,19 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "required_tests": ["tests/test_jev_bar_sentiment.py"],
         "required_files": ["packs/phase_completion.pack.json", "harness/jev_completion.py"],
     },
+    "HV-1": {
+        # The row must cite a real merged PR before the phase can pass.
+        "pr_pattern": None,
+        "required_tests": [
+            "tests/test_hourglass_jev_integrations.py",
+            "tests/test_jev_answer_lifecycle.py",
+        ],
+        "required_files": [
+            "harness/jev_packs.py",
+            "harness/jev_policy.py",
+        ],
+        "user_facing": False,
+    },
     "HV-0": {
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,
@@ -688,6 +701,7 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         "HG": re.compile(r"HG-\*|hourglass composition", re.I),
         "JEV-BAR": re.compile(r"JEV-BAR", re.I),
         "HV-0": re.compile(r"\bHV-0\b|vision-assessment pilot|vision assessment", re.I),
+        "HV-1": re.compile(r"\bHV-1\b|stage-specific JEV integration", re.I),
         "CLAUDE-LANE": re.compile(r"CLAUDE-LANE", re.I),
         "OC-HANDOFF": re.compile(r"OC-HANDOFF", re.I),
     }
