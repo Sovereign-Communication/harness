@@ -28,28 +28,19 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# No provider/service brand strings are hardcoded here: the endpoint the
-# adapter talks to is always resolved from config or environment, in this
-# order: explicit constructor args > config file > env vars > loopback
-# default. The default is a *local* fallback (not a brand), matching the
-# `media serve` quickstart in docs/media.md.
-DEFAULT_BASE = os.environ.get("MEDIA_BASE_URL", "http://127.0.0.1:8765")
-CONFIG_PATH = os.environ.get(
-    "MEDIA_CONFIG_PATH",
-    os.path.join(os.path.expanduser("~"), ".config", "harness", "media.json"),
-)
+DEFAULT_BASE = "http://127.0.0.1:8765"
+CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".config", "harness", "media.json")
 
 
 def _load_endpoint():
-    env_token = os.environ.get("MEDIA_TOKEN")
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, encoding="utf-8") as f:
                 cfg = json.load(f)
-            return cfg.get("base_url", DEFAULT_BASE), cfg.get("token") or env_token
+            return cfg.get("base_url", DEFAULT_BASE), cfg.get("token")
         except (OSError, ValueError):
             pass
-    return DEFAULT_BASE, env_token
+    return DEFAULT_BASE, os.environ.get("MEDIA_TOKEN")
 
 
 class MediaUnavailable(Exception):
@@ -57,14 +48,11 @@ class MediaUnavailable(Exception):
 
 
 class MediaAdapter:
-    def __init__(self, base_url=None, token=None, timeout=60, opener=None):
+    def __init__(self, base_url=None, token=None, timeout=60):
         base, env_token = _load_endpoint()
         self.base = (base_url or base).rstrip("/")
         self.token = token or env_token
         self.timeout = timeout
-        # Injectable transport seam for hermetic tests: defaults to the real
-        # urllib opener, but tests pass a fake so nothing touches the network.
-        self._opener = opener or urllib.request.urlopen
 
     # ---- transport ----
 
@@ -76,23 +64,20 @@ class MediaAdapter:
         req = urllib.request.Request(self.base + path, data=data, method=method,
                                      headers=headers)
         try:
-            with self._opener(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             try:
-                try:
-                    err = json.loads(e.read().decode("utf-8"))
-                except Exception:
-                    err = {"error": "HTTP {}".format(e.code)}
-            finally:
-                e.close()
+                err = json.loads(e.read().decode("utf-8"))
+            except Exception:
+                err = {"error": f"HTTP {e.code}"}
             if err.get("error") == "budget_refused":
                 return {"status": "refused", "error": err.get("message"),
                         "math": err.get("math")}
             raise MediaUnavailable(str(err.get("error") or err)) from e
         except (urllib.error.URLError, OSError) as e:
             raise MediaUnavailable(
-                "media service unreachable at {} ({}). Start it with: media serve".format(self.base, e)
+                f"media service unreachable at {self.base} ({e}). Start it with: media serve"
             ) from e
 
     # ---- core API ----
@@ -117,23 +102,23 @@ class MediaAdapter:
         import time
         deadline = time.time() + timeout
         while time.time() < deadline:
-            job = self._request("GET", "/v1/jobs/{}".format(job_id))
+            job = self._request("GET", f"/v1/jobs/{job_id}")
             if job.get("status") in ("succeeded", "failed", "refused"):
                 return self._envelope(job)
             time.sleep(interval)
         return {"status": "timeout", "job_id": job_id}
 
     def job(self, job_id):
-        return self._envelope(self._request("GET", "/v1/jobs/{}".format(job_id)))
+        return self._envelope(self._request("GET", f"/v1/jobs/{job_id}"))
 
     def jobs(self, project=None, limit=20):
-        q = "/v1/jobs?limit={}".format(int(limit))
+        q = f"/v1/jobs?limit={int(limit)}"
         if project:
-            q += "&project={}".format(urllib.parse.quote(project))
+            q += f"&project={urllib.parse.quote(project)}"
         return [self._envelope(j) for j in self._request("GET", q).get("jobs", [])]
 
     def balance(self, project=None):
-        path = "/v1/balance" + ("?project={}".format(urllib.parse.quote(project)) if project else "")
+        path = "/v1/balance" + (f"?project={urllib.parse.quote(project)}" if project else "")
         return self._request("GET", path)
 
     @staticmethod
@@ -162,14 +147,10 @@ def run_cli(args, settings=None):
     ap = argparse.ArgumentParser(prog="harness media")
     sub = ap.add_subparsers(dest="media_cmd", required=True)
 
-    # --provider/--model are free strings: the provider catalog (openai,
-    # google, higgsfield, fal, replicate, luma, ...) lives service-side in
-    # sovereign-media, not hardcoded here — harness never brand-ladders
-    # media providers in code.
     p = sub.add_parser("image")
     p.add_argument("prompt")
     p.add_argument("--project", default="default")
-    p.add_argument("--provider", default=None)
+    p.add_argument("--provider", default=None, choices=["openai", "google"])
     p.add_argument("--model", default=None)
     p.add_argument("--size", default=None)
     p.add_argument("--quality", default=None, choices=["low", "medium", "high"])
@@ -179,7 +160,7 @@ def run_cli(args, settings=None):
     p = sub.add_parser("video")
     p.add_argument("prompt")
     p.add_argument("--project", default="default")
-    p.add_argument("--provider", default=None)
+    p.add_argument("--provider", default=None, choices=["openai", "google"])
     p.add_argument("--model", default=None)
     p.add_argument("--seconds", type=int, default=None)
     p.add_argument("--no-wait", action="store_true")
@@ -204,15 +185,15 @@ def run_cli(args, settings=None):
             env.get("model"), env.get("project")))
         est = env.get("cost_estimate") or {}
         if est:
-            print("  estimate: ${:.4f} - ${:.4f}".format(est.get("low", 0), est.get("high", 0)))
+            print(f"  estimate: ${est.get('low', 0):.4f} - ${est.get('high', 0):.4f}")
         if env.get("cost") is not None:
-            print("  cost:     ${:.4f}".format(env["cost"]))
+            print(f"  cost:     ${env['cost']:.4f}")
         for a in env.get("artifacts") or []:
-            print("  artifact: {}".format(a))
+            print(f"  artifact: {a}")
         if env.get("error"):
-            print("  error:    {}".format(env["error"]))
+            print(f"  error:    {env['error']}")
         if env.get("math"):
-            print("  math:     {}".format(json.dumps(env["math"], sort_keys=True)))
+            print(f"  math:     {json.dumps(env['math'], sort_keys=True)}")
 
     try:
         if opts.media_cmd == "image":
@@ -241,6 +222,6 @@ def run_cli(args, settings=None):
             return 0
     except MediaUnavailable as e:
         # defer-style honest failure: state the reason, spend nothing
-        print("[defer] media: {}".format(e), file=sys.stderr)
+        print(f"[defer] media: {e}", file=sys.stderr)
         return 4
     return 2

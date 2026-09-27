@@ -5,67 +5,6 @@
     "SM": 10.0,
     "SD": 10.0
   },
-  "jev_scores": {
-    "A": 10.0,
-    "R": 10.0,
-    "SM": 10.0,
-    "SD": 10.0
-  },
-  "jev_gate_pass": true,
-  "jev_eval": {
-    "dimensions": {
-      "A": {
-        "name": "Security",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
-        "evaluated": true
-      },
-      "R": {
-        "name": "Reliability",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
-        "evaluated": true
-      },
-      "SM": {
-        "name": "Structural hygiene & maintainability",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
-        "evaluated": true
-      },
-      "SD": {
-        "name": "Documentation & release integrity",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.96,
-        "evaluated": true
-      }
-    },
-    "scores": {
-      "A": 10.0,
-      "R": 10.0,
-      "SM": 10.0,
-      "SD": 10.0
-    },
-    "bar_95_pass": true,
-    "min_score": 10.0,
-    "is_fallback": false,
-    "reasons": [],
-    "model": "jev-1.13.0",
-    "cost": 5.5565999999999995e-06,
-    "input_tokens": 1323,
-    "output_tokens": 60
-  },
   "checks": {
     "A": [
       {
@@ -144,7 +83,7 @@
         "id": "A13",
         "label": "hard config ceilings + fail-clean load",
         "score": 1.0,
-        "evidence": "11 numeric settings range-validated; hard ceilings enforced in load_settings; unknown keys warned; load inside CLI try"
+        "evidence": "9 numeric settings range-validated; hard ceilings enforced in load_settings; unknown keys warned; load inside CLI try"
       }
     ],
     "R": [
@@ -212,7 +151,7 @@
         "id": "R11",
         "label": "config validation ranges + unknown-key warning",
         "score": 1.0,
-        "evidence": "range-validated: ['apply_max_tokens', 'max_cost', 'max_panelists', 'max_rotations', 'max_tokens', 'mcp_tool_timeout', 'min_confidence', 'reasoning_token_budget', 'task_max_cost', 'token_budget_input', 'token_budget_output']; unknown-key warning present"
+        "evidence": "range-validated: ['apply_max_tokens', 'max_cost', 'max_panelists', 'max_rotations', 'max_tokens', 'mcp_tool_timeout', 'min_confidence', 'reasoning_token_budget', 'task_max_cost']; unknown-key warning present"
       },
       {
         "id": "R12",
@@ -224,7 +163,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 2163 tests in 235.821s\n\nOK"
+        "evidence": "unittest: Ran 1882 tests in 240.933s\n\nOK"
       },
       {
         "id": "R14",
@@ -268,7 +207,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "73/73 modules imported by tests"
+        "evidence": "72/72 modules imported by tests"
       },
       {
         "id": "S7",
@@ -288,7 +227,7 @@
         "id": "D1",
         "label": "MCP tool parity with README",
         "score": 1.0,
-        "evidence": "README documents all 15 MCP tools, no stale names"
+        "evidence": "README documents all 12 MCP tools, no stale names"
       },
       {
         "id": "D2",
@@ -306,7 +245,7 @@
         "id": "D4",
         "label": "config table keys real",
         "score": 1.0,
-        "evidence": "24 README config keys all resolve to real settings (44 configurable)"
+        "evidence": "24 README config keys all resolve to real settings (42 configurable)"
       },
       {
         "id": "D5",
@@ -324,7 +263,7 @@
         "id": "D7",
         "label": "docs reference only real modules",
         "score": 1.0,
-        "evidence": "all module references across 27 docs resolve to real files"
+        "evidence": "all module references across 25 docs resolve to real files"
       },
       {
         "id": "D8",
@@ -354,7 +293,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed"
+        "evidence": "no executable harness changes since the coverage baseline e1edf767da"
       }
     ]
   }

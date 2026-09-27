@@ -28,12 +28,7 @@ import subprocess
 import tempfile
 import time
 from .consent import probe_consent
-from .config import (
-    DEFAULT_MAX_COST,
-    HARD_MAX_COST,
-    load_vision_preflight_settings,
-    resolve_hourglass,
-)
+from .config import resolve_hourglass
 from .errors import HarnessError
 from .spend import discover_free_models
 from .filesafety import VERIFY_TIMEOUT, validate_target_file, validate_verify_command
@@ -53,15 +48,8 @@ from .waist import compose_plan as _compose_plan
 from .jev import jev_cost
 from .jev_policy import JEV_MAX_INPUT_TOKENS, aggregate_structural, policy_for
 from .jev_completion import dogfood_phase, score_all_phases
-from .jev_packs import (
-    VISION_ASSESSMENT_PACK_ID,
-    VISION_ASSESSMENT_PACK_VERSION,
-    build_vision_assessment_state,
-    validate_log_pack,
-    validate_operator_pack,
-    validate_repo_summary_pack,
-    vision_assessment_preflight,
-)
+from .jev_packs import (validate_log_pack, validate_operator_pack,
+                        validate_repo_summary_pack)
 from .repo_summary import analyze_repo as _repo_analyze
 from .repo_summary import render_repo_map as _repo_render_map
 from .repo_summary import write_envelope as _repo_write_envelope
@@ -77,7 +65,6 @@ from .pyramid_state import (
     dag_for_pending, load_state, node_routes_for_pending, persist_state)
 from .results import terminal_exit_code
 from .saturation import advise
-from .validation import finite_number
 import sys
 import uuid
 
@@ -198,7 +185,6 @@ def _cmd_verify(opts, settings):
         max_tokens=opts.max_tokens, reasoning_effort=opts.reasoning_effort,
         converge=opts.converge, judge=opts.judge,
         convergence_model=opts.convergence_model,
-        panel=(_split_opt_list(opts.panel) if opts.panel else None),
         specialist_pool=(_split_opt_list(opts.specialist_pool)
                          if opts.specialist_pool else None),
         reassurance_claims=opts.reassurance_claims, max_cost=opts.max_cost)
@@ -358,10 +344,6 @@ def _cmd_brief(opts, settings=None):
     if opts.validate:
         out["grounding_issues"] = validate_brief(pack)
         out["ok"] = not out["grounding_issues"]
-    # The ONE exit-code policy needs a terminal status; without it this face
-    # raised KeyError('status') on every run, and `--validate` had no way to
-    # report a failed grounding lint as anything but a crash.
-    out["status"] = "ok" if out.get("ok", True) else "incomplete"
     _emit_by_status(out, opts.out)
 
 
@@ -514,18 +496,6 @@ def _cmd_log_judgment(opts, settings):
         log_text, pack, jev_policy,
         info_sample=int(getattr(opts, "info_sample", 0) or 0),
     )
-    # Honest silence check: a log dump that has lines but extracted zero
-    # items almost always means the header format didn't match the
-    # expected `tracing` shape (--help documents it), not that the run
-    # genuinely saw no WARN/ERROR -- flag it instead of emitting a
-    # quietly-empty analysis that looks like a clean log.
-    if (analysis.get("coverage", {}).get("total_items") == 0
-            and log_text.strip()):
-        eprint("[log-judgment] read {} line(s) but matched 0 log items; "
-               "check the log header format matches "
-               "'<ISO-8601 ts>Z  LEVEL module::path: message' "
-               "(see `harness log-judgment --help`)"
-               .format(len(log_text.splitlines())))
     if getattr(opts, "save_to", None):
         _log_write_analysis(analysis, opts.save_to)
     _emit(analysis, opts.out)
@@ -772,50 +742,6 @@ def _cmd_cost(opts, settings):
     _emit(report, opts.out)
 
 
-# DF-HUL-2: the CLI's default attempt seat (harness.mission_driver's code-
-# owned pack probe) makes no model call and spends nothing. It is
-# deliberately unkeyed/local-only -- CLI `mission run` / `mission resume
-# --run` never dispatch a paid model. A caller that wants a paid attempt
-# seat is a *library* caller: inject a callable into
-# ``harness.mission_driver.run_mission(..., attempt_fn=...)`` yourself, for
-# example one built from ``harness.session.apply_session`` / ``engine_for``
-# (resolves models through the existing Router/pool ladders -- no second
-# model client, no brand strings here). See README.md "CLI" / `harness
-# mission --help`.
-_MISSION_ATTEMPT_SEAT_NOTE = (
-    "attempt seat: unkeyed/local-only pack probe "
-    "(harness.mission_driver.pack_probe_attempt); no model call, no spend. "
-    "CLI `mission run`/`mission resume --run` cannot select a paid seat. "
-    "Library callers get one by injecting attempt_fn into "
-    "harness.mission_driver.run_mission (e.g. an apply-lane callable from "
-    "harness.session.apply_session, routed via the existing Router/ladders)."
-)
-
-
-def _run_mission_driver(pack, opts):
-    """Shared HUL-D driver call for `mission run` and `mission resume --run`
-    (DF-HUL-3: one driver, no second loop). Adds the CLI attempt-seat note
-    (DF-HUL-2) to the returned summary."""
-    run_settings = load_settings()
-    run_settings.jev_api_key = None
-    try:
-        scope_policy = policy_for(run_settings)
-    except HarnessError:
-        scope_policy = None
-    stall_limit = getattr(opts, "stall_limit", None)
-    result = _mission_run(
-        pack,
-        attempt_fn=_mission_pack_probe,
-        scope_policy=scope_policy,
-        stall_limit=int(stall_limit) if stall_limit else 5,
-        max_attempts=getattr(opts, "max_attempts", None),
-        max_tokens=getattr(opts, "max_tokens", None),
-        max_errors=getattr(opts, "max_errors", None),
-    )
-    result["attempt_seat"] = _MISSION_ATTEMPT_SEAT_NOTE
-    return result
-
-
 def _cmd_mission(opts, settings):
     """HUL-A/D mission pack CLI: init | status | resume | findings | run."""
     from . import mission_record as mr
@@ -840,7 +766,22 @@ def _cmd_mission(opts, settings):
     if cmd == "run":
         # HUL-D until-limits driver. CLI scope seat unkeyed by default.
         pack = mr.load_mission_pack(opts.root, opts.mission_id)
-        result = _run_mission_driver(pack, opts)
+        run_settings = load_settings()
+        run_settings.jev_api_key = None
+        try:
+            scope_policy = policy_for(run_settings)
+        except HarnessError:
+            scope_policy = None
+        stall_limit = getattr(opts, "stall_limit", None)
+        result = _mission_run(
+            pack,
+            attempt_fn=_mission_pack_probe,
+            scope_policy=scope_policy,
+            stall_limit=int(stall_limit) if stall_limit else 5,
+            max_attempts=getattr(opts, "max_attempts", None),
+            max_tokens=getattr(opts, "max_tokens", None),
+            max_errors=getattr(opts, "max_errors", None),
+        )
         _emit(result, opts.out)
         return
     pack = mr.load_mission_pack(opts.root, opts.mission_id)
@@ -850,33 +791,13 @@ def _cmd_mission(opts, settings):
         _emit(mr.pack_summary(pack), opts.out)
         return
     if cmd == "resume":
-        # DF-HUL-3: plain `mission resume` stays a read-only status call
-        # (it never mutates progress) but is honest that it did not
-        # continue anything and says how to. `--run` continues the SAME
-        # HUL-D until-limits driver `mission run` uses (no second loop).
-        if getattr(opts, "run", False):
-            terminal_before = mr.is_terminal(pack)
-            result = _run_mission_driver(pack, opts)
-            result["resumed"] = not terminal_before
-            _emit(result, opts.out)
-            return
         state = mr.load_resume(pack)
         validated = mr.validate_resume(state, expected_id=pack.id)
         mr.write_resume(pack, validated)
         mr.write_status(pack)
         out = mr.pack_summary(pack)
         out["resume"] = validated
-        resumable = validated["status"] not in ("terminal", "complete", "failed")
-        out["resumable"] = resumable
-        out["resumed"] = False
-        out["how_to_continue"] = (
-            f"read-only status only -- nothing was continued; pass --run to "
-            f"continue the until-limits driver from resume.json "
-            f"(harness mission resume --id {pack.id} --root {opts.root} --run)"
-        ) if resumable else (
-            "mission is already terminal; resume --run will not continue it "
-            "(see mission findings for the terminal outcome)"
-        )
+        out["resumable"] = validated["status"] not in ("terminal", "complete", "failed")
         _emit(out, opts.out)
         return
     if cmd == "findings":
@@ -955,8 +876,7 @@ def _capabilities_payload(settings, gov, api_key=None, refresh=False,
 
 def _plan_compose(settings, opts, gov, transport, api_key, *,
                   candidate_files, frontier_model, execute, confirm=None,
-                  decompose_llm=None, plan_consensus=None, hourglass=None,
-                  allow_heuristic_preview=False):
+                  decompose_llm=None, plan_consensus=None, hourglass=None):
     """Plan-lane flow via the ONE owner (harness/waist.py): heuristic or
     cheap-LLM decomposition, then (hourglass default: on) waist
     confirmation."""
@@ -986,11 +906,7 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
         jev_policy=jev_policy,
         # The same pinned output budget the nodes will run with, so the
         # chunk policy measures each pass against the real one.
-        max_tokens=getattr(opts, "max_tokens", None),
-        # DF-HG-3b: opt-in only (CLI: --allow-heuristic-preview); the
-        # default stays fail-closed for a plan-only preview whose LLM
-        # decomposition fails.
-        allow_heuristic_preview=allow_heuristic_preview)
+        max_tokens=getattr(opts, "max_tokens", None))
 
 
 def _resolve_hourglass(opts, settings):
@@ -1042,9 +958,7 @@ def _cmd_plan(opts, settings):
         settings, opts, gov, transport, api_key,
         candidate_files=candidate_files, frontier_model=frontier_model,
         execute=execute, confirm=confirm, decompose_llm=decompose_llm,
-        plan_consensus=plan_consensus, hourglass=hourglass,
-        allow_heuristic_preview=bool(
-            getattr(opts, "allow_heuristic_preview", False)))
+        plan_consensus=plan_consensus, hourglass=hourglass)
     if plan_result.get("status") == "refused":
         # The waist refused (or the composed ceiling / unreachable waist
         # fail-closed fired); execution must not start (exit code 2).
@@ -1229,9 +1143,9 @@ def _cmd_jev_phase(opts, settings):
     min_score = float(getattr(opts, "min_score", 85.0))
 
     if all_phases:
-        # --all is a local accounting pass; one live judgment per phase could
-        # multiply spend unexpectedly.
         jev_policy = None
+        if use_live and settings is not None:
+            jev_policy = policy_for(settings)
         board = score_all_phases(
             opts.repo_root, jev_policy=jev_policy, min_score=min_score,
             pack=pack_path)
@@ -1259,10 +1173,6 @@ def _cmd_jev_phase(opts, settings):
         phase,
         evidence_path=getattr(opts, "evidence", None),
         settings=settings if use_live else None,
-        transport=HttpTransport() if use_live and settings is not None else None,
-        governor=(jev_face_governor(settings, min(settings.max_cost, 0.05))
-                  if use_live and settings is not None else None),
-        ledger=(_ledger(settings) if use_live and settings is not None else None),
         use_live_jev=use_live,
         min_score=min_score,
         pack_path=pack_path,
@@ -1276,48 +1186,6 @@ def _cmd_jev_phase(opts, settings):
         raise HarnessError(
             f"phase {result['phase']} completion score {result['score']} "
             f"< {result['min_score']} or hard gates failed — do not mark complete")
-
-
-def _cmd_jev_vision_assessment(opts, settings):
-    """Run the bounded HV-0 vision assessment or a no-dispatch preflight."""
-    state = build_vision_assessment_state(opts.repo_root)
-    model = getattr(settings, "jev_model", None) or "jev-latest"
-    preflight = vision_assessment_preflight(state, model)
-    reserve = jev_cost(preflight["estimated_input_tokens"])
-    configured_limit = finite_number(
-        getattr(settings, "max_cost", DEFAULT_MAX_COST),
-        "max_cost", 0.0, HARD_MAX_COST)
-    override = getattr(opts, "max_cost", None)
-    effective_limit = (configured_limit if override is None else
-                       finite_number(override, "max_cost", 0.0, HARD_MAX_COST))
-    if getattr(opts, "preflight_only", False):
-        report = {
-            "status": "preflight_only",
-            "pack_id": VISION_ASSESSMENT_PACK_ID,
-            "pack_version": VISION_ASSESSMENT_PACK_VERSION,
-            "preflight": preflight,
-            "worst_case_reserve_usd": reserve,
-            "effective_max_cost_usd": effective_limit,
-            "hard_max_cost_usd": HARD_MAX_COST,
-            "dispatch_attempts": 0,
-        }
-        _emit(report, opts.out, force_json=getattr(opts, "json", False))
-        if not preflight["fits_context"] or reserve > effective_limit:
-            raise HarnessError("vision assessment preflight refused; no request was sent")
-        return
-
-    policy = policy_for(
-        settings,
-        transport=HttpTransport(),
-        governor=jev_face_governor(settings, getattr(opts, "max_cost", None)),
-        ledger=_ledger(settings),
-    )
-    envelope = policy.evaluate_vision_assessment(
-        state, task_id="hv-0-vision-assessment")
-    _emit(envelope.to_dict(), opts.out,
-          force_json=getattr(opts, "json", False))
-    if envelope.status != "assessed":
-        raise HarnessError("vision assessment is unassessed; see the emitted reason")
 
 
 # Command -> handler. `required=True` subparsers make an unknown command
@@ -1348,7 +1216,6 @@ _DISPATCH = {
     "trust": _cmd_trust,
     "rankings": _cmd_rankings,
     "jev-phase": _cmd_jev_phase,
-    "jev-vision-assessment": _cmd_jev_vision_assessment,
     "mission": _cmd_mission,
 }
 
@@ -1384,12 +1251,7 @@ def main(argv=None):
         not getattr(opts, "no_color", False)
         and not os.environ.get("NO_COLOR"))
     try:
-        if (opts.command == "jev-vision-assessment"
-                and getattr(opts, "preflight_only", False)):
-            settings = load_vision_preflight_settings(
-                max_cost_override=getattr(opts, "max_cost", None))
-        else:
-            settings = load_settings()
+        settings = load_settings()
         _DISPATCH[opts.command](opts, settings)
     except HarnessError as e:
         print(f"[FATAL] {e}", file=sys.stderr)

@@ -8,8 +8,7 @@ harness.service or any face module (it is the bottom of the cli stack).
 import argparse
 
 
-def _add_engine_flags(p, *, max_tokens_default, verify_required=False,
-                      task_max_cost_help=None):
+def _add_engine_flags(p, *, max_tokens_default, verify_required=False):
     """Flags shared by apply, continue, and dogfood -- the dispatches into the
     apply engine. One definition keeps the surfaces in lockstep (the historical
     bug class: a flag or default fixed on one but not the others)."""
@@ -28,19 +27,8 @@ def _add_engine_flags(p, *, max_tokens_default, verify_required=False,
     p.add_argument("--renew-consent", dest="renew_consent", action="store_true", default=None)
     p.add_argument("--no-renew-consent", dest="renew_consent", action="store_false")
     p.add_argument("--max-tokens", type=int, default=max_tokens_default)
-    p.add_argument("--task-max-cost", type=float, default=None,
-                   help=task_max_cost_help or
-                   "per-task spend ceiling in USD (default: the session's "
-                   "configured/engine ceiling)")
-    p.add_argument("--allow-escalation", dest="allow_escalation", action="store_true", default=None,
-                   help="walk the paid escalation ladder when the cheap/free "
-                        "lane exhausts its verify budget or saturates (429s). "
-                        "Default: on automatically when a paid OpenRouter key "
-                        "is configured (free-tier runs then fail over to the "
-                        "cheapest capable paid rung with no flag needed), off "
-                        "on a free-tier-only key. Every rung is preflighted "
-                        "against the run's cost ceiling and billed + ledgered "
-                        "per attempt, never silently.")
+    p.add_argument("--task-max-cost", type=float, default=None)
+    p.add_argument("--allow-escalation", dest="allow_escalation", action="store_true", default=None)
     p.add_argument("--reasoning-effort", default=None,
                    choices=["auto", "off", "none", "low", "medium", "high", "on"])
     p.add_argument("--max-rotations", type=int, default=None)
@@ -103,20 +91,13 @@ def build_parser():
                     help="JSON map identifier -> verbatim definition for auto-expansion")
     pv.add_argument("--claim-context", default=None,
                     help="context prose naming identifiers; overrides the manifest 'context' key")
-    pv.add_argument("--panel",
-                    help="comma-separated panel model ids, strongest/preferred "
-                         "first (default: configured panel_pool); forwarded "
-                         "to the verify service as the candidate pool")
+    pv.add_argument("--panel")
     pv.add_argument("--judge")
     pv.add_argument("--max-tokens", type=int, default=None)
     pv.add_argument("--max-cost", type=float, default=None,
                     help="per-run cost ceiling in USD (default: config max_cost; "
-                         "note: paid panel/judge verify preflight reserves the worst "
-                         "case of the panel/judge/retry plan actually dispatched "
-                         "(votes + judge attempt/retry, plus a judge-fallback "
-                         "reserve only for panel pool members left undispatched "
-                         "beyond the configured max_panelists) -- headroom scales "
-                         "with that plan, not a fixed minimum)")
+                         "note: paid panel/judge verify preflight requires ~$0.036 minimum "
+                         "headroom to cover worst-case judge retry reservations)")
     pv.add_argument("--reasoning-effort", default=None,
                     choices=["auto", "off", "none", "low", "medium", "high", "on"])
     pv.add_argument("--converge", action="store_true",
@@ -206,27 +187,8 @@ def build_parser():
                          "dependent stages start")
     pp.add_argument("--keep-going", dest="keep_going", action="store_true", default=False, help="continue past a failed subtask")
     pp.add_argument("--max-cost", type=float, default=None,
-                    help="maximum spend ceiling for the entire plan run; "
-                         "NOT an alias of --task-max-cost -- when both are "
-                         "given, --task-max-cost takes precedence and this "
-                         "flag is ignored (see --task-max-cost)")
-    _add_engine_flags(
-        pp, max_tokens_default=4096,
-        task_max_cost_help="maximum spend ceiling for the entire plan run; "
-                           "when given, OVERRIDES --max-cost for this run "
-                           "(precedence: --task-max-cost, then --max-cost, "
-                           "then the session default) rather than aliasing it")
-    pp.add_argument("--allow-heuristic-preview", dest="allow_heuristic_preview",
-                    action="store_true", default=False,
-                    help="DF-HG-3b: permit a plan-only preview (no --execute) "
-                         "to degrade to heuristic decomposition when LLM "
-                         "decomposition fails twice, instead of the fail-closed "
-                         "default (a non-zero exit). The degraded preview is "
-                         "labeled decomposition='heuristic', prints a loud "
-                         "stderr note, and is never reported as confirmed "
-                         "(waist confirmation is skipped on the degraded path). "
-                         "--execute is unaffected: it always falls back to the "
-                         "heuristic on decomposition failure, opt-in or not.")
+                    help="maximum spend ceiling for the entire plan run (alias: --task-max-cost)")
+    _add_engine_flags(pp, max_tokens_default=4096)
     _add_output_flags(pp)
 
     pc = sub.add_parser("continue", help="Continue a deferred/incomplete apply task")
@@ -263,23 +225,8 @@ def build_parser():
 
     plog = sub.add_parser(
         "log-judgment",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
         help="JEV-LOG single-pass log analysis against a frozen operator "
-             "pack (never invents buckets, levels, or actions)",
-        description=(
-            "JEV-LOG single-pass log analysis against a frozen operator "
-            "pack (never invents buckets, levels, or actions).\n\n"
-            "Expected log line format (Rust `tracing`-style header; only "
-            "lines matching it become items -- everything else attaches as "
-            "continuation text to the previous matched item):\n\n"
-            "  <ISO-8601 timestamp>Z  LEVEL  module::path: message\n\n"
-            "example:\n"
-            "  2026-09-21T00:37:26.567713Z  WARN "
-            "scmessenger_core::store::relay_custody: msg\n\n"
-            "LEVEL is one of INFO|WARN|ERROR|DEBUG|TRACE. If a log dump has "
-            "lines but 0 items match this header shape, the run prints a "
-            "stderr note ('matched 0 log items') instead of emitting a "
-            "silently-empty analysis."))
+             "pack (never invents buckets, levels, or actions)")
     plog.add_argument("--log", required=True,
                       help="path to the raw runtime log dump")
     plog.add_argument("--pack", required=True,
@@ -505,18 +452,6 @@ def build_parser():
     pjphase.add_argument("--json", action="store_true", help="emit raw JSON only")
     _add_output_flags(pjphase)
 
-    pvision = sub.add_parser(
-        "jev-vision-assessment",
-        help="Assess the Hourglass vision with one bounded, typed Jev request")
-    pvision.add_argument("--repo-root", default=".",
-                         help="repo root containing the Hourglass vision and canon")
-    pvision.add_argument("--max-cost", type=float, default=None,
-                         help="per-call spend ceiling (hard-capped by Harness)")
-    pvision.add_argument("--preflight-only", action="store_true",
-                         help="measure the sanitized request without key use or dispatch")
-    pvision.add_argument("--json", action="store_true", help="emit raw JSON only")
-    _add_output_flags(pvision)
-
     # HUL-A/D mission pack surface (run = HUL-D until-limits driver).
     pmiss = sub.add_parser(
         "mission",
@@ -541,32 +476,12 @@ def build_parser():
     pmi.add_argument("--verifier-kind", default="unspecified",
                      help="verifier.kind recorded in mission.yaml")
     _add_output_flags(pmi)
-    for _sub in ("status", "findings"):
+    for _sub in ("status", "resume", "findings"):
         _p = pms.add_parser(_sub, help=f"mission {_sub}")
         _p.add_argument("--id", dest="mission_id", required=True, help="mission id")
         _p.add_argument("--root", default="missions",
                         help="pack parent directory (default: missions)")
         _add_output_flags(_p)
-    presume = pms.add_parser(
-        "resume",
-        help="mission resume: read-only status by default; --run continues "
-             "the HUL-D until-limits driver from resume.json")
-    presume.add_argument("--id", dest="mission_id", required=True, help="mission id")
-    presume.add_argument("--root", default="missions",
-                         help="pack parent directory (default: missions)")
-    presume.add_argument("--run", action="store_true",
-                         help="DF-HUL-3: continue the until-limits driver "
-                              "(same driver as `mission run`) instead of "
-                              "only reporting status")
-    presume.add_argument("--max-attempts", dest="max_attempts", type=int, default=None,
-                         help="only with --run")
-    presume.add_argument("--stall-limit", dest="stall_limit", type=int, default=5,
-                         help="only with --run")
-    presume.add_argument("--max-tokens", dest="max_tokens", type=int, default=None,
-                         help="only with --run")
-    presume.add_argument("--max-errors", dest="max_errors", type=int, default=None,
-                         help="only with --run")
-    _add_output_flags(presume)
     prun = pms.add_parser(
         "run",
         help="HUL-D until-limits driver: attempts until limits/stall/success")

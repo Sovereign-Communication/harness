@@ -184,7 +184,6 @@ statement covers the CI matrix by direct execution.
 | `harness/cli.py` | handlers + dispatch + CLI bootstrap (exit codes, color/events policy); presentation re-exports (`_emit`, `_emit_by_status`, `_print_capabilities_table`) kept as patch points; session aliases (`_governor`/`_engine`/...) kept as test seams |
 | `harness/cli_report.py` | the ONE result-rendering owner (`_emit`, `_emit_by_status`, `_print_capabilities_table`): --out files, machine JSON vs TTY pretty mode, exit-code surfacing -- moved verbatim from cli.py |
 | `harness/cli_parser.py` | the argparse surface as pure construction (`build_parser`, flag builders) — handlers live in cli.py, flags in exactly one owner |
-| `harness/media_client.py` | MEDIA-1: `MediaAdapter`, a thin stdlib-only client for the sovereign-media sibling service (image/video generation) -- honest `MediaUnavailable` failures, budget-refusal envelopes, config/env-resolved endpoint (no provider brand strings); `run_cli` is the `harness media ...` face |
 | `harness/consent.py` | the consent probe (sovereignty) |
 | `harness/ledger.py` | autonomy ledger storage/integrity lifecycle: append, hash chain, rotation, repair, verify |
 | `harness/ledger_analytics.py` | read-only ledger analytics (participation_report, defer_stats calibration) -- mixed into `AutonomyLedger` verbatim |
@@ -206,7 +205,6 @@ statement covers the CI matrix by direct execution.
 | `harness/claims.py` | structured-claims grounding: source_refs lint + claims curation from the ledger's own evidence |
 | `harness/continuation.py` | the resumable-task state contract and its verification identity |
 | `harness/spend.py` | Cost-bounded spend: the governor that makes ceilings guarantees. Live pricing catalog, key identity, BYOK learning/denylist, free-model discovery, and the HUL-B dual envelope (`working_remaining = max - spent - terminal_reserve`; attempts never eat reserve; terminal findings may). |
-| `harness/token_budget.py` | the ONE owner of token allowances: per-call input/output maxima, composable stage/run reservations (a stage may only narrow its parent), honest `actual`/`estimated`/`unavailable` usage labels, and `snapshot()` for envelopes. Independent of spend.py's dollars -- neither can raise the other. |
 | `harness/mission_record.py` | HUL-A/B mission pack: mission.yaml schema, pack layout under missions/<id>/, STATUS generator, append-only receipts/jev_evals, dual-budget budget.json (delegates formula to spend.py) + resume.json, terminal findings helper |
 | `harness/convergence.py` | deterministic tally over panel votes + the rotating specialist lane |
 | `harness/errors.py` | shared exception types (`HarnessError`) |
@@ -216,6 +214,7 @@ statement covers the CI matrix by direct execution.
 | `harness/prompts.py` | apply prompt contracts + response parsing (pure functions, no I/O) |
 | `harness/tokens.py` | token estimation shared by every cost preflight |
 | `harness/ui.py` | the pywebview desktop shell around the harness web UI |
+| `harness/media_client.py` | thin stdlib adapter to the sovereign-media service (`harness media ...`): image/video generation with budgets, sign-in, and the spend ledger kept service-side -- harness only ever sees job envelopes |
 | `tests/` | one test module per product owner (test_spend, test_panel, test_convergence, test_specialist, test_chat, test_ledger, test_prompts, ...); shared fakes and the `_gov` helper live in `tests/_fake.py` |
 
 ## Audit corpus integrity
@@ -248,25 +247,6 @@ reflects:
 A traced run costs roughly a minute; do it when landing substantive
 harness changes, not per commit. Missing data is a visible SKIP, never
 a silent pass.
-
-## Version bump
-
-D5 (`sd_version_single_source`) compares `pyproject.toml`'s `version` against
-`harness.__version__`, and that attribute prefers **installed distribution
-metadata** (`importlib.metadata.version("sovereign-harness")`) over a fresh
-parse of `pyproject.toml` -- authoritative once the package is installed, but
-static: an editable install's `METADATA` file is written once at install
-time and does not track later edits to `pyproject.toml` on its own. Bump the
-version in `pyproject.toml` and then reinstall so the installed metadata
-(and therefore `harness.__version__`, and D5) actually reflects it:
-
-  python -m pip install -e .[dev]
-
-Skipping the reinstall leaves D5 comparing the new `pyproject.toml` version
-against the stale installed one and failing the audit, or comparing two
-stale reads and passing for the wrong reason. `audits/self/release.py`'s
-driver already does this reinstall-with-metadata-check step for you; it
-only needs calling out here for a manual version bump outside that driver.
 
 ## Release driver
 
