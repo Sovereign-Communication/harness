@@ -685,8 +685,7 @@ def _decompose_repo_context(goal: str,
     brief = distill_context(files, summary=goal or "")
     if ledger is not None:
         ledger.append("brief_built", task_id=task_id, site="hourglass",
-                      schema=2, estimated_tokens=brief.estimated_tokens,
-                      sources=len(brief.file_signatures))
+                      schema=2, **brief.ledger_fields())
     return brief.to_prompt_context()
 
 

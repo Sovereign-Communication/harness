@@ -372,6 +372,27 @@ class MicroBriefReconciliationTests(unittest.TestCase):
         self.assertIn("CONDENSED FILE INTERFACES", text)
         self.assertIn("File: a.py", text)
 
+    def test_ledger_fields_name_both_token_numbers(self):
+        # A schema=2 brief_built event carries two different token counts and
+        # they used to collapse into one ambiguous field: the condensed text
+        # the seat reads, and the v2 pack the brief ships. A budget owner must
+        # be able to tell which it is preflighting against.
+        micro = self._micro()
+        fields = micro.ledger_fields()
+        self.assertEqual(fields["estimated_tokens"], micro.estimated_tokens)
+        self.assertEqual(fields["sources"], len(micro.file_signatures))
+        self.assertEqual(fields["pack_estimated_tokens"],
+                         micro.to_brief_pack()["estimated_tokens"])
+
+    def test_ledger_fields_omit_the_pack_number_when_there_is_no_pack(self):
+        # A MicroBrief built without the reconciliation carries no pack, so
+        # it must not invent a pack cost for a consumer to budget against.
+        from harness.condenser import MicroBrief
+        bare = MicroBrief(summary="no pack here", estimated_tokens=7,
+                          file_signatures=(("a.py", "def f(): ..."),))
+        self.assertEqual(bare.ledger_fields(),
+                         {"estimated_tokens": 7, "sources": 1})
+
 
 def _sha(text):
     import hashlib

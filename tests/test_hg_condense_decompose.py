@@ -225,6 +225,9 @@ class Hv2LedgerEvidenceTests(unittest.TestCase):
         self.assertEqual(fields["schema"], 2)
         self.assertEqual(fields["sources"], 1)
         self.assertGreater(fields["estimated_tokens"], 0)
+        # The v2 pack's own size rides along under its own name, so the
+        # event cannot be misread as costing only the condensed signatures.
+        self.assertGreater(fields["pack_estimated_tokens"], 0)
 
     def test_condensation_without_a_ledger_stays_silent_and_safe(self):
         with tempfile.TemporaryDirectory() as tmp:

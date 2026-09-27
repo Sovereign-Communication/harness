@@ -6,7 +6,7 @@ Drastically reduces token overhead and enables cheap, frontier-grade reasoning.
 """
 import ast
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .brief import build_brief
 from .tokens import estimate_prompt_tokens
@@ -31,6 +31,26 @@ class MicroBrief:
     def to_brief_pack(self) -> Optional[Dict]:
         """The schema-v2 evidence pack for these condensed sources."""
         return self.pack
+
+    def ledger_fields(self) -> Dict[str, Any]:
+        """Payload for the HV-2 ``brief_built`` ledger event.
+
+        Two token numbers are in play and they are not the same number:
+        ``estimated_tokens`` is what the seat actually reads on the wire
+        (the condensed signatures), while the v2 pack measures the evidence
+        artifact the brief ships. Recording only the first made a
+        ``schema=2`` event read as if the pack were that small, so a budget
+        owner (HV-3) had no way to tell which figure it was preflighting
+        against. Both are reported, each named for what it is.
+        """
+        fields: Dict[str, Any] = {
+            "estimated_tokens": self.estimated_tokens,
+            "sources": len(self.file_signatures),
+        }
+        pack_tokens = (self.pack or {}).get("estimated_tokens")
+        if isinstance(pack_tokens, int):
+            fields["pack_estimated_tokens"] = pack_tokens
+        return fields
 
     def to_prompt_context(self) -> str:
         """Format micro-brief into prompt context lines."""
