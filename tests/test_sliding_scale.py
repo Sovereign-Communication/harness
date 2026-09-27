@@ -265,12 +265,21 @@ class TestSlidingScale(unittest.TestCase):
 
     def test_load_settings_auto_paid_failover_pools(self):
         # When use_free is true and a paid key is present, paid pools are appended as failovers
-        s = load_settings({"use_free": True, "openrouter_api_key": "sk-or-paid-test"})
-        self.assertTrue(s.use_free)
-        # Verify paid rungs are present in the default pools for failover
-        self.assertIn("deepseek/deepseek-v4.1-flash", s.apply_pool)
-        self.assertIn("deepseek/deepseek-v4.1-flash", s.panel)
-        self.assertIn("z-ai/glm-5.3-flash", s.escalation_pool)
+        import tempfile
+        from unittest import mock
+        # Hermetic CONFIG_DIR: this asserts the loader's default contract,
+        # not the operator's machine. A real config.json that pins free
+        # pools flipped this test red on 2026-09-27 while CI (no config)
+        # stayed green -- machine state must not decide the verdict.
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch("harness.config.CONFIG_DIR", tmp):
+            s = load_settings({"use_free": True,
+                               "openrouter_api_key": "sk-or-paid-test"})
+            self.assertTrue(s.use_free)
+            # Verify paid rungs are present in the default pools for failover
+            self.assertIn("deepseek/deepseek-v4.1-flash", s.apply_pool)
+            self.assertIn("deepseek/deepseek-v4.1-flash", s.panel)
+            self.assertIn("z-ai/glm-5.3-flash", s.escalation_pool)
 
     def test_router_classify_and_route_falls_back_when_jev_route_raises(self):
         from unittest.mock import MagicMock

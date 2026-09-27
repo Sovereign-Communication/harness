@@ -58,10 +58,18 @@ class ServerHarness(unittest.TestCase):
         _events.remove_sink(self.httpd.ui._on_event)
         self.httpd.shutdown()
         self.httpd.server_close()
-        self.thread.join(timeout=5)
+        # Room under a traced battery (stdlib trace slows every handler
+        # thread 10-50x): a join that gives up early leaks a live server
+        # thread whose socket surfaces as "ResourceWarning: unclosed" at
+        # GC -- which fails the whole audit through the R13 classifier.
+        self.thread.join(timeout=60)
 
     def _conn(self):
-        return http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        # 120s, not 10s: under the traced baseline battery a route handler
+        # can legitimately take longer than 10 wall-clock seconds, and a
+        # client-side socket.timeout there is a false failure (the class of
+        # defect the 2026-09-27 probe run surfaced: 4 ERRORs, all timeouts).
+        return http.client.HTTPConnection("127.0.0.1", self.port, timeout=120)
 
 
 class SecurityGuardTests(ServerHarness):

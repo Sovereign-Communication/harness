@@ -697,8 +697,10 @@ def _norm_phase(phase_id: str) -> str:
         raise HarnessError("phase id is required")
     if raw.startswith("P") and raw[1:2].isdigit():
         return f"JEV-P{raw[1:2]}"
-    if not raw.startswith("JEV-"):
-        return f"JEV-{raw}" if raw.startswith("P") else raw
+    # A named track id keeps its canonical spelling. The old P-prefix
+    # catch-all rewrote PLAT-cmd-data to JEV-PLAT-CMD-DATA, which matched
+    # neither the PHASE_CONTRACTS table nor the STATUS-row needles -- the
+    # phase silently scored on an empty contract and an empty row.
     return raw
 
 
@@ -836,12 +838,16 @@ def collect_phase_evidence(repo_root: str, phase_id: str,
         pattern = contract.get("pr_pattern")
         lowered = status_row.lower()
         mentions_pr = phase_status_mentions_pr(status_row, pattern)
+        # Match against the LOWERED row with lowered literals: the old
+        # uppercase "PR" pattern could never match, so "PR #104 open, merge
+        # pending" scored as merged (a fake-complete leak in the gate itself).
         open_pr = bool(
-            re.search(r"\b(?:PR|pull request)\s*(?:#\d+)?\s*(?:is\s+)?open\b", lowered)
-            or re.search(r"\bopen\s+(?:PR|pull request)(?:\s+#\d+)?\b", lowered)
+            re.search(r"\b(?:pr|pull request)\s*(?:#\d+)?\s*(?:is\s+)?open\b", lowered)
+            or re.search(r"\bopen\s+(?:pr|pull request)(?:\s+#\d+)?\b", lowered)
             or re.search(r"\bno pr\b", lowered)
         )
-        merged_word = "merged" in lowered or "merge" in lowered
+        # Only the word "merged" is merge evidence; "merge pending" is a plan.
+        merged_word = bool(re.search(r"\bmerged\b", lowered))
         # Presence of a PR id is not merge evidence while the row still says open.
         evidence["pr_merged"] = bool(mentions_pr and merged_word and not open_pr)
         evidence["origin_evidence"] = status_row

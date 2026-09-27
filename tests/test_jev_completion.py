@@ -19,6 +19,7 @@ from harness.errors import HarnessError
 from harness.jev_completion import (
     DEFAULT_COMPLETION_PACK,
     PHASE_COMPLETE_MIN_SCORE,
+    _norm_phase,
     collect_phase_evidence,
     dogfood_phase,
     load_evidence_file,
@@ -501,6 +502,65 @@ class ExtendedPhaseContractTests(unittest.TestCase):
             self.assertTrue(evidence["tests_missing"])
             self.assertTrue(evidence["files_missing"])
             self.assertFalse(result["can_mark_complete"])
+
+    def test_named_track_ids_are_not_rewritten_to_jev_prefixes(self):
+        """PLAT-cmd-data must resolve to its own contract and STATUS row.
+
+        The old P-prefix catch-all rewrote it to JEV-PLAT-CMD-DATA, which
+        matched neither PHASE_CONTRACTS nor the row needles -- the phase
+        scored on an empty contract (vacuous required_tests) and an empty
+        status_row (status_honesty stuck at blocking even when honest).
+        """
+        self.assertEqual(_norm_phase("PLAT-cmd-data"), "PLAT-CMD-DATA")
+        self.assertEqual(_norm_phase("plat-docs"), "PLAT-DOCS")
+        # The JEV P-phase family keeps its renaming.
+        self.assertEqual(_norm_phase("P4"), "JEV-P4")
+        self.assertEqual(_norm_phase("JEV-P4"), "JEV-P4")
+
+    def test_plat_contract_and_row_resolve_through_phase_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(
+                root,
+                "| PLAT-cmd-data gates-as-data | **in progress** | PR #104 OPEN |",
+                tests=[],
+                files=[],
+            )
+            evidence = collect_phase_evidence(str(root), "PLAT-cmd-data")
+            self.assertIn("PLAT-cmd-data", evidence["status_row"])
+            self.assertIn("tests/test_plat_cmd_runnable.py",
+                          evidence["required_tests"])
+            self.assertIn("harness/gate_runner.py", evidence["required_files"])
+
+    def test_open_pr_with_merge_pending_is_not_merge_evidence(self):
+        """"PR #104 open, merge pending" must score as OPEN.
+
+        The open-PR detector once matched uppercase "PR" against the
+        lowered row and never fired, so the gate claimed pr_merged (and
+        then derived ci_green/local_gates_green from it) while the PR was
+        still open -- a fake-complete leak in the gate itself.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(
+                root,
+                "| `PLAT-cmd-data` gates | **in progress** | "
+                "**PR #104 open, merge pending** |",
+                tests=[], files=[])
+            evidence = collect_phase_evidence(str(root), "PLAT-cmd-data")
+            self.assertFalse(evidence["pr_merged"])
+            self.assertFalse(evidence["ci_green"])
+            self.assertTrue(any("PR open" in b for b in evidence["open_blockers"]))
+
+    def test_merge_pending_without_open_word_is_not_merge_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(
+                root,
+                "| `PLAT-docs` docs | **in progress** | PR #104, merge pending |",
+                tests=[], files=[])
+            evidence = collect_phase_evidence(str(root), "PLAT-docs")
+            self.assertFalse(evidence["pr_merged"])
 
     def test_oc_handoff_contract_detects_artifacts_and_stays_gated_while_open(self):
         with tempfile.TemporaryDirectory() as tmp:
