@@ -18,8 +18,8 @@ This document also reports a third defect in the gate itself: it has no waiver m
 
 ## Pinned state
 
-- Measured `origin/main` at `2cf24b5`, 2026-09-26. 364 commits of history.
-- 64 remote branches enumerated via `git ls-remote --heads`; all 64 fetched and inspected.
+- Measured `origin/main` at `2cf24b5`, 2026-09-26. 364 commits of history. **Re-verified 2026-09-27: `origin/main` is still `2cf24b5`.** Nothing in this repository has moved, so every measurement in this document is still current and there is no drift to reconcile.
+- **69** remote branches enumerated via `git ls-remote --heads`; all 69 fetched and inspected. This was first published as 64; five branches have appeared since. The finding is unchanged and is in fact stronger — see Part 1.
 - All work was read-only from an isolated clone. No working tree in this repository or in the operations workspace was modified, nothing was deployed, no host was contacted.
 
 ---
@@ -36,10 +36,12 @@ The handoff-ownership gate for this repository exists as **uncommitted files in 
 
 Inspection across every remote ref:
 
-- `scripts/validate_handoff_scope.py` — present on **0 of 64** remote branches.
-- `tests/test_handoff_scope.py` — present on **0 of 64** remote branches.
-- Branches whose `.github/workflows/ci.yml` invokes the gate — **0 of 64**.
+- `scripts/validate_handoff_scope.py` — present on **0 of 69** remote branches.
+- `tests/test_handoff_scope.py` — present on **0 of 69** remote branches.
+- Branches whose `.github/workflows/ci.yml` invokes the gate — **0 of 69**.
 - `origin/main` — has **no `scripts/` directory at all**, and no `validate_handoff_scope.py` anywhere in its tree.
+
+**Stronger than first published, not merely unchanged.** The earlier version reported that 0 of 64 branches carried the two files. Re-enumerating all 69 shows something wider: **no remote branch in this repository has a `scripts/` directory at all.** The control is not merely unmerged — the directory that would hold it does not exist on any remote ref, so there is no branch to fast-forward and no pull request that could be opened from work already done.
 
 **This corrects an earlier characterisation.** The gate was previously described as living on local branches ahead of `main`, which would have implied a branch was waiting to be merged. That is not the case. There is nothing mergeable, and no pull request could be opened from existing work. The correct diagnosis is stronger than "unmerged": the control exists only as uncommitted files on one machine, and is one lost disk away from being gone permanently.
 
@@ -133,7 +135,11 @@ Landing it is not a drop-in, and the lane should expect this much work:
 
 ### Third defect: no waiver mechanism
 
-The gate contains **zero** references to waivers or exemptions. It hard-requires the literal `foreign_material: NONE` in every scope block and rejects any foreign alias outside it. The comparison repository solved this exact problem by adding a per-document, owner-signed, dated waiver register that is audited on every run and fails if a waiver names a path that is not a tracked handoff or a document that no longer trips the detector.
+The gate contains **zero** references to waivers or exemptions. It hard-requires the literal `foreign_material: NONE` in every scope block and rejects any foreign alias outside it.
+
+**This is no longer a design question. The comparison repository has landed it, so the remedy is a port.** In the commit its maintainers title *"feat(handoff): add an auditable, per-document waiver register"*, the register is a tracked, per-document, owner-signed, dated JSON file at the repository root, audited on every run, and it fails if a waiver names a path that is not a tracked handoff or names a document that no longer trips the detector. The gate reading it grew from 448 to 991 lines and gained 109 references to waivers, together with a `--self-test` mode that fails when the classifier itself drifts, and a self-locating guard that refuses to run outside the repository that contains it.
+
+Two consequences for this repository. First, the recommendation is now concrete: read that commit and adapt the register, rather than designing a second shape for it. Second, the argument is stronger than when this was first written. The pattern was adopted elsewhere within a day of this finding being raised, which is evidence that the failure mode below is real and observed rather than hypothetical.
 
 Without an equivalent, this repository has a strictly worse failure mode than having no gate: it cannot record a legitimate cross-lane reference at all, so the only available responses are to obfuscate or to bypass. The three documents in Part 3 are already proof that correct text will trip the detector.
 
@@ -147,10 +153,12 @@ It is a textual control. It cannot distinguish a disclaimer from a leak, and it 
 
 1. Treat the gate as **untracked work in progress, not a pending merge**. Nothing is waiting to be merged; the three files must be committed forward onto a fresh branch off a current `origin/main`.
 2. Recover the control into version control before anything else on this list. The three pieces are the script, its test, and the `handoff-scope` job. They must land as one commit, off a freshly fetched base, not off the 58-commit-stale local `main`.
-3. Add a per-document waiver register, mirroring the pattern the comparison repository uses, so that correct boundary statements are not forced to choose between obfuscation and bypass.
+3. Add a per-document waiver register. **This is a port, not a design.** The comparison repository has landed one in a single tracked commit, and the mechanism — audited JSON register, owner-signed and dated, failing on a stale or untracked waiver — is described under *Third defect*. Read it and adapt it; do not invent a second shape for the same control.
 4. Remediate `docs/MODEL_SELECTION_HANDOFF_2026-09-13.md` by splitting the foreign evidence, finding, action item and receipt out of it. Do not waive this one.
 5. Stamp or waive the other 8 documents the gate classifies as handoffs, so the gate can be turned on without a red backlog.
 6. Only after 1-5: enable the `handoff-scope` job on `main`.
+
+**Does the waiver landing change what this document asks for?** No, not in substance, and the ordering is unaffected. Actions 1, 2, 4, 5 and 6 are untouched by it. Action 3 changes from *design a mechanism* to *port an existing one* — smaller, better specified, and no longer a judgement call this lane has to make. Landing the register early does not let the job be enabled early, because the 9 documents still have to be stamped or waived before the job can go green, which is what action 6 already sequences.
 
 ## Limits of this handoff
 
