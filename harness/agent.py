@@ -258,6 +258,11 @@ class AutonomousAgent:
                 continue
         brief = distill_context(
             files=files, summary=prompt, max_tokens=1800)
+        # HV-2 evidence: the condensation is a ledger event, not a private
+        # step -- site=hourglass, schema-v2 pack attached to the MicroBrief.
+        ledger_for(self.settings, caller="agent").append(
+            "brief_built", site="hourglass", schema=2,
+            **brief.ledger_fields())
         context = brief.to_prompt_context()[:_MAX_HOURGLASS_CONTEXT_CHARS]
         web_sources = []
         if web:
@@ -923,6 +928,9 @@ class AutonomousAgent:
                     pass
 
         brief = distill_context(files=file_contents, summary=prompt)
+        ledger_for(self.settings, caller="agent").append(
+            "brief_built", task_id=session_id, site="hourglass", schema=2,
+            **brief.ledger_fields())
         emit("context_condensed", estimated_tokens=brief.estimated_tokens)
 
         # Formulate the FIRST-round DAG plan (LLM decomposition when the

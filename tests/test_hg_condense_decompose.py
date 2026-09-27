@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 
-from harness.waist import compose_plan
+from harness.waist import _decompose_repo_context, compose_plan
 
 from tests._fake import FakeTransport, m
 
@@ -178,6 +178,68 @@ class CondenseDecomposeTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(plan["decomposition"], "llm:injected")
         self.assertIn("dag", plan)
+
+
+class _RecordingLedger:
+    """Minimal ledger double: records appends, owns no I/O."""
+
+    def __init__(self):
+        self.events = []
+
+    def append(self, event, task_id=None, **fields):
+        self.events.append((event, task_id, fields))
+
+
+class Hv2LedgerEvidenceTests(unittest.TestCase):
+    """The plan lane's condensation is HV-2 evidence: the ledger shows it
+    (site=hourglass), exactly like every other lane's work."""
+
+    def test_plan_lane_records_its_condensation_as_hv2_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = os.path.join(tmp, "pkg")
+            os.makedirs(pkg, exist_ok=True)
+            with open(os.path.join(pkg, "mod.py"), "w", encoding="utf-8") as handle:
+                handle.write("# module header\n" + RAW_BODY)
+            recorder = _RecordingLedger()
+
+            def chat_fn(prompt):
+                return DECOMP, 0.0
+
+            fake = FakeTransport(models=[m("m/cheap")])
+            from harness.spend import SpendGovernor
+            gov = SpendGovernor(fake, "sk-test", max_cost=1.0)
+            compose_plan(
+                transport=fake, api_key="k", governor=gov,
+                ledger=recorder,
+                opts_goal="Update the shipments helper",
+                candidate_files=["pkg/mod.py"],
+                root=tmp,
+                decompose_llm=True,
+                chat_fn=chat_fn,
+                execute=False)
+
+        built = [e for e in recorder.events if e[0] == "brief_built"]
+        self.assertTrue(built, "the plan lane must record its condensation")
+        _event, _task_id, fields = built[0]
+        self.assertEqual(fields["site"], "hourglass")
+        self.assertEqual(fields["schema"], 2)
+        self.assertEqual(fields["sources"], 1)
+        self.assertGreater(fields["estimated_tokens"], 0)
+        # The v2 pack's own size rides along under its own name, so the
+        # event cannot be misread as costing only the condensed signatures.
+        self.assertGreater(fields["pack_estimated_tokens"], 0)
+
+    def test_condensation_without_a_ledger_stays_silent_and_safe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = os.path.join(tmp, "pkg")
+            os.makedirs(pkg, exist_ok=True)
+            with open(os.path.join(pkg, "mod.py"), "w", encoding="utf-8") as handle:
+                handle.write("# module header\n" + RAW_BODY)
+            context = _decompose_repo_context(
+                "Update the shipments helper", ["pkg/mod.py"], root=tmp)
+        self.assertIn("CONDENSED FILE INTERFACES", context)
+        self.assertIn("def helper_compute_shipments", context)
+        self.assertNotIn("SECRET_RAW_BODY_MARKER", context)
 
 
 if __name__ == "__main__":

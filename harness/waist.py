@@ -658,12 +658,16 @@ def _refuse_composed_ceiling(plan_result: Dict[str, Any], composed: Dict[str, An
 
 def _decompose_repo_context(goal: str,
                             candidate_files: Optional[Sequence[str]],
-                            root: Optional[str] = None) -> Optional[str]:
+                            root: Optional[str] = None,
+                            ledger=None, task_id: Optional[str] = None,
+                            ) -> Optional[str]:
     """Condensed signatures for the decompose prompt (HG-condense-decompose).
 
     ``decompose_via_llm`` / ``build_decomposition_prompt`` already accept
     ``repo_context``; this is the plan lane's producer: distill candidate
     files into signatures so the cheap decomposer never sees raw bodies.
+    When a ledger is supplied the condensation is recorded as HV-2
+    evidence (``brief_built``, site=hourglass) like every other lane.
     """
     if not candidate_files:
         return None
@@ -679,6 +683,9 @@ def _decompose_repo_context(goal: str,
     if not files:
         return None
     brief = distill_context(files, summary=goal or "")
+    if ledger is not None:
+        ledger.append("brief_built", task_id=task_id, site="hourglass",
+                      schema=2, **brief.ledger_fields())
     return brief.to_prompt_context()
 
 
@@ -1356,7 +1363,7 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                 # decision pack; never raw file bodies; prompt still labels
                 # REPOSITORY CONTEXT: via build_decomposition_prompt.
                 sig_ctx = _decompose_repo_context(
-                    plan_goal, candidate_files, root=root)
+                    plan_goal, candidate_files, root=root, ledger=ledger)
                 decision_ctx = build_context_pack(
                     opts_goal, candidate_files=candidate_files)
                 if sig_ctx and str(sig_ctx).strip():
@@ -1513,7 +1520,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                 )
                 try:
                     critique_context = _decompose_repo_context(
-                        critique_prompt, candidate_files, root=root)
+                        critique_prompt, candidate_files, root=root,
+                        ledger=ledger)
                     re_decomposed = decompose_via_llm(
                         lambda p: chat_fn(p)[0], critique_prompt,
                         candidate_files=candidate_files,
