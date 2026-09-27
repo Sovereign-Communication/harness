@@ -13,6 +13,7 @@ byte-identical output, so "runs on all three" is what turns those hashes from
 opinions into facts.
 """
 import os
+import subprocess
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -120,6 +121,62 @@ class WorkflowTest(unittest.TestCase):
         for gate in ("validate_handoff_scope.py", "python -m twine check dist/*",
                      "python -m build", "harness.__version__"):
             self.assertIn(gate, self.text, f"CI lost the {gate} gate")
+
+
+class CheckoutHygieneTest(unittest.TestCase):
+    """A fresh checkout must be CLEAN, and `.gitattributes` is what decides.
+
+    The 2026-09-27 Windows matrix run caught a defect no local gate could:
+    the new `text eol=lf` rules were applied to eight `bench/tasks/*`
+    fixtures that git classifies as binary (`i/-text` in `ls-files --eol`),
+    so every fresh checkout reported them as modified. That is not cosmetic --
+    the apply engine reads `git status --porcelain` as a node's diff, so the
+    files surfaced as "undeclared writes outside target_files" and isolated
+    plan runs failed. These tests ask git directly, so the class cannot come
+    back on any platform.
+    """
+
+    def _ls_files_eol(self):
+        try:
+            out = subprocess.run(["git", "ls-files", "--eol"], cwd=REPO_ROOT,
+                                 capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            self.skipTest("optional-deps: git is not available in this environment")
+        if out.returncode != 0:
+            self.skipTest("platform: not a git checkout (source tree install)")
+        return out.stdout.splitlines()
+
+    def test_no_file_is_forced_to_text_that_git_calls_binary(self):
+        """`text` overrides git's binary heuristic -- so it must never be
+        applied to a path git already refuses to normalize."""
+        offenders = []
+        for line in self._ls_files_eol():
+            fields = line.split()
+            if len(fields) < 3:
+                continue
+            index_eol, _worktree_eol, attrs = fields[0], fields[1], fields[2]
+            path = "\t".join(fields[3:]) or fields[-1]
+            if index_eol == "i/-text" and "text" in attrs and "eol=" in attrs:
+                offenders.append(f"{path} ({attrs})")
+        self.assertEqual(
+            offenders, [],
+            "these paths are binary to git but forced to text by "
+            ".gitattributes, so a fresh checkout is dirty:\n  "
+            + "\n  ".join(offenders))
+
+    def test_no_committed_blob_carries_crlf(self):
+        """The index is the authority the parity hashes describe; a CRLF blob
+        in a text file is a parity hazard waiting for the next checkout."""
+        offenders = [line for line in self._ls_files_eol()
+                     if line.startswith("i/crlf")]
+        self.assertEqual(offenders, [],
+                         "text files committed with CRLF line endings:\n  "
+                         + "\n  ".join(offenders))
+
+    def test_the_declared_binary_exclusions_are_still_binary(self):
+        text = _read(".gitattributes")
+        self.assertIn("bench/tasks/** -text", text,
+                      "the bench fixtures must stay excluded from normalization")
 
 
 class GitAttributesTest(unittest.TestCase):

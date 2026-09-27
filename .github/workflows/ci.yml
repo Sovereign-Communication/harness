@@ -13,6 +13,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # PLAT-parity-tests: line-ending hygiene is a property of the CHECKOUT, so
+  # it is checked on a fresh one, before anything else runs. A .gitattributes
+  # rule that makes files look modified is invisible to the rest of CI and
+  # fatal to the apply engine, which reads `git status --porcelain` as a
+  # node's diff (the 2026-09-27 matrix run found exactly that).
+  checkout-hygiene:
+    name: Checkout hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: A fresh checkout must be clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          dirty="$(git status --porcelain --untracked-files=no)"
+          if [ -n "$dirty" ]; then
+            echo "fresh checkout is dirty (line-ending or attribute rules):" >&2
+            echo "$dirty" >&2
+            git ls-files --eol | grep -E '^i/(crlf|-text)' >&2 || true
+            exit 1
+          fi
+          echo "working tree clean; eol inventory:"
+          git ls-files --eol | awk '{print $1}' | sort | uniq -c
+
   handoff-scope:
     name: Handoff ownership scope
     runs-on: ubuntu-latest

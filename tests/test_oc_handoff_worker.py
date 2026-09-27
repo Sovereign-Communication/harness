@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -115,7 +116,11 @@ class WorkerTests(unittest.TestCase):
         redirected.rmdir()
 
         def reports_link(path):
-            return path == redirected or original_is_symlink(path)
+            # Resolved comparison: the worker resolves the checkout root,
+            # which on Windows expands an 8.3 short name, so a raw ==
+            # comparison misses and the refusal never fires.
+            return (os.path.realpath(str(path)) == os.path.realpath(str(redirected))
+                    or original_is_symlink(path))
 
         with mock.patch.object(path_type, "is_symlink", reports_link):
             with self.assertRaisesRegex(ValueError, "worktree_parent_symlink_refused"):
