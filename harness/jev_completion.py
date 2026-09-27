@@ -380,9 +380,11 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "required_tests": [
             "tests/test_hourglass_brief.py",
             "tests/test_brief.py",
+            "tests/test_hg_condense_decompose.py",
         ],
         "required_files": [
             "harness/brief.py",
+            "harness/condenser.py",
         ],
         "user_facing": False,
     },

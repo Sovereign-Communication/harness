@@ -8,16 +8,29 @@ import ast
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from .brief import build_brief
 from .tokens import estimate_prompt_tokens
 
 
 @dataclass(frozen=True)
 class MicroBrief:
-    """A condensed architectural context packet."""
+    """A condensed architectural context packet.
+
+    ``pack`` is the HV-2 reconciliation: every MicroBrief carries the
+    schema-v2 evidence pack for the exact sources it condensed (same bytes,
+    same sha256 pins), so the condensed view and the evidence record can
+    never drift apart. The pack is built by ``brief``'s own owner functions
+    -- this module adds no second schema.
+    """
     summary: str
     file_signatures: Tuple[Tuple[str, str], ...] = ()
     condensed_errors: str = ""
     estimated_tokens: int = 0
+    pack: Optional[Dict] = None
+
+    def to_brief_pack(self) -> Optional[Dict]:
+        """The schema-v2 evidence pack for these condensed sources."""
+        return self.pack
 
     def to_prompt_context(self) -> str:
         """Format micro-brief into prompt context lines."""
@@ -138,8 +151,17 @@ def distill_context(
     max_tokens: int = 1500,
     focus_symbols: Optional[Sequence[str]] = None,
     summary: str = "",
+    now: Optional[float] = None,
 ) -> MicroBrief:
-    """Distill source files and errors into a compact MicroBrief under max_tokens."""
+    """Distill source files and errors into a compact MicroBrief under max_tokens.
+
+    The returned brief also carries a schema-v2 evidence pack (HV-2) built
+    from the same in-memory bytes through ``brief.build_brief``'s reader
+    seam: every condensed file becomes a cited source with its sha256,
+    byte count and observation time. Condensation therefore stays as
+    cheap as it was (no I/O: the caller already holds the bytes) while
+    its provenance is exactly the Hourglass brief schema.
+    """
     signatures: List[Tuple[str, str]] = []
     for path, content in sorted(files.items()):
         if path.endswith(".py"):
@@ -172,9 +194,16 @@ def distill_context(
         rendered = brief.to_prompt_context()
         tokens = estimate_prompt_tokens(rendered)
 
+    pack = build_brief(
+        summary or "context condensation",
+        sorted(files),
+        reader=lambda p: files[p],
+        now=now,
+    )
     return MicroBrief(
         summary=brief.summary,
         file_signatures=brief.file_signatures,
         condensed_errors=brief.condensed_errors,
         estimated_tokens=tokens,
+        pack=pack,
     )

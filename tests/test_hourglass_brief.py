@@ -293,5 +293,90 @@ class IndependentUseTests(unittest.TestCase):
             carried, reader=_reader(files)), [])
 
 
+class MicroBriefReconciliationTests(unittest.TestCase):
+    """HV-2: condenser.MicroBrief is reconciled onto the v2 schema.
+
+    Every MicroBrief must carry the schema-v2 evidence pack for the exact
+    bytes it condensed -- same files, same sha256 pins -- so the condensed
+    view and the evidence record can never drift apart. These assertions
+    are the condensation-parity gate: the two views describe one artifact.
+    """
+
+    FILES = {
+        "a.py": "def f():\n    return 1\n",
+        "b.py": "class B:\n    def m(self):\n        return 2\n",
+    }
+
+    def _micro(self, **kwargs):
+        from harness.condenser import distill_context
+        return distill_context(files=dict(self.FILES),
+                               summary="audit the ledger",
+                               now=1_700_000_000.0, **kwargs)
+
+    def test_micro_brief_carries_a_valid_v2_pack(self):
+        micro = self._micro()
+        pack = micro.to_brief_pack()
+        self.assertEqual(pack["schema_version"], BRIEF_SCHEMA_VERSION)
+        self.assertEqual(validate_brief(pack, reader=_reader(self.FILES)), [])
+
+    def test_pack_pins_the_exact_condensed_sources(self):
+        micro = self._micro()
+        pack = micro.to_brief_pack()
+        cited = {s["path"]: s for s in pack["grounding"]["sources"]}
+        condensed = dict(micro.file_signatures)
+        self.assertEqual(set(cited), set(condensed))
+        for path, source in cited.items():
+            self.assertEqual(source["sha256"], _sha(self.FILES[path]))
+            self.assertEqual(source["bytes"],
+                             len(self.FILES[path].encode("utf-8")))
+
+    def test_pruned_condensation_still_cites_every_source(self):
+        # Under a brutal token cap the prompt view shrinks, but the evidence
+        # pack still names every condensed file: pruning may narrow what
+        # ships, never what is acknowledged.
+        micro = self._micro(max_tokens=1)
+        pack = micro.to_brief_pack()
+        self.assertEqual({s["path"] for s in pack["grounding"]["sources"]},
+                         set(self.FILES))
+        self.assertEqual(validate_brief(pack, reader=_reader(self.FILES)), [])
+
+    def test_freshness_reports_drift_as_a_finding_not_a_crash(self):
+        pack = self._micro().to_brief_pack()
+        changed = dict(self.FILES)
+        changed["a.py"] = "def f():\n    return 999  # drifted\n"
+        report = freshness_report(pack, reader=_reader(changed))
+        self.assertFalse(report["fresh"])
+        self.assertEqual([s["path"] for s in report["stale"]], ["a.py"])
+        intact = freshness_report(pack, reader=_reader(self.FILES))
+        self.assertTrue(intact["fresh"])
+
+    def test_pack_estimate_is_measured_by_the_v2_owner(self):
+        pack = self._micro().to_brief_pack()
+        # The v2 owner measures the bytes the pack ships (the estimate field
+        # cannot measure itself), and the condenser's prompt estimate is a
+        # different, separately-tracked number.
+        shipped = {k: v for k, v in pack.items() if k != "estimated_tokens"}
+        self.assertEqual(pack["estimated_tokens"], estimate_brief_tokens(shipped))
+        self.assertGreater(pack["estimated_tokens"], 0)
+
+    def test_render_brief_needs_no_io_for_the_condensed_pack(self):
+        pack = self._micro().to_brief_pack()
+        rendered = render_brief(pack)
+        self.assertIn("audit the ledger", rendered)
+        self.assertIn("schema: v{0}".format(BRIEF_SCHEMA_VERSION), rendered)
+        self.assertIn("a.py", rendered)
+
+    def test_to_prompt_context_shape_is_unchanged_by_the_reconciliation(self):
+        text = self._micro().to_prompt_context()
+        self.assertIn("CONTEXT SUMMARY", text)
+        self.assertIn("CONDENSED FILE INTERFACES", text)
+        self.assertIn("File: a.py", text)
+
+
+def _sha(text):
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 if __name__ == "__main__":
     unittest.main()
