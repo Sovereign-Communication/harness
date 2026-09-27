@@ -34,6 +34,16 @@ packs/** text eol=lf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
 
+# bench/tasks/** are CRLF-encoded task fixtures that git classifies as binary
+# (`git ls-files --eol` reports `i/-text` for them). Forcing `text` on a path
+# git already refuses to normalize makes every fresh checkout report the file
+# as MODIFIED -- and a dirty tree is not cosmetic: the apply engine reads
+# `git status --porcelain` as the node's diff, so those files show up as
+# "undeclared writes outside target_files" and a plan run fails. Respect the
+# classification instead of overriding it; their bytes are fixture data, and
+# the bench compares content, not line endings.
+bench/tasks/** -text
+
 # Binary: never touched.
 *.png binary
 *.jpg binary
