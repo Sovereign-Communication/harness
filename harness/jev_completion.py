@@ -318,6 +318,19 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         ],
         "user_facing": False,
     },
+    "HV-4": {
+        # The row must cite a real merged PR before the phase can pass.
+        "pr_pattern": None,
+        "required_tests": [
+            "tests/test_hourglass_stage_composition.py",
+            "tests/test_hourglass_planning_budget.py",
+        ],
+        "required_files": [
+            "harness/stages.py",
+            "harness/config.py",
+        ],
+        "user_facing": False,
+    },
     "HV-3": {
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,
@@ -726,6 +739,7 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         "HV-1": re.compile(r"\bHV-1\b|stage-specific JEV integration", re.I),
         "HV-2": re.compile(r"\bHV-2\b|evidence-bearing context brief", re.I),
         "HV-3": re.compile(r"\bHV-3\b|token allowance and accounting owner", re.I),
+        "HV-4": re.compile(r"\bHV-4\b|stage composition", re.I),
         "CLAUDE-LANE": re.compile(r"CLAUDE-LANE", re.I),
         "OC-HANDOFF": re.compile(r"OC-HANDOFF", re.I),
     }

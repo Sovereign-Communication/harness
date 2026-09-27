@@ -207,6 +207,7 @@ statement covers the CI matrix by direct execution.
 | `harness/continuation.py` | the resumable-task state contract and its verification identity |
 | `harness/spend.py` | Cost-bounded spend: the governor that makes ceilings guarantees. Live pricing catalog, key identity, BYOK learning/denylist, free-model discovery, and the HUL-B dual envelope (`working_remaining = max - spent - terminal_reserve`; attempts never eat reserve; terminal findings may). |
 | `harness/token_budget.py` | the ONE owner of token allowances: per-call input/output maxima, composable stage/run reservations (a stage may only narrow its parent), honest `actual`/`estimated`/`unavailable` usage labels, and `snapshot()` for envelopes. Independent of spend.py's dollars -- neither can raise the other. |
+| `harness/stages.py` | the ONE owner of Hourglass stage composition: which of context/planning/execution/verification run, in what order, and why the others do not. Composes the brief, token-budget, and Jev stage-dimension owners rather than re-implementing them; a selected stage it does not run is reported `pending`, never dropped. |
 | `harness/mission_record.py` | HUL-A/B mission pack: mission.yaml schema, pack layout under missions/<id>/, STATUS generator, append-only receipts/jev_evals, dual-budget budget.json (delegates formula to spend.py) + resume.json, terminal findings helper |
 | `harness/convergence.py` | deterministic tally over panel votes + the rotating specialist lane |
 | `harness/errors.py` | shared exception types (`HarnessError`) |
