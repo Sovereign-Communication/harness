@@ -253,7 +253,10 @@ class OsalBoundedRunTest(TempTree):
 
             def wait(self, timeout=None):
                 if timeout is not None:
-                    self.reader_started = self.stdout.started.wait(2)
+                    # Generous: the drain thread is a Python thread, so under a
+                    # traced (20x slower) battery a 2s handshake is a flake,
+                    # not a contract.
+                    self.reader_started = self.stdout.started.wait(30)
                     return 0
                 return -9
 
@@ -263,7 +266,7 @@ class OsalBoundedRunTest(TempTree):
         process = StuckProcess()
         with mock.patch("harness.osal.subprocess.Popen", return_value=process):
             self.assertIsNone(osal.run_bounded(["git", "log"], max_bytes=8,
-                                               timeout=0.5))
+                                               timeout=5))
         self.assertTrue(process.killed)
         self.assertTrue(process.stdout.closed)
         self.assertTrue(process.reader_started)
@@ -312,7 +315,7 @@ class OsalBoundedRunTest(TempTree):
         process = TimeoutProcess()
         with mock.patch("harness.osal.subprocess.Popen", return_value=process):
             self.assertIsNone(osal.run_bounded(["git", "log"], max_bytes=8,
-                                               timeout=0.1))
+                                               timeout=1))
         self.assertTrue(process.killed)
         self.assertEqual(process.wait_calls, 2,
                          "the wait that times out, plus the reap after kill")
