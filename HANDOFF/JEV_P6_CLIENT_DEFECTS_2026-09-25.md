@@ -1,5 +1,8 @@
 # Harness owner handoff — three JEV-P6 / Jev-client defects measured during a Jev-only audit run
 
+> **All three fixed in #96 (merged 2026-09-27). One measurement outstanding.**
+> See "Status as of 2026-09-27" below. Kept open only for that measurement.
+
 <!-- HANDOFF-SCOPE-BEGIN -->
 scope: Harness
 owner: Sovereign-Communication/Harness
@@ -9,6 +12,41 @@ boundary: No foreign-repository findings, evidence, status, or remediation are i
 <!-- HANDOFF-SCOPE-END -->
 
 This is an assist-only handoff. The owning repository retains all decisions, edits, merges, and publication authority.
+
+## Status as of 2026-09-27 — all three defects fixed; one measurement still outstanding
+
+The three findings below are **fixed on `main`**. They were implemented by the
+owning lane in pull request **#96** (`fix/jev-p0-fixes`), merged
+**2026-09-27T03:20:20Z**, and independently re-verified against the merged code
+on `main` at `02d5f4286ba6064bc9ae84b32cbc1504e7b97f74`. This section was added
+after the fact; the finding text below is preserved exactly as measured.
+
+| # | Defect | Fix | Verified against the code |
+|---|---|---|---|
+| 1 | Score/expectation tolerance rejected correct provider output | #96 | Tolerance is now derived from the pack-declared `score_probability_precision`; the original pinning test is retained and still rejects; a new test still rejects above the new tolerance; a fully-keyed non-fallback live assessment returned `assessed` |
+| 2 | Billed-but-discarded answers, 94.1% on a 7-criteria axis | #96 | A `probabilities` subset that normalises onto the declared criteria is recoverable, unmatched options recorded as `None` and never as an invented `0.0`; an undeclared option, a non-normalising subset, and a score-legend mismatch all remain fatal; `coverage.billed_but_discarded` and `spend.discarded_cost_usd` / `discarded_input_tokens` are reported and rendered |
+| 3 | Any `HarnessError` reported as `stop_reason="run_budget"` | #96 | A spend refusal still reports `run_budget`; anything else reports `stop_reason="error"` with `stop_detail` carrying the exception type and message; `rate limit exceeded`-style errors stay out of the budget bucket |
+
+The full suite on that merged `main` is green: **2,163 tests, OK, 46 skipped,
+0 failures.**
+
+**What is not yet done.** Requested action 4 below — a keyed re-run at
+comparable volume reporting the post-fix billed-but-discarded rate — has **not**
+happened, so the improvement is currently demonstrated at the mechanism level
+and asserted at the rate level. The only keyed evidence committed since the fix
+is a single live vision-assessment call (`HV0_LIVE_PILOT_2026-09-26.md`) and a
+1,323-input-token self-audit aggregate; no committed artifact renders the
+"billed but discarded" line, so no post-fix measured rate exists in the
+repository. Requested actions 1, 2 and 3 are satisfied: the fixes are minimal,
+each lives in the module that owns the behaviour, they landed through the normal
+reviewed pull request path, and each carries the regression test this document
+asked for. The regression test for Finding 2 pins the *accounting* of the rate,
+which is what a hermetic test can pin; the *observed* rate on real traffic is
+what remains to be measured.
+
+These are findings about a revision, not about the product. The measurements
+were taken on `2cf24b5`; re-check rather than trusting this table if `main` has
+moved again.
 
 ## Context and measurement basis
 
@@ -47,14 +85,25 @@ This is an assist-only handoff. The owning repository retains all decisions, edi
 
 ## Requested owner action
 
-1. Treat Findings 1 and 2 as release blockers for Jev-dependent work: between them they make a real assessment un-completable and make a large fraction of paid calls produce nothing.
-2. Keep all three fixes minimal, in the module that owns the behaviour, and behind the owning lane's normal reviewed pull request path. Do not patch the release candidate directly.
-3. Add the regression tests described above before each fix so the measured rates quoted in this handoff become enforced floors.
-4. Re-run a keyed audit at comparable volume after the fixes and report the resulting billed-but-discarded rate, so the improvement is demonstrated rather than asserted.
+**Actions 1, 2 and 3 are complete** and are recorded above with the PR that
+discharged them. One action remains:
+
+1. Re-run a keyed audit at comparable volume after the fixes and report the
+   resulting billed-but-discarded rate, so the improvement is demonstrated
+   rather than asserted. The envelope now reports this figure per run, so the
+   number should come from a normal artifact rather than a separate tally. A run
+   in the same order of magnitude as the original (thousands of calls, not tens)
+   is what makes the comparison meaningful; the 7-criteria axis that discarded
+   94.1% of its answers is the case worth reporting, since a larger declared
+   vocabulary is where the defect was worst.
 
 ## Stopping condition
 
-Stop after one independent owner verdict per finding. The measurements above are reproduced evidence, not a merge recommendation, and no fix has been attempted in this lane.
+Stop after one independent owner verdict per finding. The measurements above are
+reproduced evidence, not a merge recommendation. The assist lane attempted no fix
+of its own; the fixes recorded above are the owning lane's work in #96. This
+document stays open only for the single outstanding measurement above, and can
+be closed once that rate is reported.
 
 ## Handoff boundary
 
