@@ -24,6 +24,12 @@ from .jev_packs import (
     LOG_FACTOR_SITE,
     PHASE_COMPLETION_SITE,
     REPO_SUMMARY_SITE,
+    HOURGLASS_STAGE_DIMENSIONS,
+    HOURGLASS_STAGE_PACK_ID,
+    HOURGLASS_STAGE_PACK_VERSION,
+    HOURGLASS_STAGE_SITE,
+    hourglass_stage_question_pack,
+    normalize_restart_target,
     VISION_ASSESSMENT_SITE,
     VISION_ASSESSMENT_MAX_REQUEST_TOKENS,
     VISION_ASSESSMENT_MAX_STATE_QUESTION_TOKENS,
@@ -271,6 +277,167 @@ class JevPolicy:
                     pass
             return self._record_refusal(
                 str(exc), site=site, task_id=task_id, node_id=node_id)
+
+    def evaluate_hourglass_stage(
+            self, dimension: str, state: Any, *,
+            site: str = HOURGLASS_STAGE_SITE,
+            task_id: Optional[str] = None,
+            node_id: Optional[str] = None,
+            max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+        """Judge ONE declared Hourglass stage dimension (HV-1).
+
+        Selectable typed integrations, one owner, one contract:
+
+        - ``dimension`` MUST be one of the operator-declared dimensions in
+          ``HOURGLASS_STAGE_DIMENSIONS``; an unknown dimension raises rather
+          than inventing a question set;
+        - every signal is read through the official answer shapes. An
+          unkeyed, transport-failed, malformed, or out-of-vocabulary answer
+          leaves that signal ``None`` and the whole judgment ``native=False``
+          -- a fallback is never promoted to a native signal;
+        - ``restart_target`` may only ever yield a DECLARED stage; an
+          out-of-vocabulary choice is reported ``None``. Deciding whether
+          that recommendation is an allowed transition belongs to code
+          (``validate_restart_request``), not to Jev;
+        - one preflight reservation, one dispatch, one settlement, one
+          metadata-only ledger ``jev_eval`` on every path.
+
+        Returns ``(result, structural)`` where ``structural`` carries the
+        declared signals, the capability/pack identity, and the honest
+        native/fallback state.
+        """
+        questions = hourglass_stage_question_pack(dimension)
+        spec = HOURGLASS_STAGE_DIMENSIONS[dimension]
+        signals = list(spec["signals"])
+
+        def noul_value(answers, key):
+            value = (answers or {}).get(key)
+            if isinstance(value, dict) and "noul" in value:
+                value = value.get("noul")
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            value = float(value)
+            return value if 0.0 <= value <= 1.0 else None
+
+        def choice_value(answers, key):
+            value = (answers or {}).get(key)
+            if not isinstance(value, dict):
+                return None
+            declared = set(questions[key].get("criteria") or {})
+            choice = normalize_restart_target(value.get("choice"))
+            if choice is None or choice not in declared:
+                return None
+            confidence = value.get("confidence")
+            if (isinstance(confidence, bool)
+                    or not isinstance(confidence, (int, float))):
+                return None
+            return {"target": choice, "confidence": float(confidence),
+                    "unmatched_options": list(value.get("unmatched_options") or [])}
+
+        def read(answers):
+            out: Dict[str, Any] = {}
+            for key in signals:
+                if key == "restart_target":
+                    out[key] = choice_value(answers, key)
+                else:
+                    out[key] = noul_value(answers, key)
+            return out
+
+        def envelope_payload(result, values, live):
+            return {**values, "pack_version": HOURGLASS_STAGE_PACK_VERSION,
+                    "native": bool(live)}
+
+        def finish(result, values, live, reservation=None):
+            structural = self._account(
+                result, site=site, task_id=task_id, node_id=node_id,
+                reservation=reservation,
+                event_metadata={
+                    "capability": HOURGLASS_STAGE_SITE,
+                    "pack_id": HOURGLASS_STAGE_PACK_ID,
+                    "pack_version": HOURGLASS_STAGE_PACK_VERSION,
+                    "dimension": dimension,
+                    "result_state": "judged" if live else "unavailable",
+                    "fallback_state": (
+                        "not_used" if live else
+                        "fallback" if result.is_fallback else "invalid"),
+                    "native": bool(live),
+                })
+            structural.update({
+                "capability": HOURGLASS_STAGE_SITE,
+                "pack_id": HOURGLASS_STAGE_PACK_ID,
+                "pack_version": HOURGLASS_STAGE_PACK_VERSION,
+                "dimension": dimension,
+                "declared_signals": signals,
+                "native": bool(live),
+                **{key: values.get(key) for key in signals},
+            })
+            return result, structural
+
+        if not self.keyed:
+            values = {key: None for key in signals}
+            fallback = JevEvaluationResult(
+                "fail", 0.0, 0.0, envelope_payload(None, values, False),
+                ["unkeyed Jev cannot judge " + dimension],
+                is_fallback=True, model=self.evaluator.model)
+            return finish(fallback, values, False)
+
+        reservation = None
+        try:
+            reservation = self._preflight(site=site, max_input_tokens=max_input_tokens)
+            raw = self.evaluator.evaluate(state, questions)
+            answers = raw.answers if isinstance(raw.answers, dict) else {}
+            values = read(answers)
+            live = (not raw.is_fallback
+                    and all(values.get(key) is not None for key in signals))
+            if not live:
+                values = {key: None for key in signals}
+            result = JevEvaluationResult(
+                raw.verdict if raw.verdict in ("pass", "fail") else "fail",
+                float(raw.confidence or 0.0),
+                raw.supported, envelope_payload(raw, values, live),
+                list(raw.reasons or []),
+                cost=raw.cost, input_tokens=raw.input_tokens,
+                output_tokens=raw.output_tokens,
+                is_fallback=bool(raw.is_fallback), model=raw.model,
+                discarded=bool(raw.discarded))
+            settled = self._account(
+                result, site=site, task_id=task_id, node_id=node_id,
+                reservation=reservation,
+                event_metadata={
+                    "capability": HOURGLASS_STAGE_SITE,
+                    "pack_id": HOURGLASS_STAGE_PACK_ID,
+                    "pack_version": HOURGLASS_STAGE_PACK_VERSION,
+                    "dimension": dimension,
+                    "result_state": "judged" if live else "unavailable",
+                    "fallback_state": (
+                        "not_used" if live else
+                        "fallback" if raw.is_fallback else "invalid"),
+                    "native": bool(live),
+                })
+            reservation = None
+            structural = settled
+            structural.update({
+                "capability": HOURGLASS_STAGE_SITE,
+                "pack_id": HOURGLASS_STAGE_PACK_ID,
+                "pack_version": HOURGLASS_STAGE_PACK_VERSION,
+                "dimension": dimension,
+                "declared_signals": signals,
+                "native": bool(live),
+                **{key: values.get(key) for key in signals},
+            })
+            return result, structural
+        except HarnessError as exc:
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            values = {key: None for key in signals}
+            fallback = JevEvaluationResult(
+                "fail", 0.0, 0.0, envelope_payload(None, values, False),
+                ["hourglass stage judgment unavailable: " + str(exc)],
+                is_fallback=False, model=self.evaluator.model)
+            return finish(fallback, values, False)
 
     def evaluate_answer(
             self, prompt: str, answer: str, context: str = "", *,
