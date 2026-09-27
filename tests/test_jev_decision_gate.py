@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from harness.config import load_settings
+from harness.errors import HarnessError
 from harness.jev import JevEvaluationResult, _validate_questions
 from harness.jev_packs import (
     DECISION_CALIBRATION_CASES,
@@ -240,3 +241,88 @@ class DecisionCalibrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DecisionGateMalformedSignalTests(unittest.TestCase):
+    """Fail-closed coverage for malformed Jev signals (D12)."""
+
+    def _verdict(self, answers):
+        return compose_decision_verdict(_decision_result(answers))
+
+    def test_non_numeric_destructive_noul_escalates(self):
+        bad = _decision_answers()
+        bad["is_destructive"] = {"type": "noul", "noul": "high"}
+        verdict = self._verdict(bad)
+        self.assertEqual(verdict["verdict"], "escalate")
+        self.assertIn("is_destructive", verdict["reasons"][0])
+
+    def test_bool_advances_goal_noul_escalates(self):
+        bad = _decision_answers()
+        bad["advances_goal"] = {"type": "noul", "noul": True}
+        verdict = self._verdict(bad)
+        self.assertEqual(verdict["verdict"], "escalate")
+        self.assertIn("advances_goal", verdict["reasons"][0])
+
+    def test_out_of_range_noul_escalates(self):
+        bad = _decision_answers()
+        bad["is_destructive"] = {"type": "noul", "noul": 1.5}
+        verdict = self._verdict(bad)
+        self.assertEqual(verdict["verdict"], "escalate")
+
+    def test_non_finite_noul_escalates(self):
+        bad = _decision_answers()
+        bad["advances_goal"] = {"type": "noul", "noul": float("nan")}
+        verdict = self._verdict(bad)
+        self.assertEqual(verdict["verdict"], "escalate")
+
+    def test_wrong_type_disposition_answer_escalates(self):
+        bad = _decision_answers()
+        bad["disposition"] = {"type": "noul", "noul": 0.9}
+        verdict = self._verdict(bad)
+        self.assertEqual(verdict["verdict"], "escalate")
+        self.assertIn("disposition", verdict["reasons"][0])
+
+    def test_malformed_disposition_confidence_escalates(self):
+        bad = _decision_answers()
+        bad["disposition"] = {"type": "choice", "choice": "proceed",
+                              "confidence": "high"}
+        verdict = self._verdict(bad)
+        self.assertEqual(verdict["verdict"], "escalate")
+        self.assertIn("disposition", verdict["reasons"][0])
+
+
+class EvaluateDecisionRefusalTests(unittest.TestCase):
+    """The HarnessError path: settle the reservation, record the refusal."""
+
+    def _ledger(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        return AutonomyLedger(os.path.join(td.name, "ledger.jsonl"))
+
+    def test_evaluator_error_settles_reservation_and_records_refusal(self):
+        class _ExplodingEvaluator:
+            model = "stub"
+            api_key = "jev-key"
+
+            def evaluate(self, state, questions):
+                raise HarnessError("TypeSafe transport exploded")
+
+        governor = SpendGovernor(
+            FakeTransport(models=[m("jev-test", prompt="0", completion="0")]),
+            "sk-test", max_cost=0.10)
+        ledger = self._ledger()
+        settings = load_settings({"jev_api_key": "jev-key"})
+        policy = policy_for(settings, governor=governor, ledger=ledger,
+                            evaluator=_ExplodingEvaluator())
+        verdict, structural = policy.evaluate_decision(
+            "merge the PR", "land the fix", "green CI", task_id="t9")
+        self.assertEqual(verdict["verdict"], "escalate")
+        self.assertTrue(
+            verdict["reasons"][0].startswith("evaluation refused: "))
+        self.assertIn("TypeSafe transport exploded", verdict["reasons"][0])
+        self.assertEqual(governor.spent, 0.0)
+        self.assertEqual(structural["cost"], 0.0)
+        events = ledger.entries()
+        self.assertEqual([e["event"] for e in events], ["jev_refusal"])
+        self.assertEqual(events[0]["site"], DECISION_SITE)
+        self.assertEqual(events[0]["reason"], "TypeSafe transport exploded")
