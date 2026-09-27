@@ -309,15 +309,44 @@ def atomic_write_text(path, content, follow=False, newline="preserve"):
 # paths: one normalization, one containment test, one display form
 # --------------------------------------------------------------------------
 
+_CASE_INSENSITIVE_FS = None
+
+
+def _fs_case_insensitive():
+    """True when the filesystem names files case-insensitively.
+
+    Probed on the real filesystem, never guessed from ``os.name``: the
+    default macOS volume folds case while ``posixpath.normcase`` is a
+    no-op there, so a Windows-only fold made ``same_path("A", "a")``
+    disagree with the filesystem (caught by the 2026-09-27 macOS matrix
+    run). Probed once, in the system temp volume.
+    """
+    global _CASE_INSENSITIVE_FS
+    if _CASE_INSENSITIVE_FS is None:
+        import shutil
+        probe_dir = tempfile.mkdtemp(prefix="osal-case-")
+        try:
+            probe = os.path.join(probe_dir, "CaseProbe.txt")
+            with open(probe, "w", encoding="utf-8"):
+                pass
+            _CASE_INSENSITIVE_FS = os.path.exists(probe.upper())
+        finally:
+            shutil.rmtree(probe_dir, ignore_errors=True)
+    return _CASE_INSENSITIVE_FS
+
+
 def norm_path(path):
     """Absolute, symlink-resolved, case-normalized path for COMPARISON.
 
     Windows and macOS filesystems are case-insensitive, so ``C:/Repo`` and
     ``c:/repo`` name the same file there and different files on Linux.
-    ``normcase`` encodes exactly that difference, which is why every
-    containment check goes through here instead of comparing raw strings.
+    ``normcase`` only encodes that difference on Windows -- so the fold
+    here is applied wherever the FILESYSTEM folds (see
+    ``_fs_case_insensitive``), which is why every containment check goes
+    through here instead of comparing raw strings.
     """
-    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+    out = os.path.normcase(os.path.realpath(os.path.abspath(path)))
+    return out.lower() if _fs_case_insensitive() else out
 
 
 def same_path(a, b):

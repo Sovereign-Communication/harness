@@ -342,8 +342,10 @@ class OsalPathTest(TempTree):
         path = self.path("CaseSensitive.py")
         open(path, "w").close()
         folded = osal.norm_path(path) == osal.norm_path(path.upper())
-        self.assertEqual(folded, not osal.IS_POSIX or sys.platform == "darwin"
-                         or os.path.exists(path.upper()))
+        # The filesystem is the authority -- not os.name, not sys.platform:
+        # default macOS volumes fold case even though posixpath.normcase
+        # does not, and a case-sensitive volume on any OS does not.
+        self.assertEqual(folded, os.path.exists(path.upper()))
 
     def test_same_path_and_is_within(self):
         inside = self.path("pkg", "mod.py")
