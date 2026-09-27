@@ -201,8 +201,15 @@ class AutonomyLedger(LedgerAnalytics):
                 lf.close()
 
     def _persist(self, line):
-        """Append one canonical line (caller holds the file lock)."""
-        with open(self.path, 'a', encoding='utf-8') as f:
+        """Append one canonical line (caller holds the file lock).
+
+        PLAT-parity: ``newline=""`` means the appended byte is always LF.
+        The text-mode default would write CRLF on Windows, so the same
+        chain would be two different evidence files on two platforms -- and
+        a parity hash over the ledger would only ever match the machine
+        that produced it.
+        """
+        with open(self.path, 'a', encoding='utf-8', newline='') as f:
             f.write(line + chr(10))
             f.flush()
             os.fsync(f.fileno())  # torn-line resistance: never lose the tail
@@ -474,7 +481,7 @@ class AutonomyLedger(LedgerAnalytics):
         """Atomically replace one segment file with the given valid entries
         (tmp + fsync + replace, so a crash never leaves half a segment)."""
         tmp = self.path + ".repair.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
             for e in entries:
                 f.write(_canon(e) + chr(10))
             f.flush()

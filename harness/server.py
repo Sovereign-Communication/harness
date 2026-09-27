@@ -38,6 +38,7 @@ from .batch import BatchOptions
 from .config import (HARD_MAX_COST, HARD_TASK_MAX_COST, load_settings,
                      resolve_api_key, update_config)
 from .errors import HarnessError, ToolCancelled
+from . import osal
 from .history import delete_chat_session, list_chat_sessions, load_chat_history as _history_load_chat_history
 from .session import (apply_session, governor_for, ledger_for, run_meta)
 
@@ -1036,10 +1037,24 @@ class UiRequestHandler(BaseHTTPRequestHandler):
 
 
 
+class UiServer(ThreadingHTTPServer):
+    """Loopback UI server with the Windows port-hijack hole closed.
+
+    ``ThreadingHTTPServer`` sets ``allow_reuse_address`` (SO_REUSEADDR), which
+    on Windows lets a *second* process bind a port that is already being
+    served -- so another process could take over the UI, and with it the auth
+    token that authorizes /api writes. POSIX needs the flag to rebind after
+    TIME_WAIT, so it stays there; Windows does not (osal.HARDEN_REUSE owns
+    the platform answer).
+    """
+
+    allow_reuse_address = not osal.HARDEN_REUSE
+
+
 def make_server(host="127.0.0.1", port=8765, auth_token=None):
-    """Build the ThreadingHTTPServer with its UiState attached."""
+    """Build the UI server with its UiState attached."""
     ui = UiState(auth_token=auth_token)
-    httpd = ThreadingHTTPServer((host, port), UiRequestHandler)
+    httpd = UiServer((host, port), UiRequestHandler)
     httpd.daemon_threads = True
     httpd.ui = ui
     ui.install_event_sink()
@@ -1071,8 +1086,7 @@ def main(argv=None):
         print("[OK] /api routes require header X-Harness-Auth: <your token>",
               file=sys.stderr)
     if opts.open:
-        import webbrowser
-        webbrowser.open(url)
+        osal.open_url(url)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

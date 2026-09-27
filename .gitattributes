@@ -1,2 +1,44 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Line endings are a platform fact, not a repository fact (PLAT-parity-tests).
+#
+# Everything in the working tree is LF. The parity hashes in
+# tests/test_plat_parity_*.py are computed over bytes, so a Windows checkout
+# that laundered CRLF into the evidence files would fail them -- which is the
+# intent: the ledger, the Jev report and the site bundle are written with
+# newline="" precisely so the tree's line endings cannot change their bytes.
+#
+# `text=auto` alone is not enough: it normalizes on commit but leaves the
+# working tree to the platform, so a Windows clone would keep CRLF for files
+# git believed were text. `eol=lf` states the working-tree form explicitly.
+* text=auto eol=lf
+
+# Canonical evidence and fixtures: LF everywhere, always.
+harness/** text eol=lf
+tests/** text eol=lf
+audits/** text eol=lf
+docs/** text eol=lf
+packs/** text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.cfg text eol=lf
+*.txt text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+
+# Genuinely Windows-only scripts keep the platform's own line endings: a
+# .bat/.cmd file with LF endings is a real (if rare) failure mode on cmd.exe.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary: never touched.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.whl binary

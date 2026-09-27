@@ -38,18 +38,24 @@ leave it unset only for stages that genuinely need Opus judgment.
 
 ## Gates (paste raw tails in every PR)
 
+The gate commands live as argv data in `harness/gate_runner.py`, so they are
+correct on every platform; ask the product instead of copying a command line
+(this block used to hardcode `.venv/Scripts/python.exe`, which was only ever
+right on Windows):
+
 ```bash
-.venv/Scripts/python.exe -m ruff check harness tests audits
-.venv/Scripts/python.exe -m compileall -q harness tests
-.venv/Scripts/python.exe -W error::ResourceWarning -m unittest discover -s tests
-.venv/Scripts/python.exe audits/self/audit.py        # must print "bar met"
-.venv/Scripts/python.exe -m harness.cli jev-phase --phase <ID> --repo-root . --local-only
+python -m harness.cli gates                # every gate, this platform's exact command
+python -m harness.cli gates --run ruff      # ...or just run one
+python -m harness.cli gates --run jev-phase --phase <ID>
 ```
+
+Do not hand-write a gate command. If a new gate belongs in the set, add it to
+`GATES` in `harness/gate_runner.py` (argv template, `{python}` resolved from
+`sys.executable`) and it appears here, in the docs, and in CI at once.
 
 `audits/self/audit.py` rewrites `audits/self/round2_scores.json`; commit it
 only with a BAR MET result. D5 reads installed metadata: after a version bump
-run `.venv/Scripts/python.exe -m pip install -e ".[dev]"` or D5 fails locally.
-
+run `python -m pip install -e ".[dev]"` or D5 fails locally.
 ## Harness MCP in Claude Code
 
 Registered per machine (local scope, observe-only by default):
@@ -57,6 +63,9 @@ Registered per machine (local scope, observe-only by default):
 ```bash
 claude mcp add harness --scope local -e HARNESS_MCP_ALLOWED_ROOTS=<repo path> -- <repo>/.venv/Scripts/python.exe -m harness.mcp
 ```
+
+(Windows path shown; use `<repo>/.venv/bin/python` on Linux/macOS — see
+`docs/mcp.md`.)
 
 Writes (`apply_edit`) and paid verification stay refused unless
 `HARNESS_MCP_ALLOW_WRITE` / `HARNESS_MCP_ALLOW_VERIFY` or per-call confirmation

@@ -1,69 +1,69 @@
 {
   "scores": {
-    "A": 10.0,
-    "R": 10.0,
+    "A": 8.46,
+    "R": 9.29,
     "SM": 10.0,
-    "SD": 10.0
+    "SD": 9.17
   },
   "jev_scores": {
-    "A": 10.0,
-    "R": 10.0,
-    "SM": 10.0,
-    "SD": 10.0
+    "A": 9.0,
+    "R": 9.0,
+    "SM": 9.0,
+    "SD": 9.0
   },
-  "jev_gate_pass": true,
+  "jev_gate_pass": false,
   "jev_eval": {
     "dimensions": {
       "A": {
         "name": "Security",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 2,
+        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
+        "score": 9.0,
+        "bar_met": false,
+        "confidence": 0.62,
         "evaluated": true
       },
       "R": {
         "name": "Reliability",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 2,
+        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
+        "score": 9.0,
+        "bar_met": false,
+        "confidence": 0.78,
         "evaluated": true
       },
       "SM": {
         "name": "Structural hygiene & maintainability",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 2,
+        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
+        "score": 9.0,
+        "bar_met": false,
+        "confidence": 0.55,
         "evaluated": true
       },
       "SD": {
         "name": "Documentation & release integrity",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.96,
+        "level_index": 2,
+        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
+        "score": 9.0,
+        "bar_met": false,
+        "confidence": 0.98,
         "evaluated": true
       }
     },
     "scores": {
-      "A": 10.0,
-      "R": 10.0,
-      "SM": 10.0,
-      "SD": 10.0
+      "A": 9.0,
+      "R": 9.0,
+      "SM": 9.0,
+      "SD": 9.0
     },
-    "bar_95_pass": true,
-    "min_score": 10.0,
+    "bar_95_pass": false,
+    "min_score": 9.0,
     "is_fallback": false,
     "reasons": [],
     "model": "jev-1.13.0",
-    "cost": 5.5565999999999995e-06,
-    "input_tokens": 1323,
+    "cost": 5.544e-06,
+    "input_tokens": 1320,
     "output_tokens": 60
   },
   "checks": {
@@ -101,8 +101,8 @@
       {
         "id": "A6",
         "label": "gate runner shell-free + timeout",
-        "score": 1.0,
-        "evidence": "default_run_verify: shlex tokenization + shell=False + timeout kill; apply_gate runs gates through it"
+        "score": 0.0,
+        "evidence": "filesafety=False wired=True"
       },
       {
         "id": "A7",
@@ -113,8 +113,8 @@
       {
         "id": "A8",
         "label": "atomic write: symlink refusal + mode preservation",
-        "score": 1.0,
-        "evidence": "_atomic_write: temp staged in target dir, os.replace, mode preserved, symlink refused; apply_gate writes only through it"
+        "score": 0.0,
+        "evidence": "atomic=False gate_uses=['_atomic_write', 'backup_file']"
       },
       {
         "id": "A9",
@@ -223,8 +223,8 @@
       {
         "id": "R13",
         "label": "full suite green hermetically",
-        "score": 1.0,
-        "evidence": "unittest: Ran 2163 tests in 235.821s\n\nOK"
+        "score": 0.0,
+        "evidence": "[TOTAL] actual cost this run: $0.000003 (ceiling: $0.050000)\n[ledger] ignoring 1 non-segment file(s) matching 'l.jsonl.*' (not a rotation name): l.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'l.jsonl.*' (not a rotation name): l.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[waist] Confirmation unreachable across ladder (HTTP 429: Provider returned error); degrading to local-gate execution (verdict=unavailable)\n[plan] Critique re-planning failed (decomposition service unavailable); retaining initial result\n[plan] LLM decomposition attempt 1 failed (HTTP 429: rate limited); retrying\n[plan] LLM decomposition failed (HTTP 429: rate limited); loud heuristic fallback\n[plan] LLM decomposition attempt 1 failed (HTTP 429: rate limited); retrying\n[plan] LLM decomposition failed (HTTP 429: rate limited); loud heuristic fallback\n[plan] LLM decomposition attempt 1 failed (HTTP 429: rate limited); retrying\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n----------------------------------------------------------------------\nRan 2291 tests in 303.322s\n\nOK (skipped=51)\n"
       },
       {
         "id": "R14",
@@ -268,7 +268,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "73/73 modules imported by tests"
+        "evidence": "75/75 modules imported by tests"
       },
       {
         "id": "S7",
@@ -353,8 +353,8 @@
       {
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
-        "score": 1.0,
-        "evidence": "changed harness lines are suite-executed"
+        "score": 0.0,
+        "evidence": "changed-line coverage 186/208 = 89% (bar 95%) vs baseline c8535687b6; untested: cli.py:1065,1214,1215,1217,1218,1226; cli_parser.py:432; config.py:75,423,424; filesafety.py:21,73,89; jev_completion.py:23,481; ledger.py:212; server.py:1051,1057,1089; ui.py:68; worktree.py:63,64"
       }
     ]
   }

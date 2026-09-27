@@ -704,10 +704,50 @@ Config keys (env-overridable):
 - `HARNESS_JUDGE_TOP` (smartest judge per tier)
 - `HARNESS_ALLOW_ESCALATION` (opt-in gate)
 
+## Platform support
+
+Harness is one product that runs on Linux, macOS and Windows, and the claim is
+enforced rather than asserted: the hermetic suite and an installed-wheel smoke
+test run on all three in CI (`PLAT-ci-matrix`), and the parity tests
+(`tests/test_plat_parity_*.py`) pin the *bytes* of the canonical outputs --
+the ledger chain, the Jev report, the site export bundle -- so a platform that
+writes different bytes fails the build instead of producing a different
+evidence file.
+
+| Surface | Linux | macOS | Windows | Evidence |
+|---|---|---|---|---|
+| CLI (`harness`, `python -m harness.cli`) | supported | supported | supported | hermetic suite on all three runners |
+| MCP server (`harness-mcp`) | supported | supported | supported | installed-wheel smoke on all three runners |
+| Verify / stage gates | supported | supported | supported | `tests/test_plat_cmd_runnable.py` (argv data, no shell) |
+| Parity: ledger, Jev report, site export | byte-identical | byte-identical | byte-identical | `tests/test_plat_parity_*.py` pinned SHA-256 |
+| Ledger / evidence line endings | LF | LF | LF (forced) | `newline=""` on every evidence write; `.gitattributes` `eol=lf` |
+| Key-file permission warning | enforced (mode bits) | enforced (mode bits) | not modelled (ACL) | `harness/osal.py` `keyfile_mode` |
+| Allowed-roots case handling | case-sensitive FS | case-insensitive, normalized | case-insensitive, normalized | `osal.norm_path` + `osal.is_within` |
+| Desktop shell (`harness desktop`) | needs a browser fallback | needs a browser fallback | needs a browser fallback | `pywebview` is optional; browser fallback is the tested path |
+| Native `SO_REUSEADDR` on the UI port | kept (TIME_WAIT rebind) | kept | dropped (port-hijack hole) | `osal.HARDEN_REUSE` |
+| Lint / audit / Jev bar gate | Ubuntu only | -- | -- | one platform for the verdict |
+
+The platform-shaped code is not scattered: `harness/osal.py` owns process
+launch, text I/O, atomic writes, path comparison, key-file permissions and
+the browser hand-off, and `tests/test_osal_boundary.py` fails the build if
+another module reaches for `subprocess`, `os.name`, `sys.platform` or
+`webbrowser` directly. Documented gates live as argv data in
+`harness/gate_runner.py` -- ask the product what to run instead of guessing a
+shell:
+
+```bash
+python -m harness.cli gates             # this platform's exact commands
+python -m harness.cli gates --run ruff  # ...or just run one
+```
+
+Line endings are a platform fact, not a repository fact: everything in the
+working tree is LF (`.gitattributes`), so a Windows clone cannot launder CRLF
+into the evidence files the parity hashes cover.
+
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v
+python -m harness.cli gates --run unittest   # or: python -m unittest discover -s tests -v
 ```
 
 hermetic tests — no network, no key. They pin: per-token pricing (regression

@@ -44,6 +44,7 @@ from .apply_gate import GatePolicy
 from .prompts import (
     MAX_FILE_LINES, MAX_APPLY_ROUNDS,
 )
+from . import osal
 from .filesafety import (_line_count, default_run_verify, validate_target_file,
                           validate_verify_command, VERIFY_TIMEOUT)
 
@@ -103,21 +104,23 @@ class ApplyEngine(ApplyEngineMixin):
         self.use_free = bool(use_free)
         # Optional filesystem jail for library/CLI apply (MCP already enforces
         # roots). Empty/None leaves the historical unrestricted CLI behavior.
-        self.allowed_roots = [
-            os.path.realpath(os.path.abspath(r))
-            for r in (allowed_roots or [])
-            if r
-        ]
+        self.allowed_roots = osal.normalize_roots(
+            [r for r in (allowed_roots or []) if r])
         self.gate = GatePolicy(ledger, governor, transport, api_key,
                                jev_policy=jev_policy)
 
     def _enforce_roots(self, file_path):
-        """Refuse targets outside configured allowed_roots (realpath)."""
+        """Refuse targets outside configured allowed_roots.
+
+        osal.is_within is the ONE containment test: realpath on both sides so
+        a symlinked parent cannot smuggle a write out of the tree, and
+        case-normalized so ``C:/Repo`` and ``c:/repo`` cannot disagree on
+        Windows or macOS (PLAT-osal-module).
+        """
         if not self.allowed_roots:
             return
-        real = os.path.realpath(file_path)
         for root in self.allowed_roots:
-            if real == root or real.startswith(root + os.sep):
+            if osal.is_within(file_path, root):
                 return
         raise HarnessError(
             f"file_path outside allowed_roots: {file_path} "

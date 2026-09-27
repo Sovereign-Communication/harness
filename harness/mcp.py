@@ -7,7 +7,6 @@ harness/mcp_schemas.py as pure data, and the lane-scheduling policy
 """
 import json
 import math
-import os
 import sys
 import threading
 import time
@@ -24,6 +23,7 @@ from .config import resolve_hourglass
 from .dag import TaskDAG
 from .waist import compose_plan
 from .errors import HarnessError, ToolCancelled
+from . import osal
 from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
 from .mcp_lanes import LANES, lane_for
 from .mcp_schemas import TOOL_SCHEMAS
@@ -152,8 +152,7 @@ class McpServer:
         # enabled merely because a protocol client can reach this process.
         self.allow_verify = bool(allow_verify)
         self.allow_write = bool(allow_write)
-        self.allowed_roots = [os.path.realpath(os.path.abspath(root))
-                              for root in (allowed_roots or [])]
+        self.allowed_roots = osal.normalize_roots(allowed_roots or [])
 
     # ---------------- deadlines + cancellation ----------------
     def _note_start(self, request_id):
@@ -599,8 +598,7 @@ class McpServer:
                     "MCP apply requires at least one configured allowed root",
                     task_id=args.get("task_id"), model=args.get("model"))
             for target_file in target_files:
-                target = os.path.realpath(os.path.abspath(target_file))
-                if not any(target == root or target.startswith(root + os.sep)
+                if not any(osal.is_within(target_file, root)
                            for root in self.allowed_roots):
                     self._refuse(
                         "mcp file outside allowed roots",
@@ -685,8 +683,7 @@ class McpServer:
                     "mcp continue with no allowed roots configured",
                     "MCP continue_work requires at least one configured allowed root",
                     task_id=args.get("task_id"))
-            target = os.path.realpath(os.path.abspath(continuation["file_path"]))
-            if not any(target == root or target.startswith(root + os.sep)
+            if not any(osal.is_within(continuation["file_path"], root)
                        for root in self.allowed_roots):
                 self._refuse(
                     "mcp file outside allowed roots",

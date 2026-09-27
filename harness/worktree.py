@@ -20,10 +20,10 @@ execution — the caller decides whether that is acceptable; planning may
 degrade, spending may not (no cost semantics live here).
 """
 import os
-import subprocess
 import uuid
 
 from .errors import HarnessError
+from . import osal
 
 GIT_TIMEOUT = 30
 
@@ -55,17 +55,17 @@ def _declared_relpaths(declared, *roots):
 
 
 def _git(repo, *args):
-    """One git subprocess in ``repo``; HarnessError on failure."""
-    try:
-        proc = subprocess.run(
-            ["git", "-C", repo, *args], capture_output=True, text=True,
-            timeout=GIT_TIMEOUT, shell=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise HarnessError(f"git {' '.join(args[:2])} failed: {exc}") from None
-    if proc.returncode != 0:
+    """One git subprocess in ``repo``; HarnessError on failure.
+
+    osal.run is the only process launcher (PLAT-osal): argv list, no shell,
+    so a repo path with a space or a backslash behaves the same everywhere.
+    """
+    result = osal.run(["git", "-C", repo, *args], timeout=GIT_TIMEOUT)
+    if result.returncode != 0:
         raise HarnessError(
-            f"git {' '.join(args[:2])} failed: {proc.stderr.strip()[:300]}")
-    return proc.stdout
+            f"git {' '.join(args[:2])} failed: "
+            f"{(result.stderr or result.stdout).strip()[:300]}")
+    return result.stdout
 
 
 class WorktreeIsolation:
