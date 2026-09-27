@@ -384,6 +384,7 @@ _ENV_NAMES = {
     "hourglass_parallel": "HARNESS_HOURGLASS_PARALLEL",
     "hourglass_require_attestation": "HARNESS_HOURGLASS_REQUIRE_ATTESTATION",
     "hourglass_decompose": "HARNESS_HOURGLASS_DECOMPOSE",
+    "hourglass_stages": "HARNESS_HOURGLASS_STAGES",
     "openrouter_floor_default": "HARNESS_OPENROUTER_FLOOR",
     "max_price_prompt": "HARNESS_MAX_PRICE_PROMPT",
     "max_price_completion": "HARNESS_MAX_PRICE_COMPLETION",
@@ -490,6 +491,21 @@ def _split_list(value):
     return [x.strip() for x in value.split(",") if x.strip()]
 
 
+def _stage_list(value):
+    """Declared Hourglass stage names, or None for "every stage".
+
+    Validation of the names themselves belongs to the ONE composition owner
+    (``harness/stages.py``); config only splits, so an unknown name is
+    refused where the stage ladder is resolved rather than silently dropped
+    here.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return _split_list(str(value)) or None
+
+
 def _dedup(seq):
     out = []
     for x in seq:
@@ -508,7 +524,7 @@ class Settings:
                   mcp_tool_timeout=1800, mcp_auth_token=None, frontier_model=None,
                   hourglass_confirm=True, hourglass_isolate=True,
                   hourglass_parallel=True, hourglass_require_attestation=True,
-                  hourglass_decompose=None,
+                  hourglass_decompose=None, hourglass_stages=None,
                   openrouter_floor_default=True, max_price_prompt=None,
                   max_price_completion=None, jev_api_key=None,
                   jev_endpoint="https://api.typesafe.ai/v1/systemone",
@@ -566,6 +582,10 @@ class Settings:
         # None = resolve_hourglass derives the default (True when the
         # hourglass is active: confirm and/or parallel on).
         self.hourglass_decompose = hourglass_decompose
+        # None = every declared stage is selected: the hourglass is the
+        # product's default posture, and HV-4 adds opt-out, never opt-in.
+        # harness/stages.py owns the resolution and validates the names.
+        self.hourglass_stages = hourglass_stages
         self.openrouter_floor_default = openrouter_floor_default
         self.max_price_prompt = max_price_prompt
         self.max_price_completion = max_price_completion
@@ -589,6 +609,7 @@ class Settings:
             "mcp_auth_token", "frontier_model", "hourglass_confirm",
             "hourglass_isolate", "hourglass_parallel",
             "hourglass_require_attestation", "hourglass_decompose",
+            "hourglass_stages",
             "openrouter_floor_default",
             "max_price_prompt", "max_price_completion", "jev_api_key",
             "jev_endpoint", "jev_model", "min_confidence",
@@ -783,6 +804,7 @@ def load_settings(overrides=None):
             get("hourglass_require_attestation", True)),
         hourglass_decompose=(None if get("hourglass_decompose", None) is None
                              else _as_bool(get("hourglass_decompose", None))),
+        hourglass_stages=_stage_list(get("hourglass_stages", None)),
         openrouter_floor_default=_as_bool(get("openrouter_floor_default", True)),
         max_price_prompt=(float(get("max_price_prompt", None))
                           if get("max_price_prompt", None) is not None else None),
