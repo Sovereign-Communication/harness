@@ -29,7 +29,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.99,
+        "confidence": 0.98,
         "evaluated": true
       },
       "SM": {
@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.95,
+        "confidence": 0.94,
         "evaluated": true
       }
     },
@@ -144,7 +144,7 @@
         "id": "A13",
         "label": "hard config ceilings + fail-clean load",
         "score": 1.0,
-        "evidence": "9 numeric settings range-validated; hard ceilings enforced in load_settings; unknown keys warned; load inside CLI try"
+        "evidence": "11 numeric settings range-validated; hard ceilings enforced in load_settings; unknown keys warned; load inside CLI try"
       }
     ],
     "R": [
@@ -212,7 +212,7 @@
         "id": "R11",
         "label": "config validation ranges + unknown-key warning",
         "score": 1.0,
-        "evidence": "range-validated: ['apply_max_tokens', 'max_cost', 'max_panelists', 'max_rotations', 'max_tokens', 'mcp_tool_timeout', 'min_confidence', 'reasoning_token_budget', 'task_max_cost']; unknown-key warning present"
+        "evidence": "range-validated: ['apply_max_tokens', 'max_cost', 'max_panelists', 'max_rotations', 'max_tokens', 'mcp_tool_timeout', 'min_confidence', 'reasoning_token_budget', 'task_max_cost', 'token_budget_input', 'token_budget_output']; unknown-key warning present"
       },
       {
         "id": "R12",
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 2139 tests in 258.974s\n\nOK"
+        "evidence": "unittest: Ran 2162 tests in 235.517s\n\nOK"
       },
       {
         "id": "R14",
@@ -268,7 +268,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "72/72 modules imported by tests"
+        "evidence": "73/73 modules imported by tests"
       },
       {
         "id": "S7",
@@ -306,7 +306,7 @@
         "id": "D4",
         "label": "config table keys real",
         "score": 1.0,
-        "evidence": "24 README config keys all resolve to real settings (42 configurable)"
+        "evidence": "24 README config keys all resolve to real settings (44 configurable)"
       },
       {
         "id": "D5",

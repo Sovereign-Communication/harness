@@ -63,6 +63,16 @@ DEFAULT_TASK_MAX_COST = 0.10
 DEFAULT_MAX_TOKENS = 2048
 DEFAULT_APPLY_MAX_TOKENS = 4096
 
+# Run/stage TOKEN allowances (HV-3). These are not cost caps: a free model
+# bills $0.00 and can still overflow a context window. The hard caps below
+# are absolute -- like HARD_MAX_COST they cannot be raised past by config,
+# env, or a caller, so a misconfigured value is refused before any dispatch.
+# harness/token_budget.py is the one owner that enforces them.
+DEFAULT_TOKEN_BUDGET_INPUT = 200000
+DEFAULT_TOKEN_BUDGET_OUTPUT = 64000
+HARD_TOKEN_BUDGET_INPUT = 4000000
+HARD_TOKEN_BUDGET_OUTPUT = 1000000
+
 # ---- lane budgets and reasoning modes (ONE policy owner) -------------------
 # Task-shaped token budgets (2026-09-13 operator ruling: "stop using reasoning
 # if it's not needed here, or if it is, then appropriately allocate tokens").
@@ -351,6 +361,8 @@ _ENV_NAMES = {
     "task_max_cost": "HARNESS_TASK_MAX_COST",
     "max_tokens": "HARNESS_MAX_TOKENS",
     "apply_max_tokens": "HARNESS_APPLY_MAX_TOKENS",
+    "token_budget_input": "HARNESS_TOKEN_BUDGET_INPUT",
+    "token_budget_output": "HARNESS_TOKEN_BUDGET_OUTPUT",
     "reasoning_effort": "HARNESS_REASONING_EFFORT",
     "reasoning_token_budget": "HARNESS_REASONING_TOKEN_BUDGET",
     "max_panelists": "HARNESS_MAX_PANELISTS",
@@ -500,7 +512,9 @@ class Settings:
                   openrouter_floor_default=True, max_price_prompt=None,
                   max_price_completion=None, jev_api_key=None,
                   jev_endpoint="https://api.typesafe.ai/v1/systemone",
-                  jev_model="jev-latest", min_confidence=0.70):
+                  jev_model="jev-latest", min_confidence=0.70,
+                  token_budget_input=DEFAULT_TOKEN_BUDGET_INPUT,
+                  token_budget_output=DEFAULT_TOKEN_BUDGET_OUTPUT):
         self.use_free = use_free
         self.panel = list(panel)
         self.panel_pool = list(panel_pool)
@@ -559,6 +573,8 @@ class Settings:
         self.jev_endpoint = jev_endpoint
         self.jev_model = jev_model or "jev-latest"
         self.min_confidence = min_confidence
+        self.token_budget_input = token_budget_input
+        self.token_budget_output = token_budget_output
 
     def to_dict(self):
         return {k: getattr(self, k) for k in (
@@ -575,7 +591,8 @@ class Settings:
             "hourglass_require_attestation", "hourglass_decompose",
             "openrouter_floor_default",
             "max_price_prompt", "max_price_completion", "jev_api_key",
-            "jev_endpoint", "jev_model", "min_confidence")}
+            "jev_endpoint", "jev_model", "min_confidence",
+            "token_budget_input", "token_budget_output")}
 
 
 def update_config(values):
@@ -719,6 +736,12 @@ def load_settings(overrides=None):
     # same path as notifications/cancelled), so an uncancelled-but-overdue
     # run still stops at the next poll point instead of holding a lane.
     mcp_tool_timeout = _num("mcp_tool_timeout", int, 60, 7200, 1800)
+    token_budget_input = _num("token_budget_input", int, 1024,
+                              HARD_TOKEN_BUDGET_INPUT,
+                              DEFAULT_TOKEN_BUDGET_INPUT)
+    token_budget_output = _num("token_budget_output", int, 256,
+                               HARD_TOKEN_BUDGET_OUTPUT,
+                               DEFAULT_TOKEN_BUDGET_OUTPUT)
 
     return Settings(
         use_free=use_free,
@@ -736,6 +759,8 @@ def load_settings(overrides=None):
         task_max_cost=task_max_cost,
         max_tokens=max_tokens,
         apply_max_tokens=apply_max_tokens,
+        token_budget_input=token_budget_input,
+        token_budget_output=token_budget_output,
         reasoning_effort=str(get("reasoning_effort", "auto")),
         reasoning_token_budget=reasoning_token_budget,
         max_panelists=max_panelists,
