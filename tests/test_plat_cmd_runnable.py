@@ -217,20 +217,27 @@ class SingleRunnerTest(unittest.TestCase):
         self.assertGreater(STAGE_GATE_TIMEOUT, VERIFY_TIMEOUT)
 
 
+def _read(name):
+    """Module source as text -- context-managed: R13 fails the whole audit
+    on an unraisable ``ResourceWarning: unclosed file`` (the v0.3.2
+    release-gate flake class), and a bare ``open(...).read()`` is exactly
+    that leak."""
+    with open(os.path.join(REPO_ROOT, "harness", name), encoding="utf-8") as handle:
+        return handle.read()
+
+
 class VerifyAndStageGateShareOneRunnerTest(unittest.TestCase):
     def test_filesafety_delegates_to_the_one_runner(self):
         import harness.filesafety as fs
         self.assertIs(fs.default_run_verify.__wrapped__ if hasattr(
             fs.default_run_verify, "__wrapped__") else None, None)
-        source = open(os.path.join(REPO_ROOT, "harness", "filesafety.py"),
-                      encoding="utf-8").read()
+        source = _read("filesafety.py")
         self.assertIn("run_gate", source)
         self.assertNotIn("subprocess", source,
                          "the verify gate must not launch a process itself")
 
     def test_cli_stage_gate_uses_the_one_runner(self):
-        source = open(os.path.join(REPO_ROOT, "harness", "cli.py"),
-                      encoding="utf-8").read()
+        source = _read("cli.py")
         self.assertIn("run_gate(stage_gate", source)
         self.assertNotIn("shell=True", source,
                          "PLAT-cmd-data: no shell=True anywhere in the CLI")

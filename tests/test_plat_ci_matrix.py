@@ -43,6 +43,14 @@ def _job_block(text, job):
     return "\n".join(out)
 
 
+def _jobs(text):
+    """Every job in the workflow, as ``{name: block}``."""
+    names = [line.strip()[:-1] for line in text.splitlines()
+             if line.startswith("  ") and not line.startswith("   ")
+             and line.rstrip().endswith(":") and not line.strip().startswith("#")]
+    return {name: _job_block(text, name) for name in names}
+
+
 class WorkflowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -63,7 +71,11 @@ class WorkflowTest(unittest.TestCase):
 
     def test_lint_is_ubuntu_only(self):
         block = _job_block(self.text, "test")
-        self.assertIn("python -m ruff check harness tests audits", block)
+        lint_line = [ln.strip().removeprefix("run:").strip() for ln in block.splitlines()
+                     if "ruff check" in ln]
+        self.assertTrue(lint_line, "the test job lost its ruff gate")
+        self.assertTrue(lint_line[0].startswith("python -m ruff check"),
+                        f"ruff must be invoked through the interpreter: {lint_line[0]}")
         self.assertIn("if: runner.os == 'Linux'", block)
         lint_step = block.split("name: Lint (ruff)")[1].split("- name:")[0]
         self.assertIn("runner.os == 'Linux'", lint_step,
@@ -87,22 +99,47 @@ class WorkflowTest(unittest.TestCase):
 
     def test_venv_interpreter_path_is_per_platform(self):
         block = _job_block(self.text, "package-installed")
-        self.assertIn(".smoke-venv/Scripts/python.exe", block,
+        self.assertIn("Scripts/python.exe", block,
                       "Windows venvs put the interpreter in Scripts/")
-        self.assertIn(".smoke-venv/bin/python", block,
+        self.assertIn("bin/python", block,
                       "POSIX venvs put it in bin/")
+        # The smoke run leaves the repo, so the interpreter must be absolute
+        # BEFORE the cd: a relative venv path silently stops resolving there.
+        self.assertIn('VENV="$GITHUB_WORKSPACE/.smoke-venv"', block)
+        self.assertIn('PY="$VENV/', block)
+        self.assertLess(block.index("PY="), block.index('cd "$HOME"'),
+                        "resolve the venv path before leaving the repo")
+        self.assertIn("${{ matrix.venv_python }}", block)
+
+    POSIX_ONLY = ("rm -rf", "$HOME", "set -euo pipefail", "<<'PY'", "seq 1 30",
+                  "grep -oE")
 
     def test_no_step_assumes_a_posix_shell_implicitly(self):
-        """Steps that use POSIX syntax declare `shell: bash` (Windows runners
-        default to PowerShell, where `rm -rf` and `$HOME` mean something else)."""
-        for step_name in ("Smoke-install the wheel in a clean venv",
-                          "Clean up the smoke venv",
-                          "Validate changed handoffs",
-                          "Version parity (pyproject vs harness.__version__ vs MCP)"):
-            self.assertIn(step_name, self.text)
-            block = self.text.split(f"name: {step_name}")[1].split("- name:")[0]
-            self.assertIn("shell: bash", block,
-                          f"step {step_name!r} uses POSIX syntax without declaring bash")
+        """POSIX-only syntax is legal in an ubuntu job (its default shell is
+        bash) and ILLEGAL anywhere else -- Windows runners default to
+        PowerShell, where `rm -rf` and `$HOME` mean something else. So every
+        step using such syntax must either live in a single-platform ubuntu
+        job or declare `shell: bash` explicitly."""
+        checked = 0
+        for job_name, job in _jobs(self.text).items():
+            runs_on = job.split("runs-on:")[1].splitlines()[0] if "runs-on:" in job else ""
+            ubuntu_only = "ubuntu" in runs_on
+            for step in job.split("      - name:")[1:]:
+                body = step.split("- name:")[0]
+                if not any(token in body for token in self.POSIX_ONLY):
+                    continue
+                checked += 1
+                if "shell: bash" in body:
+                    continue
+                self.assertTrue(ubuntu_only,
+                                f"step in job {job_name!r} uses POSIX-only syntax "
+                                "on a matrix job without declaring `shell: bash`")
+                self.assertIn("ubuntu", runs_on,
+                              f"step in job {job_name!r} uses POSIX-only syntax "
+                              "outside an ubuntu job without `shell: bash`")
+        self.assertGreaterEqual(checked, 3,
+                                "the POSIX-syntax scan found nothing to check -- "
+                                "the workflow changed shape and this test is now vacuous")
 
     def test_artifact_handoff_between_the_two_package_jobs(self):
         upload = _job_block(self.text, "package")
@@ -118,9 +155,20 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotIn("pytest", block)
 
     def test_workflow_keeps_its_original_gates(self):
-        for gate in ("validate_handoff_scope.py", "python -m twine check dist/*",
-                     "python -m build", "harness.__version__"):
+        # The gates that shipped on origin/main BEFORE this branch existed.
+        # A platform-matrix rewrite that quietly drops one of these is a
+        # regression, not a simplification -- they are the only evidence
+        # that a released wheel can actually serve and speak MCP.
+        for gate in ("python -m twine check dist/*", "python -m build",
+                     "harness.__version__", "serve --port 0",
+                     '"method": "initialize"'):
             self.assertIn(gate, self.text, f"CI lost the {gate} gate")
+
+    def test_the_serve_and_mcp_smoke_survives_in_the_ubuntu_package_job(self):
+        block = _job_block(self.text, "package")
+        self.assertIn("runs-on: ubuntu-latest", block)
+        self.assertIn("serve --port 0", block)
+        self.assertIn("McpServer", block)
 
 
 class CheckoutHygieneTest(unittest.TestCase):
