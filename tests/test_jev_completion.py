@@ -19,6 +19,7 @@ from harness.errors import HarnessError
 from harness.jev_completion import (
     DEFAULT_COMPLETION_PACK,
     PHASE_COMPLETE_MIN_SCORE,
+    _norm_phase,
     collect_phase_evidence,
     dogfood_phase,
     load_evidence_file,
@@ -502,6 +503,65 @@ class ExtendedPhaseContractTests(unittest.TestCase):
             self.assertTrue(evidence["files_missing"])
             self.assertFalse(result["can_mark_complete"])
 
+    def test_named_track_ids_are_not_rewritten_to_jev_prefixes(self):
+        """PLAT-cmd-data must resolve to its own contract and STATUS row.
+
+        The old P-prefix catch-all rewrote it to JEV-PLAT-CMD-DATA, which
+        matched neither PHASE_CONTRACTS nor the row needles -- the phase
+        scored on an empty contract (vacuous required_tests) and an empty
+        status_row (status_honesty stuck at blocking even when honest).
+        """
+        self.assertEqual(_norm_phase("PLAT-cmd-data"), "PLAT-CMD-DATA")
+        self.assertEqual(_norm_phase("plat-docs"), "PLAT-DOCS")
+        # The JEV P-phase family keeps its renaming.
+        self.assertEqual(_norm_phase("P4"), "JEV-P4")
+        self.assertEqual(_norm_phase("JEV-P4"), "JEV-P4")
+
+    def test_plat_contract_and_row_resolve_through_phase_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(
+                root,
+                "| PLAT-cmd-data gates-as-data | **in progress** | PR #104 OPEN |",
+                tests=[],
+                files=[],
+            )
+            evidence = collect_phase_evidence(str(root), "PLAT-cmd-data")
+            self.assertIn("PLAT-cmd-data", evidence["status_row"])
+            self.assertIn("tests/test_plat_cmd_runnable.py",
+                          evidence["required_tests"])
+            self.assertIn("harness/gate_runner.py", evidence["required_files"])
+
+    def test_open_pr_with_merge_pending_is_not_merge_evidence(self):
+        """"PR #104 open, merge pending" must score as OPEN.
+
+        The open-PR detector once matched uppercase "PR" against the
+        lowered row and never fired, so the gate claimed pr_merged (and
+        then derived ci_green/local_gates_green from it) while the PR was
+        still open -- a fake-complete leak in the gate itself.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(
+                root,
+                "| `PLAT-cmd-data` gates | **in progress** | "
+                "**PR #104 open, merge pending** |",
+                tests=[], files=[])
+            evidence = collect_phase_evidence(str(root), "PLAT-cmd-data")
+            self.assertFalse(evidence["pr_merged"])
+            self.assertFalse(evidence["ci_green"])
+            self.assertTrue(any("PR open" in b for b in evidence["open_blockers"]))
+
+    def test_merge_pending_without_open_word_is_not_merge_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(
+                root,
+                "| `PLAT-docs` docs | **in progress** | PR #104, merge pending |",
+                tests=[], files=[])
+            evidence = collect_phase_evidence(str(root), "PLAT-docs")
+            self.assertFalse(evidence["pr_merged"])
+
     def test_oc_handoff_contract_detects_artifacts_and_stays_gated_while_open(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -867,117 +927,30 @@ class OcHandoffVerifierFailurePathTests(unittest.TestCase):
             with patch.object(Path, "open", side_effect=OSError("read denied")):
                 self.assertIsNone(_read_bounded(target, 16))
             self.assertIsNone(_git_bytes(root, "status", max_bytes=-1))
-            with patch("harness.jev_completion.subprocess.Popen",
-                       side_effect=OSError("git unavailable")):
+            # PLAT-osal-module: the process mechanics moved to
+            # harness/osal.py (run_bounded) and are tested there against the
+            # same doubles. What this module owns is the *verdict*: an
+            # oversized, failed or unbounded query is None, never a truncated
+            # answer that would under-report evidence.
+            with patch("harness.jev_completion.osal.run_bounded",
+                       return_value=None) as bounded:
                 self.assertIsNone(_git_bytes(root, "status"))
-
-            class MissingStdoutProcess:
-                stdout = None
-
-                def __init__(self):
-                    self.killed = False
-                    self.waited = False
-
-                def wait(self):
-                    self.waited = True
-
-                def kill(self):
-                    self.killed = True
-
-            missing_stdout = MissingStdoutProcess()
-            with patch("harness.jev_completion.subprocess.Popen",
-                       return_value=missing_stdout):
-                self.assertIsNone(_git_bytes(root, "show", "missing:stdout"))
-            self.assertTrue(missing_stdout.killed)
-            self.assertTrue(missing_stdout.waited)
-
-            class CountingBytesIO(io.BytesIO):
-                def __init__(self, value):
-                    super().__init__(value)
-                    self.bytes_read = 0
-
-                def read1(self, size=-1):
-                    value = super().read(size)
-                    self.bytes_read += len(value)
-                    return value
-
-            class FakeProcess:
-                def __init__(self):
-                    self.stdout = CountingBytesIO(b"0123456789")
-                    self.killed = False
-
-                def wait(self, timeout=None):
-                    return 0
-
-                def kill(self):
-                    self.killed = True
-
-            process = FakeProcess()
-            with patch("harness.jev_completion.subprocess.Popen", return_value=process):
-                self.assertIsNone(_git_bytes(root, "show", "large:file", max_bytes=4))
-            self.assertTrue(process.killed)
-            self.assertEqual(process.stdout.bytes_read, 5)
-
-            class TimeoutProcess:
-                def __init__(self):
-                    self.stdout = io.BytesIO(b"")
-                    self.killed = False
-                    self.wait_calls = 0
-
-                def wait(self, timeout=None):
-                    self.wait_calls += 1
-                    if timeout is not None:
-                        raise subprocess.TimeoutExpired("git", timeout)
-                    return -9
-
-                def kill(self):
-                    self.killed = True
-
-            timed_out = TimeoutProcess()
-            with patch("harness.jev_completion.subprocess.Popen", return_value=timed_out):
-                self.assertIsNone(_git_bytes(root, "show", "slow:file", max_bytes=4))
-            self.assertTrue(timed_out.killed)
-            self.assertEqual(timed_out.wait_calls, 2)
-            self.assertTrue(timed_out.stdout.closed)
-
-            import threading
-
-            class BlockingPipe:
-                def __init__(self):
-                    self.started = threading.Event()
-                    self.closed_event = threading.Event()
-                    self.closed = False
-
-                def read1(self, _size):
-                    self.started.set()
-                    self.closed_event.wait()
-                    return b""
-
-                def close(self):
-                    self.closed = True
-                    self.closed_event.set()
-
-            class StuckReaderProcess:
-                def __init__(self):
-                    self.stdout = BlockingPipe()
-                    self.killed = False
-
-                def wait(self, timeout=None):
-                    if timeout is not None:
-                        self.assert_reader_started = self.stdout.started.wait(2)
-                        return 0
-                    return -9
-
-                def kill(self):
-                    self.killed = True
-
-            stuck_reader = StuckReaderProcess()
-            with patch("harness.jev_completion.subprocess.Popen",
-                       return_value=stuck_reader):
-                self.assertIsNone(_git_bytes(root, "show", "blocked:pipe"))
-            self.assertTrue(stuck_reader.killed)
-            self.assertTrue(stuck_reader.stdout.closed)
-            self.assertTrue(stuck_reader.assert_reader_started)
+            bounded.assert_called_once_with(
+                ["git", "-C", str(root), "status"], 1_000_000)
+            with patch("harness.jev_completion.osal.run_bounded",
+                       return_value=b"HEAD -> abc") as bounded:
+                self.assertEqual(_git_bytes(root, "show", max_bytes=32),
+                                 b"HEAD -> abc")
+            self.assertEqual(
+                bounded.call_args[0][1], 32,
+                "the byte bound must be passed through to the OS owner")
+            # A negative bound is passed through and refused by the OS owner
+            # (the unpatched call above returned None without running);
+            # this seam does not second-guess the bound it was handed.
+            with patch("harness.jev_completion.osal.run_bounded") as bounded:
+                _git_bytes(root, "status", max_bytes=-1)
+            self.assertEqual(bounded.call_args[0][1], -1,
+                             "the bound is passed through; osal refuses it")
 
     def test_receipt_linkage_authentication_and_jev_shape_fail_closed(self):
         from examples.oc_handoff import worker

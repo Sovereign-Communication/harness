@@ -8,6 +8,24 @@ Harness is a dependency-light Python package with three surfaces:
 
 ## Ownership
 
+- `osal.py`: the ONE owner of operating-system contact (PLAT-osal-module):
+  process launch (`run`, `run_bounded` — argv lists, never a shell string),
+  text I/O with fixed encoding and newline policy (`read_text`, `write_text`,
+  `atomic_write_text`, `detect_newline`), path comparison and containment
+  (`norm_path`, `same_path`, `is_within`, `display_path`,
+  `normalize_roots`), key-file permissions (`keyfile_mode`,
+  `keyfile_is_insecure` — "not modelled" on Windows, never a fabricated
+  mode), and the browser hand-off (`open_url`). `tests/test_osal_boundary.py`
+  enforces the boundary: `subprocess`, `os.name`, `sys.platform` and
+  `webbrowser` outside this module fail the build.
+- `gate_runner.py`: gates as DATA (PLAT-cmd-data). The documented gates
+  (`GATES`, with `{python}` resolved from `sys.executable` at render time),
+  the one shell-free runner `run_gate`, the Windows-aware `split_command`
+  (POSIX shlex eats backslashes, so drive letters and UNC prefixes are
+  protected before tokenizing), and `validate_gate` for preflight. The verify
+  gate (`filesafety.default_run_verify`) and the plan stage gate
+  (`cli.on_stage_done`) both go through it, so a gate cannot work in one code
+  path and fail in another.
 - `config.py`: settings, model-pool defaults, lane budgets, and Jev endpoint/model/threshold configuration
   (`effective_lane_policy` is the ONE owner of per-lane output budgets and
   reasoning modes; lanes resolve policy through it, never locally).

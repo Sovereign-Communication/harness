@@ -1415,7 +1415,9 @@ class TestOrchestratorWiring(unittest.TestCase):
         self.assertEqual(res["status"], "ok")
         self.assertTrue(Path(seen["file_path"]).is_absolute())
         self.assertEqual(Path(seen["file_path"]).name, "util.py")
-        self.assertEqual(Path(seen["file_path"]).parent, root)
+        self.assertEqual(
+            os.path.realpath(str(Path(seen["file_path"]).parent)),
+            os.path.realpath(str(root)))
         # An existing .py target is gated by the round discovery.
         self.assertIn("py_compile", seen["verify_cmd"])
 
@@ -1448,8 +1450,10 @@ class TestOrchestratorWiring(unittest.TestCase):
                 res = agent.run_prompt("Create new_mod.py", auto_apply=True)
         self.assertEqual(res["status"], "ok")
         self.assertIn("py_compile", str(seen.get("verify_cmd")))
-        self.assertEqual(Path(str(seen["verify_cmd"]).split('"')[1]).parent,
-                         root)
+        self.assertEqual(
+            os.path.realpath(
+                str(Path(str(seen["verify_cmd"]).split('"')[1]).parent)),
+            os.path.realpath(str(root)))
 
     def test_large_file_nodes_route_to_diff_backend(self):
         # Whole-file rewrites cap at MAX_FILE_LINES by engine policy; the
@@ -1607,7 +1611,11 @@ class TestHourglassLane(unittest.TestCase):
         self.assertTrue(captured["parallel"])
         self.assertTrue(captured["isolate"])
         self.assertTrue(captured["require_diff_authorization"])
-        self.assertEqual(captured["repo"], str(root))
+        # realpath: the lane emits the resolved root, which on Windows
+        # expands an 8.3 short name (RUNNER~1) to the long form. The
+        # assertion is about WHICH TREE, not about its spelling.
+        self.assertEqual(os.path.realpath(captured["repo"]),
+                         os.path.realpath(str(root)))
         # keep_going: node failures are state for the judge, not aborts
         self.assertTrue(captured["keep_going"])
         self.assertEqual(captured["plan_exec"].workers, 4)

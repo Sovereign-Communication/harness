@@ -368,7 +368,11 @@ class VisionAssessmentPackTests(unittest.TestCase):
             actual = Path.is_symlink
 
             def mark_docs_as_symlink(path):
-                if path == docs:
+                # Compare resolved: on Windows the product walks from
+                # Path(tmp).resolve() (8.3 short names expand to the long
+                # form), so a raw == comparison would silently miss and
+                # the guard under test would never fire.
+                if os.path.realpath(str(path)) == os.path.realpath(str(docs)):
                     return True
                 return actual(path)
 
@@ -389,7 +393,11 @@ class VisionAssessmentPackTests(unittest.TestCase):
             resolve = Path.resolve
 
             def escape_vision_source(path, *args, **kwargs):
-                if path == vision_path:
+                # Resolved comparison, same reason as the symlink mock
+                # above: an 8.3 short name must still match the long form
+                # the product computed, or the escape is never simulated.
+                if (os.path.realpath(str(path))
+                        == os.path.realpath(str(vision_path))):
                     return outside_path
                 return resolve(path, *args, **kwargs)
 

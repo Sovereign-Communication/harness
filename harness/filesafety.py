@@ -2,68 +2,48 @@
 
 Every mutation of a real file on disk goes through this module: the atomic
 write (symlink-refusing, mode-preserving), the out-of-tree backup (content +
-permission mode, capped per file), and the shell-free verification-gate
-runner (shlex-tokenized, timeout-killed -- metacharacters are inert).
+permission mode, capped per file), and the verification-gate policy.
+
+The OS-facing mechanics moved to their single owners during platform
+unification (``PLAT-osal-module`` / ``PLAT-cmd-data``): the atomic write and
+newline detection live in :mod:`harness.osal`, the shell-free gate runner in
+:mod:`harness.gate_runner`. This module keeps the apply engine's *policy*
+about them, so engine callers and their tests are unaffected.
 """
 import hashlib
 import os
-import shlex
-import stat
-import subprocess
 import shutil
 import tempfile
 import uuid
 
 from .errors import HarnessError
+from .gate_runner import VERIFY_TIMEOUT, run_gate, validate_gate
+from . import osal
 from .output import eprint
-
-VERIFY_TIMEOUT = 300
 
 # Backups kept per target file before the oldest is pruned.
 MAX_BACKUPS_PER_FILE = 20
-
-
-def _verify_argv(command):
-    """Tokenize a verify command with POSIX-ish shlex. Raises HarnessError when
-    quoting is unbalanced -- fail closed rather than guessing."""
-    try:
-        argv = shlex.split(command)
-    except ValueError as e:
-        raise HarnessError(f"verify_cmd is not shell-tokenizable ({e}); quote it properly.") from e
-    if not argv:
-        raise HarnessError("verify_cmd is empty.")
-    return argv
-
-
 def default_run_verify(command, timeout=VERIFY_TIMEOUT, cwd=None):
-    """Run a verify command WITHOUT a shell. The command is tokenized with
-    shlex and executed directly, so shell metacharacters (&&, |, ;, backticks,
-    $()) are inert. `timeout` kills a hung gate instead of hanging the run.
+    """Run a verify command WITHOUT a shell and report ``(returncode, output)``.
+
+    The single runner (:func:`harness.gate_runner.run_gate`) tokenizes the
+    command in a Windows-aware way and executes an argv list, so shell
+    metacharacters (&&, |, ;, backticks, $()) are inert AND a Windows path
+    survives tokenizing. `timeout` kills a hung gate instead of hanging the
+    run.
     """
-    argv = _verify_argv(command)
-    try:
-        result = subprocess.run(argv, shell=False, capture_output=True, text=True,
-                                timeout=timeout, cwd=cwd)
-    except subprocess.TimeoutExpired:
-        return 124, f"verify gate timed out after {timeout}s (killed): {command}"
-    except FileNotFoundError:
-        return 127, f"verify gate executable not found: {argv[0]}"
-    except PermissionError:
-        return 126, f"verify gate is not executable: {argv[0]}"
-    return result.returncode, (result.stdout or "") + (result.stderr or "")
+    return run_gate(command, timeout=timeout, cwd=cwd)
+
 
 
 def validate_verify_command(command, require_executable=True):
-    """Preflight a --verify gate WITHOUT executing it: the command must be
-    shell-tokenizable and (when require_executable) its interpreter/tool must
-    be findable. Honesty, not a guarantee -- a gate that exists can still fail
+    """Preflight a --verify gate WITHOUT executing it: the command must
+    tokenize and (when require_executable) its interpreter/tool must be
+    findable. Honesty, not a guarantee -- a gate that exists can still fail
     at runtime. Engine callers pass require_executable=False so hermetic
     library stubs stay usable; dogfood/CLI keep the PATH check."""
-    argv = _verify_argv(command)
-    if require_executable and shutil.which(argv[0]) is None:
-        raise HarnessError(
-            f"verify gate executable not found: {argv[0]} "
-            "(the gate would fail every round; fix --verify before spending a live run)")
+    return validate_gate(command, require_executable=require_executable)
+
 
 
 def file_content_hash(path):
@@ -87,83 +67,26 @@ def _line_count(path):
         return sum(1 for _ in f)
 
 
-class _AtomicWriteError(OSError):
-    """The target of an atomic write refused the operation (symlink, escape,
-    or vanished directory) -- never follow through by writing anyway."""
+# The atomic write itself is OS contact, so osal owns the mechanism; this
+# alias keeps the engine's existing except-clauses and tests honest about
+# which error they are catching (one class, one definition).
+_AtomicWriteError = osal.AtomicWriteError
 
 
 def detect_newline(path):
-    """The target file's own line-ending style, or None when unknown.
-
-    Reads the first bytes only: a ``\\r\\n`` anywhere means CRLF (mixed
-    files normalize to CRLF); bare ``\\n`` means LF; no newline at all
-    (or an unreadable file) means None. Model output arrives with ``\\n``
-    endings -- it never saw the tree's bytes -- so writes must aim at the
-    target's style explicitly instead of laundering checkouts.
-    """
-    try:
-        with open(path, "rb") as f:
-            sample = f.read(8192)
-    except OSError:
-        return None
-    if b"\r\n" in sample:
-        return "\r\n"
-    if b"\n" in sample:
-        return "\n"
-    return None
+    """The target file's own line-ending style (or None) -- see osal."""
+    return osal.detect_newline(path)
 
 
 def _atomic_write(path, content, *, follow=False, newline="preserve"):
     """Atomically replace `path` with `content`, refusing unsafe targets.
 
-    Without ``follow=True`` a pre-existing symlink is never followed (the
-    classic dotfile-points-into-the-repo trick). The temp file is staged
-    inside the target's directory so the final replace is atomic. The
-    target's permission mode is preserved (tempfile.mkstemp creates 0600,
-    which would otherwise silently strip an executable bit from a verify
-    script or gate artifact and change the semantics of the working tree).
-
-    ``newline="preserve"`` (default) translates the content to the target
-    file's own detected style, so a model-written LF body never flips a
-    CRLF checkout (and the failed-run rewind restores the exact original
-    style, since preserved writes never change it in the first place).
-    ``newline=None`` writes bytes exactly as given -- for snapshot restore,
-    where the snapshot's bytes, not the tree's style, are authoritative.
+    The mechanism (symlink refusal, same-directory staging, permission-mode
+    preservation, newline policy) belongs to :func:`harness.osal.atomic_write_text`;
+    this is the apply engine's one call site for it, kept as a name so the
+    engine's policy reads in one place.
     """
-    d = os.path.dirname(os.path.abspath(path)) or "."
-    # Parent-dir symlink: realpath the directory so staging never lands
-    # outside the intended tree when an intermediate component is a link.
-    d_real = os.path.realpath(d)
-    if os.path.islink(path) and not follow:
-        raise _AtomicWriteError(
-            f"refusing to write through symlink: {path} "
-            "(delete the link or pass follow_symlinks=True)")
-    if newline == "preserve":
-        style = detect_newline(path)
-        if style == "\r\n":
-            content = content.replace("\r\n", "\n").replace("\n", "\r\n")
-    try:
-        fd, tmp = tempfile.mkstemp(prefix=".harness-", suffix=".tmp", dir=d_real)
-    except OSError as e:
-        raise _AtomicWriteError(f"cannot stage temp file in {d_real}: {e}") from e
-    try:
-        # newline="" writes the string unchanged: with preserve mode the
-        # translation above already ran, and with newline=None the caller
-        # takes full responsibility for the bytes (snapshot restore).
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-            f.write(content)
-        try:
-            mode = stat.S_IMODE(os.stat(path).st_mode)
-            os.chmod(tmp, mode)
-        except OSError:
-            pass  # new file: keep the safe 0600 default
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    return osal.atomic_write_text(path, content, follow=follow, newline=newline)
 
 
 def validate_target_file(file_path):

@@ -81,10 +81,17 @@ class SlatePolicyTests(unittest.TestCase):
             self.assertIn(mid, shipped)
 
     def test_paid_settings_use_new_pools(self):
-        s = config.load_settings(overrides={"use_free": False})
-        self.assertEqual(s.panel, config.DEFAULT_PANEL_PAID)
-        self.assertEqual(s.judge, config.DEFAULT_JUDGE_PAID)
-        self.assertIn(config.DEFAULT_APPLY_MODEL_PAID, s.apply_pool)
+        import tempfile
+        from unittest import mock
+        # Hermetic CONFIG_DIR: the default paid slate is a loader contract,
+        # not a fact about the operator's config.json (a free-pinned machine
+        # config failed this on 2026-09-27 while CI stayed green).
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch("harness.config.CONFIG_DIR", tmp):
+            s = config.load_settings(overrides={"use_free": False})
+            self.assertEqual(s.panel, config.DEFAULT_PANEL_PAID)
+            self.assertEqual(s.judge, config.DEFAULT_JUDGE_PAID)
+            self.assertIn(config.DEFAULT_APPLY_MODEL_PAID, s.apply_pool)
 
 
 if __name__ == "__main__":

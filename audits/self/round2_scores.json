@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.96,
+        "confidence": 0.95,
         "evaluated": true
       }
     },
@@ -102,7 +102,7 @@
         "id": "A6",
         "label": "gate runner shell-free + timeout",
         "score": 1.0,
-        "evidence": "default_run_verify: shlex tokenization + shell=False + timeout kill; apply_gate runs gates through it"
+        "evidence": "one shell-free run_gate (argv list, no shell, timeout kill) with {python} from sys.executable; the verify gate delegates to it and apply_gate runs gates through it"
       },
       {
         "id": "A7",
@@ -114,7 +114,7 @@
         "id": "A8",
         "label": "atomic write: symlink refusal + mode preservation",
         "score": 1.0,
-        "evidence": "_atomic_write: temp staged in target dir, os.replace, mode preserved, symlink refused; apply_gate writes only through it"
+        "evidence": "osal.atomic_write_text: temp staged in target dir, os.replace, mode preserved, symlink refused; filesafety delegates and apply_gate writes only through it"
       },
       {
         "id": "A9",
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 2163 tests in 235.821s\n\nOK"
+        "evidence": "unittest: Ran 2299 tests in 260.876s\n\nOK"
       },
       {
         "id": "R14",
@@ -268,7 +268,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "73/73 modules imported by tests"
+        "evidence": "75/75 modules imported by tests"
       },
       {
         "id": "S7",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed"
+        "evidence": "no executable harness changes since the coverage baseline ee22aed62a"
       }
     ]
   }

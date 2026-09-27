@@ -24,7 +24,6 @@ Exit codes: 0 success, 1 fatal refusal/error, 2 verification failed,
 import functools
 import json
 import os
-import subprocess
 import tempfile
 import time
 from .consent import probe_consent
@@ -37,6 +36,9 @@ from .config import (
 from .errors import HarnessError
 from .spend import discover_free_models
 from .filesafety import VERIFY_TIMEOUT, validate_target_file, validate_verify_command
+from .gate_runner import (GATES, GATE_ORDER, STAGE_GATE_TIMEOUT, gate_help,
+                          run_gate)
+from . import osal
 from .output import eprint
 from .session import (apply_session as _session, governor_for as _governor,
                       jev_face_governor,
@@ -1057,13 +1059,16 @@ def _cmd_plan(opts, settings):
         _emit(plan_result, opts.out)
         return
 
-    run_gate = None
+    # The plan's discovered per-node gate, carried into the executor as the
+    # default final gate. Named distinctly from gate_runner.run_gate (the
+    # shell-free runner) so a local can never shadow the runner.
+    discovered_gate = None
     if isinstance(plan_result.get("dag"), dict):
         # Carry the plan-level discovered gate into the executor for the
         # default final gate.
         for n in plan_result.get("nodes") or ():
             if isinstance(n, dict) and n.get("local_gate"):
-                run_gate = n["local_gate"]
+                discovered_gate = n["local_gate"]
                 break
     stage_gate = getattr(opts, "stage_gate", None)
 
@@ -1090,14 +1095,16 @@ def _cmd_plan(opts, settings):
     def on_stage_done(executable_nodes, _results):
         # Optional full-suite stage gate (MR-5): the composed tree must be
         # green before dependent stages start; failure aborts the run.
+        # PLAT-cmd-data: the same shell-free runner the verify gate uses --
+        # no shell means a forward-slash path is not cmd.exe's problem.
         if not stage_gate:
             return
-        proc = subprocess.run(stage_gate, shell=True, capture_output=True,
-                              text=True, timeout=VERIFY_TIMEOUT * 6)
-        if proc.returncode != 0:
+        rc, output = run_gate(stage_gate, timeout=STAGE_GATE_TIMEOUT)
+        if rc != 0:
             raise HarnessError(
                 f"stage gate failed after a parallel stage completed; "
-                f"stopping before dependent stages (gate: {stage_gate})")
+                f"stopping before dependent stages (gate: {stage_gate}, "
+                f"exit {rc})\n{output.strip()[:800]}")
 
     # ONE execution assembly for every lane (executor.PlanExecutor): worker
     # count, reservations, worktree isolation, final gate, and per-node
@@ -1130,7 +1137,7 @@ def _cmd_plan(opts, settings):
         run_ceiling=getattr(gov, "max_cost", None),
         on_stage_done=on_stage_done,
         final_gate=getattr(opts, "final_gate", None),
-        run_gate=run_gate)
+        run_gate=discovered_gate)
     all_results = plan_exec.execute(dag)
     summary = PlanExecutor.summarize(all_results)
 
@@ -1176,13 +1183,69 @@ def _cmd_plan(opts, settings):
     _emit_by_status(output, opts.out)
 
 
+def _cmd_gates(opts, settings):
+    """The documented gates, as this platform's exact commands (PLAT-cmd-data).
+
+    Listing is the default because that is what the docs need: a contributor
+    on any OS reads the same registry the runner executes, with
+    ``{python}`` already resolved to the running interpreter. ``--run``
+    executes one gate through the single shell-free runner and exits with the
+    gate's own code, so "run the documented gate" is one command everywhere
+    instead of three shell idioms.
+    """
+    run_name = getattr(opts, "run_gate", None)
+    if not run_name:
+        payload = {
+            "gates": [
+                {
+                    "name": name,
+                    "summary": GATES[name].summary,
+                    "argv": GATES[name].argv(phase=getattr(opts, "phase", None) or "JEV-P0")
+                            if name == "jev-phase" else GATES[name].argv(),
+                    "command": GATES[name].command(phase=getattr(opts, "phase", None) or "JEV-P0")
+                               if name == "jev-phase" else GATES[name].command(),
+                }
+                for name in GATE_ORDER
+            ],
+        }
+        if getattr(opts, "json", False):
+            _emit(payload, getattr(opts, "out", None), force_json=True)
+        else:
+            print(gate_help())
+            print("")
+            for entry in payload["gates"]:
+                print(f'{entry["name"]}:')
+                print("  " + entry["command"])
+        return
+    spec = GATES.get(run_name)
+    if spec is None:
+        raise HarnessError(
+            f"unknown gate: {run_name} (known: {', '.join(GATE_ORDER)})")
+    params = {"phase": getattr(opts, "phase", None) or "JEV-P0"} \
+        if run_name == "jev-phase" else {}
+    timeout = getattr(opts, "timeout", None)
+    rc, output = run_gate(
+        spec.argv(**params),
+        timeout=int(timeout) if timeout else
+        (STAGE_GATE_TIMEOUT if run_name in ("unittest", "audit") else VERIFY_TIMEOUT * 2),
+    )
+    if output:
+        eprint(output.rstrip())
+    if getattr(opts, "json", False):
+        _emit({"gate": run_name, "exit_code": rc}, getattr(opts, "out", None),
+              force_json=True)
+    if rc != 0:
+        raise HarnessError(f"gate {run_name} failed with exit code {rc}")
+
+
 def _write_jev_phase_out(opts, payload):
     if getattr(opts, "out", None):
         out_dir = os.path.dirname(opts.out)
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
-        with open(opts.out, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2, default=str)
+        # PLAT-parity: LF + UTF-8 always, so a Jev report written on Windows
+        # hashes the same as the same report written on Linux/macOS.
+        osal.write_text(opts.out, json.dumps(payload, indent=2, default=str))
 
 
 def _print_jev_phase_result(result):
@@ -1343,6 +1406,7 @@ _DISPATCH = {
     "models": _cmd_models,
     "bench": _cmd_bench,
     "capabilities": _cmd_capabilities,
+    "gates": _cmd_gates,
     "spend": _cmd_spend,
     "cost": _cmd_cost,
     "trust": _cmd_trust,

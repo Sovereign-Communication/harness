@@ -16,8 +16,13 @@ The server requires deliberate configuration for file edits:
 
 Without an allowed root, `apply_edit` is refused. Without write authorization,
 `apply_edit` is refused. Verification commands are also refused unless the
-server or request authorizes them. `shell=False` is not a sandbox; see
-[security](security.md).
+server or request authorizes them. Running a command without a shell is not a
+sandbox; see [security](security.md).
+
+Allowed roots are compared case-insensitively where the filesystem is
+case-insensitive (macOS, Windows), so a path spelled with different case is
+neither wrongly refused nor treated as a second root; see
+[security](security.md#platform-specific-protections-and-their-limits).
 
 Example configuration:
 
@@ -31,6 +36,29 @@ Example configuration:
 
 Use explicit per-request confirmation when possible. Restrict the root to a
 specific disposable checkout rather than a home directory.
+
+## Registering the server (all platforms)
+
+The interpreter path in a venv is platform-shaped: `Scripts/python.exe` on
+Windows, `bin/python` on Linux and macOS. The module form is identical
+everywhere, so register it the same way and let each machine supply its own
+interpreter:
+
+```bash
+# Linux / macOS
+claude mcp add harness --scope local -e HARNESS_MCP_ALLOWED_ROOTS=<repo path> \
+  -- <repo>/.venv/bin/python -m harness.mcp
+
+# Windows (PowerShell or cmd)
+claude mcp add harness --scope local -e HARNESS_MCP_ALLOWED_ROOTS=<repo path> ^
+  -- <repo>\.venv\Scripts\python.exe -m harness.mcp
+```
+
+Forward slashes also work in the Windows path (`<repo>/.venv/Scripts/python.exe`);
+the console-script layout is the only thing that differs, and it is a property
+of the venv, not of Harness. `harness-mcp` is installed on all three platforms
+and can be used instead of `python -m harness.mcp` when the venv's `Scripts`
+directory is on `PATH`.
 
 ## Tools
 

@@ -238,16 +238,29 @@ def a_key_label_gate():
 
 
 def a_gate_runner():
-    """Verification gates run shell-free: shlex tokenized, shell=False,
-    timeout-killed; metacharacters inert."""
+    """Verification gates run shell-free: tokenized to an argv list, run
+    without a shell, timeout-killed; metacharacters inert.
+
+    PLAT-cmd-data moved the mechanism from filesafety to the two owners, so
+    the check follows the ownership: the runner must be argv-only with a
+    timeout kill, filesafety must DELEGATE rather than launch its own
+    process, and the documented gates must resolve the interpreter from
+    sys.executable instead of a hardcoded venv path.
+    """
+    gr = _src("gate_runner")
     fs = _src("filesafety")
-    ok = ("shlex.split" in fs and "shell=False" in fs
-          and "subprocess.TimeoutExpired" in fs and "_verify_argv" in fs)
+    osal = _src("osal")
+    ok = ("shlex.split" in gr and "subprocess" in osal
+          and "TimeoutExpired" in osal and "shell=False" in osal)
+    delegated = ("run_gate" in fs and "subprocess" not in fs)
+    portable = ('"{python}"' in gr and "sys.executable" in osal)
     wired = _defines("apply_gate", "GatePolicy") or "run_gate" in _src("apply_gate")
-    return _pass(ok and wired,
-                 "default_run_verify: shlex tokenization + shell=False + "
-                 "timeout kill; apply_gate runs gates through it",
-                 f"filesafety={ok} wired={wired}")
+    return _pass(ok and delegated and portable and wired,
+                 "one shell-free run_gate (argv list, no shell, timeout kill) "
+                 "with {python} from sys.executable; the verify gate delegates "
+                 "to it and apply_gate runs gates through it",
+                 f"runner={ok} delegated={delegated} portable={portable} "
+                 f"wired={wired}")
 
 
 def a_verify_preflight():
@@ -264,17 +277,25 @@ def a_verify_preflight():
 
 def a_atomic_write():
     """File mutation is atomic and symlink-refusing: mkstemp in the target
-    dir, os.replace, permission mode preserved, symlink never followed."""
+    dir, os.replace, permission mode preserved, symlink never followed.
+
+    PLAT-osal-module moved the mechanism into harness/osal.py, so the check
+    verifies the OWNER has the properties and that filesafety delegates to it
+    (an atomic write with a second implementation is two chances to be wrong).
+    """
+    osal = _src("osal")
     fs = _src("filesafety")
-    ok = ("mkstemp" in fs and "os.replace" in fs and "islink" in fs
-          and "S_IMODE" in fs and "refusing to write through symlink" in fs)
+    ok = ("mkstemp" in osal and "os.replace" in osal and "islink" in osal
+          and "0o777" in osal and "refusing to write through symlink" in osal)
+    delegated = ("atomic_write_text" in fs and "mkstemp" not in fs)
     write_path = "apply_gate" in _TREES or True
     gate_uses = _imports_from("apply_gate", "filesafety",
                               {"_atomic_write", "backup_file"})
-    return _pass(ok and bool(gate_uses) and write_path,
-                 "_atomic_write: temp staged in target dir, os.replace, mode "
-                 "preserved, symlink refused; apply_gate writes only through it",
-                 f"atomic={ok} gate_uses={sorted(gate_uses)}")
+    return _pass(ok and delegated and bool(gate_uses) and write_path,
+                 "osal.atomic_write_text: temp staged in target dir, "
+                 "os.replace, mode preserved, symlink refused; filesafety "
+                 "delegates and apply_gate writes only through it",
+                 f"atomic={ok} delegated={delegated} gate_uses={sorted(gate_uses)}")
 
 
 def a_rewind():

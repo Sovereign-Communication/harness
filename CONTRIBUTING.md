@@ -5,11 +5,54 @@
 ```bash
 git clone <repo> && cd Harness
 python -m pip install -e '.[dev]'
-python -m ruff check harness tests
-python -W error::ResourceWarning -m unittest discover -s tests   # hermetic, no network
+python -m harness.cli gates --run ruff
+python -m harness.cli gates --run unittest   # hermetic, no network
 ```
 
+`harness gates` lists every documented gate with *this* platform's exact
+command (`python -m harness.cli gates`), and `--run <name>` executes one. The
+commands live in `harness/gate_runner.py` as argv data, so this document never
+carries a command that is only correct on one operating system.
+
 Python 3.9+; pure stdlib — the package has zero runtime dependencies.
+
+## Line endings
+
+Everything in the working tree is **LF**; `.gitattributes` pins that explicitly
+(`* text=auto eol=lf`) rather than leaving it to `text=auto`, which normalizes
+on commit but lets the platform choose the working-tree form. Three reasons:
+
+1. The parity tests (`tests/test_plat_parity_*.py`) hash the bytes of the
+   ledger, the Jev report and the site export bundle. A CRLF checkout would
+   change what those hashes cover, so the rules would rot on Windows.
+2. Evidence files are written with `newline=""`/`"\n"` on purpose
+   (`harness/osal.py`), so the platform newline can never reach them. Keeping
+   the tree LF means the same is true of every file a reviewer diffs.
+3. Diffs that show every line as changed are how a real change hides.
+
+`.bat`, `.cmd` and `.ps1` keep CRLF (`eol=crlf`) because a Windows script with
+LF endings is a real failure mode on `cmd.exe`. If your editor rewrites line
+endings on save, it is configured wrong — fix the editor, not the file.
+
+## Cross-platform rules for code
+
+All operating-system contact lives in `harness/osal.py`: process launch, text
+I/O, atomic writes, path comparison and containment, key-file permissions, and
+the browser hand-off. `tests/test_osal_boundary.py` fails the build if another
+module imports `subprocess` or `webbrowser`, or reads `os.name` / `sys.platform`
+— add the capability to `osal.py` instead.
+
+Commands are **argv lists, never shell strings**. `harness/gate_runner.py` holds
+the documented gates as data; `split_command` tokenizes a documented command in
+a Windows-aware way (drive letters, UNC prefixes and backslash paths survive).
+A `shell=True` call will not pass the suite, and it is not a style preference:
+on Windows it routes through `cmd.exe`, which rejects forward-slash paths and
+turns one portable gate into three different ones.
+
+Paths that reach a report, a ledger entry or a hash go through
+`osal.display_path` (forward slashes), and comparisons go through
+`osal.norm_path` / `osal.is_within` (realpath + case normalization), because
+macOS and Windows filesystems are case-insensitive and Linux is not.
 
 ## Module map (who owns what)
 
@@ -41,8 +84,18 @@ cli.py / mcp.py          interfaces (arg parsing, JSON-RPC; boundary
     prompts.py           apply prompt contracts + response parsing (READY
                          marker, strict unified diff); pure text, no engine
                          state -- incl. the consent mechanics text
-    filesafety.py        atomic write, out-of-tree backups, shell-free gate
-                         runner -- every disk/gate mutation policy
+    osal.py              THE operating-system boundary: argv-only process
+                         launch, UTF-8/LF text IO, atomic writes, realpath +
+                         case path containment, key-file permissions, browser
+                         hand-off. `subprocess`/`os.name`/`sys.platform`/
+                         `webbrowser` anywhere else fail the build
+                         (tests/test_osal_boundary.py)
+    gate_runner.py       gates as DATA (argv templates, {python} =
+                         sys.executable) + the ONE shell-free run_gate +
+                         the Windows-aware split_command
+    filesafety.py        atomic write, out-of-tree backups, verify-gate
+                         policy -- every disk/gate mutation policy (mechanics
+                         delegated to osal.py)
     convergence.py       deterministic claim tally + specialist lane
     consent.py           consent probe / continued consensus
     capability.py        declared-vs-observed model capability + routing

@@ -414,6 +414,23 @@ def build_parser():
                       help="session cost ceiling in dollars (default: configured max_cost)")
     _add_output_flags(pcap)
 
+    # PLAT-cmd-data: the documented gates live in harness/gate_runner.py as
+    # argv data, so docs name the gate instead of carrying a
+    # platform-flavoured command string that can only be right on one OS.
+    pgates = sub.add_parser(
+        "gates", help="List the documented quality gates with this "
+                      "platform's exact command, or run one")
+    pgates.add_argument("--run", dest="run_gate", default=None, metavar="GATE",
+                        help="run one gate by name and exit with its code "
+                             "(e.g. ruff, compileall, audit, jev-phase)")
+    pgates.add_argument("--phase", default=None,
+                        help="phase id for the jev-phase gate (default JEV-P0)")
+    pgates.add_argument("--timeout", type=float, default=None,
+                        help="seconds before the gate is killed (default: per gate)")
+    pgates.add_argument("--json", action="store_true",
+                        help="emit the gate table as JSON (argv + copy-paste command)")
+    _add_output_flags(pgates)
+
     sub.add_parser("spend", help="Key identity & spend status")
     _add_output_flags(sub.choices["spend"])
 

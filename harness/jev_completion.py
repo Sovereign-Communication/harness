@@ -14,14 +14,13 @@ import math
 import os
 import re
 import sqlite3
-import subprocess
-import threading
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 from .errors import HarnessError
+from . import osal
 from .jev_packs import (
     DEFAULT_PHASE_COMPLETION_PACK,
     PHASE_COMPLETION_SITE,
@@ -305,6 +304,53 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "required_tests": ["tests/test_jev_bar_sentiment.py"],
         "required_files": ["packs/phase_completion.pack.json", "harness/jev_completion.py"],
     },
+    # PLAT-* (platform unification): the bar for these rows is "the claim is
+    # enforced by a named test", so each row names the tests that enforce it.
+    # pr_pattern stays None: the STATUS row must cite the merged PR itself.
+    "PLAT-CMD-DATA": {
+        "pr_pattern": None,
+        "required_tests": [
+            "tests/test_plat_cmd_runnable.py",
+            "tests/test_cli_gates.py",
+        ],
+        "required_files": [
+            "harness/gate_runner.py",
+            "harness/osal.py",
+        ],
+    },
+    "PLAT-OSAL-MODULE": {
+        "pr_pattern": None,
+        "required_tests": [
+            "tests/test_osal.py",
+            "tests/test_osal_boundary.py",
+        ],
+        "required_files": ["harness/osal.py"],
+    },
+    "PLAT-CI-MATRIX": {
+        "pr_pattern": None,
+        "required_tests": ["tests/test_plat_ci_matrix.py"],
+        "required_files": [".github/workflows/ci.yml", ".gitattributes"],
+    },
+    "PLAT-PARITY-TESTS": {
+        "pr_pattern": None,
+        "required_tests": [
+            "tests/test_plat_parity_ledger.py",
+            "tests/test_plat_parity_jev_report.py",
+            "tests/test_plat_parity_site_export.py",
+        ],
+        "required_files": [".gitattributes"],
+    },
+    "PLAT-DOCS": {
+        "pr_pattern": None,
+        "required_tests": ["tests/test_plat_docs.py"],
+        "required_files": [
+            "docs/security.md",
+            "docs/mcp.md",
+            "docs/architecture.md",
+            "CONTRIBUTING.md",
+            "README.md",
+        ],
+    },
     "HV-1": {
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,
@@ -425,55 +471,14 @@ def _read_bounded(path: Path, limit: int) -> Optional[bytes]:
 
 
 def _git_bytes(root: Path, *args: str, max_bytes: int = 1_000_000) -> Optional[bytes]:
-    """Run a Git query while keeping captured stdout within a fixed bound."""
-    if max_bytes < 0:
-        return None
-    try:
-        process = subprocess.Popen(
-            ["git", "-C", str(root), *args], stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, shell=False,
-        )
-    except OSError:
-        return None
-    if process.stdout is None:
-        process.kill()
-        process.wait()
-        return None
+    """Run a Git query while keeping captured stdout within a fixed bound.
 
-    captured = bytearray()
-    oversized = threading.Event()
-
-    def drain_stdout() -> None:
-        while True:
-            remaining = max_bytes + 1 - len(captured)
-            reader = getattr(process.stdout, "read1", None) or process.stdout.read
-            chunk = reader(min(65_536, remaining))
-            if not chunk:
-                return
-            captured.extend(chunk)
-            if len(captured) > max_bytes:
-                oversized.set()
-                process.kill()
-                return
-
-    reader = threading.Thread(target=drain_stdout, daemon=True)
-    reader.start()
-    try:
-        returncode = process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-        returncode = None
-    reader.join(timeout=1)
-    if reader.is_alive():
-        process.kill()
-        process.stdout.close()
-        reader.join(timeout=1)
-        return None
-    process.stdout.close()
-    if oversized.is_set() or returncode != 0:
-        return None
-    return bytes(captured)
+    The process mechanics live in osal (PLAT-osal-module): a git query is
+    OS contact, and this module owns what the answer *means* -- that an
+    oversized, timed-out or failed query is ``None`` rather than a truncated
+    answer that would silently under-report evidence.
+    """
+    return osal.run_bounded(["git", "-C", str(root), *args], max_bytes)
 
 
 def _valid_oc_handoff_receipt(root_value: str) -> bool:
@@ -692,8 +697,10 @@ def _norm_phase(phase_id: str) -> str:
         raise HarnessError("phase id is required")
     if raw.startswith("P") and raw[1:2].isdigit():
         return f"JEV-P{raw[1:2]}"
-    if not raw.startswith("JEV-"):
-        return f"JEV-{raw}" if raw.startswith("P") else raw
+    # A named track id keeps its canonical spelling. The old P-prefix
+    # catch-all rewrote PLAT-cmd-data to JEV-PLAT-CMD-DATA, which matched
+    # neither the PHASE_CONTRACTS table nor the STATUS-row needles -- the
+    # phase silently scored on an empty contract and an empty row.
     return raw
 
 
@@ -722,6 +729,11 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         "JEV-P6": re.compile(r"JEV-P6", re.I),
         "HG": re.compile(r"HG-\*|hourglass composition", re.I),
         "JEV-BAR": re.compile(r"JEV-BAR", re.I),
+        "PLAT-CMD-DATA": re.compile(r"\bPLAT-cmd-data\b", re.I),
+        "PLAT-OSAL-MODULE": re.compile(r"\bPLAT-osal-module\b", re.I),
+        "PLAT-CI-MATRIX": re.compile(r"\bPLAT-ci-matrix\b", re.I),
+        "PLAT-PARITY-TESTS": re.compile(r"\bPLAT-parity-tests\b", re.I),
+        "PLAT-DOCS": re.compile(r"\bPLAT-docs\b", re.I),
         "HV-0": re.compile(r"\bHV-0\b|vision-assessment pilot|vision assessment", re.I),
         "HV-1": re.compile(r"\bHV-1\b|stage-specific JEV integration", re.I),
         "HV-2": re.compile(r"\bHV-2\b|evidence-bearing context brief", re.I),
@@ -826,12 +838,16 @@ def collect_phase_evidence(repo_root: str, phase_id: str,
         pattern = contract.get("pr_pattern")
         lowered = status_row.lower()
         mentions_pr = phase_status_mentions_pr(status_row, pattern)
+        # Match against the LOWERED row with lowered literals: the old
+        # uppercase "PR" pattern could never match, so "PR #104 open, merge
+        # pending" scored as merged (a fake-complete leak in the gate itself).
         open_pr = bool(
-            re.search(r"\b(?:PR|pull request)\s*(?:#\d+)?\s*(?:is\s+)?open\b", lowered)
-            or re.search(r"\bopen\s+(?:PR|pull request)(?:\s+#\d+)?\b", lowered)
+            re.search(r"\b(?:pr|pull request)\s*(?:#\d+)?\s*(?:is\s+)?open\b", lowered)
+            or re.search(r"\bopen\s+(?:pr|pull request)(?:\s+#\d+)?\b", lowered)
             or re.search(r"\bno pr\b", lowered)
         )
-        merged_word = "merged" in lowered or "merge" in lowered
+        # Only the word "merged" is merge evidence; "merge pending" is a plan.
+        merged_word = bool(re.search(r"\bmerged\b", lowered))
         # Presence of a PR id is not merge evidence while the row still says open.
         evidence["pr_merged"] = bool(mentions_pr and merged_word and not open_pr)
         evidence["origin_evidence"] = status_row

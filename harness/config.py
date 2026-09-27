@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 from .errors import HarnessError
+from . import osal
 from .output import eprint
 from .validation import finite_number
 
@@ -414,14 +415,13 @@ def _warn_insecure_keyfile(path):
     A leaked OpenRouter key spends real money, so a permissive key file is a
     silent credential hazard. We warn rather than refuse: the user's working
     setup must not break, but the failure mode must not be silent.
+
+    PLAT-osal: the permission question belongs to osal, which answers
+    "not modelled" on Windows (there the ACL is the real control) instead of
+    asking ``os.name`` here and pretending a mode exists.
     """
-    if os.name == "nt":
-        return
-    try:
-        mode = os.stat(path).st_mode & 0o777
-    except OSError:
-        return
-    if mode & 0o077:
+    if osal.keyfile_is_insecure(path):
+        mode = osal.keyfile_mode(path)
         eprint(f"[warn] key file {path} is group/world readable (mode "
                f"{oct(mode)}); restrict it with chmod 600.")
 
