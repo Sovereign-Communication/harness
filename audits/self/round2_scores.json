@@ -20,6 +20,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
+        "confidence": 0.99,
         "evaluated": true
       },
       "R": {
@@ -28,6 +29,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
+        "confidence": 0.99,
         "evaluated": true
       },
       "SM": {
@@ -36,6 +38,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
+        "confidence": 0.99,
         "evaluated": true
       },
       "SD": {
@@ -44,6 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
+        "confidence": 0.97,
         "evaluated": true
       }
     },
@@ -55,14 +59,12 @@
     },
     "bar_95_pass": true,
     "min_score": 10.0,
-    "is_fallback": true,
-    "reasons": [
-      "unkeyed"
-    ],
-    "model": "jev-latest",
-    "cost": 0.0,
-    "input_tokens": 0,
-    "output_tokens": 0
+    "is_fallback": false,
+    "reasons": [],
+    "model": "jev-1.13.0",
+    "cost": 5.5565999999999995e-06,
+    "input_tokens": 1323,
+    "output_tokens": 60
   },
   "checks": {
     "A": [
@@ -222,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 2079 tests in 171.473s\n\nOK"
+        "evidence": "unittest: Ran 2098 tests in 235.985s\n\nOK"
       },
       {
         "id": "R14",

@@ -47,6 +47,10 @@ class JevEvaluationResult:
     model_observed: bool = False
     input_tokens_observed: bool = False
     output_tokens_observed: bool = False
+    # DF-JEV-3: the provider billed this call and we could not use the answer.
+    # Cost stays settled and honest; this flag is what lets a run report its
+    # effective coverage instead of quietly presenting a paid call as signal.
+    discarded: bool = False
 
     def is_passing(self, min_confidence: float = 0.70) -> bool:
         """Apply the configured action threshold without conflating signals."""
@@ -159,16 +163,38 @@ def _parse_answer(answer: Any, expected: str, key: str,
         criteria = question.get("criteria")
         if not isinstance(choice, str) or choice not in parsed_probs:
             raise ValueError(f"choice answer {key} has an invalid choice")
-        if isinstance(criteria, dict) and set(parsed_probs) != set(criteria):
-            raise ValueError(f"choice answer {key} probabilities do not match criteria")
+        unmatched: List[str] = []
+        if isinstance(criteria, dict):
+            declared = {str(name) for name in criteria}
+            unknown = set(parsed_probs) - declared
+            if unknown:
+                # An option the operator never declared is fatal: it cannot be
+                # recorded as an honest unmatched, it is out of vocabulary.
+                raise ValueError(
+                    f"choice answer {key} declares undeclared options: "
+                    + ", ".join(sorted(unknown)))
+            # DF-JEV-3: a subset that already normalizes onto the declared
+            # criteria is a RECOVERABLE shape, not a rejection. The model put
+            # zero on the options it omitted; recording them as None keeps the
+            # answer usable and never invents a probability for them. Measured
+            # 2026-09-25: the old hard reject discarded 94.1% of answers on a
+            # 7-criteria pack -- the stricter the vocabulary, the more reliably
+            # the tool paid for answers it threw away.
+            unmatched = sorted(declared - set(parsed_probs))
+            for option in unmatched:
+                parsed_probs[option] = None
         return {"type": "choice", "choice": choice, "probabilities": parsed_probs,
-                "confidence": _number(answer["confidence"], key + ".confidence")}
+                "confidence": _number(answer["confidence"], key + ".confidence"),
+                "unmatched_options": unmatched}
     score = answer.get("score")
     legend = answer.get("legend")
     if isinstance(score, bool) or not isinstance(score, (int, float)) or not isinstance(legend, dict) or not legend:
         raise ValueError(f"score answer {key} is missing required fields")
     parsed_probs = _probabilities(answer.get("probabilities"), key + ".probabilities")
     if set(parsed_probs) != {str(k) for k in legend}:
+        # Unlike a choice, a Score's legend is the provider's OWN answer, not
+        # an operator-declared vocabulary, so a key-set mismatch here is
+        # genuinely malformed rather than an omitted option. Stay strict.
         raise ValueError(f"score answer {key} legend does not match probabilities")
     return {"type": "score", "score": float(score), "legend": dict(legend),
             "probabilities": parsed_probs,
@@ -207,9 +233,16 @@ class JevEvaluator:
                         if (isinstance(output_tokens, bool) or not isinstance(output_tokens, int)
                                 or output_tokens < 0):
                             output_tokens = 0
+                        # DF-JEV-3: the provider billed this response and we
+                        # cannot use the answer. Settle the real usage, and
+                        # mark it discarded so the caller can report the loss
+                        # rather than degrading as if nothing was spent.
                         return self._failure(
                             "invalid TypeSafe response: " + str(exc), fallback=False,
-                            input_tokens=input_tokens, output_tokens=output_tokens)
+                            input_tokens=input_tokens, output_tokens=output_tokens,
+                            input_tokens_observed=input_tokens > 0,
+                            output_tokens_observed=output_tokens > 0,
+                            discarded=input_tokens > 0)
                 if status in (401, 422):
                     return self._failure(f"TypeSafe request rejected (HTTP {status})", fallback=False)
             except Exception:
@@ -295,7 +328,10 @@ class JevEvaluator:
                 usage_observed=usage_observed, model=model,
                 model_observed=True,
                 input_tokens_observed=input_observed,
-                output_tokens_observed=output_observed)
+                output_tokens_observed=output_observed,
+                # DF-JEV-3: billed but unusable. Same discipline on the strict
+                # one-attempt path -- real usage settles, and the loss is named.
+                discarded=input_observed)
         # _parse_jev_response already returns a frozen result with these
         # observed flags set after validating both usage fields and the
         # response model. Do not mutate the frozen dataclass here.
@@ -324,7 +360,8 @@ class JevEvaluator:
                  model: Optional[str] = None,
                  model_observed: bool = False,
                  input_tokens_observed: bool = False,
-                 output_tokens_observed: bool = False) -> JevEvaluationResult:
+                 output_tokens_observed: bool = False,
+                 discarded: bool = False) -> JevEvaluationResult:
         return JevEvaluationResult(
             "fail", 0.0, 0.0, {}, [reason],
             cost=jev_cost(input_tokens), input_tokens=input_tokens,
@@ -332,7 +369,8 @@ class JevEvaluator:
             model=model or self.model, usage_observed=usage_observed,
             model_observed=model_observed,
             input_tokens_observed=input_tokens_observed,
-            output_tokens_observed=output_tokens_observed)
+            output_tokens_observed=output_tokens_observed,
+            discarded=discarded)
 
     def _parse_jev_response(self, resp: Dict[str, Any], questions: Dict[str, Any]) -> JevEvaluationResult:
         if not isinstance(resp.get("answers"), dict) or not isinstance(resp.get("usage"), dict):

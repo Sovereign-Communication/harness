@@ -137,6 +137,162 @@ def _stub_policy_factory(count=None, cost=0.001):
     return factory
 
 
+def _discarding_policy_factory(discarded_every=1):
+    """A policy whose calls are billed but whose answers cannot be used.
+
+    DF-JEV-3: this is the shape the 2026-09-25 audit measured -- the call is
+    settled, the keyword matcher supplies the axes, and unless the loss is
+    counted the run reads as clean fallback coverage.
+    """
+    state = {"n": 0}
+
+    class _DiscardingPolicy:
+        def evaluate_repo_summary(self, state_el, pack, task_id=None):
+            state["n"] += 1
+            discarded = state["n"] % discarded_every == 0
+            structural = {"verdict": "fail", "confidence": 0.0,
+                          "supported": 0.0, "cost": 0.0001,
+                          "input_tokens": 1400, "output_tokens": 0,
+                          "is_fallback": True, "model": "jev-test",
+                          "site": "repo_summary",
+                          "discarded": discarded}
+            judgment = {"pack_id": pack["id"],
+                        "axes": {"stage": None, "handling": None},
+                        "axis_confidence": {}, "attention": {},
+                        "nouls": {}, "is_fallback": True,
+                        "evidence": ["invalid TypeSafe response: score"]}
+            result = JevEvaluationResult(
+                "fail", 0.0, 0.0, {}, ["invalid TypeSafe response"],
+                cost=0.0001, input_tokens=1400, output_tokens=0,
+                is_fallback=True, model="jev-test", discarded=discarded)
+            return result, structural, judgment
+
+    return lambda cumulative: _DiscardingPolicy()
+
+
+class StopReasonHonestyTests(unittest.TestCase):
+    """DF-JEV-4: ``run_budget`` must mean the money ran out.
+
+    Measured 2026-09-25: a run with a $0.25 cumulative budget and a $0.10
+    per-governor ceiling reported ``stop_reason="run_budget"`` after 2,315 of
+    3,638 elements having spent $0.0107, leaving 1,323 pending with the real
+    error unrecoverable from the artifact.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        _tree(self.tmp.name)
+        self.pack = validate_repo_summary_pack(repo_pack())
+        self.state_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.state_dir.cleanup)
+        self.state_path = os.path.join(self.state_dir.name, "judged.jsonl")
+
+    def _run_with(self, exc):
+        class _Raising:
+            def evaluate_repo_summary(self, state_el, pack, task_id=None):
+                raise exc
+        env = analyze_repo(self.tmp.name, self.pack, lambda c: _Raising(),
+                           state_path=self.state_path, symbol_limit=5,
+                           generated_at="T")
+        return env
+
+    def test_a_non_budget_error_is_not_reported_as_run_budget(self):
+        env = self._run_with(HarnessError("provider catalog is unreachable"))
+        coverage = env["coverage"]
+        self.assertEqual(coverage["stop_reason"], "error")
+        self.assertNotEqual(coverage["stop_reason"], "run_budget")
+        # The cause is recoverable from the artifact, which was the whole point.
+        self.assertIn("HarnessError", coverage["stop_detail"])
+        self.assertIn("provider catalog is unreachable", coverage["stop_detail"])
+        self.assertIn("provider catalog is unreachable", render_repo_map(env))
+
+    def test_a_spend_refusal_still_reports_run_budget(self):
+        env = self._run_with(HarnessError(
+            "jev:repo_summary $0.000200 would exceed phase ceiling $0.000100 "
+            "(spent=$0.0, outstanding=$0.0, phase=attempt). Refusing."))
+        self.assertEqual(env["coverage"]["stop_reason"], "run_budget")
+        self.assertIsNone(env["coverage"]["stop_detail"])
+
+    def test_a_terminal_reserve_refusal_still_reports_run_budget(self):
+        env = self._run_with(HarnessError(
+            "jev:repo_summary worst-case $0.060000 would eat terminal_reserve "
+            "$0.050000; attempt working remaining is $0.010000. Refusing."))
+        self.assertEqual(env["coverage"]["stop_reason"], "run_budget")
+        self.assertIsNone(env["coverage"]["stop_detail"])
+
+    def test_an_error_stop_persists_nothing_and_resumes_cleanly(self):
+        env = self._run_with(HarnessError("transport exploded"))
+        # Nothing was judged, so the append-only state stays valid and a
+        # re-invocation retries from the start rather than losing work.
+        self.assertEqual(env["coverage"]["judged"], 0)
+        self.assertEqual(load_judgment_rows(self.state_path), [])
+        self.assertGreater(env["coverage"]["pending"], 0)
+
+    def test_an_unrelated_error_mentioning_exceed_is_not_a_budget_stop(self):
+        # The bug being fixed is a wrong *label*; a loose marker would keep
+        # producing it. "rate limit exceeded" must not read as money running out.
+        env = self._run_with(HarnessError("pricing fetch failed: rate limit exceeded"))
+        self.assertEqual(env["coverage"]["stop_reason"], "error")
+        self.assertIn("rate limit exceeded", env["coverage"]["stop_detail"])
+
+    def test_a_clean_run_carries_no_stop_detail(self):
+        env = analyze_repo(self.tmp.name, self.pack, _stub_policy_factory(),
+                           state_path=self.state_path, symbol_limit=5,
+                           generated_at="T")
+        self.assertEqual(env["coverage"]["stop_reason"], "complete")
+        self.assertIsNone(env["coverage"]["stop_detail"])
+
+
+class BilledButDiscardedCoverageTests(unittest.TestCase):
+    """DF-JEV-3 regression floor at the envelope level."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        _tree(self.tmp.name)
+        self.pack = validate_repo_summary_pack(repo_pack())
+        self.state_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.state_dir.cleanup)
+        self.state_path = os.path.join(self.state_dir.name, "judged.jsonl")
+
+    def test_envelope_reports_its_own_billed_but_discarded_rate(self):
+        env = analyze_repo(self.tmp.name, self.pack,
+                           _discarding_policy_factory(),
+                           state_path=self.state_path, symbol_limit=5,
+                           generated_at="T")
+        judged = env["coverage"]["judged"]
+        discarded = env["coverage"]["billed_but_discarded"]
+        self.assertGreater(discarded, 0)
+        self.assertEqual(discarded, judged)
+        # The loss is priced, not just counted: the operator can see what the
+        # unusable calls cost.
+        self.assertAlmostEqual(env["spend"]["discarded_cost_usd"],
+                               round(0.0001 * judged, 6))
+        self.assertEqual(env["spend"]["discarded_input_tokens"], 1400 * judged)
+        # Cost stays honest: the discarded spend is still inside the total.
+        self.assertAlmostEqual(env["spend"]["cost_usd"],
+                               round(0.0001 * judged, 6))
+        # Discarded rows are fallback rows, never live coverage.
+        self.assertEqual(env["coverage"]["live_judged"], 0)
+        self.assertEqual(env["coverage"]["fallbacks"], judged)
+        # Every persisted row carries the flag, so a resumed run does not lose
+        # the history of what was paid for and thrown away.
+        rows = load_judgment_rows(self.state_path)
+        self.assertEqual(len(rows), judged)
+        self.assertTrue(all(row["discarded"] for row in rows))
+
+    def test_a_clean_run_reports_zero_discarded(self):
+        env = analyze_repo(self.tmp.name, self.pack, _stub_policy_factory(),
+                           state_path=self.state_path, symbol_limit=5,
+                           generated_at="T")
+        self.assertEqual(env["coverage"]["billed_but_discarded"], 0)
+        self.assertEqual(env["spend"]["discarded_cost_usd"], 0.0)
+        self.assertEqual(env["spend"]["discarded_input_tokens"], 0)
+        self.assertIn("billed but discarded: 0 calls",
+                      render_repo_map(env))
+
+
 class AnalyzeRepoTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -232,7 +388,7 @@ class AnalyzeRepoTests(unittest.TestCase):
         self.assertEqual(env2["coverage"]["judged"], total)
         self.assertEqual(len(load_judgment_rows(self.state_path)), total)
 
-    def test_harness_error_mid_run_is_a_clean_budget_stop(self):
+    def test_spend_refusal_mid_run_is_a_clean_budget_stop(self):
         class _Flaky:
             def __init__(self):
                 self.n = 0
@@ -240,7 +396,9 @@ class AnalyzeRepoTests(unittest.TestCase):
             def evaluate_repo_summary(self, state_el, pack, task_id=None):
                 self.n += 1
                 if self.n > 1:
-                    raise HarnessError("reservation over ceiling")
+                    raise HarnessError(
+                        "jev:repo_summary $0.000200 would exceed phase "
+                        "ceiling $0.000100. Refusing.")
                 structural = {"verdict": "pass", "confidence": 0.9,
                               "supported": 0.9, "cost": 0.001,
                               "input_tokens": 700, "output_tokens": 50,
