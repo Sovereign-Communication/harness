@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.97,
+        "confidence": 0.96,
         "evaluated": true
       }
     },
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 2162 tests in 231.247s\n\nOK"
+        "evidence": "unittest: Ran 2163 tests in 235.821s\n\nOK"
       },
       {
         "id": "R14",
