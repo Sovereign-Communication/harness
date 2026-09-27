@@ -358,6 +358,10 @@ def _cmd_brief(opts, settings=None):
     if opts.validate:
         out["grounding_issues"] = validate_brief(pack)
         out["ok"] = not out["grounding_issues"]
+    # The ONE exit-code policy needs a terminal status; without it this face
+    # raised KeyError('status') on every run, and `--validate` had no way to
+    # report a failed grounding lint as anything but a crash.
+    out["status"] = "ok" if out.get("ok", True) else "incomplete"
     _emit_by_status(out, opts.out)
 
 

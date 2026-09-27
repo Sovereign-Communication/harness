@@ -5,6 +5,9 @@ beyond its goal -- every factual line is a cited, hash-pinned window, and
 the lint rejects drifted sources, non-span windows, unknown citations,
 and uncited claims.
 """
+import contextlib
+import io
+import json
 import os
 import tempfile
 import unittest
@@ -92,8 +95,35 @@ class ValidateBriefTests(unittest.TestCase):
 
 
 class CliBriefTests(unittest.TestCase):
-    def test_cmd_brief_builds_and_lints_hermetically(self):
+    def _opts(self, target, **kw):
         from types import SimpleNamespace
+        base = dict(goal="make x better", files=[target], validate=True,
+                    out=None, quiet=True)
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    def test_cmd_brief_builds_and_lints_hermetically(self):
+        from harness.cli import _cmd_brief
+
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "a.py")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("def x(): pass\n")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                _cmd_brief(self._opts(target))  # a clean lint must not exit
+        payload = json.loads(buf.getvalue())
+        pack = payload["brief"]
+        self.assertEqual(pack["goal"], "make x better")
+        self.assertEqual(pack["grounding"]["claims"], [])
+        self.assertEqual(payload["grounding_issues"], [])
+        self.assertTrue(payload["ok"])
+        # The terminal status the shared exit-code policy reads.
+        self.assertEqual(payload["status"], "ok")
+
+    def test_a_failed_grounding_lint_exits_nonzero_instead_of_crashing(self):
+        # The real emit path used to raise KeyError('status') on EVERY run,
+        # and a failing lint had no exit code at all.
         from unittest.mock import patch
 
         from harness.cli import _cmd_brief
@@ -102,16 +132,16 @@ class CliBriefTests(unittest.TestCase):
             target = os.path.join(d, "a.py")
             with open(target, "w", encoding="utf-8") as f:
                 f.write("def x(): pass\n")
-            opts = SimpleNamespace(goal="make x better", files=[target],
-                                   validate=True, out=None, quiet=True)
-            with patch("harness.cli._emit_by_status") as emit:
-                _cmd_brief(opts)
-        out = emit.call_args[0][0]
-        pack = out["brief"]
-        self.assertEqual(pack["goal"], "make x better")
-        self.assertEqual(pack["grounding"]["claims"], [])
-        self.assertEqual(out["grounding_issues"], [])
-        self.assertTrue(out["ok"])
+            buf = io.StringIO()
+            with patch("harness.cli.validate_brief", return_value=["boom"]):
+                with contextlib.redirect_stdout(buf):
+                    with self.assertRaises(SystemExit) as ctx:
+                        _cmd_brief(self._opts(target))
+        self.assertEqual(ctx.exception.code, 2)
+        payload = json.loads(buf.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["grounding_issues"], ["boom"])
+        self.assertEqual(payload["status"], "incomplete")
 
 
 if __name__ == "__main__":
