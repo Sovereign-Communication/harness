@@ -1067,9 +1067,6 @@ class OcHandoffVerifierFailurePathTests(unittest.TestCase):
                     self.assertFalse(_valid_oc_handoff_receipt(str(root)))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class StatusRowIdentityTests(unittest.TestCase):
     """A phase's STATUS row is the row that is ABOUT it.
 
@@ -1194,3 +1191,57 @@ class StatusRowVerdictWinsTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertIn("**in progress**", row)
         self.assertNotIn("After HV-1..3", row)
+
+
+class StatusRowForeignIdTests(unittest.TestCase):
+    """A phase that has NO STATUS row of its own must not borrow one.
+
+    The identity bonus fixes the case where a phase has a real row and a
+    neighbour merely mentions it. It cannot fix the inverse, and that case is
+    not hypothetical: registering a needle for ``HV-5``/``HV-6`` -- phases
+    with no STATUS row yet -- made both resolve to the ``HV-3`` row (it names
+    ``HV-5`` as its consumer) and report ``pr_merged: true`` off
+    ``PR #100 MERGED``. An unimplemented phase would have read as delivered.
+    There is no own-id row to reward here, so the neighbour won by default
+    and a bonus could never have caught it. The fix is a filter: a row whose
+    id cell is a *different* registered phase is not this phase's row.
+    """
+
+    ROADMAP = (
+        "| `HV-3` token allowance and accounting owner | **in progress** | "
+        "**PR #100 MERGED** (stacked); stays in progress until `HV-4` "
+        "composes through `TokenBudget` and `HV-5` dispatches through it |\n"
+        "| `HV-4` stage composition and planning waist | **in progress** | "
+        "composition lands in this PR |\n"
+    )
+
+    def test_a_registered_needle_does_not_borrow_a_neighbouring_phase_row(self):
+        for phase in ("HV-5", "HV-6"):
+            row = _status_row_for(self.ROADMAP, phase)
+            self.assertNotIn("PR #100", row or "",
+                             "{} resolved onto another phase's row".format(phase))
+
+    def test_the_borrowed_merge_evidence_is_not_reported_as_this_phase_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(root, self.ROADMAP, tests=[], files=[])
+            for phase in ("HV-5", "HV-6"):
+                evidence = collect_phase_evidence(str(root), phase)
+                self.assertFalse(evidence["pr_merged"], phase)
+
+    def test_the_neighbour_still_resolves_for_its_own_phase(self):
+        row = _status_row_for(self.ROADMAP, "HV-3")
+        self.assertIn("PR #100 MERGED", row)
+
+    def test_the_live_roadmap_does_not_lend_its_merged_row_to_hv5_or_hv6(self):
+        # The regression as it shipped, read against the real document.
+        repo_root = Path(__file__).resolve().parents[1]
+        roadmap = (repo_root / "docs" / "jev-roadmap.md").read_text(
+            encoding="utf-8")
+        for phase in ("HV-5", "HV-6"):
+            row = _status_row_for(roadmap, phase) or ""
+            self.assertNotIn("PR #100", row, phase)
+
+
+if __name__ == "__main__":
+    unittest.main()

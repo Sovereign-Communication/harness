@@ -805,6 +805,27 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         candidates.append(stripped)
     if not candidates:
         return None
+    # Identity as a FILTER, not merely a preference bonus. A row whose id
+    # cell IS a *different* registered phase is that phase's STATUS row, full
+    # stop: it may quote this phase in prose ("`HV-5` dispatches through it")
+    # and it carries that other phase's merge citation, so preferring it lets
+    # an unimplemented phase inherit a neighbour's merge. This is not
+    # hypothetical -- registering a needle for `HV-5`/`HV-6` (which have no
+    # STATUS row of their own yet) made both resolve to the `HV-3` row and
+    # report `pr_merged: true` off `PR #100 MERGED`, a fake-complete leak of
+    # exactly the kind the identity bonus was added to stop. Identity cannot
+    # express that as a bonus, because the phases concerned have no own-id
+    # row to reward: the neighbouring row wins by default.
+    #
+    # Only *registered* phase ids are excluded. A wildcard family id
+    # (`MS-*`, `HG-*`, `SITE-*`), a sub-item (`HV-2-use`, `JEV-P6-waist-brief`)
+    # and a tracker row with no phase id in the cell are not another phase's
+    # STATUS row, so they stay eligible and phases without an exact-id row
+    # rank exactly as they always did.
+    other_phase_ids = {k.lower() for k in needles} - {phase_id.lower()}
+    candidates = [r for r in candidates if _row_id_cell(r) not in other_phase_ids]
+    if not candidates:
+        return None
     # Prefer rows that look like STATUS/tracker conclusions.
     def rank(row: str) -> int:
         low = row.lower()
@@ -815,9 +836,9 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         # say) and carries stronger keywords (``merged``, a PR number) wins,
         # and the phase is then scored on ANOTHER row's claims. That is how a
         # phase gets marked complete -- or blocked -- by wording that was
-        # never about it. Purely additive: a phase with no exact-ID row
-        # (a wildcard id like ``MS-*``, or a tracker row) ranks exactly as
-        # before.
+        # never about it. The other half of that fix is the FILTER above; this
+        # bonus only has to separate this phase's own row from the rows that
+        # survive it (its spec row, its wildcard family, a tracker row).
         if _row_id_cell(row) == phase_id.lower():
             score += 50
         # Identity alone is not enough: the vision-plan spec table ALSO has
