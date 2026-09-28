@@ -1,0 +1,623 @@
+diff --git a/audits/self/audit.py b/audits/self/audit.py
+index 85b7990..d68e739 100644
+--- a/audits/self/audit.py
++++ b/audits/self/audit.py
+@@ -624,19 +624,109 @@ def _classify_suite_output(text):
+             m.group(0).strip() if m else None)
+ 
+ 
++# Credentials and ambient-config variables the hermetic suite child must not
++# inherit. Scrubbing the environment is necessary but NOT sufficient:
++# harness.config.resolve_api_key() falls back to reading key FILES under
++# ~/.config (scmorc/openrouter_fusion.env, scmorc/openrouter.env,
++# harness/openrouter.env), so an operator with a key on disk still gets a
++# non-hermetic child from an env-only scrub. The empty HOME below is what
++# actually makes `expanduser("~")` miss every one of those paths.
++_HERMETIC_STRIP_VARS = (
++    "OPENROUTER_API_KEY",
++    "TYPESAFE_API_KEY",
++    "HARNESS_JEV_KEY",
++    "HARNESS_LEDGER",
++)
++
++
++def _hermetic_suite_env(base_env, empty_home):
++    """The environment for R13's suite child: the parent's variables minus
++    every credential, with HOME/USERPROFILE pointed at an empty directory so
++    no key file under ~/.config can be found either.
++
++    Pure and factored out so it can be self-verified (see
++    ``r_suite_env_selftest``) without spawning anything. An audit check that
++    certifies hermeticity must not itself depend on ambient state, and this
++    is the piece that makes that true.
++    """
++    env = {k: v for k, v in base_env.items() if k not in _HERMETIC_STRIP_VARS}
++    # Windows resolves expanduser via USERPROFILE, POSIX via HOME; set both so
++    # the guarantee holds on every platform in the CI matrix.
++    env["HOME"] = empty_home
++    env["USERPROFILE"] = empty_home
++    return env
++
++
+ def r_suite_green():
+     """The full unit suite is green hermetically (with ResourceWarnings as
+-    errors)."""
+-    r = subprocess.run(
+-        [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest",
+-         "discover", "-s", "tests", "-q"],
+-        cwd=str(ROOT), capture_output=True, text=True, timeout=900)
++    errors).
++
++    The child is spawned with credentials stripped and HOME pointed at an
++    empty directory. Without that, a key-gated live test
++    (tests/test_judge.py's catalog freshness check) runs a real network call
++    whenever the operator happens to have a key on disk, and R13 reports the
++    result as a suite-reliability failure. R13's verdict must be a property of
++    the repository, not of the machine running the audit.
++    """
++    with tempfile.TemporaryDirectory() as empty_home:
++        r = subprocess.run(
++            [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest",
++             "discover", "-s", "tests", "-q"],
++            cwd=str(ROOT), capture_output=True, text=True, timeout=900,
++            env=_hermetic_suite_env(os.environ, empty_home))
+     summary_ok, leaked, summary = _classify_suite_output(r.stdout + r.stderr)
+     ok = summary_ok and not leaked
+     return _pass(ok, f"unittest: {summary if summary is not None else r.stderr[-200:]}",
+                  (r.stdout + r.stderr)[-2500:])
+ 
+ 
++def r_suite_env_selftest():
++    """R13's hermeticity guarantee proves its own contract: every credential
++    variable is dropped, HOME and USERPROFILE are BOTH redirected (Windows
++    resolves expanduser via USERPROFILE, so setting only HOME would leave the
++    audit non-hermetic on the Windows matrix leg), unrelated variables survive
++    (a scrub that emptied the environment wholesale would break the suite
++    rather than isolate it), and each credential is load-bearing so narrowing
++    the strip list cannot silently restore the ambient-key defect. Hermetic:
++    dicts, no subprocess and no filesystem."""
++    empty = "/nonexistent-hermetic-home"
++    bare = {
++        "PATH": "/usr/bin",
++        "SYSTEMROOT": "C:\\Windows",
++        "HOME": "/home/operator",
++        "USERPROFILE": "C:\\Users\\operator",
++    }
++    env = _hermetic_suite_env(bare, empty)
++    credentials_gone = all(v not in env for v in _HERMETIC_STRIP_VARS)
++    home_gone = env.get("HOME") == empty and env.get("USERPROFILE") == empty
++    unrelated_kept = env.get("PATH") == "/usr/bin" and env.get("SYSTEMROOT") == "C:\\Windows"
++    # The expected names are written out HERE, not read back from
++    # _HERMETIC_STRIP_VARS. A self-test that iterated the implementation list
++    # could not detect that list being trimmed: dropping a name would drop its
++    # own coverage and the check would stay green while the ambient-key defect
++    # came back. This is the same blind spot R14 guards for its own signature
++    # list.
++    expected = ("OPENROUTER_API_KEY", "TYPESAFE_API_KEY",
++                "HARNESS_JEV_KEY", "HARNESS_LEDGER")
++    strip_list_complete = set(_HERMETIC_STRIP_VARS) == set(expected)
++    # Each credential must be load-bearing: seed a credential-free parent with
++    # that one name and assert it does NOT survive into the child. (Comparing
++    # the seeded output against the unseeded one would NOT work: stripping an
++    # absent name and a present one produce identical dicts.)
++    each_load_bearing = all(
++        _hermetic_suite_env(dict(bare, **{v: "seeded-secret"}), empty).get(v) is None
++        for v in expected)
++    ok = (credentials_gone and home_gone and unrelated_kept
++          and strip_list_complete and each_load_bearing)
++    return _pass(ok, f"R13 hermetic env: credentials_gone={credentials_gone}, "
++                     f"HOME+USERPROFILE_redirected={home_gone}, "
++                     f"unrelated_kept={unrelated_kept}, "
++                     f"strip_list_complete={strip_list_complete}, "
++                     f"each_credential_load_bearing={each_load_bearing}",
++                 f"stripped={list(_HERMETIC_STRIP_VARS)}; "
++                 f"expected={list(expected)}; empty_home={empty}")
++
++
+ def r_suite_selftest():
+     """R13's classifier proves its own contract on synthetic output:
+     clean OK passes; planted-leak OK (the blind-spot shape captured in
+@@ -1166,7 +1256,8 @@ CHECKS = {
+           ("R11", "config validation ranges + unknown-key warning", r_config_validation),
+           ("R12", "continuation contract refuses all tamper classes (dynamic)", r_continuation_contract),
+           ("R13", "full suite green hermetically", r_suite_green),
+-          ("R14", "R13 classifier self-verifies its contract", r_suite_selftest)],
++          ("R14", "R13 classifier self-verifies its contract", r_suite_selftest),
++          ("R15", "R13 suite child cannot inherit a credential", r_suite_env_selftest)],
+     "SM": [("S1", "import direction (interfaces on top)", sm_layering),
+            ("S2", "no re-export facades", sm_no_facades),
+            ("S3", "result vocabulary one def site", sm_vocabulary_one_site),
+diff --git a/audits/self/round2_scores.json b/audits/self/round2_scores.json
+index 6ae2e70..b6eeac5 100644
+--- a/audits/self/round2_scores.json
++++ b/audits/self/round2_scores.json
+@@ -1,44 +1,44 @@
+ {
+   "scores": {
+     "A": 10.0,
+-    "R": 10.0,
++    "R": 9.33,
+     "SM": 10.0,
+     "SD": 10.0
+   },
+   "jev_scores": {
+-    "A": 10.0,
+-    "R": 10.0,
+-    "SM": 10.0,
++    "A": 9.0,
++    "R": 9.0,
++    "SM": 9.0,
+     "SD": 10.0
+   },
+-  "jev_gate_pass": true,
++  "jev_gate_pass": false,
+   "jev_eval": {
+     "dimensions": {
+       "A": {
+         "name": "Security",
+-        "level_index": 4,
+-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
+-        "score": 10.0,
+-        "bar_met": true,
+-        "confidence": 0.99,
++        "level_index": 2,
++        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
++        "score": 9.0,
++        "bar_met": false,
++        "confidence": 0.84,
+         "evaluated": true
+       },
+       "R": {
+         "name": "Reliability",
+-        "level_index": 4,
+-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
+-        "score": 10.0,
+-        "bar_met": true,
+-        "confidence": 0.99,
++        "level_index": 2,
++        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
++        "score": 9.0,
++        "bar_met": false,
++        "confidence": 0.91,
+         "evaluated": true
+       },
+       "SM": {
+         "name": "Structural hygiene & maintainability",
+-        "level_index": 4,
+-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
+-        "score": 10.0,
+-        "bar_met": true,
+-        "confidence": 0.99,
++        "level_index": 2,
++        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
++        "score": 9.0,
++        "bar_met": false,
++        "confidence": 0.57,
+         "evaluated": true
+       },
+       "SD": {
+@@ -47,23 +47,23 @@
+         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
+         "score": 10.0,
+         "bar_met": true,
+-        "confidence": 0.95,
++        "confidence": 0.86,
+         "evaluated": true
+       }
+     },
+     "scores": {
+-      "A": 10.0,
+-      "R": 10.0,
+-      "SM": 10.0,
++      "A": 9.0,
++      "R": 9.0,
++      "SM": 9.0,
+       "SD": 10.0
+     },
+-    "bar_95_pass": true,
+-    "min_score": 10.0,
++    "bar_95_pass": false,
++    "min_score": 9.0,
+     "is_fallback": false,
+     "reasons": [],
+     "model": "jev-1.13.0",
+-    "cost": 5.5565999999999995e-06,
+-    "input_tokens": 1323,
++    "cost": 5.5523999999999996e-06,
++    "input_tokens": 1322,
+     "output_tokens": 60
+   },
+   "checks": {
+@@ -223,14 +223,20 @@
+       {
+         "id": "R13",
+         "label": "full suite green hermetically",
+-        "score": 1.0,
+-        "evidence": "unittest: Ran 2310 tests in 424.577s\n\nOK"
++        "score": 0.0,
++        "evidence": "ply_loop)\nEnd-to-end hermetic proof through cli.main: a bench run must send\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness\\.freebuff\\worktrees\\4e01c2ef-281e-43c5-a741-8a5ee2ed0d74\\tests\\test_cli.py\", line 361, in test_bench_engine_key_reaches_apply_loop\n    self.assertTrue(posts, \"apply loop must issue chat posts\")\n    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: [] is not true : apply loop must issue chat posts\n\n======================================================================\nFAIL: test_suppression_cannot_mask_an_unkeyed_run (test_hourglass_jev_integrations.StageJudgmentRequirementTests.test_suppression_cannot_mask_an_unkeyed_run)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness\\.freebuff\\worktrees\\4e01c2ef-281e-43c5-a741-8a5ee2ed0d74\\tests\\test_hourglass_jev_integrations.py\", line 483, in test_suppression_cannot_mask_an_unkeyed_run\n    self.assertFalse(structural[\"dispatched\"])\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: True is not false\n\n======================================================================\nFAIL: test_ruff_gate_when_available (test_plat_cmd_runnable.GateRunsOnThisOSTest.test_ruff_gate_when_available)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness\\.freebuff\\worktrees\\4e01c2ef-281e-43c5-a741-8a5ee2ed0d74\\tests\\test_plat_cmd_runnable.py\", line 110, in test_ruff_gate_when_available\n    self.assertEqual(rc, 0, out)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^\nAssertionError: 1 != 0 : UP031 Use format specifiers instead of percent format\n   --> audits\\self\\audit.py:680:9\n    |\n678 |     so, lk, sm = _classify_suite_output(combined)\n679 |     Path(\"r13_classify.txt\").write_text(\n680 |         \"summary_ok=%r leaked=%r summary=%r rc=%r rw=%d unclosed=%d len=%d\" % (\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n681 |             so, lk, sm, r.returncode, combined.count(\"ResourceWarning\"),\n682 |             combined.count(\"unclosed file\"), len(combined)), encoding=\"utf-8\")\n    |\nhelp: Replace with format specifiers\n\nFound 1 error.\n\n\n----------------------------------------------------------------------\nRan 2369 tests in 139.691s\n\nFAILED (failures=3, skipped=52)\n"
+       },
+       {
+         "id": "R14",
+         "label": "R13 classifier self-verifies its contract",
+         "score": 1.0,
+         "evidence": "R13 classifier: clean->PASS, planted->FAIL, each signature load-bearing, old-rule diverges"
++      },
++      {
++        "id": "R15",
++        "label": "R13 suite child cannot inherit a credential",
++        "score": 1.0,
++        "evidence": "R13 hermetic env: credentials_gone=True, HOME+USERPROFILE_redirected=True, unrelated_kept=True, strip_list_complete=True, each_credential_load_bearing=True"
+       }
+     ],
+     "SM": [
+@@ -354,7 +360,7 @@
+         "id": "D12",
+         "label": "changed lines suite-executed (coverage)",
+         "score": 1.0,
+-        "evidence": "changed harness lines are suite-executed"
++        "evidence": "SKIP (fail-open): git diff against baseline unavailable"
+       }
+     ]
+   }
+diff --git a/harness/jev_packs.py b/harness/jev_packs.py
+index a3c34ac..378218f 100644
+--- a/harness/jev_packs.py
++++ b/harness/jev_packs.py
+@@ -787,6 +787,94 @@ def declared_restart_targets() -> List[str]:
+     return list(HOURGLASS_STAGES)
+ 
+ 
++# --------------------------------------------------------------------------
++# HV-1: "avoid redundant calls when no decision is needed".
++#
++# Every other part of the stage contract is about what a judgment MAY say.
++# This is about when a judgment is needed at all. A typed integration that
++# fires on every stage boundary spends a real Jev call to re-ask a question
++# whose answer code already owns -- e.g. re-judging an unchanged brief, or
++# asking whether to restart a run that has not advanced.
++#
++# The decision is CODE-OWNED and declared as data here, so the rule lives with
++# the rest of the pack rather than being re-implemented per caller. It is
++# deliberately conservative: the default is "a judgment IS required", so a
++# caller that knows nothing about its own state still gets judged. Only
++# explicit, code-owned facts may suppress a call, and a suppressed call can
++# never produce a signal -- it reports the skip, it does not manufacture a
++# passing or failing judgment.
++#
++# ``subject_supplied`` is a code-owned precondition (is there anything at all
++# to judge?). ``superseded`` means an earlier judgment for this same subject
++# is still current. Neither is inferred from a state dict: the state shape is
++# caller-owned and free-form, so guessing keys here would make the guard
++# silently inert for every real caller.
++# --------------------------------------------------------------------------
++HOURGLASS_STAGE_REQUIREMENTS: Dict[str, Dict[str, Any]] = {
++    name: {
++        "dimension": name,
++        "description": spec["description"],
++        "subject": (
++            "the {0} state the dimension judges".format(name)),
++    }
++    for name, spec in HOURGLASS_STAGE_DIMENSIONS.items()
++}
++
++
++def stage_judgment_requirement(
++        dimension: Any, *, subject_supplied: bool = True,
++        superseded: bool = False) -> Dict[str, Any]:
++    """Decide, from code-owned facts alone, whether this dimension needs a
++    Jev call at all (HV-1's "avoid redundant calls when no decision is
++    needed").
++
++    Pure, total, and never raises for a declared dimension: an unknown
++    dimension is still a hard error, because a caller may not invent an
++    integration. Returns a typed decision dict with ``required`` plus a
++    human-readable ``reason`` that names the code-owned fact responsible, so
++    a suppressed call is always explainable and never silent.
++
++    Defaults are permissive (``required=True``): only an explicit
++    code-owned precondition may suppress a call. This function NEVER returns
++    a judgment -- it can only say "go ask" or "do not ask".
++    """
++    if (not isinstance(dimension, str)
++            or dimension not in HOURGLASS_STAGE_REQUIREMENTS):
++        raise ValueError(
++            "unknown hourglass stage dimension: " + repr(dimension))
++    spec = HOURGLASS_STAGE_REQUIREMENTS[dimension]
++    if not subject_supplied:
++        return {
++            "dimension": dimension,
++            "required": False,
++            "disposition": "skipped",
++            "reason": ("no {0} subject was supplied, so there is no decision "
++                       "to ask Jev about".format(dimension)),
++            "code_owned_fact": "subject_supplied is False",
++            "subject": spec["subject"],
++        }
++    if superseded:
++        return {
++            "dimension": dimension,
++            "required": False,
++            "disposition": "skipped",
++            "reason": ("the current judgment for this {0} subject is "
++                       "unchanged; re-asking would spend a call to recover "
++                       "the same answer".format(dimension)),
++            "code_owned_fact": "an earlier judgment for this subject is current",
++            "subject": spec["subject"],
++        }
++    return {
++        "dimension": dimension,
++        "required": True,
++        "disposition": "call",
++        "reason": "a fresh judgment is required for this {0} subject".format(
++            dimension),
++        "code_owned_fact": None,
++        "subject": spec["subject"],
++    }
++
++
+ def normalize_restart_target(value: Any) -> Optional[str]:
+     """Return a declared restart target, or None when it is not one.
+ 
+diff --git a/harness/jev_policy.py b/harness/jev_policy.py
+index 24aa90c..79430a5 100644
+--- a/harness/jev_policy.py
++++ b/harness/jev_policy.py
+@@ -30,6 +30,7 @@ from .jev_packs import (
+     HOURGLASS_STAGE_SITE,
+     hourglass_stage_question_pack,
+     normalize_restart_target,
++    stage_judgment_requirement,
+     VISION_ASSESSMENT_SITE,
+     VISION_ASSESSMENT_MAX_REQUEST_TOKENS,
+     VISION_ASSESSMENT_MAX_STATE_QUESTION_TOKENS,
+@@ -289,7 +290,9 @@ class JevPolicy:
+             site: str = HOURGLASS_STAGE_SITE,
+             task_id: Optional[str] = None,
+             node_id: Optional[str] = None,
+-            max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
++            max_input_tokens: int = JEV_MAX_INPUT_TOKENS,
++            subject_supplied: bool = True,
++            superseded: bool = False):
+         """Judge ONE declared Hourglass stage dimension (HV-1).
+ 
+         Selectable typed integrations, one owner, one contract:
+@@ -308,6 +311,16 @@ class JevPolicy:
+         - one preflight reservation, one dispatch, one settlement, one
+           metadata-only ledger ``jev_eval`` on every path.
+ 
++        ``subject_supplied``/``superseded`` are the code-owned facts behind
++        HV-1's "avoid redundant calls when no decision is needed". When they
++        say a call is not required, this returns BEFORE any preflight: no
++        reservation, no dispatch, no settlement, and no ``jev_eval`` event,
++        because nothing was evaluated. The skip is reported in the returned
++        envelope (``result_state="not_required"``, every signal ``None``,
++        ``native=False``) rather than in the ledger -- a ``jev_eval`` event
++        for a call that never happened would be a false record. A skip can
++        therefore never be mistaken for a passing or failing judgment.
++
+         Returns ``(result, structural)`` where ``structural`` carries the
+         declared signals, the capability/pack identity, and the honest
+         native/fallback state.
+@@ -315,6 +328,36 @@ class JevPolicy:
+         questions = hourglass_stage_question_pack(dimension)
+         spec = HOURGLASS_STAGE_DIMENSIONS[dimension]
+         signals = list(spec["signals"])
++        requirement = stage_judgment_requirement(
++            dimension, subject_supplied=subject_supplied,
++            superseded=superseded)
++        if not requirement["required"]:
++            values = {key: None for key in signals}
++            skipped = JevEvaluationResult(
++                "skipped", 0.0, 0.0,
++                {**values, "pack_version": HOURGLASS_STAGE_PACK_VERSION,
++                 "native": False},
++                [requirement["reason"]],
++                is_fallback=False, model=self.evaluator.model)
++            structural = {
++                "capability": HOURGLASS_STAGE_SITE,
++                "pack_id": HOURGLASS_STAGE_PACK_ID,
++                "pack_version": HOURGLASS_STAGE_PACK_VERSION,
++                "dimension": dimension,
++                "declared_signals": signals,
++                "native": False,
++                "result_state": "not_required",
++                "judgment_required": False,
++                "skip_reason": requirement["reason"],
++                "code_owned_fact": requirement["code_owned_fact"],
++                "dispatched": False,
++                "cost": 0.0,
++                **{key: None for key in signals},
++            }
++            return skipped, structural
++        questions = hourglass_stage_question_pack(dimension)
++        spec = HOURGLASS_STAGE_DIMENSIONS[dimension]
++        signals = list(spec["signals"])
+ 
+         def noul_value(answers, key):
+             value = (answers or {}).get(key)
+@@ -375,6 +418,13 @@ class JevPolicy:
+                 "dimension": dimension,
+                 "declared_signals": signals,
+                 "native": bool(live),
++                "judgment_required": True,
++                # finish() is reached ONLY by the paths that did not dispatch
++                # (unkeyed, and a pre-dispatch/HarnessError refusal). A
++                # judgment was required and could not be made; saying
++                # otherwise would make "tried and unavailable" look like
++                # "asked and answered".
++                "dispatched": False,
+                 **{key: values.get(key) for key in signals},
+             })
+             return result, structural
+@@ -429,6 +479,8 @@ class JevPolicy:
+                 "dimension": dimension,
+                 "declared_signals": signals,
+                 "native": bool(live),
++                "judgment_required": True,
++                "dispatched": True,
+                 **{key: values.get(key) for key in signals},
+             })
+             return result, structural
+diff --git a/tests/test_hourglass_jev_integrations.py b/tests/test_hourglass_jev_integrations.py
+index 44efd15..5d58d6e 100644
+--- a/tests/test_hourglass_jev_integrations.py
++++ b/tests/test_hourglass_jev_integrations.py
+@@ -26,6 +26,8 @@ from harness.jev_packs import (
+     declared_restart_targets,
+     hourglass_stage_question_pack,
+     normalize_restart_target,
++    stage_judgment_requirement,
++    HOURGLASS_STAGE_REQUIREMENTS,
+     validate_restart_request,
+ )
+ from harness.jev_policy import policy_for
+@@ -342,5 +344,148 @@ class StageJudgmentPolicyTests(unittest.TestCase):
+         self.assertAlmostEqual(structural["escalation_justified"], 0.6)
+ 
+ 
++class StageJudgmentRequirementTests(unittest.TestCase):
++    """HV-1: "avoid redundant calls when no decision is needed".
++
++    The guard is code-owned and declared as data, so the rule lives with the
++    pack instead of being re-implemented per caller. Two properties matter and
++    are pinned separately below: a suppressed call must cost nothing at all,
++    and a suppression must never be mistakable for a judgment.
++    """
++
++    def setUp(self):
++        import tempfile
++        self.tmp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.tmp.cleanup)
++        self.ledger = AutonomyLedger(self.tmp.name + "/ledger.jsonl")
++        self.governor = RecordingGovernor()
++
++    def _policy(self, evaluator):
++        with mock.patch("harness.config.CONFIG_DIR", self.tmp.name), \
++                mock.patch("harness.config.resolve_api_key", return_value=None):
++            settings = load_settings({
++                "jev_api_key": "test-key", "jev_model": "jev-test"})
++        return policy_for(settings, transport=None, governor=self.governor,
++                          ledger=self.ledger, evaluator=evaluator)
++
++    def test_default_requires_a_judgment_for_every_declared_dimension(self):
++        # Permissive by default: a caller that knows nothing about its own
++        # state must still be judged, or the guard would silently disable
++        # every integration.
++        for name in HOURGLASS_STAGE_DIMENSIONS:
++            with self.subTest(dimension=name):
++                need = stage_judgment_requirement(name)
++                self.assertTrue(need["required"], name)
++                self.assertEqual(need["disposition"], "call", name)
++                self.assertIsNone(need["code_owned_fact"], name)
++
++    def test_each_code_owned_fact_suppresses_and_names_itself(self):
++        for name in HOURGLASS_STAGE_DIMENSIONS:
++            for kwargs in ({"subject_supplied": False}, {"superseded": True}):
++                with self.subTest(dimension=name, **kwargs):
++                    need = stage_judgment_requirement(name, **kwargs)
++                    self.assertFalse(need["required"])
++                    self.assertEqual(need["disposition"], "skipped")
++                    self.assertEqual(need["dimension"], name)
++                    # The responsible fact is named, so a skip is never silent.
++                    self.assertTrue(need["reason"].strip())
++                    self.assertTrue(need["code_owned_fact"])
++
++    def test_requirements_are_declared_for_exactly_the_five_dimensions(self):
++        # The declared set and the dimension set must not drift; a name in one
++        # and not the other would make a dimension unaskable or undeclared.
++        self.assertEqual(set(HOURGLASS_STAGE_REQUIREMENTS),
++                         set(HOURGLASS_STAGE_DIMENSIONS))
++        for name, spec in HOURGLASS_STAGE_REQUIREMENTS.items():
++            self.assertEqual(spec["dimension"], name)
++            self.assertTrue(spec["description"], name)
++            self.assertTrue(spec["subject"], name)
++
++    def test_an_unknown_dimension_is_refused_not_guarded(self):
++        # The guard must not become a softer door around the pack's own
++        # refusal: an undeclared dimension is still a hard error.
++        for bad in (None, "", "graph_neural", 7, ["execution"]):
++            with self.assertRaises(ValueError):
++                stage_judgment_requirement(bad)
++
++    def test_a_suppressed_call_dispatches_nothing_and_costs_nothing(self):
++        # The whole point: no preflight reservation, no dispatch, no
++        # settlement. A guard that still reserved would not have saved a call.
++        evaluator = FakeEvaluator({"context_relevant": noul(0.9)})
++        result, structural = self._policy(evaluator).evaluate_hourglass_stage(
++            "context_intake", {"request": "audit the ledger"},
++            superseded=True)
++        self.assertEqual(evaluator.calls, [])
++        self.assertEqual(self.governor.reservations, [])
++        self.assertEqual(self.governor.settlements, [])
++        self.assertEqual(self.ledger.entries(), [])
++        self.assertEqual(result.cost, 0.0)
++        self.assertEqual(structural["cost"], 0.0)
++        self.assertFalse(structural["dispatched"])
++
++    def test_a_suppressed_call_is_never_a_judgment(self):
++        # A skip reports the skip. It must not be readable as a pass, a fail,
++        # or a native signal, and it must not be silently absent either.
++        evaluator = FakeEvaluator({"context_relevant": noul(0.9)})
++        _result, structural = self._policy(evaluator).evaluate_hourglass_stage(
++            "context_intake", {"request": "x"}, subject_supplied=False)
++        self.assertFalse(structural["judgment_required"])
++        self.assertEqual(structural["result_state"], "not_required")
++        self.assertFalse(structural["native"])
++        self.assertTrue(structural["skip_reason"].strip())
++        for key in HOURGLASS_STAGE_DIMENSIONS["context_intake"]["signals"]:
++            self.assertIsNone(structural[key], key)
++
++    def test_a_suppressed_call_makes_no_completion_or_readiness_claim(self):
++        # The skip shares the "never a completion claim" rule with every other
++        # outcome: a dimension that was not asked says nothing at all.
++        import json
++        evaluator = FakeEvaluator({"context_relevant": noul(0.9)})
++        _result, structural = self._policy(evaluator).evaluate_hourglass_stage(
++            "context_intake", {"request": "x"}, superseded=True)
++        serialized = json.dumps(structural, default=str)
++        for forbidden in ("can_mark_complete", "readiness", "phase_status",
++                          "complete"):
++            self.assertNotIn(forbidden, serialized)
++
++    def test_a_required_judgment_is_dispatched_and_ledgered_normally(self):
++        # The other half of the contract: suppressing is opt-in, and the
++        # ordinary path is unchanged -- one call, one event, real cost.
++        evaluator = FakeEvaluator({
++            "context_relevant": noul(0.91),
++            "context_coverage_sufficient": noul(0.62),
++            "context_conflict_present": noul(0.05)})
++        result, structural = self._policy(evaluator).evaluate_hourglass_stage(
++            "context_intake", {"request": "audit the ledger"},
++            subject_supplied=True, superseded=False)
++        self.assertTrue(structural["judgment_required"])
++        self.assertTrue(structural["dispatched"])
++        self.assertTrue(structural["native"])
++        self.assertEqual(len(evaluator.calls), 1)
++        self.assertEqual([e["event"] for e in self.ledger.entries()],
++                         ["jev_eval"])
++        self.assertEqual(result.cost, 0.0001)
++
++    def test_suppression_cannot_mask_an_unkeyed_run(self):
++        # Unkeyed already fails closed. The guard must not let a caller turn
++        # an unjudgeable run into a clean-looking "not required": a judgment
++        # WAS required here, it simply could not be made. That is a different
++        # fact from a suppressed call and must stay distinguishable.
++        with mock.patch("harness.config.CONFIG_DIR", self.tmp.name), \
++                mock.patch("harness.config.resolve_api_key", return_value=None):
++            settings = load_settings({"jev_api_key": None})
++        policy = policy_for(settings, transport=None,
++                            governor=self.governor, ledger=self.ledger,
++                            evaluator=FakeEvaluator({}))
++        result, structural = policy.evaluate_hourglass_stage(
++            "context_intake", {"request": "x"})
++        self.assertTrue(structural["judgment_required"])
++        self.assertFalse(structural["dispatched"])
++        self.assertTrue(result.is_fallback)
++        self.assertNotEqual(structural.get("result_state"), "not_required")
++        # Unavailable, not suppressed: the three outcomes never alias.
++        self.assertNotIn("skip_reason", structural)
++
++
+ if __name__ == "__main__":
+     unittest.main()
