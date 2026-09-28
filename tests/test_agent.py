@@ -17,6 +17,7 @@ from harness.agent import (
 from harness.history import get_default_history_dir
 from harness.config import load_settings
 from harness.errors import HarnessError, ToolCancelled
+from harness.repo_scope import _gate_python
 from tests._fake import FakeTransport, _gov
 
 
@@ -127,13 +128,13 @@ class TestAgentClassificationAndDiscovery(unittest.TestCase):
             gate_a = discover_verification_gate(["harness/mod_a.py"], root_dir=root)
             self.assertEqual(
                 gate_a,
-                f"python -m unittest {root / 'tests' / 'test_mod_a.py'}")
+                f"{_gate_python()} -m unittest {root / 'tests' / 'test_mod_a.py'}")
 
             # Test file does not exist -> fallback to py_compile (absolute)
             gate_b = discover_verification_gate(["harness/mod_b.py"], root_dir=root)
             self.assertEqual(
                 gate_b,
-                f"python -m py_compile \"{root / 'harness' / 'mod_b.py'}\"")
+                f"{_gate_python()} -m py_compile \"{root / 'harness' / 'mod_b.py'}\"")
 
             # No targets
             self.assertIsNone(discover_verification_gate([], root_dir=root))

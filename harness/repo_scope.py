@@ -10,6 +10,21 @@ import re
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+from .osal import python_exe
+
+
+def _gate_python() -> str:
+    """The interpreter token for code-owned verification gate commands.
+
+    ``sys.executable`` (via :func:`osal.python_exe`) -- never a bare
+    ``python`` resolved from PATH, which need not exist on python3-only
+    systems (a derived gate then exits 127 and fails the whole edit lane).
+    Quoted when it contains whitespace so the shell-free gate tokenizer
+    keeps it a single argv element.
+    """
+    exe = python_exe()
+    return f'"{exe}"' if any(ch.isspace() for ch in exe) else exe
+
 def discover_target_files(prompt: str, root_dir: Optional[Path] = None) -> List[str]:
     # Autonomously identify candidate target files from prompt or repository
     root = root_dir or Path.cwd()
@@ -96,11 +111,11 @@ def discover_verification_gate(target_files: Sequence[str], root_dir=None) -> Op
             # Absolute: the gate runner's CWD is the server's, not the
             # agent's chosen root -- a relative path compiles/tests the
             # wrong tree (or nothing) for GUI runs with a workDir.
-            return f"python -m unittest {test_path}"
+            return f"{_gate_python()} -m unittest {test_path}"
 
     # Generic check: syntax compile
     if primary.endswith(".py") and (root / primary).exists():
-        return f"python -m py_compile \"{root / primary}\""
+        return f"{_gate_python()} -m py_compile \"{root / primary}\""
 
     return None
 
@@ -131,7 +146,7 @@ def gate_for_targets(target_files: Sequence[str],
     if not gate:
         primary = targets[0] if targets else None
         if primary and primary.endswith(".py"):
-            gate = f'python -m py_compile "{root / primary}"'
+            gate = f'{_gate_python()} -m py_compile "{root / primary}"'
     return gate
 
 
