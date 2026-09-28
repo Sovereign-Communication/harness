@@ -7,11 +7,12 @@ execute / evaluate) onto that pack; it never writes pack files itself.
 
 Subcommands (all print one JSON object):
   init     --id --request --success --max-cost [--reserve] [--in-scope] [--out-of-scope]
-  receipt  --id --phase --round --model [--cost] [--tokens] --status --summary [--artifact]
-  artifact --id --name --file
-  bar      --id --file            # append a `jev-phase` result to jev_evals.jsonl
+  receipt  --id --phase --round --model --isolation inline [--cost] [--tokens]
+           --status --summary [--artifact] [--force]
+  artifact --id --name --file [--force]
+  bar      --id --file [--force]  # append a `jev-phase` result to jev_evals.jsonl
   show     --id
-  terminal --id --outcome complete|failed|blocked|stalled --findings-file
+  terminal --id --outcome complete|failed|blocked|stalled --findings-file [--force]
 Default pack root: tmp/claude/missions (tmp/ is gitignored); override with --root.
 """
 from __future__ import annotations
@@ -56,6 +57,19 @@ def _emit(obj) -> int:
     return 0
 
 
+def _refuse(opts, blocked: bool, message: str) -> int:
+    """Refuse a write that would silently lose evidence in the pack.
+
+    ``blocked`` is the caller's condition (terminal mission, artifact name
+    already taken); ``message`` is per-command because what would be lost
+    differs. Returns the exit code: 0 to proceed, 1 after refusing. ``--force``
+    is the deliberate override for either.
+    """
+    if not blocked or opts.force:
+        return 0
+    return _emit({"ok": False, "error": message}) or 1
+
+
 def cmd_init(opts) -> int:
     from harness.cli import main as harness_main
     argv = ["mission", "init", "--id", opts.id, "--request", opts.request,
@@ -81,9 +95,28 @@ def cmd_init(opts) -> int:
 
 def cmd_receipt(opts) -> int:
     mr, pack = _pack(opts)
+    # Recording rebuilds resume.json as in_progress, dropping the outcome.
+    rc = _refuse(opts, mr.is_terminal(pack), (
+        f"isolated-mission: mission {opts.id} is terminal; a receipt would "
+        f"reopen it and erase its outcome. Re-run with --force to reopen "
+        f"deliberately."))
+    if rc:
+        return rc
+    if opts.artifact:
+        # A receipt citing evidence the pack does not hold is a claim the
+        # auditor cannot check, so the name must match a stored artifact.
+        rc = _refuse(opts, not (pack.artifacts_dir / Path(opts.artifact).name).is_file(), (
+            f"isolated-mission: receipt names artifact {opts.artifact!r}, which "
+            f"is not in the pack; it would cite evidence that does not exist. "
+            f"Record the artifact first, or pass --force to cite it anyway."))
+        if rc:
+            return rc
     receipt = {
         "kind": "attempt" if opts.phase == "execute" else opts.phase,
         "phase": opts.phase, "round": opts.round, "model": opts.model,
+        # Kept out of `model` on purpose: `model` is a provenance label, so
+        # putting the isolation mode in it would forge provenance.
+        "isolation": opts.isolation,
         "cost_usd": opts.cost, "tokens": opts.tokens, "status": opts.status,
         "summary": opts.summary, "artifact": opts.artifact,
     }
@@ -102,6 +135,13 @@ def cmd_artifact(opts) -> int:
     pack.artifacts_dir.mkdir(parents=True, exist_ok=True)
     name = Path(opts.name).name
     dest = pack.artifacts_dir / name
+    # copyfile overwrites silently, and a resumed round reuses the name.
+    rc = _refuse(opts, dest.exists(), (
+        f"isolated-mission: artifact {name!r} already exists; overwriting "
+        f"would destroy the earlier round's evidence. Re-run with --force "
+        f"to overwrite deliberately."))
+    if rc:
+        return rc
     shutil.copyfile(opts.file, dest)
     _mr_mod.write_status(pack)
     return _emit({"ok": True, "artifact": str(dest)})
@@ -109,6 +149,13 @@ def cmd_artifact(opts) -> int:
 
 def cmd_bar(opts) -> int:
     mr, pack = _pack(opts)
+    # A closed mission's bar record is what an auditor reads; a late append rewrites it.
+    rc = _refuse(opts, mr.is_terminal(pack), (
+        f"isolated-mission: mission {opts.id} is terminal; a bar record "
+        f"would add evidence to a closed mission. Re-run with --force if "
+        f"the bar really does belong to this closed mission."))
+    if rc:
+        return rc
     with open(opts.file, encoding="utf-8-sig") as fh:
         text = fh.read()
     start = text.find("{")
@@ -145,13 +192,21 @@ def cmd_show(opts) -> int:
 
 def cmd_terminal(opts) -> int:
     mr, pack = _pack(opts)
+    # mark_terminal overwrites FINDINGS.md and the outcome; correcting one is what --force is for.
+    rc = _refuse(opts, mr.is_terminal(pack), (
+        f"isolated-mission: mission {opts.id} is already terminal; "
+        f"re-running terminal would overwrite FINDINGS.md and the outcome. "
+        f"Re-run with --force to correct a wrong findings document or a "
+        f"wrong outcome deliberately."))
+    if rc:
+        return rc
     with open(opts.findings_file, encoding="utf-8") as fh:
         findings = fh.read()
     resume = mr.mark_terminal(pack, outcome=opts.outcome, findings=findings)
     return _emit({"ok": True, "resume": resume})
 
 
-def main(argv=None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="isolated-mission state (HUL pack)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -170,24 +225,40 @@ def main(argv=None) -> int:
     p = common(sub.add_parser("receipt"))
     p.add_argument("--phase", choices=PHASES, required=True)
     p.add_argument("--round", type=int, required=True)
-    p.add_argument("--model", required=True)
+    p.add_argument("--model", required=True,
+                   help="provenance label: the model that actually ran")
+    p.add_argument("--isolation", choices=("inline",), required=True,
+                   help="how this phase was isolated; 'inline' is the only mode "
+                        "Freebuff offers (a boundary in this session)")
     p.add_argument("--cost", type=float, default=0.0)
     p.add_argument("--tokens", type=int, default=0)
     p.add_argument("--status", required=True)
     p.add_argument("--summary", required=True)
     p.add_argument("--artifact")
+    p.add_argument("--force", action="store_true",
+                   help="record even though the mission is terminal (reopens it)")
     p = common(sub.add_parser("artifact"))
     p.add_argument("--name", required=True)
     p.add_argument("--file", required=True)
+    p.add_argument("--force", action="store_true",
+                   help="overwrite an existing artifact of the same name")
     p = common(sub.add_parser("bar"))
     p.add_argument("--file", required=True)
+    p.add_argument("--force", action="store_true",
+                   help="record the bar even though the mission is terminal")
     common(sub.add_parser("show"))
     p = common(sub.add_parser("terminal"))
     p.add_argument("--outcome", choices=("complete", "failed", "blocked", "stalled"),
                    required=True)
     p.add_argument("--findings-file", required=True)
+    p.add_argument("--force", action="store_true",
+                   help="re-close a terminal mission (corrects FINDINGS.md/outcome)")
 
-    opts = ap.parse_args(argv)
+    return ap
+
+
+def main(argv=None) -> int:
+    opts = build_parser().parse_args(argv)
     handler = {"init": cmd_init, "receipt": cmd_receipt, "artifact": cmd_artifact,
                "bar": cmd_bar, "show": cmd_show, "terminal": cmd_terminal}[opts.cmd]
     try:

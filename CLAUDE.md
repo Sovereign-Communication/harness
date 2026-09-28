@@ -10,27 +10,27 @@ a parallel plan document.
 ## Model tiering (cost policy)
 
 The main session (Opus) is for orchestration, design, canon edits, and final
-review. Delegate everything else to the cheapest capable tier:
+review. Everything else runs cheaper; the cost lever is **which model you open
+the session on**, because Freebuff picks the model when a session or task opens
+and cannot switch it between mission phases.
 
-| Work | Delegate to | Model |
-|---|---|---|
-| scope extraction, grep/inventory sweeps, listing | `harness-scout` agent | Haiku |
-| implementing a written spec / plan phase | `harness-implementer` agent | Sonnet |
-| gate runs + adversarial review (builder ≠ grader) | `harness-verifier` agent | Sonnet |
-| one clean-context analysis in a fresh process | `/isolated-request` | Haiku/Sonnet |
-| multi-round mission with a completion bar | `/isolated-mission` | tiered per phase |
-
-In Workflow / Agent calls pass `model: "haiku"` or `"sonnet"` explicitly;
-leave it unset only for stages that genuinely need Opus judgment.
+`--model` on `/isolated-mission` and `/isolated-request` is a provenance label
+recorded in the pack's receipt, not a router: it names the model that ran and
+cannot move a phase onto a different one. Both skills run their phases `inline`
+— a fresh input, not a fresh mind — and a genuinely independent grade means the
+operator opens a new Freebuff task. The `.claude/agents/` delegation tiers are
+not wired into these skills.
 
 ## Missions and the Jev bar
 
-- `/isolated-mission [--bar PHASE_ID] <mission>` — Haiku scout → Opus plan only
-  when justified → cheapest execute → separate verifier + Jev bar → loop.
+- `/isolated-mission [--bar PHASE_ID] <mission>` — scout → plan only when
+  justified → execute from injected context → separate verifier + Jev bar → loop.
+  Phases are in-session boundaries; an independent grade is the operator's
+  move, not something the skill arranges.
   State is a Harness HUL mission pack under `tmp/claude/missions/<id>/`
   (`python .claude/skills/isolated-mission/state.py show --id <id>`).
-- `/isolated-request [--model tier] <prompt>` — one fresh `claude -p` session,
-  read-only by default, returns result + cost.
+- `/isolated-request [--model label] <prompt>` — one analysis prompt in a fresh
+  Freebuff task, read-only by default, returns just the result.
 - **Jev bar**: `python -m harness.cli jev-phase --phase <ID> --repo-root . --local-only`
   (add `--all` for the whole board). STATUS may say complete only on bar pass;
   its `improvements` list (declared sentiment buckets + suggested actions) is the
