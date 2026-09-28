@@ -519,11 +519,13 @@ class StageRequirementPolicyTests(unittest.TestCase):
         self.assertFalse(structural["dispatched"])
         # result_state is what distinguishes the three outcomes, and the skip
         # path is the only one allowed to claim "not_required".
-        self.assertNotEqual(structural.get("result_state"), "not_required")
+        self.assertEqual(structural["result_state"], "unavailable")
         self.assertNotIn("skip_reason", structural)
         self.assertEqual(self.governor.reservations, [])
-        # The unavailable state is still recorded, as it always was.
-        self.assertEqual(self.ledger.entries()[0]["result_state"], "unavailable")
+        # The unavailable state is still recorded, as it always was, and the
+        # envelope agrees with the ledger rather than restating it.
+        self.assertEqual(self.ledger.entries()[0]["result_state"],
+                         structural["result_state"])
 
     def test_a_refused_call_is_also_honestly_labelled(self):
         """The pre-dispatch refusal path must not claim it dispatched, and the
@@ -551,14 +553,23 @@ class StageRequirementPolicyTests(unittest.TestCase):
             FakeEvaluator(self._good_answers("execution"))).evaluate_hourglass_stage(
                 "execution", {"p": 1})
         self.assertEqual(seen["skip"]["result_state"], "not_required")
-        self.assertNotEqual(seen["unavailable"].get("result_state"),
-                            "not_required")
+        self.assertEqual(seen["unavailable"]["result_state"], "unavailable")
+        self.assertEqual(seen["judged"]["result_state"], "judged")
+        # The three states are pairwise distinct, so a caller can branch on
+        # the envelope alone without consulting the ledger.
+        self.assertEqual(
+            len({seen[k]["result_state"]
+                 for k in ("skip", "unavailable", "judged")}), 3)
         self.assertFalse(seen["skip"]["judgment_required"])
         self.assertTrue(seen["unavailable"]["judgment_required"])
         self.assertTrue(seen["judged"]["judgment_required"])
         self.assertEqual(
             [seen[k]["dispatched"] for k in ("skip", "unavailable", "judged")],
             [False, False, True])
+        # Only the skip may claim a suppression reason.
+        self.assertIn("skip_reason", seen["skip"])
+        self.assertNotIn("skip_reason", seen["unavailable"])
+        self.assertNotIn("skip_reason", seen["judged"])
 
 
 if __name__ == "__main__":

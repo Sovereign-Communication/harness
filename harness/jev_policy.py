@@ -428,9 +428,12 @@ class JevPolicy:
                 # (unkeyed, and a pre-dispatch HarnessError refusal). A
                 # judgment WAS required and could not be made; saying
                 # otherwise would make "tried and unavailable" look like
-                # "asked and answered".
+                # "asked and answered". ``result_state`` mirrors the
+                # event_metadata above, so the envelope alone distinguishes
+                # skip / unavailable / judged without reading the ledger.
                 "judgment_required": True,
                 "dispatched": False,
+                "result_state": "unavailable",
                 **{key: values.get(key) for key in signals},
             })
             return result, structural
@@ -487,6 +490,7 @@ class JevPolicy:
                 "native": bool(live),
                 "judgment_required": True,
                 "dispatched": True,
+                "result_state": "judged" if live else "unavailable",
                 **{key: values.get(key) for key in signals},
             })
             return result, structural
