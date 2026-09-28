@@ -74,6 +74,14 @@ DEFAULT_TOKEN_BUDGET_OUTPUT = 64000
 HARD_TOKEN_BUDGET_INPUT = 4000000
 HARD_TOKEN_BUDGET_OUTPUT = 1000000
 
+# Composable run stages (HV-4). Declared here as the *default set*; the
+# composition owner is harness/waist.py (resolve_stages), which is what
+# refuses an unknown stage name -- config only decides what an operator
+# asks for by default, and the default is every stage, which is exactly how
+# the lanes behaved before composition was selectable.
+DEFAULT_HOURGLASS_STAGES = ("context", "planning", "execution",
+                            "verification")
+
 # ---- lane budgets and reasoning modes (ONE policy owner) -------------------
 # Task-shaped token budgets (2026-09-13 operator ruling: "stop using reasoning
 # if it's not needed here, or if it is, then appropriately allocate tokens").
@@ -364,6 +372,7 @@ _ENV_NAMES = {
     "apply_max_tokens": "HARNESS_APPLY_MAX_TOKENS",
     "token_budget_input": "HARNESS_TOKEN_BUDGET_INPUT",
     "token_budget_output": "HARNESS_TOKEN_BUDGET_OUTPUT",
+    "hourglass_stages": "HARNESS_HOURGLASS_STAGES",
     "reasoning_effort": "HARNESS_REASONING_EFFORT",
     "reasoning_token_budget": "HARNESS_REASONING_TOKEN_BUDGET",
     "max_panelists": "HARNESS_MAX_PANELISTS",
@@ -509,6 +518,7 @@ class Settings:
                   hourglass_confirm=True, hourglass_isolate=True,
                   hourglass_parallel=True, hourglass_require_attestation=True,
                   hourglass_decompose=None,
+                  hourglass_stages=None,
                   openrouter_floor_default=True, max_price_prompt=None,
                   max_price_completion=None, jev_api_key=None,
                   jev_endpoint="https://api.typesafe.ai/v1/systemone",
@@ -575,6 +585,10 @@ class Settings:
         self.min_confidence = min_confidence
         self.token_budget_input = token_budget_input
         self.token_budget_output = token_budget_output
+        # The stages this run composes. None means "the Hourglass default",
+        # i.e. every stage; the composition owner validates any subset.
+        self.hourglass_stages = (list(hourglass_stages)
+                                 if hourglass_stages else None)
 
     def to_dict(self):
         return {k: getattr(self, k) for k in (
@@ -592,7 +606,8 @@ class Settings:
             "openrouter_floor_default",
             "max_price_prompt", "max_price_completion", "jev_api_key",
             "jev_endpoint", "jev_model", "min_confidence",
-            "token_budget_input", "token_budget_output")}
+            "token_budget_input", "token_budget_output",
+            "hourglass_stages")}
 
 
 def update_config(values):
@@ -773,6 +788,9 @@ def load_settings(overrides=None):
         mcp_allow_write=_as_bool(get("mcp_allow_write", False)),
         mcp_allow_verify=_as_bool(get("mcp_allow_verify", False)),
         mcp_allowed_roots=_split_list(str(get("mcp_allowed_roots", ""))),
+        hourglass_stages=(_split_list(str(get(
+            "hourglass_stages", ",".join(DEFAULT_HOURGLASS_STAGES))))
+            or None),
         mcp_tool_timeout=mcp_tool_timeout,
         mcp_auth_token=get("mcp_auth_token", None) or None,
         frontier_model=get("frontier_model", None),

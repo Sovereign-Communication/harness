@@ -374,6 +374,21 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         ],
         "user_facing": False,
     },
+    "HV-4": {
+        # The row must cite a real merged PR before the phase can pass.
+        "pr_pattern": None,
+        "required_tests": [
+            "tests/test_hourglass_stage_composition.py",
+            "tests/test_hourglass_planning_budget.py",
+        ],
+        # The canon's HV-4 row names harness/waist.py as the composition
+        # owner, so the gate requires that file and not a parallel module.
+        "required_files": [
+            "harness/waist.py",
+            "harness/config.py",
+        ],
+        "user_facing": False,
+    },
     "HV-2": {
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,
@@ -706,6 +721,31 @@ def _norm_phase(phase_id: str) -> str:
     return raw
 
 
+def _row_id_cell(row: str) -> str:
+    """The row's identity token, normalized to lowercase.
+
+    A STATUS row is ``| `HV-4` title | **complete** | evidence |``, so the
+    id is the first backticked token of the first cell (or, unbackticked,
+    the first word of it). Everything after that token is a title, and
+    everything after the first cell is prose that may be about OTHER
+    phases -- which is exactly what must not decide this row's identity.
+    """
+    cells = row.split("|")
+    if len(cells) < 2:
+        return ""
+    first = cells[1]
+    quoted = re.search(r"`([^`]+)`", first)
+    token = quoted.group(1) if quoted else first.split()[0] if first.split() else ""
+    return re.sub(r"\s+", "", token).lower()
+
+
+#: An explicit bolded verdict in a row's own cell. Its presence is what
+#: separates a STATUS/tracker *conclusion* row from a vision-plan *spec*
+#: row that happens to share the same id.
+_STATUS_VERDICT_RE = re.compile(
+    r"\*\*(complete|in progress|open|blocked|partial|deferred)\*\*", re.I)
+
+
 def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
     needles = {
         "JEV-P0": re.compile(r"JEV-P0|0 Contract|contract truth", re.I),
@@ -741,6 +781,14 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         "HV-2": re.compile(r"\bHV-2\b|evidence-bearing context brief", re.I),
         "HV-3": re.compile(r"\bHV-3\b|token allowance and accounting owner", re.I),
         "HV-4": re.compile(r"\bHV-4\b", re.I),
+        # Registered here (not only in PHASE_CONTRACTS) because the row lookup
+        # is what decides which STATUS row a phase is scored against. The
+        # identity FILTER below is what makes registering them safe: without
+        # it, both resolved to the `HV-3` row and inherited its `PR #100
+        # MERGED` claim. Plain word-boundary needles, matching `HV-4`, so a
+        # descriptive phrase can never act as a substring mention.
+        "HV-5": re.compile(r"\bHV-5\b", re.I),
+        "HV-6": re.compile(r"\bHV-6\b", re.I),
         "CLAUDE-LANE": re.compile(r"CLAUDE-LANE", re.I),
         "OC-HANDOFF": re.compile(r"OC-HANDOFF", re.I),
     }
@@ -763,12 +811,37 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         candidates.append(stripped)
     if not candidates:
         return None
+    # Identity as a FILTER, not merely a preference bonus. A row whose id
+    # cell IS a *different* registered phase is that phase's STATUS row, full
+    # stop: it may quote this phase in prose ("`HV-5` dispatches through it")
+    # and it carries that other phase's merge citation, so preferring it lets
+    # an unimplemented phase inherit a neighbour's merge. This is not
+    # hypothetical -- registering a needle for `HV-5`/`HV-6` (which have no
+    # STATUS row of their own yet) made both resolve to the `HV-3` row and
+    # report `pr_merged: true` off `PR #100 MERGED`, a fake-complete leak of
+    # exactly the kind the identity bonus was added to stop. Identity cannot
+    # express that as a bonus, because the phases concerned have no own-id
+    # row to reward: the neighbouring row wins by default.
+    #
+    # Only *registered* phase ids are excluded. A wildcard family id
+    # (`MS-*`, `HG-*`, `SITE-*`), a sub-item (`HV-2-use`, `JEV-P6-waist-brief`)
+    # and a tracker row with no phase id in the cell are not another phase's
+    # STATUS row, so they stay eligible and phases without an exact-id row
+    # rank exactly as they always did.
+    other_phase_ids = {k.lower() for k in needles} - {phase_id.lower()}
+    candidates = [r for r in candidates if _row_id_cell(r) not in other_phase_ids]
+    if not candidates:
+        return None
+
     # Identical repeated rows are one candidate; source order must not decide
     # which distinct row owns a phase.
     candidates = sorted(set(candidates))
 
     # Prefer a row whose first cell names the requested phase. A narrative
-    # mention elsewhere in the row is weaker identity evidence.
+    # mention elsewhere in the row is weaker identity evidence. The identity
+    # term is the PRIMARY key, so this phase's own row always outranks a row
+    # that merely mentions it; an exact tie between two distinct best rows is
+    # not resolved by document order -- it fails closed below.
     def rank(row: str) -> tuple[int, int]:
         low = row.lower()
         first_cell = row.split("|", 2)[1].strip() if "|" in row else ""
@@ -776,13 +849,43 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
             rf"(?<![A-Za-z0-9-]){re.escape(phase_id)}(?:-\*)?(?![A-Za-z0-9-])",
             first_cell, re.I)))
         score = 0
+        # A row whose ID *cell* IS this phase outranks every row that merely
+        # mentions it. Without this, a neighbouring row that happens to name
+        # the phase in its prose (``HV-3`` naming ``HV-4`` as its consumer,
+        # say) and carries stronger keywords (``merged``, a PR number) wins,
+        # and the phase is then scored on ANOTHER row's claims. That is how a
+        # phase gets marked complete -- or blocked -- by wording that was
+        # never about it. The other half of that fix is the FILTER above; this
+        # bonus only has to separate this phase's own row from the rows that
+        # survive it (its spec row, its wildcard family, a tracker row).
+        if _row_id_cell(row) == phase_id.lower():
+            score += 50
+        # Identity alone is not enough: the vision-plan spec table ALSO has
+        # an exact ``| `HV-4` |`` row, and it once tied with the STATUS row at
+        # the identity bonus, so the winner was decided by document order --
+        # i.e. by whichever row happened to be written first. A STATUS row
+        # carries an explicit bolded verdict in its own cell (``**in
+        # progress**``); a spec row states the contract and carries no verdict
+        # at all. Preferring a row that *concludes* over one that *defines*
+        # separates the two deterministically, and it sits BELOW identity so
+        # a mentioning row can never overtake the phase's own row.
+        if _STATUS_VERDICT_RE.search(row):
+            score += 30
         if "**complete**" in low or "**in progress" in low or "**open**" in low:
             score += 10
-        if "pr #" in low or "merged" in low:
+        # Word-boundary, not substring: a row that merely NAMES the flag
+        # (``pr_merged``) or a longer identifier must not be preferred as if
+        # it carried merge proof. A bare ``"merged" in low`` did exactly
+        # that, and two rows landing on the same score left the winner to
+        # document order. ``collect_phase_evidence`` already gated merges on
+        # ``\bmerged\b``; this is the same rule applied to the preference.
+        merged_word = bool(re.search(r"\bmerged\b", low))
+        pr_word = bool(re.search(r"\bpr\s*#", low))
+        if pr_word or merged_word:
             score += 5
         # The canonical STATUS row spells out the merge; the tracker row often
         # cites only "PR #NN <sha>". Prefer the row that carries merge proof.
-        if "merged" in low:
+        if merged_word:
             score += 3
         if phase_id.lower() in low or "pillar" in low or "owner" in low or "accountability" in low:
             score += 2

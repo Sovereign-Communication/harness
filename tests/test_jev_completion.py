@@ -27,6 +27,7 @@ from harness.jev_completion import (
     score_phase_completion,
 )
 from harness import cli as harness_cli
+import re
 
 
 def _write_repo(root: Path, status_line: str, tests=None, files=None):
@@ -1123,6 +1124,232 @@ class OcHandoffVerifierFailurePathTests(unittest.TestCase):
                         patch("harness.jev_completion._git_bytes",
                               side_effect=fake_git_bytes):
                     self.assertFalse(_valid_oc_handoff_receipt(str(root)))
+
+
+class StatusRowIdentityTests(unittest.TestCase):
+    """A phase's STATUS row is the row that is ABOUT it.
+
+    The rows are prose-heavy and routinely name other phases ("HV-3" naming
+    "HV-4" as its consumer). Ranking by keywords alone let a neighbouring row
+    outrank the real one, so a phase was scored -- including its merge
+    evidence -- on wording that was never about it. That is a fake-complete
+    leak in the gate itself, not a docs problem.
+    """
+
+    ROADMAP = (
+        "| `HV-3` token allowance owner | **complete** | **PR #100 MERGED**; "
+        "`HV-4` composes stages through it |\n"
+        "| `HV-4` stage composition and planning waist | **in progress** | "
+        "composition lands in this PR |\n"
+    )
+
+    def _row(self, phase):
+        return _status_row_for(self.ROADMAP, phase)
+
+    def test_a_row_merely_mentioning_the_phase_cannot_win(self):
+        row = self._row("HV-4")
+        self.assertIn("`HV-4` stage composition", row)
+        self.assertNotIn("PR #100", row)
+
+    def test_the_mentioning_row_still_resolves_for_its_own_phase(self):
+        row = self._row("HV-3")
+        self.assertIn("`HV-3` token allowance owner", row)
+
+    def test_a_phase_is_not_scored_on_another_rows_merge_evidence(self):
+        # The bug in one assertion: HV-4 borrowed "PR #100 MERGED" from the
+        # HV-3 row and read as merged before its own PR existed.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(root, self.ROADMAP, tests=[], files=[])
+            evidence = collect_phase_evidence(str(root), "HV-4")
+        self.assertFalse(evidence["pr_merged"])
+
+    def test_naming_the_merge_flag_is_not_carrying_merge_proof(self):
+        # A row that says "``pr_merged`` is honestly false" must not be
+        # preferred as merge evidence. The old bare ``"merged" in low``
+        # matched inside the identifier, tied with the real row, and left
+        # the winner to document order.
+        roadmap = (
+            "| `HV-4` stage composition | **in progress** | `pr_merged` is "
+            "false until this lands |\n"
+            "| `MS-*` cheapest-capable routing | **complete** | "
+            "**PR #69 MERGED** `e47001a` |\n"
+        )
+        self.assertIn("MS-*", _status_row_for(roadmap, "MS"))
+
+    def test_a_wildcard_id_row_still_resolves_its_phase(self):
+        # Rows whose id is a family (``MS-*``) have no exact-id cell, so
+        # they must keep ranking the way they always did.
+        roadmap = ("| `MS-*` cheapest-capable routing | **complete** | "
+                   "**PR #69 MERGED** `e47001a` |\n")
+        self.assertIn("MS-*", _status_row_for(roadmap, "MS"))
+
+    def test_an_unbackticked_id_row_still_resolves_its_phase(self):
+        roadmap = ("| OC-HANDOFF findings-only lane | open / gated | "
+                   "PR #90 MERGED `6aea14b` |\n")
+        self.assertIn("OC-HANDOFF", _status_row_for(roadmap, "OC-HANDOFF"))
+
+
+class StatusRowVerdictWinsTests(unittest.TestCase):
+    """A STATUS conclusion beats a spec definition, whatever the keywords say.
+
+    Two rows legitimately carry the same id cell: the STATUS table records
+    what the phase *is now*, and the vision-plan table records what it
+    *specifies*. Identity alone did not separate them, and the two did not
+    merely tie -- the longer, more careful STATUS row actually scored
+    LOWER, because its prose happened to name a word the ranker penalises
+    ("policy"). So the spec row won outright and became the phase's merge
+    evidence, purely on vocabulary.
+
+    The fixture below reproduces that shape rather than a tidy tie: the spec
+    row is written FIRST, and the STATUS row's prose is the kind that scores
+    worse. Reversing the two orderings pins that the winner is the verdict,
+    not the position.
+    """
+
+    SPEC = ("| `HV-4` stage composition and planning waist | Compose optional "
+            "context/planning/execution/verification stages. After HV-1..3 "
+            "merged. Owns composition and waist. |")
+    STATUS = ("| `HV-4` stage composition and planning waist | **in progress** "
+              "| Composition lands here; the semantic question goes to a "
+              "declared policy dimension when a policy is supplied, and no PR "
+              "cites a merge for this slice yet. |")
+    SPEC_FIRST = SPEC + "\n" + STATUS + "\n"
+    STATUS_FIRST = STATUS + "\n" + SPEC + "\n"
+
+    def test_the_status_row_wins_when_the_spec_row_is_written_first(self):
+        row = _status_row_for(self.SPEC_FIRST, "HV-4")
+        self.assertIn("**in progress**", row)
+        self.assertNotIn("After HV-1..3", row)
+
+    def test_the_status_row_wins_when_it_is_written_first(self):
+        row = _status_row_for(self.STATUS_FIRST, "HV-4")
+        self.assertIn("**in progress**", row)
+        self.assertNotIn("After HV-1..3", row)
+
+    def test_the_winner_does_not_depend_on_document_order(self):
+        self.assertEqual(_status_row_for(self.SPEC_FIRST, "HV-4"),
+                         _status_row_for(self.STATUS_FIRST, "HV-4"))
+
+    def test_a_spec_row_cannot_supply_this_phase_merge_evidence(self):
+        # The concrete harm: the spec row says HV-1..3 "merged". Borrowed as
+        # HV-4's row, that reads as this phase being merged.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(root, self.SPEC_FIRST, tests=[], files=[])
+            evidence = collect_phase_evidence(str(root), "HV-4")
+        self.assertFalse(evidence["pr_merged"])
+
+    def test_the_real_canon_document_is_read_on_its_own_status_row(self):
+        # The regression as it actually shipped: on the live roadmap the
+        # spec row outscored the STATUS row, so the gate read the spec.
+        repo_root = Path(__file__).resolve().parents[1]
+        roadmap = (repo_root / "docs" / "jev-roadmap.md").read_text(
+            encoding="utf-8")
+        row = _status_row_for(roadmap, "HV-4")
+        self.assertIsNotNone(row)
+        self.assertIn("**in progress**", row)
+        self.assertNotIn("After HV-1..3", row)
+
+
+class StatusRowForeignIdTests(unittest.TestCase):
+    """A phase that has NO STATUS row of its own must not borrow one.
+
+    The identity bonus fixes the case where a phase has a real row and a
+    neighbour merely mentions it. It cannot fix the inverse, and that case is
+    not hypothetical: registering a needle for ``HV-5``/``HV-6`` -- phases
+    with no STATUS row yet -- made both resolve to the ``HV-3`` row (it names
+    ``HV-5`` as its consumer) and report ``pr_merged: true`` off
+    ``PR #100 MERGED``. An unimplemented phase would have read as delivered.
+    There is no own-id row to reward here, so the neighbour won by default
+    and a bonus could never have caught it. The fix is a filter: a row whose
+    id cell is a *different* registered phase is not this phase's row.
+    """
+
+    ROADMAP = (
+        "| `HV-3` token allowance and accounting owner | **in progress** | "
+        "**PR #100 MERGED** (stacked); stays in progress until `HV-4` "
+        "composes through `TokenBudget` and `HV-5` dispatches through it |\n"
+        "| `HV-4` stage composition and planning waist | **in progress** | "
+        "composition lands in this PR |\n"
+    )
+
+    def test_a_registered_needle_does_not_borrow_a_neighbouring_phase_row(self):
+        for phase in ("HV-5", "HV-6"):
+            row = _status_row_for(self.ROADMAP, phase)
+            self.assertNotIn("PR #100", row or "",
+                             "{} resolved onto another phase's row".format(phase))
+
+    def test_the_borrowed_merge_evidence_is_not_reported_as_this_phase_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(root, self.ROADMAP, tests=[], files=[])
+            for phase in ("HV-5", "HV-6"):
+                evidence = collect_phase_evidence(str(root), phase)
+                self.assertFalse(evidence["pr_merged"], phase)
+
+    def test_the_neighbour_still_resolves_for_its_own_phase(self):
+        row = _status_row_for(self.ROADMAP, "HV-3")
+        self.assertIn("PR #100 MERGED", row)
+
+    def test_the_live_roadmap_does_not_lend_its_merged_row_to_hv5_or_hv6(self):
+        # The regression as it shipped, read against the real document.
+        repo_root = Path(__file__).resolve().parents[1]
+        roadmap = (repo_root / "docs" / "jev-roadmap.md").read_text(
+            encoding="utf-8")
+        for phase in ("HV-5", "HV-6"):
+            row = _status_row_for(roadmap, phase) or ""
+            self.assertNotIn("PR #100", row, phase)
+
+
+class StatusRowMustNotCarryItsOwnEvidenceTests(unittest.TestCase):
+    """A row that explains the merge rule must not satisfy it.
+
+    `collect_phase_evidence` reads a row's own tokens as merge proof: a
+    ``PR #<digits>`` mention plus the past-tense merge word. So a STATUS row
+    that DESCRIBES that detection -- as the HV-4 row does, at length -- can
+    document the rule and trip it in the same breath. That is exactly what
+    commit e2c8274 did: the row gained the merge word and a concrete PR
+    number while explaining the word-boundary fix, and `jev-phase --phase
+    HV-4` reported `pr_merged: true` for a phase that has not landed -- on
+    the pull request whose subject is a fake-complete leak in this gate.
+
+    Nothing caught it. Every test in the tree checked which STATUS row was
+    SELECTED, never what the selected row's own tokens resolve to. These read
+    the live document, so the next person who explains the rule in a row
+    finds out at test time rather than after a merge.
+    """
+
+    def _roadmap(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        return (repo_root / "docs" / "jev-roadmap.md").read_text(encoding="utf-8")
+
+    def _claims_merge(self, roadmap, phase):
+        row = _status_row_for(roadmap, phase)
+        self.assertIsNotNone(row, "no STATUS row for " + phase)
+        from harness.jev_packs import phase_status_mentions_pr
+        return (bool(phase_status_mentions_pr(row, None))
+                and bool(re.search(r"\bmerged\b", row.lower())))
+
+    def test_the_live_hv4_row_does_not_read_as_its_own_merge_proof(self):
+        self.assertFalse(self._claims_merge(self._roadmap(), "HV-4"))
+
+    def test_a_row_quoting_the_rule_is_caught_by_the_same_check(self):
+        # The shape that actually shipped: a row explaining the fix while
+        # carrying the tokens. It must read as merge evidence, which is the
+        # defect -- if this ever stops being true, the check above is blind.
+        roadmap = (
+            "| `HV-4` stage composition | **in progress** | the merge word and "
+            "`PR #100` match on word boundaries; a neighbour's `PR #100 MERGED` "
+            "must not be this phase's proof |\n")
+        self.assertTrue(self._claims_merge(roadmap, "HV-4"))
+
+    def test_the_explained_row_without_the_tokens_is_inert(self):
+        roadmap = (
+            "| `HV-4` stage composition | **in progress** | the two merge "
+            "tokens match on word boundaries, so a row merely naming the "
+            "`pr_merged` flag is not preferred as merge proof |\n")
+        self.assertFalse(self._claims_merge(roadmap, "HV-4"))
 
 
 if __name__ == "__main__":
