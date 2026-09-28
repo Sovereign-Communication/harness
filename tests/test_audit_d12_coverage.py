@@ -53,7 +53,8 @@ class D12BaselinePinTests(unittest.TestCase):
         self.assertEqual(len(ref), 40, "baseline must name a full commit id")
         exists = _git("cat-file", "-e", ref + "^{commit}").returncode == 0
         if not exists and _git("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
-            self.skipTest("shallow checkout: cannot resolve the baseline object")
+            self.skipTest("shallow clone (platform checkout default): "
+                          "baseline object unavailable")
         self.assertTrue(
             exists,
             f"coverage_baseline.json names {ref[:12]}, which is not in this "
@@ -64,16 +65,21 @@ class D12BaselinePinTests(unittest.TestCase):
         score, evidence = self.audit.sd_coverage_changed()
         if "not reachable" in evidence and \
                 _git("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
-            self.skipTest("shallow checkout: D12 cannot evaluate here")
+            self.skipTest("shallow clone (platform checkout default): "
+                          "D12 cannot evaluate here")
         self.assertNotIn("fail-open", evidence,
                          f"D12 skipped instead of evaluating: {evidence}")
         self.assertNotIn("not reachable", evidence,
                          f"D12 could not reach its baseline: {evidence}")
         self.assertIn(score, (0.0, 1.0))
+        # "Evaluating" has to be observable in the evidence, not inferred from
+        # the score: DF-AUDIT-3 was a perfect score with no ratio at all. So
+        # either D12 reports what it measured, or it states that the tree has
+        # no executable harness changes since the baseline.
         self.assertTrue(
-            "no executable harness changes" in evidence
-            or "changed-line coverage" in evidence,
-            f"unexpected D12 evidence: {evidence}")
+            "changed-line coverage" in evidence
+            or "no executable harness changes" in evidence,
+            f"D12 returned a verdict without saying what it measured: {evidence}")
 
     def test_unreachable_reference_fails_closed_in_ci(self):
         score, evidence = self.audit.d12_unreachable("f" * 40, in_ci=True)

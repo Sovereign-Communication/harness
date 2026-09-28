@@ -1237,7 +1237,12 @@ def sd_coverage_changed():
             + ("..." if len(gaps[r]) > 8 else "")
             for r in sorted(gaps))
         detail += "; untested: " + items
-    return _pass(ok, "changed harness lines are suite-executed", detail)
+    # The pass evidence carries the measured ratio on purpose. A green D12 that
+    # does not say what it measured is indistinguishable from one that measured
+    # nothing -- which is exactly the shape of DF-AUDIT-3 (score 1.0, no ratio,
+    # for months), and the reason the regression pin asserts on this string.
+    return _pass(ok, f"changed harness lines are suite-executed ({detail})",
+                 detail)
 
 
 
