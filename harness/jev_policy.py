@@ -61,6 +61,11 @@ from .jev_packs import (
     repo_summary_question_pack,
     route_question_pack,
     DEFAULT_VISION_ASSESSMENT_PACK,
+    DECISION_CONFIDENCE_THRESHOLD,
+    DECISION_PACK_VERSION,
+    DECISION_SITE,
+    compose_decision_verdict,
+    decision_question_pack,
     validate_vision_assessment_answers,
     validate_vision_assessment_pack,
     vision_assessment_preflight,
@@ -664,6 +669,71 @@ class JevPolicy:
                     pass
             return self._record_refusal(
                 str(exc), site=site, task_id=task_id)
+
+    def evaluate_decision(self, action: str, end_state: str, context: str = "",
+                          *, site: str = DECISION_SITE,
+                          task_id: Optional[str] = None,
+                          node_id: Optional[str] = None,
+                          threshold: float = DECISION_CONFIDENCE_THRESHOLD,
+                          max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+        """Typed pre-escalation decision gate (issue #106).
+
+        Jev advises on three split dimensions over code-owned state
+        (``action``, ``end_state``, ``context`` -- never model output);
+        CODE composes the verdict via ``compose_decision_verdict``:
+
+        - ``is_destructive >= 0.5`` -> escalate, at any confidence;
+        - no Jev signal (unkeyed / transport failure) or unusable answers
+          -> escalate (fail closed, never proceed);
+        - disposition ``escalate``, disposition confidence < threshold, or
+          ``advances_goal`` < threshold -> escalate;
+        - disposition ``needs_improvement`` -> revise: the caller fixes the
+          action and re-gates (bounded by ``DECISION_MAX_REVISIONS``);
+        - otherwise -> proceed.
+
+        Authorization gates are not bypassed: the gate can only add a
+        reason to escalate, never remove one. Returns ``(verdict,
+        structural)`` where ``verdict`` is the composed dict
+        (``verdict`` / ``reasons`` / the three signals / ``threshold`` /
+        ``pack_version``) and ``structural`` is the shared Jev envelope;
+        the ``jev_eval`` ledger event carries the composed verdict so the
+        gate is measurable like every other Jev surface.
+        """
+        reservation = None
+        try:
+            reservation = self._preflight(
+                site=site, max_input_tokens=max_input_tokens)
+            result = self.evaluator.evaluate(
+                {"action": action or "", "end_state": end_state or "",
+                 "context": context or ""},
+                decision_question_pack())
+            verdict = compose_decision_verdict(result, threshold=threshold)
+            structural = self._account(
+                result, site=site, task_id=task_id, node_id=node_id,
+                reservation=reservation,
+                event_metadata={
+                    "decision_verdict": verdict["verdict"],
+                    "decision_disposition": verdict["disposition"],
+                    "decision_confidence": verdict["disposition_confidence"],
+                    "decision_advances_goal": verdict["advances_goal"],
+                    "decision_destructive": verdict["is_destructive"],
+                    "decision_threshold": threshold,
+                    "decision_pack": DECISION_PACK_VERSION,
+                })
+            reservation = None
+            return verdict, structural
+        except HarnessError as exc:
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            result, structural = self._record_refusal(
+                str(exc), site=site, task_id=task_id, node_id=node_id)
+            verdict = compose_decision_verdict(result, threshold=threshold)
+            verdict["reasons"] = (["evaluation refused: " + str(exc)]
+                                  + verdict["reasons"])
+            return verdict, structural
 
     def evaluate_plan(self, prompt: str, target_files=None, *, site: str = "waist",
                       task_id: Optional[str] = None, node_id: Optional[str] = None,
