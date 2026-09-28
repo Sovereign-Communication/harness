@@ -1145,6 +1145,15 @@ class AutonomousAgent:
             "target_files": target_files,
             "dag": plan.get("dag"),
             "confirmation": confirmation,
+            # A refused run still composed, still ran planning and still
+            # judged execution; the refusal is about the plan, not about
+            # erasing what the run did. Same three keys, same reason.
+            **({"composition": dict(plan["composition"])}
+               if isinstance(plan.get("composition"), dict) else {}),
+            **({"planning": dict(plan["planning"])}
+               if isinstance(plan.get("planning"), dict) else {}),
+            **({"stage_judgments": dict(plan["stage_judgments"])}
+               if isinstance(plan.get("stage_judgments"), dict) else {}),
             "cost": float(confirmation.get("cost") or 0.0),
             **({"structural": plan["structural"]}
                if isinstance(plan.get("structural"), dict) else {}),
@@ -1551,6 +1560,20 @@ class AutonomousAgent:
                                 if isinstance(r, dict)
                                 for m in (r.get("model_observed") or [])]),
             "cost": round(total_cost, 6),
+            # HV-5: the composed stages, the planning outcome and the
+            # execution-stage judgment are the same evidence the review-first
+            # envelope already carried, and `auto_apply` DEFAULTS TO TRUE --
+            # so leaving them on the preview branch only would have made the
+            # whole slice invisible on an ordinary autonomous run. They ride
+            # the final plan, next to the `hourglass` block that already
+            # carries stage evidence, because a reader of a completed run has
+            # at least as much claim to them as a reader of a preview.
+            **({"composition": dict(plan["composition"])}
+               if isinstance(plan.get("composition"), dict) else {}),
+            **({"planning": dict(plan["planning"])}
+               if isinstance(plan.get("planning"), dict) else {}),
+            **({"stage_judgments": dict(plan["stage_judgments"])}
+               if isinstance(plan.get("stage_judgments"), dict) else {}),
             **engine.governor.snapshot(),
             "results": list(all_results.values()),
             "orchestrator_rounds": len(rounds_history),

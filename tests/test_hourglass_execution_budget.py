@@ -241,5 +241,127 @@ class HermeticNoSpendTests(_GovernedRun):
         self.assertEqual(snapshot["cancelled"], 0)
 
 
+class _StubEngine:
+    """Enough apply surface for the autonomous lane to reach its result.
+
+    The run cannot dispatch anything with the transport blocked, and that is
+    the point: the question is not whether the edit succeeded but whether the
+    stage evidence is present on the envelope an ordinary run returns.
+    """
+
+    class _Gov:
+        spent = 0.0
+        max_cost = 0.05
+
+        def snapshot(self):
+            return {"spent": 0.0, "reserved": 0.0}
+
+        def reserve(self, *a, **k):
+            return object()
+
+        def reconcile(self, *a, **k):
+            return None
+
+        def record_actual(self, *a, **k):
+            return None
+
+    governor = _Gov()
+
+    def execute_node(self, *a, **k):
+        return {"status": "ok", "model_observed": [], "model_requested": None,
+                "diff": "", "node_id": "n1"}
+
+
+class _BlockedTransport:
+    """Refuses every provider call, so the proof cannot spend."""
+
+    def get(self, *a, **k):
+        raise HarnessError("transport blocked (HV-5 default-path test)")
+
+    def post(self, *a, **k):
+        raise HarnessError("transport blocked (HV-5 default-path test)")
+
+    def __getattr__(self, name):
+        def _blocked(*a, **k):
+            raise HarnessError("transport blocked (HV-5 default-path test)")
+        return _blocked
+
+
+class DefaultPathDeliversTheEvidenceTests(_GovernedRun):
+    """``auto_apply`` defaults to True, so the default path is the real one.
+
+    The composition, the planning outcome and the execution-stage judgment
+    were attached only to the review-first ``preview_ready`` envelope. Review
+    -first is the exception: an ordinary autonomous run -- the default -- never
+    carried any of it, so the whole of HV-5's evidence was invisible to the
+    caller except in a mode most runs do not use.
+    """
+
+    def _autonomous_run(self):
+        session_patch = patch("harness.agent.apply_session",
+                              return_value=_StubEngine())
+        session_patch.start()
+        self.addCleanup(session_patch.stop)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "calc.py").write_text(REPO, encoding="utf-8")
+            (root / ".hist").mkdir(exist_ok=True)
+            agent = AutonomousAgent(
+                settings=_settings(), root_dir=root,
+                transport=_BlockedTransport())
+            # auto_apply deliberately left at its DEFAULT.
+            return agent.run_hourglass_request(
+                "edit calc.py so add() documents its return value")
+
+    def test_the_default_run_is_the_autonomous_one(self):
+        with _Repo() as repo:
+            agent = repo.agent()
+            result = agent.run_hourglass_request(
+                "edit calc.py so add() documents its return value",
+                auto_apply=True)
+        # The review-first envelope reports preview_ready; the default lane
+        # must NOT, or this test is not exercising the path it claims to.
+        self.assertNotEqual(result.get("status"), "preview_ready")
+
+    def test_the_default_run_carries_the_composition(self):
+        result = self._autonomous_run()
+        composition = result.get("composition") or {}
+        self.assertTrue(composition.get("stages"),
+                        "the autonomous envelope dropped the composition")
+        self.assertEqual(composition.get("run_budget"), "edit")
+
+    def test_the_default_run_carries_the_planning_outcome(self):
+        result = self._autonomous_run()
+        self.assertIn((result.get("planning") or {}).get("kind"),
+                      ("sufficient", "plan", "evidence_request", "defer"))
+
+    def test_the_default_run_carries_the_execution_judgment(self):
+        result = self._autonomous_run()
+        judgment = (result.get("stage_judgments") or {}).get("execution")
+        self.assertIsNotNone(
+            judgment, "the autonomous envelope dropped the stage judgment")
+        self.assertIn("allowed", judgment.get("restart") or {})
+
+    def test_a_refused_run_still_reports_what_it_did(self):
+        # A refusal is about the PLAN, not about erasing the stages the run
+        # already composed, planned and judged. Drove through the real surface
+        # with a refused plan rather than calling the envelope builder.
+        with _Repo() as repo:
+            agent = repo.agent()
+            refused = agent._refused_edit(
+                {"dag": None, "confirmation": {"reason": "waist refused"},
+                 "composition": {"run_budget": "edit",
+                                 "stages": [{"stage": "planning",
+                                             "state": "completed"}]},
+                 "planning": {"kind": "sufficient", "reason": "brief_covers"},
+                 "stage_judgments": {"execution": {"dimension": "execution",
+                                                   "restart": {"allowed": False}}}},
+                "edit calc.py", ["calc.py"], "s1")
+        self.assertEqual(refused["status"], "refused")
+        self.assertTrue(refused["composition"]["stages"])
+        self.assertEqual(refused["planning"]["kind"], "sufficient")
+        self.assertIn("execution", refused["stage_judgments"])
+
+
 if __name__ == "__main__":
     unittest.main()
