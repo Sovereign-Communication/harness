@@ -9,7 +9,7 @@ from harness.dag import TaskDAG, heuristic_decompose_goal, plan_task
 from harness.errors import HarnessError
 from harness.mcp_lanes import lane_for
 from harness.mcp_schemas import TOOL_SCHEMAS
-from harness.repo_scope import rebase_gate
+from harness.repo_scope import _gate_python, rebase_gate
 
 
 class TestPlanningSurface(unittest.TestCase):
@@ -68,7 +68,7 @@ class TestPlanningSurface(unittest.TestCase):
             self.assertEqual(node["target_files"], [target])
             self.assertEqual(
                 node["local_gate"],
-                f'python -m py_compile "{target}"')
+                f'{_gate_python()} -m py_compile "{target}"')
             self.assertEqual(plan["dag"]["nodes"][0]["local_gate"],
                              node["local_gate"])
 
