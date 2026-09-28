@@ -81,7 +81,7 @@ class CostCliTests(unittest.TestCase):
     def test_cli_cost_command_json_out(self):
         out_file = os.path.join(self.tmp.name, "cost.json")
         env_backup = dict(os.environ)
-        os.environ["HARNESS_LEDGER_PATH"] = self.ledger_path
+        os.environ["HARNESS_LEDGER"] = self.ledger_path
         try:
             main(["cost", "--out", out_file, "--json"])
             self.assertTrue(os.path.exists(out_file))
@@ -96,7 +96,7 @@ class CostCliTests(unittest.TestCase):
     def test_cli_cost_command_pretty(self):
         out_file = os.path.join(self.tmp.name, "cost_pretty.json")
         env_backup = dict(os.environ)
-        os.environ["HARNESS_LEDGER_PATH"] = self.ledger_path
+        os.environ["HARNESS_LEDGER"] = self.ledger_path
         try:
             main(["cost", "--out", out_file, "--by-tier", "--by-model", "--savings"])
             self.assertTrue(os.path.exists(out_file))

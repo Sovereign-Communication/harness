@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -624,17 +625,77 @@ def _classify_suite_output(text):
             m.group(0).strip() if m else None)
 
 
+# Environment that must NOT reach R13's suite child. R13 asserts the suite is
+# green *hermetically*; inheriting the operator's routing and key environment
+# makes that claim false in two directions. Routing knobs change which lane a
+# test exercises, so a green here would not be the green CI sees; and a live
+# provider key turns the opt-in live-catalog check on, so the audit would fail
+# on upstream drift (a delisted model id) that has nothing to do with this
+# tree. CI's hermetic jobs carry none of these, so scrubbing is what makes the
+# local check the same check.
+_HERMETIC_ENV_DROP = (
+    "HARNESS_USE_FREE",
+    "HARNESS_ALLOW_ESCALATION",
+    "HARNESS_MAX_COST",
+    "HARNESS_TASK_MAX_COST",
+    "HARNESS_MIN_CONFIDENCE",
+    "HARNESS_JEV_KEY",
+    "TYPESAFE_API_KEY",
+    "JEV_API_KEY",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_API_KEY_FILE",
+)
+
+
+def hermetic_suite_env():
+    """Return (env, dropped) for R13's suite child.
+
+    Two independent leaks have to be closed before that child is actually
+    hermetic, and scrubbing variables only closes the first one:
+
+    * **environment.** Routing knobs change which lane a test exercises, so a
+      green here would not be the green CI sees; a provider key in the
+      environment turns the opt-in live-catalog check on, so the audit could
+      fail on upstream drift (a delisted model id) that has nothing to do with
+      this tree.
+    * **the user's home directory.** A key is also resolved from *files* under
+      ``~`` (``.config/scmorc/openrouter_fusion.env``,
+      ``.config/scmorc/openrouter.env``, ``.config/harness/openrouter.env``,
+      ``.config/harness/jev.env``), and ``harness.config.CONFIG_DIR`` itself is
+      derived from ``~``. No environment scrub can reach those, so the child
+      gets a fresh empty home and resolves nothing -- the same shape CI runs
+      in, and the reason the result no longer depends on whose machine ran it.
+
+    ``HARNESS_LEDGER`` is deliberately left alone: the suite pins its own
+    temporary ledger in ``tests/__init__.py``, and a caller that set a private
+    one is already isolated.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _HERMETIC_ENV_DROP}
+    dropped = sorted(k for k in os.environ if k in _HERMETIC_ENV_DROP)
+    home = tempfile.mkdtemp(prefix="harness-hermetic-home-")
+    for name in ("HOME", "USERPROFILE", "APPDATA", "XDG_CONFIG_HOME"):
+        env[name] = home
+    return env, dropped
+
+
 def r_suite_green():
     """The full unit suite is green hermetically (with ResourceWarnings as
     errors)."""
-    r = subprocess.run(
-        [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest",
-         "discover", "-s", "tests", "-q"],
-        cwd=str(ROOT), capture_output=True, text=True, timeout=900)
-    summary_ok, leaked, summary = _classify_suite_output(r.stdout + r.stderr)
+    env, dropped = hermetic_suite_env()
+    try:
+        r = subprocess.run(
+            [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest",
+             "discover", "-s", "tests", "-q"],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=900, env=env)
+        stdout, stderr = r.stdout, r.stderr
+    finally:
+        shutil.rmtree(env["HOME"], ignore_errors=True)
+    summary_ok, leaked, summary = _classify_suite_output(stdout + stderr)
     ok = summary_ok and not leaked
-    return _pass(ok, f"unittest: {summary if summary is not None else r.stderr[-200:]}",
-                 (r.stdout + r.stderr)[-2500:])
+    scrubbed = ("env scrubbed: " + ", ".join(dropped)) if dropped else "env clean"
+    return _pass(ok, f"unittest: {summary if summary is not None else stderr[-200:]}"
+                     f" ({scrubbed}; empty home)",
+                 (stdout + stderr)[-2500:])
 
 
 def r_suite_selftest():
