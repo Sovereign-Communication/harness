@@ -1,5 +1,14 @@
 # P1 — Harness Jev: completion dogfood gate + P2 repair
 
+<!-- HANDOFF-SCOPE-BEGIN -->
+scope: Harness
+owner: Sovereign-Communication/harness
+purpose: Harness-only findings and remediation handoff
+foreign_material: NONE
+boundary: No foreign-repository findings, evidence, status, or remediation are included.
+<!-- HANDOFF-SCOPE-END -->
+
+
 > **SUPERSEDED 2026-09-22** — historical Freebuff-lane handoff; every item here has merged (PRs #36–#65). Current truth: `docs/jev-roadmap.md` (canon STATUS). Agent lane: Claude Code (`CLAUDE.md`, `docs/claude-context.md`).
 
 **Status:** OPEN  

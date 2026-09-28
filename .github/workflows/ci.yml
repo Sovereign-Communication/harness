@@ -275,3 +275,58 @@ jobs:
         if: always()
         shell: bash
         run: rm -rf "$GITHUB_WORKSPACE/.smoke-venv"
+
+  # handoff-scope (issue #108): every handoff has one owner, and a document
+  # that quietly mixes another lane's evidence should not land without being
+  # noticed. This job is ADVISORY by design -- it reports and annotates, and
+  # it never fails the build. A gate that blocks a merge over a missing HTML
+  # comment trains people to delete the comment, so the first step is
+  # visibility, not enforcement. Promotion to blocking is a separate,
+  # deliberate decision once the register has proved itself.
+  handoff-scope:
+    name: handoff scope (advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # The gate diffs the working tree against a base ref, so the base has to
+      # resolve. On a pull_request event that is the PR's base branch; on a push
+      # to main it is main itself, which is a no-op diff and correctly reports
+      # "no changed handoff documents".
+      - name: Resolve the diff base
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}"
+          git fetch --no-tags origin "$BASE"
+          echo "BASE=$BASE" >> "$GITHUB_ENV"
+          echo "diffing handoff documents against origin/$BASE"
+      # Strict, but it tests the TOOL rather than any document: a drifted
+      # classifier would make every advisory finding untrustworthy. Reported as
+      # a warning rather than a failure, to keep this job warn-only.
+      - name: Classifier self-test (strict; reported, not enforced)
+        id: selftest
+        continue-on-error: true
+        run: |
+          python scripts/validate_handoff_scope.py --repo-root . --self-test
+      - name: Report a drifted classifier
+        if: failure() && steps.selftest.outcome == 'failure'
+        run: echo "::warning title=handoff scope::The ownership-gate classifier self-test failed. Advisory findings below may be unreliable until refresh_coverage/validate_handoff_scope.py is repaired."
+      - name: Advisory scan of changed handoff documents
+        id: scan
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          python scripts/validate_handoff_scope.py \
+            --repo-root . --warn-only --changed-from "origin/$BASE"
+      - name: Annotate any ownership findings
+        if: failure() && steps.scan.outcome == 'failure'
+        run: echo "::warning title=handoff scope::The ownership gate reported a problem. This job does not block; see the log for the named document."
+      - name: Always print the register
+        if: always()
+        run: |
+          echo "--- waiver register ---"
+          cat handoff_scope_waivers.json

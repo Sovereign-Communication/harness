@@ -1,5 +1,14 @@
 # BOD_STATE — Harness Board of Directors
 
+<!-- HANDOFF-SCOPE-BEGIN -->
+scope: Harness
+owner: Sovereign-Communication/harness
+purpose: Harness-only findings and remediation handoff
+foreign_material: NONE
+boundary: No foreign-repository findings, evidence, status, or remediation are included.
+<!-- HANDOFF-SCOPE-END -->
+
+
 **Updated:** 2026-09-22
 **Doctrine:** `.claude/skills/bod/SKILL.md` (sovereignty + consent, cost-bounded cheapest capable, one owner, fail closed, dependency-light + brand-neutral).
 **Mechanics:** 5-model `harness verify` panel + judge concurrence, unanimity 5/5, $0.10 ceiling, fails closed.

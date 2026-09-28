@@ -1,5 +1,14 @@
 # CEO_STATE — Harness
 
+<!-- HANDOFF-SCOPE-BEGIN -->
+scope: Harness
+owner: Sovereign-Communication/harness
+purpose: Harness-only findings and remediation handoff
+foreign_material: NONE
+boundary: No foreign-repository findings, evidence, status, or remediation are included.
+<!-- HANDOFF-SCOPE-END -->
+
+
 **Updated:** 2026-09-24
 **Audit basis:** fresh commands + disk artifacts through the lane-unification canon audit; canon `docs/jev-roadmap.md`.
 

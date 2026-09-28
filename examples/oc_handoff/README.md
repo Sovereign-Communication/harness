@@ -1,5 +1,14 @@
 # OC findings handoff worker
 
+<!-- HANDOFF-SCOPE-BEGIN -->
+scope: Harness
+owner: Sovereign-Communication/harness
+purpose: Harness-only findings and remediation handoff
+foreign_material: NONE
+boundary: No foreign-repository findings, evidence, status, or remediation are included.
+<!-- HANDOFF-SCOPE-END -->
+
+
 This Harness-only example accepts locally approved findings and writes exactly
 `HANDOFF/OC_FINDINGS.md` in an isolated local worktree. It never chooses a
 repository, target path, command, verifier, database, or endpoint from a
