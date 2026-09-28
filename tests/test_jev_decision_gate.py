@@ -9,7 +9,9 @@ from harness.jev import JevEvaluationResult, _validate_questions
 from harness.jev_packs import (
     DECISION_CALIBRATION_CASES,
     DECISION_CONFIDENCE_THRESHOLD,
+    DECISION_DISPOSITION_MARGIN,
     DECISION_DISPOSITIONS,
+    DECISION_PACK_VERSION,
     DECISION_SITE,
     compose_decision_verdict,
     decision_calibration_report,
@@ -22,14 +24,18 @@ from tests._fake import FakeTransport, m
 
 
 def _decision_answers(*, destructive=0.05, disposition="proceed",
-                      confidence=0.97, advances=0.96):
-    probabilities = {name: 0.0 for name in DECISION_DISPOSITIONS}
-    probabilities[disposition] = 1.0
+                      confidence=0.97, advances=0.96, probabilities=None):
+    if probabilities is None:
+        distribution = {name: 0.0 for name in DECISION_DISPOSITIONS}
+        distribution[disposition] = 1.0
+    else:
+        distribution = {name: float(probabilities.get(name, 0.0))
+                        for name in DECISION_DISPOSITIONS}
     return {
         "is_destructive": {"type": "noul", "noul": destructive},
         "disposition": {"type": "choice", "choice": disposition,
                         "confidence": confidence,
-                        "probabilities": probabilities,
+                        "probabilities": distribution,
                         "unmatched_options": []},
         "advances_goal": {"type": "noul", "noul": advances},
     }
@@ -90,6 +96,7 @@ class ComposeDecisionVerdictTests(unittest.TestCase):
         verdict = self._verdict()
         self.assertEqual(verdict["verdict"], "proceed")
         self.assertEqual(verdict["threshold"], DECISION_CONFIDENCE_THRESHOLD)
+        self.assertEqual(verdict["margin"], DECISION_DISPOSITION_MARGIN)
 
     def test_destructive_escalates_at_any_confidence(self):
         verdict = self._verdict(destructive=0.9, disposition="proceed",
@@ -110,10 +117,86 @@ class ComposeDecisionVerdictTests(unittest.TestCase):
                                 advances=0.96)
         self.assertEqual(verdict["verdict"], "escalate")
 
-    def test_low_disposition_confidence_escalates(self):
-        verdict = self._verdict(disposition="proceed", confidence=0.82,
-                                advances=0.96)
+    def test_ambiguous_disposition_escalates(self):
+        """No clear front-runner is the failure this gate exists to catch.
+
+        This replaces a test that asserted a *low confidence scalar* escalated
+        while its own fixture claimed a one-hot distribution. It could not
+        express a real ambiguity, so it never tested the thing its name
+        implied.
+        """
+        verdict = self._verdict(
+            disposition="proceed", confidence=0.45, advances=0.96,
+            probabilities={"proceed": 0.45, "escalate": 0.40,
+                           "needs_improvement": 0.15})
         self.assertEqual(verdict["verdict"], "escalate")
+        self.assertIn("no clear recommendation", verdict["reasons"][0])
+
+    def test_lead_below_margin_escalates(self):
+        verdict = self._verdict(
+            disposition="proceed", confidence=0.55, advances=0.96,
+            probabilities={"proceed": 0.55, "escalate": 0.40,
+                           "needs_improvement": 0.05})
+        self.assertEqual(verdict["verdict"], "escalate")
+
+    def test_decisive_lead_without_unanimity_proceeds(self):
+        """A clear recommendation is actionable; residual uncertainty is not danger."""
+        verdict = self._verdict(
+            disposition="proceed", confidence=0.78, advances=0.95,
+            probabilities={"proceed": 0.78, "escalate": 0.15,
+                           "needs_improvement": 0.07})
+        self.assertEqual(verdict["verdict"], "proceed")
+        self.assertAlmostEqual(verdict["disposition_lead"], 0.63)
+
+    def test_confidence_alone_no_longer_gates_the_verdict(self):
+        """Regression pin for the fix itself.
+
+        Holding a Choice's concentration to the absolute 0.95 Noul bar is the
+        conflation this change removes. A single coherent distribution must
+        produce the same verdict whatever concentration is reported alongside
+        it, because the reported concentration is telemetry.
+        """
+        coherent = {"proceed": 0.78, "escalate": 0.15,
+                    "needs_improvement": 0.07}
+        verdicts = {
+            self._verdict(disposition="proceed", confidence=value,
+                          advances=0.95, probabilities=coherent)["verdict"]
+            for value in (0.5, 0.78, 0.95, 0.99)
+        }
+        self.assertEqual(verdicts, {"proceed"})
+
+    def test_missing_probabilities_fail_closed(self):
+        bad = _decision_answers()
+        bad["disposition"] = {"type": "choice", "choice": "proceed",
+                              "confidence": 0.99}
+        verdict = compose_decision_verdict(_decision_result(bad))
+        self.assertEqual(verdict["verdict"], "escalate")
+
+    def test_probabilities_not_summing_to_one_fail_closed(self):
+        bad = _decision_answers()
+        bad["disposition"]["probabilities"] = {"proceed": 0.9,
+                                               "escalate": 0.9,
+                                               "needs_improvement": 0.9}
+        verdict = compose_decision_verdict(_decision_result(bad))
+        self.assertEqual(verdict["verdict"], "escalate")
+
+    def test_destructive_still_escalates_on_a_decisive_proceed_lead(self):
+        """The margin change must not soften the destructive guard."""
+        verdict = self._verdict(
+            destructive=0.9, disposition="proceed", confidence=0.99,
+            advances=0.99,
+            probabilities={"proceed": 0.99, "escalate": 0.005,
+                           "needs_improvement": 0.005})
+        self.assertEqual(verdict["verdict"], "escalate")
+        self.assertIn("destructive", verdict["reasons"][0])
+
+    def test_tangential_still_escalates_on_a_decisive_proceed_lead(self):
+        """The advances_goal Noul bar is unchanged and still absolute."""
+        verdict = self._verdict(
+            destructive=0.02, disposition="proceed", confidence=0.97,
+            advances=0.30)
+        self.assertEqual(verdict["verdict"], "escalate")
+        self.assertIn("advances_goal", verdict["reasons"][0])
 
     def test_tangential_action_escalates(self):
         verdict = self._verdict(disposition="proceed", confidence=0.97,
@@ -194,10 +277,14 @@ class EvaluateDecisionPolicyTests(unittest.TestCase):
         self.assertEqual(events[0]["decision_verdict"], "proceed")
         self.assertEqual(events[0]["decision_disposition"], "proceed")
         self.assertAlmostEqual(events[0]["decision_confidence"], 0.97)
+        self.assertAlmostEqual(events[0]["decision_lead"], 0.85)
         self.assertAlmostEqual(events[0]["decision_advances_goal"], 0.96)
         self.assertAlmostEqual(events[0]["decision_destructive"], 0.05)
         self.assertEqual(events[0]["decision_threshold"],
                          DECISION_CONFIDENCE_THRESHOLD)
+        self.assertEqual(events[0]["decision_margin"],
+                         DECISION_DISPOSITION_MARGIN)
+        self.assertEqual(events[0]["decision_pack"], DECISION_PACK_VERSION)
 
     def test_keyed_destructive_action_escalates_but_still_ledgers(self):
         transport = FakeTransport(
@@ -224,6 +311,29 @@ class DecisionCalibrationTests(unittest.TestCase):
         for case in DECISION_CALIBRATION_CASES:
             self.assertIn(case["expected"], ("proceed", "revise", "escalate"))
 
+    def test_calibration_fixtures_are_internally_coherent(self):
+        """A fixture may not claim a distribution its own answer contradicts.
+
+        The old helper let ``confidence`` be set independently of a one-hot
+        distribution, so cases could assert near-unanimity and low confidence
+        simultaneously. The helper now derives one from the other; this pins
+        that every case in the set agrees with itself.
+        """
+        for case in DECISION_CALIBRATION_CASES:
+            answers = case.get("answers") or {}
+            disposition = answers.get("disposition") or {}
+            probabilities = disposition.get("probabilities")
+            if not probabilities:
+                continue
+            self.assertAlmostEqual(sum(probabilities.values()), 1.0,
+                                   msg=case.get("id"))
+            self.assertEqual(set(probabilities), set(DECISION_DISPOSITIONS),
+                             case.get("id"))
+            self.assertEqual(disposition.get("choice"),
+                             max(probabilities, key=probabilities.get),
+                             "{}: the declared choice is not the top "
+                             "probability".format(case.get("id")))
+
     def test_composer_matches_ground_truth_with_zero_false_proceeds(self):
         report = decision_calibration_report()
         self.assertEqual(report["case_count"],
@@ -232,9 +342,9 @@ class DecisionCalibrationTests(unittest.TestCase):
         self.assertEqual(report["false_proceed_rate"], 0.0)
         # Recorded for the calibration gate: unnecessary escalations are
         # reported, not asserted, so tightening the gate stays data-driven.
-        print("\ncalibration: {} cases, threshold {}, false_proceed_rate {}, "
-              "unnecessary_escalation_rate {}".format(
-                  report["case_count"], report["threshold"],
+        print("\ncalibration: {} cases, threshold {}, margin {}, "
+              "false_proceed_rate {}, unnecessary_escalation_rate {}".format(
+                  report["case_count"], report["threshold"], report["margin"],
                   report["false_proceed_rate"],
                   report["unnecessary_escalation_rate"]))
 
