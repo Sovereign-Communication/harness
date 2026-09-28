@@ -1,0 +1,158 @@
+name: publish
+
+# Issue #107. Pushing a v* tag builds the distribution and publishes it to
+# PyPI through OIDC trusted publishing. There is deliberately no PyPI token,
+# no TWINE_USERNAME/TWINE_PASSWORD, and no other secret in this repository:
+# `id-token: write` is the entire credential surface, and the upload fails
+# closed at pypi.org if the publisher is not registered.
+#
+# Two ways in:
+#   * `push` on a `v*` tag -- the real release path.
+#   * `workflow_dispatch` -- the rehearsal path. It defaults to dry_run: true
+#     so the full build/verify chain is verifiable end to end WITHOUT the
+#     pypi.org publisher registration, which cannot be created from here.
+#     That is how acceptance criterion 2 (test release / dry run) is met
+#     before the first real upload.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version to rehearse, e.g. v0.4.1. Ignored on a tag push."
+        required: false
+        type: string
+      dry_run:
+        description: "Build and verify only; do not upload to PyPI."
+        type: boolean
+        default: true
+
+# Least privilege by default. The publish job opts in to exactly one extra
+# capability, and that grant is what trusted publishing consumes.
+permissions:
+  contents: read
+
+# Never cancel: a publish interrupted between "reserve the version" and
+# "attach the files" leaves PyPI holding a version nobody can re-upload,
+# because PyPI forbids overwriting a release.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: build, verify, and publish
+    runs-on: ubuntu-latest
+    # id-token: write is the whole mechanism. Without it the action cannot
+    # mint the OIDC assertion pypi.org exchanges for a short-lived upload
+    # token; with it, nothing else about this job is privileged.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install development tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+
+      # One interpreter, one build. This is deliberately NOT the ci.yml
+      # python matrix: pypa/gh-action-pypi-publish rejects a directory
+      # containing two distributions of the same name, so a matrix here
+      # would upload a wheel and an sdist that collide. Cross-version
+      # support is already proven by the `package` job in ci.yml; this
+      # workflow ships exactly one of each artifact.
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Check metadata (twine)
+        run: python -m twine check dist/*
+
+      # Three-way parity: pyproject declares the version, harness.__version__
+      # is what the installed package reports, and the tag is what a user
+      # installs. A tag that disagrees with pyproject would publish a
+      # distribution under a version its own metadata does not claim, and
+      # PyPI would then serve a name that cannot be corrected in place.
+      # ci.yml enforces the first two; this job adds the third, which only
+      # exists at tag-push time.
+      - name: Version parity (pyproject vs harness.__version__ vs tag)
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          try:
+              import tomllib
+          except ImportError:
+              import tomli as tomllib
+
+          py = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          name = py["project"]["name"]
+          version = py["project"]["version"]
+          assert name == "sovereign-harness", f"unexpected distribution name: {name}"
+
+          code = "import harness; print(harness.__version__)"
+          reported = subprocess.run(
+              [sys.executable, "-c", code], check=True, capture_output=True, text=True
+          ).stdout.strip()
+          assert reported == version, (
+              f"harness.__version__ ({reported}) != pyproject ({version})"
+          )
+          # A PEP 440 version must not carry the tag's leading "v".
+          assert re.fullmatch(r"\d+(\.\d+)*((a|b|rc)\d+)?(\.post\d+)?(\.dev\d+)?", version), (
+              f"pyproject version {version!r} is not a plain PEP 440 release"
+          )
+          print(f"parity OK: {name} {version} (importable, reads {reported})")
+
+          tag = (os.environ.get("RELEASE_TAG") or "").strip()
+          if tag:
+              expected = f"v{version}"
+              assert tag == expected, f"tag {tag!r} does not match pyproject version {expected!r}"
+              print(f"tag parity OK: {tag} == {expected}")
+          else:
+              print("no tag in context (dispatch without a tag input): tag parity not checked")
+          PY
+
+      - name: Smoke-install the wheel in a clean venv
+        run: |
+          set -euo pipefail
+          # The artifact that is about to be published is the one exercised
+          # here, and from outside the checkout so `import harness` resolves
+          # to the installed wheel rather than the source tree.
+          python -m venv "$RUNNER_TEMP/smoke-venv"
+          "$RUNNER_TEMP/smoke-venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/smoke-venv/bin/pip" install dist/*.whl
+          cd "$HOME"
+          "$RUNNER_TEMP/smoke-venv/bin/python" -c "import harness; print(harness.__version__)"
+          "$RUNNER_TEMP/smoke-venv/bin/harness" --help > /dev/null
+
+      # A dry run must stop here. Everything above it -- build, metadata
+      # check, three-way version parity, and a real install of the built
+      # wheel -- is exactly what the upload path depends on, so a green dry
+      # run is evidence for the whole chain and not just for the build.
+      - name: Rehearsal only -- skipping upload
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          echo "dry run: artifacts verified, not uploaded."
+          ls -l dist/
+
+      - name: Publish to PyPI (trusted publishing, OIDC)
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          # No password/user/api-token inputs. The action exchanges this
+          # job's OIDC identity for a short-lived upload token; a missing
+          # pypi.org publisher registration surfaces here as a 403.
+          attestations: true
+          verbose: true
