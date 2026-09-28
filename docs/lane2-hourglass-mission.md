@@ -13,13 +13,20 @@ HV-4/5/6 rows and is deleted in the final commit.
 | Lane | Tracker | Owns |
 |---|---|---|
 | 1 | PR #116 (Freebuff mission) | `harness/jev_packs.py`, `harness/jev_policy.py` (+ tests), `.github/workflows/*`, handoff-scope files, the canon header / Next slice / non-HV rows, `AGENTS.md` |
-| 2 | this PR | `harness/waist.py`, `harness/stages.py`, `harness/config.py` (stage resolution), plan/DAG modules; HV-5: `harness/agent.py`, `apply.py`, `consent.py`; HV-6: CLI/MCP/server adapters; HV-4..6 canon rows and `jev-phase` contracts |
+| 2 | this PR | `harness/stages.py` (single composition owner), `harness/waist.py` (call site), `harness/jev_completion.py` (status-row matching + HV-4..6 contracts), `harness/config.py` (stage resolution), plan/DAG modules; HV-5: `harness/agent.py`, `apply.py`, `consent.py`; HV-6: CLI/MCP/server adapters; HV-4..6 canon rows and `jev-phase` contracts |
 | 3 | Lane 3 mission PR | test-isolation helpers, `audits/self/*`, `harness/ledger.py`, `packs/repo_summary.pack.json` |
 If you need a change in another lane's file, write the exact request in your PR body; do not make the change.
 
 ## Work, in order
-1. **HV-4: draft PR #118** (`feat/hv4-waist-composition`). This is the salvaged, never-pushed commit `459bd87`, rebased onto main:
-   `harness/stages.py` +646, both named HV-4 tests, and the HV-4 contract. Ruff and compileall are clean, and 113 targeted tests pass.
+0. **Status-row identity fix first** (operator ruling 2026-09-28), as its own small PR off origin/main before #118:
+   `jev_completion.py` `_row_id_cell` + exact-ID bonus + word-boundary merged/PR matching from the salvage, with the six StatusRowIdentityTests.
+   A tie between candidate rows must fail closed ("ambiguous STATUS row", no can_mark_complete), never break on document order.
+   Without this fix, `jev-phase --phase HV-4` reads HV-3's merged row.
+1. **HV-4: draft PR #118** (`feat/hv4-waist-composition` @ `7d77907` = the never-pushed `459bd87` rebased onto `0499277`):
+   `harness/stages.py` +646, the two HV-4 test modules (49 tests), and the HV-4 contract.
+   Operator rulings: `stages.py` is the single composition owner. Port the salvage's `compose_plan` kwargs and composition envelope
+   as a thin `waist.py` call site, plus the `agent.py` plan-path hunk. Port semantics, not duplicate functions.
+   Execution-side `agent.py` stays HV-5.
    Reconcile the newer wiring on `salvage/704d1bdf-hv4-waist-wiring` (`waist.py` +279, `config.py`, `jev_completion.py` +56,
    plus alternate test versions). Keep the stronger assertions, and cite each hunk's source.
    Before you extend it, check it against the HV-4 row: the waist consumes curated briefs with decreasing token allowances,
@@ -44,6 +51,6 @@ If you need a change in another lane's file, write the exact request in your PR 
 - Gates in every PR (raw tails): ruff, compileall, both suite halves, `audits/self/audit.py`, and `jev-phase --phase <ID>`
   (a single phase is live Jev; `--all` is local only).
 
-## Definition of Done
+## Definition of Done (the mission file lives only on this tracker branch; delete it here, not in #118)
 HV-4, HV-5 and HV-6 are merged with CI green, each with its `jev-phase` contract passing and its row honestly complete.
 Consumed salvage branches are noted in the PRs. The final commit deletes this file; then merge this PR as the seal.
