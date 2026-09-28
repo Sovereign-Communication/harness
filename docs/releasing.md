@@ -32,3 +32,75 @@
 
 The project intentionally keeps runtime dependencies at zero. Build and lint
 packages are development-only extras.
+
+## Publishing to PyPI
+
+Publishing is automated and credential-free. `.github/workflows/publish.yml`
+builds the distribution on a `v*` tag and uploads it to PyPI with
+[pypa/gh-action-pypi-publish](https://github.com/pypa/gh-action-pypi-publish)
+using **OIDC trusted publishing**. There is no PyPI API token in this
+repository's secrets, and there is never a need to add one: the workflow's
+only elevated capability is `id-token: write`, and pypi.org exchanges the
+run's OIDC identity for a short-lived upload token.
+
+### Release procedure
+
+1. Bump `version` in `pyproject.toml` and land that change on `main` through
+   a reviewed PR. `harness.__version__` is derived from `pyproject.toml`, so
+   this single edit is the whole version bump.
+2. Wait for `ci` to be green on `main`. The `package` job builds the same
+   artifacts this workflow will publish.
+3. Tag the merge commit and push the tag:
+
+   ```bash
+   git tag v0.4.2          # must equal the pyproject version, with the v
+   git push origin v0.4.2
+   ```
+
+   The tag is what triggers the publish. The workflow refuses to upload if
+   the tag and the `pyproject.toml` version disagree, because PyPI does not
+   allow a released version to be overwritten: a mismatch would permanently
+   publish a version number that the distribution's own metadata contradicts.
+
+4. Watch the `publish` run. It builds, runs `twine check`, verifies
+   three-way version parity (pyproject, the importable `harness.__version__`,
+   and the tag), smoke-installs the built wheel in a clean virtualenv, and
+   only then uploads.
+
+### Rehearsing without publishing
+
+`workflow_dispatch` runs the entire chain and stops before the upload. Use it
+to verify the release path without consuming a version number, and to
+rehearse a tag you have not pushed yet:
+
+- **`dry_run` is `true` by default.** Build, metadata check, version parity,
+  and the clean-venv wheel install all run; the upload step is skipped. A
+  green dry run is evidence for the whole path, not just the build.
+- Set **`tag`** to rehearse a specific version. The tag-parity check then
+  runs against that value. Leave it empty to skip tag parity and verify only
+  the artifacts.
+
+### One-time owner step: register the publisher
+
+Trusted publishing requires a publisher entry on the project at pypi.org,
+and **that entry must be created by the account owner** — it cannot be done
+from a workflow or from CI credentials. Until it exists, a real tag push
+runs every step and then fails at upload with a 403 from pypi.org. Nothing
+earlier in the workflow fails, so a 403 at the last step means exactly one
+thing: the publisher is not registered.
+
+Register under the `sovereign-harness` project at pypi.org, using these exact
+values:
+
+| Field | Value |
+|---|---|
+| PyPI project | `sovereign-harness` |
+| Provider | GitHub Actions |
+| Repository | `Sovereign-Communication/harness` |
+| Workflow name | `publish.yml` |
+| Environment | *(leave empty)* |
+
+The workflow sets no GitHub `environment`, so the Environment field must stay
+empty — a mismatch there is the most common cause of a 403 that looks
+otherwise correct. After registering, run a dry run first, then push a real
+tag.
