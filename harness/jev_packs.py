@@ -504,6 +504,35 @@ def normalize_complexity_class(value: Any) -> Optional[str]:
 # --- JEV-LOG operator log-factor packs (site=log_factor) ---
 
 LOG_FACTOR_SITE = "log_factor"
+PHASE_COMPLETION_SITE = "phase_completion"
+
+
+def _validated_score_block(pack: Any) -> Dict[str, Any]:
+    """Shared operator-declared score block (log + completion packs).
+
+    Requires: object with a non-empty string ``id`` (not 'bucket'),
+    non-empty ``instructions``, and ``levels`` = >=2 unique non-empty
+    strings. Returns the clean {id, instructions, levels} copy.
+    """
+    score = pack.get("score")
+    if not isinstance(score, dict):
+        raise ValueError("pack requires a score block object")
+    score_id = score.get("id")
+    if not isinstance(score_id, str) or not score_id or score_id == "bucket":
+        raise ValueError(
+            "pack score requires a non-empty string id other than 'bucket'")
+    instructions = score.get("instructions")
+    if not isinstance(instructions, str) or not instructions:
+        raise ValueError("pack score requires non-empty instructions")
+    levels = score.get("levels")
+    if (not isinstance(levels, list) or len(levels) < 2
+            or any(not isinstance(x, str) or not x for x in levels)):
+        raise ValueError(
+            "pack score levels must be a list of at least two non-empty strings")
+    if len(set(levels)) != len(levels):
+        raise ValueError("pack score levels must be unique")
+    return {"id": score_id, "instructions": instructions,
+            "levels": list(levels)}
 
 
 def validate_log_pack(pack: Any) -> Dict[str, Any]:
@@ -516,26 +545,81 @@ def validate_log_pack(pack: Any) -> Dict[str, Any]:
     buckets, path ids, actions, or score levels.
     """
     doc = validate_operator_pack(pack)
-    score = pack.get("score")
-    if not isinstance(score, dict):
-        raise ValueError("log pack requires a score block object")
-    score_id = score.get("id")
-    if not isinstance(score_id, str) or not score_id or score_id == "bucket":
-        raise ValueError(
-            "log pack score requires a non-empty string id other than 'bucket'")
-    instructions = score.get("instructions")
-    if not isinstance(instructions, str) or not instructions:
-        raise ValueError("log pack score requires non-empty instructions")
-    levels = score.get("levels")
-    if (not isinstance(levels, list) or len(levels) < 2
-            or any(not isinstance(x, str) or not x for x in levels)):
-        raise ValueError(
-            "log pack score levels must be a list of at least two non-empty strings")
-    if len(set(levels)) != len(levels):
-        raise ValueError("log pack score levels must be unique")
-    doc["score"] = {"id": score_id, "instructions": instructions,
-                    "levels": list(levels)}
+    doc["score"] = _validated_score_block(pack)
     return doc
+
+
+def validate_phase_completion_pack(pack: Any) -> Dict[str, Any]:
+    """Validate an operator phase-completion pack; return a clean copy.
+
+    Same shape as the log pack: P5 operator buckets (attention steering:
+    which area needs eyes, and the operator's recommended next step) plus
+    ONE declared completeness score dimension whose level strings map to
+    the score-question criteria in declared order. Nothing invented.
+    """
+    doc = validate_operator_pack(pack)
+    doc["score"] = _validated_score_block(pack)
+    return doc
+
+
+def phase_completion_score_100(pack: Any, raw: Any) -> Optional[float]:
+    """Map a TypeSafe level-index score onto 0-100 — the ONLY sanctioned
+    scaling for the completion pack.
+
+    TypeSafe returns level-index scores (live probe jev-1.13.0: 2.72 on 4
+    declared levels), never 0..1 floats, so the scale is
+    ``raw / (len(levels) - 1) * 100`` clamped to [0, 100]. A non-numeric
+    raw (or a degenerate single-level pack) yields ``None`` — code never
+    guesses. With two levels this is exactly the old 0..1 x 100 rule.
+    """
+    doc = validate_phase_completion_pack(pack)
+    levels = doc["score"]["levels"]
+    span = len(levels) - 1
+    if span <= 0 or isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    return round(max(0.0, min(100.0, float(raw) / span * 100.0)), 2)
+
+
+def phase_completion_level_for_index(pack: Any, raw: Any) -> Optional[str]:
+    """Nearest operator-declared level string for a numeric index answer.
+
+    Rounded+clamped onto ``levels``; non-numeric answers yield ``None`` so
+    the model can never name a level the operator did not declare.
+    """
+    doc = validate_phase_completion_pack(pack)
+    levels = doc["score"]["levels"]
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    idx = max(0, min(len(levels) - 1, int(round(float(raw)))))
+    return levels[idx]
+
+
+def phase_completion_question_pack(pack: Any) -> Dict[str, Dict[str, Any]]:
+    """The TypeSafe question pack for one phase-completion call.
+
+    Two typed questions: the attention-bucket choice (criteria = operator
+    bucket labels only) and the completeness score (criteria = operator
+    level strings in declared order). Nothing invented.
+    """
+    doc = validate_phase_completion_pack(pack)
+    criteria = {
+        bid: entry["label"] for bid, entry in doc["buckets"].items()
+    }
+    return {
+        "bucket": {
+            "type": "choice",
+            "instructions": (
+                "Choose the operator-declared attention area this phase "
+                "evidence most needs next. Select only from the declared "
+                "criteria keys; do not invent categories."),
+            "criteria": criteria,
+        },
+        "completeness": {
+            "type": "score",
+            "instructions": doc["score"]["instructions"],
+            "criteria": list(doc["score"]["levels"]),
+        },
+    }
 
 
 def log_factor_question_pack(pack: Any) -> Dict[str, Dict[str, Any]]:
