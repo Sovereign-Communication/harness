@@ -23,7 +23,7 @@ from types import SimpleNamespace
 
 from .errors import HarnessError
 from .output import eprint
-from .validation import finite_number
+from .validation import MAX_TOKENS, bounded_int, finite_number
 
 CONFIG_DIR = os.path.expanduser("~/.config/harness")
 
@@ -62,6 +62,21 @@ DEFAULT_TASK_MAX_COST = 0.10
 # ignored/truncated by OpenRouter, so a large value here is safe.
 DEFAULT_MAX_TOKENS = 2048
 DEFAULT_APPLY_MAX_TOKENS = 4096
+
+# Hourglass token-policy authority. These are the largest per-call limits a
+# caller may request; lower per-call maxima remain explicit at dispatch. The
+# aggregate ceilings default to that same validated allowance instead of to
+# "no ceiling", so a run is bounded in every dimension without anyone
+# inventing a number nobody chose: the default aggregate *is* the per-call
+# allowance. Unbounded is a deliberate opt-out (``None``), never the result
+# of leaving a setting alone.
+MAX_HOURGLASS_TOKEN_ALLOWANCE = MAX_TOKENS
+DEFAULT_HOURGLASS_MAX_INPUT_TOKENS = MAX_HOURGLASS_TOKEN_ALLOWANCE
+DEFAULT_HOURGLASS_MAX_OUTPUT_TOKENS = MAX_HOURGLASS_TOKEN_ALLOWANCE
+DEFAULT_HOURGLASS_RUN_MAX_INPUT_TOKENS = MAX_HOURGLASS_TOKEN_ALLOWANCE
+DEFAULT_HOURGLASS_RUN_MAX_OUTPUT_TOKENS = MAX_HOURGLASS_TOKEN_ALLOWANCE
+DEFAULT_HOURGLASS_STAGE_MAX_INPUT_TOKENS = MAX_HOURGLASS_TOKEN_ALLOWANCE
+DEFAULT_HOURGLASS_STAGE_MAX_OUTPUT_TOKENS = MAX_HOURGLASS_TOKEN_ALLOWANCE
 
 # ---- lane budgets and reasoning modes (ONE policy owner) -------------------
 # Task-shaped token budgets (2026-09-13 operator ruling: "stop using reasoning
@@ -351,6 +366,12 @@ _ENV_NAMES = {
     "task_max_cost": "HARNESS_TASK_MAX_COST",
     "max_tokens": "HARNESS_MAX_TOKENS",
     "apply_max_tokens": "HARNESS_APPLY_MAX_TOKENS",
+    "hourglass_max_input_tokens": "HARNESS_HOURGLASS_MAX_INPUT_TOKENS",
+    "hourglass_max_output_tokens": "HARNESS_HOURGLASS_MAX_OUTPUT_TOKENS",
+    "hourglass_run_max_input_tokens": "HARNESS_HOURGLASS_RUN_MAX_INPUT_TOKENS",
+    "hourglass_run_max_output_tokens": "HARNESS_HOURGLASS_RUN_MAX_OUTPUT_TOKENS",
+    "hourglass_stage_max_input_tokens": "HARNESS_HOURGLASS_STAGE_MAX_INPUT_TOKENS",
+    "hourglass_stage_max_output_tokens": "HARNESS_HOURGLASS_STAGE_MAX_OUTPUT_TOKENS",
     "reasoning_effort": "HARNESS_REASONING_EFFORT",
     "reasoning_token_budget": "HARNESS_REASONING_TOKEN_BUDGET",
     "max_panelists": "HARNESS_MAX_PANELISTS",
@@ -500,7 +521,13 @@ class Settings:
                   openrouter_floor_default=True, max_price_prompt=None,
                   max_price_completion=None, jev_api_key=None,
                   jev_endpoint="https://api.typesafe.ai/v1/systemone",
-                  jev_model="jev-latest", min_confidence=0.70):
+                  jev_model="jev-latest", min_confidence=0.70,
+                  hourglass_max_input_tokens=DEFAULT_HOURGLASS_MAX_INPUT_TOKENS,
+                  hourglass_max_output_tokens=DEFAULT_HOURGLASS_MAX_OUTPUT_TOKENS,
+                  hourglass_run_max_input_tokens=DEFAULT_HOURGLASS_RUN_MAX_INPUT_TOKENS,
+                  hourglass_run_max_output_tokens=DEFAULT_HOURGLASS_RUN_MAX_OUTPUT_TOKENS,
+                  hourglass_stage_max_input_tokens=DEFAULT_HOURGLASS_STAGE_MAX_INPUT_TOKENS,
+                  hourglass_stage_max_output_tokens=DEFAULT_HOURGLASS_STAGE_MAX_OUTPUT_TOKENS):
         self.use_free = use_free
         self.panel = list(panel)
         self.panel_pool = list(panel_pool)
@@ -559,6 +586,16 @@ class Settings:
         self.jev_endpoint = jev_endpoint
         self.jev_model = jev_model or "jev-latest"
         self.min_confidence = min_confidence
+        # Per-call values are owner-issued ceilings, not call defaults. The
+        # stage and run ceilings compose independently and default to the
+        # same allowance, so a run is bounded without an operator having to
+        # configure one; ``None`` is the explicit unbounded opt-out.
+        self.hourglass_max_input_tokens = hourglass_max_input_tokens
+        self.hourglass_max_output_tokens = hourglass_max_output_tokens
+        self.hourglass_run_max_input_tokens = hourglass_run_max_input_tokens
+        self.hourglass_run_max_output_tokens = hourglass_run_max_output_tokens
+        self.hourglass_stage_max_input_tokens = hourglass_stage_max_input_tokens
+        self.hourglass_stage_max_output_tokens = hourglass_stage_max_output_tokens
 
     def to_dict(self):
         return {k: getattr(self, k) for k in (
@@ -575,7 +612,10 @@ class Settings:
             "hourglass_require_attestation", "hourglass_decompose",
             "openrouter_floor_default",
             "max_price_prompt", "max_price_completion", "jev_api_key",
-            "jev_endpoint", "jev_model", "min_confidence")}
+            "jev_endpoint", "jev_model", "min_confidence",
+            "hourglass_max_input_tokens", "hourglass_max_output_tokens",
+            "hourglass_run_max_input_tokens", "hourglass_run_max_output_tokens",
+            "hourglass_stage_max_input_tokens", "hourglass_stage_max_output_tokens")}
 
 
 def update_config(values):
@@ -712,6 +752,31 @@ def load_settings(overrides=None):
     task_max_cost = _num("task_max_cost", float, 0, HARD_TASK_MAX_COST, DEFAULT_TASK_MAX_COST)
     max_tokens = _num("max_tokens", int, 64, 200000, DEFAULT_MAX_TOKENS)
     apply_max_tokens = _num("apply_max_tokens", int, 64, 200000, DEFAULT_APPLY_MAX_TOKENS)
+
+    def _hourglass_token_limit(key, default, *, optional=False):
+        raw = get(key, default)
+        if optional and raw is None:
+            return None
+        return bounded_int(raw, key, 0 if optional else 1,
+                           MAX_HOURGLASS_TOKEN_ALLOWANCE)
+
+    hourglass_max_input_tokens = _hourglass_token_limit(
+        "hourglass_max_input_tokens", DEFAULT_HOURGLASS_MAX_INPUT_TOKENS)
+    hourglass_max_output_tokens = _hourglass_token_limit(
+        "hourglass_max_output_tokens", DEFAULT_HOURGLASS_MAX_OUTPUT_TOKENS)
+    hourglass_run_max_input_tokens = _hourglass_token_limit(
+        "hourglass_run_max_input_tokens", DEFAULT_HOURGLASS_RUN_MAX_INPUT_TOKENS,
+        optional=True)
+    hourglass_run_max_output_tokens = _hourglass_token_limit(
+        "hourglass_run_max_output_tokens", DEFAULT_HOURGLASS_RUN_MAX_OUTPUT_TOKENS,
+        optional=True)
+    hourglass_stage_max_input_tokens = _hourglass_token_limit(
+        "hourglass_stage_max_input_tokens", DEFAULT_HOURGLASS_STAGE_MAX_INPUT_TOKENS,
+        optional=True)
+    hourglass_stage_max_output_tokens = _hourglass_token_limit(
+        "hourglass_stage_max_output_tokens", DEFAULT_HOURGLASS_STAGE_MAX_OUTPUT_TOKENS,
+        optional=True)
+
     reasoning_token_budget = _num("reasoning_token_budget", float, 0.05, 1, 0.4)
     max_panelists = _num("max_panelists", int, 1, 10, 3)
     max_rotations = _num("max_rotations", int, 0, 20, 3)
@@ -768,6 +833,12 @@ def load_settings(overrides=None):
         jev_endpoint=str(get("jev_endpoint", "https://api.typesafe.ai/v1/systemone")),
         jev_model=str(get("jev_model", "jev-latest")),
         min_confidence=_num("min_confidence", float, 0.0, 1.0, 0.70),
+        hourglass_max_input_tokens=hourglass_max_input_tokens,
+        hourglass_max_output_tokens=hourglass_max_output_tokens,
+        hourglass_run_max_input_tokens=hourglass_run_max_input_tokens,
+        hourglass_run_max_output_tokens=hourglass_run_max_output_tokens,
+        hourglass_stage_max_input_tokens=hourglass_stage_max_input_tokens,
+        hourglass_stage_max_output_tokens=hourglass_stage_max_output_tokens,
     )
 
 

@@ -10,6 +10,7 @@ import io
 import json
 import os
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -61,7 +62,20 @@ class ServerHarness(unittest.TestCase):
         self.thread.join(timeout=5)
 
     def _conn(self):
-        return http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        # The coverage ritual (audits/self/refresh_coverage_baseline.py) runs
+        # this whole battery under sys.settrace, which inflates endpoint
+        # latency by about an order of magnitude: /api/snapshot answers in
+        # ~1.8s untraced and ~19s traced, so a fixed 10s client budget
+        # expires mid-request and the test errors out on a perfectly healthy
+        # endpoint. A socket timeout is not an assertion about the product,
+        # so a traced run gets the headroom the tracer costs it. Every
+        # untraced run keeps the tight 10s budget, which is what still
+        # catches a genuine hang. Evaluated per call, not at import, so it
+        # does not depend on whether the module was imported under the
+        # tracer.
+        timeout = 120 if sys.gettrace() else 10
+        return http.client.HTTPConnection("127.0.0.1", self.port,
+                                          timeout=timeout)
 
 
 class SecurityGuardTests(ServerHarness):

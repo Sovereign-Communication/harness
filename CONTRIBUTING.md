@@ -140,6 +140,7 @@ statement covers the CI matrix by direct execution.
 |---|---|
 | `harness/config.py` | settings, key resolution, lane curation |
 | `harness/spend.py` | SpendGovernor: spend ceilings, BYOK, model discovery |
+| `harness/token_budget.py` | TokenBudget: the token-allowance and accounting owner -- per-call input/output maxima this module issues (callers may only ask for less), composable stage/run ceilings enforced by reservation, and measured/estimated/unavailable usage labels. Independent of the dollar ceiling; `reserve_composed` holds both claims at once |
 | `harness/router.py` | cheap-first routing ladder: model pools, rotation, gated escalation |
 | `harness/capability.py` | model capability profiles + observed evidence |
 | `harness/saturation.py` | one free-tier saturation policy: per-attempt evidence -> the plain-language verdict terminal surfaces print when the tier fail-closes |
