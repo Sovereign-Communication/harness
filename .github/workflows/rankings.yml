@@ -6,6 +6,14 @@ name: rankings-report
 # earns a billable one-vote probe from an operator run
 # (`harness rankings --probe`) or an explicitly enabled workflow input.
 # The report is an artifact, never an automatic config change.
+#
+# No `--json` flag here: `harness rankings` has no table renderer, so
+# `_emit` already writes the report as JSON to `--out` and as machine JSON on
+# a piped stdout. `--json` is a `capabilities` flag (it suppresses that
+# subcommand's table) and is not accepted here -- passing it made every run of
+# this workflow exit 2 on "unrecognized arguments", so the weekly evidence
+# artifact has been silently absent since 2026-09-21. `tests/test_rankings_cli.py`
+# pins every flag these invocations use against the real parser.
 
 on:
   workflow_dispatch:
@@ -48,7 +56,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           mkdir -p rankings
-          harness rankings --top 15 --json --out "rankings/rankings-$(date -u +%Y-%m-%d).json"
+          harness rankings --top 15 --out "rankings/rankings-$(date -u +%Y-%m-%d).json"
       - name: Rankings candidate report (with one-vote probes)
         if: ${{ inputs.probe }}
         env:
@@ -56,7 +64,7 @@ jobs:
         run: |
           mkdir -p rankings
           harness rankings --top 15 --probe --max-cost "${{ inputs.max_cost }}" \
-            --json --out "rankings/rankings-$(date -u +%Y-%m-%d)-probed.json"
+            --out "rankings/rankings-$(date -u +%Y-%m-%d)-probed.json"
       - name: Upload report artifact
         uses: actions/upload-artifact@v4
         with:
