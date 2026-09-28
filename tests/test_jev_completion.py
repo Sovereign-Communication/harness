@@ -20,6 +20,7 @@ from harness.jev_completion import (
     DEFAULT_COMPLETION_PACK,
     PHASE_COMPLETE_MIN_SCORE,
     _norm_phase,
+    _status_row_for,
     collect_phase_evidence,
     dogfood_phase,
     load_evidence_file,
@@ -1064,6 +1065,70 @@ class OcHandoffVerifierFailurePathTests(unittest.TestCase):
                         patch("harness.jev_completion._git_bytes",
                               side_effect=fake_git_bytes):
                     self.assertFalse(_valid_oc_handoff_receipt(str(root)))
+
+
+class StatusRowIdentityTests(unittest.TestCase):
+    """A phase's STATUS row is the row that is ABOUT it.
+
+    The rows are prose-heavy and routinely name other phases ("HV-3" naming
+    "HV-4" as its consumer). Ranking by keywords alone let a neighbouring row
+    outrank the real one, so a phase was scored -- including its merge
+    evidence -- on wording that was never about it. That is a fake-complete
+    leak in the gate itself, not a docs problem.
+    """
+
+    ROADMAP = (
+        "| `HV-3` token allowance owner | **complete** | **PR #100 MERGED**; "
+        "`HV-4` composes stages through it |\n"
+        "| `HV-4` stage composition and planning waist | **in progress** | "
+        "composition lands in this PR |\n"
+    )
+
+    def _row(self, phase):
+        return _status_row_for(self.ROADMAP, phase)
+
+    def test_a_row_merely_mentioning_the_phase_cannot_win(self):
+        row = self._row("HV-4")
+        self.assertIn("`HV-4` stage composition", row)
+        self.assertNotIn("PR #100", row)
+
+    def test_the_mentioning_row_still_resolves_for_its_own_phase(self):
+        row = self._row("HV-3")
+        self.assertIn("`HV-3` token allowance owner", row)
+
+    def test_a_phase_is_not_scored_on_another_rows_merge_evidence(self):
+        # The bug in one assertion: HV-4 borrowed "PR #100 MERGED" from the
+        # HV-3 row and read as merged before its own PR existed.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(root, self.ROADMAP, tests=[], files=[])
+            evidence = collect_phase_evidence(str(root), "HV-4")
+        self.assertFalse(evidence["pr_merged"])
+
+    def test_naming_the_merge_flag_is_not_carrying_merge_proof(self):
+        # A row that says "``pr_merged`` is honestly false" must not be
+        # preferred as merge evidence. The old bare ``"merged" in low``
+        # matched inside the identifier, tied with the real row, and left
+        # the winner to document order.
+        roadmap = (
+            "| `HV-4` stage composition | **in progress** | `pr_merged` is "
+            "false until this lands |\n"
+            "| `MS-*` cheapest-capable routing | **complete** | "
+            "**PR #69 MERGED** `e47001a` |\n"
+        )
+        self.assertIn("MS-*", _status_row_for(roadmap, "MS"))
+
+    def test_a_wildcard_id_row_still_resolves_its_phase(self):
+        # Rows whose id is a family (``MS-*``) have no exact-id cell, so
+        # they must keep ranking the way they always did.
+        roadmap = ("| `MS-*` cheapest-capable routing | **complete** | "
+                   "**PR #69 MERGED** `e47001a` |\n")
+        self.assertIn("MS-*", _status_row_for(roadmap, "MS"))
+
+    def test_an_unbackticked_id_row_still_resolves_its_phase(self):
+        roadmap = ("| OC-HANDOFF findings-only lane | open / gated | "
+                   "PR #90 MERGED `6aea14b` |\n")
+        self.assertIn("OC-HANDOFF", _status_row_for(roadmap, "OC-HANDOFF"))
 
 
 if __name__ == "__main__":

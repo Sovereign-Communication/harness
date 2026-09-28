@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.95,
+        "confidence": 0.96,
         "evaluated": true
       }
     },
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 2310 tests in 424.577s\n\nOK"
+        "evidence": "unittest: Ran 2354 tests in 455.647s\n\nOK"
       },
       {
         "id": "R14",
@@ -306,7 +306,7 @@
         "id": "D4",
         "label": "config table keys real",
         "score": 1.0,
-        "evidence": "24 README config keys all resolve to real settings (44 configurable)"
+        "evidence": "25 README config keys all resolve to real settings (45 configurable)"
       },
       {
         "id": "D5",

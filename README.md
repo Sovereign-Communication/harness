@@ -132,6 +132,7 @@ with `HARNESS_*` env overrides:
 | `hourglass_parallel` | `true` | `plan --execute` runs independent stages concurrently (`--no-parallel` opts out) |
 | `hourglass_isolate` | `true` | parallel-stage nodes run in isolated git worktrees (`--no-isolate` opts out) |
 | `hourglass_require_attestation` | `true` | every node write is attested against its exact diff by an independent verifier (`--no-attestation` opts out) |
+| `hourglass_stages` | `context,planning,execution,verification` | which run stages compose, in that order; each stage narrows the token allowance of the one before it |
 | `openrouter_floor_default` | `true` | append :floor selector to paid model calls to lock onto lowest price provider |
 | `max_price_prompt` | `null` | OpenRouter provider.max_price cap for prompt tokens ($/M tokens) |
 | `max_price_completion` | `null` | OpenRouter provider.max_price cap for completion tokens ($/M tokens) |
