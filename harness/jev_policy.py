@@ -30,6 +30,7 @@ from .jev_packs import (
     HOURGLASS_STAGE_SITE,
     hourglass_stage_question_pack,
     normalize_restart_target,
+    stage_judgment_requirement,
     VISION_ASSESSMENT_SITE,
     VISION_ASSESSMENT_MAX_REQUEST_TOKENS,
     VISION_ASSESSMENT_MAX_STATE_QUESTION_TOKENS,
@@ -289,7 +290,9 @@ class JevPolicy:
             site: str = HOURGLASS_STAGE_SITE,
             task_id: Optional[str] = None,
             node_id: Optional[str] = None,
-            max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+            max_input_tokens: int = JEV_MAX_INPUT_TOKENS,
+            subject_supplied: bool = True,
+            superseded: bool = False):
         """Judge ONE declared Hourglass stage dimension (HV-1).
 
         Selectable typed integrations, one owner, one contract:
@@ -307,6 +310,24 @@ class JevPolicy:
           (``validate_restart_request``), not to Jev;
         - one preflight reservation, one dispatch, one settlement, one
           metadata-only ledger ``jev_eval`` on every path.
+
+        ``subject_supplied``/``superseded`` are the code-owned facts behind
+        HV-1's "avoid redundant calls when no decision is needed". When they
+        say no call is required, this returns BEFORE any preflight: no
+        reservation, no dispatch, no settlement, and no ``jev_eval`` event,
+        because nothing was evaluated -- a ``jev_eval`` for a call that never
+        happened would be a false record. The skip is reported in the returned
+        envelope instead (``result_state="not_required"``, every signal
+        ``None``, ``native=False``), so it can never be mistaken for a
+        judgment that passed or failed. Which facts are supplied is Lane 2's
+        wiring decision (#119); this owner only reads the pack's verdict.
+
+        ``dispatched`` in the returned envelope is the honest answer to "did
+        a Jev call actually leave this machine": only the live path sets it
+        true. The unkeyed and pre-dispatch-refusal paths DID require a
+        judgment and could not make one -- ``judgment_required`` is true and
+        ``result_state`` is ``unavailable`` -- which is a different fact from
+        one that was asked and answered.
 
         Returns ``(result, structural)`` where ``structural`` carries the
         declared signals, the capability/pack identity, and the honest
@@ -353,6 +374,34 @@ class JevPolicy:
             return {**values, "pack_version": HOURGLASS_STAGE_PACK_VERSION,
                     "native": bool(live)}
 
+        # HV-1 redundancy guard, read from the pack (never decided here).
+        # Placed before the preflight so a suppressed call costs nothing.
+        requirement = stage_judgment_requirement(
+            dimension, subject_supplied=subject_supplied,
+            superseded=superseded)
+        if not requirement["required"]:
+            values = {key: None for key in signals}
+            skipped = JevEvaluationResult(
+                "skip", 0.0, 0.0, envelope_payload(None, values, False),
+                [requirement["reason"]],
+                is_fallback=False, model=self.evaluator.model)
+            return skipped, {
+                "capability": HOURGLASS_STAGE_SITE,
+                "pack_id": HOURGLASS_STAGE_PACK_ID,
+                "pack_version": HOURGLASS_STAGE_PACK_VERSION,
+                "dimension": dimension,
+                "declared_signals": signals,
+                "native": False,
+                "result_state": "not_required",
+                "judgment_required": False,
+                "skip_reason": requirement["reason"],
+                "code_owned_fact": requirement["code_owned_fact"],
+                # No reservation, no dispatch, no settlement, no ledger event.
+                "dispatched": False,
+                "cost": 0.0,
+                **{key: None for key in signals},
+            }
+
         def finish(result, values, live, reservation=None):
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id,
@@ -375,6 +424,16 @@ class JevPolicy:
                 "dimension": dimension,
                 "declared_signals": signals,
                 "native": bool(live),
+                # finish() is reached only by paths that did NOT dispatch
+                # (unkeyed, and a pre-dispatch HarnessError refusal). A
+                # judgment WAS required and could not be made; saying
+                # otherwise would make "tried and unavailable" look like
+                # "asked and answered". ``result_state`` mirrors the
+                # event_metadata above, so the envelope alone distinguishes
+                # skip / unavailable / judged without reading the ledger.
+                "judgment_required": True,
+                "dispatched": False,
+                "result_state": "unavailable",
                 **{key: values.get(key) for key in signals},
             })
             return result, structural
@@ -429,6 +488,9 @@ class JevPolicy:
                 "dimension": dimension,
                 "declared_signals": signals,
                 "native": bool(live),
+                "judgment_required": True,
+                "dispatched": True,
+                "result_state": "judged" if live else "unavailable",
                 **{key: values.get(key) for key in signals},
             })
             return result, structural

@@ -780,9 +780,15 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         "HV-1": re.compile(r"\bHV-1\b|stage-specific JEV integration", re.I),
         "HV-2": re.compile(r"\bHV-2\b|evidence-bearing context brief", re.I),
         "HV-3": re.compile(r"\bHV-3\b|token allowance and accounting owner", re.I),
-        "HV-4": re.compile(r"\bHV-4\b|stage composition and planning waist", re.I),
-        "HV-5": re.compile(r"\bHV-5\b|expanded-token execution and sovereign handoffs", re.I),
-        "HV-6": re.compile(r"\bHV-6\b|surface parity, observability, and acceptance", re.I),
+        "HV-4": re.compile(r"\bHV-4\b", re.I),
+        # Registered here (not only in PHASE_CONTRACTS) because the row lookup
+        # is what decides which STATUS row a phase is scored against. The
+        # identity FILTER below is what makes registering them safe: without
+        # it, both resolved to the `HV-3` row and inherited its `PR #100
+        # MERGED` claim. Plain word-boundary needles, matching `HV-4`, so a
+        # descriptive phrase can never act as a substring mention.
+        "HV-5": re.compile(r"\bHV-5\b", re.I),
+        "HV-6": re.compile(r"\bHV-6\b", re.I),
         "CLAUDE-LANE": re.compile(r"CLAUDE-LANE", re.I),
         "OC-HANDOFF": re.compile(r"OC-HANDOFF", re.I),
     }
@@ -826,9 +832,22 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
     candidates = [r for r in candidates if _row_id_cell(r) not in other_phase_ids]
     if not candidates:
         return None
-    # Prefer rows that look like STATUS/tracker conclusions.
-    def rank(row: str) -> int:
+
+    # Identical repeated rows are one candidate; source order must not decide
+    # which distinct row owns a phase.
+    candidates = sorted(set(candidates))
+
+    # Prefer a row whose first cell names the requested phase. A narrative
+    # mention elsewhere in the row is weaker identity evidence. The identity
+    # term is the PRIMARY key, so this phase's own row always outranks a row
+    # that merely mentions it; an exact tie between two distinct best rows is
+    # not resolved by document order -- it fails closed below.
+    def rank(row: str) -> tuple[int, int]:
         low = row.lower()
+        first_cell = row.split("|", 2)[1].strip() if "|" in row else ""
+        identity = int(bool(re.search(
+            rf"(?<![A-Za-z0-9-]){re.escape(phase_id)}(?:-\*)?(?![A-Za-z0-9-])",
+            first_cell, re.I)))
         score = 0
         # A row whose ID *cell* IS this phase outranks every row that merely
         # mentions it. Without this, a neighbouring row that happens to name
@@ -872,9 +891,12 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
             score += 2
         if re.search(r"policy|consent-confidence|min-confidence|triage|apply\|", low):
             score -= 5
-        return score
-    candidates.sort(key=rank, reverse=True)
-    return candidates[0]
+        return identity, score
+    best_rank = max(rank(row) for row in candidates)
+    best = [row for row in candidates if rank(row) == best_rank]
+    if len(best) > 1:
+        return "ambiguous STATUS row"
+    return best[0]
 
 
 def collect_phase_evidence(repo_root: str, phase_id: str,
@@ -895,6 +917,7 @@ def collect_phase_evidence(repo_root: str, phase_id: str,
                 status_row = _status_row_for(fh.read(), phase)
         except OSError:
             status_row = None
+    status_row_ambiguous = status_row == "ambiguous STATUS row"
 
     required_tests = list(contract.get("required_tests") or [])
     tests_present = []
@@ -931,34 +954,38 @@ def collect_phase_evidence(repo_root: str, phase_id: str,
     }
 
     if status_row:
-        pattern = contract.get("pr_pattern")
-        lowered = status_row.lower()
-        mentions_pr = phase_status_mentions_pr(status_row, pattern)
-        # Match against the LOWERED row with lowered literals: the old
-        # uppercase "PR" pattern could never match, so "PR #104 open, merge
-        # pending" scored as merged (a fake-complete leak in the gate itself).
-        open_pr = bool(
-            re.search(r"\b(?:pr|pull request)\s*(?:#\d+)?\s*(?:is\s+)?open\b", lowered)
-            or re.search(r"\bopen\s+(?:pr|pull request)(?:\s+#\d+)?\b", lowered)
-            or re.search(r"\bno pr\b", lowered)
-        )
-        # Only the word "merged" is merge evidence; "merge pending" is a plan.
-        merged_word = bool(re.search(r"\bmerged\b", lowered))
-        # Presence of a PR id is not merge evidence while the row still says open.
-        evidence["pr_merged"] = bool(mentions_pr and merged_word and not open_pr)
-        evidence["origin_evidence"] = status_row
-        claims_complete = phase_status_claims_complete(status_row)
-        has_blocker = phase_status_has_blocker(status_row)
-        if claims_complete and has_blocker:
-            evidence["open_blockers"].append(
-                "STATUS claims complete while row still lists open/repair/fail evidence")
-        elif has_blocker:
-            evidence["open_blockers"].append("STATUS row not complete")
-        if open_pr:
-            evidence["open_blockers"].append("STATUS says PR open or no PR")
-        if evidence["pr_merged"]:
-            evidence["ci_green"] = True  # merged PR implies checks were required green
-            evidence["local_gates_green"] = True  # operator claimed green on merge path
+        if status_row == "ambiguous STATUS row":
+            evidence["open_blockers"].append("ambiguous STATUS row")
+            evidence["origin_evidence"] = status_row
+        else:
+            pattern = contract.get("pr_pattern")
+            lowered = status_row.lower()
+            mentions_pr = phase_status_mentions_pr(status_row, pattern)
+            # Match against the LOWERED row with lowered literals: the old
+            # uppercase "PR" pattern could never match, so "PR #104 open, merge
+            # pending" scored as merged (a fake-complete leak in the gate itself).
+            open_pr = bool(
+                re.search(r"\b(?:pr|pull request)\s*(?:#\d+)?\s*(?:is\s+)?open\b", lowered)
+                or re.search(r"\bopen\s+(?:pr|pull request)(?:\s+#\d+)?\b", lowered)
+                or re.search(r"\bno pr\b", lowered)
+            )
+            # Only the word "merged" is merge evidence; "merge pending" is a plan.
+            merged_word = bool(re.search(r"\bmerged\b", lowered))
+            # Presence of a PR id is not merge evidence while the row still says open.
+            evidence["pr_merged"] = bool(mentions_pr and merged_word and not open_pr)
+            evidence["origin_evidence"] = status_row
+            claims_complete = phase_status_claims_complete(status_row)
+            has_blocker = phase_status_has_blocker(status_row)
+            if claims_complete and has_blocker:
+                evidence["open_blockers"].append(
+                    "STATUS claims complete while row still lists open/repair/fail evidence")
+            elif has_blocker:
+                evidence["open_blockers"].append("STATUS row not complete")
+            if open_pr:
+                evidence["open_blockers"].append("STATUS says PR open or no PR")
+            if evidence["pr_merged"]:
+                evidence["ci_green"] = True  # merged PR implies checks were required green
+                evidence["local_gates_green"] = True  # operator claimed green on merge path
     else:
         evidence["notes"].append(f"no STATUS row found for {phase} in docs/jev-roadmap.md")
 
@@ -991,6 +1018,11 @@ def collect_phase_evidence(repo_root: str, phase_id: str,
             evidence["status_row"] = extra["status_row"]
         if extra.get("gate_output"):
             evidence["notes"].append(str(extra["gate_output"])[:500])
+
+    # Caller-supplied evidence may supplement gates, but cannot resolve an
+    # ambiguous canonical STATUS identity or erase its fail-closed blocker.
+    if status_row_ambiguous:
+        evidence["open_blockers"].append("ambiguous STATUS row")
 
     # Deduplicate blockers
     seen = set()

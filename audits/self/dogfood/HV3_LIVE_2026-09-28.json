@@ -1,0 +1,187 @@
+{
+  "phase": "HV-3",
+  "score": 46.67,
+  "min_score": 85.0,
+  "can_mark_complete": false,
+  "hard_gates": {
+    "pr_merged": true,
+    "origin_evidence": true,
+    "required_tests_present": true,
+    "required_files_present": true,
+    "oc_handoff_verified": true,
+    "local_gates_green": true,
+    "ci_green": true,
+    "no_open_blockers": false
+  },
+  "mechanical_score": 85.0,
+  "semantic": {
+    "score": 46.67,
+    "is_fallback": false,
+    "model": "jev-1.13.0",
+    "site": "phase_completion",
+    "verdict": "fail",
+    "cost": 5.6532e-06,
+    "reasons": [
+      "merge_evidence (score): 3.08 (conf: 0.23)",
+      "gate_tests (score): 1.27 (conf: 0.35)",
+      "verification (score): 1.55 (conf: 0.44)",
+      "status_honesty (score): 1.59 (conf: 0.0)",
+      "residual_scope (score): 1.08 (conf: 0.1)",
+      "dogfood (score): 1.31 (conf: 0.35)",
+      "primary_gap (choice): residual_untracked (conf: 0.14)"
+    ]
+  },
+  "blockers": [
+    "STATUS row not complete",
+    "hard gate failed: open_blockers"
+  ],
+  "status_row": "| `HV-3` token allowance and accounting owner | **in progress** | **PR #100 MERGED** (stacked; landed on `main` with PR #101). New `harness/token_budget.py` is the ONE owner of per-call input/output maxima and of composable stage/run reservations, enforced **independently** of `SpendGovernor`'s dollars (`harness/spend.py` keeps the dollar formula; neither can raise the other). Shape: `TokenBudget` holds an input and an output allowance, `budget.stage(label, max_input_tokens=\u2026, max_output_tokens=\u2026)` returns a child that may only **narrow** its parent (a stage cannot widen its own limits by nesting), and one call's worst case is reserved from every budget in the chain at once under the root's single lock. `allowance()` is the reservation object itself, so it settles or cancels exactly once; a second settle, or settling an allowance another budget owns, is refused. `settle(..., source=\u2026)` records `actual`/`estimated`/`unavailable` honestly and charges the **full** reservation when usage is unreadable rather than zero; a provider that reports more than was reserved is recorded with the overrun counted in `over_input_tokens`, never clamped. `cancel()` is a pre-dispatch refusal that charges nothing. `snapshot()` exposes used/reserved/remaining, per-label usage with its source, and `open_allowances` so a run that leaks a reservation is visible. Concurrency is covered with real threads (30 racing workers admit exactly 10, 40 racing settlements never double-count). Config: `token_budget_input`/`token_budget_output` with absolute hard caps (`HARD_TOKEN_BUDGET_INPUT`/`_OUTPUT`), loaded by `budget_from_settings`. 22 hermetic tests in `tests/test_hourglass_token_budget.py`; a named `jev-phase` contract for `HV-3` is registered. **Not complete:** no lane calls it yet \u2014 `HV-4` composes stages through it and `HV-5` dispatches execution packages through it, and `HV-6` exposes budgets on CLI/MCP/API surfaces. |",
+  "evidence": {
+    "pr_merged": true,
+    "origin_evidence": "| `HV-3` token allowance and accounting owner | **in progress** | **PR #100 MERGED** (stacked; landed on `main` with PR #101). New `harness/token_budget.py` is the ONE owner of per-call input/output maxima and of composable stage/run reservations, enforced **independently** of `SpendGovernor`'s dollars (`harness/spend.py` keeps the dollar formula; neither can raise the other). Shape: `TokenBudget` holds an input and an output allowance, `budget.stage(label, max_input_tokens=\u2026, max_output_tokens=\u2026)` returns a child that may only **narrow** its parent (a stage cannot widen its own limits by nesting), and one call's worst case is reserved from every budget in the chain at once under the root's single lock. `allowance()` is the reservation object itself, so it settles or cancels exactly once; a second settle, or settling an allowance another budget owns, is refused. `settle(..., source=\u2026)` records `actual`/`estimated`/`unavailable` honestly and charges the **full** reservation when usage is unreadable rather than zero; a provider that reports more than was reserved is recorded with the overrun counted in `over_input_tokens`, never clamped. `cancel()` is a pre-dispatch refusal that charges nothing. `snapshot()` exposes used/reserved/remaining, per-label usage with its source, and `open_allowances` so a run that leaks a reservation is visible. Concurrency is covered with real threads (30 racing workers admit exactly 10, 40 racing settlements never double-count). Config: `token_budget_input`/`token_budget_output` with absolute hard caps (`HARD_TOKEN_BUDGET_INPUT`/`_OUTPUT`), loaded by `budget_from_settings`. 22 hermetic tests in `tests/test_hourglass_token_budget.py`; a named `jev-phase` contract for `HV-3` is registered. **Not complete:** no lane calls it yet \u2014 `HV-4` composes stages through it and `HV-5` dispatches execution packages through it, and `HV-6` exposes budgets on CLI/MCP/API surfaces. |",
+    "tests_missing": [],
+    "open_blockers": [
+      "STATUS row not complete"
+    ]
+  },
+  "sentiment": {
+    "pack_id": "harness-phase-completion-v1",
+    "levels": [
+      "blocking \u2014 evidence contradicts completion",
+      "at_risk \u2014 open gap likely to fail review",
+      "mixed \u2014 evidence partial or ambiguous",
+      "confident \u2014 evidenced with minor gaps",
+      "proven \u2014 evidenced and consistent"
+    ],
+    "axes": {
+      "merge_evidence": {
+        "level": "proven \u2014 evidenced and consistent",
+        "index": 4,
+        "ordinal": 100.0,
+        "source": "code",
+        "code_index": 4,
+        "live_index": 4,
+        "confidence": 0.23
+      },
+      "gate_tests": {
+        "level": "mixed \u2014 evidence partial or ambiguous",
+        "index": 2,
+        "ordinal": 60.0,
+        "source": "live",
+        "code_index": 4,
+        "live_index": 2,
+        "confidence": 0.35
+      },
+      "verification": {
+        "level": "mixed \u2014 evidence partial or ambiguous",
+        "index": 2,
+        "ordinal": 60.0,
+        "source": "live",
+        "code_index": 3,
+        "live_index": 2,
+        "confidence": 0.44
+      },
+      "status_honesty": {
+        "level": "blocking \u2014 evidence contradicts completion",
+        "index": 0,
+        "ordinal": 0.0,
+        "source": "live",
+        "code_index": 4,
+        "live_index": 0,
+        "confidence": 0.0
+      },
+      "residual_scope": {
+        "level": "blocking \u2014 evidence contradicts completion",
+        "index": 0,
+        "ordinal": 0.0,
+        "source": "live",
+        "code_index": 1,
+        "live_index": 0,
+        "confidence": 0.1
+      },
+      "dogfood": {
+        "level": "mixed \u2014 evidence partial or ambiguous",
+        "index": 2,
+        "ordinal": 60.0,
+        "source": "live",
+        "code_index": 4,
+        "live_index": 2,
+        "confidence": 0.35
+      }
+    },
+    "overall": {
+      "ordinal": 35.0,
+      "level": "at_risk \u2014 open gap likely to fail review"
+    }
+  },
+  "improvements": [
+    {
+      "axis": null,
+      "bucket": "status_dishonest",
+      "label": "STATUS claim contradicts evidence",
+      "path_id": "bar/status",
+      "suggested_next_action": "Correct the STATUS wording so the claim matches the evidence (no complete while open).",
+      "level": null,
+      "ordinal": -1.0,
+      "source": "hard_gate",
+      "confidence": null,
+      "primary": false
+    },
+    {
+      "axis": "residual_scope",
+      "bucket": "residual_untracked",
+      "label": "Residual work hidden in a complete claim",
+      "path_id": "bar/residual",
+      "suggested_next_action": "Split residual/deferred work into its own open STATUS row with an owner, or close it with evidence.",
+      "level": "blocking \u2014 evidence contradicts completion",
+      "ordinal": 0.0,
+      "source": "live",
+      "confidence": 0.1,
+      "primary": true
+    },
+    {
+      "axis": "dogfood",
+      "bucket": "dogfood_missing",
+      "label": "Live dogfood evidence missing",
+      "path_id": "bar/dogfood",
+      "suggested_next_action": "Run paid-cheap live dogfood on the user-facing lane; record receipt, cost, and fallback rate.",
+      "level": "mixed \u2014 evidence partial or ambiguous",
+      "ordinal": 60.0,
+      "source": "live",
+      "confidence": 0.35,
+      "primary": false
+    },
+    {
+      "axis": "gate_tests",
+      "bucket": "tests_missing",
+      "label": "Named gate tests missing",
+      "path_id": "bar/tests",
+      "suggested_next_action": "Add the named hermetic gate tests to the phase contract and make them pass.",
+      "level": "mixed \u2014 evidence partial or ambiguous",
+      "ordinal": 60.0,
+      "source": "live",
+      "confidence": 0.35,
+      "primary": false
+    },
+    {
+      "axis": "verification",
+      "bucket": "gates_unverified",
+      "label": "Gates or CI unverified",
+      "path_id": "bar/gates",
+      "suggested_next_action": "Run the local battery and audits/self/audit.py to BAR MET; cite the CI run.",
+      "level": "mixed \u2014 evidence partial or ambiguous",
+      "ordinal": 60.0,
+      "source": "live",
+      "confidence": 0.44,
+      "primary": false
+    }
+  ],
+  "bar": {
+    "pass": false,
+    "blocking_axes": [
+      "residual_scope",
+      "status_honesty"
+    ],
+    "min_score": 85.0
+  }
+}

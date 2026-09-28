@@ -161,6 +161,64 @@ def _sign_test_receipt(worker, receipt: dict[str, Any], key: bytes,
 
 
 class CompletionScoreTests(unittest.TestCase):
+    def test_hv4_exact_row_identity_beats_substring_mention(self):
+        exact = "| HV-4 | stage composition | **open** | PR #118 pending |"
+        mention = "| HV-3 | follow-up mentions HV-4 concerns | **open** | PR #117 |"
+        for text in (mention + "\n" + exact, exact + "\n" + mention):
+            self.assertEqual(_status_row_for(text, "HV-4"), exact)
+
+    def test_hv4_duplicate_identical_rows_are_one_candidate(self):
+        row = "| HV-4 | stage composition | **open** | PR #118 pending |"
+        self.assertEqual(_status_row_for(row + "\n" + row, "HV-4"), row)
+
+    def test_hv4_equal_best_distinct_rows_are_ambiguous_in_both_orders(self):
+        row_a = "| HV-4 | stage composition | **open** | PR #118 pending |"
+        row_b = "| HV-4 | stage composition alternate | **open** | PR #118 pending |"
+        for text in (row_a + "\n" + row_b, row_b + "\n" + row_a):
+            with self.subTest(text=text):
+                self.assertEqual(_status_row_for(text, "HV-4"),
+                                 "ambiguous STATUS row")
+
+    def test_hv4_ambiguity_blocks_completion(self):
+        rows = (
+            "| HV-4 | stage composition | **complete** | PR #118 MERGED; CI green |\n"
+            "| HV-4 | stage composition alternate | **complete** | PR #118 MERGED; CI green |"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(root, rows)
+            evidence = collect_phase_evidence(str(root), "HV-4")
+            result = score_phase_completion(evidence)
+            self.assertIn("ambiguous STATUS row", result["blockers"])
+            self.assertFalse(result["can_mark_complete"])
+
+    def test_hv4_ambiguity_survives_extra_evidence_overrides(self):
+        rows = (
+            "| HV-4 | stage composition | **complete** | PR #118 MERGED; CI green |\n"
+            "| HV-4 | stage composition alternate | **complete** | PR #118 MERGED; CI green |"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_repo(root, rows)
+            evidence = collect_phase_evidence(
+                str(root), "HV-4", extra={
+                    "pr_merged": True,
+                    "local_gates_green": True,
+                    "ci_green": True,
+                    "origin_evidence": "caller supplied merge evidence",
+                    "open_blockers": [],
+                })
+            result = score_phase_completion(evidence)
+            self.assertIn("ambiguous STATUS row", result["blockers"])
+            self.assertFalse(result["can_mark_complete"])
+
+    def test_hv4_row_matching_ignores_non_row_mentions(self):
+        text = (
+            "Narrative prose: HV-4 is planned.\n"
+            "| HV-3 | previous work complete | PR #117 MERGED |"
+        )
+        self.assertIsNone(_status_row_for(text, "HV-4"))
+
     def test_p2_incomplete_status_cannot_mark_complete(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
