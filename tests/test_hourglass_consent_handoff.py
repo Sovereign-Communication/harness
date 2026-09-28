@@ -247,6 +247,37 @@ class RestartGuardIsReachedTests(unittest.TestCase):
         self.assertEqual(decision["recommendation_source"], "jev")
         self.assertTrue(decision["allowed"], decision["reasons"])
 
+    # -- the dimension actually asked ---------------------------------------
+    def test_the_declared_execution_questions_are_what_gets_asked(self):
+        # The static literal census cannot see this call: the production
+        # caller passes the dimension as a parameter. So pin the question set
+        # the real JevPolicy built, which is the thing that must not drift.
+        from harness.jev_packs import HOURGLASS_STAGE_DIMENSIONS
+        evaluator = _ScriptedEvaluator(EXEC_SOUND)
+        with tempfile.TemporaryDirectory() as repo:
+            root = Path(repo)
+            (root / "calc.py").write_text(REPO, encoding="utf-8")
+            (root / ".hist").mkdir()
+            settings = load_settings()
+            settings.jev_api_key = None
+            settings.hourglass_confirm = False
+            policy_patch = patch(
+                "harness.agent.policy_for",
+                side_effect=lambda *a, **k: self._real_policy(evaluator))
+            policy_patch.start()
+            self.addCleanup(policy_patch.stop)
+            agent = AutonomousAgent(settings=settings, root_dir=root,
+                                    transport=FakeTransport())
+            agent.run_hourglass_request(
+                "edit calc.py so add() documents its return value",
+                auto_apply=False)
+        asked = {key for _state, questions in evaluator.calls for key in questions}
+        declared = set(HOURGLASS_STAGE_DIMENSIONS["execution"]["signals"])
+        self.assertTrue(declared & asked,
+                        "the execution dimension's own signals were never asked")
+        # The restart question is asked too, on the same run.
+        self.assertIn("restart_target", asked)
+
     # -- fail-soft ----------------------------------------------------------
     def test_a_failed_dimension_call_does_not_take_the_run_down(self):
         result = self._run(EXEC_SOUND)  # baseline shape
