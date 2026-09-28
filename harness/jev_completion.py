@@ -364,6 +364,16 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         ],
         "user_facing": False,
     },
+    "HV-3": {
+        # The row must cite a real merged PR before the phase can pass.
+        "pr_pattern": None,
+        "required_tests": ["tests/test_hourglass_token_budget.py"],
+        "required_files": [
+            "harness/token_budget.py",
+            "harness/config.py",
+        ],
+        "user_facing": False,
+    },
     "HV-4": {
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,
@@ -371,18 +381,10 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "tests/test_hourglass_stage_composition.py",
             "tests/test_hourglass_planning_budget.py",
         ],
+        # The canon's HV-4 row names harness/waist.py as the composition
+        # owner, so the gate requires that file and not a parallel module.
         "required_files": [
-            "harness/stages.py",
-            "harness/config.py",
-        ],
-        "user_facing": False,
-    },
-    "HV-3": {
-        # The row must cite a real merged PR before the phase can pass.
-        "pr_pattern": None,
-        "required_tests": ["tests/test_hourglass_token_budget.py"],
-        "required_files": [
-            "harness/token_budget.py",
+            "harness/waist.py",
             "harness/config.py",
         ],
         "user_facing": False,
@@ -719,6 +721,31 @@ def _norm_phase(phase_id: str) -> str:
     return raw
 
 
+def _row_id_cell(row: str) -> str:
+    """The row's identity token, normalized to lowercase.
+
+    A STATUS row is ``| `HV-4` title | **complete** | evidence |``, so the
+    id is the first backticked token of the first cell (or, unbackticked,
+    the first word of it). Everything after that token is a title, and
+    everything after the first cell is prose that may be about OTHER
+    phases -- which is exactly what must not decide this row's identity.
+    """
+    cells = row.split("|")
+    if len(cells) < 2:
+        return ""
+    first = cells[1]
+    quoted = re.search(r"`([^`]+)`", first)
+    token = quoted.group(1) if quoted else first.split()[0] if first.split() else ""
+    return re.sub(r"\s+", "", token).lower()
+
+
+#: An explicit bolded verdict in a row's own cell. Its presence is what
+#: separates a STATUS/tracker *conclusion* row from a vision-plan *spec*
+#: row that happens to share the same id.
+_STATUS_VERDICT_RE = re.compile(
+    r"\*\*(complete|in progress|open|blocked|partial|deferred)\*\*", re.I)
+
+
 def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
     needles = {
         "JEV-P0": re.compile(r"JEV-P0|0 Contract|contract truth", re.I),
@@ -753,7 +780,9 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         "HV-1": re.compile(r"\bHV-1\b|stage-specific JEV integration", re.I),
         "HV-2": re.compile(r"\bHV-2\b|evidence-bearing context brief", re.I),
         "HV-3": re.compile(r"\bHV-3\b|token allowance and accounting owner", re.I),
-        "HV-4": re.compile(r"\bHV-4\b|stage composition", re.I),
+        "HV-4": re.compile(r"\bHV-4\b|stage composition and planning waist", re.I),
+        "HV-5": re.compile(r"\bHV-5\b|expanded-token execution and sovereign handoffs", re.I),
+        "HV-6": re.compile(r"\bHV-6\b|surface parity, observability, and acceptance", re.I),
         "CLAUDE-LANE": re.compile(r"CLAUDE-LANE", re.I),
         "OC-HANDOFF": re.compile(r"OC-HANDOFF", re.I),
     }
@@ -780,13 +809,43 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
     def rank(row: str) -> int:
         low = row.lower()
         score = 0
+        # A row whose ID *cell* IS this phase outranks every row that merely
+        # mentions it. Without this, a neighbouring row that happens to name
+        # the phase in its prose (``HV-3`` naming ``HV-4`` as its consumer,
+        # say) and carries stronger keywords (``merged``, a PR number) wins,
+        # and the phase is then scored on ANOTHER row's claims. That is how a
+        # phase gets marked complete -- or blocked -- by wording that was
+        # never about it. Purely additive: a phase with no exact-ID row
+        # (a wildcard id like ``MS-*``, or a tracker row) ranks exactly as
+        # before.
+        if _row_id_cell(row) == phase_id.lower():
+            score += 50
+        # Identity alone is not enough: the vision-plan spec table ALSO has
+        # an exact ``| `HV-4` |`` row, and it once tied with the STATUS row at
+        # the identity bonus, so the winner was decided by document order --
+        # i.e. by whichever row happened to be written first. A STATUS row
+        # carries an explicit bolded verdict in its own cell (``**in
+        # progress**``); a spec row states the contract and carries no verdict
+        # at all. Preferring a row that *concludes* over one that *defines*
+        # separates the two deterministically, and it sits BELOW identity so
+        # a mentioning row can never overtake the phase's own row.
+        if _STATUS_VERDICT_RE.search(row):
+            score += 30
         if "**complete**" in low or "**in progress" in low or "**open**" in low:
             score += 10
-        if "pr #" in low or "merged" in low:
+        # Word-boundary, not substring: a row that merely NAMES the flag
+        # (``pr_merged``) or a longer identifier must not be preferred as if
+        # it carried merge proof. A bare ``"merged" in low`` did exactly
+        # that, and two rows landing on the same score left the winner to
+        # document order. ``collect_phase_evidence`` already gated merges on
+        # ``\bmerged\b``; this is the same rule applied to the preference.
+        merged_word = bool(re.search(r"\bmerged\b", low))
+        pr_word = bool(re.search(r"\bpr\s*#", low))
+        if pr_word or merged_word:
             score += 5
         # The canonical STATUS row spells out the merge; the tracker row often
         # cites only "PR #NN <sha>". Prefer the row that carries merge proof.
-        if "merged" in low:
+        if merged_word:
             score += 3
         if phase_id.lower() in low or "pillar" in low or "owner" in low or "accountability" in low:
             score += 2

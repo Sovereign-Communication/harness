@@ -250,7 +250,7 @@ statement covers the CI matrix by direct execution.
 | `harness/render.py` | the ONE human-facing pretty-printer: TTY tables of result envelopes on stderr; read-only, machine JSON stays the stdout contract |
 | `harness/bench.py` | hermetic known-answer benchmarks |
 | `harness/chat.py` | the one chat-completion path and the one assessment of what a model actually produced |
-| `harness/waist.py` | plan-confirmation waist + LLM decomposition lane: condensed-brief frontier confirmation, bounded file-window rounds, `plan_verdict` ledger events |
+| `harness/waist.py` | plan-confirmation waist + LLM decomposition lane: condensed-brief frontier confirmation, bounded file-window rounds, `plan_verdict` ledger events. Also the ONE owner of `HV-4` stage composition: which of context/planning/execution/verification run, in what order, under which allowances (each stage a narrowing child of the run's one `TokenBudget`), and what the planning waist may emit -- stop, bounded plan, bounded evidence request, or honest defer. Composes the brief, token-budget, DAG and Jev-dimension owners rather than re-implementing them; a stage it selects but does not run is reported `pending`, never dropped. |
 | `harness/pyramid_state.py` | persisted pyramid run envelope (goal, DAG, node_results, spent) and resume helpers: pending-node selection so `plan --resume` never re-dispatches completed ok nodes |
 | `harness/attest.py` | diff-bound independent authorization (M4): sovereign-diff-v1 schema + fail-closed binding checks; the LLM second-verifier lane (`authorize_diff`) is enforced in `write_candidate` before every write when opted in |
 | `harness/brief.py` | grounded context packs (`harness brief`): cited hash-pinned windows, honest truncation, no uncited claims; `validate_brief` is the grounding lint |
@@ -260,7 +260,6 @@ statement covers the CI matrix by direct execution.
 | `harness/continuation.py` | the resumable-task state contract and its verification identity |
 | `harness/spend.py` | Cost-bounded spend: the governor that makes ceilings guarantees. Live pricing catalog, key identity, BYOK learning/denylist, free-model discovery, and the HUL-B dual envelope (`working_remaining = max - spent - terminal_reserve`; attempts never eat reserve; terminal findings may). |
 | `harness/token_budget.py` | the ONE owner of token allowances: per-call input/output maxima, composable stage/run reservations (a stage may only narrow its parent), honest `actual`/`estimated`/`unavailable` usage labels, and `snapshot()` for envelopes. Independent of spend.py's dollars -- neither can raise the other. |
-| `harness/stages.py` | the ONE owner of Hourglass stage composition: which of context/planning/execution/verification run, in what order, and why the others do not. Composes the brief, token-budget, and Jev stage-dimension owners rather than re-implementing them; a selected stage it does not run is reported `pending`, never dropped. |
 | `harness/mission_record.py` | HUL-A/B mission pack: mission.yaml schema, pack layout under missions/<id>/, STATUS generator, append-only receipts/jev_evals, dual-budget budget.json (delegates formula to spend.py) + resume.json, terminal findings helper |
 | `harness/convergence.py` | deterministic tally over panel votes + the rotating specialist lane |
 | `harness/errors.py` | shared exception types (`HarnessError`) |

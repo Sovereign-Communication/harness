@@ -28,6 +28,7 @@ from .session import apply_session, attest_model_for, governor_for, jev_for, led
 from .jev_policy import (
     JevPolicy, aggregate_structural, jev_cost_ceiling, policy_for,
 )
+from .token_budget import budget_from_settings
 from .waist import compose_plan, resolve_scout_ladder
 from .web import DEFAULT_FETCH_HOSTS, gather_web_context
 
@@ -841,7 +842,13 @@ class AutonomousAgent:
                 self._orchestrator_chat_fn(gov)(prompt_text), 0.0),
             execute=True,
             allow_escalation=bool(getattr(self.settings, "allow_escalation", False)),
-            jev_policy=jev_policy)
+            jev_policy=jev_policy,
+            # HV-4: the run's own token budget, so the plan lane composes
+            # its stages against a real allowance and records the decision
+            # on the envelope. Stage selection comes from config; the
+            # budget object is the one owner, never invented here.
+            token_budget=budget_from_settings(self.settings, label="edit"),
+            stages=getattr(self.settings, "hourglass_stages", None))
         if str(plan.get("decomposition", "")).startswith("heuristic"):
             # compose_plan degrades to the heuristic only after the LLM
             # decomposition failed (execute=True); the GUI needs that on the

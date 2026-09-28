@@ -140,16 +140,6 @@ class TokenBudget:
         return self._label
 
     @property
-    def parent(self):
-        """The budget this one is a stage of, or None for a run budget.
-
-        The stage ladder reads it to prove each round is a child of the one
-        before it -- the invariant that makes a planning budget unable to
-        widen.
-        """
-        return self._parent
-
-    @property
     def max_input_tokens(self):
         return self._max_input
 
