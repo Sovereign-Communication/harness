@@ -27,6 +27,7 @@ from harness.jev_completion import (
     score_phase_completion,
 )
 from harness import cli as harness_cli
+import re
 
 
 def _write_repo(root: Path, status_line: str, tests=None, files=None):
@@ -1241,6 +1242,56 @@ class StatusRowForeignIdTests(unittest.TestCase):
         for phase in ("HV-5", "HV-6"):
             row = _status_row_for(roadmap, phase) or ""
             self.assertNotIn("PR #100", row, phase)
+
+
+class StatusRowMustNotCarryItsOwnEvidenceTests(unittest.TestCase):
+    """A row that explains the merge rule must not satisfy it.
+
+    `collect_phase_evidence` reads a row's own tokens as merge proof: a
+    ``PR #<digits>`` mention plus the past-tense merge word. So a STATUS row
+    that DESCRIBES that detection -- as the HV-4 row does, at length -- can
+    document the rule and trip it in the same breath. That is exactly what
+    commit e2c8274 did: the row gained the merge word and a concrete PR
+    number while explaining the word-boundary fix, and `jev-phase --phase
+    HV-4` reported `pr_merged: true` for a phase that has not landed -- on
+    the pull request whose subject is a fake-complete leak in this gate.
+
+    Nothing caught it. Every test in the tree checked which STATUS row was
+    SELECTED, never what the selected row's own tokens resolve to. These read
+    the live document, so the next person who explains the rule in a row
+    finds out at test time rather than after a merge.
+    """
+
+    def _roadmap(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        return (repo_root / "docs" / "jev-roadmap.md").read_text(encoding="utf-8")
+
+    def _claims_merge(self, roadmap, phase):
+        row = _status_row_for(roadmap, phase)
+        self.assertIsNotNone(row, "no STATUS row for " + phase)
+        from harness.jev_packs import phase_status_mentions_pr
+        return (bool(phase_status_mentions_pr(row, None))
+                and bool(re.search(r"\bmerged\b", row.lower())))
+
+    def test_the_live_hv4_row_does_not_read_as_its_own_merge_proof(self):
+        self.assertFalse(self._claims_merge(self._roadmap(), "HV-4"))
+
+    def test_a_row_quoting_the_rule_is_caught_by_the_same_check(self):
+        # The shape that actually shipped: a row explaining the fix while
+        # carrying the tokens. It must read as merge evidence, which is the
+        # defect -- if this ever stops being true, the check above is blind.
+        roadmap = (
+            "| `HV-4` stage composition | **in progress** | the merge word and "
+            "`PR #100` match on word boundaries; a neighbour's `PR #100 MERGED` "
+            "must not be this phase's proof |\n")
+        self.assertTrue(self._claims_merge(roadmap, "HV-4"))
+
+    def test_the_explained_row_without_the_tokens_is_inert(self):
+        roadmap = (
+            "| `HV-4` stage composition | **in progress** | the two merge "
+            "tokens match on word boundaries, so a row merely naming the "
+            "`pr_merged` flag is not preferred as merge proof |\n")
+        self.assertFalse(self._claims_merge(roadmap, "HV-4"))
 
 
 if __name__ == "__main__":
