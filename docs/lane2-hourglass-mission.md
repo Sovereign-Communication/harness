@@ -13,7 +13,7 @@ HV-4/5/6 rows and is deleted in the final commit.
 | Lane | Tracker | Owns |
 |---|---|---|
 | 1 | PR #116 (Freebuff mission) | `harness/jev_packs.py`, `harness/jev_policy.py` (+ tests), `.github/workflows/*`, handoff-scope files, the canon header / Next slice / non-HV rows, `AGENTS.md` |
-| 2 | this PR | `harness/stages.py` (single composition owner), `harness/waist.py` (call site), `harness/jev_completion.py` (status-row matching + HV-4..6 contracts), `harness/config.py` (stage resolution), plan/DAG modules; HV-5: `harness/agent.py`, `apply.py`, `consent.py`; HV-6: CLI/MCP/server adapters; HV-4..6 canon rows and `jev-phase` contracts |
+| 2 | this PR | `harness/waist.py` (single composition owner, per the canon HV-4 row), `harness/jev_completion.py` (status-row matching + HV-4..6 contracts), `harness/config.py` (stage resolution), plan/DAG modules; HV-5: `harness/agent.py`, `apply.py`, `consent.py`; HV-6: CLI/MCP/server adapters; HV-4..6 canon rows and `jev-phase` contracts |
 | 3 | Lane 3 mission PR | test-isolation helpers, `audits/self/*`, `harness/ledger.py`, `packs/repo_summary.pack.json` |
 If you need a change in another lane's file, write the exact request in your PR body; do not make the change.
 
@@ -24,9 +24,10 @@ If you need a change in another lane's file, write the exact request in your PR 
    Without this fix, `jev-phase --phase HV-4` reads HV-3's merged row.
 1. **HV-4: draft PR #118** (`feat/hv4-waist-composition` @ `7d77907` = the never-pushed `459bd87` rebased onto `0499277`):
    `harness/stages.py` +646, the two HV-4 test modules (49 tests), and the HV-4 contract.
-   Operator rulings: `stages.py` is the single composition owner. Port the salvage's `compose_plan` kwargs and composition envelope
-   as a thin `waist.py` call site, plus the `agent.py` plan-path hunk. Port semantics, not duplicate functions.
-   Execution-side `agent.py` stays HV-5.
+   Operator ruling (2026-09-27 23:32): the canon HV-4 row decides. It names `harness/waist.py`, so composition lives in waist.py
+   and `stages.py` was dissolved into it. The agent.py wiring was reverted to HV-5 scope, so `compose_stages` has no
+   production caller until HV-5. That gap is stated, and the row stays in progress.
+   Done at `9215084`: CI 11/11 green, status-row identity fix included.
    Reconcile the newer wiring on `salvage/704d1bdf-hv4-waist-wiring` (`waist.py` +279, `config.py`, `jev_completion.py` +56,
    plus alternate test versions). Keep the stronger assertions, and cite each hunk's source.
    Before you extend it, check it against the HV-4 row: the waist consumes curated briefs with decreasing token allowances,
