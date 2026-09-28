@@ -65,10 +65,24 @@ jobs:
           mkdir -p rankings
           harness rankings --top 15 --probe --max-cost "${{ inputs.max_cost }}" \
             --out "rankings/rankings-$(date -u +%Y-%m-%d)-probed.json"
+      - name: Validate generated report JSON
+        run: |
+          python - <<'PY'
+          import glob
+          import json
+
+          reports = glob.glob("rankings/rankings-*.json")
+          if not reports:
+              raise SystemExit("rankings command produced no report JSON")
+          for report in reports:
+              with open(report, encoding="utf-8") as stream:
+                  json.load(stream)
+          PY
       - name: Upload report artifact
         uses: actions/upload-artifact@v4
         with:
           name: rankings-report
           path: |
             rankings/
+          if-no-files-found: error
           retention-days: 90

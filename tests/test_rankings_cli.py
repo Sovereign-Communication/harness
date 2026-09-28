@@ -37,7 +37,9 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "rankings.yml"
 
 # `harness <subcommand> ...` at the start of a `run:` script line, with
 # optional line-continuation backslashes already joined by the caller.
-_INVOCATION = re.compile(r"^\s*harness\s+(?P<args>[^\n#]+)$", re.MULTILINE)
+_INVOCATION = re.compile(
+    r"^\s*(?:harness|python\s+-m\s+harness\.cli)\s+"
+    r"(?P<args>[^\n#]+)$", re.MULTILINE)
 
 
 def _run_script_lines():
@@ -71,20 +73,29 @@ def _run_script_lines():
             index += 1
 
 
+def _parse_invocation_args(args):
+    """Return argv for a CLI invocation, rejecting unresolved shell variables."""
+    # GitHub expressions and command substitutions are deliberately replaced
+    # below; any remaining `$` is an unresolved shell expansion. Treat it as
+    # a parse error instead of letting a variable token disappear from the
+    # flag checks.
+    cleaned = re.sub(r"\$\{\{[^}]*\}\}", "PLACEHOLDER", args)
+    cleaned = re.sub(r"\$\([^)]*\)", "PLACEHOLDER", cleaned)
+    cleaned = cleaned.rstrip("\\").strip()
+    if "$" in cleaned:
+        raise ValueError(f"unresolved shell variable in CLI invocation: {cleaned}")
+    return shlex.split(cleaned)
+
+
 def _invocations():
-    """[(subcommand, [flags])] for each `harness ...` call in the workflow."""
+    """[(subcommand, [flags])] for each CLI call in the workflow."""
     found = []
     for script in _run_script_lines():
         for line in script.splitlines():
             match = _INVOCATION.match(line)
             if not match:
                 continue
-            # Strip the shell expansion so shlex sees one argument; `${{ }}`
-            # actions and `$(date ...)` are placeholders either way.
-            cleaned = re.sub(r"\$\{\{[^}]*\}\}", "PLACEHOLDER", match.group("args"))
-            cleaned = re.sub(r"\$\([^)]*\)", "PLACEHOLDER", cleaned)
-            cleaned = cleaned.rstrip("\\").strip()
-            tokens = shlex.split(cleaned)
+            tokens = _parse_invocation_args(match.group("args"))
             if not tokens:
                 continue
             subcommand = tokens[0]
@@ -115,6 +126,32 @@ class RankingsWorkflowInvocationTests(unittest.TestCase):
                         "the reader stopped matching and these tests would "
                         "silently pass")
         self.assertIn("rankings", [sub for sub, _ in invocations])
+
+    def test_unresolved_shell_variables_are_parse_errors(self):
+        with self.assertRaisesRegex(ValueError, "unresolved shell variable"):
+            _parse_invocation_args("rankings $EXTRA --out report.json")
+
+    def test_quoted_paths_and_python_module_invocations_keep_flags_visible(self):
+        cases = (
+            ('harness rankings --out "reports/weekly report.json" --bogus',
+             "reports/weekly report.json"),
+            ("python -m harness.cli rankings --out reports/out.json --bogus",
+             "reports/out.json"),
+        )
+        for command, expected_path in cases:
+            with self.subTest(command=command):
+                match = _INVOCATION.match(command)
+                self.assertIsNotNone(match)
+                tokens = _parse_invocation_args(match.group("args"))
+                subcommand = tokens[0]
+                flags = [token for token in tokens[1:]
+                         if token.startswith("--")]
+                self.assertEqual(subcommand, "rankings")
+                self.assertIn(expected_path, tokens)
+                self.assertEqual(flags, ["--out", "--bogus"])
+                accepted = _subparser(subcommand)._option_string_actions
+                self.assertIn("--out", accepted)
+                self.assertNotIn("--bogus", accepted)
 
     def test_every_invoked_subcommand_exists(self):
         for subcommand, _ in _invocations():
@@ -166,6 +203,17 @@ class RankingsWorkflowInvocationTests(unittest.TestCase):
         self.assertEqual(len(with_out), 2,
                          "expected the no-probe and probe invocations to both "
                          "pass --out")
+
+    def test_report_json_is_validated_before_required_artifact_upload(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        validate = workflow.index("- name: Validate generated report JSON")
+        upload = workflow.index("- name: Upload report artifact")
+        self.assertLess(validate, upload)
+        validation_step = workflow[validate:upload]
+        self.assertIn('glob.glob("rankings/rankings-*.json")', validation_step)
+        self.assertIn("json.load(stream)", validation_step)
+        upload_step = workflow[upload:]
+        self.assertIn("if-no-files-found: error", upload_step)
 
 
 if __name__ == "__main__":
