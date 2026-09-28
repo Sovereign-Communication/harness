@@ -1269,7 +1269,9 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                  stages: Optional[Sequence[str]] = None,
                  supplied_brief: bool = False,
                  supplied_plan: bool = False,
-                 brief_tokens: Optional[int] = None) -> Dict[str, Any]:
+                 brief_tokens: Optional[int] = None,
+                 brief: Optional[Dict[str, Any]] = None,
+                 brief_reader=None) -> Dict[str, Any]:
     """ONE owner of the plan-lane flow (CLI and MCP call this).
 
     Order: optional cheap-LLM decomposition (M1, condensed signatures) ->
@@ -1654,7 +1656,7 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         plan_result["composition"] = composition_envelope(compose_stages(
             budget=token_budget, declared=stages,
             supplied_brief=supplied_brief, supplied_plan=supplied_plan,
-            brief_tokens=brief_tokens))
+            brief_tokens=brief_tokens, brief=brief, reader=brief_reader))
     return plan_result
 
 
@@ -1783,7 +1785,7 @@ STAGE_BYPASS_REASONS = {
 # freshness contract exists to prevent, so the context stage runs, rebuilds,
 # and the caller can see that its supply was refused.
 STAGE_DENIED_BYPASS = {
-    STAGE_CONTEXT: "supplied brief is not fresh; intake runs again",
+    STAGE_CONTEXT: "supplied brief is missing, invalid or stale; intake runs again",
 }
 
 # Per-stage states a composition may report. A stage that is selected and
@@ -1794,10 +1796,8 @@ STATE_SKIPPED = "skipped"
 STATE_PENDING = "pending"
 STAGE_STATES = (STATE_COMPLETED, STATE_SKIPPED, STATE_PENDING)
 
-# Successive stages plan over less than the one before: the brief is curated
-# down as it is consumed, so a later stage's ceiling is the earlier stage's
-# smaller share. This is a *narrowing* factor applied on top of the run
-# budget, never a budget of its own.
+# Planning is the narrow waist. Execution expands again under the run's
+# ceiling; it is a sibling of planning, never a widened planning child.
 STAGE_INPUT_DECAY = 0.5
 STAGE_OUTPUT_DECAY = 0.5
 MIN_STAGE_INPUT_TOKENS = 1024
@@ -1833,6 +1833,9 @@ DEFAULT_MAX_PLAN_NODES = 12
 #: at or above this confidence and ignored below it, so a borderline call
 #: ends the ladder instead of buying another round of curation.
 SUFFICIENCY_NOUL_THRESHOLD = 0.5
+PLAN_SOUND_THRESHOLD = 0.7
+PLANNER_MAX_OUTPUT_TOKENS = 2048
+JEV_PLANNING_OUTPUT_TOKENS = 256
 
 #: How narrow the window search may get, in characters. A brief's size is
 #: monotone in its window budget, so a bounded bisection finds the largest
@@ -1880,10 +1883,8 @@ def resolve_stages(declared: Optional[Sequence[str]] = None, *,
     work without paying for intake or decomposition twice. The bypass is
     returned, not hidden: a stage that did not run is visible evidence.
 
-    A bypass backed by an actual brief *pack* is stronger evidence than the
-    bare ``supplied_brief`` flag, so it is checked: while the pack is fresh
-    the bypass stands, and once it has drifted the bypass is denied, the
-    stage runs, and the refusal is reported under ``denied``.
+    Intake can only be bypassed by a valid, fresh artifact. The legacy
+    ``supplied_brief`` flag alone is not evidence and never grants a bypass.
     """
     if declared is None:
         wanted = list(HOURGLASS_DEFAULT_STAGES)
@@ -1910,9 +1911,8 @@ def resolve_stages(declared: Optional[Sequence[str]] = None, *,
     bypassed: Dict[str, str] = {}
     denied: Dict[str, str] = {}
     if (supplied_brief or brief is not None) and STAGE_CONTEXT in wanted:
-        if brief is None:
-            bypassed[STAGE_CONTEXT] = STAGE_BYPASS_REASONS[STAGE_CONTEXT]
-        elif freshness_report(brief, reader=reader).get("fresh"):
+        if brief is not None and not validate_brief(brief, reader=reader) \
+                and freshness_report(brief, reader=reader).get("fresh"):
             bypassed[STAGE_CONTEXT] = STAGE_BYPASS_REASONS[STAGE_CONTEXT]
         else:
             denied[STAGE_CONTEXT] = STAGE_DENIED_BYPASS[STAGE_CONTEXT]
@@ -1928,12 +1928,7 @@ def resolve_stages(declared: Optional[Sequence[str]] = None, *,
 
 def _narrow(previous: int, factor: float, floor: int) -> int:
     """The next stage's ceiling: strictly smaller, never larger."""
-    nxt = int(previous * factor)
-    if nxt >= previous:
-        nxt = previous - 1
-    if previous < floor:
-        return max(1, nxt)
-    return max(floor, nxt)
+    return max(0, min(previous - 1, max(floor, int(previous * factor))))
 
 
 def compose_stages(*, budget, declared: Optional[Sequence[str]] = None,
@@ -1943,18 +1938,15 @@ def compose_stages(*, budget, declared: Optional[Sequence[str]] = None,
                    reader=None) -> Dict[str, Any]:
     """Compose the run's stages against ONE ``TokenBudget`` (HV-3).
 
-    ``budget`` is the run's own budget object -- composition never invents an
-    allowance, it only asks each stage to narrow the one above it, which is
-    what makes "a stage cannot raise its own limits" a structural property
-    rather than a promise. Successive stages get strictly smaller ceilings,
-    and when the caller measured the curated brief it just produced
-    (``brief_tokens``) each later stage is additionally capped at that brief,
-    so planning is preflighted against the evidence it will actually read.
+    Every stage is a child of the run budget. Planning narrows the run's
+    allowance even when intake is bypassed; execution expands under the
+    original run ceiling. A brief measurement caps planning only. Actual
+    serialized requests must still reserve their full size before dispatch.
 
     Returns the stage list, the bypassed stages with their reasons, and each
     stage's child budget, so a caller reserves from exactly the right one.
     """
-    if budget is None:
+    if not isinstance(budget, TokenBudget):
         raise HarnessError(
             "stage composition needs the run's TokenBudget; it does not "
             "create one (harness/token_budget.py is the one owner)")
@@ -1968,33 +1960,22 @@ def compose_stages(*, budget, declared: Optional[Sequence[str]] = None,
                 "brief_tokens cannot be negative: {0}".format(brief_tokens))
 
     stages: List[Dict[str, Any]] = []
-    prev_in = budget.max_input_tokens
-    prev_out = budget.max_output_tokens
     for stage in selection["stages"]:
-        if not stages:
-            # The first stage inherits the run's own ceilings; it is the
-            # parent, so it cannot exceed them by construction.
-            want_in, want_out = prev_in, prev_out
-        else:
-            want_in = _narrow(prev_in, STAGE_INPUT_DECAY,
+        want_in, want_out = budget.max_input_tokens, budget.max_output_tokens
+        if stage == STAGE_PLANNING:
+            want_in = _narrow(want_in, STAGE_INPUT_DECAY,
                               MIN_STAGE_INPUT_TOKENS)
-            want_out = _narrow(prev_out, STAGE_OUTPUT_DECAY,
+            want_out = _narrow(want_out, STAGE_OUTPUT_DECAY,
                                MIN_STAGE_OUTPUT_TOKENS)
             if brief_tokens is not None:
                 # Plan over the brief that exists, not over a guess of it.
                 want_in = min(want_in,
-                              max(brief_tokens, MIN_STAGE_INPUT_TOKENS))
-        if want_in > prev_in or want_out > prev_out:
-            raise HarnessError(
-                "stage {0!r} asked for ({1}, {2}) above its own ceiling "
-                "({3}, {4}); a stage may not raise its own limits"
-                .format(stage, want_in, want_out, prev_in, prev_out))
+                              brief_tokens + MIN_STAGE_INPUT_TOKENS)
         child = budget.stage(stage, max_input_tokens=want_in,
                              max_output_tokens=want_out)
         stages.append({"stage": stage, "budget": child,
                        "max_input_tokens": want_in,
                        "max_output_tokens": want_out})
-        prev_in, prev_out = want_in, want_out
 
     return {"stages": stages, "bypassed": selection["bypassed"],
             "denied": selection["denied"],
@@ -2060,6 +2041,7 @@ def composition_envelope(composition: Dict[str, Any], *,
 
 
 def plan_outcome(kind: str, *, plan: Optional[Dict[str, Any]] = None,
+                 answer: Optional[str] = None,
                  questions: Optional[Sequence[str]] = None,
                  reason: Optional[str] = None) -> Dict[str, Any]:
     """The planning waist's terminal contract, fail-closed on every branch.
@@ -2080,7 +2062,9 @@ def plan_outcome(kind: str, *, plan: Optional[Dict[str, Any]] = None,
             "unknown planning outcome {0!r}; the waist may only stop, plan, "
             "request evidence, or defer".format(kind))
     if outcome == OUTCOME_SUFFICIENT:
-        return {"outcome": OUTCOME_SUFFICIENT}
+        if not isinstance(answer, str) or not answer.strip():
+            raise HarnessError("a sufficient outcome must carry the judged answer")
+        return {"outcome": OUTCOME_SUFFICIENT, "answer": answer}
     if outcome == OUTCOME_PLAN:
         if not isinstance(plan, dict) or not plan.get("nodes"):
             raise HarnessError(
@@ -2154,7 +2138,8 @@ def planning_ladder(stage_budget, *, rounds=2, shrink=PLANNING_SHRINK):
     return ladder
 
 
-def _curated_brief(goal, files, *, reader, allowance_tokens):
+def _curated_brief(goal, files, *, reader, allowance_tokens, measure=None,
+                   scope=None, conflicts=None):
     """The largest brief whose MEASURED token estimate fits the allowance.
 
     :func:`harness.brief.build_brief` estimates over the bytes it actually
@@ -2171,8 +2156,9 @@ def _curated_brief(goal, files, *, reader, allowance_tokens):
     rather than shipping a brief it cannot pay for.
     """
     def build(window):
-        pack = build_brief(goal, files, reader=reader, max_total_chars=window)
-        return pack, estimate_brief_tokens(pack)
+        pack = build_brief(goal, files, reader=reader, max_total_chars=window,
+                           scope=scope, conflicts=conflicts)
+        return pack, measure(pack) if measure else estimate_brief_tokens(pack)
 
     smallest, smallest_tokens = build(0)
     if smallest_tokens > allowance_tokens:
@@ -2213,33 +2199,112 @@ def _evidence_request(pack, *, max_items=MAX_EVIDENCE_QUESTIONS):
     return items[:max_items]
 
 
-def _jev_sufficiency(jev_policy, goal, pack, *, site):
-    """Ask the one declared dimension that owns 'is this enough to plan on?'.
+@dataclass(frozen=True)
+class PlanningRequest:
+    """Planner transport contract: send this prompt and honor the output cap.
 
-    Returns ``(signals, native)``. A policy that fails, falls back, or
-    answers out of vocabulary yields ``native=False`` with whatever signals it
-    produced, and the caller reads that as "not sufficient". Composition never
-    re-implements the judgment and never promotes a fallback to native.
-
-    The signal names come from the pack that declared them, not from a local
-    list, so a new dimension's vocabulary cannot drift from this reader.
+    The callback owns model selection and SpendGovernor preflight, but must
+    not add unmeasured input or retry internally. Each invocation is one call.
+    HV-4 owns token reservation and settlement around that invocation.
     """
-    from .jev_packs import HOURGLASS_STAGE_DIMENSIONS
-    state = {
-        "goal": goal,
-        "represented_sources": len(
-            ((pack.get("grounding") or {}).get("sources") or [])),
-        "omitted": _unrepresented(pack),
-        "conflicts": [c.get("description") for c in _conflicts(pack)],
-        "brief_render": render_brief(pack),
-    }
-    _result, structural = jev_policy.evaluate_hourglass_stage(
-        "plan_soundness", state, site=site)
-    structural = structural or {}
-    declared = HOURGLASS_STAGE_DIMENSIONS["plan_soundness"]["signals"]
-    signals = {name: structural.get(name) for name in declared
-               if structural.get(name) is not None}
-    return signals, bool(structural.get("native"))
+
+    prompt: str
+    max_output_tokens: int
+
+
+@dataclass(frozen=True)
+class PlanningCallResult:
+    """One callback's artifact and optional provider usage.
+
+    ``value`` is exactly one of ``{"plan": <DAG>}`` or
+    ``{"answer": <text>}``. Unknown/invalid usage charges the full reservation;
+    it is never interpreted as a zero-cost call.
+    """
+
+    value: Any
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    usage_source: str = "unavailable"
+
+
+def _planning_prompt(goal, pack, max_nodes):
+    return json.dumps({
+        "instructions": (
+            "Return one JSON object: a plan with at most {0} DAG nodes, or an "
+            "answer satisfying the request. Cite the supplied evidence; never "
+            "invent missing evidence.").format(max_nodes),
+        "goal": goal, "brief": pack,
+    })
+
+
+def _budgeted_planning_call(budget, prompt, output_limit, callback, *, label):
+    """Reserve before calling and settle once, including exceptions/overruns."""
+    reservation = budget.allowance(
+        estimate_prompt_tokens(prompt), max_output_tokens=output_limit,
+        label=label)
+    response = None
+    try:
+        response = callback()
+        if not isinstance(response, PlanningCallResult):
+            raise HarnessError("planner must return a PlanningCallResult")
+    finally:
+        counts = (response.input_tokens, response.output_tokens) \
+            if isinstance(response, PlanningCallResult) else (None, None)
+        source = response.usage_source \
+            if isinstance(response, PlanningCallResult) else "unavailable"
+        if source not in ("actual", "estimated") or not all(
+                isinstance(n, int) and not isinstance(n, bool) and n >= 0
+                for n in counts):
+            source = "unavailable"
+        usage = budget.settle(
+            reservation, input_tokens=counts[0], output_tokens=counts[1],
+            source=source)
+    if usage.input_tokens > reservation.input_tokens \
+            or usage.output_tokens > reservation.max_output_tokens:
+        raise HarnessError("planning call exceeded its token reservation")
+    return response.value
+
+
+def _judge_planning_candidate(policy, goal, pack, candidate, budget, *, site):
+    """Use the declared judgment with its actual candidate, never a bare brief."""
+    from .jev_packs import answer_question_pack, hourglass_stage_question_pack
+    context = render_brief(pack)
+    if "plan" in candidate:
+        state = {"goal": goal, "plan": candidate["plan"], "brief": pack}
+        questions = hourglass_stage_question_pack("plan_soundness")
+        method = lambda size: policy.evaluate_hourglass_stage(
+            "plan_soundness", state, site=site, max_input_tokens=size)
+    else:
+        if not callable(getattr(policy, "evaluate_answer", None)):
+            raise HarnessError("answer judgment is unavailable")
+        # The existing answer owner truncates these fields. Refuse a larger
+        # candidate so it can never approve a different, shortened request.
+        if len(goal) > 1400 or len(candidate["answer"]) > 1800 or len(context) > 1400:
+            raise HarnessError("answer exceeds the existing judgment context limits")
+        state = {"request": goal, "candidate_answer": candidate["answer"],
+                 "retained_context": context}
+        questions = answer_question_pack()
+        method = lambda size: policy.evaluate_answer(
+            goal, candidate["answer"], context, site=site, max_input_tokens=size)
+    model = getattr(getattr(policy, "evaluator", None), "model", None)
+    if not isinstance(model, str) or not model:
+        raise HarnessError("judgment policy must expose its evaluator model")
+    prompt = json.dumps({"model": model, "state": state, "questions": questions})
+
+    def call():
+        result, signals = method(estimate_prompt_tokens(prompt))
+        # Some older policy envelopes discard observation flags. Do not
+        # invent actual usage in that case: reserve/charge the full bound.
+        observed = getattr(result, "usage_observed", False) or (
+            getattr(result, "input_tokens_observed", False)
+            and getattr(result, "output_tokens_observed", False))
+        return PlanningCallResult(
+            signals, getattr(result, "input_tokens", None),
+            getattr(result, "output_tokens", None),
+            "actual" if observed else "unavailable")
+
+    return _budgeted_planning_call(
+        budget, prompt, JEV_PLANNING_OUTPUT_TOKENS, call, label="planning-judge")
 
 
 def _validated_plan(plan_data, *, max_nodes=DEFAULT_MAX_PLAN_NODES):
@@ -2271,6 +2336,7 @@ class PlanningOutcome:
     reason: Optional[str] = None
     brief: Optional[Dict[str, Any]] = None
     plan: Any = None
+    answer: Optional[str] = None
     evidence_request: Sequence[Dict[str, Any]] = ()
     rounds: Sequence[Dict[str, Any]] = ()
     jev_signals: Dict[str, Any] = field(default_factory=dict)
@@ -2292,11 +2358,18 @@ class PlanningOutcome:
             raise HarnessError(
                 "a defer must state why it deferred; an unexplained defer is a "
                 "silent failure")
+        plan_outcome(
+            self.kind,
+            plan=self.plan.to_dict() if isinstance(self.plan, TaskDAG) else self.plan,
+            answer=self.answer, reason=self.reason,
+            questions=["{0}: {1}".format(item.get("source"), item.get("reason"))
+                       for item in self.evidence_request])
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "kind": self.kind,
             "reason": self.reason,
+            "answer": self.answer,
             "brief_tokens": (self.brief or {}).get("estimated_tokens"),
             "plan": (self.plan.to_dict() if isinstance(self.plan, TaskDAG)
                      else self.plan),
@@ -2312,141 +2385,143 @@ def run_planning(*, goal, budget, files=(), reader=None, brief=None,
                  max_nodes=DEFAULT_MAX_PLAN_NODES,
                  max_evidence_items=MAX_EVIDENCE_QUESTIONS,
                  site="hourglass-planning"):
-    """Run the planning stage: curate, judge sufficiency, and stop honestly.
+    """Run bounded planning over validated evidence.
 
-    One round is one allowance, and the round's allowance is what its brief
-    must fit inside. The ladder either finds the evidence sufficient (and
-    stops there, spending nothing further), asks for a bounded piece of
-    evidence, or -- when a ``planner`` is supplied -- emits a validated
-    bounded plan. When it is exhausted the outcome is an honest ``defer``
-    naming what was still missing, never a plan built on evidence the stage
-    admitted it could not represent.
+    A planner accepts one PlanningRequest and returns one PlanningCallResult.
+    Each callback and judgment has its own reservation in the current round.
+    A clean brief is context, never an answer. Only an actual answer approved
+    by the answer policy can stop as sufficient. A supplied Jev policy must
+    approve an actual plan before it is emitted; fallback is an honest defer.
+    HV-5 still owns the production callback, dollar preflight and dispatch.
     """
-    if jev_policy is not None and not hasattr(jev_policy,
-                                               "evaluate_hourglass_stage"):
-        raise HarnessError(
-            "jev_policy must be a JevPolicy-like owner exposing "
-            "evaluate_hourglass_stage")
+    if jev_policy is not None and not callable(
+            getattr(jev_policy, "evaluate_hourglass_stage", None)):
+        raise HarnessError("jev_policy must expose evaluate_hourglass_stage")
     if planner is not None and not callable(planner):
         raise HarnessError("planner must be callable")
     if not isinstance(budget, TokenBudget):
         raise HarnessError("planning needs a TokenBudget to spend from")
+    if isinstance(max_nodes, bool) or not isinstance(max_nodes, int) or max_nodes < 1:
+        raise HarnessError("max_nodes must be a positive integer")
+    if not isinstance(max_evidence_items, int) or not 1 <= max_evidence_items <= MAX_EVIDENCE_QUESTIONS:
+        raise HarnessError("max_evidence_items must be between one and five")
 
     stage = budget.stage(STAGE_PLANNING)
     ladder = planning_ladder(stage, rounds=rounds)
-    round_log: List[Dict[str, Any]] = []
-    jev_signals: Dict[str, Any] = {}
+    round_log = []
+    signals = {}
     pack = brief
+    last_reason = "planner_unavailable"
+
+    def finish(kind, reason, **payload):
+        return PlanningOutcome(
+            kind, reason=reason[:MAX_DEFER_REASON_CHARS], brief=pack,
+            rounds=round_log, jev_signals=signals, budget=stage.snapshot(),
+            **payload)
 
     for index, round_budget in enumerate(ladder, start=1):
-        allowance = round_budget.max_input_tokens
+        allowance = min(round_budget.max_input_tokens, round_budget.remaining_input())
+        record = {"round": index, "max_input_tokens": allowance,
+                  "max_output_tokens": round_budget.max_output_tokens,
+                  "outcome": OUTCOME_DEFER, "jev_native": False}
+        round_log.append(record)
         if index > 1 and not files:
-            # Nothing left to curate. A second round would judge the IDENTICAL
-            # brief again, and a judgment that cannot change its answer must
-            # not be paid for -- so the ladder stops here and says why.
-            round_log.append({"round": index, "outcome": STATE_SKIPPED,
-                              "reason": "nothing_left_to_curate",
-                              "max_input_tokens": allowance})
+            record.update(outcome=STATE_SKIPPED, reason="nothing_left_to_curate")
             break
         if pack is None or index > 1:
-            # Round one reads a supplied brief as data; every round after the
-            # first curates its own, because a narrower allowance has to buy a
-            # narrower brief. Curating reads the sources, so a caller that
-            # supplies both a brief and unreadable files gets the reader's own
-            # error rather than a silently different evidence set.
-            pack, _ = _curated_brief(goal, files, reader=reader,
-                                     allowance_tokens=allowance)
+            previous = pack or {}
+            pack, _ = _curated_brief(
+                goal, files, reader=reader, allowance_tokens=allowance,
+                measure=lambda value: estimate_prompt_tokens(
+                    _planning_prompt(goal, value, max_nodes)),
+                scope=previous.get("scope"), conflicts=previous.get("conflicts"))
         if pack is None:
-            round_log.append({"round": index, "outcome": STATE_SKIPPED,
-                              "reason": "brief_exceeds_allowance",
-                              "max_input_tokens": allowance})
-            # A round with no honest brief is not a stopping point by itself:
-            # a narrower round may still fit. The ladder decides.
-            continue
+            record.update(outcome=STATE_SKIPPED, reason="brief_exceeds_allowance")
+            return finish(OUTCOME_DEFER, "no_brief_fit_any_round")
 
         issues = validate_brief(pack, reader=reader)
-        missing = _unrepresented(pack)
-        conflicts = _conflicts(pack)
-        sources = len(((pack.get("grounding") or {}).get("sources") or []))
-        lint_clean = not issues
-        # A brief citing no source is not evidence of anything: without this
-        # bound an empty pack reads as a clean, gapless, conflictless brief and
-        # planning would stop on it.
-        sufficient = lint_clean and sources > 0 and not missing and not conflicts
-        native = False
-        # The semantic question is only asked when the artifact's own facts
-        # are inconclusive, a failed lint always wins over a Jev "yes", and a
-        # brief citing nothing is not asked about at all -- that question has
-        # no answer worth a reservation.
-        if lint_clean and sources > 0 and jev_policy is not None \
-                and not sufficient:
-            try:
-                jev_signals, native = _jev_sufficiency(jev_policy, goal, pack,
-                                                      site=site)
-            except HarnessError:
-                jev_signals, native = {}, False
-            if native and sources > 0:
-                requested = jev_signals.get("plan_evidence_requested")
-                # The semantic answer is Jev's; what counts as "yes, ask for
-                # more" is code's. A missing signal is not a quiet yes.
-                if isinstance(requested, (int, float)) \
-                        and not isinstance(requested, bool) \
-                        and requested < SUFFICIENCY_NOUL_THRESHOLD:
-                    sufficient = True
-        round_log.append({
-            "round": index,
-            "outcome": (OUTCOME_SUFFICIENT if sufficient
-                        else OUTCOME_EVIDENCE_REQUEST),
-            "max_input_tokens": allowance,
-            "brief_tokens": pack.get("estimated_tokens"),
-            "sources": sources,
-            "omitted": len(missing),
-            "conflicts": len(conflicts),
-            "grounding_issues": len(issues),
-            "jev_native": native,
-        })
-        if sufficient:
-            # Route through the one terminal contract, so the verdict a run
-            # reports is the same checked verdict a caller would get.
-            plan_outcome(OUTCOME_SUFFICIENT)
-            return PlanningOutcome(
-                OUTCOME_SUFFICIENT, reason="brief_covers_the_request",
-                brief=pack, rounds=round_log, jev_signals=jev_signals,
-                budget=stage.snapshot())
+        sources = len(((pack.get("grounding") or {}).get("sources") or [])) \
+            if isinstance(pack, dict) else 0
+        record.update(grounding_issues=len(issues), sources=sources)
+        if not sources:
+            return finish(OUTCOME_DEFER, "no_evidence_cited")
+        if issues or not freshness_report(pack, reader=reader).get("fresh"):
+            return finish(OUTCOME_DEFER, "invalid_or_stale_brief")
 
-    if planner is not None and pack is not None:
+        # Measure the actual serialized round input, not the untrusted size
+        # field on an external artifact or just the excerpt bytes.
+        prompt = _planning_prompt(goal, pack, max_nodes)
+        request_tokens = estimate_prompt_tokens(prompt)
+        record.update(brief_tokens=estimate_brief_tokens(pack),
+                      request_tokens=request_tokens,
+                      omitted=len(_unrepresented(pack)), conflicts=len(_conflicts(pack)))
+        if request_tokens > allowance:
+            record.update(reason="brief_exceeds_allowance")
+            return finish(OUTCOME_DEFER, "brief_exceeds_allowance")
+        if planner is None:
+            break
+        output_limit = min(PLANNER_MAX_OUTPUT_TOKENS, round_budget.remaining_output())
+        if output_limit <= 0:
+            return finish(OUTCOME_DEFER, "planning_output_allowance_exhausted")
+        request = PlanningRequest(prompt, output_limit)
         try:
-            dag = _validated_plan(planner(goal, pack), max_nodes=max_nodes)
+            value = _budgeted_planning_call(
+                round_budget, prompt, output_limit, lambda: planner(request),
+                label="planning-candidate")
+            if not isinstance(value, dict) or set(value) not in ({"plan"}, {"answer"}):
+                raise HarnessError("planner must return exactly one plan or answer")
+            if estimate_prompt_tokens(json.dumps(value)) > output_limit:
+                raise HarnessError("planner artifact exceeds its output allowance")
+            if "plan" in value:
+                dag = _validated_plan(value["plan"], max_nodes=max_nodes)
+                candidate = {"plan": dag.to_dict()}
+            else:
+                plan_outcome(OUTCOME_SUFFICIENT, answer=value["answer"])
+                candidate = value
+            if jev_policy is None:
+                if "plan" in candidate:
+                    record["outcome"] = OUTCOME_PLAN
+                    return finish(OUTCOME_PLAN, "validated_bounded_plan", plan=dag)
+                return finish(OUTCOME_DEFER, "answer_judgment_unavailable")
+            signals = _judge_planning_candidate(
+                jev_policy, goal, pack, candidate, round_budget, site=site) or {}
         except HarnessError as exc:
-            return PlanningOutcome(
-                OUTCOME_DEFER, reason="plan_rejected: {0}".format(exc),
-                brief=pack, rounds=round_log, jev_signals=jev_signals,
-                budget=stage.snapshot())
-        plan_outcome(OUTCOME_PLAN, plan=dag.to_dict())
-        return PlanningOutcome(
-            OUTCOME_PLAN, reason="validated_bounded_plan", brief=pack,
-            plan=dag, rounds=round_log, jev_signals=jev_signals,
-            budget=stage.snapshot())
+            return finish(OUTCOME_DEFER, "planning_refused: " + str(exc))
+        native = signals.get("native") is True
+        record["jev_native"] = native
+        if "plan" in candidate:
+            sound = signals.get("plan_sound")
+            evidence = signals.get("plan_evidence_requested")
+            accepted = native and _probability_at_least(sound, PLAN_SOUND_THRESHOLD) \
+                and _probability_below(evidence, SUFFICIENCY_NOUL_THRESHOLD)
+            if accepted:
+                record["outcome"] = OUTCOME_PLAN
+                return finish(OUTCOME_PLAN, "judged_bounded_plan", plan=dag)
+            last_reason = "plan_judgment_rejected_or_unavailable"
+        else:
+            accepted = native and _probability_at_least(
+                signals.get("answer_sufficient"), PLAN_SOUND_THRESHOLD) \
+                and signals.get("iteration_required") is False \
+                and signals.get("plan_required") is False
+            if accepted:
+                record["outcome"] = OUTCOME_SUFFICIENT
+                return finish(OUTCOME_SUFFICIENT, "judged_answer_sufficient",
+                              answer=candidate["answer"])
+            last_reason = "answer_judgment_rejected_or_unavailable"
+        record["reason"] = last_reason
 
-    request = _evidence_request(pack, max_items=max_evidence_items) \
-        if pack is not None else []
+    request = _evidence_request(pack, max_items=max_evidence_items) if pack else []
     if request:
-        # The bound is the waist's, so an over-long question is refused here
-        # rather than trimmed into something the caller never asked.
-        plan_outcome(OUTCOME_EVIDENCE_REQUEST,
-                     questions=["{0}: {1}".format(item.get("source"),
-                                                 item.get("reason"))
-                                for item in request])
-        reason = "bounded_evidence_request"
-    elif pack is None:
-        reason = "no_brief_fit_any_round"
-    elif not ((pack.get("grounding") or {}).get("sources") or []):
-        reason = "no_evidence_cited"
-    else:
-        reason = "nothing_left_to_request"
-    if not request:
-        plan_outcome(OUTCOME_DEFER, reason=reason)
-    return PlanningOutcome(
-        OUTCOME_EVIDENCE_REQUEST if request else OUTCOME_DEFER,
-        reason=reason, brief=pack, evidence_request=request, rounds=round_log,
-        jev_signals=jev_signals, budget=stage.snapshot())
+        return finish(OUTCOME_EVIDENCE_REQUEST, "bounded_evidence_request",
+                      evidence_request=request)
+    return finish(OUTCOME_DEFER, last_reason)
+
+
+def _probability_at_least(value, threshold):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) \
+        and threshold <= value <= 1.0
+
+
+def _probability_below(value, threshold):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) \
+        and 0.0 <= value < threshold
