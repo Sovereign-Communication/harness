@@ -2010,30 +2010,24 @@ def stage_budget(composition: Dict[str, Any], stage: str):
     return None
 
 
-def stage_states(composition: Dict[str, Any], *,
-                 context_ran: Optional[bool] = None,
-                 planning_ran: Optional[bool] = None
-                 ) -> Dict[str, str]:
+def stage_states(composition: Dict[str, Any]) -> Dict[str, str]:
     """What happened to each declared stage, for every stage in the contract.
 
     Composition has *resolved* every stage it budgets; it has not *run* it.
-    So a stage this owner only allowed for reports ``pending``, a stage that
-    did not compose reports ``skipped``, and the caller upgrades the two
-    stages it actually performed to ``completed``. A selected stage that is
+    So a stage this owner only allowed for reports ``pending`` and a stage
+    that did not compose reports ``skipped``. A selected stage that is
     silently absent from this map is the one thing a composition must never
     produce, so the map always carries all four declared stages.
+
+    ``completed`` is in the declared vocabulary but has no producer here:
+    this owner budgets stages, it does not perform them. A caller that
+    actually ran a stage reports that through
+    ``composition_envelope(..., states=...)``; dispatching a work package is
+    ``HV-5``'s contract.
     """
     composed = {entry.get("stage") for entry in composition.get("stages") or []}
-    ran = {STAGE_CONTEXT: context_ran, STAGE_PLANNING: planning_ran}
-    states: Dict[str, str] = {}
-    for stage in STAGE_ORDER:
-        if stage not in composed:
-            states[stage] = STATE_SKIPPED
-        elif ran.get(stage) is True:
-            states[stage] = STATE_COMPLETED
-        else:
-            states[stage] = STATE_PENDING
-    return states
+    return {stage: (STATE_PENDING if stage in composed else STATE_SKIPPED)
+            for stage in STAGE_ORDER}
 
 
 def composition_envelope(composition: Dict[str, Any], *,

@@ -320,12 +320,20 @@ class StageStateTests(unittest.TestCase):
         self.assertEqual(states[STAGE_EXECUTION], STATE_PENDING)
         self.assertEqual(states[STAGE_VERIFICATION], STATE_PENDING)
 
-    def test_a_caller_that_actually_ran_a_stage_upgrades_its_state(self):
-        states = stage_states(self._comp(), context_ran=True,
-                              planning_ran=True)
-        self.assertEqual(states[STAGE_CONTEXT], STATE_COMPLETED)
-        self.assertEqual(states[STAGE_PLANNING], STATE_COMPLETED)
-        self.assertEqual(states[STAGE_EXECUTION], STATE_PENDING)
+    def test_a_caller_that_actually_ran_a_stage_reports_it(self):
+        # This owner budgets stages; it does not perform them, so it cannot
+        # mark one completed. A caller that DID run a stage says so through
+        # the envelope's ``states`` seam -- which is how HV-5 will report
+        # execution, and why ``completed`` is in the declared vocabulary even
+        # though nothing here produces it.
+        comp = self._comp()
+        env = composition_envelope(
+            comp, states=dict(stage_states(comp), **{STAGE_CONTEXT:
+                                                      STATE_COMPLETED}))
+        self.assertEqual(
+            [e["state"] for e in env["stages"] if e["stage"] == STAGE_CONTEXT],
+            [STATE_COMPLETED])
+        self.assertNotIn(STAGE_CONTEXT, env["skipped"])
 
     def test_the_envelope_round_trips_through_json(self):
         import json
