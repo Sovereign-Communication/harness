@@ -787,6 +787,103 @@ def declared_restart_targets() -> List[str]:
     return list(HOURGLASS_STAGES)
 
 
+# --------------------------------------------------------------------------
+# HV-1: "avoid redundant calls when no decision is needed".
+#
+# Every other part of the stage contract is about what a judgment MAY say.
+# This is about when a judgment is needed at all. A typed integration that
+# fires on every stage boundary spends a real Jev call to re-ask a question
+# whose answer code already owns -- re-judging an unchanged brief, or asking
+# whether to restart a run that has not advanced.
+#
+# The decision is CODE-OWNED and declared as data here, so the rule lives with
+# the rest of the pack rather than being re-implemented per caller. It is
+# deliberately conservative: the default is "a judgment IS required", so a
+# caller that knows nothing about its own state still gets judged. Only
+# explicit, code-owned facts may suppress a call.
+#
+# The two facts are parameters rather than state-dict lookups on purpose: the
+# state shape is caller-owned and free-form, so guessing keys here would make
+# the guard silently inert for every real caller. Wiring these facts from the
+# calling lanes is Lane 2's (#119) work; this module only decides, and
+# harness/jev_policy.py only reads.
+# --------------------------------------------------------------------------
+HOURGLASS_STAGE_REQUIREMENTS: Dict[str, Dict[str, Any]] = {
+    name: {
+        "dimension": name,
+        "description": spec["description"],
+        "signals": tuple(spec["signals"]),
+        "subject": "the {0} state this dimension judges".format(name),
+    }
+    for name, spec in HOURGLASS_STAGE_DIMENSIONS.items()
+}
+
+#: The code-owned facts that may suppress a call, and why each is sound. Kept
+#: as data so the guard's own contract is inspectable and testable without
+#: re-reading the branches below.
+HOURGLASS_SUPPRESSION_FACTS: Dict[str, str] = {
+    "subject_supplied": (
+        "no subject state was supplied, so there is no decision to ask about"),
+    "superseded": (
+        "an earlier judgment for this same subject is still current, so "
+        "re-asking would spend a call to recover the same answer"),
+}
+
+
+def stage_judgment_requirement(
+        dimension: Any, *, subject_supplied: bool = True,
+        superseded: bool = False) -> Dict[str, Any]:
+    """Decide, from code-owned facts alone, whether ``dimension`` needs a Jev
+    call at all (HV-1's "avoid redundant calls when no decision is needed").
+
+    Pure and total for a declared dimension. An unknown dimension still
+    raises, because a caller may not invent an integration. Returns a typed
+    decision carrying ``required`` plus a ``reason`` and the
+    ``code_owned_fact`` responsible, so a suppressed call is always
+    explainable and never silent.
+
+    Defaults are permissive: only an explicit code-owned fact suppresses a
+    call, and this function NEVER returns a judgment -- it can only say "go
+    ask" or "do not ask".
+    """
+    if (not isinstance(dimension, str)
+            or dimension not in HOURGLASS_STAGE_REQUIREMENTS):
+        raise ValueError(
+            "unknown hourglass stage dimension: " + repr(dimension))
+    spec = HOURGLASS_STAGE_REQUIREMENTS[dimension]
+    base = {
+        "dimension": dimension,
+        "declared_signals": list(spec["signals"]),
+        "subject": spec["subject"],
+    }
+    if not subject_supplied:
+        return {
+            **base,
+            "required": False,
+            "disposition": "skipped",
+            "fact": "subject_supplied",
+            "reason": HOURGLASS_SUPPRESSION_FACTS["subject_supplied"],
+            "code_owned_fact": "subject_supplied is False",
+        }
+    if superseded:
+        return {
+            **base,
+            "required": False,
+            "disposition": "skipped",
+            "fact": "superseded",
+            "reason": HOURGLASS_SUPPRESSION_FACTS["superseded"],
+            "code_owned_fact": "an earlier judgment for this subject is current",
+        }
+    return {
+        **base,
+        "required": True,
+        "disposition": "call",
+        "fact": None,
+        "reason": "a fresh judgment is required for this subject",
+        "code_owned_fact": None,
+    }
+
+
 def normalize_restart_target(value: Any) -> Optional[str]:
     """Return a declared restart target, or None when it is not one.
 
