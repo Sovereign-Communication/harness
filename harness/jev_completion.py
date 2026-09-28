@@ -392,12 +392,12 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
     "HV-5": {
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,
-        # Only the slice that has actually landed is required. The canon's
-        # HV-5 row names two test modules; tests/test_hourglass_consent_handoff.py
-        # belongs to the consent/handoff slice that has not been built yet, and
-        # requiring a file that does not exist would make the gate report a
-        # missing test rather than the real reason this phase is not done.
-        "required_tests": ["tests/test_hourglass_execution_budget.py"],
+        # Both canon-named test modules now exist and both are required: the
+        # execution/composition slice and the restart/consent-decision slice.
+        "required_tests": [
+            "tests/test_hourglass_execution_budget.py",
+            "tests/test_hourglass_consent_handoff.py",
+        ],
         "required_files": [
             "harness/agent.py",
             "harness/waist.py",

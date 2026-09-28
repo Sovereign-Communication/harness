@@ -28,10 +28,17 @@ from .session import apply_session, attest_model_for, governor_for, jev_for, led
 from .jev_policy import (
     JevPolicy, aggregate_structural, jev_cost_ceiling, policy_for,
 )
+from .jev_packs import (
+    HOURGLASS_STAGE_SITE,
+    declared_restart_targets,
+    validate_restart_request,
+)
 from .token_budget import budget_from_settings
 from .waist import (
+    STAGE_EXECUTION,
     STAGE_PLANNING,
     STATE_COMPLETED,
+    STATE_PENDING,
     compose_plan,
     compose_stages,
     composition_envelope,
@@ -825,7 +832,152 @@ class AutonomousAgent:
 
         return chat_fn
 
-    def _compose_run_stages(self, goal, candidate_files, jev_policy=None):
+    def _run_execution_stage(self, goal, plan, *, jev_policy,
+                             completed_stages=()):
+        """HV-5: judge the work package, then let CODE decide any restart.
+
+        ``HV-1`` published five typed stage dimensions and, until now, no
+        production path asked for any of them: the single call site sat inside
+        the planning stage, which only asks its question when the brief is
+        NOT already sufficient -- so on a clean run the dimension never
+        executed. This is the execution stage's own call, and it is the one
+        place the ``execution`` and ``restart_target`` dimensions mean
+        anything: the package about to be handed to a worker, and the
+        decision to walk back to an earlier stage instead.
+
+        The restart split is ``HV-1``'s, and this caller keeps it: Jev may
+        only RECOMMEND a declared target, and
+        :func:`~harness.jev_packs.validate_restart_request` -- code -- decides
+        whether that transition is allowed, preserving completed work and
+        forcing consent renewal for a changed assignment. When no native
+        answer arrives the recommendation is derived from the execution
+        signals, and the same code-owned guard decides it, so the decision
+        path exists whether or not a model was reachable.
+
+        Returns the judgment as evidence. It deliberately does NOT mark the
+        stage ``completed``: judging a package is not dispatching it, and
+        dispatch is the next ``HV-5`` slice. Reporting ``completed`` here
+        would claim work this code does not do.
+        """
+        judgment: Dict[str, Any] = {
+            "dimension": "execution",
+            "state": STATE_PENDING,
+            "dispatched": False,
+            "signals": {},
+            "native": False,
+            "restart": None,
+        }
+        nodes = [
+            {"node_id": n.get("node_id"), "instruction": n.get("instruction"),
+             "target": (n.get("target_files") or [""])[0]}
+            for n in (plan.get("nodes") or [])
+        ]
+        package = {
+            "goal": goal,
+            "status": plan.get("status"),
+            "decomposition": plan.get("decomposition"),
+            "total_nodes": plan.get("total_nodes") or len(nodes),
+            "nodes": nodes,
+        }
+        if jev_policy is not None:
+            judgment.update(self._ask_stage_dimension(
+                "execution", package, jev_policy, task_id=None))
+        judgment["restart"] = self._restart_decision(
+            goal, jev_policy, judgment, completed_stages=completed_stages)
+        return judgment
+
+    def _ask_stage_dimension(self, dimension, state, jev_policy, *,
+                             task_id=None):
+        """Ask one declared ``HV-1`` dimension and read its signals.
+
+        The dimension name, the question pack and the signal vocabulary are
+        all ``HV-1``'s (``harness/jev_packs.py``); this only calls the owner
+        and reports what came back. A fallback, a transport failure or a
+        malformed answer is never promoted to a native signal -- that is the
+        owner's contract, and this caller does not second-guess it.
+        """
+        from .jev_packs import HOURGLASS_STAGE_DIMENSIONS
+        try:
+            _result, structural = jev_policy.evaluate_hourglass_stage(
+                dimension, state, site=HOURGLASS_STAGE_SITE, task_id=task_id)
+        except HarnessError as exc:
+            return {"signals": {}, "native": False,
+                    "error": "{0}: {1}".format(type(exc).__name__, exc)}
+        structural = structural or {}
+        declared = HOURGLASS_STAGE_DIMENSIONS[dimension]["signals"]
+        signals = {name: structural.get(name) for name in declared
+                   if structural.get(name) is not None}
+        return {"signals": signals,
+                "native": bool(structural.get("native"))}
+
+    def _restart_decision(self, goal, jev_policy, judgment, *,
+                          completed_stages=()):
+        """Ask for a restart target, then let code rule on the transition."""
+        recommendation = None
+        source = "none"
+        if jev_policy is not None:
+            asked = self._ask_stage_dimension(
+                "restart_target",
+                {"goal": goal, "completed_stages": list(completed_stages)},
+                jev_policy)
+            choice = asked["signals"].get("restart_target")
+            if isinstance(choice, dict) and choice.get("target"):
+                recommendation = choice["target"]
+                source = "jev"
+        if recommendation is None:
+            # No native answer. The recommendation is then DERIVED from the
+            # execution signals -- an underspecified package or a required
+            # checkpoint both mean the work is not ready where it is -- and
+            # it is still only a DECLARED stage: the walk-back target is read
+            # out of `HV-1`'s own vocabulary rather than hardcoded here, so
+            # this caller and the pack cannot disagree about what a restart
+            # may even name. The decision below is code either way.
+            walk_back = self._declared_walk_back()
+            signals = judgment.get("signals") or {}
+            unsuitable = signals.get("execution_suitable")
+            checkpoint = signals.get("checkpoint_required")
+            if walk_back is not None and (
+                    (unsuitable is not None and unsuitable < 0.5)
+                    or (checkpoint is not None and checkpoint >= 0.5)):
+                recommendation, source = walk_back, "derived"
+        if recommendation is not None and \
+                recommendation not in declared_restart_targets():
+            # Belt and braces: a recommendation that is not in the declared
+            # vocabulary is discarded here rather than handed to the guard as
+            # something it would have to reject.
+            recommendation, source = None, "undeclared_discarded"
+
+        # `consent_fresh` is deliberately None, not True. Nothing has
+        # changed the assignment yet -- no work package has been dispatched,
+        # so no new consent question exists -- and claiming freshness the run
+        # has not re-derived would be exactly the kind of invented signal
+        # this stage is meant to avoid. None means "no evidence it is
+        # stale", so no renewal is forced here; the dispatch slice is where
+        # consent is actually re-derived.
+        decision = validate_restart_request(
+            STAGE_EXECUTION, recommendation,
+            completed_stages=completed_stages, consent_fresh=None)
+        decision["recommendation_source"] = source
+        return decision
+
+    @staticmethod
+    def _declared_walk_back():
+        """The declared stage a restart from ``execution`` should name.
+
+        Read from `HV-1`'s declared vocabulary, not hardcoded: a restart may
+        only ever name a declared stage, and the stage immediately preceding
+        execution in that vocabulary is the furthest-back legal target. If
+        execution is not in the vocabulary, or nothing precedes it, there is
+        no legal walk-back and the caller reports none.
+        """
+        declared = declared_restart_targets()
+        if STAGE_EXECUTION not in declared:
+            return None
+        index = declared.index(STAGE_EXECUTION)
+        return declared[index - 1] if index > 0 else None
+
+    def _compose_run_stages(self, goal, candidate_files, jev_policy=None,
+                            plan=None):
         """HV-5: compose this run's stages and actually RUN the planning one.
 
         ``HV-4`` published the composition owner and deliberately left it
@@ -852,6 +1004,7 @@ class AutonomousAgent:
             declared=stage_selection_from_settings(self.settings))
         states = stage_states(composition)
         outcome = None
+        judgments: Dict[str, Any] = {}
         planning = stage_budget(composition, STAGE_PLANNING)
         if planning is not None:
             # Plan over the files that are actually there. Triage names its
@@ -873,7 +1026,23 @@ class AutonomousAgent:
             # the owner that finally produces it: composition budgets
             # stages, but the caller that RAN one reports it here.
             states[STAGE_PLANNING] = STATE_COMPLETED
-        return composition_envelope(composition, states=states), outcome
+        execution = stage_budget(composition, STAGE_EXECUTION)
+        if execution is not None and plan is not None:
+            # Only stages that ACTUALLY completed are completed work. Passing
+            # `planning` unconditionally would make the restart guard refuse
+            # a walk-back to planning as "already recorded complete" on a run
+            # where planning was never selected -- a preservation rule
+            # triggered by a stage that never ran.
+            completed = tuple(name for name, state in states.items()
+                              if state == STATE_COMPLETED)
+            # The execution stage is composed and, in this slice, JUDGED.
+            # It stays `pending` in the envelope because judging a package
+            # is not dispatching it; `dispatched: False` in the judgment
+            # says the same thing where a reader of the plan will see it.
+            judgments["execution"] = self._run_execution_stage(
+                goal, plan, jev_policy=jev_policy, completed_stages=completed)
+        return (composition_envelope(composition, states=states), outcome,
+                judgments)
 
     def _evidence_reader(self):
         """A reader for brief intake, bound to this run's own root.
@@ -937,8 +1106,8 @@ class AutonomousAgent:
         # where it did. Attached last, so it survives every degraded or
         # refused copy compose_plan may have made along the way.
         try:
-            envelope, planning = self._compose_run_stages(
-                goal, candidate_files, jev_policy=jev_policy)
+            envelope, planning, judgments = self._compose_run_stages(
+                goal, candidate_files, jev_policy=jev_policy, plan=plan)
         except HarnessError as exc:
             # A composition that cannot be built must not take the plan lane
             # down with it: the DAG above is already valid and gated. The
@@ -953,6 +1122,13 @@ class AutonomousAgent:
                  kind=planning.kind, reason=planning.reason,
                  rounds=len(planning.rounds),
                  evidence_items=len(planning.evidence_request))
+        if judgments:
+            plan["stage_judgments"] = judgments
+            execution = judgments.get("execution") or {}
+            emit("execution_stage",
+                 signals=dict(execution.get("signals") or {}),
+                 native=bool(execution.get("native")),
+                 restart=(execution.get("restart") or {}).get("allowed"))
         return plan
 
     def _refused_edit(self, plan, prompt, target_files, session_id):
@@ -1094,6 +1270,8 @@ class AutonomousAgent:
                    if isinstance(plan.get("composition"), dict) else {}),
                 **({"planning": dict(plan["planning"])}
                    if isinstance(plan.get("planning"), dict) else {}),
+                **({"stage_judgments": dict(plan["stage_judgments"])}
+                   if isinstance(plan.get("stage_judgments"), dict) else {}),
                 **({"structural": dict(plan["structural"])}
                    if isinstance(plan.get("structural"), dict) else {}),
             }
