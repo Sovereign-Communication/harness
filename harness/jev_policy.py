@@ -62,6 +62,7 @@ from .jev_packs import (
     route_question_pack,
     DEFAULT_VISION_ASSESSMENT_PACK,
     DECISION_CONFIDENCE_THRESHOLD,
+    DECISION_DISPOSITION_MARGIN,
     DECISION_PACK_VERSION,
     DECISION_SITE,
     compose_decision_verdict,
@@ -675,6 +676,7 @@ class JevPolicy:
                           task_id: Optional[str] = None,
                           node_id: Optional[str] = None,
                           threshold: float = DECISION_CONFIDENCE_THRESHOLD,
+                          margin: float = DECISION_DISPOSITION_MARGIN,
                           max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
         """Typed pre-escalation decision gate (issue #106).
 
@@ -685,8 +687,16 @@ class JevPolicy:
         - ``is_destructive >= 0.5`` -> escalate, at any confidence;
         - no Jev signal (unkeyed / transport failure) or unusable answers
           -> escalate (fail closed, never proceed);
-        - disposition ``escalate``, disposition confidence < threshold, or
-          ``advances_goal`` < threshold -> escalate;
+        - disposition ``escalate`` -> escalate;
+        - the disposition does not lead the runner-up by ``margin`` ->
+          escalate. A Choice's ``confidence`` is distribution concentration
+          and does NOT gate: holding it to an absolute ``threshold`` demanded
+          near-unanimity from a three-way question and escalated on almost
+          every well-evidenced action. The disposition's concentration is
+          still reported as ``disposition_confidence`` for telemetry;
+        - ``advances_goal`` < threshold -> escalate. This one stays absolute
+          because ``advances_goal`` is a Noul, whose value is a real
+          yes-probability;
         - disposition ``needs_improvement`` -> revise: the caller fixes the
           action and re-gates (bounded by ``DECISION_MAX_REVISIONS``);
         - otherwise -> proceed.
@@ -694,10 +704,11 @@ class JevPolicy:
         Authorization gates are not bypassed: the gate can only add a
         reason to escalate, never remove one. Returns ``(verdict,
         structural)`` where ``verdict`` is the composed dict
-        (``verdict`` / ``reasons`` / the three signals / ``threshold`` /
-        ``pack_version``) and ``structural`` is the shared Jev envelope;
-        the ``jev_eval`` ledger event carries the composed verdict so the
-        gate is measurable like every other Jev surface.
+        (``verdict`` / ``reasons`` / the three signals / ``disposition_lead``
+        / ``threshold`` / ``margin`` / ``pack_version``) and ``structural``
+        is the shared Jev envelope; the ``jev_eval`` ledger event carries
+        the composed verdict so the gate is measurable like every other Jev
+        surface.
         """
         reservation = None
         try:
@@ -707,7 +718,8 @@ class JevPolicy:
                 {"action": action or "", "end_state": end_state or "",
                  "context": context or ""},
                 decision_question_pack())
-            verdict = compose_decision_verdict(result, threshold=threshold)
+            verdict = compose_decision_verdict(
+                result, threshold=threshold, margin=margin)
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id,
                 reservation=reservation,
@@ -715,9 +727,11 @@ class JevPolicy:
                     "decision_verdict": verdict["verdict"],
                     "decision_disposition": verdict["disposition"],
                     "decision_confidence": verdict["disposition_confidence"],
+                    "decision_lead": verdict["disposition_lead"],
                     "decision_advances_goal": verdict["advances_goal"],
                     "decision_destructive": verdict["is_destructive"],
                     "decision_threshold": threshold,
+                    "decision_margin": margin,
                     "decision_pack": DECISION_PACK_VERSION,
                 })
             reservation = None
@@ -730,7 +744,8 @@ class JevPolicy:
                     pass
             result, structural = self._record_refusal(
                 str(exc), site=site, task_id=task_id, node_id=node_id)
-            verdict = compose_decision_verdict(result, threshold=threshold)
+            verdict = compose_decision_verdict(
+                result, threshold=threshold, margin=margin)
             verdict["reasons"] = (["evaluation refused: " + str(exc)]
                                   + verdict["reasons"])
             return verdict, structural
