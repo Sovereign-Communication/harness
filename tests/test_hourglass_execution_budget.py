@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 from harness.agent import AutonomousAgent
 from harness.config import load_settings
+from harness.errors import HarnessError
 from harness.token_budget import budget_from_settings
 from harness.waist import (
     STAGE_EXECUTION,
