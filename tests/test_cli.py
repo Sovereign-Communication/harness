@@ -735,6 +735,17 @@ class CliParserSurfaceTests(unittest.TestCase):
                      "_read_text", "_governor", "_session"):
             self.assertTrue(hasattr(cli, name), name)
 
+    def test_media_early_intercept_dispatches_to_media_client(self):
+        """`harness media ...` is intercepted before build_parser(), the same
+        pattern as serve/desktop -- it never reaches _DISPATCH."""
+        from harness import media_client
+
+        with mock.patch.object(media_client, "run_cli",
+                               return_value=0) as fake_run_cli:
+            rc = cli.main(["media", "balance", "--project", "demo"])
+        fake_run_cli.assert_called_once_with(["balance", "--project", "demo"])
+        self.assertEqual(rc, 0)
+
 
 class CliPresentationOwnerTests(unittest.TestCase):
     """S6 mirror pin: presentation lives in cli_report (the ONE owner of
