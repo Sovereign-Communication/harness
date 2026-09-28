@@ -86,8 +86,18 @@ class AutonomyLedger(LedgerAnalytics):
             entries = []
         names = []
         skipped = []
+        # The ledger's own cross-process append lock (``_file_lock`` opens
+        # ``self.path + '.lock'``). It matches the ledger's prefix by
+        # construction and is created by this very class, so treating it as a
+        # stray made every run that touches a ledger print a warning about
+        # itself -- and a warning that always fires is one the operator learns
+        # to ignore, which is the opposite of what the stray-file guard is for
+        # (DF-LEDGER-1).
+        own_lock = base + ".lock"
         for fn in sorted(entries):
             if not fn.startswith(prefix):
+                continue
+            if fn == own_lock:
                 continue
             suffix = fn[len(prefix):]
             if _ROTATION_SUFFIX_RE.match(suffix):
