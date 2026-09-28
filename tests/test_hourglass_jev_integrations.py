@@ -26,6 +26,8 @@ from harness.jev_packs import (
     declared_restart_targets,
     hourglass_stage_question_pack,
     normalize_restart_target,
+    stage_judgment_requirement,
+    HOURGLASS_STAGE_REQUIREMENTS,
     validate_restart_request,
 )
 from harness.jev_policy import policy_for
@@ -340,6 +342,149 @@ class StageJudgmentPolicyTests(unittest.TestCase):
         self.assertAlmostEqual(structural["consent_fresh"], 0.2)
         self.assertAlmostEqual(structural["consent_defer_required"], 0.8)
         self.assertAlmostEqual(structural["escalation_justified"], 0.6)
+
+
+class StageJudgmentRequirementTests(unittest.TestCase):
+    """HV-1: "avoid redundant calls when no decision is needed".
+
+    The guard is code-owned and declared as data, so the rule lives with the
+    pack instead of being re-implemented per caller. Two properties matter and
+    are pinned separately below: a suppressed call must cost nothing at all,
+    and a suppression must never be mistakable for a judgment.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.ledger = AutonomyLedger(self.tmp.name + "/ledger.jsonl")
+        self.governor = RecordingGovernor()
+
+    def _policy(self, evaluator):
+        with mock.patch("harness.config.CONFIG_DIR", self.tmp.name), \
+                mock.patch("harness.config.resolve_api_key", return_value=None):
+            settings = load_settings({
+                "jev_api_key": "test-key", "jev_model": "jev-test"})
+        return policy_for(settings, transport=None, governor=self.governor,
+                          ledger=self.ledger, evaluator=evaluator)
+
+    def test_default_requires_a_judgment_for_every_declared_dimension(self):
+        # Permissive by default: a caller that knows nothing about its own
+        # state must still be judged, or the guard would silently disable
+        # every integration.
+        for name in HOURGLASS_STAGE_DIMENSIONS:
+            with self.subTest(dimension=name):
+                need = stage_judgment_requirement(name)
+                self.assertTrue(need["required"], name)
+                self.assertEqual(need["disposition"], "call", name)
+                self.assertIsNone(need["code_owned_fact"], name)
+
+    def test_each_code_owned_fact_suppresses_and_names_itself(self):
+        for name in HOURGLASS_STAGE_DIMENSIONS:
+            for kwargs in ({"subject_supplied": False}, {"superseded": True}):
+                with self.subTest(dimension=name, **kwargs):
+                    need = stage_judgment_requirement(name, **kwargs)
+                    self.assertFalse(need["required"])
+                    self.assertEqual(need["disposition"], "skipped")
+                    self.assertEqual(need["dimension"], name)
+                    # The responsible fact is named, so a skip is never silent.
+                    self.assertTrue(need["reason"].strip())
+                    self.assertTrue(need["code_owned_fact"])
+
+    def test_requirements_are_declared_for_exactly_the_five_dimensions(self):
+        # The declared set and the dimension set must not drift; a name in one
+        # and not the other would make a dimension unaskable or undeclared.
+        self.assertEqual(set(HOURGLASS_STAGE_REQUIREMENTS),
+                         set(HOURGLASS_STAGE_DIMENSIONS))
+        for name, spec in HOURGLASS_STAGE_REQUIREMENTS.items():
+            self.assertEqual(spec["dimension"], name)
+            self.assertTrue(spec["description"], name)
+            self.assertTrue(spec["subject"], name)
+
+    def test_an_unknown_dimension_is_refused_not_guarded(self):
+        # The guard must not become a softer door around the pack's own
+        # refusal: an undeclared dimension is still a hard error.
+        for bad in (None, "", "graph_neural", 7, ["execution"]):
+            with self.assertRaises(ValueError):
+                stage_judgment_requirement(bad)
+
+    def test_a_suppressed_call_dispatches_nothing_and_costs_nothing(self):
+        # The whole point: no preflight reservation, no dispatch, no
+        # settlement. A guard that still reserved would not have saved a call.
+        evaluator = FakeEvaluator({"context_relevant": noul(0.9)})
+        result, structural = self._policy(evaluator).evaluate_hourglass_stage(
+            "context_intake", {"request": "audit the ledger"},
+            superseded=True)
+        self.assertEqual(evaluator.calls, [])
+        self.assertEqual(self.governor.reservations, [])
+        self.assertEqual(self.governor.settlements, [])
+        self.assertEqual(self.ledger.entries(), [])
+        self.assertEqual(result.cost, 0.0)
+        self.assertEqual(structural["cost"], 0.0)
+        self.assertFalse(structural["dispatched"])
+
+    def test_a_suppressed_call_is_never_a_judgment(self):
+        # A skip reports the skip. It must not be readable as a pass, a fail,
+        # or a native signal, and it must not be silently absent either.
+        evaluator = FakeEvaluator({"context_relevant": noul(0.9)})
+        _result, structural = self._policy(evaluator).evaluate_hourglass_stage(
+            "context_intake", {"request": "x"}, subject_supplied=False)
+        self.assertFalse(structural["judgment_required"])
+        self.assertEqual(structural["result_state"], "not_required")
+        self.assertFalse(structural["native"])
+        self.assertTrue(structural["skip_reason"].strip())
+        for key in HOURGLASS_STAGE_DIMENSIONS["context_intake"]["signals"]:
+            self.assertIsNone(structural[key], key)
+
+    def test_a_suppressed_call_makes_no_completion_or_readiness_claim(self):
+        # The skip shares the "never a completion claim" rule with every other
+        # outcome: a dimension that was not asked says nothing at all.
+        import json
+        evaluator = FakeEvaluator({"context_relevant": noul(0.9)})
+        _result, structural = self._policy(evaluator).evaluate_hourglass_stage(
+            "context_intake", {"request": "x"}, superseded=True)
+        serialized = json.dumps(structural, default=str)
+        for forbidden in ("can_mark_complete", "readiness", "phase_status",
+                          "complete"):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_a_required_judgment_is_dispatched_and_ledgered_normally(self):
+        # The other half of the contract: suppressing is opt-in, and the
+        # ordinary path is unchanged -- one call, one event, real cost.
+        evaluator = FakeEvaluator({
+            "context_relevant": noul(0.91),
+            "context_coverage_sufficient": noul(0.62),
+            "context_conflict_present": noul(0.05)})
+        result, structural = self._policy(evaluator).evaluate_hourglass_stage(
+            "context_intake", {"request": "audit the ledger"},
+            subject_supplied=True, superseded=False)
+        self.assertTrue(structural["judgment_required"])
+        self.assertTrue(structural["dispatched"])
+        self.assertTrue(structural["native"])
+        self.assertEqual(len(evaluator.calls), 1)
+        self.assertEqual([e["event"] for e in self.ledger.entries()],
+                         ["jev_eval"])
+        self.assertEqual(result.cost, 0.0001)
+
+    def test_suppression_cannot_mask_an_unkeyed_run(self):
+        # Unkeyed already fails closed. The guard must not let a caller turn
+        # an unjudgeable run into a clean-looking "not required": a judgment
+        # WAS required here, it simply could not be made. That is a different
+        # fact from a suppressed call and must stay distinguishable.
+        with mock.patch("harness.config.CONFIG_DIR", self.tmp.name), \
+                mock.patch("harness.config.resolve_api_key", return_value=None):
+            settings = load_settings({"jev_api_key": None})
+        policy = policy_for(settings, transport=None,
+                            governor=self.governor, ledger=self.ledger,
+                            evaluator=FakeEvaluator({}))
+        result, structural = policy.evaluate_hourglass_stage(
+            "context_intake", {"request": "x"})
+        self.assertTrue(structural["judgment_required"])
+        self.assertFalse(structural["dispatched"])
+        self.assertTrue(result.is_fallback)
+        self.assertNotEqual(structural.get("result_state"), "not_required")
+        # Unavailable, not suppressed: the three outcomes never alias.
+        self.assertNotIn("skip_reason", structural)
 
 
 if __name__ == "__main__":

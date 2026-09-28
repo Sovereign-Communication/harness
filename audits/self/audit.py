@@ -624,17 +624,107 @@ def _classify_suite_output(text):
             m.group(0).strip() if m else None)
 
 
+# Credentials and ambient-config variables the hermetic suite child must not
+# inherit. Scrubbing the environment is necessary but NOT sufficient:
+# harness.config.resolve_api_key() falls back to reading key FILES under
+# ~/.config (scmorc/openrouter_fusion.env, scmorc/openrouter.env,
+# harness/openrouter.env), so an operator with a key on disk still gets a
+# non-hermetic child from an env-only scrub. The empty HOME below is what
+# actually makes `expanduser("~")` miss every one of those paths.
+_HERMETIC_STRIP_VARS = (
+    "OPENROUTER_API_KEY",
+    "TYPESAFE_API_KEY",
+    "HARNESS_JEV_KEY",
+    "HARNESS_LEDGER",
+)
+
+
+def _hermetic_suite_env(base_env, empty_home):
+    """The environment for R13's suite child: the parent's variables minus
+    every credential, with HOME/USERPROFILE pointed at an empty directory so
+    no key file under ~/.config can be found either.
+
+    Pure and factored out so it can be self-verified (see
+    ``r_suite_env_selftest``) without spawning anything. An audit check that
+    certifies hermeticity must not itself depend on ambient state, and this
+    is the piece that makes that true.
+    """
+    env = {k: v for k, v in base_env.items() if k not in _HERMETIC_STRIP_VARS}
+    # Windows resolves expanduser via USERPROFILE, POSIX via HOME; set both so
+    # the guarantee holds on every platform in the CI matrix.
+    env["HOME"] = empty_home
+    env["USERPROFILE"] = empty_home
+    return env
+
+
 def r_suite_green():
     """The full unit suite is green hermetically (with ResourceWarnings as
-    errors)."""
-    r = subprocess.run(
-        [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest",
-         "discover", "-s", "tests", "-q"],
-        cwd=str(ROOT), capture_output=True, text=True, timeout=900)
+    errors).
+
+    The child is spawned with credentials stripped and HOME pointed at an
+    empty directory. Without that, a key-gated live test
+    (tests/test_judge.py's catalog freshness check) runs a real network call
+    whenever the operator happens to have a key on disk, and R13 reports the
+    result as a suite-reliability failure. R13's verdict must be a property of
+    the repository, not of the machine running the audit.
+    """
+    with tempfile.TemporaryDirectory() as empty_home:
+        r = subprocess.run(
+            [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest",
+             "discover", "-s", "tests", "-q"],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=900,
+            env=_hermetic_suite_env(os.environ, empty_home))
     summary_ok, leaked, summary = _classify_suite_output(r.stdout + r.stderr)
     ok = summary_ok and not leaked
     return _pass(ok, f"unittest: {summary if summary is not None else r.stderr[-200:]}",
                  (r.stdout + r.stderr)[-2500:])
+
+
+def r_suite_env_selftest():
+    """R13's hermeticity guarantee proves its own contract: every credential
+    variable is dropped, HOME and USERPROFILE are BOTH redirected (Windows
+    resolves expanduser via USERPROFILE, so setting only HOME would leave the
+    audit non-hermetic on the Windows matrix leg), unrelated variables survive
+    (a scrub that emptied the environment wholesale would break the suite
+    rather than isolate it), and each credential is load-bearing so narrowing
+    the strip list cannot silently restore the ambient-key defect. Hermetic:
+    dicts, no subprocess and no filesystem."""
+    empty = "/nonexistent-hermetic-home"
+    bare = {
+        "PATH": "/usr/bin",
+        "SYSTEMROOT": "C:\\Windows",
+        "HOME": "/home/operator",
+        "USERPROFILE": "C:\\Users\\operator",
+    }
+    env = _hermetic_suite_env(bare, empty)
+    credentials_gone = all(v not in env for v in _HERMETIC_STRIP_VARS)
+    home_gone = env.get("HOME") == empty and env.get("USERPROFILE") == empty
+    unrelated_kept = env.get("PATH") == "/usr/bin" and env.get("SYSTEMROOT") == "C:\\Windows"
+    # The expected names are written out HERE, not read back from
+    # _HERMETIC_STRIP_VARS. A self-test that iterated the implementation list
+    # could not detect that list being trimmed: dropping a name would drop its
+    # own coverage and the check would stay green while the ambient-key defect
+    # came back. This is the same blind spot R14 guards for its own signature
+    # list.
+    expected = ("OPENROUTER_API_KEY", "TYPESAFE_API_KEY",
+                "HARNESS_JEV_KEY", "HARNESS_LEDGER")
+    strip_list_complete = set(_HERMETIC_STRIP_VARS) == set(expected)
+    # Each credential must be load-bearing: seed a credential-free parent with
+    # that one name and assert it does NOT survive into the child. (Comparing
+    # the seeded output against the unseeded one would NOT work: stripping an
+    # absent name and a present one produce identical dicts.)
+    each_load_bearing = all(
+        _hermetic_suite_env(dict(bare, **{v: "seeded-secret"}), empty).get(v) is None
+        for v in expected)
+    ok = (credentials_gone and home_gone and unrelated_kept
+          and strip_list_complete and each_load_bearing)
+    return _pass(ok, f"R13 hermetic env: credentials_gone={credentials_gone}, "
+                     f"HOME+USERPROFILE_redirected={home_gone}, "
+                     f"unrelated_kept={unrelated_kept}, "
+                     f"strip_list_complete={strip_list_complete}, "
+                     f"each_credential_load_bearing={each_load_bearing}",
+                 f"stripped={list(_HERMETIC_STRIP_VARS)}; "
+                 f"expected={list(expected)}; empty_home={empty}")
 
 
 def r_suite_selftest():
@@ -1166,7 +1256,8 @@ CHECKS = {
           ("R11", "config validation ranges + unknown-key warning", r_config_validation),
           ("R12", "continuation contract refuses all tamper classes (dynamic)", r_continuation_contract),
           ("R13", "full suite green hermetically", r_suite_green),
-          ("R14", "R13 classifier self-verifies its contract", r_suite_selftest)],
+          ("R14", "R13 classifier self-verifies its contract", r_suite_selftest),
+          ("R15", "R13 suite child cannot inherit a credential", r_suite_env_selftest)],
     "SM": [("S1", "import direction (interfaces on top)", sm_layering),
            ("S2", "no re-export facades", sm_no_facades),
            ("S3", "result vocabulary one def site", sm_vocabulary_one_site),

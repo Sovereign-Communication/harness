@@ -1,44 +1,44 @@
 {
   "scores": {
     "A": 10.0,
-    "R": 10.0,
+    "R": 9.33,
     "SM": 10.0,
     "SD": 10.0
   },
   "jev_scores": {
-    "A": 10.0,
-    "R": 10.0,
-    "SM": 10.0,
+    "A": 9.0,
+    "R": 9.0,
+    "SM": 9.0,
     "SD": 10.0
   },
-  "jev_gate_pass": true,
+  "jev_gate_pass": false,
   "jev_eval": {
     "dimensions": {
       "A": {
         "name": "Security",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 2,
+        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
+        "score": 9.0,
+        "bar_met": false,
+        "confidence": 0.84,
         "evaluated": true
       },
       "R": {
         "name": "Reliability",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 2,
+        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
+        "score": 9.0,
+        "bar_met": false,
+        "confidence": 0.91,
         "evaluated": true
       },
       "SM": {
         "name": "Structural hygiene & maintainability",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 2,
+        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
+        "score": 9.0,
+        "bar_met": false,
+        "confidence": 0.57,
         "evaluated": true
       },
       "SD": {
@@ -47,23 +47,23 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.95,
+        "confidence": 0.86,
         "evaluated": true
       }
     },
     "scores": {
-      "A": 10.0,
-      "R": 10.0,
-      "SM": 10.0,
+      "A": 9.0,
+      "R": 9.0,
+      "SM": 9.0,
       "SD": 10.0
     },
-    "bar_95_pass": true,
-    "min_score": 10.0,
+    "bar_95_pass": false,
+    "min_score": 9.0,
     "is_fallback": false,
     "reasons": [],
     "model": "jev-1.13.0",
-    "cost": 5.5565999999999995e-06,
-    "input_tokens": 1323,
+    "cost": 5.5523999999999996e-06,
+    "input_tokens": 1322,
     "output_tokens": 60
   },
   "checks": {
@@ -223,14 +223,20 @@
       {
         "id": "R13",
         "label": "full suite green hermetically",
-        "score": 1.0,
-        "evidence": "unittest: Ran 2310 tests in 424.577s\n\nOK"
+        "score": 0.0,
+        "evidence": "ply_loop)\nEnd-to-end hermetic proof through cli.main: a bench run must send\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness\\.freebuff\\worktrees\\4e01c2ef-281e-43c5-a741-8a5ee2ed0d74\\tests\\test_cli.py\", line 361, in test_bench_engine_key_reaches_apply_loop\n    self.assertTrue(posts, \"apply loop must issue chat posts\")\n    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: [] is not true : apply loop must issue chat posts\n\n======================================================================\nFAIL: test_suppression_cannot_mask_an_unkeyed_run (test_hourglass_jev_integrations.StageJudgmentRequirementTests.test_suppression_cannot_mask_an_unkeyed_run)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness\\.freebuff\\worktrees\\4e01c2ef-281e-43c5-a741-8a5ee2ed0d74\\tests\\test_hourglass_jev_integrations.py\", line 483, in test_suppression_cannot_mask_an_unkeyed_run\n    self.assertFalse(structural[\"dispatched\"])\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: True is not false\n\n======================================================================\nFAIL: test_ruff_gate_when_available (test_plat_cmd_runnable.GateRunsOnThisOSTest.test_ruff_gate_when_available)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness\\.freebuff\\worktrees\\4e01c2ef-281e-43c5-a741-8a5ee2ed0d74\\tests\\test_plat_cmd_runnable.py\", line 110, in test_ruff_gate_when_available\n    self.assertEqual(rc, 0, out)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^\nAssertionError: 1 != 0 : UP031 Use format specifiers instead of percent format\n   --> audits\\self\\audit.py:680:9\n    |\n678 |     so, lk, sm = _classify_suite_output(combined)\n679 |     Path(\"r13_classify.txt\").write_text(\n680 |         \"summary_ok=%r leaked=%r summary=%r rc=%r rw=%d unclosed=%d len=%d\" % (\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n681 |             so, lk, sm, r.returncode, combined.count(\"ResourceWarning\"),\n682 |             combined.count(\"unclosed file\"), len(combined)), encoding=\"utf-8\")\n    |\nhelp: Replace with format specifiers\n\nFound 1 error.\n\n\n----------------------------------------------------------------------\nRan 2369 tests in 139.691s\n\nFAILED (failures=3, skipped=52)\n"
       },
       {
         "id": "R14",
         "label": "R13 classifier self-verifies its contract",
         "score": 1.0,
         "evidence": "R13 classifier: clean->PASS, planted->FAIL, each signature load-bearing, old-rule diverges"
+      },
+      {
+        "id": "R15",
+        "label": "R13 suite child cannot inherit a credential",
+        "score": 1.0,
+        "evidence": "R13 hermetic env: credentials_gone=True, HOME+USERPROFILE_redirected=True, unrelated_kept=True, strip_list_complete=True, each_credential_load_bearing=True"
       }
     ],
     "SM": [
@@ -354,7 +360,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed"
+        "evidence": "SKIP (fail-open): git diff against baseline unavailable"
       }
     ]
   }

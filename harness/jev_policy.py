@@ -30,6 +30,7 @@ from .jev_packs import (
     HOURGLASS_STAGE_SITE,
     hourglass_stage_question_pack,
     normalize_restart_target,
+    stage_judgment_requirement,
     VISION_ASSESSMENT_SITE,
     VISION_ASSESSMENT_MAX_REQUEST_TOKENS,
     VISION_ASSESSMENT_MAX_STATE_QUESTION_TOKENS,
@@ -289,7 +290,9 @@ class JevPolicy:
             site: str = HOURGLASS_STAGE_SITE,
             task_id: Optional[str] = None,
             node_id: Optional[str] = None,
-            max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+            max_input_tokens: int = JEV_MAX_INPUT_TOKENS,
+            subject_supplied: bool = True,
+            superseded: bool = False):
         """Judge ONE declared Hourglass stage dimension (HV-1).
 
         Selectable typed integrations, one owner, one contract:
@@ -308,10 +311,50 @@ class JevPolicy:
         - one preflight reservation, one dispatch, one settlement, one
           metadata-only ledger ``jev_eval`` on every path.
 
+        ``subject_supplied``/``superseded`` are the code-owned facts behind
+        HV-1's "avoid redundant calls when no decision is needed". When they
+        say a call is not required, this returns BEFORE any preflight: no
+        reservation, no dispatch, no settlement, and no ``jev_eval`` event,
+        because nothing was evaluated. The skip is reported in the returned
+        envelope (``result_state="not_required"``, every signal ``None``,
+        ``native=False``) rather than in the ledger -- a ``jev_eval`` event
+        for a call that never happened would be a false record. A skip can
+        therefore never be mistaken for a passing or failing judgment.
+
         Returns ``(result, structural)`` where ``structural`` carries the
         declared signals, the capability/pack identity, and the honest
         native/fallback state.
         """
+        questions = hourglass_stage_question_pack(dimension)
+        spec = HOURGLASS_STAGE_DIMENSIONS[dimension]
+        signals = list(spec["signals"])
+        requirement = stage_judgment_requirement(
+            dimension, subject_supplied=subject_supplied,
+            superseded=superseded)
+        if not requirement["required"]:
+            values = {key: None for key in signals}
+            skipped = JevEvaluationResult(
+                "skipped", 0.0, 0.0,
+                {**values, "pack_version": HOURGLASS_STAGE_PACK_VERSION,
+                 "native": False},
+                [requirement["reason"]],
+                is_fallback=False, model=self.evaluator.model)
+            structural = {
+                "capability": HOURGLASS_STAGE_SITE,
+                "pack_id": HOURGLASS_STAGE_PACK_ID,
+                "pack_version": HOURGLASS_STAGE_PACK_VERSION,
+                "dimension": dimension,
+                "declared_signals": signals,
+                "native": False,
+                "result_state": "not_required",
+                "judgment_required": False,
+                "skip_reason": requirement["reason"],
+                "code_owned_fact": requirement["code_owned_fact"],
+                "dispatched": False,
+                "cost": 0.0,
+                **{key: None for key in signals},
+            }
+            return skipped, structural
         questions = hourglass_stage_question_pack(dimension)
         spec = HOURGLASS_STAGE_DIMENSIONS[dimension]
         signals = list(spec["signals"])
@@ -375,6 +418,13 @@ class JevPolicy:
                 "dimension": dimension,
                 "declared_signals": signals,
                 "native": bool(live),
+                "judgment_required": True,
+                # finish() is reached ONLY by the paths that did not dispatch
+                # (unkeyed, and a pre-dispatch/HarnessError refusal). A
+                # judgment was required and could not be made; saying
+                # otherwise would make "tried and unavailable" look like
+                # "asked and answered".
+                "dispatched": False,
                 **{key: values.get(key) for key in signals},
             })
             return result, structural
@@ -429,6 +479,8 @@ class JevPolicy:
                 "dimension": dimension,
                 "declared_signals": signals,
                 "native": bool(live),
+                "judgment_required": True,
+                "dispatched": True,
                 **{key: values.get(key) for key in signals},
             })
             return result, structural
