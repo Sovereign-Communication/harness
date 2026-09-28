@@ -399,6 +399,29 @@ class ApplyTests(ApplyFixture):
         with open(p, encoding="utf-8") as f:
             self.assertEqual(f.read().strip(), CHANGED.strip())
 
+    def test_resume_with_new_instruction_overrides_remaining_scope(self):
+        """Resuming a deferred task with a fresh --instruction must update
+        the continuation's remaining_scope so any later re-defer carries the
+        caller's newest scope forward, not the stale one from the first
+        HARNESS_DEFER."""
+        p = self.make_file()
+        _, _, _, engine = self.make_env(
+            posts=[comp(PARTIAL + "HARNESS_DEFER: "
+                        '{"remaining_scope":"finish +0","reason":"low on tokens"}')],
+            renew=False)
+        r1 = engine.apply_edit(task_id=None, file_path=p, instruction="add +0",
+                               verify_cmd="check", require_consent=False)
+        state = r1["continuation"]
+        self.assertEqual(state["remaining_scope"], "finish +0")
+
+        req = engine._prepare({"continuation": state,
+                               "instruction": "finish +0 and also +1",
+                               "require_consent": False})
+        self.assertEqual(req.continuation["remaining_scope"],
+                         "finish +0 and also +1")
+        # the saved dict itself is never mutated in place
+        self.assertEqual(state["remaining_scope"], "finish +0")
+
     def test_continuation_resumes_under_saved_task_id(self):
         """A resume is the same task: ledger attribution must stay under the
         original task id even when the resume goes through apply_batch (which
