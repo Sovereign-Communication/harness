@@ -9,12 +9,26 @@ the strict mode still fails closed on findings.
 
 import importlib.util
 import io
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "validate_handoff_scope.py"
+
+# A document that names a foreign product, so the alias detector trips.
+# It is written to a temporary directory rather than borrowed from the
+# repository: a real tracked document is mutable state, and the moment one
+# such document is correctly waived (which is the register's whole purpose)
+# a test that names it stops testing mode handling and starts testing
+# register contents. These two tests exist to pin that warn-only warns and
+# strict fails, and they should depend on nothing but their own fixture.
+DIRTY_BODY = (
+    "Harness dogfood notes.\n\n"
+    "The run was driven through SCMessenger and cross-checked with the "
+    "BigEnergyCo engine.\n"
+)
 
 
 def load_gate():
@@ -37,6 +51,19 @@ class TestHandoffScopeGate(unittest.TestCase):
     def test_script_self_test_passes(self):
         self.assertEqual(self.gate.self_test(), 0)
 
+    def _dirty_document(self):
+        """An absolute path to a temporary document that trips the detector.
+
+        Absolute, so the gate resolves it as given and the waiver register
+        cannot match it: no waiver names a temporary path, which is what
+        keeps this a genuine violation rather than a suppressed one.
+        """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "DIRTY.md"
+        path.write_text(DIRTY_BODY, encoding="utf-8")
+        return str(path)
+
     def test_warn_only_never_fails_on_document_content(self):
         # A document naming a foreign product trips the detector; in
         # warn-only mode that must be a warning, not a failure.
@@ -46,7 +73,7 @@ class TestHandoffScopeGate(unittest.TestCase):
                 [
                     "--repo-root", str(REPO_ROOT),
                     "--warn-only",
-                    "--document", "HANDOFF/CTO_HANDOFF_HARNESS_JEV_FREEBUFF_AUDIT_2026-09-21.md",
+                    "--document", self._dirty_document(),
                 ]
             )
         self.assertEqual(code, 0)
@@ -58,7 +85,7 @@ class TestHandoffScopeGate(unittest.TestCase):
             code = self.gate.main(
                 [
                     "--repo-root", str(REPO_ROOT),
-                    "--document", "HANDOFF/CTO_HANDOFF_HARNESS_JEV_FREEBUFF_AUDIT_2026-09-21.md",
+                    "--document", self._dirty_document(),
                 ]
             )
         self.assertEqual(code, 1)

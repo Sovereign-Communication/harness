@@ -1,5 +1,14 @@
 # CTO_STATE — Harness
 
+<!-- HANDOFF-SCOPE-BEGIN -->
+scope: Harness
+owner: Sovereign-Communication/harness
+purpose: Harness-only findings and remediation handoff
+foreign_material: NONE
+boundary: No foreign-repository findings, evidence, status, or remediation are included.
+<!-- HANDOFF-SCOPE-END -->
+
+
 **Updated:** 2026-09-24 (lane-unification canon correction)
 **Canon:** `docs/jev-roadmap.md` — STATUS, "Next implementation slice", `DF-*` rows. This file is seat state, not a plan.
 

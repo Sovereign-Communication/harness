@@ -1,1 +1,27 @@
-{"_note":"Owner-signed, per-document exemptions from the handoff ownership gate. A waiver SUPPRESSES the advisory warning for exactly one document; it never writes a scope block into that document, so an exempted document is never made to look compliant. Use a waiver only when a document cannot honestly carry `foreign_material: NONE` -- for example one that legitimately records another product's tooling. Stamping such a document is a false attestation, which is precisely what this gate exists to surface. Every entry requires all five fields (path, owner, reason, ticket, date) and is audited on every run: an entry naming a path that is not a tracked handoff document, or whose document no longer trips the foreign-alias detector, is reported as a warning (this gate is advisory; it never fails). An exemption therefore cannot silently outlive its reason. Validate with: python scripts/validate_handoff_scope.py --repo-root . --self-test","schema":1,"waivers":[]}
+{
+  "_note": "Owner-signed, per-document exemptions from the handoff ownership gate. A waiver SUPPRESSES the advisory warning for exactly one document; it never writes a scope block into that document, so an exempted document is never made to look compliant. Use a waiver only when a document cannot honestly carry `foreign_material: NONE` -- for example one that legitimately records another product's tooling. Stamping such a document is a false attestation, which is precisely what this gate exists to surface. Every entry requires all five fields (path, owner, reason, ticket, date) and is audited on every run: an entry naming a path that is not a tracked handoff document, or whose document no longer trips the foreign-alias detector, is reported as a warning (this gate is advisory; it never fails). An exemption therefore cannot silently outlive its reason. Validate with: python scripts/validate_handoff_scope.py --repo-root . --self-test",
+  "schema": 1,
+  "waivers": [
+    {
+      "date": "2026-09-28",
+      "owner": "Sovereign-Communication/harness operator (CTO seat)",
+      "path": "HANDOFF/CTO_HANDOFF_HARNESS_JEV_FREEBUFF_AUDIT_2026-09-21.md",
+      "reason": "Records, by design, that the sibling lane's identity/transport/WiFi handoff is NOT in this repository, and names its location so the exclusion is checkable. The reference establishes the boundary rather than importing foreign material.",
+      "ticket": "#108"
+    },
+    {
+      "date": "2026-09-28",
+      "owner": "Sovereign-Communication/harness operator",
+      "path": "HANDOFF/FREEBUFF_TRANSITION.md",
+      "reason": "Transition record that cites a foreign-lane log path as dogfood evidence and states the rule that no foreign product code lands in Harness PRs. The named artifacts are pointers, not imported findings, evidence, status, or remediation.",
+      "ticket": "#108"
+    },
+    {
+      "date": "2026-09-28",
+      "owner": "Sovereign-Communication/harness operator",
+      "path": "docs/MODEL_SELECTION_HANDOFF_2026-09-13.md",
+      "reason": "Carries its own authorship provenance (a recovery session belonging to the foreign lane) and uses that lane's failed board run as the evidence for the model-selection conclusions. Removing either would falsify the record. Confirmed as a substantive foreign reference, not an incidental mention, by HANDOFF/OWNERSHIP_GATE_UNTRACKED_2026-09-26.md.",
+      "ticket": "#108"
+    }
+  ]
+}

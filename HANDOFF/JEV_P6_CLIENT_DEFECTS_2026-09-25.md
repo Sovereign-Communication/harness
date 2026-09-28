@@ -5,7 +5,7 @@
 
 <!-- HANDOFF-SCOPE-BEGIN -->
 scope: Harness
-owner: Sovereign-Communication/Harness
+owner: Sovereign-Communication/harness
 purpose: Harness-only findings and remediation handoff
 foreign_material: NONE
 boundary: No foreign-repository findings, evidence, status, or remediation are included.
