@@ -28,7 +28,19 @@ from .session import apply_session, attest_model_for, governor_for, jev_for, led
 from .jev_policy import (
     JevPolicy, aggregate_structural, jev_cost_ceiling, policy_for,
 )
-from .waist import compose_plan, resolve_scout_ladder
+from .token_budget import budget_from_settings
+from .waist import (
+    STAGE_PLANNING,
+    STATE_COMPLETED,
+    compose_plan,
+    compose_stages,
+    composition_envelope,
+    resolve_scout_ladder,
+    run_planning,
+    stage_budget,
+    stage_selection_from_settings,
+    stage_states,
+)
 from .web import DEFAULT_FETCH_HOSTS, gather_web_context
 
 # Consumers import history/repo_scope/web helpers from their owners
@@ -813,6 +825,75 @@ class AutonomousAgent:
 
         return chat_fn
 
+    def _compose_run_stages(self, goal, candidate_files, jev_policy=None):
+        """HV-5: compose this run's stages and actually RUN the planning one.
+
+        ``HV-4`` published the composition owner and deliberately left it
+        uncalled, so a run composed nothing. This is the caller it declared:
+        the run's own :class:`~harness.token_budget.TokenBudget` (never one
+        invented here) and the configured ``hourglass_stages`` reach
+        :func:`~harness.waist.compose_stages`, and when ``planning`` is among
+        the selected stages the stage's OWN child budget is handed to
+        :func:`~harness.waist.run_planning`.
+
+        The child matters: ``TokenBudget.stage()`` inherits its parent's
+        ceilings when none are given, so passing the run budget would hand
+        planning the FULL run allowance and quietly undo the narrowing the
+        envelope just reported. The stage that spends is therefore the stage
+        that was composed, read back through the one accessor that owns it.
+
+        Returns ``(envelope, planning_outcome)``. The envelope is the
+        serialisable decision; the outcome is ``None`` when the operator did
+        not select ``planning`` at all.
+        """
+        budget = budget_from_settings(self.settings, label="edit")
+        composition = compose_stages(
+            budget=budget,
+            declared=stage_selection_from_settings(self.settings))
+        states = stage_states(composition)
+        outcome = None
+        planning = stage_budget(composition, STAGE_PLANNING)
+        if planning is not None:
+            # Plan over the files that are actually there. Triage names its
+            # hits before anything reads them, so a path can be stale by the
+            # time the planner arrives; the edit lane already drops unreadable
+            # files from its own context, and composition must not be the one
+            # step that turns a vanished file into a failed run.
+            readable = [rel for rel in candidate_files
+                        if (self.root_dir / rel).is_file()]
+            outcome = run_planning(
+                goal=goal, budget=planning, files=readable,
+                # Brief intake reads through the agent's own root: the
+                # candidate files are run-relative, and a reader that
+                # resolved them against the server's CWD would curate a
+                # different (or empty) evidence set than the run targets.
+                reader=self._evidence_reader(),
+                jev_policy=jev_policy)
+            # `completed` is in the declared stage vocabulary and this is
+            # the owner that finally produces it: composition budgets
+            # stages, but the caller that RAN one reports it here.
+            states[STAGE_PLANNING] = STATE_COMPLETED
+        return composition_envelope(composition, states=states), outcome
+
+    def _evidence_reader(self):
+        """A reader for brief intake, bound to this run's own root.
+
+        Brief intake is allowed to report a read failure as a read failure --
+        it must not curate a different evidence set to work around one -- so
+        this raises :class:`HarnessError` rather than letting an ``OSError``
+        escape as an unhandled crash. The caller's refusal path is already
+        fail-soft: it emits a visible note and leaves the gated plan intact.
+        """
+        def read(rel):
+            try:
+                return (self.root_dir / rel).read_text(
+                    encoding="utf-8", errors="replace")
+            except OSError as exc:
+                raise HarnessError(
+                    "could not read evidence {0!r}: {1}".format(rel, exc)
+                ) from exc
+        return read
+
     def _plan_round(self, goal, candidate_files, gov, confirm=None):
         """One planning pass through the ONE plan composer
         (harness/waist.py:compose_plan): cheap-LLM decomposition when the
@@ -848,6 +929,30 @@ class AutonomousAgent:
             # event stream, not just on stderr.
             emit("orchestration_note",
                  note="LLM decomposition unavailable; heuristic plan in use")
+
+        # HV-5: the run is composed against the run budget, and the planning
+        # stage is EXECUTED rather than only budgeted. The composition rides
+        # on the plan envelope, so a caller reading the plan can see which
+        # stages ran, what each was allowed to spend, and why planning ended
+        # where it did. Attached last, so it survives every degraded or
+        # refused copy compose_plan may have made along the way.
+        try:
+            envelope, planning = self._compose_run_stages(
+                goal, candidate_files, jev_policy=jev_policy)
+        except HarnessError as exc:
+            # A composition that cannot be built must not take the plan lane
+            # down with it: the DAG above is already valid and gated. The
+            # refusal is reported, never silently swallowed.
+            emit("orchestration_note",
+                 note="stage composition unavailable: {0}".format(exc))
+            return plan
+        plan["composition"] = envelope
+        if planning is not None:
+            plan["planning"] = planning.to_dict()
+            emit("planning_stage",
+                 kind=planning.kind, reason=planning.reason,
+                 rounds=len(planning.rounds),
+                 evidence_items=len(planning.evidence_request))
         return plan
 
     def _refused_edit(self, plan, prompt, target_files, session_id):
@@ -980,6 +1085,15 @@ class AutonomousAgent:
                 "verification_gate": verification_gate,
                 "cost_ceiling": plan["total_cost_ceiling"],
                 "cost": 0.0,
+                # HV-5: the composed stages and the planning outcome are part
+                # of what the caller asked for, so they are part of the
+                # answer. A run that reports a plan without saying which
+                # stages it was allowed to spend, and how planning ended,
+                # is asking the reader to take the composition on trust.
+                **({"composition": dict(plan["composition"])}
+                   if isinstance(plan.get("composition"), dict) else {}),
+                **({"planning": dict(plan["planning"])}
+                   if isinstance(plan.get("planning"), dict) else {}),
                 **({"structural": dict(plan["structural"])}
                    if isinstance(plan.get("structural"), dict) else {}),
             }
