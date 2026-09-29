@@ -1860,11 +1860,149 @@ def stage_selection_from_settings(settings, *, default=None) -> List[str]:
     return list(raw)
 
 
+# ---- GAP-recondense: when a stage-mutated tree invalidates the brief -----
+#
+# A supplied brief buys the ``context`` bypass only while it is still
+# evidence. ``brief.freshness_report`` answers one half of that -- has a
+# cited file changed? -- and a *composed* run has two more, neither of which
+# a pin check can see: a stage gate that failed, which voids the green-tree
+# basis the plan was written against, and an executed node that wrote a path
+# the brief describes, which makes the brief's account of that path stale
+# even while every file it pinned is byte-identical. The trigger vocabulary
+# is declared here so a caller reads a fixed set of reasons instead of
+# inventing one, and precedence is code's rather than a model's: a terminal
+# fact outranks a drifted pin, and a drifted pin outranks a heuristic overlap.
+
+RECONDENSE_GATE_FAILURE = "gate_failure"
+RECONDENSE_PIN_DRIFT = "pin_drift"
+RECONDENSE_EXECUTED_OVERLAP = "executed_overlap"
+RECONDENSE_TRIGGERS = (RECONDENSE_GATE_FAILURE, RECONDENSE_PIN_DRIFT,
+                       RECONDENSE_EXECUTED_OVERLAP)
+RECONDENSE_REASONS = {
+    RECONDENSE_GATE_FAILURE: ("a stage gate failed, so the green-tree basis "
+                              "the plan was written against is void"),
+    RECONDENSE_PIN_DRIFT: "a cited source no longer matches its pin",
+    RECONDENSE_EXECUTED_OVERLAP: ("an executed node wrote a path the brief "
+                                  "describes"),
+}
+
+
+def _brief_path(value):
+    """One comparable path: separators normalized, no leading ``./``.
+
+    Deliberately not a filesystem operation. This only decides whether two
+    names a brief and an executed node both report are the same path, and it
+    refuses to guess about case or symlinks rather than silently matching on
+    one platform and missing on the other -- a false "no overlap" is a stale
+    brief nobody notices, so the rule stays exact and is stated here.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip().replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    return text or None
+
+
+def _recondense_failures(gate_failures):
+    """The stage gates that failed, refusing a bare string.
+
+    A string here would silently iterate into characters and count as one
+    failure per letter, which is the same class of mistake ``resolve_stages``
+    already refuses for a declared-stage value.
+    """
+    if gate_failures is None:
+        return []
+    if isinstance(gate_failures, str):
+        raise HarnessError(
+            "gate_failures must be a sequence of gate names, not a string: "
+            "{0!r}".format(gate_failures))
+    return [f for f in gate_failures if f]
+
+
+def brief_covered_paths(pack) -> List[str]:
+    """Every path a brief describes, read from its own declared shape.
+
+    A v2 pack names its evidence in ``grounding.sources[].path`` and its
+    scope in ``scope.included``. Both are read; nothing is inferred from
+    prose, because an overlap the brief never declared is not one this owner
+    can honestly claim to have found.
+    """
+    if not isinstance(pack, dict):
+        return []
+    candidates = []
+    for source in (pack.get("grounding") or {}).get("sources") or []:
+        if isinstance(source, dict):
+            candidates.append(source.get("path"))
+    scope = pack.get("scope")
+    if isinstance(scope, dict):
+        candidates.extend(scope.get("included") or [])
+    covered: List[str] = []
+    for value in candidates:
+        path = _brief_path(value)
+        if path and path not in covered:
+            covered.append(path)
+    return covered
+
+
+def recondense_decision(*, brief, freshness=None, touched_paths=(),
+                        gate_failures=(), reader=None) -> Dict[str, Any]:
+    """Must the brief be rebuilt before the run continues? Code owns the call.
+
+    Returns the decision, the highest-precedence ``trigger``, *every* reason
+    that applies, and the evidence behind each, so a refresh is never a bare
+    boolean: a caller is expected to report why it paid to re-condense.
+
+    ``freshness`` lets a caller that already measured the brief (for instance
+    to decide a bypass once) reuse that report instead of re-reading the
+    tree; omitted, it is measured here. ``touched_paths`` is what executed
+    nodes actually wrote, and ``gate_failures`` the gates that failed -- both
+    are supplied by a caller that ran a stage, which is why this owner cannot
+    discover them itself.
+    """
+    if freshness is None:
+        freshness = freshness_report(brief, reader=reader)
+    failures = _recondense_failures(gate_failures)
+    triggers: List[str] = []
+    details: Dict[str, Any] = {}
+    if failures:
+        triggers.append(RECONDENSE_GATE_FAILURE)
+        details[RECONDENSE_GATE_FAILURE] = {
+            "gates": [str(f) for f in failures]}
+    if not freshness.get("fresh"):
+        triggers.append(RECONDENSE_PIN_DRIFT)
+        details[RECONDENSE_PIN_DRIFT] = {
+            "checked": freshness.get("checked"),
+            "stale": [s.get("id") for s in freshness.get("stale") or []
+                      if isinstance(s, dict)],
+            "missing": [s.get("id") for s in freshness.get("missing") or []
+                        if isinstance(s, dict)],
+            "reasons": list(freshness.get("reasons") or []),
+        }
+    touched = {_brief_path(value) for value in (touched_paths or ())}
+    overlap = sorted(set(brief_covered_paths(brief))
+                     & {p for p in touched if p})
+    if overlap:
+        triggers.append(RECONDENSE_EXECUTED_OVERLAP)
+        details[RECONDENSE_EXECUTED_OVERLAP] = {"paths": overlap}
+    trigger = triggers[0] if triggers else None
+    return {
+        "refresh": trigger is not None,
+        "trigger": trigger,
+        "triggers": triggers,
+        "reasons": [RECONDENSE_REASONS[t] for t in triggers],
+        "details": details,
+    }
+
+
 def resolve_stages(declared: Optional[Sequence[str]] = None, *,
                    supplied_brief: bool = False,
                    supplied_plan: bool = False,
                    brief: Optional[Dict[str, Any]] = None,
-                   reader=None
+                   reader=None,
+                   touched_paths=None,
+                   gate_failures=None,
+                   freshness=None,
                    ) -> Dict[str, Any]:
     """Select the stages that will actually run, in pipeline order.
 
@@ -1884,6 +2022,15 @@ def resolve_stages(declared: Optional[Sequence[str]] = None, *,
     bare ``supplied_brief`` flag, so it is checked: while the pack is fresh
     the bypass stands, and once it has drifted the bypass is denied, the
     stage runs, and the refusal is reported under ``denied``.
+
+    ``touched_paths``/``gate_failures``/``freshness`` (GAP-recondense) are
+    the evidence a *composed* run has that a pin check cannot see. Supplying
+    any of them routes the bypass decision through
+    :func:`recondense_decision` -- the ONE owner of the trigger vocabulary --
+    and returns its decision under ``recondense``. Supplying none of them
+    keeps this function's historical behaviour exactly: a tri-state sentinel,
+    where ``touched_paths=None`` means "no stage ran, nothing to report" and
+    ``touched_paths=()`` means "a stage ran and wrote nothing".
     """
     if declared is None:
         wanted = list(HOURGLASS_DEFAULT_STAGES)
@@ -1909,21 +2056,44 @@ def resolve_stages(declared: Optional[Sequence[str]] = None, *,
 
     bypassed: Dict[str, str] = {}
     denied: Dict[str, str] = {}
+    decision: Optional[Dict[str, Any]] = None
+    # Tri-state: None means no stage has run, so there is no decision to make.
+    stage_evidence = (touched_paths is not None or freshness is not None
+                      or bool(_recondense_failures(gate_failures)))
     if (supplied_brief or brief is not None) and STAGE_CONTEXT in wanted:
         if brief is None:
             bypassed[STAGE_CONTEXT] = STAGE_BYPASS_REASONS[STAGE_CONTEXT]
-        elif freshness_report(brief, reader=reader).get("fresh"):
-            bypassed[STAGE_CONTEXT] = STAGE_BYPASS_REASONS[STAGE_CONTEXT]
         else:
-            denied[STAGE_CONTEXT] = STAGE_DENIED_BYPASS[STAGE_CONTEXT]
+            if stage_evidence:
+                decision = recondense_decision(
+                    brief=brief, freshness=freshness, reader=reader,
+                    touched_paths=touched_paths or (),
+                    gate_failures=gate_failures or ())
+                drifted = bool(decision["refresh"])
+            else:
+                drifted = not freshness_report(brief, reader=reader).get("fresh")
+            if not drifted:
+                bypassed[STAGE_CONTEXT] = STAGE_BYPASS_REASONS[STAGE_CONTEXT]
+            else:
+                reason = STAGE_DENIED_BYPASS[STAGE_CONTEXT]
+                if decision is not None and decision.get("trigger"):
+                    # The refusal names its trigger, so a reader can tell a
+                    # re-condense paid for by a failed gate from one paid for
+                    # by a drifted pin without diffing the tree.
+                    reason = "{0} (trigger: {1})".format(
+                        reason, decision["trigger"])
+                denied[STAGE_CONTEXT] = reason
     if supplied_plan and STAGE_PLANNING in wanted:
         bypassed[STAGE_PLANNING] = STAGE_BYPASS_REASONS[STAGE_PLANNING]
 
     # A *denied* bypass is not a skip: it is the reason the stage runs. Only a
     # granted bypass removes a stage from the run.
     stages = [s for s in STAGE_ORDER if s in wanted and s not in bypassed]
-    return {"stages": stages, "bypassed": bypassed, "denied": denied,
-            "declared": list(wanted)}
+    resolved = {"stages": stages, "bypassed": bypassed, "denied": denied,
+                "declared": list(wanted)}
+    if decision is not None:
+        resolved["recondense"] = decision
+    return resolved
 
 
 def _narrow(previous: int, factor: float, floor: int) -> int:
@@ -1940,7 +2110,10 @@ def compose_stages(*, budget, declared: Optional[Sequence[str]] = None,
                    supplied_brief: bool = False, supplied_plan: bool = False,
                    brief_tokens: Optional[int] = None,
                    brief: Optional[Dict[str, Any]] = None,
-                   reader=None) -> Dict[str, Any]:
+                   reader=None,
+                   touched_paths=None,
+                   gate_failures=None,
+                   freshness=None) -> Dict[str, Any]:
     """Compose the run's stages against ONE ``TokenBudget`` (HV-3).
 
     ``budget`` is the run's own budget object -- composition never invents an
@@ -1960,7 +2133,9 @@ def compose_stages(*, budget, declared: Optional[Sequence[str]] = None,
             "create one (harness/token_budget.py is the one owner)")
     selection = resolve_stages(declared, supplied_brief=supplied_brief,
                                supplied_plan=supplied_plan, brief=brief,
-                               reader=reader)
+                               reader=reader, touched_paths=touched_paths,
+                               gate_failures=gate_failures,
+                               freshness=freshness)
     if brief_tokens is not None:
         brief_tokens = int(brief_tokens)
         if brief_tokens < 0:
@@ -1996,10 +2171,15 @@ def compose_stages(*, budget, declared: Optional[Sequence[str]] = None,
                        "max_output_tokens": want_out})
         prev_in, prev_out = want_in, want_out
 
-    return {"stages": stages, "bypassed": selection["bypassed"],
-            "denied": selection["denied"],
-            "declared": selection["declared"],
-            "run_budget": budget.label}
+    composed = {"stages": stages, "bypassed": selection["bypassed"],
+                "denied": selection["denied"],
+                "declared": selection["declared"],
+                "run_budget": budget.label}
+    if "recondense" in selection:
+        # The decision rides with the composition, so "did this run re-condense,
+        # and why" is answerable from the envelope alone.
+        composed["recondense"] = selection["recondense"]
+    return composed
 
 
 def stage_budget(composition: Dict[str, Any], stage: str):
@@ -2056,6 +2236,12 @@ def composition_envelope(composition: Dict[str, Any], *,
                     if state == STATE_SKIPPED],
         "bypassed": dict(composition.get("bypassed") or {}),
         "denied_bypass": dict(composition.get("denied") or {}),
+        # Added only when a stage actually ran and supplied its evidence: a
+        # stable key would have to say *something* for the pre-composition
+        # callers that never make this decision, and "no decision" is not the
+        # same fact as "no drift".
+        **({"recondense": composition["recondense"]}
+           if composition.get("recondense") is not None else {}),
     }
 
 
