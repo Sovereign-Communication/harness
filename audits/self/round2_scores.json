@@ -1,44 +1,44 @@
 {
   "scores": {
     "A": 10.0,
-    "R": 10.0,
+    "R": 9.29,
     "SM": 10.0,
     "SD": 10.0
   },
   "jev_scores": {
-    "A": 10.0,
-    "R": 10.0,
-    "SM": 10.0,
+    "A": 9.0,
+    "R": 9.0,
+    "SM": 9.0,
     "SD": 10.0
   },
-  "jev_gate_pass": true,
+  "jev_gate_pass": false,
   "jev_eval": {
     "dimensions": {
       "A": {
         "name": "Security",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 2,
+        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
+        "score": 9.0,
+        "bar_met": false,
+        "confidence": 0.81,
         "evaluated": true
       },
       "R": {
         "name": "Reliability",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 2,
+        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
+        "score": 9.0,
+        "bar_met": false,
+        "confidence": 0.92,
         "evaluated": true
       },
       "SM": {
         "name": "Structural hygiene & maintainability",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 2,
+        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
+        "score": 9.0,
+        "bar_met": false,
+        "confidence": 0.51,
         "evaluated": true
       },
       "SD": {
@@ -47,23 +47,23 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.95,
+        "confidence": 0.87,
         "evaluated": true
       }
     },
     "scores": {
-      "A": 10.0,
-      "R": 10.0,
-      "SM": 10.0,
+      "A": 9.0,
+      "R": 9.0,
+      "SM": 9.0,
       "SD": 10.0
     },
-    "bar_95_pass": true,
-    "min_score": 10.0,
+    "bar_95_pass": false,
+    "min_score": 9.0,
     "is_fallback": false,
     "reasons": [],
     "model": "jev-1.13.0",
-    "cost": 5.5565999999999995e-06,
-    "input_tokens": 1323,
+    "cost": 5.5523999999999996e-06,
+    "input_tokens": 1322,
     "output_tokens": 60
   },
   "checks": {
@@ -223,8 +223,8 @@
       {
         "id": "R13",
         "label": "full suite green hermetically",
-        "score": 1.0,
-        "evidence": "unittest: Ran 2310 tests in 424.577s\n\nOK"
+        "score": 0.0,
+        "evidence": "; degrading to local-gate execution (verdict=unavailable)\n[plan] Critique re-planning failed (decomposition service unavailable); retaining initial result\n[plan] LLM decomposition attempt 1 failed (HTTP 429: rate limited); retrying\n[plan] LLM decomposition failed (HTTP 429: rate limited); loud heuristic fallback\n[plan] LLM decomposition attempt 1 failed (HTTP 429: rate limited); retrying\n[plan] LLM decomposition failed (HTTP 429: rate limited); loud heuristic fallback\n[plan] LLM decomposition attempt 1 failed (HTTP 429: rate limited); retrying\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n[ledger] ignoring 1 non-segment file(s) matching 'ledger.jsonl.*' (not a rotation name): ledger.jsonl.lock\n======================================================================\nFAIL: test_shipped_ids_resolve_in_live_catalog (test_judge.ShippedModelFreshnessTests.test_shipped_ids_resolve_in_live_catalog)\nThe real freshness gate, auto-run wherever a key exists (this\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\SCM\\Documents\\GitHub\\Harness-l3-118b\\tests\\test_judge.py\", line 45, in test_shipped_ids_resolve_in_live_catalog\n    self.assertEqual(stale, [],\nAssertionError: Lists differ: ['inclusionai/ling-3.0-flash-fin:free'] != []\n\nFirst list contains 1 additional elements.\nFirst extra element 0:\n'inclusionai/ling-3.0-flash-fin:free'\n\n- ['inclusionai/ling-3.0-flash-fin:free']\n+ [] : stale shipped ids (run `capabilities --check-shipped`): ['inclusionai/ling-3.0-flash-fin:free']\n\n----------------------------------------------------------------------\nRan 2459 tests in 158.058s\n\nFAILED (failures=1, skipped=52)\n"
       },
       {
         "id": "R14",
@@ -306,7 +306,7 @@
         "id": "D4",
         "label": "config table keys real",
         "score": 1.0,
-        "evidence": "24 README config keys all resolve to real settings (44 configurable)"
+        "evidence": "24 README config keys all resolve to real settings (45 configurable)"
       },
       {
         "id": "D5",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed"
+        "evidence": "SKIP (fail-open): git diff against baseline unavailable"
       }
     ]
   }
