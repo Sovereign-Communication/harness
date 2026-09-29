@@ -235,6 +235,44 @@ class PlanCompositionWiringTests(unittest.TestCase):
                          DEFAULT_RUN_INPUT_TOKENS)
         self.assertEqual(captured["stages"], list(HOURGLASS_DEFAULT_STAGES))
 
+    def test_runtime_execution_budget_is_bound_after_composition(self):
+        from types import SimpleNamespace
+
+        from harness.token_budget import TokenBudget
+
+        captured = {}
+
+        def fake_compose_plan(**kwargs):
+            captured.update(kwargs)
+            return {"composition": {"stages": [{
+                "stage": "execution",
+                "max_input_tokens": 800,
+                "max_output_tokens": 64,
+            }]}}
+
+        opts = SimpleNamespace(goal="g", allow_escalation=None,
+                               max_tokens=None, plan_consensus=False)
+        settings = SimpleNamespace(
+            use_free=True, allow_escalation=False,
+            token_budget_input=1200, token_budget_output=96,
+            hourglass_stages=["context", "execution"])
+        with mock.patch.object(cli, "_compose_plan",
+                               side_effect=fake_compose_plan):
+            plan, execution_budget = cli._plan_compose(
+                settings, opts, None, None, None,
+                candidate_files=None, frontier_model=None, execute=True,
+                confirm=False, decompose_llm=False, plan_consensus=False,
+                hourglass={"confirm": False, "decompose": False},
+                return_runtime=True)
+
+        self.assertNotIn("return_runtime", captured)
+        self.assertEqual(plan["composition"]["stages"][0]["stage"],
+                         "execution")
+        self.assertIsInstance(captured["token_budget"], TokenBudget)
+        self.assertEqual(execution_budget.snapshot()["parent"], "run")
+        self.assertEqual(execution_budget.max_input_tokens, 800)
+        self.assertEqual(execution_budget.max_output_tokens, 64)
+
 
 class MaxCostWiringTests(unittest.TestCase):
     def test_verify_max_cost_reaches_governor(self):

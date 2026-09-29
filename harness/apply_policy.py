@@ -22,7 +22,10 @@ from .chat import (
     REASONING_FALLBACK_PREFIX, _reported_cost, _chat_reservation_slots,
 )
 from . import events as _events
-from .consent import probe_consent, consent_renew
+from .consent import (
+    probe_consent, consent_renew, make_consent_binding,
+    consent_binding_is_fresh, consent_binding_changes,
+)
 from .errors import HarnessError, ToolCancelled
 from .output import eprint
 from .prompts import build_apply_prompt, consent_mechanics_text
@@ -98,23 +101,39 @@ class ApplyEngineMixin:
             # target hash remains the original on-disk baseline; only the
             # in-memory proposal starts from this saved partial.
             current_content=req.continuation.get("partial_content") or req.original)
-        consent = self._initial_consent(req)
+        state.consent_binding = req.continuation.get("consent_binding")
+        if not req.want_consent:
+            state.consent_binding = None
+        state.candidates = self._candidate_models(req)
+        first_model = next(iter(state.candidates), req.model)
+        consent = self._initial_consent(req, state, first_model)
         if consent is not None and consent.get("decision") != "accept":
+            if req.continuation:
+                return self._consent_deferral(req, state, consent.get("reason"))
             return {"status": "consent_blocked", "task_id": req.task_id, **consent}
         state.consent_attempts = (consent.get("attempts", [])
                                   if isinstance(consent, dict) else [])
 
-        self.ledger.append("dispatch_start", task_id=req.task_id, model=req.model,
-                           continuation=bool(req.continuation))
-
+        dispatch_started = False
         for round_no in range(1, req.max_rounds + 1):
             if req.cancel_check and req.cancel_check():
                 raise ToolCancelled()
             state.round_no = round_no
             if req.renew:
-                deferral = self._renew_consent(req, state)
+                round_model = next((m_ for m_ in state.candidates
+                                    if m_ not in state.failed_models
+                                    and m_ not in state.deferred_models), first_model)
+                deferral = self._renew_consent(req, state, round_model)
                 if deferral is not None:
                     return self._attach_envelopes(deferral, state)
+
+            if not dispatch_started:
+                self.ledger.append(
+                    "dispatch_start", task_id=req.task_id, model=req.model,
+                    continuation=bool(req.continuation),
+                    worker_model=first_model,
+                    consent_binding=(state.consent_binding or {}).get("digest"))
+                dispatch_started = True
 
             state.round_ctx, state.gate_broken = self._round_context(req, state)
             if state.gate_broken:
@@ -132,6 +151,10 @@ class ApplyEngineMixin:
                 break
 
             outcome = self._attempt_round(req, state, attempt_model)
+            if outcome.consent_blocked:
+                return self._attach_envelopes(
+                    self._consent_deferral(req, state, outcome.last_defer_reason),
+                    state)
             if outcome.model_used is None:
                 if outcome.last_defer_reason is not None:
                     # A readiness defer is evidence that the current rung
@@ -164,6 +187,24 @@ class ApplyEngineMixin:
                     continue
             else:
                 new_content = _extract_file_content(outcome.content)
+            if req.want_consent or req.renew:
+                write_binding = self._consent_binding(
+                    req, state, outcome.model_used)
+                if not consent_binding_is_fresh(
+                        state.consent_binding, write_binding):
+                    self.ledger.append(
+                        "consent_stale_before_write", task_id=req.task_id,
+                        package_id=req.package_id,
+                        accepted_binding=(state.consent_binding or {}).get("digest"),
+                        current_binding=write_binding["digest"],
+                        events=sorted(event.value for event in
+                                      consent_binding_changes(
+                                          state.consent_binding, write_binding)))
+                    return self._attach_envelopes(
+                        self._consent_deferral(
+                            req, state,
+                            "consent binding changed before the candidate write"),
+                        state)
             result = self.gate.apply_candidate(req, state, outcome, new_content)
             if result is not None:
                 return self._attach_envelopes(result, state)
@@ -173,60 +214,159 @@ class ApplyEngineMixin:
 
     # ---------------- phases ----------------------------------------------
 
-    def _initial_consent(self, req):
-        """Sovereignty gate: the judge model accepts the visible work or the
-        task never dispatches. Returns the consent record, or None when the
-        probe is disabled or this is a continuation (already consented)."""
-        if not req.want_consent or req.continuation:
+    def _consent_binding(self, req, state, worker_model):
+        return make_consent_binding(
+            file_path=req.file_path, source_content=state.current_content,
+            instruction=req.instruction, context=req.consent_context,
+            package_id=req.package_id, selected_model=worker_model,
+            max_tokens=req.max_tokens, token_budget=req.token_budget,
+            task_max_cost=req.task_max_cost,
+            run_max_cost=getattr(self.governor, "max_cost", None))
+
+    def _consent_task(self, req, state, worker_model, binding):
+        token_budget = req.token_budget
+        input_limit = (getattr(token_budget, "max_input_tokens", None)
+                       if token_budget is not None else None)
+        output_limit = (getattr(token_budget, "max_output_tokens", None)
+                        if token_budget is not None else None)
+        mechanics = consent_mechanics_text(
+            req.file_path, state.current_content, req.instruction)
+        package = (
+            "\n\nEXACT DISPATCH PACKAGE:\n"
+            f"Package: {req.package_id or req.task_id}\n"
+            f"Selected worker: {worker_model}\n"
+            f"Binding SHA-256: {binding['digest']}\n"
+            f"Maximum output tokens per call: {req.max_tokens}\n"
+            f"Stage maximum input tokens: {input_limit}\n"
+            f"Stage maximum output tokens: {output_limit}\n"
+            f"Task dollar ceiling: {req.task_max_cost}\n"
+            f"Run dollar ceiling: {getattr(self.governor, 'max_cost', None)}\n"
+            "This consent authorizes only this package, source, worker, and limits."
+        )
+        return mechanics + package
+
+    def _initial_consent(self, req, state, worker_model):
+        """Authorize this exact worker package before the first dispatch."""
+        if not req.want_consent:
             return None
-        consent = probe_consent(
-            transport=self.transport, api_key=self.api_key, governor=self.governor,
-            task_id=req.task_id, task=consent_mechanics_text(
-                req.file_path, req.original, req.instruction),
-            model=self.router.judge, ledger=self.ledger, required=True,
-            fallback_pool=self.router.panel_pool,
-            min_confidence=req.min_confidence)
+        return self._authorize_package(req, state, worker_model)
+
+    def _authorize_package(self, req, state, worker_model, *, force=False):
+        """Authorize the exact current package before provider dispatch.
+
+        A prior acceptance is reusable only for an identical, integrity-checked
+        binding. Rotations, continuation changes, or new source content require
+        an explicit new decision before the worker call.
+        """
+        if not req.want_consent and not req.renew and not force:
+            return None
+        binding = self._consent_binding(req, state, worker_model)
+        previous = state.consent_binding
+        if (not force and consent_binding_is_fresh(previous, binding)):
+            return {"task_id": req.task_id, "model": worker_model,
+                    "decision": "accept", "dispatched": True,
+                    "reason": "unchanged consent binding", "attempts": [],
+                    "binding": binding}
+        changes = consent_binding_changes(previous, binding)
+        if ((previous is not None and changes)
+                or (req.continuation and previous is None)):
+            self.ledger.append(
+                "consent_stale", task_id=req.task_id,
+                package_id=req.package_id,
+                previous_binding=previous.get("digest")
+                if isinstance(previous, dict) else None,
+                proposed_binding=binding["digest"],
+                events=sorted(event.value for event in changes))
+        consent_task = self._consent_task(req, state, worker_model, binding)
+        consent_context = req.consent_context
+        if previous is not None or force:
+            consent_model = (
+                getattr(self.router, "cheap_judge", None)
+                if getattr(self.router, "cheap_judge", None)
+                and not req.allow_escalation else self.router.judge)
+            consent = consent_renew(
+                transport=self.transport, api_key=self.api_key,
+                governor=self.governor, task_id=req.task_id,
+                task=consent_task, model=consent_model,
+                context=consent_context, ledger=self.ledger, required=True,
+                fallback_pool=[
+                    model for model in self.router.panel_pool
+                    if model not in {
+                        attempt.get("model")
+                        for attempt in (state.consent_attempts or [])
+                        if attempt.get("status") == "error"}],
+                min_confidence=req.min_confidence,
+                token_budget=req.token_budget)
+        else:
+            consent = probe_consent(
+                transport=self.transport, api_key=self.api_key,
+                governor=self.governor, task_id=req.task_id,
+                task=consent_task, model=self.router.judge,
+                context=consent_context, ledger=self.ledger, required=True,
+                fallback_pool=self.router.panel_pool,
+                min_confidence=req.min_confidence,
+                token_budget=req.token_budget)
         if self.governor.spent - req.task_start_spent > req.task_max_cost:
             raise HarnessError(
                 f"consent cost exceeded task ceiling ${req.task_max_cost:.6f}; refusing to dispatch")
+        if consent.get("decision") == "accept":
+            state.consent_binding = binding
+            consent["binding"] = binding
+            state.consent_attempts = consent.get("attempts", [])
+            self.ledger.append(
+                "consent_binding", task_id=req.task_id,
+                package_id=req.package_id,
+                worker_model=worker_model, binding=binding["digest"],
+                changed_files=binding["changed_files"],
+                context=binding["context"], instruction=binding["instruction"],
+                token_limit=binding["token_limit"],
+                monetary_limit=binding["monetary_limit"])
         return consent
 
-    def _renew_consent(self, req, state):
-        """Continued consensus before each round; a revocation defers the task
-        with partial work preserved. Returns a terminal deferral or None."""
-        # Skip re-asking models already shown unable to answer the consent
-        # probe this run (e.g. reasoning-only emitters): the primary just
-        # fails again and the rotation ladder absorbs it.
-        consent_unusable = {
-            a["model"] for a in (state.consent_attempts or [])
-            if a.get("status") == "error"}
-        renew_pool = [m_ for m_ in self.router.panel_pool
-                      if m_ not in consent_unusable]
-        renew_model = (
-            getattr(self.router, "cheap_judge", None)
-            if getattr(self.router, "cheap_judge", None) and not req.allow_escalation
-            else self.router.judge
-        )
-        cr = consent_renew(
-            transport=self.transport, api_key=self.api_key, governor=self.governor,
-            task_id=req.task_id, task=consent_mechanics_text(
-                req.file_path, state.current_content, req.instruction),
-            model=renew_model, ledger=self.ledger, required=True,
-            fallback_pool=renew_pool, min_confidence=req.min_confidence)
-        if self.governor.spent - req.task_start_spent > req.task_max_cost:
-            raise HarnessError(
-                f"consent renewal exceeded task ceiling ${req.task_max_cost:.6f}; refusing to continue")
-        if cr["decision"] != "accept":
-            self.ledger.append("defer_midtask", task_id=req.task_id, category="consent",
-                               reason=cr["reason"], confidence=cr.get("confidence"),
-                               model=renew_model)
-            return _defer_result(
-                task_id=req.task_id, file_path=req.file_path, category="consent",
-                reason=cr["reason"], remaining_scope=req.instruction,
-                rounds=state.rounds, history=state.history, cost=self.governor.spent,
-                backend=req.backend, verify_only=req.verify_only, max_lines=req.max_lines,
-                edit_snippet=req.edit_snippet, verify_cmd=req.verify_cmd)
-        return None
+    def _renew_consent(self, req, state, worker_model):
+        """Continue consensus at a round boundary and renew the package bind."""
+        consent = self._authorize_package(
+            req, state, worker_model, force=True)
+        if consent is None or consent.get("decision") == "accept":
+            return None
+        reason = consent.get("reason") or "consent was deferred or declined"
+        self.ledger.append("defer_midtask", task_id=req.task_id, category="consent",
+                           reason=reason, confidence=consent.get("confidence"),
+                           model=consent.get("model") or self.router.judge)
+        return self._consent_deferral(req, state, reason)
+
+    def _consent_deferral(self, req, state, reason):
+        return _defer_result(
+            task_id=req.task_id, file_path=req.file_path, category="consent",
+            reason=reason or "consent blocked dispatch",
+            remaining_scope=req.instruction, rounds=state.rounds,
+            history=state.history, cost=self.governor.spent,
+            backend=req.backend, verify_only=req.verify_only,
+            max_lines=req.max_lines, edit_snippet=req.edit_snippet,
+            verify_cmd=req.verify_cmd,
+            partial_content=(state.current_content
+                             if state.current_content != req.original else None),
+            consent_binding=state.consent_binding,
+            token_budget_remaining=self._token_budget_remaining(req),
+            task_cost_remaining=self._task_cost_remaining(req))
+
+    @staticmethod
+    def _token_budget_remaining(req):
+        if req.token_budget is None:
+            return None
+        snapshot = req.token_budget.snapshot()
+        return {
+            "max_input_tokens": snapshot["remaining_input_tokens"],
+            "max_output_tokens": snapshot["remaining_output_tokens"],
+        }
+
+    def _task_cost_remaining(self, req):
+        remaining = max(0.0, req.task_max_cost
+                        - (self.governor.spent - req.task_start_spent))
+        run_max = getattr(self.governor, "max_cost", None)
+        if run_max is not None:
+            remaining = min(remaining, max(0.0, run_max - self.governor.spent))
+        return remaining
 
     def _round_context(self, req, state):
         """Retry context for this round, plus the broken-gate stop: a gate
@@ -294,13 +434,27 @@ class ApplyEngineMixin:
         while attempt_model is not None:
             if req.cancel_check and req.cancel_check():
                 raise ToolCancelled()
+            consent = (self._authorize_package(req, state, attempt_model)
+                       if req.want_consent or req.renew else None)
+            if consent is not None and consent.get("decision") != "accept":
+                outcome.consent_blocked = True
+                outcome.last_defer_reason = consent.get("reason") or (
+                    "consent blocked the assigned worker")
+                return outcome
             prompt = build_apply_prompt(req.file_path, req.instruction, req.edit_snippet,
                                         state.current_content, state.round_ctx,
                                         req.continuation, backend=req.backend)
             a_pp, a_cp = self.governor.fetch_pricing([attempt_model])[attempt_model]
             est = estimate_prompt_tokens(prompt)
             slots = _chat_reservation_slots(attempt_model, req.reasoning, 0)
-            per_call_estimate = slots * (est * a_pp + req.max_tokens * a_cp)
+            attempt_max_tokens = req.max_tokens
+            if req.token_budget is not None:
+                attempt_max_tokens = min(
+                    attempt_max_tokens, req.token_budget.remaining_output())
+            if attempt_max_tokens <= 0:
+                raise HarnessError(
+                    "execution token budget has no output allowance remaining; refusing dispatch")
+            per_call_estimate = slots * (est * a_pp + attempt_max_tokens * a_cp)
             jev_worst = 0.0
             if getattr(self, "jev_policy", None) is not None and getattr(self.jev_policy, "keyed", False):
                 from .jev import jev_cost
@@ -319,14 +473,17 @@ class ApplyEngineMixin:
             # if provider billing exceeds the live pricing estimate.
             self.governor.preflight(
                 prompt,
-                [(f"apply attempt {i + 1}/{slots}", attempt_model, req.max_tokens, 0)
+                [(f"apply attempt {i + 1}/{slots}", attempt_model,
+                  attempt_max_tokens, 0)
                  for i in range(slots)],
             )
             _events.emit("attempt_start", task_id=req.task_id, model=attempt_model,
                          round=state.round_no, backend=req.backend)
             status, resp = chat(self.transport, self.api_key, attempt_model,
-                                [{"role": "user", "content": prompt}], req.max_tokens,
-                                req.reasoning, self.reasoning_token_budget, self.governor)
+                                [{"role": "user", "content": prompt}], attempt_max_tokens,
+                                req.reasoning, self.reasoning_token_budget,
+                                self.governor, token_budget=req.token_budget,
+                                token_label=f"apply:{req.task_id}")
             outcome.resp = resp
             if status != 200:
                 err = _http_error(status, resp)
@@ -432,7 +589,12 @@ class ApplyEngineMixin:
             reason=reason, remaining_scope=req.instruction,
             rounds=state.rounds, history=state.history, cost=self.governor.spent,
             backend=req.backend, verify_only=req.verify_only, max_lines=req.max_lines,
-            edit_snippet=req.edit_snippet, verify_cmd=req.verify_cmd)
+            edit_snippet=req.edit_snippet, verify_cmd=req.verify_cmd,
+            partial_content=(state.current_content
+                             if state.current_content != req.original else None),
+            consent_binding=state.consent_binding,
+            token_budget_remaining=self._token_budget_remaining(req),
+            task_cost_remaining=self._task_cost_remaining(req))
 
     def _capability_deferral(self, req, state, outcome):
         """The model hit its capability limit (HARNESS_DEFER marker): stop,
@@ -467,7 +629,10 @@ class ApplyEngineMixin:
             history=state.history, cost=self.governor.spent,
             backend=req.backend, verify_only=req.verify_only, max_lines=req.max_lines,
             edit_snippet=req.edit_snippet, verify_cmd=req.verify_cmd,
-            partial_content=deferred_partial)
+            partial_content=deferred_partial,
+            consent_binding=state.consent_binding,
+            token_budget_remaining=self._token_budget_remaining(req),
+            task_cost_remaining=self._task_cost_remaining(req))
 
     def _merge_or_extract(self, req, state, outcome):
         """Diff backend only: merge the proposed unified diff. A malformed or
@@ -637,7 +802,9 @@ class ApplyEngineMixin:
         )
         status, resp = chat(self.transport, self.api_key, esc["model"],
                             [{"role": "user", "content": prompt}], req.max_tokens,
-                            "high", self.reasoning_token_budget, self.governor)
+                            "high", self.reasoning_token_budget, self.governor,
+                            token_budget=req.token_budget,
+                            token_label=f"apply-escalation:{req.task_id}")
         if status != 200:
             err = _http_error(status, resp)
             self._record_billable(req, esc["model"], _reported_cost(resp), "error",
@@ -671,5 +838,3 @@ class ApplyEngineMixin:
             _annotate_escalation(result, from_model=req.model,
                                  to_model=esc["model"], rungs=[esc["model"]])
         return result
-
-

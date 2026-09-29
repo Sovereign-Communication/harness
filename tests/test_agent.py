@@ -1140,7 +1140,7 @@ class TestOrchestratorDrive(unittest.TestCase):
     def _scripted_seam(verdicts):
         it = iter(verdicts)
 
-        def fake_chat_fn(gov):
+        def fake_chat_fn(gov, **_kwargs):
             def chat_fn(prompt_text):
                 if "completion judge" in prompt_text:
                     v = next(it)
@@ -1206,7 +1206,7 @@ class TestOrchestratorDrive(unittest.TestCase):
             engine = MagicMock()
             engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
 
-            def dead_judge(gov):
+            def dead_judge(gov, **_kwargs):
                 def chat_fn(prompt_text):
                     raise HarnessError("judge down")
                 return chat_fn
@@ -1288,7 +1288,7 @@ class TestOrchestratorWiring(unittest.TestCase):
             (root / "unrelated.py").write_text("y = 2", encoding="utf-8")
             agent = self._agent(root)
 
-            def fake_fn(gov):
+            def fake_fn(gov, **_kwargs):
                 def chat_fn(prompt_text):
                     assert "file-triage" in prompt_text
                     return '{"files": ["util.py", "ghost.py"]}'
@@ -1329,7 +1329,7 @@ class TestOrchestratorWiring(unittest.TestCase):
             engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
             state = {"judged": False}
 
-            def fake_fn(gov):
+            def fake_fn(gov, **_kwargs):
                 def chat_fn(prompt_text):
                     if "completion judge" in prompt_text:
                         state["judged"] = True
@@ -1471,7 +1471,7 @@ class TestOrchestratorWiring(unittest.TestCase):
             engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
             rounds = {"n": 0}
 
-            def lazy_judge(gov):
+            def lazy_judge(gov, **_kwargs):
                 def chat_fn(prompt_text):
                     if "completion judge" in prompt_text:
                         rounds["n"] += 1
@@ -1501,7 +1501,7 @@ class TestOrchestratorWiring(unittest.TestCase):
                                               "error": "gate boom",
                                               "cost": 0.001}
 
-            def dead_judge(gov):
+            def dead_judge(gov, **_kwargs):
                 def chat_fn(prompt_text):
                     raise HarnessError("judge down")
                 return chat_fn
@@ -1545,7 +1545,7 @@ class TestHourglassLane(unittest.TestCase):
     @staticmethod
     def _decompose_seam():
         """Decomposition answers with a DAG; nothing else is scripted."""
-        def fake_chat_fn(gov):
+        def fake_chat_fn(gov, **_kwargs):
             def chat_fn(_prompt_text):
                 return TestHourglassLane._DAG_JSON
             return chat_fn
@@ -1610,6 +1610,11 @@ class TestHourglassLane(unittest.TestCase):
         # 3. the write attestation the hourglass armed reached the node write
         self.assertTrue(
             engine.apply_edit.call_args[1]["require_diff_authorization"])
+        self.assertTrue(engine.apply_edit.call_args[1]["require_consent"])
+        self.assertEqual(
+            engine.apply_edit.call_args[1]["consent_context"]["original_request"],
+            "Update util.py")
+        self.assertIn(":n", engine.apply_edit.call_args[1]["package_id"])
 
     def test_armed_lane_dispatches_a_free_node_under_the_default_ceiling(self):
         """The reported defect, at the lane that had it. A free-tier node
@@ -1667,7 +1672,7 @@ class TestHourglassLane(unittest.TestCase):
                      '"add a docstring to c.py", "target_files": ["c.py"], '
                      '"dependencies": []}]}')
 
-        def seam(_gov):
+        def seam(_gov, **_kwargs):
             def chat_fn(_prompt_text):
                 return two_nodes
             return chat_fn
@@ -1731,9 +1736,10 @@ class TestHourglassLane(unittest.TestCase):
             planned_prompts = []
             orig_plan_round = agent._plan_round
 
-            def track_plan(goal, candidate_files, gov, confirm=None):
+            def track_plan(goal, candidate_files, gov, confirm=None, **kwargs):
                 planned_prompts.append(goal)
-                return orig_plan_round(goal, candidate_files, gov, confirm=False)
+                kwargs["confirm"] = False
+                return orig_plan_round(goal, candidate_files, gov, **kwargs)
 
             with patch.object(agent, "_plan_round", side_effect=track_plan), \
                  self._decompose_seam():
@@ -1751,7 +1757,7 @@ class TestHourglassLane(unittest.TestCase):
                     'module docstring", "target_files": ["big.py"], '
                     '"dependencies": []}]}')
 
-        def seam(_gov):
+        def seam(_gov, **_kwargs):
             def chat_fn(_prompt_text):
                 return json_dag
             return chat_fn

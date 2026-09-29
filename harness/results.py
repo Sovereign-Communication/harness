@@ -79,7 +79,8 @@ def _terminal_result(status, *, task_id, rounds, cost, rotations, backend,
 def _defer_result(*, task_id, file_path, category, reason, remaining_scope,
                  rounds, history, cost, backend="harness", verify_only=False,
                  max_lines=MAX_FILE_LINES, edit_snippet=None, verify_cmd=None,
-                 partial_content=None):
+                 partial_content=None, consent_binding=None,
+                 token_budget_remaining=None, task_cost_remaining=None):
     """Terminal deferral: partial work preserved in a continuation state, not
     in the working tree."""
     continuation = {
@@ -103,6 +104,12 @@ def _defer_result(*, task_id, file_path, category, reason, remaining_scope,
         # working tree; a resumed run may inspect it but the gate decides
         # what lands on disk.
         continuation["partial_content"] = partial_content
+    if consent_binding is not None:
+        continuation["consent_binding"] = dict(consent_binding)
+    if token_budget_remaining is not None:
+        continuation["token_budget_remaining"] = dict(token_budget_remaining)
+    if task_cost_remaining is not None:
+        continuation["task_cost_remaining"] = float(task_cost_remaining)
     return _terminal_result(
         "deferred", task_id=task_id, rounds=rounds, cost=cost,
         rotations=None, backend=backend, verify_only=verify_only,

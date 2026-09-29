@@ -39,6 +39,9 @@ class ApplyRequest:
     require_diff_authorization: bool = False
     attest_model: object = None
     min_confidence: float = 0.70
+    token_budget: object = None
+    consent_context: object = None
+    package_id: object = None
 
 
 @dataclass
@@ -56,6 +59,9 @@ class RunState:
     rotations: int = 0
     backup: object = None
     consent_attempts: list = field(default_factory=list)
+    # The accepted authorization is tied to one exact assignment. A changed
+    # worker, source, request, or limit must obtain a new binding before work.
+    consent_binding: object = None
     # Auto-escalation / de-escalation state
     escalation_condensed_context: str = ""
     de_escalation_target_rung: int = 0
@@ -79,3 +85,4 @@ class AttemptOutcome:
     resp: object = None
     last_error: object = None
     last_defer_reason: object = None
+    consent_blocked: bool = False

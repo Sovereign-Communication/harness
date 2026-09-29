@@ -17,7 +17,11 @@ preserved and the continuation mode hands it to the next iteration. The apply
 prompt encodes that instruction; the consent ledger records these as
 category="capability" deferrals.
 """
+import hashlib
+import json
 import math
+import os
+from enum import Enum
 
 from . import events as _events
 from .chat import (chat, extract_content_and_cost, _extract_json, _reported_cost,
@@ -43,6 +47,172 @@ DECISIONS = ("accept", "decline", "defer", "redirect")
 
 PREVIEW_WHOLE_CHARS = 12000
 PREVIEW_HEAD_CHARS = 9000
+
+
+class ConsentStalenessEvent(str, Enum):
+    """Declared changes that invalidate consent for an offered work package.
+
+    Values are stable ledger/API vocabulary. Unknown values must not be treated
+    as fresh consent; callers can use ``consent_staleness_events`` to validate
+    a proposed event set before acting on it.
+    """
+
+    CHANGED_FILES = "changed_files"
+    CONTEXT = "context"
+    INSTRUCTION = "instruction"
+    SELECTED_MODEL = "selected_model"
+    TOKEN_LIMIT = "token_limit"
+    MONETARY_LIMIT = "monetary_limit"
+
+
+def consent_staleness_events(events):
+    """Normalize declared staleness events or raise on invalid input.
+
+    Accepts enum members or their exact serialized values. Strings and
+    iterables are handled deliberately: a bare string is one event, while
+    other iterables are treated as collections. No unknown kind is ignored.
+    """
+    if isinstance(events, (str, ConsentStalenessEvent)):
+        events = (events,)
+    try:
+        return frozenset(ConsentStalenessEvent(event) for event in events)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("unknown consent staleness event") from exc
+
+
+def consent_is_fresh(consented, current, events):
+    """Return whether the declared consent bindings still match.
+
+    ``consented`` and ``current`` map the stable event values to the values
+    authorized and now proposed. Missing bindings are invalid and fail closed.
+    """
+    kinds = consent_staleness_events(events)
+    try:
+        return all(consented[kind.value] == current[kind.value]
+                   for kind in kinds)
+    except (KeyError, TypeError):
+        return False
+
+
+_BINDING_EVENTS = tuple(event.value for event in ConsentStalenessEvent)
+
+
+def _binding_hash(value):
+    """Hash canonical JSON without retaining source text in continuation state."""
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def make_consent_binding(*, file_path, source_content, instruction,
+                         context=None, package_id=None, selected_model,
+                         max_tokens, token_budget=None, task_max_cost,
+                         run_max_cost=None):
+    """Build the stable, payload-free identity of one proposed dispatch.
+
+    The accepted object binds the exact offered file bytes, request context,
+    instruction, worker identity, and immutable token/dollar ceilings. Mutable
+    usage counters are intentionally excluded: they describe consumption,
+    not the limits the worker was offered.
+    """
+    path = os.path.normcase(os.path.abspath(os.fspath(file_path)))
+    content_hash = hashlib.sha256(
+        str(source_content).encode("utf-8")).hexdigest()
+    context_hash = _binding_hash({
+        "package_id": package_id,
+        "context": context,
+    })
+    token_limits = {
+        "max_tokens": int(max_tokens),
+        "max_input_tokens": (getattr(token_budget, "max_input_tokens", None)
+                             if token_budget is not None else None),
+        "max_output_tokens": (getattr(token_budget, "max_output_tokens", None)
+                              if token_budget is not None else None),
+    }
+    money_limits = {
+        "task_max_cost": (float(task_max_cost)
+                          if task_max_cost is not None else None),
+        "run_max_cost": (float(run_max_cost)
+                         if run_max_cost is not None else None),
+    }
+    binding = {
+        "version": 1,
+        "changed_files": _binding_hash([{
+            "path": path,
+            "content_sha256": content_hash,
+        }]),
+        "context": context_hash,
+        "instruction": _binding_hash(str(instruction)),
+        "selected_model": _binding_hash(str(selected_model)),
+        "token_limit": _binding_hash(token_limits),
+        "monetary_limit": _binding_hash(money_limits),
+        "worker_model": str(selected_model),
+        "token_limits": token_limits,
+        "monetary_limits": money_limits,
+    }
+    binding["digest"] = _binding_hash(binding)
+    return binding
+
+
+def valid_consent_binding(binding):
+    """Whether a serialized consent binding is complete and untampered."""
+    if not isinstance(binding, dict) or binding.get("version") != 1:
+        return False
+    expected_keys = {"version", "digest", *_BINDING_EVENTS,
+                     "worker_model", "token_limits", "monetary_limits"}
+    if set(binding) != expected_keys:
+        return False
+    for key in (*_BINDING_EVENTS, "digest"):
+        value = binding.get(key)
+        if (not isinstance(value, str) or len(value) != 64
+                or any(char not in "0123456789abcdef" for char in value)):
+            return False
+    unsigned = {key: binding[key] for key in binding if key != "digest"}
+    try:
+        return (
+            isinstance(binding.get("worker_model"), str)
+            and bool(binding.get("worker_model"))
+            and isinstance(binding.get("token_limits"), dict)
+            and set(binding["token_limits"]) == {
+                "max_tokens", "max_input_tokens", "max_output_tokens"}
+            and isinstance(binding["token_limits"].get("max_tokens"), int)
+            and not isinstance(binding["token_limits"].get("max_tokens"), bool)
+            and binding["token_limits"]["max_tokens"] >= 0
+            and all(value is None or (
+                isinstance(value, int) and not isinstance(value, bool)
+                and value >= 0)
+                    for key, value in binding["token_limits"].items()
+                    if key != "max_tokens")
+            and isinstance(binding.get("monetary_limits"), dict)
+            and set(binding["monetary_limits"]) == {
+                "task_max_cost", "run_max_cost"}
+            and all(value is None or (
+                isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(float(value)) and float(value) >= 0)
+                    for value in binding["monetary_limits"].values())
+            and binding["selected_model"] == _binding_hash(binding["worker_model"])
+            and binding["token_limit"] == _binding_hash(binding["token_limits"])
+            and binding["monetary_limit"] == _binding_hash(binding["monetary_limits"])
+            and _binding_hash(unsigned) == binding["digest"]
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def consent_binding_is_fresh(consented, current):
+    """Compare two complete package bindings; missing/old state is stale."""
+    return (valid_consent_binding(consented)
+            and valid_consent_binding(current)
+            and consented["digest"] == current["digest"]
+            and consent_is_fresh(consented, current, _BINDING_EVENTS))
+
+
+def consent_binding_changes(consented, current):
+    """Return the declared changed binding dimensions, fail-closed on bad state."""
+    if not valid_consent_binding(consented) or not valid_consent_binding(current):
+        return frozenset(ConsentStalenessEvent)
+    return frozenset(event for event in ConsentStalenessEvent
+                     if consented[event.value] != current[event.value])
 
 
 def consent_preview(content):
@@ -72,7 +242,8 @@ _EVENT_FOR = {
 
 def probe_consent(*, transport, api_key, governor, task_id, task, model,
                   context=None, max_tokens=512, ledger=None, required=True,
-                  fallback_pool=None, min_confidence=0.70):
+                  fallback_pool=None, min_confidence=0.70,
+                  token_budget=None):
     """Ask a model whether it accepts the work. Returns a consent dict.
 
     The probe is itself a rotating lane: ``model`` is asked first, then
@@ -162,7 +333,9 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
         status, resp = chat(transport, api_key, m_,
                             [{"role": "system", "content": CONSENT_SYSTEM_PROMPT},
                              {"role": "user", "content": user}],
-                            max_tokens, reasoning_effort="none", governor=governor)
+                            max_tokens, reasoning_effort="none", governor=governor,
+                            token_budget=token_budget,
+                            token_label=f"consent:{task_id}")
         content, parsed, tracked_cost, reported_cost, byok, fail_reason = _take(
             status, resp, m_)
         tracked_total += tracked_cost
@@ -262,7 +435,8 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
 
 def consent_renew(*, transport, api_key, governor, task_id, task, model,
                   context=None, max_tokens=512, ledger=None, required=True,
-                  fallback_pool=None, min_confidence=0.70):
+                  fallback_pool=None, min_confidence=0.70,
+                  token_budget=None):
     """Re-check consent at a verification checkpoint (continued consensus).
 
     Returns the probe result; records a consent_renew_* event. Any deferral
@@ -272,7 +446,8 @@ def consent_renew(*, transport, api_key, governor, task_id, task, model,
     base = probe_consent(transport=transport, api_key=api_key, governor=governor,
                           task_id=task_id, task=task, model=model, context=context,
                           max_tokens=max_tokens, ledger=None, required=required,
-                          fallback_pool=fallback_pool, min_confidence=min_confidence)
+                          fallback_pool=fallback_pool, min_confidence=min_confidence,
+                          token_budget=token_budget)
     if ledger:
         # Attribute to the model that ANSWERED (post-rotation), not the
         # requested primary: billing a rotated renewal to the wrong model

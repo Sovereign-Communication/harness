@@ -76,7 +76,8 @@ from .mission_driver import run_mission as _mission_run
 from .capability import capabilities_payload as _capability_payload_owner
 from .brief import build_brief, validate_brief
 from .dag import TaskDAG, node_apply_kwargs
-from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
+from .executor import (DEFAULT_PLAN_WORKERS, PlanExecutor,
+                       budget_for_composed_stage)
 from .pyramid_state import (
     dag_for_pending, load_state, node_routes_for_pending, persist_state)
 from .results import terminal_exit_code
@@ -960,7 +961,7 @@ def _capabilities_payload(settings, gov, api_key=None, refresh=False,
 def _plan_compose(settings, opts, gov, transport, api_key, *,
                   candidate_files, frontier_model, execute, confirm=None,
                   decompose_llm=None, plan_consensus=None, hourglass=None,
-                  allow_heuristic_preview=False):
+                  allow_heuristic_preview=False, return_runtime=False):
     """Plan-lane flow via the ONE owner (harness/waist.py): heuristic or
     cheap-LLM decomposition, then (hourglass default: on) waist
     confirmation."""
@@ -976,7 +977,9 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
     jev_policy = (policy_for(settings, transport=transport,
                              governor=gov, ledger=plan_ledger)
                   if hasattr(settings, "jev_api_key") else None)
-    return _compose_plan(
+    composition = compose_arguments(settings, goal=opts.goal,
+                                    files=candidate_files)
+    plan_result = _compose_plan(
         transport=transport, api_key=api_key, governor=gov,
         ledger=plan_ledger if (confirm or plan_consensus) else None,
         opts_goal=opts.goal,
@@ -1000,8 +1003,11 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
         # run's allowance, the operator's stage subset, and the intake brief
         # the `context` stage produces. Attaching composition is evidence;
         # it is not a second budget and it refuses no run by itself.
-        **compose_arguments(settings, goal=opts.goal,
-                            files=candidate_files))
+        **composition)
+    if return_runtime:
+        return (plan_result, budget_for_composed_stage(
+            composition.get("token_budget"), plan_result, "execution"))
+    return plan_result
 
 
 def _resolve_hourglass(opts, settings):
@@ -1049,13 +1055,18 @@ def _cmd_plan(opts, settings):
     if resume_path:
         pending_state = load_state(resume_path, allow_missing=True)
 
-    plan_result = _plan_compose(
+    composed_result = _plan_compose(
         settings, opts, gov, transport, api_key,
         candidate_files=candidate_files, frontier_model=frontier_model,
         execute=execute, confirm=confirm, decompose_llm=decompose_llm,
         plan_consensus=plan_consensus, hourglass=hourglass,
         allow_heuristic_preview=bool(
-            getattr(opts, "allow_heuristic_preview", False)))
+            getattr(opts, "allow_heuristic_preview", False)),
+        return_runtime=execute)
+    if execute:
+        plan_result, execution_stage_budget = composed_result
+    else:
+        plan_result, execution_stage_budget = composed_result, None
     if plan_result.get("status") == "refused":
         # The waist refused (or the composed ceiling / unreachable waist
         # fail-closed fired); execution must not start (exit code 2).
@@ -1067,6 +1078,9 @@ def _cmd_plan(opts, settings):
             plan_result["structural"]["site"] = "cli"
         _emit(plan_result, opts.out)
         return
+    if plan_result.get("composition") is not None and execution_stage_budget is None:
+        raise HarnessError(
+            "execution stage is not selected or has no composed token allowance")
 
     # The plan's discovered per-node gate, carried into the executor as the
     # default final gate. Named distinctly from gate_runner.run_gate (the
@@ -1146,7 +1160,7 @@ def _cmd_plan(opts, settings):
         run_ceiling=getattr(gov, "max_cost", None),
         on_stage_done=on_stage_done,
         final_gate=getattr(opts, "final_gate", None),
-        run_gate=discovered_gate)
+        run_gate=discovered_gate, token_budget=execution_stage_budget)
     all_results = plan_exec.execute(dag)
     summary = PlanExecutor.summarize(all_results)
 

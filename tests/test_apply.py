@@ -10,6 +10,7 @@ from harness.filesafety import _atomic_write
 from harness.ledger import AutonomyLedger
 from harness.router import Router
 from harness.spend import SpendGovernor
+from harness.token_budget import TokenBudget
 from tests._applyfixture import (APPLY, ApplyFixture, CODER_A, CODER_B, CHANGED,
                                  ESC, JUDGE, ORIGINAL, PARTIAL, scripted_run)
 from tests._fake import FakeTransport, comp, consent, m
@@ -137,6 +138,78 @@ class ApplyTests(ApplyFixture):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(len(fake.chat_posts()), 2)
 
+    def test_consent_binding_change_on_resume_reconsents_before_dispatch(self):
+        p = self.make_file()
+        fake, _, ledger, engine = self.make_env(
+            posts=[consent("accept", "initial package accepted"),
+                   consent("defer", "pause before dispatch"),
+                   consent("accept", "changed instruction accepted"),
+                   comp(CHANGED)],
+            default_consent=True, renew=True,
+            run=scripted_run([(0, "")]))
+        first = engine.apply_edit(
+            task_id="resume-binding", file_path=p, instruction="edit x",
+            verify_cmd="check", task_max_cost=0.01,
+            token_budget=TokenBudget("execution", max_input_tokens=8000,
+                                     max_output_tokens=2000))
+        self.assertEqual(first["status"], "deferred")
+        continuation = first["continuation"]
+        self.assertIn("consent_binding", continuation)
+        self.assertIn("token_budget_remaining", continuation)
+        self.assertIn("task_cost_remaining", continuation)
+        prepared = engine._prepare({
+            "task_id": "resume-binding", "file_path": p,
+            "instruction": "edit x safely", "verify_cmd": "check",
+            "continuation": continuation, "task_max_cost": 0.01,
+            "token_budget": TokenBudget("new-run", max_input_tokens=20000,
+                                         max_output_tokens=4000),
+            "renew_consent": False,
+        })
+        self.assertLessEqual(prepared.max_tokens,
+                             continuation["token_budget_remaining"]["max_output_tokens"])
+        self.assertLessEqual(prepared.token_budget.max_input_tokens,
+                             continuation["token_budget_remaining"]["max_input_tokens"])
+        self.assertLessEqual(prepared.task_max_cost,
+                             continuation["task_cost_remaining"])
+
+        result = engine.apply_edit(
+            task_id="resume-binding", file_path=p, instruction="edit x safely",
+            verify_cmd="check", continuation=continuation,
+            task_max_cost=0.01,
+            token_budget=TokenBudget("new-run", max_input_tokens=20000,
+                                     max_output_tokens=4000),
+            renew_consent=False)
+        self.assertEqual(result["status"], "ok")
+        events = ledger.entries()
+        stale = [entry for entry in events if entry["event"] == "consent_stale"]
+        self.assertTrue(stale)
+        self.assertIn("instruction", stale[-1]["events"])
+        self.assertEqual(fake.chat_posts()[-1][2]["model"].replace(":floor", ""), APPLY)
+
+    def test_legacy_continuation_without_binding_requires_new_consent(self):
+        p = self.make_file()
+        fake, _, ledger, engine = self.make_env(
+            posts=[consent("accept", "accepted"),
+                   consent("defer", "hold"),
+                   consent("accept", "legacy state reviewed"),
+                   comp(CHANGED)],
+            default_consent=True, renew=True,
+            run=scripted_run([(0, "")]))
+        first = engine.apply_edit(
+            task_id="legacy-resume", file_path=p, instruction="edit x",
+            verify_cmd="check")
+        continuation = dict(first["continuation"])
+        continuation.pop("consent_binding")
+        result = engine.apply_edit(
+            task_id="legacy-resume", file_path=p, instruction="edit x",
+            verify_cmd="check", continuation=continuation,
+            renew_consent=False)
+        self.assertEqual(result["status"], "ok")
+        stale = [entry for entry in ledger.entries()
+                 if entry["event"] == "consent_stale"]
+        self.assertTrue(stale)
+        self.assertEqual(stale[-1]["previous_binding"], None)
+
     def test_consent_and_rotation_costs_are_reported_together(self):
         """Consent, a failed primary call, and its replacement all appear in
         the same tracked total and remain below the configured ceiling."""
@@ -148,6 +221,7 @@ class ApplyTests(ApplyFixture):
                 accepted,
                 (429, {"error": {"message": "rate limited"},
                        "usage": {"cost": 0.0002}}),
+                consent("accept", "fallback remains within the package limits"),
                 comp(CHANGED, cost=0.0003),
             ],
             run=scripted_run([(0, "")]), default_consent=True,
@@ -157,7 +231,7 @@ class ApplyTests(ApplyFixture):
                                    max_rounds=1, task_max_cost=0.001)
         report = ledger.participation_report()
         self.assertEqual(result["status"], "ok")
-        self.assertAlmostEqual(gov.spent, 0.0006, places=9)
+        self.assertAlmostEqual(gov.spent, 0.000601, places=9)
         self.assertAlmostEqual(result["cost"], gov.spent, places=9)
         self.assertAlmostEqual(report["tracked_cost"], gov.spent, places=9)
         self.assertLessEqual(gov.spent, gov.max_cost)

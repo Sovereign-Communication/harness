@@ -12,6 +12,7 @@ to execute); this module owns the persisted *contract*, its validation, and
 the bind-or-refuse decision that couples a runner to the pinned gate.
 """
 import hashlib
+import math
 import os
 
 from .errors import HarnessError
@@ -51,6 +52,29 @@ def validate_continuation(state):
     schema_version = state.get("schema_version", 1)
     if schema_version != 1:
         raise HarnessError(f"unsupported continuation schema_version: {schema_version!r}")
+    if "consent_binding" in state:
+        # Schema v1 states predating consent bindings remain readable; once a
+        # binding is present, however, corruption cannot silently authorize a
+        # resumed dispatch. The apply owner will re-consent legacy states.
+        from .consent import valid_consent_binding
+        if not valid_consent_binding(state.get("consent_binding")):
+            raise HarnessError("continuation consent_binding is invalid")
+    token_remaining = state.get("token_budget_remaining")
+    if token_remaining is not None:
+        if (not isinstance(token_remaining, dict)
+                or set(token_remaining) != {"max_input_tokens", "max_output_tokens"}):
+            raise HarnessError("continuation token_budget_remaining is invalid")
+        for key, value in token_remaining.items():
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise HarnessError(
+                    f"continuation token_budget_remaining {key} must be a non-negative integer")
+    task_cost_remaining = state.get("task_cost_remaining")
+    if task_cost_remaining is not None:
+        if (isinstance(task_cost_remaining, bool)
+                or not isinstance(task_cost_remaining, (int, float))
+                or not math.isfinite(float(task_cost_remaining))
+                or task_cost_remaining < 0):
+            raise HarnessError("continuation task_cost_remaining is invalid")
     verify_only = state.get("verify_only", False)
     if not isinstance(verify_only, bool):
         raise HarnessError("continuation verify_only must be a boolean")

@@ -16,7 +16,7 @@ from .events import emit
 from .orchestrator import drive, keyword_fallback, triage_files
 from .prompts import CAPABILITY_MARKER
 from .escalation import escalation_evidence, escalation_evidence_fields
-from .executor import PlanExecutor
+from .executor import PlanExecutor, budget_for_composed_stage
 from .history import load_chat_history, save_chat_turn
 from .repo_scope import (
     discover_target_files,
@@ -28,7 +28,9 @@ from .session import apply_session, attest_model_for, governor_for, jev_for, led
 from .jev_policy import (
     JevPolicy, aggregate_structural, jev_cost_ceiling, policy_for,
 )
-from .waist import compose_arguments, compose_plan, resolve_scout_ladder
+from .waist import (STAGE_EXECUTION, compose_arguments, compose_plan,
+                    resolve_scout_ladder)
+from .token_budget import budget_from_settings
 from .web import DEFAULT_FETCH_HOSTS, gather_web_context
 
 # Consumers import history/repo_scope/web helpers from their owners
@@ -788,7 +790,7 @@ class AutonomousAgent:
         emit("chat_response", intent="audit", verified=ok)
         return result
 
-    def _orchestrator_chat_fn(self, gov):
+    def _orchestrator_chat_fn(self, gov, token_budget=None):
         """Injected chat_fn for orchestration calls (decompose/triage/judge):
         governed, tier-0 scout head -- the cheapest rung of the same sliding
         scale that classifies nodes. Raises HarnessError on failure; callers
@@ -805,7 +807,9 @@ class AutonomousAgent:
                 try:
                     content, _ = governed_text(self.transport, api_key, gov,
                                                model, prompt_text, 2048,
-                                               label="orchestrate")
+                                               label="orchestrate",
+                                               token_budget=token_budget,
+                                               token_label="orchestrate")
                     return content
                 except HarnessError as e:
                     last = e
@@ -813,7 +817,8 @@ class AutonomousAgent:
 
         return chat_fn
 
-    def _plan_round(self, goal, candidate_files, gov, confirm=None):
+    def _plan_round(self, goal, candidate_files, gov, confirm=None,
+                    token_budget=None, return_runtime=False):
         """One planning pass through the ONE plan composer
         (harness/waist.py:compose_plan): cheap-LLM decomposition when the
         orchestration ladder answers, tier classification, then (hourglass)
@@ -826,7 +831,12 @@ class AutonomousAgent:
         jev_policy = policy_for(
             self.settings, transport=self.transport, governor=gov,
             ledger=ledger_for(self.settings, caller="agent"))
-        plan = compose_plan(
+        composition = compose_arguments(
+            self.settings, goal=goal, files=candidate_files,
+            root=self.root_dir)
+        if token_budget is not None:
+            composition["token_budget"] = token_budget
+        plan_result = compose_plan(
             transport=self.transport, api_key=resolve_api_key(),
             governor=gov, ledger=ledger_for(self.settings),
             opts_goal=goal, candidate_files=candidate_files,
@@ -838,7 +848,8 @@ class AutonomousAgent:
             # files this run actually edits, not the server's CWD.
             root=str(self.root_dir),
             chat_fn=lambda prompt_text: (
-                self._orchestrator_chat_fn(gov)(prompt_text), 0.0),
+                self._orchestrator_chat_fn(
+                    gov, token_budget=token_budget)(prompt_text), 0.0),
             execute=True,
             allow_escalation=bool(getattr(self.settings, "allow_escalation", False)),
             jev_policy=jev_policy,
@@ -846,15 +857,17 @@ class AutonomousAgent:
             # CLI and MCP lanes use, so "which stages ran, what each was
             # allowed, and what evidence it started from" is answerable from
             # the envelope here too instead of only from the caller's head.
-            **compose_arguments(self.settings, goal=goal,
-                                files=candidate_files,
-                                root=self.root_dir))
+            **composition)
+        plan = plan_result
         if str(plan.get("decomposition", "")).startswith("heuristic"):
             # compose_plan degrades to the heuristic only after the LLM
             # decomposition failed (execute=True); the GUI needs that on the
             # event stream, not just on stderr.
             emit("orchestration_note",
                  note="LLM decomposition unavailable; heuristic plan in use")
+        if return_runtime:
+            return plan, budget_for_composed_stage(
+                composition.get("token_budget"), plan, STAGE_EXECUTION)
         return plan
 
     def _refused_edit(self, plan, prompt, target_files, session_id):
@@ -946,6 +959,7 @@ class AutonomousAgent:
         # governor. Jev's own key controls only the typed structural call;
         # an unkeyed Jev evaluator remains the explicit local fallback.
         _, gov = governor_for(self.settings)
+        run_token_budget = budget_from_settings(self.settings)
         plan_policy = policy_for(
             self.settings, transport=self.transport, governor=gov,
             ledger=ledger_for(self.settings, caller="agent"))
@@ -960,12 +974,28 @@ class AutonomousAgent:
                 "control flow, conditional branching, or multi-step execution. "
                 "Ensure the decomposed DAG explicitly breaks down the iterative "
                 "loop and discrete steps into executable nodes.")
-        plan = self._plan_round(plan_prompt, target_files, gov,
-                                confirm=hourglass["confirm"])
+        initial_plan = self._plan_round(
+            plan_prompt, target_files, gov,
+            confirm=hourglass["confirm"], token_budget=run_token_budget,
+            return_runtime=True)
+        if isinstance(initial_plan, tuple) and len(initial_plan) == 2:
+            plan, execution_stage_budget = initial_plan
+        else:
+            # Keep injected/subclass planning seams that return the historic
+            # JSON plan shape usable; production _plan_round returns runtime.
+            plan, execution_stage_budget = initial_plan, None
         if isinstance(plan_structural, dict):
             plan["structural"] = plan_structural
         if plan.get("status") == "refused":
             return self._refused_edit(plan, prompt, target_files, session_id)
+        if (auto_apply and plan.get("composition") is not None
+                and execution_stage_budget is None):
+            return self._refused_edit({
+                "status": "refused", "dag": plan.get("dag"),
+                "confirmation": {
+                    "reason": ("execution stage is not selected or has no "
+                               "composed token allowance")}},
+                prompt, target_files, session_id)
         emit("dag_planned", total_nodes=plan["total_nodes"],
              total_ceiling=plan["total_cost_ceiling"],
              nodes=[{"node_id": n["node_id"], "instruction": n["instruction"],
@@ -1047,7 +1077,13 @@ class AutonomousAgent:
                 instruction=node.instruction,
                 verify_cmd=gate,
                 allow_verify=True,
-                require_consent=False,
+                require_consent=True,
+                package_id=f"{session_id}:{node.node_id}",
+                consent_context={
+                    "original_request": prompt,
+                    "node_id": node.node_id,
+                    "target_files": list(node.target_files or ()),
+                },
                 require_diff_authorization=hourglass["require_diff_authorization"],
                 **apply_kwargs,
             )
@@ -1085,7 +1121,13 @@ class AutonomousAgent:
                         instruction=healing_inst,
                         verify_cmd=gate,
                         allow_verify=True,
-                        require_consent=False,
+                        require_consent=True,
+                        package_id=f"{session_id}:{node.node_id}:structural-retry",
+                        consent_context={
+                            "original_request": prompt,
+                            "node_id": node.node_id,
+                            "target_files": list(node.target_files or ()),
+                        },
                         require_diff_authorization=hourglass["require_diff_authorization"],
                         **apply_kwargs,
                     )
@@ -1105,7 +1147,13 @@ class AutonomousAgent:
                     instruction=healing_inst,
                     verify_cmd=gate,
                     allow_verify=True,
-                    require_consent=False,
+                    require_consent=True,
+                    package_id=f"{session_id}:{node.node_id}:verification-retry",
+                    consent_context={
+                        "original_request": prompt,
+                        "node_id": node.node_id,
+                        "target_files": list(node.target_files or ()),
+                    },
                     require_diff_authorization=hourglass["require_diff_authorization"],
                     **apply_kwargs,
                 )
@@ -1137,13 +1185,24 @@ class AutonomousAgent:
                 # HG-final-gate: default ON when a verify command was
                 # discovered/declared; shared with CLI/MCP via PlanExecutor.
                 final_gate=hourglass.get("final_gate"),
-                run_gate=run_gate)
+                run_gate=run_gate, token_budget=execution_stage_budget)
             return plan_exec.execute(dag)
+
+        def plan_round(next_goal):
+            nonlocal execution_stage_budget
+            planned = self._plan_round(
+                next_goal, target_files, gov,
+                confirm=hourglass["confirm"],
+                token_budget=run_token_budget, return_runtime=True)
+            if isinstance(planned, tuple) and len(planned) == 2:
+                next_plan, execution_stage_budget = planned
+            else:
+                next_plan, execution_stage_budget = planned, None
+            return next_plan
 
         drive_kwargs = dict(
             goal=prompt, target_files=target_files, initial_plan=plan,
-            root_dir=self.root_dir, plan_round=lambda next_goal: self._plan_round(
-                next_goal, target_files, gov, confirm=hourglass["confirm"]),
+            root_dir=self.root_dir, plan_round=plan_round,
             execute_plan=execute_plan,
             completion_chat=lambda prompt_text: self._orchestrator_chat_fn(gov)(prompt_text),
             emit=emit, cancel_check=cancel_check,

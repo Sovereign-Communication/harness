@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from harness.continuation import gate_id, validate_continuation
+from harness.consent import make_consent_binding
 from harness.errors import HarnessError
 from harness.validation import finite_number, validate_apply_request
 
@@ -68,6 +69,31 @@ class ContinuationIntegrityTests(unittest.TestCase):
                 "verify_gate_id": gate_id(command),
             }
             self.assertEqual(validate_continuation(state)["file_path"], target)
+
+    def test_legacy_continuation_without_consent_binding_remains_loadable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = os.path.join(directory, "target.py")
+            with open(target, "w", encoding="utf-8") as stream:
+                stream.write("x = 1\n")
+            state = {"schema_version": 1, "file_path": target,
+                     "verify_only": True, "verification_required": False}
+            self.assertEqual(validate_continuation(state), state)
+
+    def test_corrupt_consent_binding_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = os.path.join(directory, "target.py")
+            with open(target, "w", encoding="utf-8") as stream:
+                stream.write("x = 1\n")
+            binding = make_consent_binding(
+                file_path=target, source_content="x = 1\n", instruction="edit",
+                selected_model="worker-a", max_tokens=1024,
+                task_max_cost=0.05)
+            binding["instruction"] = "tampered"
+            state = {"schema_version": 1, "file_path": target,
+                     "verify_only": True, "verification_required": False,
+                     "consent_binding": binding}
+            with self.assertRaisesRegex(HarnessError, "consent_binding"):
+                validate_continuation(state)
 
 
 if __name__ == "__main__":

@@ -11,8 +11,10 @@ and must never be mined for votes, file bodies, or consent decisions.
 import json
 
 from .config import OPENROUTER_CHAT_URL
+from .errors import HarnessError
 from .output import eprint
 from .routing_table import floor_model, strip_variant_suffix
+from .token_budget import TokenBudget, USAGE_ACTUAL, USAGE_UNAVAILABLE
 
 REASONING_FALLBACK_PREFIX = "[NOTE] model returned no content"
 
@@ -276,7 +278,8 @@ def _ensure_accounted(governor, model, resp, usage):
 
 def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto",
          reasoning_token_budget=0.4, governor=None, enable_floor=True,
-         max_price=None, provider_sort="price"):
+         max_price=None, provider_sort="price", token_budget=None,
+         token_label=None):
     """One chat completion with the spend governor's payload guards.
 
     Reasoning is included whenever the effort mode resolves to a value --
@@ -288,6 +291,8 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
     accounting: a missing usage.cost is resolved here, once, so no lane can
     bill a paid call as $0.
     """
+    if token_budget is not None and not isinstance(token_budget, TokenBudget):
+        raise HarnessError("token_budget must be a TokenBudget or None")
     canonical_model = strip_variant_suffix(model)
     if governor:
         governor.check_byok(canonical_model)
@@ -318,8 +323,54 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
                 _ensure_accounted(governor, canonical_model, resp, usage)
         return status, resp
 
+    def _dispatch(payload):
+        """Reserve before each provider transport and settle that attempt.
+
+        ``chat`` may dispatch twice when a provider rejects its reasoning
+        parameter. Each actual HTTP attempt therefore owns its own allowance;
+        a response with missing/malformed usage and a transport exception
+        both charge the full reservation.
+        """
+        allowance = None
+        if token_budget is not None:
+            from .tokens import estimate_prompt_tokens
+            serialized = json.dumps(payload, sort_keys=True,
+                                    separators=(",", ":"))
+            allowance = token_budget.allowance(
+                estimate_prompt_tokens(serialized),
+                max_output_tokens=max_tokens,
+                label=token_label or canonical_model)
+        try:
+            status, resp = transport.post(
+                OPENROUTER_CHAT_URL, api_key, payload)
+        except BaseException:
+            if allowance is not None:
+                token_budget.settle(allowance, source=USAGE_UNAVAILABLE)
+            raise
+        if allowance is not None:
+            usage = resp.get("usage") if isinstance(resp, dict) else None
+            try:
+                if not isinstance(usage, dict):
+                    raise ValueError("usage is unavailable")
+                input_tokens = usage.get("prompt_tokens")
+                output_tokens = usage.get("completion_tokens")
+                counts = (input_tokens, output_tokens)
+                if any(isinstance(value, bool) or value is None
+                       for value in counts):
+                    raise ValueError("usage counts are unavailable")
+                if any(isinstance(value, float) and not value.is_integer()
+                       for value in counts):
+                    raise ValueError("usage counts are not whole tokens")
+                token_budget.settle(
+                    allowance, input_tokens=int(input_tokens),
+                    output_tokens=int(output_tokens), source=USAGE_ACTUAL)
+            except (AttributeError, TypeError, ValueError, OverflowError,
+                    HarnessError):
+                token_budget.settle(allowance, source=USAGE_UNAVAILABLE)
+        return status, resp
+
     want_reasoning = _effort_to_send(reasoning_effort, model) is not None
-    status, resp = transport.post(OPENROUTER_CHAT_URL, api_key, build(want_reasoning))
+    status, resp = _dispatch(build(want_reasoning))
     if want_reasoning and status != 200:
         err = str(resp.get("error", {}).get("message", resp)
                   if isinstance(resp, dict) else resp).lower()
@@ -329,8 +380,7 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
             _events.emit("rotation", model=model, reason="reasoning_param_rejected",
                          note="provider retry without the reasoning parameter")
             prior_cost = _reported_cost(resp)
-            retry_status, retry_resp = transport.post(
-                OPENROUTER_CHAT_URL, api_key, build(False))
+            retry_status, retry_resp = _dispatch(build(False))
             return _account(retry_status,
                             _merge_retry_cost(retry_resp, prior_cost))
     return _account(status, resp)
@@ -338,7 +388,8 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
 
 def governed_text(transport, api_key, governor, model, prompt, max_tokens,
                   label="ask", reasoning_effort="auto",
-                  reasoning_token_budget=0.4):
+                  reasoning_token_budget=0.4, token_budget=None,
+                  token_label=None):
     """Single-shot governed text call: preflight -> chat -> bill -> extract.
 
     ONE owner of the request-lane mechanics the panel/judge paths inline
@@ -360,7 +411,8 @@ def governed_text(transport, api_key, governor, model, prompt, max_tokens,
                         [{"role": "user", "content": prompt}],
                         max_tokens, reasoning_effort=reasoning_effort,
                         reasoning_token_budget=reasoning_token_budget,
-                        governor=governor)
+                        governor=governor, token_budget=token_budget,
+                        token_label=token_label or label)
     if status != 200:
         from .results import _http_error
         raise HarnessError(_http_error(status, resp))

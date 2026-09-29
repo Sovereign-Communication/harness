@@ -22,12 +22,54 @@ from .output import eprint
 from .repo_scope import _rebase_path, discover_verification_gate, rebase_gate
 from .results import SUCCESS_STATUSES
 from .spend import NodeReserver
+from .token_budget import TokenBudget
 from .waist import node_apply_kwargs
 from .worktree import WorktreeIsolation
 
 # Auto-scaling hourglass default for concurrent node dispatch (the CLI
 # parser, MCP schema, and the agent lane all mean this number).
 DEFAULT_PLAN_WORKERS = 4
+
+
+def budget_for_composed_stage(run_budget, plan_result, stage):
+    """Materialize one runtime stage child from the plan's public envelope.
+
+    ``waist.compose_plan`` intentionally keeps live TokenBudget objects out of
+    its JSON-safe result. An execution caller that must retain accounting
+    across planning and dispatch can therefore use the envelope's declared
+    ceilings with the same run budget. The waist remains the owner of stage
+    selection and limits; this adapter only binds those published limits to
+    the runtime object accepted by PlanExecutor.
+
+    Returns ``None`` when the stage was not selected. A malformed or duplicate
+    stage declaration fails closed rather than falling back to an unbounded
+    run budget.
+    """
+    if not isinstance(plan_result, dict):
+        raise HarnessError("composed plan result must be an object")
+    composition = plan_result.get("composition")
+    if composition is None:
+        return None
+    if not isinstance(composition, dict):
+        raise HarnessError("plan composition envelope must be an object")
+    if not isinstance(run_budget, TokenBudget):
+        raise HarnessError("composed stage needs the run's TokenBudget")
+    if not isinstance(stage, str) or not stage.strip():
+        raise HarnessError("composed stage name must be a non-empty string")
+    entries = [entry for entry in composition.get("stages", [])
+               if isinstance(entry, dict) and entry.get("stage") == stage]
+    if not entries:
+        return None
+    if len(entries) != 1:
+        raise HarnessError("plan composition declares a stage more than once")
+    entry = entries[0]
+    max_input = entry.get("max_input_tokens")
+    max_output = entry.get("max_output_tokens")
+    if (isinstance(max_input, bool) or not isinstance(max_input, int)
+            or isinstance(max_output, bool) or not isinstance(max_output, int)):
+        raise HarnessError("plan composition stage limits must be whole tokens")
+    return run_budget.stage(stage, max_input_tokens=max_input,
+                            max_output_tokens=max_output)
 
 
 def partition_by_target_overlap(nodes):
@@ -416,8 +458,12 @@ class PlanExecutor:
                  require_diff_authorization=False, route_kwargs_fn=None,
                  base_apply_kwargs=None, apply=None, task_max_cost=None,
                  run_ceiling=None, repo=None, on_stage_done=None,
-                 final_gate=None, run_gate=None, final_gate_runner=None):
+                 final_gate=None, run_gate=None, final_gate_runner=None,
+                 token_budget=None):
+        if token_budget is not None and not isinstance(token_budget, TokenBudget):
+            raise HarnessError("token_budget must be a TokenBudget or None")
         self.engine = engine
+        self.token_budget = token_budget
         # The tree the plan was made in: nodes' verification gates are rooted
         # here (the planner derives them from the plan's own root), so a node
         # running somewhere else can have them re-rooted truthfully.
@@ -506,6 +552,10 @@ class PlanExecutor:
         # Route kwargs win: a tier ceiling bounds the request unless the
         # lane pinned one (node_apply_kwargs suppresses it when pinned).
         kwargs.update(route_kwargs)
+        # The composed execution allowance is authoritative. Route details
+        # are caller supplied and cannot replace or widen it.
+        if self.token_budget is not None:
+            kwargs["token_budget"] = self.token_budget
         # The attestation switch is this assembly's, so no lane can forget
         # to thread it into the write it is gating.
         kwargs["require_diff_authorization"] = self.require_diff_authorization
@@ -539,7 +589,12 @@ class PlanExecutor:
         if gate_cwd:
             def task_runner(command, timeout=VERIFY_TIMEOUT):
                 return default_run_verify(command, timeout=timeout, cwd=gate_cwd)
-        return self.apply(target, node, self.route_kwargs(node), task_runner)
+        route_kwargs = dict(self.route_kwargs(node) or {})
+        # Give every node callback the exact execution-stage budget object.
+        # Copy first: route maps may be shared across concurrent nodes.
+        if self.token_budget is not None:
+            route_kwargs["token_budget"] = self.token_budget
+        return self.apply(target, node, route_kwargs, task_runner)
 
     def execute(self, dag: TaskDAG) -> Dict[str, Any]:
         results = self.executor.execute_dag(

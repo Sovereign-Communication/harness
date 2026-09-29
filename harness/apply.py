@@ -53,6 +53,7 @@ from .capability import ordered_pool
 from .config import HARD_TASK_MAX_COST, MORPH_MODEL
 from .batch import run_batch
 from .continuation import validate_continuation
+from .token_budget import TokenBudget
 from .errors import HarnessError
 from .validation import validate_apply_request
 
@@ -195,6 +196,9 @@ class ApplyEngine(ApplyEngineMixin):
         """Validate the request and freeze engine defaults into one request
         object. All argument policy lives here exactly once; phases read the
         request and never re-derive defaults."""
+        token_budget = kwargs.get("token_budget")
+        if token_budget is not None and not isinstance(token_budget, TokenBudget):
+            raise HarnessError("token_budget must be a TokenBudget or None")
         continuation = validate_continuation(kwargs.get("continuation"))
         resumed = bool(continuation)
         if resumed and kwargs.get("instruction"):
@@ -275,6 +279,33 @@ class ApplyEngine(ApplyEngineMixin):
         task_max_cost = (self.default_task_max_cost
                          if kwargs.get("task_max_cost") is None
                          else kwargs.get("task_max_cost"))
+        if resumed:
+            saved_binding = continuation.get("consent_binding") or {}
+            saved_token_limits = saved_binding.get("token_limits") or {}
+            saved_max_tokens = saved_token_limits.get("max_tokens")
+            if (isinstance(saved_max_tokens, int) and not isinstance(saved_max_tokens, bool)
+                    and saved_max_tokens >= 0):
+                max_tokens = min(max_tokens, saved_max_tokens)
+            saved_remaining = continuation.get("token_budget_remaining")
+            if saved_remaining is not None:
+                input_cap = saved_remaining["max_input_tokens"]
+                output_cap = saved_remaining["max_output_tokens"]
+                if token_budget is not None:
+                    input_cap = min(input_cap, token_budget.remaining_input())
+                    output_cap = min(output_cap, token_budget.remaining_output())
+                    token_budget = token_budget.stage(
+                        "continuation",
+                        max_input_tokens=input_cap,
+                        max_output_tokens=output_cap)
+                else:
+                    token_budget = TokenBudget(
+                        "continuation", max_input_tokens=input_cap,
+                        max_output_tokens=output_cap)
+                max_tokens = min(max_tokens, token_budget.max_output_tokens)
+            saved_cost = continuation.get("task_cost_remaining")
+            if saved_cost is not None:
+                task_max_cost = (float(saved_cost) if task_max_cost is None
+                                 else min(float(task_max_cost), float(saved_cost)))
         max_rot = (kwargs.get("max_rotations")
                    if kwargs.get("max_rotations") is not None
                    else self.default_max_rotations)
@@ -294,7 +325,7 @@ class ApplyEngine(ApplyEngineMixin):
                 f"Use backend='diff' (unified diff) for large files.")
         validated = validate_apply_request(
             max_rounds=kwargs.get("max_rounds", MAX_APPLY_ROUNDS),
-            max_tokens=kwargs.get("max_tokens") or 4096,
+            max_tokens=max_tokens,
             task_max_cost=task_max_cost,
             max_rotations=max_rot,
             max_lines=max_lines,
@@ -391,9 +422,11 @@ class ApplyEngine(ApplyEngineMixin):
             trust_combined=_trust_decision["combined"],
             trust_correctness=_trust_decision["correctness"],
             require_diff_authorization=require_auth,
-            attest_model=attest_model, min_confidence=self.min_confidence)
+            attest_model=attest_model, min_confidence=self.min_confidence,
+            token_budget=token_budget,
+            consent_context=kwargs.get("consent_context"),
+            package_id=kwargs.get("package_id"))
 
     def apply_batch(self, files, **kwargs):
         """Run the shared multi-file policy over this engine."""
         return run_batch(self, files, **kwargs)
-

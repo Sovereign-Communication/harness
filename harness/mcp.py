@@ -26,7 +26,8 @@ from .waist import compose_arguments
 from .waist import compose_plan
 from .errors import HarnessError, ToolCancelled
 from . import osal
-from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
+from .executor import (DEFAULT_PLAN_WORKERS, PlanExecutor,
+                       budget_for_composed_stage)
 from .mcp_lanes import LANES, lane_for
 from .mcp_schemas import TOOL_SCHEMAS
 from .jev_completion import dogfood_phase, score_all_phases
@@ -984,6 +985,13 @@ class McpServer:
                     plan_result["structural"]["site"] = "mcp"
                 return plan_result
 
+            execution_budget = budget_for_composed_stage(
+                composition.get("token_budget"), plan_result, "execution")
+            if (plan_result.get("composition") is not None
+                    and execution_budget is None):
+                raise HarnessError(
+                    "execution stage is not selected or has no composed token allowance")
+
             dag = TaskDAG.from_dict(plan_result["dag"])
             node_routes = {n.get("node_id"): n for n in plan_result["nodes"]}
             run_gate = None
@@ -1010,7 +1018,8 @@ class McpServer:
                 # be bounded by an unrelated nominal default instead.
                 run_ceiling=self.governor.max_cost,
                 final_gate=final_gate,
-                run_gate=run_gate)
+                run_gate=run_gate,
+                token_budget=execution_budget)
             all_results = plan_exec.execute(dag)
             summary = PlanExecutor.summarize(all_results)
             output = {

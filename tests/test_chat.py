@@ -5,6 +5,7 @@ from harness.chat import (_extract_json, chat, extract_content_and_cost,
                           governed_text)
 from harness.errors import HarnessError
 from harness.spend import SpendGovernor
+from harness.token_budget import TokenBudget
 from tests._fake import FakeTransport, comp, m
 
 
@@ -86,6 +87,72 @@ class CostAccountingTests(unittest.TestCase):
         with self.assertRaisesRegex(HarnessError, "omitted usage accounting"):
             chat(fake, "k", "paid/x", [{"role": "user", "content": "hi"}],
                  64, governor=gov)
+
+
+class TokenBudgetDispatchTests(unittest.TestCase):
+    """Each actual chat transport attempt reserves and settles token usage."""
+
+    def _call(self, fake, budget, **kwargs):
+        return chat(fake, "k", "cheap/x",
+                    [{"role": "user", "content": "hi"}], 64,
+                    reasoning_effort="off", token_budget=budget, **kwargs)
+
+    def test_refuses_before_transport_when_allowance_does_not_fit(self):
+        fake = FakeTransport(posts=[_resp(prompt_tokens=10,
+                                          completion_tokens=5)])
+        budget = TokenBudget("small", max_input_tokens=1,
+                             max_output_tokens=64)
+        with self.assertRaises(HarnessError):
+            self._call(fake, budget)
+        self.assertEqual(fake.chat_posts(), [])
+        self.assertEqual(budget.open_allowances, 0)
+
+    def test_invalid_budget_is_refused_before_transport(self):
+        fake = FakeTransport(posts=[_resp(prompt_tokens=10,
+                                          completion_tokens=5)])
+        with self.assertRaisesRegex(HarnessError, "TokenBudget"):
+            chat(fake, "k", "cheap/x", [{"role": "user", "content": "hi"}],
+                 64, token_budget=object())
+        self.assertEqual(fake.chat_posts(), [])
+
+    def test_reported_usage_settles_actual_counts(self):
+        fake = FakeTransport(posts=[_resp(prompt_tokens=11,
+                                          completion_tokens=4)])
+        budget = TokenBudget("actual", max_input_tokens=1000,
+                             max_output_tokens=64)
+        self._call(fake, budget)
+        snapshot = budget.snapshot()
+        self.assertEqual(snapshot["used_input_tokens"], 11)
+        self.assertEqual(snapshot["used_output_tokens"], 4)
+        self.assertEqual(snapshot["usage_sources"]["actual"], 1)
+        self.assertEqual(snapshot["open_allowances"], 0)
+
+    def test_missing_usage_charges_full_reservation(self):
+        fake = FakeTransport(posts=[{"choices": [{"message": {"content": "ok"}}]}])
+        budget = TokenBudget("unknown", max_input_tokens=1000,
+                             max_output_tokens=64)
+        self._call(fake, budget)
+        snapshot = budget.snapshot()
+        self.assertGreater(snapshot["used_input_tokens"], 0)
+        self.assertEqual(snapshot["used_output_tokens"], 64)
+        self.assertEqual(snapshot["usage_sources"]["unavailable"], 1)
+        self.assertEqual(snapshot["open_allowances"], 0)
+
+    def test_retry_owns_a_separate_reservation(self):
+        fake = FakeTransport(posts=[
+            (400, {"error": {"message": "unsupported reasoning parameter"}}),
+            _resp(prompt_tokens=11, completion_tokens=4),
+        ])
+        budget = TokenBudget("retry", max_input_tokens=1000,
+                             max_output_tokens=128)
+        chat(fake, "k", "cheap/x", [{"role": "user", "content": "hi"}], 64,
+             reasoning_effort="low", token_budget=budget)
+        snapshot = budget.snapshot()
+        self.assertEqual(len(fake.chat_posts()), 2)
+        self.assertEqual(snapshot["calls"], 2)
+        self.assertEqual(snapshot["usage_sources"]["unavailable"], 1)
+        self.assertEqual(snapshot["usage_sources"]["actual"], 1)
+        self.assertEqual(snapshot["open_allowances"], 0)
 
 
 class GovernedTextTests(unittest.TestCase):
