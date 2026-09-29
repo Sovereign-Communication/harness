@@ -206,6 +206,21 @@ class PlanCompositionWiringTests(unittest.TestCase):
         # ...and the operator's stage subset, in pipeline order.
         self.assertEqual(captured["stages"], ["context", "planning"])
 
+    def test_the_lane_hands_over_the_intake_brief(self):
+        from types import SimpleNamespace
+
+        # HV-2-use: the brief is the composed run's intake artifact, so the
+        # lane must hand the ARTIFACT over -- never the `supplied_brief` flag
+        # on its own, which would assert an artifact that does not exist.
+        captured = self._capture(SimpleNamespace(
+            use_free=True, allow_escalation=False,
+            token_budget_input=200000, token_budget_output=64000,
+            hourglass_stages=None))
+        self.assertTrue(captured["supplied_brief"])
+        self.assertIsInstance(captured["brief"], dict)
+        self.assertEqual(captured["brief"]["goal"], "g")
+        self.assertIsInstance(captured["brief_tokens"], int)
+
     def test_a_plan_only_settings_object_defaults_to_every_stage(self):
         from types import SimpleNamespace
 
