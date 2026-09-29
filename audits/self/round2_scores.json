@@ -222,7 +222,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 2540 tests in 127.464s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 2562 tests in 130.969s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -352,7 +352,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 56/56 = 100% (bar 95%) vs baseline 87a3ac0789)"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 69/69 = 100% (bar 95%) vs baseline d1f7c85a10)"
       }
     ]
   }
