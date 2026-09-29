@@ -27,7 +27,8 @@ from harness.jev_policy import JevPolicy, policy_for
 from harness.ledger import AutonomyLedger
 from harness.router import Router
 from harness.spend import SpendGovernor
-from harness.waist import HOURGLASS_DEFAULT_STAGES, compose_plan
+from harness.waist import (HOURGLASS_DEFAULT_STAGES, STAGE_CONTEXT,
+                           compose_plan)
 from tests._fake import FakeTransport, comp, m
 
 
@@ -166,15 +167,26 @@ class LaneParityTests(unittest.TestCase):
         self.assertIn("structural", result)
         self.assertTrue(result["structural"]["is_fallback"])
         self.assertEqual(result["structural"]["site"], "mcp")
-        # HV-4/HV-3-use, on the parity surface: the MCP lane reaches the
-        # composed path through the same settings seam, so `composition`
-        # lands here exactly as it does on the CLI lane -- same owner, same
-        # stage order, same allowance. That is what "lane parity" means for
-        # the waist, not merely the same structural block.
-        self.assertIn("composition", result)
+        # HV-2-use, on the parity surface: the intake brief is the `context`
+        # stage's artifact, the lane handed a real pack over, and the brief
+        # covers a file that really exists -- so the composition CONSUMES it:
+        # the stage is bypassed (its work already exists, so it does not
+        # re-run) and reported `completed`, not `skipped`. Asserting the
+        # bypass and its outcome, not merely that a key appeared, is what
+        # separates consuming the brief from accepting the keyword.
+        composed = result["composition"]
+        self.assertIn(STAGE_CONTEXT, composed["bypassed"])
+        self.assertIn(STAGE_CONTEXT, composed["completed"])
+        self.assertNotIn(STAGE_CONTEXT, composed["skipped"])
+        # The other stages still compose in pipeline order behind it.
         self.assertEqual(
-            [entry["stage"] for entry in result["composition"]["stages"]],
-            list(HOURGLASS_DEFAULT_STAGES))
+            [entry["stage"] for entry in composed["stages"]],
+            [stage for stage in HOURGLASS_DEFAULT_STAGES
+             if stage != STAGE_CONTEXT])
+        # Every declared stage lands in exactly one bucket.
+        buckets = ([entry["stage"] for entry in composed["stages"]]
+                   + list(composed["skipped"]) + list(composed["completed"]))
+        self.assertEqual(sorted(buckets), sorted(HOURGLASS_DEFAULT_STAGES))
 
     def test_batch_aggregates_child_structural_envelopes(self):
         engine, transport = self._engine(

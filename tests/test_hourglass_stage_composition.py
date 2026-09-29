@@ -343,3 +343,138 @@ class StageStateTests(unittest.TestCase):
         for entry in env["stages"]:
             self.assertIn("state", entry)
             self.assertIn("max_input_tokens", entry)
+
+
+class IntakeBriefTests(unittest.TestCase):
+    """HV-2-use: the brief is the composed plan run's intake artifact.
+
+    The consumer condition was tracked as prose for a while and then as its
+    own row; these tests are what makes the last half of it a fact rather
+    than a claim. Every one is hermetic: real temp files, no network, no
+    model, no Jev call.
+    """
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        self.tmp = tempfile.mkdtemp(prefix="harness-intake-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _write(self, name, text):
+        path = os.path.join(self.tmp, name)
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+        return path
+
+    def _settings(self, **overrides):
+        from types import SimpleNamespace
+        base = dict(use_free=True, token_budget_input=200000,
+                    token_budget_output=64000, hourglass_stages=None)
+        base.update(overrides)
+        return SimpleNamespace(**base)
+
+    def test_intake_brief_measures_and_lints_a_real_file(self):
+        from harness.waist import intake_brief
+        path = self._write("real.py", "x = 1\n")
+        intake = intake_brief("update real.py", [path])
+        self.assertEqual(intake["brief"]["goal"], "update real.py")
+        self.assertEqual(intake["issues"], [])
+        # The size is MEASURED, and it is the number that caps later stages.
+        self.assertGreater(intake["tokens"], 0)
+        self.assertEqual(intake["excluded"], [])
+        self.assertEqual(intake["brief"]["scope"]["included"], [path])
+
+    def test_an_unreadable_candidate_is_excluded_not_fatal(self):
+        from harness.waist import intake_brief
+        path = self._write("real.py", "x = 1\n")
+        missing = os.path.join(self.tmp, "not_yet.py")
+        # A goal whose first node creates a file is an ordinary goal, so a
+        # candidate that does not exist may not take the run down. It is
+        # recorded through the pack's own exclusion vocabulary instead.
+        intake = intake_brief("add not_yet.py", [path, missing])
+        self.assertEqual(intake["excluded"], [missing])
+        self.assertIn(missing, intake["brief"]["scope"]["excluded"])
+        self.assertEqual(intake["brief"]["scope"]["included"], [path])
+        self.assertEqual(intake["brief"]["coverage"]["omitted"], 0)
+
+    def test_the_arguments_hand_the_brief_only_when_context_is_selected(self):
+        from harness.waist import compose_arguments
+        path = self._write("real.py", "x = 1\n")
+        from harness.brief import estimate_brief_tokens
+        selected = compose_arguments(self._settings(), goal="g", files=[path])
+        self.assertTrue(selected["supplied_brief"])
+        self.assertEqual(selected["brief"]["goal"], "g")
+        # Re-measured, exactly as the planning ladder measures a pack, rather
+        # than read back from the pack's own `estimated_tokens` field: that
+        # field is written before it exists, so it is a slightly different
+        # number and the ladder's convention is the fresh one.
+        self.assertEqual(selected["brief_tokens"],
+                         estimate_brief_tokens(selected["brief"]))
+        self.assertIn(STAGE_CONTEXT, selected["stages"])
+        # A run that dropped `context` must not pay to curate an artifact
+        # nothing will consume, and must not claim it has one.
+        dropped = compose_arguments(self._settings(hourglass_stages=["planning"]),
+                                   goal="g", files=[path])
+        self.assertNotIn("brief", dropped)
+        self.assertNotIn("supplied_brief", dropped)
+        self.assertNotIn("brief_tokens", dropped)
+
+    def test_the_plan_lane_consumes_a_supplied_brief(self):
+        from harness.spend import SpendGovernor
+        from harness.waist import compose_arguments, compose_plan
+        from tests._fake import FakeTransport, m
+        path = self._write("real.py", "x = 1\n")
+        settings = self._settings()
+        arguments = compose_arguments(settings, goal="update real.py",
+                                      files=[path])
+        fake = FakeTransport(models=[m("m/cheap")])
+        gov = SpendGovernor(fake, "sk-test", max_cost=1.0)
+        plan = compose_plan(
+            transport=fake, api_key="k", governor=gov, ledger=None,
+            opts_goal="update real.py", candidate_files=[path],
+            root=self.tmp, execute=False, **arguments)
+        comp = plan["composition"]
+        # Consumed, not merely accepted: the stage's work already exists, so
+        # it does not re-run, and its outcome is complete rather than skipped.
+        self.assertIn(STAGE_CONTEXT, comp["bypassed"])
+        self.assertIn(STAGE_CONTEXT, comp["completed"])
+        self.assertNotIn(STAGE_CONTEXT, comp["skipped"])
+        # Its measured size is what caps the LATER stages. `planning` is the
+        # first *composed* stage here (the context stage did not compose), and
+        # HV-4's contract is that the first composing stage inherits the run's
+        # own ceiling -- so the brief's cap lands on the stage after it,
+        # floored at the contract's minimum stage allowance. That is what
+        # "preflights the later stages" means, and this pins both halves.
+        from harness.waist import MIN_STAGE_INPUT_TOKENS
+        planning = [entry for entry in comp["stages"]
+                    if entry["stage"] == STAGE_PLANNING][0]
+        execution = [entry for entry in comp["stages"]
+                     if entry["stage"] == STAGE_EXECUTION][0]
+        self.assertEqual(planning["max_input_tokens"], 200000)
+        self.assertLessEqual(execution["max_input_tokens"],
+                             max(arguments["brief_tokens"],
+                                 MIN_STAGE_INPUT_TOKENS))
+        # Every declared stage still lands in exactly one bucket.
+        buckets = ([entry["stage"] for entry in comp["stages"]]
+                   + list(comp["skipped"]) + list(comp["completed"]))
+        self.assertEqual(sorted(buckets), sorted(HOURGLASS_DEFAULT_STAGES))
+
+    def test_a_brief_over_no_readable_source_buys_no_bypass(self):
+        from harness.spend import SpendGovernor
+        from harness.waist import compose_arguments, compose_plan
+        from tests._fake import FakeTransport, m
+        missing = os.path.join(self.tmp, "not_yet.py")
+        arguments = compose_arguments(self._settings(), goal="add it",
+                                      files=[missing])
+        fake = FakeTransport(models=[m("m/cheap")])
+        gov = SpendGovernor(fake, "sk-test", max_cost=1.0)
+        plan = compose_plan(
+            transport=fake, api_key="k", governor=gov, ledger=None,
+            opts_goal="add it", candidate_files=[missing], root=self.tmp,
+            execute=False, **arguments)
+        comp = plan["composition"]
+        # An empty pack is a brief, but it is not EVIDENCE -- so the bypass is
+        # denied and the stage composes instead of pretending intake is done.
+        self.assertNotIn(STAGE_CONTEXT, comp["bypassed"])
+        self.assertIn(STAGE_CONTEXT,
+                      [entry["stage"] for entry in comp["stages"]])

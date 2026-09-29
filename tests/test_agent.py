@@ -1812,6 +1812,37 @@ class TestHourglassLane(unittest.TestCase):
         self.assertIsInstance(captured["token_budget"], TokenBudget)
         self.assertEqual(captured["stages"], list(HOURGLASS_DEFAULT_STAGES))
 
+    def test_plan_round_curates_the_intake_brief_against_its_own_tree(self):
+        """HV-2-use: the GUI lane's brief reads ITS tree, not the CWD.
+
+        An agent lane's candidate files are relative to its own root, so the
+        intake brief has to be read through a reader pointed at that root --
+        otherwise the brief would either miss the file or, worse, silently
+        describe a same-named file somewhere else on disk.
+        """
+        captured = {}
+
+        def fake_compose_plan(**kwargs):
+            captured.update(kwargs)
+            return {"status": "planned", "goal": "g"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "util.py").write_text("x = 1\n", encoding="utf-8")
+            agent = AutonomousAgent(settings=self._armed(), root_dir=root,
+                                    history_dir=root)
+            with patch("harness.agent.compose_plan",
+                       side_effect=fake_compose_plan):
+                agent._plan_round("Update util.py", ["util.py"], MagicMock(),
+                                  confirm=False)
+
+        self.assertTrue(captured["supplied_brief"])
+        self.assertIn("util.py", captured["brief"]["scope"]["included"])
+        self.assertEqual([source["path"]
+                          for source in captured["brief"]["grounding"]["sources"]],
+                         ["util.py"])
+        self.assertGreater(captured["brief_tokens"], 0)
+
     def test_disarmed_lane_stays_serial_single_tree(self):
         import harness.executor as executor_module
 

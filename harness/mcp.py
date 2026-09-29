@@ -22,9 +22,8 @@ from .continuation import validate_continuation
 from .config import (freeze_jev_settings, load_settings, resolve_hourglass,
                      validate_jev_model_id)
 from .dag import TaskDAG
-from .token_budget import budget_from_settings
+from .waist import compose_arguments
 from .waist import compose_plan
-from .waist import stage_selection_from_settings
 from .errors import HarnessError, ToolCancelled
 from . import osal
 from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
@@ -950,13 +949,12 @@ class McpServer:
                     jev_policy = policy_for(
                         settings, transport=self.transport,
                         governor=self.governor, ledger=self.ledger)
-            # HV-4: only a caller can name the run's allowance, which is why
-            # the composed path was published but unreachable. Both arguments
-            # come from owners that already exist -- the ceilings from
-            # `token_budget.budget_from_settings`, the operator's stage subset
-            # from `waist.stage_selection_from_settings` (default: every
-            # stage, i.e. the pre-slice posture) -- so this lane reaches the
-            # composed path instead of publishing it.
+            # HV-4/HV-2-use: only a caller can name the run's allowance, and
+            # only a caller can hand over the intake brief, which is why the
+            # composed path was published but unreachable. `compose_arguments`
+            # is the one owner of that decision, so this lane composes exactly
+            # as the CLI and agent lanes do -- allowance, stage subset and the
+            # brief the `context` stage produces.
             #
             # Built per request on purpose: a `TokenBudget` accounts for ONE
             # run, so a server-level budget would carry one plan's usage into
@@ -964,8 +962,8 @@ class McpServer:
             # supplied the lane behaves exactly as before rather than
             # inventing an allowance, which composition refuses to do.
             composition = (
-                {"token_budget": budget_from_settings(self.settings),
-                 "stages": stage_selection_from_settings(self.settings)}
+                compose_arguments(self.settings, goal=goal,
+                                  files=candidate_files)
                 if self.settings is not None else {})
             plan_result = compose_plan(
                 transport=self.transport, api_key=self.api_key,

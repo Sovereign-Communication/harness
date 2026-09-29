@@ -42,7 +42,8 @@ from .prompts import MAX_FILE_LINES
 from .repo_scope import discover_verification_gate, gate_for_targets
 from .sliding_scale import resolve_frontier_model, resolve_sliding_scale_route
 from .tokens import estimate_prompt_tokens
-from .token_budget import TokenBudget
+from .osal import read_text
+from .token_budget import TokenBudget, budget_from_settings
 from .validation import MAX_INSTRUCTION_CHARS
 from .jev_packs import build_context_pack
 from .jev_policy import JevPolicy
@@ -1269,7 +1270,9 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                  stages: Optional[Sequence[str]] = None,
                  supplied_brief: bool = False,
                  supplied_plan: bool = False,
-                 brief_tokens: Optional[int] = None) -> Dict[str, Any]:
+                 brief: Optional[Dict[str, Any]] = None,
+                 brief_tokens: Optional[int] = None,
+                 reader=None) -> Dict[str, Any]:
     """ONE owner of the plan-lane flow (CLI and MCP call this).
 
     Order: optional cheap-LLM decomposition (M1, condensed signatures) ->
@@ -1316,6 +1319,16 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     composition may not invent an allowance. ``brief_tokens`` is the measured
     size of a brief the caller already curated; supplying it preflights the
     later stages against the evidence they will actually read.
+
+    ``brief`` (HV-2-use) is that brief itself: the ``context`` stage's
+    artifact, handed in by the run's caller as its intake evidence. Passing
+    the pack rather than only the ``supplied_brief`` flag is what lets the
+    ``context`` bypass be decided on real evidence -- the pack's own
+    freshness, and the re-condense trigger whenever the caller also reports
+    stage evidence -- instead of on a boolean the caller asserts. It is also
+    reported as ``completed``, not ``skipped``: composition budgets stages,
+    it does not perform them, so a caller that actually produced the
+    artifact is the one that can say the stage is done.
     """
     if (decompose_llm or confirm or plan_consensus) and governor is None:
         raise HarnessError("LLM plan features require a governor")
@@ -1651,10 +1664,21 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         # HV-4: the composition decision is evidence, so it rides on the
         # envelope rather than living only in the caller's head. Attached
         # last, so it survives the degraded/refused envelope copies above.
-        plan_result["composition"] = composition_envelope(compose_stages(
+        composition = compose_stages(
             budget=token_budget, declared=stages,
             supplied_brief=supplied_brief, supplied_plan=supplied_plan,
-            brief_tokens=brief_tokens))
+            brief=brief, brief_tokens=brief_tokens, reader=reader)
+        states = stage_states(composition)
+        if brief is not None and STAGE_CONTEXT in (composition.get("bypassed")
+                                                  or {}):
+            # HV-2-use: the brief IS the context stage's artifact, and the
+            # caller produced it, so a granted bypass means that stage is
+            # **done** rather than *skipped*. Only a granted bypass: when the
+            # pack is stale the bypass is denied, the stage genuinely has to
+            # run, and its own `pending` is the honest report.
+            states[STAGE_CONTEXT] = STATE_COMPLETED
+        plan_result["composition"] = composition_envelope(composition,
+                                                          states=states)
     return plan_result
 
 
@@ -1858,6 +1882,126 @@ def stage_selection_from_settings(settings, *, default=None) -> List[str]:
     if isinstance(raw, str):
         return [part.strip() for part in raw.split(",") if part.strip()]
     return list(raw)
+
+
+def tree_reader(root):
+    """Read a run's files relative to the tree that run edits.
+
+    An agent lane's candidate files are relative to ITS root, not to the
+    process CWD, so building the intake brief with the default reader would
+    either miss the file or -- worse -- silently read a same-named file from
+    wherever the process happens to be. Reading goes through ``osal`` (the
+    ONE owner of evidence bytes) so the sha256 a pack pins matches the bytes
+    on disk on every platform.
+
+    An absolute path is left alone: a caller that names one means it.
+    """
+    base = str(root)
+
+    def read(path):
+        name = path if os.path.isabs(str(path)) else os.path.join(base,
+                                                                str(path))
+        return read_text(name)
+
+    return read
+
+
+def compose_arguments(settings, *, goal, files, root=None,
+                      reader=None) -> Dict[str, Any]:
+    """Everything ``compose_plan`` needs to compose one run (HV-2-use).
+
+    ONE owner for *how a lane composes*, so the CLI, MCP and agent lanes
+    cannot drift apart on what a composed run is:
+
+    * the allowance from ``budget_from_settings`` -- the owner of
+      settings-defined ceilings, never a lane-local guess;
+    * the stage subset from ``stage_selection_from_settings`` (default: every
+      stage, i.e. the pre-composition posture); and
+    * when the ``context`` stage is selected, the intake brief that stage
+      produces, from :func:`intake_brief`, together with its measured token
+      count.
+
+    The brief is built only when ``context`` is actually selected: a run that
+    dropped the stage would pay to curate an artifact nothing consumes, and
+    the composition already reports that stage as ``skipped``.
+
+    ``supplied_brief`` is set only alongside a real pack. A lane must never
+    assert the flag without the artifact -- that is the difference between
+    "the context artifact exists" and "the caller hopes it does", and it is
+    the difference the composition decides the bypass on.
+
+    ``root`` is the tree the run edits. When it is given, the brief is read
+    relative to it and the SAME reader is handed to ``compose_plan``, because
+    the composition re-reads the pack's sources to decide whether it has
+    drifted: a pack built through one reader and checked through another
+    would report phantom drift -- or hide real drift -- on exactly the
+    platforms where the two disagree.
+    """
+    stages = stage_selection_from_settings(settings)
+    if reader is None and root is not None:
+        reader = tree_reader(root)
+    arguments: Dict[str, Any] = {
+        "token_budget": budget_from_settings(settings),
+        "stages": stages,
+        "reader": reader,
+    }
+    if STAGE_CONTEXT in stages:
+        intake = intake_brief(goal, files, reader=reader)
+        arguments["brief"] = intake["brief"]
+        arguments["brief_tokens"] = intake["tokens"]
+        arguments["supplied_brief"] = True
+    return arguments
+
+
+def intake_brief(goal, files, *, reader=None) -> Dict[str, Any]:
+    """The ``context`` stage's artifact for a composed plan run (HV-2-use).
+
+    ONE owner for "the brief a plan run starts from", so no lane invents its
+    own shape, its own reader, or its own token number:
+
+    * the pack comes from :func:`harness.brief.build_brief`, the same owner
+      the planning ladder curates through -- there is no second brief
+      artifact;
+    * the size is MEASURED with ``estimate_brief_tokens`` over the bytes the
+      pack actually ships, because that number is what caps every later
+      stage (``compose_plan(brief_tokens=...)``); and
+    * the grounding lint runs here, through ``validate_brief``, so an
+      ungrounded pack is visible at the moment it is built.
+
+    ``issues`` are returned rather than raised: a caller decides whether an
+    imperfect brief should stop the run, and the fact belongs on the
+    envelope either way. An empty list means the pack passed the lint.
+
+    A candidate the run cannot read is **excluded, not fatal**. A plan lane is
+    allowed to name a file that does not exist yet -- a goal whose first node
+    creates it is an ordinary goal -- and ``build_brief`` refuses to invent
+    content for a path it cannot read, so the two cannot simply be handed to
+    each other. The exclusion goes through the pack's own vocabulary for it
+    (``scope.excluded``, and therefore ``coverage``), so an unreadable
+    candidate stays visible instead of being dropped on the floor, and the
+    returned ``excluded`` list names them for the caller and the ledger.
+
+    A brief over no readable source is still a brief: it is simply not
+    *evidence*, which is why the composition refuses its bypass rather than
+    treating an empty pack as a fresh one.
+    """
+    probe = reader or read_text
+    usable: List[str] = []
+    excluded: List[str] = []
+    for path in list(files or []):
+        try:
+            probe(path)
+        except OSError:
+            excluded.append(path)
+        else:
+            usable.append(path)
+    pack = build_brief(goal, usable, reader=reader, scope=excluded)
+    return {
+        "brief": pack,
+        "tokens": estimate_brief_tokens(pack),
+        "issues": list(validate_brief(pack, reader=reader) or []),
+        "excluded": excluded,
+    }
 
 
 # ---- GAP-recondense: when a stage-mutated tree invalidates the brief -----
@@ -2234,6 +2378,14 @@ def composition_envelope(composition: Dict[str, Any], *,
         ],
         "skipped": [name for name, state in resolved.items()
                     if state == STATE_SKIPPED],
+        # Caller-reported completions surface here for the same reason
+        # `skipped` does. A stage that did not compose is absent from
+        # `stages`, so without this list a stage a caller actually ran -- the
+        # `context` stage whose brief the caller curated, say -- would land in
+        # NO bucket, and "every declared stage sits in exactly one of
+        # completed/skipped/pending" is the invariant this envelope keeps.
+        "completed": [name for name, state in resolved.items()
+                      if state == STATE_COMPLETED],
         "bypassed": dict(composition.get("bypassed") or {}),
         "denied_bypass": dict(composition.get("denied") or {}),
         # Added only when a stage actually ran and supplied its evidence: a
