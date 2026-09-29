@@ -1,11 +1,13 @@
 """Unit tests for context distillation and micro-brief condensation (harness/condenser.py)."""
 import unittest
+from unittest import mock
 
 from harness.condenser import (
     MicroBrief,
     condense_error_log,
     distill_context,
     extract_python_signatures,
+    extract_source_evidence,
 )
 
 
@@ -111,6 +113,51 @@ class CondenserTests(unittest.TestCase):
         self.assertIn("CONTEXT SUMMARY:", prompt_ctx)
         self.assertIn("CONDENSED FILE INTERFACES:", prompt_ctx)
         self.assertIn("CONDENSED ERROR / FAILURE TRACE:", prompt_ctx)
+
+    def test_extract_source_evidence_reports_the_extractor_cap(self):
+        # The seam the context brief builds on: retained text plus a flag saying
+        # whether an extractor cap cut it. No truncation marker is added here --
+        # that marker is part of the brief artifact, not of extraction.
+        text, truncated = extract_source_evidence("widget.py", SAMPLE_PYTHON)
+        self.assertFalse(truncated)
+        self.assertIn("class Widget:", text)
+
+        unparseable = "def oops(:\n    pass\n"
+        text, truncated = extract_source_evidence("broken.py", unparseable)
+        self.assertFalse(truncated)
+        self.assertIn("def oops(:", text)
+
+        capped = "\n".join(f"fn api_{index}() {{}}" for index in range(81))
+        text, truncated = extract_source_evidence("api.rs", capped)
+        self.assertTrue(truncated)
+        self.assertEqual(len(text.splitlines()), 80)
+        self.assertNotIn("truncated", text)
+
+    def test_extract_source_evidence_falls_back_when_the_ast_extractor_fails(self):
+        # A source that parses cleanly can still defeat the AST extractor (deep
+        # unparse recursion, a tree shape ast.unparse rejects). The seam must
+        # degrade to the heuristic extractor and report the cap rather than
+        # propagate, so one bad source cannot take down a whole brief.
+        capped = "\n".join(f"def api_{index}():\n    pass" for index in range(90))
+        for error in (ValueError("unparse refused"), RecursionError("too deep")):
+            with self.subTest(error=type(error).__name__), \
+                    mock.patch(
+                        "harness.condenser.extract_python_signatures",
+                        side_effect=error,
+                    ) as patched:
+                text, truncated = extract_source_evidence("api.py", capped)
+            self.assertIn("def api_0():", text)
+            self.assertEqual(len(text.splitlines()), 80)
+            self.assertTrue(truncated)
+            self.assertEqual(patched.call_count, 1)
+
+        # The fallback is a degradation, not a silent success: the retained
+        # text is the heuristic extractor's, so AST-only structure is gone.
+        with mock.patch("harness.condenser.extract_python_signatures",
+                        side_effect=ValueError("unparse refused")):
+            text, _ = extract_source_evidence("api.py", capped)
+        self.assertNotIn("...", text)
+        self.assertNotIn("truncated", text)
 
     def test_distill_context_budget_truncation(self):
         # Stress test token budget clamping with tiny max_tokens

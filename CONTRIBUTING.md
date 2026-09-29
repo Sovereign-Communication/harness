@@ -153,6 +153,7 @@ statement covers the CI matrix by direct execution.
 | `harness/repo_scope.py` | repository file discovery and per-target verification-gate derivation/rebasing; the single owner of edit scope |
 | `harness/executor.py` | concurrent multi-threaded batch dispatch & file mutex manager |
 | `harness/condenser.py` | context distillation & micro-brief pipeline: AST signature extraction, error pruning |
+| `harness/context_brief.py` | the evidence-bearing context brief artifact (HV-2): `create_context_brief`/`validate_context_brief`/`render_context_brief` -- versioned schema, hash-pinned source identity + freshness, claims grounded in evidence refs, explicit omissions and truncation, honest token estimate; hermetic (no I/O, no model) |
 | `harness/sliding_scale.py` | dynamic sliding-scale tier classification (Tiers 0, 1, 2) & frontier model routing ladder |
 | `harness/routing_table.py` | task-to-model 4-tier routing table, :floor provider formatting, and gateway-level max_price ceilings |
 | `harness/jev.py` | TypeSafe AI Jev / System One structural verification client with local AST and diff fallbacks |

@@ -1,8 +1,12 @@
-"""Context distillation and micro-brief condensation engine (#PR-3).
+"""Source extraction for condensed context (#PR-3).
 
-Extracts structural AST signatures from source files and condenses raw error
-logs into compact, high-signal MicroBriefs for sliding-scale model escalation.
-Drastically reduces token overhead and enables cheap, frontier-grade reasoning.
+Owns the extraction primitives -- structural AST signatures, the heuristic
+declaration extractor for non-Python or unparseable sources, and error-log
+condensation -- plus the backward-compatible `MicroBrief`/`distill_context`
+path used by `agent.py` and `waist.py`. The evidence-bearing context brief has
+its own owner in `harness.context_brief`, which builds on the
+`extract_source_evidence` seam exposed here; brief schema, validation, and
+rendering deliberately do not live in this module.
 """
 import ast
 from dataclasses import dataclass
@@ -96,15 +100,50 @@ def extract_python_signatures(source: str, focus_symbols: Optional[Sequence[str]
     return "\n".join(lines).strip()
 
 
-def _heuristic_signatures(source: str) -> str:
-    """Fallback line-based signature extractor for non-Python or unparseable source."""
+def _heuristic_signature_lines(source: str) -> List[str]:
+    """Collect declaration-like lines for the heuristic signature extractor."""
     result = []
     for line in source.splitlines():
         trimmed = line.strip()
         if (trimmed.startswith(("def ", "class ", "async def ", "fn ", "pub fn ", "function ", "interface ")) or
                 trimmed.startswith(("#", "//", "export "))):
             result.append(line)
-    return "\n".join(result[:80]).strip()
+    return result
+
+
+def _heuristic_signatures(source: str) -> str:
+    """Fallback line-based signature extractor for non-Python or unparseable source."""
+    return "\n".join(_heuristic_signature_lines(source)[:80]).strip()
+
+
+def _heuristic_signatures_with_status(source: str) -> Tuple[str, bool]:
+    """Return heuristic signatures and whether the historical 80-line cap applied."""
+    lines = _heuristic_signature_lines(source)
+    return "\n".join(lines[:80]).strip(), len(lines) > 80
+
+
+def extract_source_evidence(path: str, content: str,
+                            focus_symbols: Optional[Sequence[str]] = None
+                            ) -> Tuple[str, bool]:
+    """Extract one source's retained text, plus whether an extractor cap cut it.
+
+    Python sources go through the AST signature extractor, falling back to the
+    heuristic line extractor when the source will not parse. The boolean
+    reports the heuristic extractor's 80-line cap so a caller can label the
+    result as truncated rather than silently complete. The truncation marker
+    itself belongs to the brief artifact, not to extraction, so none is added
+    here.
+    """
+    if not path.endswith(".py"):
+        return _heuristic_signatures_with_status(content)
+    try:
+        ast.parse(content)
+    except (RecursionError, SyntaxError, ValueError):
+        return _heuristic_signatures_with_status(content)
+    try:
+        return extract_python_signatures(content, focus_symbols=focus_symbols), False
+    except (RecursionError, ValueError):
+        return _heuristic_signatures_with_status(content)
 
 
 def condense_error_log(error_log: str, max_chars: int = 1200) -> str:
