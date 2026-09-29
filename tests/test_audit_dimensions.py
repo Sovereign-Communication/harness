@@ -664,5 +664,25 @@ class AuditReceiptLineEndingTests(unittest.TestCase):
         self.assertNotIn("out.write_text(", source)
 
 
+class ShippedFreshnessAuditTests(unittest.TestCase):
+    def test_four_free_models_satisfy_the_guard_wiring_check(self):
+        from audits.self import audit
+
+        sources = {
+            "config": "\n".join(
+                f'"example/model-{index}:free"' for index in range(4)),
+            "cli_parser": "--check-shipped",
+            "cli": "shipped_model_ids",
+            "spend": "not found in live OpenRouter model list",
+        }
+        with patch.object(audit, "_defines", return_value=True), \
+             patch.object(audit, "_src", side_effect=lambda name: sources[name]), \
+             patch.object(audit, "LIVE", False):
+            score, evidence = audit.sd_shipped_freshness()
+
+        self.assertEqual(score, 1.0)
+        self.assertIn("4 :free pool ids", evidence)
+
+
 if __name__ == "__main__":
     unittest.main()
