@@ -81,7 +81,12 @@ class CostCliTests(unittest.TestCase):
     def test_cli_cost_command_json_out(self):
         out_file = os.path.join(self.tmp.name, "cost.json")
         env_backup = dict(os.environ)
-        os.environ["HARNESS_LEDGER_PATH"] = self.ledger_path
+        # HARNESS_LEDGER is the name harness.config reads (ENV_MAP["ledger_path"]).
+        # The previous HARNESS_LEDGER_PATH here was a no-op: nothing in the
+        # codebase reads that name, so `harness cost` fell through to the
+        # default ledger and these two tests were asserting against whatever
+        # happened to be in it rather than the four events setUp just seeded.
+        os.environ["HARNESS_LEDGER"] = self.ledger_path
         try:
             main(["cost", "--out", out_file, "--json"])
             self.assertTrue(os.path.exists(out_file))
@@ -96,7 +101,7 @@ class CostCliTests(unittest.TestCase):
     def test_cli_cost_command_pretty(self):
         out_file = os.path.join(self.tmp.name, "cost_pretty.json")
         env_backup = dict(os.environ)
-        os.environ["HARNESS_LEDGER_PATH"] = self.ledger_path
+        os.environ["HARNESS_LEDGER"] = self.ledger_path
         try:
             main(["cost", "--out", out_file, "--by-tier", "--by-model", "--savings"])
             self.assertTrue(os.path.exists(out_file))
