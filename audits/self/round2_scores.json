@@ -76,7 +76,7 @@
         "id": "A2",
         "label": "preflight covers reasoning/429 retry slots",
         "score": 1.0,
-        "evidence": "reasoning/429 retry slots counted via _chat_reservation_slots (panel wired); apply/convergence/consent preflight before calls"
+        "evidence": "reasoning/429 retry slots counted via _chat_reservation_slots (panel wired); convergence binds retry slots into its governor preflight; apply/consent preflight before calls"
       },
       {
         "id": "A3",
@@ -222,7 +222,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 2022 tests in 153.480s\n\nOK"
+        "evidence": "unittest: Ran 2092 tests in 152.806s\n\nOK"
       },
       {
         "id": "R14",

@@ -39,8 +39,9 @@ class ConsentRotationTests(unittest.TestCase):
         self.assertIn("reasoning-only", r["attempts"][0]["error"])
 
     def test_http_error_rotates_then_fails_closed(self):
-        fake, gov, r = self.probe([(500, {"error": {"message": "down"}}),
-                                   (500, {"error": {"message": "down"}})])
+        fake, gov, r = self.probe([
+            (500, {"error": {"message": "down"}, "usage": {"cost": 0.0}}),
+            (500, {"error": {"message": "down"}, "usage": {"cost": 0.0}})])
         self.assertEqual(r["decision"], "defer")
         self.assertEqual(len(r["attempts"]), 2)
         self.assertIn("fail-closed", r["reason"])
@@ -62,11 +63,11 @@ class ConsentRotationTests(unittest.TestCase):
                              posts=[comp(None, reasoning="hmm"), consent("accept")])
         gov = SpendGovernor(fake, "sk-test", max_cost=0.01)
         preflight_calls = []
-        original = gov.preflight
+        original = gov.preflight_with_lease
         def spy(prompt, calls):
             preflight_calls.extend(calls)
             return original(prompt, calls)
-        gov.preflight = spy
+        gov.preflight_with_lease = spy
         probe_consent(transport=fake, api_key="k", governor=gov, task_id="pf",
                       task="Do the work", model=JUDGE, ledger=None,
                       fallback_pool=[FALLBACK])
@@ -76,6 +77,26 @@ class ConsentRotationTests(unittest.TestCase):
         # candidate is the exact worst case (_chat_reservation_slots).
         self.assertEqual([c[1] for c in preflight_calls],
                          [JUDGE, JUDGE, FALLBACK, FALLBACK])
+
+    def test_legacy_preflight_without_lease_api_still_preflights_pool(self):
+        fake = FakeTransport(models=self.models, posts=[consent("accept")])
+        gov = SpendGovernor(fake, "sk-test")
+        gov.preflight_with_lease = None
+        seen = []
+        original = gov.preflight
+
+        def spy(prompt, calls):
+            seen.extend(calls)
+            return original(prompt, calls)
+
+        gov.preflight = spy
+        result = probe_consent(
+            transport=fake, api_key="k", governor=gov, task_id="legacy-pf",
+            task="Do the work", model=JUDGE, ledger=None,
+            fallback_pool=[FALLBACK])
+
+        self.assertEqual(result["decision"], "accept")
+        self.assertEqual({call[1] for call in seen}, {JUDGE, FALLBACK})
 
     def test_renew_passes_fallback_pool(self):
         fake = FakeTransport(models=self.models,
@@ -122,7 +143,8 @@ class ConsentProbeTests(unittest.TestCase):
         self.assertIn("unparseable", r["reason"])
 
     def test_http_failure_fails_closed(self):
-        _, _, r = self.probe((500, {"error": {"message": "down"}}))
+        _, _, r = self.probe((500, {"error": {"message": "down"},
+                                    "usage": {"cost": 0.0}}))
         self.assertEqual(r["decision"], "defer")
 
     def test_redirect_surfaces_signal(self):

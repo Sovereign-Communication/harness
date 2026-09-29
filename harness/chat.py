@@ -11,8 +11,10 @@ and must never be mined for votes, file bodies, or consent decisions.
 import json
 
 from .config import OPENROUTER_CHAT_URL
+from .errors import HarnessError
 from .output import eprint
 from .routing_table import floor_model, strip_variant_suffix
+from .validation import finite_number
 
 REASONING_FALLBACK_PREFIX = "[NOTE] model returned no content"
 
@@ -59,11 +61,36 @@ def _extract_json(text):
 
 
 def _reported_cost(resp):
-    """Read a provider-reported cost even when the HTTP response is an error."""
+    """Return a valid reported cost, keeping missing/invalid distinct from zero."""
+    if not isinstance(resp, dict):
+        return None
+    usage = resp.get("usage")
+    if isinstance(usage, dict) and "cost" in usage:
+        raw_cost = usage["cost"]
+    else:
+        # Some provider error envelopes expose a billable amount outside the
+        # normal usage object. Preserve that pre-existing accounting source
+        # before falling back to token-based estimation.
+        error = resp.get("error")
+        if not isinstance(error, dict) or "cost" not in error:
+            return None
+        raw_cost = error["cost"]
+    if raw_cost is None or isinstance(raw_cost, bool):
+        return None
     try:
-        return float((resp.get("usage") or {}).get("cost") or 0.0)
-    except (AttributeError, TypeError, ValueError):
-        return 0.0
+        return finite_number(raw_cost, "reported cost", 0.0)
+    except HarnessError:
+        return None
+
+
+def _reported_byok(usage):
+    """Read an explicit BYOK marker without truthiness coercion."""
+    marker = usage.get("is_byok", False)
+    if not isinstance(marker, bool):
+        raise HarnessError(
+            "provider returned an invalid usage.is_byok marker; refusing "
+            "to classify spend")
+    return marker
 
 
 def _merge_retry_cost(resp, prior_cost):
@@ -74,14 +101,11 @@ def _merge_retry_cost(resp, prior_cost):
     the ledger charge the complete provider-reported total without silently
     dropping a billable rejected request.
     """
-    if not prior_cost or not isinstance(resp, dict):
+    if prior_cost is None or not isinstance(resp, dict):
         return resp
     usage = resp.setdefault("usage", {})
-    try:
-        current = float(usage.get("cost") or 0.0)
-    except (TypeError, ValueError):
-        current = 0.0
-    usage["cost"] = current + prior_cost
+    current = _reported_cost(resp)
+    usage["cost"] = (current if current is not None else 0.0) + prior_cost
     usage["retry_cost"] = prior_cost
     return resp
 
@@ -103,7 +127,7 @@ def extract_content_and_cost(resp):
     usage = resp.get("usage") if isinstance(resp, dict) else {}
     usage = usage if isinstance(usage, dict) else {}
     cost = usage.get("cost", 0.0)
-    is_byok = usage.get("is_byok", False)
+    is_byok = _reported_byok(usage)
     try:
         choice = resp["choices"][0]
         message = choice["message"]
@@ -276,7 +300,7 @@ def _ensure_accounted(governor, model, resp, usage):
 
 def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto",
          reasoning_token_budget=0.4, governor=None, enable_floor=True,
-         max_price=None, provider_sort="price"):
+         max_price=None, provider_sort="price", phase_lease=None):
     """One chat completion with the spend governor's payload guards.
 
     Reasoning is included whenever the effort mode resolves to a value --
@@ -284,9 +308,9 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
     and a provider rejection triggers one retry without the reasoning key
     (mandatory-reasoning routes reject the disable with HTTP 400; the retry
     then runs the provider default). A rejected attempt's billable cost is
-    merged into the retry response. Every 200 response also passes cost
-    accounting: a missing usage.cost is resolved here, once, so no lane can
-    bill a paid call as $0.
+    merged into the retry response. Every governed response passes cost
+    accounting: missing costs are estimated where token data allows and an
+    unaccountable paid response fails closed.
     """
     canonical_model = strip_variant_suffix(model)
     if governor:
@@ -312,28 +336,80 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
         return payload
 
     def _account(status, resp):
-        if governor is not None and status == 200 and isinstance(resp, dict):
+        if governor is not None:
+            if not isinstance(resp, dict):
+                from .errors import HarnessError
+                raise HarnessError(
+                    "provider returned no usage envelope; refusing to bill blind")
             usage = resp.get("usage")
-            if isinstance(usage, dict) and "cost" not in usage:
-                _ensure_accounted(governor, canonical_model, resp, usage)
+            if not isinstance(usage, dict):
+                usage = {}
+                resp["usage"] = usage
+            is_byok = _reported_byok(usage)
+            if "cost" not in usage:
+                if is_byok:
+                    # BYOK spend is outside this key's ledger and its caller
+                    # rejects paid routes before settling local spend.
+                    usage["cost"] = 0.0
+                else:
+                    reported = _reported_cost(resp)
+                    if reported is not None:
+                        usage["cost"] = reported
+                    else:
+                        _ensure_accounted(governor, canonical_model, resp, usage)
+            if not is_byok:
+                raw_cost = usage.get("cost")
+                if raw_cost is None or isinstance(raw_cost, bool):
+                    from .errors import HarnessError
+                    raise HarnessError(
+                        "provider returned an invalid billed cost; refusing "
+                        "to treat it as zero")
+                usage["cost"] = finite_number(
+                    raw_cost, "reported cost", 0.0)
         return status, resp
 
     want_reasoning = _effort_to_send(reasoning_effort, model) is not None
-    status, resp = transport.post(OPENROUTER_CHAT_URL, api_key, build(want_reasoning))
-    if want_reasoning and status != 200:
-        err = str(resp.get("error", {}).get("message", resp)
-                  if isinstance(resp, dict) else resp).lower()
-        if any(h in err for h in _REASONING_PARAM_ERR_HINTS):
-            eprint(f"[retry] {model} rejected reasoning param; retrying without it.")
-            from . import events as _events
-            _events.emit("rotation", model=model, reason="reasoning_param_rejected",
-                         note="provider retry without the reasoning parameter")
-            prior_cost = _reported_cost(resp)
-            retry_status, retry_resp = transport.post(
-                OPENROUTER_CHAT_URL, api_key, build(False))
-            return _account(retry_status,
-                            _merge_retry_cost(retry_resp, prior_cost))
-    return _account(status, resp)
+    begin_dispatch = getattr(governor, "begin_dispatch", None)
+    if callable(begin_dispatch):
+        dispatch_token = (begin_dispatch(phase_lease)
+                          if phase_lease is not None else begin_dispatch())
+    else:
+        dispatch_token = None
+    try:
+        status, resp = transport.post(
+            OPENROUTER_CHAT_URL, api_key, build(want_reasoning))
+        status, resp = _account(status, resp)
+        if want_reasoning and status != 200:
+            err = str(resp.get("error", {}).get("message", resp)
+                      if isinstance(resp, dict) else resp).lower()
+            if any(h in err for h in _REASONING_PARAM_ERR_HINTS):
+                eprint(f"[retry] {model} rejected reasoning param; retrying without it.")
+                from . import events as _events
+                _events.emit("rotation", model=model,
+                             reason="reasoning_param_rejected",
+                             note="provider retry without the reasoning parameter")
+                prior_cost = _reported_cost(resp)
+                try:
+                    retry_status, retry_resp = transport.post(
+                        OPENROUTER_CHAT_URL, api_key, build(False))
+                    retry_status, retry_resp = _account(retry_status, retry_resp)
+                except Exception:
+                    # The rejected attempt is known even if the retry's usage
+                    # cannot be measured. Preserve it before latching the retry
+                    # as unknown in the outer exception handler.
+                    if governor is not None and prior_cost is not None:
+                        governor.record_actual(prior_cost, model)
+                    raise
+                return retry_status, _merge_retry_cost(retry_resp, prior_cost)
+        return status, resp
+    except Exception:
+        # The request may have reached the provider before transport or usage
+        # parsing failed. Unknown billed usage closes the phase lease and
+        # blocks subsequent dispatches rather than leaking an in-flight slot.
+        fail_dispatch = getattr(governor, "fail_dispatch", None)
+        if dispatch_token is not None and callable(fail_dispatch):
+            fail_dispatch(dispatch_token, unknown_cost=True)
+        raise
 
 
 def governed_text(transport, api_key, governor, model, prompt, max_tokens,
@@ -355,13 +431,21 @@ def governed_text(transport, api_key, governor, model, prompt, max_tokens,
         raise HarnessError("governed_text requires a SpendGovernor")
     from .errors import HarnessError
     governor.check_byok(model)
-    governor.preflight(prompt, [(label, model, max_tokens, 0)])
+    slots = _chat_reservation_slots(model, reasoning_effort)
+    calls = [(label if slots == 1 else f"{label} attempt {i + 1}/{slots}",
+              model, max_tokens, 0) for i in range(slots)]
+    governor.preflight(prompt, calls)
     status, resp = chat(transport, api_key, model,
                         [{"role": "user", "content": prompt}],
                         max_tokens, reasoning_effort=reasoning_effort,
                         reasoning_token_budget=reasoning_token_budget,
                         governor=governor)
     if status != 200:
+        _, _, _, is_byok = extract_content_and_cost(resp)
+        if is_byok:
+            governor.record_byok(model)
+        else:
+            governor.record_actual(_reported_cost(resp), model)
         from .results import _http_error
         raise HarnessError(_http_error(status, resp))
     content, _, cost, is_byok = extract_content_and_cost(resp)
@@ -370,8 +454,7 @@ def governed_text(transport, api_key, governor, model, prompt, max_tokens,
         raise HarnessError(
             f"response for {model} was BYOK-routed; spend is not tracked on "
             "this key, so the call is refused")
-    if cost:
-        governor.record_actual(cost, model)
+    governor.record_actual(cost, model)
     if not content or not content.strip():
         raise HarnessError(f"empty response body from {model}")
     return content, cost

@@ -20,15 +20,18 @@ Covers:
   transport HarnessError falls back with the reservation settled.
 """
 import json
+import ast
+import importlib.util
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from harness.config import load_settings
 from harness.errors import HarnessError
-from harness.jev import JevEvaluationResult
+from harness.jev import JevEvaluationResult, jev_cost
 from harness.jev_packs import (
     AUDIT_DIMENSIONS_SITE,
     DEFAULT_AUDIT_DIMENSIONS_PACK,
@@ -38,6 +41,232 @@ from harness.jev_packs import (
 )
 from harness.jev_policy import JevPolicy, policy_for
 from harness.ledger import AutonomyLedger
+from harness.spend import SpendGovernor
+
+_AUDIT_PATH = Path(__file__).resolve().parents[1] / "audits" / "self" / "audit.py"
+_AUDIT_SPEC = importlib.util.spec_from_file_location("harness_self_audit", _AUDIT_PATH)
+_AUDIT = importlib.util.module_from_spec(_AUDIT_SPEC)
+_AUDIT_SPEC.loader.exec_module(_AUDIT)
+
+
+class SelfAuditPreflightCheckTests(unittest.TestCase):
+    def test_a2_recognizes_convergence_phase_lease(self):
+        score, evidence = _AUDIT.a_preflight_covers_retries()
+        self.assertEqual(score, 1.0, evidence)
+        self.assertIn("convergence", evidence)
+
+    def test_a2_rejects_preflight_on_unrelated_receiver(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    other.preflight_with_lease(prompt, calls)
+""")
+        self.assertFalse(_AUDIT._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_requires_the_reserved_call_list(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    governor.preflight_with_lease(prompt, other_calls)
+""")
+        self.assertFalse(_AUDIT._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_retry_slots_detached_from_preflight_calls(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        calls.append(("one attempt", model, max_tokens, 0))
+        _chat_reservation_slots(model, reasoning_effort)
+    governor.preflight_with_lease(prompt, calls)
+""")
+        self.assertFalse(_AUDIT._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_calls_reset_after_retry_reservations(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    calls = []
+    governor.preflight_with_lease(prompt, calls)
+""")
+        self.assertFalse(_AUDIT._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_retry_reservation_hidden_in_dead_branch(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            if False:
+                calls.append(("attempt", model, max_tokens, 0))
+    governor.preflight_with_lease(prompt, calls)
+""")
+        self.assertFalse(_AUDIT._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_dispatch_before_preflight(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        chat(transport, api_key, model, prompt, max_tokens)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    governor.preflight_with_lease(prompt, calls)
+""")
+        self.assertFalse(_AUDIT._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_retry_reservation_after_unconditional_continue(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            continue
+            calls.append(("attempt", model, max_tokens, 0))
+    governor.preflight_with_lease(prompt, calls)
+""")
+        self.assertFalse(_AUDIT._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_retry_reservation_after_conditional_continue(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            if attempt >= 0:
+                continue
+            calls.append(("attempt", model, max_tokens, 0))
+    governor.preflight_with_lease(prompt, calls)
+""")
+        self.assertFalse(_AUDIT._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_preflight_hidden_in_dead_branch(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    if False:
+        governor.preflight_with_lease(prompt, calls)
+""")
+        self.assertFalse(_AUDIT._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_calls_in_the_wrong_positional_slot(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    governor.preflight_with_lease(prompt, label, calls)
+        """)
+        self.assertFalse(_AUDIT._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_calls_reset_on_the_preflight_line(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    calls = []; governor.preflight_with_lease(prompt, calls)
+        """)
+        self.assertFalse(_AUDIT._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_alias_mutation_before_preflight(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    alias = calls
+    alias.clear()
+    governor.preflight_with_lease(prompt, calls)
+""")
+        self.assertFalse(_AUDIT._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_requires_the_prompt_as_the_first_argument(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    governor.preflight_with_lease(other_prompt, calls)
+""")
+        self.assertFalse(_AUDIT._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_requires_reserved_token_budget_in_each_attempt(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, 0, 0))
+    governor.preflight_with_lease(prompt, calls)
+""")
+        self.assertFalse(_AUDIT._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_accepts_governor_preflight_with_reserved_retry_calls(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    governor.preflight_with_lease(prompt, calls)
+        """)
+        self.assertTrue(_AUDIT._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_zero_max_tokens_parameter(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=0):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    governor.preflight_with_lease(prompt, calls)
+""")
+        self.assertFalse(_AUDIT._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_max_tokens_zeroed_locally(self):
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    max_tokens = 0
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    governor.preflight_with_lease(prompt, calls)
+""")
+        self.assertFalse(_AUDIT._has_governor_preflight_with_retry_calls(tree))
 
 
 class ValidateAuditPackTests(unittest.TestCase):
@@ -459,6 +688,65 @@ class EvaluateAuditDimensionsKeyedTests(unittest.TestCase):
         self.assertEqual(events[0]["site"], AUDIT_DIMENSIONS_SITE)
         self.assertFalse(events[0]["is_fallback"])
         self.assertEqual(len(transport.calls), 1)
+
+    def test_over_budget_request_is_refused_before_transport(self):
+        transport = _JevTransport({
+            "model": "jev-test",
+            "answers": _build_live_dim_answers(self.pack, {d: 4 for d in self.pack["dimensions"]}),
+            "usage": {"input_tokens": 200, "output_tokens": 40},
+        })
+        gov = SpendGovernor(
+            None, None, max_cost=0.05,
+            byok_prefixes_path=os.path.join(self.tmp.name, "byok.json"),
+        )
+        policy = policy_for(_keyed_settings(), transport=transport, governor=gov,
+                            ledger=self.ledger)
+
+        result = policy.evaluate_audit_dimensions(self._full_evidence())
+
+        self.assertTrue(result["is_fallback"])
+        self.assertTrue(any("preflight_refused" in reason.lower()
+                            for reason in result["reasons"]))
+        self.assertEqual(transport.calls, [])
+        self.assertEqual(gov.spent, 0.0)
+        self.assertEqual(gov.outstanding, 0.0)
+        events = [e for e in self.ledger.entries() if e["event"] == "jev_eval"]
+        self.assertEqual(len(events), 1)
+        self.assertTrue(events[0]["is_fallback"])
+        self.assertEqual(events[0]["reason_code"], "preflight_refused")
+
+    def test_over_budget_live_response_is_ledgered_then_raises(self):
+        answers = _build_live_dim_answers(
+            self.pack, {dim: 4 for dim in self.pack["dimensions"]})
+        response = JevEvaluationResult(
+            "pass", 0.9, 0.9, answers, [], cost=jev_cost(1322),
+            input_tokens=1322, model="jev-test")
+
+        class FixedEvaluator:
+            api_key = "test-key"
+            model = "jev-test"
+
+            def evaluate(self, _state, _questions):
+                return response
+
+        governor = SpendGovernor(
+            None, None, max_cost=0.054,
+            byok_prefixes_path=os.path.join(self.tmp.name, "byok-overrun.json"),
+        )
+        policy = policy_for(
+            _keyed_settings(), governor=governor, ledger=self.ledger,
+            evaluator=FixedEvaluator())
+
+        with self.assertRaisesRegex(HarnessError, "actual running cost"):
+            policy.evaluate_audit_dimensions(self._full_evidence())
+
+        events = [e for e in self.ledger.entries() if e["event"] == "jev_eval"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["input_tokens"], 1322)
+        self.assertAlmostEqual(events[0]["cost"], jev_cost(1322))
+        self.assertFalse(events[0]["is_fallback"])
+        self.assertAlmostEqual(governor.spent, governor.max_cost)
+        self.assertEqual(governor.outstanding, 0.0)
 
     def test_partial_run_keyed_marks_missing_dim_not_evaluated_and_fails_closed(self):
         # Live transport still answers all 4 (the operator's own audit

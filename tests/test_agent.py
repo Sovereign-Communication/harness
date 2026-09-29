@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from harness.agent import (
     AutonomousAgent,
@@ -552,7 +552,8 @@ class TestChatLadderRotation(unittest.TestCase):
 
     _OK = {"choices": [{"message": {"content": "fallback answer"}}],
            "usage": {"cost": 0.0}}
-    _429 = {"error": {"message": "rate-limited upstream", "code": 429}}
+    _429 = {"error": {"message": "rate-limited upstream", "code": 429},
+            "usage": {"cost": 0.0}}
 
     def _agent(self, hdir, **overrides):
         from harness.config import load_settings
@@ -592,7 +593,11 @@ class TestChatLadderRotation(unittest.TestCase):
         self.assertEqual(res["model"], "paid-1")
         self.assertEqual(res["response"], "paid answer")
         gov = mg.return_value[1]
-        gov.record_actual.assert_called_once_with(0.01, "paid-1")
+        self.assertEqual(gov.record_actual.call_args_list, [
+            call(0.0, "m1:free"),
+            call(0.0, "m2:free"),
+            call(0.01, "paid-1"),
+        ])
 
     def test_raises_honestly_when_every_rung_fails(self):
         with tempfile.TemporaryDirectory() as tmp:

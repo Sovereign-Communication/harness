@@ -115,7 +115,8 @@ class JudgeRotationTests(unittest.TestCase):
         # The round7 01_is_poison failure: judge http_502, raw outputs only.
         result, fake = self._run(
             [comp("take one"), comp("take two"),
-             (502, {"error": {"message": "bad gateway"}}),
+             (502, {"error": {"message": "bad gateway"},
+                    "usage": {"cost": 0.0}}),
              comp(GOOD_SYNTHESIS)])
         self.assertEqual(result["judge_synthesis_status"], "parseable")
         self.assertEqual(result["judge_model"], JUDGE)
@@ -126,8 +127,10 @@ class JudgeRotationTests(unittest.TestCase):
     def test_permanent_500_rotates_to_fallback(self):
         result, _ = self._run(
             [comp("take one"), comp("take two"),
-             (500, {"error": {"message": "down"}}),  # primary
-             (500, {"error": {"message": "down"}}),  # transient retry
+             (500, {"error": {"message": "down"},
+                    "usage": {"cost": 0.0}}),  # primary
+             (500, {"error": {"message": "down"},
+                    "usage": {"cost": 0.0}}),  # transient retry
              comp(GOOD_SYNTHESIS)])                  # fallback candidate
         self.assertEqual(result["judge_synthesis_status"], "parseable")
         self.assertEqual(result["judge_model"], FREE_FALLBACK)
@@ -137,10 +140,14 @@ class JudgeRotationTests(unittest.TestCase):
         # Both fallback attempts fail too (two candidates, two failures).
         result, _ = self._run(
             [comp("take one"), comp("take two"),
-             (500, {"error": {"message": "down"}}),   # primary judge
-             (500, {"error": {"message": "down"}}),   # transient retry
-             (500, {"error": {"message": "down"}}),   # fallback candidate 1
-             (500, {"error": {"message": "down"}})])  # fallback candidate 2
+             (500, {"error": {"message": "down"},
+                    "usage": {"cost": 0.0}}),   # primary judge
+             (500, {"error": {"message": "down"},
+                    "usage": {"cost": 0.0}}),   # transient retry
+             (500, {"error": {"message": "down"},
+                    "usage": {"cost": 0.0}}),   # fallback candidate 1
+             (500, {"error": {"message": "down"},
+                    "usage": {"cost": 0.0}})])  # fallback candidate 2
         self.assertIsNone(result["judge_synthesis"])
         self.assertEqual(result["judge_synthesis_status"], "http_500")
         self.assertIn("raw panel outputs", result["verdict"])
@@ -153,8 +160,10 @@ class JudgeRotationTests(unittest.TestCase):
         # never be called again as the judge.
         _, fake = self._run(
             [comp("take one"), comp("take two"),
-             (500, {"error": {"message": "down"}}),
-             (500, {"error": {"message": "down"}})],
+             (500, {"error": {"message": "down"},
+                    "usage": {"cost": 0.0}}),
+             (500, {"error": {"message": "down"},
+                    "usage": {"cost": 0.0}})],
             panel=[P1, P2], judge=P2, max_panelists=2)
         self.assertEqual(len(fake.chat_posts()), 4)
         # The judge seat ended on P2 without any third judge attempt.

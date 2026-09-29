@@ -4,12 +4,108 @@ import os
 import tempfile
 import unittest
 
-from harness.errors import HarnessError
+from harness.errors import HarnessError, ToolCancelled
 from harness.panel import panel_judge
 from tests._fake import FakeTransport, m, comp, _gov, P1, P2, JUDGE
 
 
 class PanelJudgeTests(unittest.TestCase):
+    def test_cancel_after_response_settles_cost_and_releases_dispatch(self):
+        class CancelAfterResponseTransport(FakeTransport):
+            response_received = False
+
+            def post(self, url, api_key, payload, timeout=45):
+                result = super().post(url, api_key, payload, timeout)
+                self.response_received = True
+                return result
+
+        fake = CancelAfterResponseTransport(
+            models=[m(P1)], posts=[comp("panel answer", cost=0.001)])
+        gov = _gov(fake, max_cost=0.10, terminal_reserve=0.05)
+        with tempfile.TemporaryDirectory() as directory:
+            from harness.ledger import AutonomyLedger
+            ledger = AutonomyLedger(os.path.join(directory, "ledger.jsonl"))
+            with self.assertRaises(ToolCancelled):
+                panel_judge(
+                    transport=fake, api_key="k", governor=gov, prompt="Q?",
+                    panel=[P1], judge=JUDGE,
+                    cancel_check=lambda: fake.response_received,
+                    ledger=ledger, task_id="cancel-after-response")
+            result_events = [
+                event for event in ledger.entries()
+                if event["event"] == "model_result"]
+            self.assertEqual(len(result_events), 1)
+            self.assertEqual(result_events[0]["status"], "cancelled")
+            self.assertTrue(result_events[0]["cancelled_after_response"])
+            self.assertEqual(result_events[0]["cost"], 0.001)
+        self.assertAlmostEqual(gov.spent, 0.001)
+        self.assertEqual(gov._dispatches_in_progress, 0)
+        self.assertEqual(gov.outstanding, 0.0)
+        self.assertEqual(gov.set_phase("terminal"), "terminal")
+
+    def test_cancelled_paid_byok_response_is_learned_without_local_charge(self):
+        from harness.spend import SpendGovernor
+
+        class CancelAfterResponseTransport(FakeTransport):
+            response_received = False
+
+            def post(self, url, api_key, payload, timeout=45):
+                result = super().post(url, api_key, payload, timeout)
+                self.response_received = True
+                return result
+
+        response = comp("panel answer", cost=0.001)
+        response["usage"]["is_byok"] = True
+        fake = CancelAfterResponseTransport(models=[m(P1)], posts=[response])
+        with tempfile.TemporaryDirectory() as directory:
+            gov = SpendGovernor(
+                fake, "sk-test", max_cost=0.10, terminal_reserve=0.05,
+                byok_prefixes_path=os.path.join(directory, "byok.json"))
+            with self.assertRaises(ToolCancelled):
+                panel_judge(
+                    transport=fake, api_key="k", governor=gov, prompt="Q?",
+                    panel=[P1], judge=JUDGE,
+                    cancel_check=lambda: fake.response_received)
+            self.assertEqual(gov.spent, 0.0)
+            self.assertTrue(gov.learned_blocked(P1))
+            self.assertEqual(gov._dispatches_in_progress, 0)
+            self.assertEqual(gov.outstanding, 0.0)
+
+    def test_judge_retry_keeps_original_preflight_phase_lease(self):
+        class JudgeErrorTransport(FakeTransport):
+            judge_error_returned = False
+
+            def post(self, url, api_key, payload, timeout=45):
+                result = super().post(url, api_key, payload, timeout)
+                if len(self.chat_posts()) == 2 and result[0] == 500:
+                    self.judge_error_returned = True
+                return result
+
+        fake = JudgeErrorTransport(
+            models=[m(P1)],
+            posts=[comp("panel answer", cost=0.0001),
+                   (500, {"error": {"message": "judge unavailable"},
+                          "usage": {"cost": 0.0002}}),
+                   comp("retry must not dispatch", cost=0.0001)])
+        gov = _gov(fake, max_cost=0.10, terminal_reserve=0.05)
+        phase_switched = [False]
+
+        def change_phase_before_retry():
+            if fake.judge_error_returned and not phase_switched[0]:
+                gov.set_phase("terminal")
+                phase_switched[0] = True
+            return False
+
+        with self.assertRaisesRegex(HarnessError, "phase changed after preflight"):
+            panel_judge(
+                transport=fake, api_key="k", governor=gov, prompt="Q?",
+                panel=[P1], judge=JUDGE, max_panelists=1,
+                cancel_check=change_phase_before_retry)
+        self.assertTrue(phase_switched[0])
+        self.assertEqual(len(fake.chat_posts()), 2)
+        self.assertAlmostEqual(gov.spent, 0.0003, places=9)
+        self.assertEqual(gov._dispatches_in_progress, 0)
+
     def test_happy_path(self):
         fake = FakeTransport(models=[m(P1), m(P2), m(JUDGE)],
                              posts=[comp("take one"), comp("take two"),
@@ -23,7 +119,8 @@ class PanelJudgeTests(unittest.TestCase):
 
     def test_panel_failure_skips_and_continues(self):
         fake = FakeTransport(models=[m(P1), m(P2), m(JUDGE)],
-                             posts=[(500, {"error": {"message": "boom"}}),
+                             posts=[(500, {"error": {"message": "boom"},
+                                           "usage": {"cost": 0.0}}),
                                     comp("take two"), comp("verdict")])
         gov = _gov(fake)
         result = panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",
@@ -105,8 +202,10 @@ class PanelJudgeTests(unittest.TestCase):
 
     def test_all_panel_failures_abort(self):
         fake = FakeTransport(models=[m(P1), m(P2), m(JUDGE)],
-                             posts=[(500, {"error": {"message": "x"}}),
-                                    (500, {"error": {"message": "y"}})])
+                             posts=[(500, {"error": {"message": "x"},
+                                           "usage": {"cost": 0.0}}),
+                                    (500, {"error": {"message": "y"},
+                                           "usage": {"cost": 0.0}})])
         gov = _gov(fake)
         with self.assertRaises(HarnessError):
             panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",
@@ -119,8 +218,10 @@ class PanelJudgeTests(unittest.TestCase):
         # both panelists voted, so no fallback candidate remains.
         fake = FakeTransport(models=[m(P1), m(P2), m(JUDGE)],
                              posts=[comp("take one"), comp("take two"),
-                                    (500, {"error": {"message": "judge down"}}),
-                                    (500, {"error": {"message": "judge still down"}})])
+                                    (500, {"error": {"message": "judge down"},
+                                           "usage": {"cost": 0.0}}),
+                                    (500, {"error": {"message": "judge still down"},
+                                           "usage": {"cost": 0.0}})])
         gov = _gov(fake)
         result = panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",
                              panel=[P1, P2], judge=JUDGE)

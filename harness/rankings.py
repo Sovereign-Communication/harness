@@ -20,7 +20,8 @@ here mutates configuration or pools; the report is advisory input for the
 operator and the weekly CI job.
 """
 from . import events as _events
-from .chat import _extract_json, chat, extract_content_and_cost, _reported_cost
+from .chat import (_chat_reservation_slots, _extract_json, chat,
+                   extract_content_and_cost, _reported_cost)
 from .config import OPENROUTER_RANKINGS_URL, shipped_model_ids
 from .errors import HarnessError
 from .output import eprint
@@ -178,17 +179,24 @@ def _probe_vote(transport, api_key, governor, model, max_tokens=PROBE_MAX_TOKENS
         "Respond with ONLY a JSON object and nothing else:\n"
         "{\"claim_1\": {\"real\": true, \"confidence\": 0.9}}\n"
         "This is a connectivity and JSON-emission probe. Do not add prose.")
+    slots = _chat_reservation_slots(model, "off")
+    governor.preflight(prompt, [
+        (f"ranking probe {model} attempt {i + 1}/{slots}", model,
+         max_tokens, 0) for i in range(slots)])
     status, resp = chat(transport, api_key, model,
                         [{"role": "user", "content": prompt}],
                         max_tokens, "off", 0.4, governor)
     cost = _reported_cost(resp)
     if status != 200:
+        governor.record_actual(cost, model)
         err = (resp.get("error", {}).get("message", resp)
                if isinstance(resp, dict) else resp)
         return False, f"http_{status}: {str(err)[:200]}", cost
     content, _finish, cost, is_byok = extract_content_and_cost(resp)
     if is_byok and not governor.is_free(model):
+        governor.record_byok(model)
         return False, "paid BYOK route; spend invisible to the tracked key", cost
+    governor.record_actual(cost, model)
     if not content or not str(content).strip():
         return False, "empty response body", cost
     parsed = _extract_json(content)

@@ -23,6 +23,8 @@ from harness.config import FREE_PANEL_POOL, FREE_APPLY_POOL
 from harness.continuation import gate_id, validate_continuation
 from harness.errors import HarnessError
 from harness.ledger import AutonomyLedger
+from harness.spend import SpendGovernor
+from tests._fake import FakeTransport
 
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "openrouter_models.json")
@@ -454,6 +456,47 @@ class RoutingOrderTest(unittest.TestCase):
 
 
 class ProbeTest(unittest.TestCase):
+    def test_metered_error_settlement_failure_is_reported_as_probe_error(self):
+        from unittest import mock
+        import harness.chat as chat_mod
+
+        class Gov:
+            def check_byok(self, model):
+                pass
+
+            def preflight(self, prompt_text, calls):
+                return 0.0, []
+
+            def record_actual(self, cost, model):
+                raise HarnessError("settlement failed closed")
+
+        response = (429, {"error": {"message": "busy", "cost": 0.001}})
+        ledger = mock.Mock()
+        with mock.patch.object(chat_mod, "chat", return_value=response):
+            result = probe_json_reliability(
+                "t", "k", Gov(), ["paid/example"], max_tokens=64,
+                ledger=ledger)
+
+        self.assertEqual(result["paid/example"]["errors"], 5)
+        self.assertEqual(ledger.append.call_count, 5)
+        self.assertEqual(
+            ledger.append.call_args_list[0].kwargs["error"],
+            "settlement failed closed")
+
+    def test_preflight_refusal_does_not_latch_unknown_provider_spend(self):
+        from unittest import mock
+
+        fake = FakeTransport(models=[])
+        gov = SpendGovernor(fake, "sk-test")
+        with mock.patch.object(gov, "preflight",
+                               side_effect=HarnessError("ceiling refused")):
+            result = probe_json_reliability(
+                fake, "k", gov, ["paid/example"], max_tokens=64)
+        self.assertEqual(result["paid/example"]["errors"], 5)
+        self.assertFalse(gov._settlement_unknown)
+        self.assertEqual(gov._dispatches_in_progress, 0)
+        self.assertEqual(fake.chat_posts(), [])
+
     def test_probe_counts_json_and_correctness(self):
         from unittest import mock
         import harness.chat as chat_mod

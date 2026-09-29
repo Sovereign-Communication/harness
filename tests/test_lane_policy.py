@@ -67,11 +67,18 @@ class PanelLanePolicyTests(unittest.TestCase):
                                 __import__("os").path.join(td, "byok.json"))
             preflight = []
             orig = gov.preflight
+            orig_with_lease = gov.preflight_with_lease
 
             def spy(prompt, calls):
                 preflight.extend(calls)
                 return orig(prompt, calls)
+
+            def spy_with_lease(prompt, calls):
+                preflight.extend(calls)
+                return orig_with_lease(prompt, calls)
+
             gov.preflight = spy
+            gov.preflight_with_lease = spy_with_lease
             result = panel_judge(transport=fake, api_key="k", governor=gov,
                                  prompt="Q?", panel=panel or ["m/a"], judge="m/j",
                                  max_tokens=max_tokens,

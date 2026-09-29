@@ -7,15 +7,17 @@ lanes. P3 utilization packs live in :mod:`harness.jev_packs` and are imported
 here — still ONE policy owner, never a second Jev client.
 """
 import difflib
+import json
 import os
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from .errors import HarnessError
+from .errors import HarnessError, JevSettlementError
 from .jev import (JevEvaluationResult, JevEvaluator, jev_cost,
                   triage_question_pack)
 from .route_pack import (ROUTE_QUERY_SITE, fallback_route, route_combo,
                          route_question_pack as route_query_pack,
                          validate_route_pack)
+from .tokens import estimate_prompt_tokens
 from .jev_packs import (
     ANSWER_PACK_VERSION,
     AUDIT_DIMENSIONS_SITE,
@@ -55,6 +57,7 @@ from .jev_packs import (
 )
 
 JEV_MAX_INPUT_TOKENS = 1024
+JEV_AUDIT_ESTIMATE_SAFETY_FACTOR = 2
 
 
 def jev_cost_ceiling(max_input_tokens: int = JEV_MAX_INPUT_TOKENS) -> float:
@@ -181,25 +184,42 @@ class JevPolicy:
     def _account(self, result: JevEvaluationResult, *, site: str,
                  task_id: Optional[str] = None,
                  node_id: Optional[str] = None,
-                 reservation=None) -> Dict[str, Any]:
+                 reservation=None,
+                 reason_code: Optional[str] = None) -> Dict[str, Any]:
         """Settle live spend and append exactly one hash-chained jev_eval."""
         cost = float(result.cost or 0.0)
+        settlement_error = None
         if reservation is not None and self.governor is not None:
-            self.governor.reconcile(
-                reservation, 0.0 if result.is_fallback else cost)
-        elif self.governor is not None and not result.is_fallback:
+            try:
+                self.governor.reconcile(
+                    reservation, cost)
+            except HarnessError as exc:
+                # The provider may already have billed a response that exceeds
+                # the local ceiling. Preserve its actual usage in the ledger
+                # before propagating the hard-budget failure.
+                settlement_error = exc
+        elif (self.governor is not None
+              and (cost > 0.0 or not result.is_fallback)):
             # A governor without reservations still gets one actual settlement,
             # including a zero-cost response.
-            self.governor.record_actual(cost, result.model or "jev")
+            try:
+                self.governor.record_actual(cost, result.model or "jev")
+            except HarnessError as exc:
+                settlement_error = exc
         structural = self._structural(result, site)
         if self.ledger is not None:
+            fields = {}
+            if reason_code is not None:
+                fields["reason_code"] = reason_code
             self.ledger.append(
                 "jev_eval", task_id=task_id, node_id=node_id, site=site,
                 model=result.model, verdict=result.verdict,
                 supported=result.supported, confidence=result.confidence,
                 input_tokens=result.input_tokens, output_tokens=result.output_tokens,
-                cost=cost, is_fallback=result.is_fallback,
+                cost=cost, is_fallback=result.is_fallback, **fields,
             )
+        if settlement_error is not None:
+            raise JevSettlementError(str(settlement_error)) from settlement_error
         return structural
 
     def evaluate_diff(self, diff: str, instruction: str, file_path: str,
@@ -225,6 +245,8 @@ class JevPolicy:
             )
             reservation = None
             return result, structural
+        except JevSettlementError:
+            raise
         except HarnessError as exc:
             if reservation is not None and self.governor is not None:
                 try:
@@ -339,6 +361,8 @@ class JevPolicy:
                     else values["plan_required"] >= 0.5),
             })
             return result, structural
+        except JevSettlementError:
+            raise
         except HarnessError as exc:
             if reservation is not None and self.governor is not None:
                 try:
@@ -401,6 +425,8 @@ class JevPolicy:
             structural = self._account(result, site=site, task_id=task_id,
                                        reservation=reservation)
             return result, structural
+        except JevSettlementError:
+            raise
         except HarnessError as exc:
             if reservation is not None and self.governor is not None:
                 try:
@@ -451,6 +477,8 @@ class JevPolicy:
                 result, site=site, task_id=task_id, reservation=reservation)
             reservation = None
             return result, structural
+        except JevSettlementError:
+            raise
         except HarnessError as exc:
             if reservation is not None and self.governor is not None:
                 try:
@@ -476,6 +504,8 @@ class JevPolicy:
             )
             reservation = None
             return result, structural
+        except JevSettlementError:
+            raise
         except HarnessError as exc:
             if reservation is not None and self.governor is not None:
                 try:
@@ -550,6 +580,8 @@ class JevPolicy:
                 result, site=site, task_id=task_id, node_id=node_id,
                 reservation=reservation)
             return result, structural
+        except JevSettlementError:
+            raise
         except HarnessError as exc:
             if reservation is not None and self.governor is not None:
                 try:
@@ -631,6 +663,8 @@ class JevPolicy:
                 result, site=site, task_id=task_id, reservation=reservation)
             structural["files"] = list(result.answers["files"])
             return result, structural
+        except JevSettlementError:
+            raise
         except HarnessError as exc:
             if reservation is not None and self.governor is not None:
                 try:
@@ -716,6 +750,8 @@ class JevPolicy:
             structural["claim_flags"] = flags
             structural["skipped"] = False
             return result, structural
+        except JevSettlementError:
+            raise
         except HarnessError as exc:
             if reservation is not None and self.governor is not None:
                 try:
@@ -832,6 +868,8 @@ class JevPolicy:
             structural["cannot_complete"] = bool(cannot)
             structural["missing_artifacts"] = missing
             return result, structural
+        except JevSettlementError:
+            raise
         except HarnessError as exc:
             if reservation is not None and self.governor is not None:
                 try:
@@ -1112,6 +1150,8 @@ class JevPolicy:
                 reservation=reservation)
             structural["determination"] = determination
             return result, structural, determination
+        except JevSettlementError:
+            raise
         except HarnessError as exc:
             if reservation is not None and self.governor is not None:
                 try:
@@ -2066,7 +2106,8 @@ class JevPolicy:
             return all(float(s) >= 9.5 for s in scores)
 
         def fallback_judgment(reasons, *, model=None, cost=0.0, input_tokens=0,
-                              output_tokens=0, reservation=None):
+                              output_tokens=0, reservation=None,
+                              reason_code=None):
             dim_results = heuristic_audit_dimensions(dimension_evidence, pack_doc)
             scores = {dim: d.get("score") for dim, d in dim_results.items()}
             evaluated_scores = [s for s in scores.values() if s is not None]
@@ -2079,7 +2120,8 @@ class JevPolicy:
                 output_tokens=output_tokens, is_fallback=True,
                 model=model or model_name)
             self._account(fallback_result, site=site, task_id=task_id,
-                          reservation=reservation)
+                          reservation=reservation,
+                          reason_code=reason_code)
             return {
                 "dimensions": dim_results,
                 "scores": scores,
@@ -2097,10 +2139,31 @@ class JevPolicy:
             return fallback_judgment(["unkeyed" if not self.keyed else "governor_not_provided"])
 
         text = self._audit_dimension_text(dimension_evidence)
+        payload = {"evidence": text, "pack_id": pack_doc["id"]}
+        request_text = json.dumps({
+            "model": model_name,
+            "state": payload,
+            "questions": questions,
+        })
+        # TypeSafe reports usage after evaluation and its HTTP contract does
+        # not accept an input-token ceiling. Reserve against the complete
+        # serialized request with extra room for service-side instructions;
+        # the local estimator is approximate, so a budget that cannot cover
+        # this conservative estimate must fail closed before dispatch.
+        estimated_input_tokens = estimate_prompt_tokens(request_text)
+        input_budget = max(
+            JEV_MAX_INPUT_TOKENS,
+            estimated_input_tokens * JEV_AUDIT_ESTIMATE_SAFETY_FACTOR,
+        )
         reservation = None
         try:
-            reservation = self._preflight(site=site, max_input_tokens=JEV_MAX_INPUT_TOKENS)
-            payload = {"evidence": text, "pack_id": pack_doc["id"]}
+            reservation = self._preflight(
+                site=site, max_input_tokens=input_budget)
+        except HarnessError as exc:
+            return fallback_judgment(
+                [f"preflight_refused: {exc}"],
+                reason_code="preflight_refused")
+        try:
             result = self.evaluator.evaluate(payload, questions)
         except HarnessError as exc:
             return fallback_judgment(

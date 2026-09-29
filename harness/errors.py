@@ -10,6 +10,11 @@ class HarnessError(Exception):
     kind = "harness_error"
 
 
+class JevSettlementError(HarnessError):
+    """A paid Jev response could not be settled within the governor budget."""
+    kind = "jev_settlement_error"
+
+
 class ToolCancelled(Exception):
     """Raised inside a long-running tool when its request id is cancelled
     via notifications/cancelled (#13). Not an error of the work itself."""

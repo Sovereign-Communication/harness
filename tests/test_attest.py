@@ -232,7 +232,51 @@ class AuthorizeDiffTests(unittest.TestCase):
 
     def test_http_error_fails_closed(self):
         with self.assertRaises(HarnessError):
-            self._run([(500, {"error": {"message": "down"}})])
+            self._run([(500, {"error": {"message": "down"},
+                             "usage": {"cost": 0.0}})])
+
+    def test_paid_byok_response_is_recorded_and_refused(self):
+        import tempfile
+
+        body = comp(json.dumps({"verdict": "allow", "reason": "ok"}))
+        body["usage"]["is_byok"] = True
+        fake = FakeTransport(models=[m("verifier/v1")], posts=[body])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            gov = SpendGovernor(
+                fake, "sk-test",
+                byok_prefixes_path=os.path.join(temp_dir, "byok.json"))
+            with self.assertRaisesRegex(HarnessError, "BYOK-routed"):
+                from harness.attest import authorize_diff
+                authorize_diff(
+                    fake, "k", gov, None, task_id="t", model="verifier/v1",
+                    file_path="x.py", instruction="make it better",
+                    current_content="old\n", new_content="new\n", round_no=2)
+        self.assertTrue(gov.learned_blocked("verifier/v1"))
+        self.assertEqual(gov._dispatches_in_progress, 0)
+
+    def test_paid_byok_http_error_is_learned_without_local_charge(self):
+        import tempfile
+
+        for cost in ("omit", 0.002):
+            with self.subTest(cost=cost), tempfile.TemporaryDirectory() as temp_dir:
+                error = {"error": {"message": "provider error"},
+                         "usage": {"is_byok": True}}
+                if cost != "omit":
+                    error["usage"]["cost"] = cost
+                fake = FakeTransport(
+                    models=[m("verifier/v1")], posts=[(500, error)])
+                gov = SpendGovernor(
+                    fake, "sk-test",
+                    byok_prefixes_path=os.path.join(temp_dir, "byok.json"))
+                from harness.attest import authorize_diff
+                with self.assertRaisesRegex(HarnessError, "no usable verdict"):
+                    authorize_diff(
+                        fake, "k", gov, None, task_id="t", model="verifier/v1",
+                        file_path="x.py", instruction="make it better",
+                        current_content="old\n", new_content="new\n", round_no=2)
+                self.assertEqual(gov.spent, 0.0)
+                self.assertTrue(gov.learned_blocked("verifier/v1"))
+                self.assertEqual(gov._dispatches_in_progress, 0)
 
     def test_reasoning_only_fails_closed(self):
         with self.assertRaises(HarnessError):
@@ -304,7 +348,8 @@ class WriteCandidateAttestationTests(unittest.TestCase):
 
     def test_verifier_down_refuses_the_write(self):
         fake = FakeTransport(models=[m("verifier/v1")], posts=[
-            (500, {"error": {"message": "down"}})])
+            (500, {"error": {"message": "down"},
+                   "usage": {"cost": 0.0}})])
         gate = self._gate(fake)
         with self.assertRaises(HarnessError):
             gate.write_candidate(self._request(require_auth=True),

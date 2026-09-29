@@ -562,20 +562,19 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
                     record_actual = getattr(governor, "record_actual", None)
                     if record_actual is not None:
                         record_actual(call_cost, m)
-            else:
+            elif status is not None:
                 # Error bodies can still carry a billable cost (a rejected
                 # reasoning param, a throttled-but-metered 429): dropping it
                 # would let the governor and the ledger disagree, the same
                 # hole every other lane already closes.
                 error_cost = _reported_cost(resp)
-                if error_cost:
-                    record_actual = getattr(governor, "record_actual", None)
-                    if record_actual is not None:
-                        try:
-                            record_actual(error_cost, m)
-                        except Exception as exc:
-                            error_message = str(exc)
-                            status, resp = None, {}
+                record_actual = getattr(governor, "record_actual", None)
+                if record_actual is not None:
+                    try:
+                        record_actual(error_cost, m)
+                    except Exception as exc:
+                        error_message = str(exc)
+                        status, resp = None, {}
             ok = False
             corr = False
             if byok_skip:

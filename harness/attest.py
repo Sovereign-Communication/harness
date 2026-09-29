@@ -193,7 +193,7 @@ def authorize_diff(transport, api_key, governor, ledger, *, task_id, model,
     HarnessError on deny, unparseable output, transport error -- every
     failure path refuses the write (fail-closed, no fallback to intent)."""
     from .chat import chat, extract_content_and_cost, _extract_json, \
-        _reported_cost, REASONING_FALLBACK_PREFIX
+        _chat_reservation_slots, _reported_cost, REASONING_FALLBACK_PREFIX
 
     new_sha = compute_diff_sha256(new_content)
     base_sha = compute_diff_sha256(current_content)
@@ -206,8 +206,10 @@ def authorize_diff(transport, api_key, governor, ledger, *, task_id, model,
         f"--- end ---")
     preflight = getattr(governor, "preflight", None)
     if preflight is not None:
+        slots = _chat_reservation_slots(model, "none")
         preflight(DIFF_AUTH_SYSTEM_PROMPT + "\n" + user,
-                  [(f"attest:{model}", model, max_tokens, 0)])
+                  [(f"attest:{model} attempt {i + 1}/{slots}", model,
+                    max_tokens, 0) for i in range(slots)])
     governor.check_byok(model)
     status, resp = chat(transport, api_key, model,
                         [{"role": "system", "content": DIFF_AUTH_SYSTEM_PROMPT},
@@ -215,12 +217,23 @@ def authorize_diff(transport, api_key, governor, ledger, *, task_id, model,
                         max_tokens, reasoning_effort="none", governor=governor)
     raw = ""
     if status == 200:
-        content, _, _, is_byok = extract_content_and_cost(resp)
-        reported = _reported_cost(resp)
-        if reported:
+        content, _, reported, is_byok = extract_content_and_cost(resp)
+        if is_byok:
+            governor.record_byok(model)
+            if not governor.is_free(model):
+                raise HarnessError(
+                    "diff verifier response was BYOK-routed; refusing an "
+                    "untracked attestation")
+        else:
             governor.record_actual(reported, model)
         if content and not content.startswith(REASONING_FALLBACK_PREFIX):
             raw = content
+    else:
+        _, _, _, is_byok = extract_content_and_cost(resp)
+        if is_byok:
+            governor.record_byok(model)
+        else:
+            governor.record_actual(_reported_cost(resp), model)
     parsed = _extract_json(raw) if raw else None
     verdict = (parsed or {}).get("verdict") if isinstance(parsed, dict) else None
     reason = str((parsed or {}).get("reason") or "")

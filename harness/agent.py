@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from ._http import HttpTransport
-from .chat import assess_output, chat, extract_content_and_cost, governed_text, looks_truncated
+from .chat import (_chat_reservation_slots, _reported_cost, assess_output,
+                   chat, extract_content_and_cost, governed_text,
+                   looks_truncated)
 from .condenser import distill_context, condense_error_log
 from .config import Settings, load_settings, resolve_api_key, resolve_hourglass
 from .dag import TaskDAG, DAGNode, node_apply_kwargs
@@ -328,7 +330,10 @@ class AutonomousAgent:
             if cancel_check and cancel_check():
                 raise ToolCancelled("Prompt execution was cancelled by user")
             try:
-                gov.preflight(prompt_text, [("answer", model, 4096, 0)])
+                slots = _chat_reservation_slots(model, "off")
+                gov.preflight(prompt_text, [
+                    (f"answer attempt {i + 1}/{slots}", model, 4096, 0)
+                    for i in range(slots)])
                 status, response = chat(
                     transport=self.transport, api_key=api_key, model=model,
                     messages=messages, max_tokens=4096,
@@ -337,6 +342,7 @@ class AutonomousAgent:
                 attempts.append(f"{model}: {exc}")
                 continue
             if status != 200:
+                gov.record_actual(_reported_cost(response), model)
                 attempts.append(f"{model}: HTTP {status}")
                 emit("rotation", model=model, reason="answer_ladder_advance",
                      note=f"HTTP {status}")
@@ -347,8 +353,7 @@ class AutonomousAgent:
                 gov.record_byok(model)
                 attempts.append(f"{model}: BYOK route refused")
                 continue
-            if cost:
-                gov.record_actual(cost, model)
+            gov.record_actual(cost, model)
             usable, why = assess_output(content, finish_reason)
             if usable and looks_truncated(content):
                 usable, why = False, "response truncated mid-body"
@@ -611,7 +616,10 @@ class AutonomousAgent:
             note = None
             content, cost = None, 0.0
             try:
-                gov.preflight(prompt, [("chat", model, 4096, 0)])
+                slots = _chat_reservation_slots(model, "off")
+                gov.preflight(prompt, [
+                    (f"chat attempt {i + 1}/{slots}", model, 4096, 0)
+                    for i in range(slots)])
                 status, resp = chat(
                     transport=self.transport,
                     api_key=api_key,
@@ -625,6 +633,7 @@ class AutonomousAgent:
                 note = str(e)
             else:
                 if status != 200:
+                    gov.record_actual(_reported_cost(resp), model)
                     note = _http_error(status, resp)
                 else:
                     content, finish_reason, cost, is_byok = \
@@ -637,8 +646,7 @@ class AutonomousAgent:
                         # A billable-but-unusable completion is still billed
                         # (the provider charged for it); only usable content
                         # ends the walk.
-                        if cost:
-                            gov.record_actual(cost, model)
+                        gov.record_actual(cost, model)
                         usable, why = assess_output(content, finish_reason)
                         if usable and looks_truncated(content):
                             # Providers do not always report finish_reason

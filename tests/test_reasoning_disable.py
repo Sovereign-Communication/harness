@@ -16,7 +16,9 @@ import unittest
 
 from harness.chat import (_build_reasoning_param, _chat_reservation_slots,
                           _effort_to_send, chat, looks_reasoning)
-from tests._fake import FakeTransport, comp
+from harness.errors import HarnessError
+from harness.spend import SpendGovernor
+from tests._fake import FakeTransport, comp, m
 
 
 class ReasoningDisableTests(unittest.TestCase):
@@ -73,16 +75,55 @@ class ReasoningDisableTests(unittest.TestCase):
     def test_disable_retry_merges_rejected_attempt_cost(self):
         """The rejected 400 attempt can still be metered; dropping its cost
         would let the governor and the ledger disagree about spend."""
+        model = "z-ai/glm-5.3-flash"
         fake = FakeTransport(
-            models=[],
+            models=[m(model)],
             posts=[(400, {"error": {"message": "Reasoning is mandatory"},
                           "usage": {"cost": 0.0002}}),
                    comp("ok", cost=0.0001)])
-        _status, resp = chat(fake, "k", "z-ai/glm-5.3-flash",
+        gov = SpendGovernor(fake, "sk-test")
+        _status, resp = chat(fake, "k", model,
                              [{"role": "user", "content": "hi"}], 4096,
-                             reasoning_effort="off")
+                             reasoning_effort="off", governor=gov)
         self.assertAlmostEqual(resp["usage"]["cost"], 0.0003, places=9)
         self.assertAlmostEqual(resp["usage"]["retry_cost"], 0.0002, places=9)
+        gov.record_actual(resp["usage"]["cost"], model)
+        self.assertAlmostEqual(gov.spent, 0.0003, places=9)
+
+    def test_governed_reasoning_retry_refuses_unaccounted_rejection(self):
+        model = "z-ai/glm-5.3-flash"
+        fake = FakeTransport(
+            models=[m(model)],
+            posts=[(400, {"error": {"message": "Reasoning is mandatory"}}),
+                   comp("must not retry", cost=0.0001)])
+        gov = SpendGovernor(fake, "sk-test")
+        with self.assertRaisesRegex(HarnessError, "omitted usage accounting"):
+            chat(fake, "k", model, [{"role": "user", "content": "hi"}],
+                 4096, reasoning_effort="off", governor=gov)
+        self.assertEqual(len(fake.chat_posts()), 1)
+        self.assertTrue(gov._settlement_unknown)
+        self.assertEqual(gov._dispatches_in_progress, 0)
+
+    def test_retry_transport_failure_preserves_known_rejection_cost(self):
+        model = "z-ai/glm-5.3-flash"
+
+        class RetryFailureTransport(FakeTransport):
+            def post(self, url, api_key, payload, timeout=45):
+                if self.posts:
+                    return super().post(url, api_key, payload, timeout)
+                raise RuntimeError("retry transport failed")
+
+        fake = RetryFailureTransport(
+            models=[m(model)],
+            posts=[(400, {"error": {"message": "Reasoning is mandatory"},
+                          "usage": {"cost": 0.0002}})])
+        gov = SpendGovernor(fake, "sk-test")
+        with self.assertRaisesRegex(RuntimeError, "retry transport failed"):
+            chat(fake, "k", model, [{"role": "user", "content": "hi"}],
+                 4096, reasoning_effort="off", governor=gov)
+        self.assertAlmostEqual(gov.spent, 0.0002, places=9)
+        self.assertTrue(gov._settlement_unknown)
+        self.assertEqual(gov._dispatches_in_progress, 0)
 
     def test_reservation_slots_disable_is_two(self):
         """A disable is a reasoning PARAMETER and may be rejected: its

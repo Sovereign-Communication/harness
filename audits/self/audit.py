@@ -85,6 +85,233 @@ def _has_call(module, func_name, attr=None):
     return False
 
 
+def _has_governor_preflight_with_retry_calls(module_tree):
+    """Require retry slots to populate the list passed to convergence preflight."""
+    def is_name(node, name):
+        return isinstance(node, ast.Name) and node.id == name
+
+    def targets_name(targets, name):
+        return any(is_name(part, name)
+                   for target in targets for part in ast.walk(target))
+
+    def source_position(node):
+        return (getattr(node, "lineno", -1),
+                getattr(node, "col_offset", -1))
+
+    def positive_default(function, name):
+        positional = function.args.posonlyargs + function.args.args
+        defaults = ([None] * (len(positional) - len(function.args.defaults))
+                    + list(function.args.defaults))
+        for parameter, default in zip(positional, defaults):
+            if parameter.arg != name:
+                continue
+            if (isinstance(default, ast.Constant)
+                    and type(default.value) is int and default.value > 0):
+                return True
+            if isinstance(default, ast.Name):
+                for node in ast.walk(tree("config")):
+                    if (isinstance(node, ast.Assign)
+                            and targets_name(node.targets, default.id)
+                            and isinstance(node.value, ast.Constant)
+                            and type(node.value.value) is int
+                            and node.value.value > 0):
+                        return True
+        return False
+
+    for function in ast.walk(module_tree):
+        if (not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+                or function.name != "run_convergence_specialist"
+                or not positive_default(function, "max_tokens")):
+            continue
+        if any(isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign,
+                                 ast.NamedExpr))
+               and targets_name(node.targets if isinstance(node, ast.Assign)
+                                else [node.target], "max_tokens")
+               for node in ast.walk(function)):
+            continue
+        for candidates_loop in function.body:
+            if (not isinstance(candidates_loop, (ast.For, ast.AsyncFor))
+                    or not is_name(candidates_loop.iter, "candidates")
+                    or not isinstance(candidates_loop.target, ast.Name)):
+                continue
+            model_name = candidates_loop.target.id
+            calls_inits = [
+                node for node in function.body
+                if isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and is_name(node.targets[0], "calls")
+                and isinstance(node.value, ast.List)
+                and not node.value.elts
+                and node.lineno < candidates_loop.lineno]
+            if not calls_inits:
+                continue
+            calls_init = max(calls_inits, key=lambda node: node.lineno)
+
+            for slot_assignment in candidates_loop.body:
+                if (not isinstance(slot_assignment, (ast.Assign, ast.AnnAssign))
+                        or not targets_name(
+                            slot_assignment.targets if isinstance(
+                                slot_assignment, ast.Assign)
+                            else [slot_assignment.target], "slots")
+                        or not isinstance(slot_assignment.value, ast.Call)):
+                    continue
+                slot_call = slot_assignment.value
+                if (not is_name(slot_call.func, "_chat_reservation_slots")
+                        or len(slot_call.args) < 2
+                        or not is_name(slot_call.args[0], model_name)
+                        or not is_name(slot_call.args[1], "reasoning_effort")):
+                    continue
+
+                for retry_loop in candidates_loop.body:
+                    if (not isinstance(retry_loop, (ast.For, ast.AsyncFor))
+                            or retry_loop.lineno <= slot_assignment.lineno):
+                        continue
+                    iterator = retry_loop.iter
+                    if (not isinstance(iterator, ast.Call)
+                            or not is_name(iterator.func, "range")
+                            or len(iterator.args) != 1
+                            or not is_name(iterator.args[0], "slots")):
+                        continue
+                    # The range must consume the helper's slots value without
+                    # an intervening override such as ``slots = 1``.
+                    slots_overwritten = any(
+                        isinstance(node, (ast.Assign, ast.AnnAssign))
+                        and targets_name(node.targets if isinstance(
+                            node, ast.Assign) else [node.target], "slots")
+                        and slot_assignment.lineno < node.lineno < retry_loop.lineno
+                        for node in ast.walk(function))
+                    if slots_overwritten:
+                        continue
+
+                    valid_appends = set()
+                    retry_terminated = False
+                    reservation_seen = False
+                    for statement in retry_loop.body:
+                        # Statements after an unconditional control-flow exit
+                        # cannot reserve a reachable provider attempt.
+                        if retry_terminated:
+                            continue
+                        # A conditional terminal before the first reservation
+                        # can also skip every append (for example, `if attempt
+                        # >= 0: continue` over range(slots)). Reject that
+                        # ambiguous control flow instead of counting a later,
+                        # unreachable reservation.
+                        if (not reservation_seen
+                                and any(isinstance(node, (ast.Break, ast.Continue,
+                                                          ast.Return, ast.Raise))
+                                        for node in ast.walk(statement))):
+                            retry_terminated = True
+                            break
+                        if isinstance(statement, ast.Expr):
+                            node = statement.value
+                            if (isinstance(node, ast.Call)
+                                    and isinstance(node.func, ast.Attribute)
+                                    and node.func.attr == "append"
+                                    and is_name(node.func.value, "calls")
+                                    and len(node.args) == 1
+                                    and isinstance(node.args[0], ast.Tuple)):
+                                entry = node.args[0].elts
+                                if (len(entry) == 4
+                                        and is_name(entry[1], model_name)
+                                        and is_name(entry[2], "max_tokens")):
+                                    valid_appends.add(node)
+                                    reservation_seen = True
+                        if isinstance(statement, (ast.Break, ast.Continue,
+                                                 ast.Return, ast.Raise)):
+                            retry_terminated = True
+                    if not valid_appends:
+                        continue
+
+                    for statement in function.body:
+                        preflight = (statement.value
+                                     if isinstance(statement, (ast.Assign, ast.Expr))
+                                     else None)
+                        if (not isinstance(preflight, ast.Call)
+                                or not isinstance(preflight.func, ast.Attribute)
+                                or preflight.func.attr != "preflight_with_lease"
+                                or not is_name(preflight.func.value, "governor")
+                                or preflight.lineno <= candidates_loop.end_lineno):
+                            continue
+                        exact_args = (len(preflight.args) == 2
+                                      and not preflight.keywords
+                                      and is_name(preflight.args[0], "prompt")
+                                      and is_name(preflight.args[1], "calls"))
+                        if not exact_args:
+                            continue
+                        # No provider dispatch may occur while building the
+                        # reservation list, before its lease is acquired.
+                        dispatch_before_preflight = any(
+                            isinstance(node, ast.Call)
+                            and is_name(node.func, "chat")
+                            and node.lineno < preflight.lineno
+                            for node in ast.walk(function))
+                        if dispatch_before_preflight:
+                            continue
+
+                        # No reassignment, deletion, or destructive mutation may
+                        # discard the reservations between construction and use.
+                        rebind = False
+                        for node in ast.walk(function):
+                            node_position = source_position(node)
+                            if (node_position[0] < 0
+                                    or not source_position(calls_init) < node_position
+                                    < source_position(preflight)):
+                                continue
+                            if (isinstance(node, ast.Assign)
+                                    and node.value is preflight):
+                                continue
+                            if (isinstance(node, ast.AnnAssign)
+                                    and node.value is preflight):
+                                continue
+                            if isinstance(node, (ast.Assign, ast.AnnAssign,
+                                                 ast.AugAssign, ast.NamedExpr,
+                                                 ast.Delete)):
+                                targets = (node.targets if isinstance(node, ast.Assign)
+                                           else [node.target] if isinstance(
+                                               node, (ast.AnnAssign, ast.AugAssign,
+                                                      ast.NamedExpr))
+                                           else node.targets)
+                                if targets_name(targets, "calls"):
+                                    rebind = True
+                                    break
+                                value = getattr(node, "value", None)
+                                if (value is not None
+                                        and any(is_name(part, "calls")
+                                                for part in ast.walk(value))):
+                                    rebind = True
+                                    break
+                            if (isinstance(node, ast.Call)
+                                    and any(
+                                        is_name(part, "calls")
+                                        for argument in node.args + [
+                                            keyword.value
+                                            for keyword in node.keywords]
+                                        for part in ast.walk(argument))
+                                    and node not in valid_appends):
+                                rebind = True
+                                break
+                            if (isinstance(node, ast.Call)
+                                    and isinstance(node.func, ast.Attribute)
+                                    and is_name(node.func.value, "calls")
+                                    and node.func.attr != "append"):
+                                rebind = True
+                                break
+                        if rebind:
+                            continue
+
+                        all_appends_valid = all(
+                            node in valid_appends
+                            for node in ast.walk(function)
+                            if isinstance(node, ast.Call)
+                            and isinstance(node.func, ast.Attribute)
+                            and node.func.attr == "append"
+                            and is_name(node.func.value, "calls")
+                            and node.lineno < preflight.lineno)
+                        if all_appends_valid:
+                            return True
+    return False
+
+
 def _defines(module, name):
     """True if module defines `name` as a function, method, or class
     (assignments do not count -- a local variable is not an owner)."""
@@ -176,11 +403,12 @@ def a_preflight_covers_retries():
         _has_call("panel", "_chat_reservation_slots")
     apply_pf = (_has_call("apply", "preflight", None)
                    or "preflight(" in _src("apply_policy"))  # per-round owner
-    conv_pf = "preflight(" in _src("convergence")
+    conv_pf = _has_governor_preflight_with_retry_calls(tree("convergence"))
     consent_pf = "preflight(" in _src("consent")
     return _pass(ok and apply_pf and conv_pf and consent_pf,
                  "reasoning/429 retry slots counted via _chat_reservation_slots "
-                 "(panel wired); apply/convergence/consent preflight before calls",
+                 "(panel wired); convergence binds retry slots into its governor "
+                 "preflight; apply/consent preflight before calls",
                  f"slots={ok} apply={apply_pf} conv={conv_pf} consent={consent_pf}")
 
 

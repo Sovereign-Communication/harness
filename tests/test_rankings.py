@@ -1,6 +1,8 @@
 """Rankings-driven candidate refresh (ruling 7): the daily rankings API is
 the evidence source; candidates must pass the ONE-vote probe before they are
 proposed as probed. All hermetic (fake transport, no network)."""
+import os
+import tempfile
 import unittest
 
 from harness.rankings import (_probe_vote, aggregate_rankings,
@@ -172,6 +174,25 @@ class ProbeGateTests(unittest.TestCase):
         self.assertEqual(payload["reasoning"], {"effort": "none"})
         self.assertGreaterEqual(payload["max_tokens"], 4096)
 
+    def test_probe_rejects_paid_byok_as_untracked_evidence(self):
+        from harness.spend import SpendGovernor
+
+        model = "paid/probe"
+        response = comp('{"claim_1": {"real": false}}', cost=0.001)
+        response["usage"]["is_byok"] = True
+        fake = FakeTransport(models=[m(model)], posts=[response])
+        with tempfile.TemporaryDirectory() as directory:
+            gov = SpendGovernor(
+                fake, "sk-test",
+                byok_prefixes_path=os.path.join(directory, "byok.json"))
+            ok, detail, cost = _probe_vote(fake, "k", gov, model)
+
+        self.assertFalse(ok)
+        self.assertIn("paid BYOK", detail)
+        self.assertEqual(cost, 0.001)
+        self.assertEqual(gov.spent, 0.0)
+        self.assertTrue(gov.learned_blocked(model))
+
     def test_probe_fails_on_prose(self):
         fake = FakeTransport(models=[m("x/a")], posts=[comp("some prose")])
         ok, detail, _cost = _probe_vote(fake, "k", self._gov(fake), "x/a")
@@ -180,7 +201,8 @@ class ProbeGateTests(unittest.TestCase):
 
     def test_probe_fails_on_http_error(self):
         fake = FakeTransport(models=[m("x/a")],
-                             posts=[(503, {"error": {"message": "down"}})])
+                             posts=[(503, {"error": {"message": "down"},
+                                           "usage": {"cost": 0.0}})])
         ok, detail, _cost = _probe_vote(fake, "k", self._gov(fake), "x/a")
         self.assertFalse(ok)
         self.assertIn("503", detail)
