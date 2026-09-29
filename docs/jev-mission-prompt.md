@@ -3,10 +3,11 @@
 **Canon:** [jev-roadmap.md](jev-roadmap.md) only. Trust **origin/main** STATUS;
 a stale local copy is not evidence.
 
-These run the canon through `/isolated-mission` (Haiku scout → Opus plan only
-when justified → cheapest execute → separate verifier + Jev bar → loop). Mission
-state lands in `tmp/claude/missions/<id>/` (HUL pack: receipts, dual budget,
-Jev bar evals, FINDINGS). Context: [claude-context.md](claude-context.md).
+These run the canon through `/isolated-mission` (scout → plan only when
+justified → execute from injected context → separate verifier + Jev bar → loop).
+Every phase shares the session's one model. Mission state lands in
+`tmp/claude/missions/<id>/` (HUL pack: receipts, dual budget, Jev bar evals,
+FINDINGS). Context: [claude-context.md](claude-context.md).
 
 ---
 
@@ -15,7 +16,7 @@ Jev bar evals, FINDINGS). Context: [claude-context.md](claude-context.md).
 Interactive (paste into Claude Code at the repo root):
 
 ```text
-/isolated-mission --iterative --rounds 3 --bar <ROW-ID> --budget 2
+/isolated-mission --rounds 3 --bar <ROW-ID> --budget 2
 Implement canon row <ROW-ID> from docs/jev-roadmap.md "Next implementation slice".
 Worktree off origin/main (feat/<slug>); extend the one owner named in the
 tracker; hermetic tests named in canon; no provider brands in phase code;
@@ -28,7 +29,7 @@ Unattended (scheduled / cloud / CI shell):
 
 ```bash
 claude -p --model opus --max-budget-usd 10 --permission-mode acceptEdits \
-  "/isolated-mission --iterative --rounds 3 --bar <ROW-ID> --budget 2 Implement canon row <ROW-ID> ..."
+  "/isolated-mission --rounds 3 --bar <ROW-ID> --budget 2 Implement canon row <ROW-ID> ..."
 ```
 
 Headless sessions ignore project allow rules until the workspace trust dialog is
@@ -39,7 +40,7 @@ accepted once; pass `--allowedTools` for gate commands otherwise.
 ## Full canon loop (operator)
 
 ```text
-/isolated-mission --iterative --plan
+/isolated-mission --plan
 Harness mission. Read docs/jev-roadmap.md only (origin/main). Execute every
 open STATUS row in "Next implementation slice" order: worktree → gates +
 audit BAR MET → Jev bar pass → PR → merge only when CI green → post-merge

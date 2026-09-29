@@ -8,13 +8,13 @@ lane) loads this via `CLAUDE.md`; any other agent reads it directly.
 | File | Role |
 |---|---|
 | **`docs/jev-roadmap.md`** | **CANON** — STATUS, tracker, next slice, DoD. The only operational plan. |
-| `CLAUDE.md` | Claude Code operating notes (model tiering, skills, gates, MCP) |
+| `CLAUDE.md` | Claude Code operating notes (model choice, skills, gates, MCP) |
 | `docs/claude-context.md` | Agent-lane context pack: files, trust/permissions, launch recipes, legacy Freebuff notes |
-| `docs/jev-mission-prompt.md` | Mission prompts (`/isolated-mission`, headless `claude -p`) |
+| `docs/jev-mission-prompt.md` | Mission prompts (`/isolated-mission`; launch recipes are `claude -p`-era and not yet Freebuff-native) |
 | `docs/system-one-integration.md` | Architecture rationale only (not STATUS) |
 | `docs/MODEL_SELECTION_HANDOFF_2026-09-13.md` | Model policy evidence |
 | `.agents/skills/typesafe-ai/SKILL.md` | TypeSafe / System One skill (read before touching `jev*.py`) |
-| `.claude/skills/`, `.claude/agents/` | `/isolated-mission`, `/isolated-request`, seats `/cto` `/ceo` `/bod`; scout / implementer / verifier tiers |
+| `.claude/skills/`, `.claude/agents/` | `/isolated-mission`, `/isolated-request`, seats `/cto` `/ceo` `/bod`. The skills run as in-session boundaries (Freebuff has no Agent tool); `.claude/agents/` is not wired into them |
 | `HANDOFF/{CTO,CEO,BOD}_STATE.md` | Seat state (read at seat resume; updated at session close) — not plans |
 
 If a local `docs/jev-roadmap.md` disagrees with `origin/main`, **fetch origin** —
@@ -68,7 +68,8 @@ Live probe snapshot (2026-09-21, OpenRouter fusion key, small “OK” chat):
 Operator harness config (`~/.config/harness/config.json`) already arms paid escalation. For tracking runs prefer paid apply/judge via env or config (`HARNESS_USE_FREE=false`, paid pools in `harness/config.py`). The OpenRouter key has a small daily limit (≈$0.75 on 2026-09-22) — keep probes tiny.
 
 The model policy above governs **Harness's own lanes**. The policy for the
-coding agent's own tiers (Opus orchestrates; Haiku/Sonnet do the work) is in `CLAUDE.md`.
+coding agent's own model choice (one model per session; the skills label what
+ran rather than routing between tiers) is in `CLAUDE.md`.
 
 ## Rules every agent keeps
 
