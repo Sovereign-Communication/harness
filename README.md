@@ -263,6 +263,14 @@ harness trust --caller <id>    # one peer's standing
 harness jev-phase --phase JEV-P2 --repo-root . --local-only
 harness jev-phase --phase JEV-P1 --repo-root . --local-only --json --out phase.json
 
+# JEV-P4 residual (GAP-freeze-face): pin the Jev model id + abstain/escalate
+# threshold AFTER calibration. Previews by default and writes nothing; only
+# --persist touches ~/.config/harness/config.json, through the one config
+# owner. A persisted freeze is refused when the environment pins the same
+# key, since the pin would not take effect.
+harness jev-freeze --model jev-1.13.0 --min-confidence 0.85
+harness jev-freeze --model jev-1.13.0 --min-confidence 0.85 --persist
+
 # JEV-LOG single-pass log analysis: code extracts log items ($0), the ONE
 # Jev policy owner judges every item against a FROZEN operator pack (bucket
 # choice + operator-declared score), and code aggregates the JSON artifact.
@@ -391,7 +399,14 @@ Wire into any MCP host (Claude Code, Cursor, your own agents):
 
 Tools (`tools/list` order): `panel_verify`, `apply_edit`, `offer_work`, `defer_work`,
 `ledger_status`, `participation_report`, `spend_status`, `trust_status`, `plan_and_execute`,
-`issue_sort`, `route_query`, `mission_status`, `continue_work`, `log_judgment`, `jev_phase`.
+`issue_sort`, `route_query`, `mission_status`, `continue_work`, `log_judgment`, `jev_phase`,
+`jev_freeze`.
+`jev_freeze` is a thin face over `harness.config.freeze_jev_settings` (the same
+owner `harness jev-freeze` calls): a preview reports the pin/threshold the
+freeze would apply and writes nothing, while `persist: true` writes the
+operator config and requires `allow_write`. It is refused when the environment
+pins the same key, because a config file the environment overrides only
+*looks* frozen.
 `jev_phase` is a thin, always-local-only face over `harness.jev_completion` (the
 same engine `harness jev-phase --local-only` runs): hard gates + sentiment
 buckets score one phase (`phase`) or the whole board (`all: true`). It never

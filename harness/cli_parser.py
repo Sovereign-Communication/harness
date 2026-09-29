@@ -534,6 +534,25 @@ def build_parser():
     pvision.add_argument("--json", action="store_true", help="emit raw JSON only")
     _add_output_flags(pvision)
 
+    pfreeze = sub.add_parser(
+        "jev-freeze",
+        help="Freeze the Jev model pin + min_confidence after first "
+             "calibration (JEV-P4 residual): previews by default, --persist "
+             "writes the operator config through the one config owner")
+    pfreeze.add_argument("--model", default=None, metavar="MODEL_ID",
+                         help="model id to pin (e.g. jev-1.13.0); omit to keep "
+                              "the current pin")
+    pfreeze.add_argument("--min-confidence", dest="min_confidence", type=float,
+                         default=None,
+                         help="abstain/escalate threshold in [0,1]; omit to "
+                              "keep the current value")
+    pfreeze.add_argument("--persist", action="store_true",
+                         help="write the named keys into config.json (refused "
+                              "fail-closed when the environment pins the same "
+                              "key, since the pin would not take effect)")
+    pfreeze.add_argument("--json", action="store_true", help="emit raw JSON only")
+    _add_output_flags(pfreeze)
+
     # HUL-A/D mission pack surface (run = HUL-D until-limits driver).
     pmiss = sub.add_parser(
         "mission",

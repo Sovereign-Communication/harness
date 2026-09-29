@@ -17,6 +17,7 @@ free router and serves as a final fallback lane.
 """
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -610,6 +611,27 @@ class Settings:
             "hourglass_stages")}
 
 
+# JEV-P4 freeze: the two settings an operator pins after first calibration,
+# and the only keys beyond the original runtime set whose writes the freeze
+# face is allowed to make. They are declared here, next to ``_ENV_NAMES``,
+# so the write allow-list and the freeze face cannot drift apart.
+JEV_FREEZE_KEYS = ("jev_model", "min_confidence")
+
+# A pinned model id is data, never free text. Anything with whitespace, a
+# control character, or JSON-ish punctuation is rejected rather than being
+# coerced to a string and written into the operator's config file.
+_JEV_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$")
+
+
+def validate_jev_model_id(value):
+    """Return ``value`` if it can be a model id, else raise HarnessError."""
+    if not isinstance(value, str) or not _JEV_MODEL_ID_RE.match(value):
+        raise HarnessError(
+            "jev_model must be a model id (letters, digits and . _ : / @ + -, "
+            "starting alphanumeric, max 128 chars)")
+    return value
+
+
 def update_config(values):
     """Persist runtime-updatable settings into config.json (the ONE owner of
     config I/O). Each value is validated by a full ``load_settings`` round
@@ -625,10 +647,13 @@ def update_config(values):
         raise HarnessError(
             "unknown setting(s): " + ", ".join(sorted(unknown)))
     allowed = {"use_free", "allow_escalation", "max_cost", "task_max_cost"}
+    allowed |= set(JEV_FREEZE_KEYS)
     disallowed = set(values) - allowed
     if disallowed:
         raise HarnessError(
             "setting(s) not runtime-updatable: " + ", ".join(sorted(disallowed)))
+    if "jev_model" in values:
+        validate_jev_model_id(values["jev_model"])
 
     cfg_path = os.path.join(CONFIG_DIR, "config.json")
     cfg = {}
@@ -843,7 +868,8 @@ def load_vision_preflight_settings(*, max_cost_override=None):
     return SimpleNamespace(jev_model=model, max_cost=max_cost)
 
 
-def freeze_jev_settings(settings, *, jev_model=None, min_confidence=None):
+def freeze_jev_settings(settings, *, jev_model=None, min_confidence=None,
+                        persist=False):
     """JEV-P4 model pin + threshold freeze path.
 
     Operators freeze after calibration by writing the observed model id and
@@ -852,18 +878,60 @@ def freeze_jev_settings(settings, *, jev_model=None, min_confidence=None):
     returns the frozen fields for ledger/docs evidence. It never invents a
     model: omit ``jev_model`` to keep the current pin; omit
     ``min_confidence`` to keep the current threshold.
+
+    ``persist=True`` additionally writes the named keys through
+    ``update_config`` -- the ONE config-I/O owner -- so the freeze survives
+    the process. Two rules make a persisted freeze honest:
+
+    * an env-pinned key wins over config.json, so persisting a freeze the
+      environment overrides would produce a file that *looks* frozen and is
+      not; the write is refused before it happens, not after;
+    * the returned ``effective`` block is read back with ``load_settings()``,
+      so evidence reports what the next run will actually use rather than
+      what this call hoped it wrote.
+
+    The returned mapping is the same shape on both paths -- ``persisted``
+    says which one ran and ``freeze_keys`` names what was (or would be)
+    written -- so a preview and a write are never confusable evidence.
     """
+    pending = {}
+    if jev_model is not None:
+        pending["jev_model"] = validate_jev_model_id(str(jev_model))
+    if min_confidence is not None:
+        pending["min_confidence"] = finite_number(
+            min_confidence, "min_confidence", 0.0, 1.0)
+
     frozen = {
         "jev_model": settings.jev_model,
         "min_confidence": settings.min_confidence,
+        "freeze_keys": sorted(pending),
+        "persisted": False,
     }
-    if jev_model is not None:
-        settings.jev_model = str(jev_model)
-        frozen["jev_model"] = settings.jev_model
-    if min_confidence is not None:
-        settings.min_confidence = float(min_confidence)
-        frozen["min_confidence"] = settings.min_confidence
+    for key, value in pending.items():
+        setattr(settings, key, value)
+        frozen[key] = value
     frozen["jev_model_is_pinned"] = settings.jev_model not in (None, "", "jev-latest")
+
+    if not persist:
+        return frozen
+
+    if not pending:
+        raise HarnessError(
+            "a persisted freeze must name jev_model and/or min_confidence; "
+            "nothing to write")
+    overridden = sorted(k for k in pending
+                        if os.environ.get(_ENV_NAMES[k]) is not None)
+    if overridden:
+        raise HarnessError(
+            "refusing to persist a freeze the environment overrides: "
+            + ", ".join(f"{k} via {_ENV_NAMES[k]}" for k in overridden)
+            + "; unset it and re-run so the pin is the one that takes effect")
+
+    update_config(dict(pending))
+    effective = load_settings()
+    frozen["persisted"] = True
+    frozen["config_path"] = os.path.join(CONFIG_DIR, "config.json")
+    frozen["effective"] = {k: getattr(effective, k) for k in pending}
     return frozen
 
 

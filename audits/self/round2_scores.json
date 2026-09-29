@@ -29,7 +29,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.99,
+        "confidence": 0.98,
         "evaluated": true
       },
       "SM": {
@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.95,
+        "confidence": 0.98,
         "evaluated": true
       }
     },
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 2310 tests in 424.577s\n\nOK"
+        "evidence": "unittest: Ran 2534 tests in 131.199s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -288,7 +288,7 @@
         "id": "D1",
         "label": "MCP tool parity with README",
         "score": 1.0,
-        "evidence": "README documents all 15 MCP tools, no stale names"
+        "evidence": "README documents all 16 MCP tools, no stale names"
       },
       {
         "id": "D2",
@@ -306,7 +306,7 @@
         "id": "D4",
         "label": "config table keys real",
         "score": 1.0,
-        "evidence": "24 README config keys all resolve to real settings (44 configurable)"
+        "evidence": "24 README config keys all resolve to real settings (45 configurable)"
       },
       {
         "id": "D5",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed"
+        "evidence": "SKIP (fail-open): git diff against baseline unavailable"
       }
     ]
   }

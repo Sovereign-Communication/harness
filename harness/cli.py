@@ -30,6 +30,7 @@ from .consent import probe_consent
 from .config import (
     DEFAULT_MAX_COST,
     HARD_MAX_COST,
+    freeze_jev_settings,
     load_vision_preflight_settings,
     resolve_hourglass,
 )
@@ -1383,6 +1384,36 @@ def _cmd_jev_vision_assessment(opts, settings):
         raise HarnessError("vision assessment is unassessed; see the emitted reason")
 
 
+def _cmd_jev_freeze(opts, settings):
+    """Operator face over ``config.freeze_jev_settings`` (GAP-freeze-face).
+
+    The owner has existed since JEV-P4; this is the missing CLI face. A
+    *preview* (the default -- no ``--persist``) reports the pin/threshold the
+    freeze would apply and writes nothing, so an operator can see the effect
+    before touching config.json. ``--persist`` performs the write through
+    ``update_config`` -- the ONE config-I/O owner -- and the emitted
+    ``effective`` block is read back with ``load_settings()``, i.e. what the
+    NEXT run will actually use rather than what this call hoped it wrote.
+    """
+    frozen = freeze_jev_settings(
+        settings,
+        jev_model=getattr(opts, "model", None),
+        min_confidence=getattr(opts, "min_confidence", None),
+        persist=bool(getattr(opts, "persist", False)))
+    result = {
+        "status": "frozen" if frozen["persisted"] else "preview",
+        "command": "jev-freeze",
+        "freeze": frozen,
+        "note": (
+            "written to config.json; `effective` is what the next run loads"
+            if frozen["persisted"] else
+            "preview only -- nothing was written; re-run with --persist to freeze"),
+    }
+    _emit(result, opts.out, force_json=getattr(opts, "json", False))
+    if not frozen["persisted"]:
+        eprint("[jev-freeze] preview only (no write); pass --persist to pin")
+
+
 # Command -> handler. `required=True` subparsers make an unknown command
 # unreachable here, so the table has no default arm; every handler takes
 # (opts, settings), so a signature drift fails loudly at dispatch instead of
@@ -1413,6 +1444,7 @@ _DISPATCH = {
     "rankings": _cmd_rankings,
     "jev-phase": _cmd_jev_phase,
     "jev-vision-assessment": _cmd_jev_vision_assessment,
+    "jev-freeze": _cmd_jev_freeze,
     "mission": _cmd_mission,
 }
 
