@@ -222,7 +222,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 2573 tests in 122.262s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 2586 tests in 160.412s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -328,7 +328,7 @@
         "id": "D8",
         "label": "shipped model freshness guard (live: opt-in)",
         "score": 1.0,
-        "evidence": "shipped_model_ids + capabilities --check-shipped wired; pricing lookup hard-fatals on stale ids; 5 :free pool ids; live check skipped (HARNESS_AUDIT_LIVE unset)"
+        "evidence": "shipped_model_ids + capabilities --check-shipped wired; pricing lookup hard-fatals on stale ids; 4 :free pool ids; live check skipped (HARNESS_AUDIT_LIVE unset)"
       },
       {
         "id": "D9",
@@ -352,7 +352,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 34/34 = 100% (bar 95%) vs baseline 16a0c4be11)"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 22/22 = 100% (bar 95%) vs baseline bbfa7f3d05)"
       }
     ]
   }

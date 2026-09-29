@@ -157,6 +157,32 @@ class DecreasingAllowanceTests(unittest.TestCase):
 
 
 class PlanningWaistOutcomeTests(unittest.TestCase):
+    def test_runner_accepts_the_composed_planning_child(self):
+        run = _run_budget()
+        composition = compose_stages(budget=run, declared=[STAGE_PLANNING])
+        stage_budget = composition["stages"][0]["budget"]
+        outcome = run_planning(goal="g", budget=run,
+                               stage_budget=stage_budget, files=[], rounds=1)
+        self.assertEqual(outcome.kind, OUTCOME_DEFER)
+        self.assertEqual(outcome.budget["parent"], run.label)
+
+    def test_runner_rejects_foreign_or_wrong_stage_budgets(self):
+        run = _run_budget()
+        foreign = _run_budget().stage(STAGE_PLANNING)
+        wrong_stage = run.stage(STAGE_CONTEXT)
+        for candidate in (foreign, wrong_stage):
+            with self.subTest(candidate=candidate.label):
+                with self.assertRaisesRegex(
+                        HarnessError, "planning child of budget"):
+                    run_planning(goal="g", budget=run,
+                                 stage_budget=candidate, files=[], rounds=1)
+
+    def test_runner_rejects_a_non_budget_stage_argument(self):
+        with self.assertRaisesRegex(
+                HarnessError, "planning stage_budget must be a TokenBudget"):
+            run_planning(goal="g", budget=_run_budget(),
+                         stage_budget=object(), files=[], rounds=1)
+
     def test_a_sufficient_answer_stops_without_a_plan(self):
         self.assertEqual(plan_outcome(OUTCOME_SUFFICIENT),
                          {"outcome": OUTCOME_SUFFICIENT})
