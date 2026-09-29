@@ -27,6 +27,13 @@ class SlatePolicyTests(unittest.TestCase):
         self.assertEqual(offenders, set(),
                          "superseded/banned ids must not ship as defaults")
 
+    def test_stale_free_ling_is_removed_and_paid_ling_remains(self):
+        stale_free = "inclusionai/ling-3.0-flash-fin:free"
+        self.assertNotIn(stale_free, config.shipped_model_ids())
+        paid_ling = "inclusionai/ling-3.0-flash"
+        self.assertIn(paid_ling, config.DEFAULT_PANEL_PAID)
+        self.assertGreater(config.DEFAULT_PANEL_PAID.index(paid_ling), 0)
+
     def test_paid_vote_pool_is_the_verified_slate(self):
         self.assertEqual(config.DEFAULT_PANEL_PAID, [
             "deepseek/deepseek-v4-flash",

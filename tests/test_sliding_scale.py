@@ -202,36 +202,32 @@ class TestSlidingScale(unittest.TestCase):
         self.assertEqual(dag.nodes["task_1"].target_files, ("utils.py",))
 
     def test_ling_in_rotation_but_never_default(self):
-        """DF-LING-2 (operator ruling 2026-09-23): Ling may rotate in, but it
-        must never be the first/default pick for any lane. DF-LING-1 already
-        fixed the actual parsing defect (chat._extract_json / reasoning
-        hints); this pins the pool-ordering half of the ruling."""
+        """DF-LING-2: paid Ling may rotate, but never becomes the default.
+        DF-MS-4 removes the delisted free id from shipped pools."""
         from harness.config import (FREE_APPLY_POOL, FREE_PANEL_POOL,
-                                     DEFAULT_APPLY_POOL_PAID)
+                                    DEFAULT_APPLY_POOL_PAID, DEFAULT_PANEL_PAID)
 
-        # In rotation: still present in the free apply pool...
-        self.assertIn("inclusionai/ling-3.0-flash-fin:free", FREE_APPLY_POOL)
-        # ...but never leading it.
+        stale_free = "inclusionai/ling-3.0-flash-fin:free"
+        self.assertNotIn(stale_free, FREE_APPLY_POOL)
+        self.assertNotIn(stale_free, FREE_PANEL_POOL)
         self.assertNotIn("ling", FREE_APPLY_POOL[0].lower())
 
-        # Never the default apply model.
+        paid_ling = "inclusionai/ling-3.0-flash"
+        self.assertIn(paid_ling, DEFAULT_PANEL_PAID)
+        self.assertGreater(DEFAULT_PANEL_PAID.index(paid_ling), 0)
+
         apply_model = str(load_settings(
             overrides={"use_free": True}).apply_model)
         self.assertNotIn("ling", apply_model.lower())
 
-        # Never the Tier-1 recommended model (free or paid).
         tier1_free = resolve_tier_recommended_model(TIER_1_DISTILLER, use_free=True)
         self.assertNotIn("ling", tier1_free.lower())
         self.assertNotIn("ling", DEFAULT_APPLY_POOL_PAID[0].lower())
 
-        # Never the leading rung of the Tier-1 free ladder.
         ladder = tier_model_ladder(TIER_1_DISTILLER, use_free=True)
         self.assertNotIn("ling", ladder[0].lower())
-        # ...but Ling still shows up somewhere in the ladder, i.e. it rotates
-        # in after the default rather than being dropped outright.
-        self.assertTrue(any("ling" in m.lower() for m in ladder))
+        self.assertFalse(any("ling" in model.lower() for model in ladder))
 
-        # Scout tier recommended model must be capable (Gemma 4 31b), not Ling
         scout_rec = resolve_tier_recommended_model(TIER_0_SCOUT, use_free=True)
         self.assertEqual(scout_rec, FREE_PANEL_POOL[0])
         self.assertNotIn("ling", scout_rec.lower())
