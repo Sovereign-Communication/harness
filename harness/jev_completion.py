@@ -432,6 +432,20 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "HANDOFF/OC_FINDINGS.md",
         ],
     },
+    # External project phase. Without a declared contract an unlisted phase id
+    # falls back to the generic pr_pattern=None rule but its STATUS row is never
+    # matched, so it scores against no evidence at all. Registering it makes
+    # CivicScore's own PR, tests and docs the contract.
+    "CIVICSCOPE-COMPLETION": {
+        "pr_pattern": r"PR #1\b|PR #\d+ MERGED",
+        "required_tests": ["tests/test_gates.test.ts"],
+        "required_files": [
+            "docs/jev-roadmap.md",
+            "packs/phase_completion.pack.json",
+            "tools/completion-gate.mjs",
+        ],
+        "user_facing": True,
+    },
 }
 
 
@@ -708,6 +722,10 @@ def _norm_phase(phase_id: str) -> str:
 
 def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
     needles = {
+        # External project. The needle matches the phase id as it appears in
+        # that repository's roadmap, so its evidence row is found rather than
+        # silently scoring against nothing.
+        "CIVICSCOPE-COMPLETION": re.compile(r"CIVICSCOPE-COMPLETION", re.I),
         "JEV-P0": re.compile(r"JEV-P0|0 Contract|contract truth", re.I),
         "JEV-P1": re.compile(r"JEV-P1|One owner|one owner \+ lanes", re.I),
         "JEV-P2": re.compile(r"JEV-P2|2 Pillars|System One pillars", re.I),
