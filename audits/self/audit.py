@@ -1105,16 +1105,55 @@ def sd_corpus_integrity():
                  detail)
 
 
+#: Is this process the CI audit? CI is where D12 has to be authoritative.
+#: Locally an unreachable baseline object can be legitimate (a shallow clone),
+#: so the same condition is reported loudly there instead of failing an
+#: interactive run -- but it is never silent, because a coverage gate that
+#: quietly stops checking is worse than one that is absent (DF-AUDIT-3).
+_IN_CI = os.environ.get("CI", "").strip().lower() not in ("", "0", "false")
+
+
+def _audible(msg):
+    """Warn on stderr: a fail-open SKIP is only honest if it is seen. The
+    audit's report may be piped or captured, so the warning cannot ride along
+    inside the returned evidence string alone."""
+    print(msg, file=sys.stderr)
+
+
+def d12_unreachable(ref, *, in_ci):
+    """Result for a baseline reference that cannot be diffed.
+
+    Pure decision, so the fail-closed rule is testable without staging a
+    broken repository. A coverage gate that cannot compute a changed-line
+    ratio has verified nothing, so it must not present itself as a pass:
+    in CI an absent object means the baseline is stale and the check is
+    inert, which fails closed. Locally the same condition returns a visible
+    SKIP.
+    """
+    reason = (f"baseline commit {ref[:12]} is not reachable in this checkout, "
+              f"so D12 cannot compute a changed-line ratio (re-run "
+              f"refresh_coverage_baseline.py and commit the re-pointed "
+              f"baseline)")
+    if in_ci:
+        _audible(f"[FATAL] D12: {reason} -- failing closed")
+        return 0.0, f"FAIL: {reason}"
+    _audible(f"[warn] D12: {reason} -- SKIP (fail-open) locally; CI fails closed")
+    return 1.0, f"SKIP (fail-open): {reason}"
+
+
 def sd_coverage_changed():
     """Changed harness lines must be executed by the traced suite:
     since the coverage baseline's own commit, added lines in
     harness/ that the traced battery never ran fail this check
     below a 95% executed bar. The baseline is generated only by
     refresh_coverage_baseline.py (a traced full battery run) and
-    committed with the code change it reflects. Missing data fails
-    open with an honest SKIP, never a silent pass."""
+    committed with the code change it reflects. A missing or unusable
+    baseline is reported visibly -- never a silent pass -- and an
+    unreachable reference fails closed in CI."""
     mf = HERE / "coverage_baseline.json"
     if not mf.exists():
+        _audible("[warn] D12: coverage_baseline.json missing -- "
+                 "SKIP (fail-open); run refresh_coverage_baseline.py")
         return 1.0, ("SKIP (fail-open): coverage_baseline.json missing -- "
                      "run refresh_coverage_baseline.py")
     doc = json.loads(mf.read_text(encoding="utf-8-sig"))
@@ -1123,12 +1162,14 @@ def sd_coverage_changed():
     # BOM instead of its coverage content (2026-09-21 CI failure).
     ref = doc.get("commit", "")
     if len(ref) != 40:
+        _audible("[warn] D12: baseline lacks a commit reference -- "
+                 "SKIP (fail-open)")
         return 1.0, "SKIP (fail-open): baseline lacks a commit reference"
     d = subprocess.run(
         ["git", "diff", "--unified=0", ref, "--", "harness/"],
         cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8", errors="replace")
     if d.returncode != 0:
-        return 1.0, "SKIP (fail-open): git diff against baseline unavailable"
+        return d12_unreachable(ref, in_ci=_IN_CI)
     added = {}
     rel = None
     new_ln = 0
@@ -1196,7 +1237,12 @@ def sd_coverage_changed():
             + ("..." if len(gaps[r]) > 8 else "")
             for r in sorted(gaps))
         detail += "; untested: " + items
-    return _pass(ok, "changed harness lines are suite-executed", detail)
+    # The pass evidence carries the measured ratio on purpose. A green D12 that
+    # does not say what it measured is indistinguishable from one that measured
+    # nothing -- which is exactly the shape of DF-AUDIT-3 (score 1.0, no ratio,
+    # for months), and the reason the regression pin asserts on this string.
+    return _pass(ok, f"changed harness lines are suite-executed ({detail})",
+                 detail)
 
 
 
