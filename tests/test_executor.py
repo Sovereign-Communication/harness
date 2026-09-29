@@ -120,6 +120,33 @@ class ConcurrentExecutorTests(unittest.TestCase):
         self.assertEqual(results[0]["status"], "fatal")
         self.assertIn("crash", results[0]["error"])
 
+    def test_defer_fences_already_running_sibling_before_protected_write(self):
+        started = threading.Event()
+        writes = []
+        dag = TaskDAG(nodes={
+            "defer": DAGNode(node_id="defer", instruction="ask first"),
+            "sibling": DAGNode(node_id="sibling", instruction="write later"),
+        })
+
+        def worker(node, cancel_check, dispatch_fence):
+            if node.node_id == "defer":
+                self.assertTrue(started.wait(timeout=2))
+                return {"status": "deferred", "node_id": node.node_id}
+            started.set()
+            deadline = time.monotonic() + 2
+            while not cancel_check() and time.monotonic() < deadline:
+                time.sleep(0.005)
+            with dispatch_fence.protected_write():
+                writes.append(node.node_id)
+            return {"status": "ok", "node_id": node.node_id}
+
+        results = ConcurrentExecutor(max_workers=2).execute_dag(
+            dag, worker, stop_on_defer=True)
+
+        self.assertEqual(results["defer"]["status"], "deferred")
+        self.assertEqual(results["sibling"]["status"], "not_dispatched")
+        self.assertEqual(writes, [])
+
     def test_isolation_creation_failure_cleans_prior_handles(self):
         class FailingIsolation:
             def __init__(self):
@@ -225,6 +252,27 @@ class ConcurrentExecutorTests(unittest.TestCase):
         results = executor.execute_dag(dag, worker, keep_going=True)
         self.assertEqual(results["A"]["status"], "verify_failed")
         self.assertEqual(results["B"]["status"], "dependency_failed")
+
+    def test_consent_block_stops_dispatch_even_when_keep_going(self):
+        nodes = {
+            "A": DAGNode(node_id="A", instruction="a"),
+            "B": DAGNode(node_id="B", instruction="b", dependencies=("A",)),
+            "C": DAGNode(node_id="C", instruction="c", dependencies=("B",)),
+        }
+        dag = TaskDAG(nodes=nodes)
+        dispatched = []
+
+        def worker(node):
+            dispatched.append(node.node_id)
+            return {"status": "consent_blocked", "reason": "not approved"}
+
+        results = ConcurrentExecutor(max_workers=1).execute_dag(
+            dag, worker, keep_going=True)
+
+        self.assertEqual(dispatched, ["A"])
+        self.assertEqual(results["A"]["status"], "consent_blocked")
+        self.assertEqual(results["B"]["status"], "not_dispatched")
+        self.assertEqual(results["C"]["status"], "not_dispatched")
 
 
 class BatchParallelIntegrationTests(unittest.TestCase):

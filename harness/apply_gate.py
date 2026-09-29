@@ -6,6 +6,7 @@ provider dispatch stay in ``apply.py``; this policy receives request and run
 state records and returns the shared result shapes.
 """
 import os
+from contextlib import nullcontext
 
 from . import events as _events
 from . import attest as attest_policy
@@ -49,16 +50,24 @@ class GatePolicy:
         # allow them. Deny, unparseable verdict, and transport error all
         # refuse the write -- intent approval is never a fallback.
         if getattr(req, "require_diff_authorization", False):
+            token_kwargs = ({"token_budget": req.token_budget}
+                            if req.token_budget is not None else {})
             attest_policy.authorize_diff(
                 self.transport, self.api_key, self.governor, self.ledger,
                 task_id=req.task_id, model=req.attest_model,
                 file_path=req.file_path, instruction=req.instruction,
                 current_content=state.current_content, new_content=content,
-                round_no=state.round_no, max_tokens=req.max_tokens)
-        if state.backup is None:
-            state.backup = backup_file(req.file_path, req.task_id,
-                                       marker or state.round_no)
-        _atomic_write(req.file_path, content)
+                round_no=state.round_no, max_tokens=req.max_tokens,
+                **token_kwargs)
+        write_guard = getattr(req, "write_guard", None)
+        guard = write_guard() if callable(write_guard) else nullcontext()
+        with guard:
+            if req.cancel_check and req.cancel_check():
+                raise ToolCancelled()
+            if state.backup is None:
+                state.backup = backup_file(req.file_path, req.task_id,
+                                           marker or state.round_no)
+            _atomic_write(req.file_path, content)
         state.current_content = content
         _events.emit("gate_start", task_id=req.task_id, phase="candidate_write",
                      round=state.round_no, changed=True)
@@ -74,9 +83,12 @@ class GatePolicy:
         """Evaluate a candidate before writing, then run its gate."""
         changed = new_content != state.current_content
         if changed and self.jev_policy is not None:
+            token_kwargs = ({"token_budget": req.token_budget}
+                            if req.token_budget is not None else {})
             jev_result, structural = self.jev_policy.evaluate_candidate(
                 state.current_content, new_content, req.instruction,
-                req.file_path, task_id=req.task_id)
+                req.file_path, task_id=req.task_id,
+                **token_kwargs)
             state.structural = structural
             if not jev_result.is_passing(getattr(self.jev_policy.settings,
                                                  "min_confidence", 0.70)):
@@ -266,6 +278,8 @@ class GatePolicy:
             "remaining_scope": remaining,
             "reason": reason,
             "history": state.history,
+            "consent_binding": state.consent_binding,
+            "consent_attempts": list(state.consent_attempts or []),
         }
         result = _terminal_result(
             terminal_status, task_id=req.task_id, rounds=state.rounds,

@@ -11,12 +11,15 @@ Provides:
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import replace
+import hashlib
+import json
 import os
 import threading
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Set
 
 from .dag import DAGNode, TaskDAG
-from .errors import HarnessError
+from .errors import HarnessError, ToolCancelled
+from .token_budget import TokenBudget
 from .filesafety import VERIFY_TIMEOUT, default_run_verify
 from .output import eprint
 from .repo_scope import _rebase_path, discover_verification_gate, rebase_gate
@@ -28,6 +31,74 @@ from .worktree import WorktreeIsolation
 # Auto-scaling hourglass default for concurrent node dispatch (the CLI
 # parser, MCP schema, and the agent lane all mean this number).
 DEFAULT_PLAN_WORKERS = 4
+
+
+class DispatchFence:
+    """Stop sibling package writes atomically at a defer boundary."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._stopped = threading.Event()
+
+    def is_stopped(self):
+        return self._stopped.is_set()
+
+    def stop(self):
+        # A writer already inside the short protected filesystem commit may
+        # finish first. Once this returns, no later protected write can start.
+        with self._lock:
+            self._stopped.set()
+
+    @contextmanager
+    def protected_write(self):
+        with self._lock:
+            if self._stopped.is_set():
+                raise ToolCancelled("sibling package deferred before write")
+            yield
+
+
+def _consent_context(value, max_chars=3000):
+    """Give consent a bounded, labeled context excerpt and bind its full hash."""
+    if value is None:
+        return None
+    rendered = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                          separators=(",", ":"), default=str)
+    return {
+        "sha256": hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
+        "excerpt": rendered[:max_chars],
+        "truncated": len(rendered) > max_chars,
+    }
+
+
+def execution_budget(run_budget, execution_stage, planning_stage):
+    """Give execution a wider direct child of the shared run budget.
+
+    Stage composition narrows each successive stage, which is useful for the
+    planning waist but would otherwise leave execution narrower than planning.
+    Keep execution reservations in the same run-level accounting chain while
+    restoring its maxima to the run ceilings. If no planning stage ran, retain
+    the composed execution allowance unchanged.
+    """
+    if not isinstance(run_budget, TokenBudget):
+        raise HarnessError("execution run_budget must be a TokenBudget")
+    if not isinstance(execution_stage, TokenBudget):
+        raise HarnessError("execution_stage must be a TokenBudget")
+    if planning_stage is None:
+        return execution_stage
+    if not isinstance(planning_stage, TokenBudget):
+        raise HarnessError("planning_stage must be a TokenBudget or None")
+    if run_budget not in execution_stage._chain():
+        raise HarnessError("execution_stage must descend from run_budget")
+    if run_budget not in planning_stage._chain():
+        raise HarnessError("planning_stage must descend from run_budget")
+    if (run_budget.max_input_tokens <= planning_stage.max_input_tokens
+            or run_budget.max_output_tokens <= planning_stage.max_output_tokens):
+        raise HarnessError(
+            "run budget cannot strictly widen both execution ceilings beyond planning")
+    return run_budget.stage(
+        execution_stage.label,
+        max_input_tokens=run_budget.max_input_tokens,
+        max_output_tokens=run_budget.max_output_tokens)
 
 
 def partition_by_target_overlap(nodes):
@@ -192,6 +263,7 @@ class ConcurrentExecutor:
         reserver=None,
         isolator=None,
         on_stage_done=None,
+        stop_on_defer: bool = False,
     ) -> Dict[str, Any]:
         """Execute a TaskDAG stage-by-stage (batch by batch) concurrently.
 
@@ -217,8 +289,19 @@ class ConcurrentExecutor:
         batches = dag.topological_batches()
         all_results: Dict[str, Dict[str, Any]] = {}
         failed_nodes: Set[str] = set()
+        stop_dispatch = False
+        stop_reason = None
+        dispatch_fence = DispatchFence() if stop_on_defer else None
 
         for batch in batches:
+            if stop_dispatch:
+                for node in batch:
+                    all_results[node.node_id] = {
+                        "status": "not_dispatched",
+                        "node_id": node.node_id,
+                        "reason": stop_reason,
+                    }
+                continue
             # Check if any node in this batch depends on a failed node
             executable_nodes: List[DAGNode] = []
             for node in batch:
@@ -238,13 +321,23 @@ class ConcurrentExecutor:
             if self.max_workers == 1:
                 for node in executable_nodes:
                     try:
-                        res = self._run_node_with_locks(node, worker_fn)
+                        res = self._run_node_reserved(
+                            node, worker_fn, reserver, None,
+                            dispatch_fence=dispatch_fence)
                     except Exception as exc:
                         res = {"status": "fatal", "error": str(exc), "node_id": node.node_id}
 
                     all_results[node.node_id] = res
                     if res.get("status") not in SUCCESS_STATUSES:
                         failed_nodes.add(node.node_id)
+                        if res.get("status") in {"consent_blocked", "deferred"}:
+                            stop_dispatch = True
+                            if dispatch_fence is not None:
+                                dispatch_fence.stop()
+                            stop_reason = (
+                                f"{res.get('status')} at node {node.node_id}; "
+                                "remaining planned nodes were not dispatched")
+                            break
                         if not keep_going:
                             break
             else:
@@ -274,11 +367,19 @@ class ConcurrentExecutor:
                             future_to_node = {
                                 pool.submit(self._run_node_reserved, node, worker_fn,
                                             reserver,
-                                            (handles.get(node) or {}).get("path")): node
+                                            (handles.get(node) or {}).get("path"),
+                                            dispatch_fence): node
                                 for node in parallel_nodes
                             }
                             for future in as_completed(future_to_node):
                                 node = future_to_node[future]
+                                if future.cancelled():
+                                    stage_results[node] = {
+                                        "status": "not_dispatched",
+                                        "node_id": node.node_id,
+                                        "reason": stop_reason or "prior package stopped dispatch",
+                                    }
+                                    continue
                                 try:
                                     stage_results[node] = future.result()
                                 except Exception as exc:
@@ -286,14 +387,34 @@ class ConcurrentExecutor:
                                         "status": "fatal", "error": str(exc),
                                         "node_id": node.node_id,
                                     }
+                                if stage_results[node].get("status") in {
+                                        "consent_blocked", "deferred"}:
+                                    stop_dispatch = True
+                                    if dispatch_fence is not None:
+                                        dispatch_fence.stop()
+                                    stop_reason = (
+                                        f"{stage_results[node]['status']} at node "
+                                        f"{node.node_id}; remaining planned nodes "
+                                        "were not dispatched")
+                                    for future in future_to_node:
+                                        future.cancel()
                                 if (not keep_going and
                                         stage_results[node].get("status") not in SUCCESS_STATUSES):
+                                    if dispatch_fence is not None:
+                                        dispatch_fence.stop()
                                     for f in future_to_node:
                                         f.cancel()
 
                     # Serial shared-tree arm: overlapping targets never share
                     # a worktree; they run one-at-a-time under the mutex.
                     for node in shared_nodes:
+                        if stop_dispatch:
+                            stage_results[node] = {
+                                "status": "not_dispatched",
+                                "node_id": node.node_id,
+                                "reason": stop_reason,
+                            }
+                            continue
                         if (not keep_going and any(
                                 stage_results.get(n, {}).get("status") not in SUCCESS_STATUSES
                                 for n in parallel_nodes)):
@@ -305,7 +426,8 @@ class ConcurrentExecutor:
                             continue
                         try:
                             stage_results[node] = self._run_node_reserved(
-                                node, worker_fn, reserver, None)
+                                node, worker_fn, reserver, None,
+                                dispatch_fence=dispatch_fence)
                         except Exception as exc:
                             stage_results[node] = {
                                 "status": "fatal", "error": str(exc),
@@ -313,7 +435,13 @@ class ConcurrentExecutor:
                             }
 
                     for node in executable_nodes:
-                        res = stage_results[node]
+                        res = stage_results.get(node)
+                        if res is None:
+                            res = {
+                                "status": "not_dispatched",
+                                "node_id": node.node_id,
+                                "reason": stop_reason or "prior package stopped dispatch",
+                            }
                         if node in handles:
                             res = self._settle_isolated(node, res, handles[node], isolator)
                         all_results[node.node_id] = res
@@ -324,9 +452,18 @@ class ConcurrentExecutor:
                         for handle in handles.values():
                             isolator.discard(handle)
 
+            if stop_dispatch:
+                for node in executable_nodes:
+                    all_results.setdefault(node.node_id, {
+                        "status": "not_dispatched",
+                        "node_id": node.node_id,
+                        "reason": stop_reason,
+                    })
             if on_stage_done is not None:
                 on_stage_done(executable_nodes, all_results)
 
+            if stop_dispatch:
+                continue
             if failed_nodes and not keep_going:
                 break
 
@@ -346,6 +483,7 @@ class ConcurrentExecutor:
         worker_fn: Callable[[DAGNode], Dict[str, Any]],
         reserver,
         gate_cwd=None,
+        dispatch_fence=None,
     ) -> Dict[str, Any]:
         token = reserver.reserve(node) if reserver is not None else None
         try:
@@ -354,10 +492,28 @@ class ConcurrentExecutor:
                 # called as ``worker_fn(node, gate_cwd=<worktree path>)``;
                 # otherwise the historical single-argument shape is kept
                 # (DAGNode is frozen -- state rides the call, not the node).
-                if gate_cwd is not None:
+                if dispatch_fence is not None:
+                    worker_kwargs = {
+                        "cancel_check": dispatch_fence.is_stopped,
+                        "dispatch_fence": dispatch_fence,
+                    }
+                    if gate_cwd is not None:
+                        worker_kwargs["gate_cwd"] = gate_cwd
+                    res = worker_fn(node, **worker_kwargs)
+                elif gate_cwd is not None:
                     res = worker_fn(node, gate_cwd=gate_cwd)
                 else:
                     res = worker_fn(node)
+        except ToolCancelled as exc:
+            if token is not None:
+                reserver.reconcile(token, 0.0)
+                token = None
+            if dispatch_fence is not None and dispatch_fence.is_stopped():
+                return {
+                    "status": "not_dispatched", "node_id": node.node_id,
+                    "reason": str(exc),
+                }
+            raise
         except Exception:
             if token is not None:
                 reserver.reconcile(token, 0.0)
@@ -415,7 +571,9 @@ class PlanExecutor:
                  max_workers=DEFAULT_PLAN_WORKERS, keep_going=False,
                  require_diff_authorization=False, route_kwargs_fn=None,
                  base_apply_kwargs=None, apply=None, task_max_cost=None,
-                 run_ceiling=None, repo=None, on_stage_done=None,
+                 run_ceiling=None, token_budget=None, repo=None,
+                 jev_policy=None, consent_context=None,
+                 on_stage_done=None,
                  final_gate=None, run_gate=None, final_gate_runner=None):
         self.engine = engine
         # The tree the plan was made in: nodes' verification gates are rooted
@@ -429,6 +587,20 @@ class PlanExecutor:
         self.require_diff_authorization = bool(require_diff_authorization)
         self.route_kwargs_fn = route_kwargs_fn or node_apply_kwargs
         self.base_apply_kwargs = dict(base_apply_kwargs or {})
+        # Every planned write is an exact package handoff. Consent must be
+        # checked at the package boundary even when a plan/preview already
+        # received broader approval; renew it again after a retry changes the
+        # instruction or working candidate.
+        self.base_apply_kwargs["require_consent"] = True
+        self.base_apply_kwargs["renew_consent"] = True
+        if token_budget is not None and not isinstance(token_budget, TokenBudget):
+            raise HarnessError("PlanExecutor token_budget must be a TokenBudget")
+        self.token_budget = token_budget
+        self.consent_context = consent_context
+        # The shared policy may add a fail-closed semantic veto, but it never
+        # supplies package consent or replaces the apply engine's gates.
+        self.jev_policy = (jev_policy if jev_policy is not None
+                           else getattr(engine, "jev_policy", None))
         self.apply = apply or self._apply_edit
         self.executor = ConcurrentExecutor(max_workers=self.workers)
 
@@ -515,7 +687,8 @@ class PlanExecutor:
             file_path=target, instruction=node.instruction,
             verify_cmd=node.local_gate, **kwargs)
 
-    def run_node(self, node: DAGNode, gate_cwd: Optional[str] = None):
+    def run_node(self, node: DAGNode, gate_cwd: Optional[str] = None,
+                 cancel_check=None, dispatch_fence=None):
         """Worker contract for :meth:`ConcurrentExecutor.execute_dag`.
 
         Isolated nodes arrive with ``gate_cwd=<worktree path>``: the target
@@ -539,13 +712,87 @@ class PlanExecutor:
         if gate_cwd:
             def task_runner(command, timeout=VERIFY_TIMEOUT):
                 return default_run_verify(command, timeout=timeout, cwd=gate_cwd)
-        return self.apply(target, node, self.route_kwargs(node), task_runner)
+        route_kwargs = dict(self.route_kwargs(node))
+        if self.token_budget is not None:
+            route_kwargs["token_budget"] = self.token_budget
+        effective_kwargs = dict(self.base_apply_kwargs)
+        effective_kwargs.update(route_kwargs)
+        execution_models = list(dict.fromkeys(
+            ([effective_kwargs.get("model")]
+             if effective_kwargs.get("model") else [])
+            + list(effective_kwargs.get("apply_pool") or ())))
+        judgment = None
+        package = {
+            "package_id": node.node_id,
+            "node_id": node.node_id,
+            "instruction": node.instruction,
+            "target_files": list(node.target_files or ()),
+            "dependencies": list(node.dependencies or ()),
+            "verification_gate": node.local_gate,
+            "route": self.node_routes.get(node.node_id),
+            "execution_models": execution_models,
+            "limits": {
+                "max_input_tokens": getattr(
+                    self.token_budget, "max_input_tokens", None),
+                "max_output_tokens": getattr(
+                    self.token_budget, "max_output_tokens", None),
+                "request_max_tokens": effective_kwargs.get("max_tokens"),
+                "task_max_cost": effective_kwargs.get("task_max_cost"),
+                "run_max_cost": self.run_ceiling,
+                "backend": effective_kwargs.get("backend", "harness"),
+            },
+            "context": _consent_context(self.consent_context),
+        }
+        if self.jev_policy is not None:
+            _result, judgment = self.jev_policy.evaluate_hourglass_stage(
+                "execution", package, site="hourglass_execution",
+                node_id=node.node_id,
+                token_budget=self.token_budget)
+            # Only a native typed answer may add a veto. Missing, unkeyed,
+            # malformed, or unavailable answers are never treated as a
+            # positive authorization; the independent consent and write
+            # gates below remain authoritative.
+            if judgment.get("native"):
+                suitable = judgment.get("execution_suitable")
+                checkpoint = judgment.get("checkpoint_required")
+                if suitable is not None and suitable < 0.5:
+                    return {
+                        "status": "deferred", "node_id": node.node_id,
+                        "reason": "Jev execution judgment recommends deferring this package",
+                        "remaining_scope": node.instruction,
+                        "hourglass_execution": judgment,
+                    }
+                if checkpoint is not None and checkpoint >= 0.5:
+                    return {
+                        "status": "deferred", "node_id": node.node_id,
+                        "reason": "Jev execution judgment requires a checkpoint",
+                        "remaining_scope": node.instruction,
+                        "hourglass_execution": judgment,
+                }
+        if cancel_check is not None and cancel_check():
+            return {
+                "status": "not_dispatched", "node_id": node.node_id,
+                "reason": "sibling package deferred before dispatch",
+            }
+        route_kwargs["consent_package"] = package
+        route_kwargs["consent_policy"] = self.jev_policy
+        if cancel_check is not None:
+            route_kwargs["cancel_check"] = cancel_check
+        if dispatch_fence is not None:
+            route_kwargs["write_guard"] = dispatch_fence.protected_write
+        result = self.apply(target, node, route_kwargs, task_runner)
+        if (dispatch_fence is not None and isinstance(result, dict)
+                and result.get("status") in {"consent_blocked", "deferred"}):
+            dispatch_fence.stop()
+        if isinstance(result, dict) and judgment is not None:
+            result.setdefault("hourglass_execution", judgment)
+        return result
 
     def execute(self, dag: TaskDAG) -> Dict[str, Any]:
         results = self.executor.execute_dag(
             dag, self.run_node, keep_going=self.keep_going,
             reserver=self.reserver, isolator=self.isolator,
-            on_stage_done=self.on_stage_done)
+            on_stage_done=self.on_stage_done, stop_on_defer=True)
         gate = self.resolve_final_gate(dag)
         if gate:
             try:

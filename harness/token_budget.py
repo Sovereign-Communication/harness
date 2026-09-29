@@ -245,27 +245,31 @@ class TokenBudget:
         well have billed its worst case, and undercounting it is the one
         answer this owner must not give.
         """
-        self._check_open(allowance, "settle")
-        if source not in _USAGE_SOURCES:
-            raise HarnessError(
-                f"usage source must be one of {sorted(_USAGE_SOURCES)}; "
-                f"got {source!r}")
-        if source == USAGE_UNAVAILABLE:
-            spent_in, spent_out = allowance.input_tokens, allowance.max_output_tokens
-        else:
-            spent_in = _tokens(
-                allowance.input_tokens if input_tokens is None else input_tokens,
-                "input_tokens")
-            spent_out = _tokens(
-                allowance.max_output_tokens if output_tokens is None
-                else output_tokens, "output_tokens")
+        # Checking the state, releasing the reservation, recording usage and
+        # closing the allowance are one transaction. Otherwise two callers
+        # can both pass _check_open before either one marks it settled.
         with self._lock:
+            self._check_open(allowance, "settle")
+            if source not in _USAGE_SOURCES:
+                raise HarnessError(
+                    f"usage source must be one of {sorted(_USAGE_SOURCES)}; "
+                    f"got {source!r}")
+            if source == USAGE_UNAVAILABLE:
+                spent_in = allowance.input_tokens
+                spent_out = allowance.max_output_tokens
+            else:
+                spent_in = _tokens(
+                    allowance.input_tokens if input_tokens is None
+                    else input_tokens, "input_tokens")
+                spent_out = _tokens(
+                    allowance.max_output_tokens if output_tokens is None
+                    else output_tokens, "output_tokens")
             for budget in allowance.chain:
                 budget._release(allowance)
             for budget in allowance.chain:
                 budget._record(spent_in, spent_out, allowance.label, source,
                                allowance)
-        allowance.settled = True
+            allowance.settled = True
         return Usage(spent_in, spent_out, source)
 
     def cancel(self, allowance):
@@ -274,13 +278,12 @@ class TokenBudget:
         Distinct from settling with ``unavailable``: nothing was billed, and
         saying so is the point.
         """
-        self._check_open(allowance, "cancel")
         with self._lock:
+            self._check_open(allowance, "cancel")
             for budget in allowance.chain:
                 budget._release(allowance)
-        allowance.settled = True
-        allowance.cancelled = True
-        with self._lock:
+            allowance.settled = True
+            allowance.cancelled = True
             self._cancelled += 1
 
     def snapshot(self):

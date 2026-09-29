@@ -113,6 +113,7 @@ class ComposedCeilingTests(unittest.TestCase):
         from types import SimpleNamespace
         from unittest.mock import MagicMock, patch
         from harness.cli import _cmd_plan
+        from tests._fake import NativeJevPolicy
 
         opts = SimpleNamespace(
             goal="Refactor concurrency architecture",
@@ -146,6 +147,7 @@ class ComposedCeilingTests(unittest.TestCase):
             hourglass_isolate=False,
             hourglass_require_attestation=False,
             hourglass_decompose=False,
+            jev_api_key=None,
         )
 
         fake = FakeTransport(models=[
@@ -158,7 +160,8 @@ class ComposedCeilingTests(unittest.TestCase):
         mock_engine.api_key = "k"
 
         emitted = {}
-        with patch("harness.cli._session", return_value=mock_engine) as mock_session, \
+        with patch("harness.cli.policy_for", return_value=NativeJevPolicy()), \
+             patch("harness.cli._session", return_value=mock_engine) as mock_session, \
              patch("harness.cli._emit_by_status", side_effect=lambda r, o=None: emitted.update(r)):
             _cmd_plan(opts, settings)
 

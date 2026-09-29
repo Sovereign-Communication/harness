@@ -22,6 +22,7 @@ Exit codes: 0 success, 1 fatal refusal/error, 2 verification failed,
 3 deferred (capability/consent) -- safe to continue.
 """
 import functools
+import copy
 import json
 import os
 import tempfile
@@ -40,6 +41,7 @@ from .filesafety import VERIFY_TIMEOUT, validate_target_file, validate_verify_co
 from .gate_runner import (GATES, GATE_ORDER, STAGE_GATE_TIMEOUT, gate_help,
                           run_gate)
 from . import osal
+from . import events as _events
 from .output import eprint
 from .session import (apply_session as _session, governor_for as _governor,
                       jev_face_governor,
@@ -52,7 +54,9 @@ from .rankings import build_rankings_report as _rankings_report
 from .route_pack import validate_route_pack
 from .site_export import export_bundle as _site_export_bundle
 from .site_export import write_bundle as _site_export_write
-from .waist import compose_arguments
+from .waist import (STAGE_CONTEXT, STAGE_EXECUTION, STAGE_PLANNING,
+                    compose_arguments,
+                    refuse_unbudgeted_execution, runtime_stage_budget)
 from .waist import compose_plan as _compose_plan
 from .jev import jev_cost
 from .jev_policy import JEV_MAX_INPUT_TOKENS, aggregate_structural, policy_for
@@ -76,6 +80,8 @@ from .mission_driver import run_mission as _mission_run
 from .capability import capabilities_payload as _capability_payload_owner
 from .brief import build_brief, validate_brief
 from .dag import TaskDAG, node_apply_kwargs
+from .token_budget import TokenBudget, budget_from_settings
+from .orchestrator import drive
 from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
 from .pyramid_state import (
     dag_for_pending, load_state, node_routes_for_pending, persist_state)
@@ -960,7 +966,8 @@ def _capabilities_payload(settings, gov, api_key=None, refresh=False,
 def _plan_compose(settings, opts, gov, transport, api_key, *,
                   candidate_files, frontier_model, execute, confirm=None,
                   decompose_llm=None, plan_consensus=None, hourglass=None,
-                  allow_heuristic_preview=False):
+                  allow_heuristic_preview=False, composition_runtime=None,
+                  persisted_plan=None, token_budget=None):
     """Plan-lane flow via the ONE owner (harness/waist.py): heuristic or
     cheap-LLM decomposition, then (hourglass default: on) waist
     confirmation."""
@@ -976,6 +983,13 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
     jev_policy = (policy_for(settings, transport=transport,
                              governor=gov, ledger=plan_ledger)
                   if hasattr(settings, "jev_api_key") else None)
+    if composition_runtime is not None:
+        composition_runtime["jev_policy"] = jev_policy
+    compose_args = compose_arguments(
+        settings, goal=(persisted_plan or {}).get("goal") or opts.goal,
+        files=candidate_files, token_budget=token_budget)
+    if persisted_plan is not None:
+        compose_args["supplied_plan"] = True
     return _compose_plan(
         transport=transport, api_key=api_key, governor=gov,
         ledger=plan_ledger if (confirm or plan_consensus) else None,
@@ -995,13 +1009,15 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
         # default stays fail-closed for a plan-only preview whose LLM
         # decomposition fails.
         allow_heuristic_preview=allow_heuristic_preview,
+        composition_runtime=composition_runtime,
+        persisted_plan=persisted_plan,
+        require_context_intake=True,
         # HV-4/HV-2-use: everything a lane must hand the ONE composer, taken
         # from the owner of that decision rather than assembled here -- the
         # run's allowance, the operator's stage subset, and the intake brief
         # the `context` stage produces. Attaching composition is evidence;
         # it is not a second budget and it refuses no run by itself.
-        **compose_arguments(settings, goal=opts.goal,
-                            files=candidate_files))
+        **compose_args)
 
 
 def _resolve_hourglass(opts, settings):
@@ -1009,6 +1025,28 @@ def _resolve_hourglass(opts, settings):
     config.resolve_hourglass): an explicit flag wins, otherwise the
     settings-file default (auto-scaling hourglass: all on)."""
     return resolve_hourglass(settings, opts)
+
+
+def _plan_composition_inputs(settings, opts, token_budget=None):
+    """Resolve per-request narrowing through the shared settings/budget owners."""
+    if token_budget is None:
+        token_budget = budget_from_settings(settings)
+    max_input = getattr(opts, "max_input_tokens", None)
+    max_output = getattr(opts, "max_output_tokens", None)
+    if max_input is not None or max_output is not None:
+        token_budget = token_budget.stage(
+            "request-cap",
+            max_input_tokens=min(token_budget.max_input_tokens,
+                                 max_input if max_input is not None else
+                                 token_budget.max_input_tokens),
+            max_output_tokens=min(token_budget.max_output_tokens,
+                                  max_output if max_output is not None else
+                                  token_budget.max_output_tokens))
+    selected = getattr(opts, "hourglass_stages", None)
+    if selected is not None:
+        settings = copy.copy(settings)
+        settings.hourglass_stages = list(selected)
+    return settings, token_budget
 
 
 def _cmd_plan(opts, settings):
@@ -1048,14 +1086,63 @@ def _cmd_plan(opts, settings):
     pending_state = None
     if resume_path:
         pending_state = load_state(resume_path, allow_missing=True)
+    resume_token_budget = None
+    legacy_token_budget = False
+    if pending_state is not None:
+        saved_budget = pending_state.get("token_budget")
+        if isinstance(saved_budget, dict):
+            try:
+                resume_token_budget = TokenBudget(
+                    "resume",
+                    max_input_tokens=saved_budget["remaining_input_tokens"],
+                    max_output_tokens=saved_budget["remaining_output_tokens"])
+            except (KeyError, TypeError, ValueError, HarnessError) as exc:
+                raise HarnessError(
+                    "pyramid state has invalid token-budget evidence; refusing to resume: "
+                    f"{exc}") from exc
+        else:
+            # Pre-HV-5 states did not persist token usage. Keep them resumable
+            # under current settings, but mark the reset in the envelope so
+            # they cannot be mistaken for a continuous token-metered run.
+            resume_token_budget = budget_from_settings(
+                settings, label="resume-legacy")
+            legacy_token_budget = True
+        prior_spend = float(pending_state.get("spent") or 0.0)
+        if gov is not None and prior_spend:
+            # Pyramid state owns cumulative spend across process restarts. Put
+            # it back into the governor before any resumed planning or write.
+            gov.record_actual(prior_spend, "pyramid-resume")
 
+    composition_settings, resume_token_budget = _plan_composition_inputs(
+        settings, opts, resume_token_budget)
+    persisted_plan = None
+    if pending_state is not None:
+        pending_dag = dag_for_pending(pending_state)
+        pending_routes = node_routes_for_pending(pending_state)
+        candidate_files = sorted({
+            target for node in pending_dag.nodes.values()
+            for target in node.target_files
+        })
+        persisted_plan = {
+            "status": "planned",
+            "goal": pending_state.get("goal") or opts.goal,
+            "dag": pending_dag.to_dict(),
+            "nodes": list(pending_routes.values()),
+            **({"token_budget_reset": "legacy_state_missing_snapshot"}
+               if legacy_token_budget else {}),
+        }
+
+    composition_runtime = {}
     plan_result = _plan_compose(
-        settings, opts, gov, transport, api_key,
+        composition_settings, opts, gov, transport, api_key,
         candidate_files=candidate_files, frontier_model=frontier_model,
         execute=execute, confirm=confirm, decompose_llm=decompose_llm,
         plan_consensus=plan_consensus, hourglass=hourglass,
         allow_heuristic_preview=bool(
-            getattr(opts, "allow_heuristic_preview", False)))
+            getattr(opts, "allow_heuristic_preview", False)),
+        composition_runtime=composition_runtime,
+        persisted_plan=persisted_plan,
+        token_budget=resume_token_budget)
     if plan_result.get("status") == "refused":
         # The waist refused (or the composed ceiling / unreachable waist
         # fail-closed fired); execution must not start (exit code 2).
@@ -1101,6 +1188,15 @@ def _cmd_plan(opts, settings):
         dag = TaskDAG.from_dict(plan_result["dag"])
         node_routes = {n.get("node_id"): n for n in plan_result["nodes"]}
 
+    # A fully completed resume is read-only and needs no execution allowance.
+    # Every path that may dispatch work must carry the live child captured by
+    # the one composition that planned this run.
+    execution_budget = runtime_stage_budget(
+        composition_runtime, STAGE_EXECUTION)
+    if dag.nodes and execution_budget is None:
+        _emit_by_status(refuse_unbudgeted_execution(plan_result), opts.out)
+        return
+
     def on_stage_done(executable_nodes, _results):
         # Optional full-suite stage gate (MR-5): the composed tree must be
         # green before dependent stages start; failure aborts the run.
@@ -1130,13 +1226,13 @@ def _cmd_plan(opts, settings):
             explicit_task_max_cost=getattr(opts, "task_max_cost", None)),
         base_apply_kwargs={
             "allow_verify": True,
-            "require_consent": False,
+            "require_consent": True,
             "model": getattr(opts, "model", None),
             "max_tokens": getattr(opts, "max_tokens", None),
             "task_max_cost": getattr(opts, "task_max_cost", None),
             "allow_escalation": getattr(opts, "allow_escalation", False),
             "reasoning_effort": getattr(opts, "reasoning_effort", None),
-            "renew_consent": False,
+            "renew_consent": True,
             "max_rotations": getattr(opts, "max_rotations", 3),
         },
         task_max_cost=getattr(opts, "task_max_cost", None),
@@ -1144,40 +1240,163 @@ def _cmd_plan(opts, settings):
         # this command resolved), so a node reservation is bounded by it
         # instead of by an unrelated nominal default.
         run_ceiling=getattr(gov, "max_cost", None),
+        token_budget=execution_budget,
+        jev_policy=composition_runtime.get("jev_policy"),
+        consent_context=composition_runtime.get("retained_brief"),
         on_stage_done=on_stage_done,
         final_gate=getattr(opts, "final_gate", None),
         run_gate=discovered_gate)
-    all_results = plan_exec.execute(dag)
-    summary = PlanExecutor.summarize(all_results)
+    initial_results = plan_exec.execute(dag)
+    initial_results_pending = [initial_results]
+
+    def execute_alignment_plan(current_plan):
+        if initial_results_pending:
+            return initial_results_pending.pop(0)
+        current_dag = TaskDAG.from_dict(current_plan["dag"])
+        current_routes = {n.get("node_id"): n
+                          for n in current_plan.get("nodes") or ()}
+        current_budget = runtime_stage_budget(
+            composition_runtime, STAGE_EXECUTION)
+        if current_dag.nodes and current_budget is None:
+            return {node_id: {
+                "status": "not_dispatched", "node_id": node_id,
+                "reason": "execution stage has no composed TokenBudget allowance",
+            } for node_id in current_dag.nodes}
+        current_run_gate = next((n.get("local_gate")
+                                 for n in current_plan.get("nodes") or ()
+                                 if isinstance(n, dict) and n.get("local_gate")),
+                                None)
+        current_executor = PlanExecutor(
+            engine, current_routes,
+            parallel=hourglass["parallel"], isolate=hourglass["isolate"],
+            max_workers=getattr(opts, "max_workers", DEFAULT_PLAN_WORKERS),
+            keep_going=getattr(opts, "keep_going", False),
+            require_diff_authorization=hourglass["require_diff_authorization"],
+            route_kwargs_fn=functools.partial(
+                node_apply_kwargs,
+                explicit_model=getattr(opts, "model", None),
+                explicit_task_max_cost=getattr(opts, "task_max_cost", None)),
+            base_apply_kwargs={
+                "allow_verify": True,
+                "require_consent": True,
+                "model": getattr(opts, "model", None),
+                "max_tokens": getattr(opts, "max_tokens", None),
+                "task_max_cost": getattr(opts, "task_max_cost", None),
+                "allow_escalation": getattr(opts, "allow_escalation", False),
+                "reasoning_effort": getattr(opts, "reasoning_effort", None),
+                "renew_consent": True,
+                "max_rotations": getattr(opts, "max_rotations", 3),
+            },
+            task_max_cost=getattr(opts, "task_max_cost", None),
+            run_ceiling=getattr(gov, "max_cost", None),
+            token_budget=current_budget,
+            jev_policy=composition_runtime.get("jev_policy"),
+            consent_context=composition_runtime.get("retained_brief"),
+            on_stage_done=on_stage_done,
+            final_gate=getattr(opts, "final_gate", None),
+            run_gate=current_run_gate)
+        return current_executor.execute(current_dag)
+
+    def replan_alignment(next_goal, request):
+        declared = set((composition_runtime.get("composition") or {}).get(
+            "declared") or ())
+        if request.get("target") == STAGE_CONTEXT and STAGE_CONTEXT not in declared:
+            return {"status": "refused",
+                    "reason": "context stage is not selected for this run"}
+        amended_opts = copy.copy(opts)
+        amended_opts.goal = next_goal
+        return _plan_compose(
+            composition_settings, amended_opts, gov, transport, api_key,
+            candidate_files=candidate_files, frontier_model=frontier_model,
+            execute=True, confirm=confirm, decompose_llm=decompose_llm,
+            plan_consensus=plan_consensus, hourglass=hourglass,
+            allow_heuristic_preview=bool(
+                getattr(opts, "allow_heuristic_preview", False)),
+            composition_runtime=composition_runtime,
+            token_budget=resume_token_budget)
+
+    initial_composition = plan_result.get("composition") or {}
+    completed_stages = list(initial_composition.get("completed") or [])
+    completed_stages.extend(
+        entry.get("stage") for entry in initial_composition.get("stages") or ()
+        if isinstance(entry, dict) and entry.get("state") == "completed")
+    alignment_run = drive(
+        goal=plan_result.get("goal") or opts.goal,
+        target_files=candidate_files, initial_plan=plan_result,
+        root_dir=os.getcwd(),
+        plan_round=lambda _goal: {"status": "refused",
+                                  "reason": "only validated final-alignment restarts may add work"},
+        execute_plan=execute_alignment_plan,
+        completion_chat=lambda _prompt: "",
+        emit=_events.emit,
+        jev_policy=composition_runtime.get("jev_policy"),
+        retained_brief=lambda: composition_runtime.get("retained_brief"),
+        completed_stages=list(dict.fromkeys(completed_stages)),
+        jev_token_budget=composition_runtime.get("run_budget"),
+        jev_stage_token_budget=lambda stage: runtime_stage_budget(
+            composition_runtime, stage),
+        plan_amendment=replan_alignment,
+        alignment_only=True)
+    all_results = alignment_run["all_results"]
+    last_results = alignment_run["last_round_results"]
+    plan_result = alignment_run["plan"]
 
     # HG-pyramid-resume: persist after every execute so a later --resume can
     # skip completed ok nodes.
     if resume_path or getattr(opts, "persist_state", None):
         state_path = resume_path or getattr(opts, "persist_state", None)
         merged = dict((pending_state or {}).get("node_results") or {})
-        for key, res in all_results.items():
+        for key, res in last_results.items():
             if key == "final_gate":
                 continue
-            merged[key] = res
+            merged[(res.get("node_id") if isinstance(res, dict) else None)
+                   or key] = res
         persist_state(
             state_path,
             goal=plan_result.get("goal") or opts.goal,
-            dag=(pending_state or {}).get("dag") or plan_result.get("dag"),
+            dag=plan_result.get("dag"),
             node_results=merged,
-            spent=float(summary.get("total_cost") or 0.0)
+            spent=float(alignment_run.get("total_cost") or 0.0)
             + float((pending_state or {}).get("spent") or 0.0),
-            plan_nodes=plan_result.get("nodes"))
+            plan_nodes=plan_result.get("nodes"),
+            token_budget=(composition_runtime.get("run_budget").snapshot()
+                          if composition_runtime.get("run_budget") is not None
+                          else (pending_state or {}).get("token_budget")))
 
     output = {
-        "status": "ok" if summary["all_ok"] else "failed",
-        "goal": opts.goal,
-        "total_nodes": len(dag.nodes),
-        "completed_nodes": summary["completed"],
-        "results": [r for key, r in all_results.items() if key != "final_gate"],
-        "cost": summary["total_cost"],
+        "status": "ok" if alignment_run["final_all_ok"] else "failed",
+        "goal": plan_result.get("goal") or opts.goal,
+        "total_nodes": len({r.get("node_id") for r in all_results.values()
+                             if isinstance(r, dict) and r.get("node_id")
+                             and r.get("node_id") != "final_gate"}),
+        "completed_nodes": len({r.get("node_id") for r in all_results.values()
+                                 if isinstance(r, dict)
+                                 and r.get("status") in {"ok", "changed", "completed"}
+                                 and r.get("node_id") != "final_gate"}),
+        "results": [r for key, r in all_results.items()
+                    if not key.endswith("/final_gate") and key != "final_gate"],
+        "cost": (float(alignment_run.get("total_cost") or 0.0)
+                 + float((pending_state or {}).get("spent") or 0.0)),
         "composed_worst_case": plan_result.get("composed_worst_case"),
-        "final_gate": summary.get("final_gate"),
+        "final_gate": last_results.get("final_gate"),
+        "rounds_history": alignment_run.get("rounds_history"),
+        "remaining_scope": alignment_run.get("remaining_scope"),
+        "final_alignment": alignment_run.get("final_alignment"),
     }
+    composition = plan_result.get("composition")
+    if isinstance(composition, dict):
+        composition = dict(composition)
+        stage_rows = []
+        for entry in composition.get("stages", []):
+            row = dict(entry)
+            if row.get("stage") == STAGE_EXECUTION and alignment_run["final_all_ok"]:
+                row["state"] = "completed"
+            stage_rows.append(row)
+        composition["stages"] = stage_rows
+        output["composition"] = composition
+    run_budget = composition_runtime.get("run_budget")
+    if run_budget is not None:
+        output["token_budget"] = run_budget.snapshot()
     if pending_state is not None:
         output["resumed"] = True
         output["skipped_completed"] = sorted(

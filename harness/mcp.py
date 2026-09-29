@@ -6,12 +6,14 @@ harness/mcp_schemas.py as pure data, and the lane-scheduling policy
 (which serial worker runs each tool) lives in harness/mcp_lanes.py.
 """
 import json
+import copy
 import math
 import sys
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from . import __version__
 from . import events as _events
@@ -22,7 +24,8 @@ from .continuation import validate_continuation
 from .config import (freeze_jev_settings, load_settings, resolve_hourglass,
                      validate_jev_model_id)
 from .dag import TaskDAG
-from .waist import compose_arguments
+from .waist import (STAGE_EXECUTION, STAGE_ORDER, compose_arguments,
+                    refuse_unbudgeted_execution, runtime_stage_budget)
 from .waist import compose_plan
 from .errors import HarnessError, ToolCancelled
 from . import osal
@@ -31,6 +34,8 @@ from .mcp_lanes import LANES, lane_for
 from .mcp_schemas import TOOL_SCHEMAS
 from .jev_completion import dogfood_phase, score_all_phases
 from .jev_policy import aggregate_structural, policy_for
+from .orchestrator import drive
+from .token_budget import budget_from_settings
 from .jev_packs import validate_log_pack, validate_operator_pack
 from .route_pack import validate_route_pack
 from .log_analysis import analyze_log
@@ -934,6 +939,25 @@ class McpServer:
             frontier_model = validate_mcp_model(args.get("frontier_model"), "frontier_model")
             raw_files = args.get("file")
             candidate_files = validate_mcp_files(raw_files) if raw_files is not None else []
+            selected_stages = args.get("hourglass_stages")
+            if selected_stages is not None:
+                if (not isinstance(selected_stages, list)
+                        or any(not isinstance(stage, str) for stage in selected_stages)):
+                    raise HarnessError("hourglass_stages must be an array of stage names")
+                if len(selected_stages) != len(set(selected_stages)):
+                    raise HarnessError("hourglass_stages must not contain duplicates")
+                unknown = [stage for stage in selected_stages
+                           if stage not in STAGE_ORDER]
+                if unknown:
+                    raise HarnessError("unknown Hourglass stage: " + ", ".join(unknown))
+            input_cap = args.get("max_input_tokens")
+            output_cap = args.get("max_output_tokens")
+            for cap_name, cap_value in (("max_input_tokens", input_cap),
+                                        ("max_output_tokens", output_cap)):
+                if cap_value is not None and (
+                        isinstance(cap_value, bool)
+                        or not isinstance(cap_value, int) or cap_value < 0):
+                    raise HarnessError(f"{cap_name} must be a non-negative integer")
 
             if execute and not (self.allow_write or allow_write):
                 self._refuse(
@@ -961,10 +985,25 @@ class McpServer:
             # the next plan on the same connection. When no settings seam was
             # supplied the lane behaves exactly as before rather than
             # inventing an allowance, which composition refuses to do.
-            composition = (
-                compose_arguments(self.settings, goal=goal,
-                                  files=candidate_files)
-                if self.settings is not None else {})
+            composition = {}
+            if self.settings is not None:
+                composition_settings = copy.copy(self.settings)
+                if selected_stages is not None:
+                    composition_settings.hourglass_stages = list(selected_stages)
+                run_budget = budget_from_settings(composition_settings)
+                if input_cap is not None or output_cap is not None:
+                    run_budget = run_budget.stage(
+                        "request-cap",
+                        max_input_tokens=min(run_budget.max_input_tokens,
+                                             input_cap if input_cap is not None
+                                             else run_budget.max_input_tokens),
+                        max_output_tokens=min(run_budget.max_output_tokens,
+                                              output_cap if output_cap is not None
+                                              else run_budget.max_output_tokens))
+                composition = compose_arguments(
+                    composition_settings, goal=goal, files=candidate_files,
+                    token_budget=run_budget)
+            composition_runtime = {}
             plan_result = compose_plan(
                 transport=self.transport, api_key=self.api_key,
                 governor=self.governor, ledger=self.ledger, opts_goal=goal,
@@ -973,7 +1012,9 @@ class McpServer:
                 confirm=confirm, execute=execute,
                 allow_escalation=allow_escalation,
                 plan_consensus=plan_consensus,
-                jev_policy=jev_policy, **composition)
+                jev_policy=jev_policy,
+                require_context_intake=True,
+                composition_runtime=composition_runtime, **composition)
             if plan_result.get("status") == "refused":
                 # Waist refusal / composed-ceiling / unreachable-waist is
                 # terminal evidence: the plan never executes.
@@ -983,6 +1024,11 @@ class McpServer:
                     plan_result["structural"] = dict(plan_result["structural"])
                     plan_result["structural"]["site"] = "mcp"
                 return plan_result
+
+            execution_budget = runtime_stage_budget(
+                composition_runtime, STAGE_EXECUTION)
+            if execution_budget is None:
+                return refuse_unbudgeted_execution(plan_result)
 
             dag = TaskDAG.from_dict(plan_result["dag"])
             node_routes = {n.get("node_id"): n for n in plan_result["nodes"]}
@@ -1004,27 +1050,150 @@ class McpServer:
                 require_diff_authorization=require_auth,
                 base_apply_kwargs={
                     "allow_verify": self.allow_verify,
-                    "require_consent": False,
+                    "require_consent": True,
+                    "renew_consent": True,
                 },
                 # This server's real budget, so a node reservation can never
                 # be bounded by an unrelated nominal default instead.
                 run_ceiling=self.governor.max_cost,
+                token_budget=execution_budget,
+                jev_policy=jev_policy,
+                consent_context=composition_runtime.get("retained_brief"),
                 final_gate=final_gate,
                 run_gate=run_gate)
-            all_results = plan_exec.execute(dag)
-            summary = PlanExecutor.summarize(all_results)
+            initial_results = plan_exec.execute(dag)
+            initial_results_pending = [initial_results]
+
+            def execute_alignment_plan(current_plan):
+                if initial_results_pending:
+                    return initial_results_pending.pop(0)
+                current_dag = TaskDAG.from_dict(current_plan["dag"])
+                current_routes = {n.get("node_id"): n
+                                  for n in current_plan.get("nodes") or ()}
+                current_budget = runtime_stage_budget(
+                    composition_runtime, STAGE_EXECUTION)
+                if current_dag.nodes and current_budget is None:
+                    return {node_id: {
+                        "status": "not_dispatched", "node_id": node_id,
+                        "reason": ("execution stage has no composed "
+                                   "TokenBudget allowance"),
+                    } for node_id in current_dag.nodes}
+                current_run_gate = next((n.get("local_gate")
+                                         for n in current_plan.get("nodes") or ()
+                                         if isinstance(n, dict)
+                                         and n.get("local_gate")), None)
+                current_executor = PlanExecutor(
+                    self.engine, current_routes,
+                    parallel=parallel, isolate=self.hourglass["isolate"],
+                    max_workers=max_workers,
+                    require_diff_authorization=require_auth,
+                    base_apply_kwargs={
+                        "allow_verify": self.allow_verify,
+                        "require_consent": True,
+                        "renew_consent": True,
+                    },
+                    run_ceiling=self.governor.max_cost,
+                    token_budget=current_budget,
+                    jev_policy=jev_policy,
+                    consent_context=composition_runtime.get("retained_brief"),
+                    final_gate=final_gate,
+                    run_gate=current_run_gate)
+                return current_executor.execute(current_dag)
+
+            def replan_alignment(next_goal, request):
+                declared = set((composition_runtime.get("composition") or {}).get(
+                    "declared") or ())
+                if (request.get("target") == STAGE_CONTEXT
+                        and STAGE_CONTEXT not in declared):
+                    return {"status": "refused",
+                            "reason": "context stage is not selected for this run"}
+                if self.settings is None:
+                    return {"status": "refused",
+                            "reason": "MCP settings are unavailable for a bounded amendment"}
+                amended_composition = copy.copy(self.settings)
+                if selected_stages is not None:
+                    amended_composition.hourglass_stages = list(selected_stages)
+                amended_inputs = compose_arguments(
+                    amended_composition, goal=next_goal,
+                    files=candidate_files,
+                    token_budget=composition.get("token_budget"))
+                return compose_plan(
+                    transport=self.transport, api_key=self.api_key,
+                    governor=self.governor, ledger=self.ledger,
+                    opts_goal=next_goal, candidate_files=candidate_files,
+                    frontier_model=frontier_model,
+                    use_free=self.use_free, decompose_llm=decompose_llm,
+                    confirm=confirm, execute=True,
+                    allow_escalation=allow_escalation,
+                    plan_consensus=plan_consensus, jev_policy=jev_policy,
+                    require_context_intake=True,
+                    composition_runtime=composition_runtime,
+                    **amended_inputs)
+
+            initial_composition = plan_result.get("composition") or {}
+            completed_stages = list(initial_composition.get("completed") or [])
+            completed_stages.extend(
+                entry.get("stage")
+                for entry in initial_composition.get("stages") or ()
+                if isinstance(entry, dict) and entry.get("state") == "completed")
+            alignment_run = drive(
+                goal=goal, target_files=candidate_files,
+                initial_plan=plan_result, root_dir=Path.cwd(),
+                plan_round=lambda _goal: {"status": "refused",
+                                          "reason": ("only validated final-alignment "
+                                                     "restarts may add work")},
+                execute_plan=execute_alignment_plan,
+                completion_chat=lambda _prompt: "",
+                emit=_events.emit,
+                jev_policy=jev_policy,
+                retained_brief=lambda: composition_runtime.get("retained_brief"),
+                completed_stages=list(dict.fromkeys(completed_stages)),
+                jev_token_budget=composition_runtime.get("run_budget"),
+                jev_stage_token_budget=lambda stage: runtime_stage_budget(
+                    composition_runtime, stage),
+                plan_amendment=replan_alignment,
+                alignment_only=True)
+            all_results = alignment_run["all_results"]
+            last_results = alignment_run["last_round_results"]
+            plan_result = alignment_run["plan"]
             output = {
-                "status": "ok" if summary["all_ok"] else "failed",
+                "status": "ok" if alignment_run["final_all_ok"] else "failed",
                 "goal": goal,
-                "total_nodes": len(dag.nodes),
-                "completed_nodes": summary["completed"],
+                "total_nodes": len({r.get("node_id") for r in all_results.values()
+                                     if isinstance(r, dict) and r.get("node_id")
+                                     and r.get("node_id") != "final_gate"}),
+                "completed_nodes": len({r.get("node_id") for r in all_results.values()
+                                         if isinstance(r, dict)
+                                         and r.get("status") in {"ok", "changed", "completed"}
+                                         and r.get("node_id") != "final_gate"}),
                 "results": [r for key, r in all_results.items()
-                            if key != "final_gate"],
-                "cost": summary["total_cost"],
+                            if not key.endswith("/final_gate")
+                            and key != "final_gate"],
+                "cost": alignment_run.get("total_cost"),
                 "dag": plan_result["dag"],
                 "composed_worst_case": plan_result.get("composed_worst_case"),
-                "final_gate": summary.get("final_gate"),
+                "final_gate": last_results.get("final_gate"),
+                "rounds_history": alignment_run.get("rounds_history"),
+                "remaining_scope": alignment_run.get("remaining_scope"),
+                "final_alignment": alignment_run.get("final_alignment"),
             }
+            result_composition = plan_result.get("composition")
+            if isinstance(result_composition, dict):
+                result_composition = dict(result_composition)
+                stage_rows = []
+                for entry in result_composition.get("stages", []):
+                    row = dict(entry)
+                    if (row.get("stage") == STAGE_EXECUTION
+                            and alignment_run["final_all_ok"]):
+                        row["state"] = "completed"
+                    stage_rows.append(row)
+                result_composition["stages"] = stage_rows
+                output["composition"] = result_composition
+            run_budget = composition_runtime.get("run_budget")
+            if run_budget is not None:
+                output["token_budget"] = run_budget.snapshot()
+            if isinstance(plan_result.get("context_intake"), dict):
+                output["context_intake"] = dict(plan_result["context_intake"])
             structural = aggregate_structural(
                 list(all_results.values()), site="mcp")
             if structural is None and isinstance(plan_result.get("structural"), dict):

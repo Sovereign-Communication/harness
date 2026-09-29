@@ -18,6 +18,7 @@ from .errors import HarnessError
 from .output import eprint
 from .sliding_scale import (decide_probe_verify_escalate, model_family,
                             should_abstain)
+from .token_budget import TokenBudget
 
 
 def _annotate_escalation(result, *, from_model, to_model, rungs) -> None:
@@ -322,10 +323,17 @@ class EscalationDriver:
                 eprint(f"[escalation] rung {rung} refused by spend governor: {exc}")
                 break
 
-            status, resp = chat(self.transport, self.api_key, model,
-                                [{"role": "user", "content": prompt}],
-                                self.max_tokens, self.reasoning_effort,
-                                self.reasoning_token_budget, self.governor)
+            token_budget = getattr(req, "token_budget", None)
+            if not isinstance(token_budget, TokenBudget):
+                token_budget = None
+            token_kwargs = ({"token_budget": token_budget,
+                             "token_label": "escalation"}
+                            if token_budget is not None else {})
+            status, resp = chat(
+                self.transport, self.api_key, model,
+                [{"role": "user", "content": prompt}], self.max_tokens,
+                self.reasoning_effort, self.reasoning_token_budget,
+                self.governor, **token_kwargs)
 
             if status != 200:
                 error_cost = 0.0

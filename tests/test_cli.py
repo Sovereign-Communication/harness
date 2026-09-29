@@ -12,6 +12,23 @@ from harness.errors import HarnessError
 from harness.router import Router
 
 
+class PlanInputSurfaceHandlerTests(unittest.TestCase):
+    def test_explicit_caps_narrow_settings_budget_and_stage_selection(self):
+        from types import SimpleNamespace
+
+        settings = SimpleNamespace(token_budget_input=5000,
+                                   token_budget_output=500,
+                                   hourglass_stages=["context", "planning"])
+        opts = SimpleNamespace(hourglass_stages=["execution"],
+                               max_input_tokens=1200,
+                               max_output_tokens=100)
+        scoped_settings, budget = cli._plan_composition_inputs(settings, opts)
+        self.assertEqual(scoped_settings.hourglass_stages, ["execution"])
+        self.assertEqual(settings.hourglass_stages, ["context", "planning"])
+        self.assertEqual((budget.max_input_tokens, budget.max_output_tokens),
+                         (1200, 100))
+
+
 class PanelWiringTests(unittest.TestCase):
     def test_verify_panel_flag_reaches_run_verify(self):
         """DF-CLI-2: ``harness verify --panel`` was declared in cli_parser.py
@@ -235,6 +252,112 @@ class PlanCompositionWiringTests(unittest.TestCase):
                          DEFAULT_RUN_INPUT_TOKENS)
         self.assertEqual(captured["stages"], list(HOURGLASS_DEFAULT_STAGES))
 
+    def test_execute_passes_the_live_execution_child_to_executor(self):
+        from types import SimpleNamespace
+
+        from harness.token_budget import TokenBudget
+        from harness.waist import STAGE_EXECUTION, compose_stages, stage_budget
+
+        run_budget = TokenBudget("run")
+        composition = compose_stages(
+            budget=run_budget, declared=[STAGE_EXECUTION])
+        execution_budget = stage_budget(composition, STAGE_EXECUTION)
+        retained_brief = {"goal": "g", "evidence": ["source"]}
+        jev_policy = object()
+
+        def fake_plan_compose(_settings, _opts, _gov, _transport, _api_key,
+                              **kwargs):
+            runtime = kwargs["composition_runtime"]
+            runtime["composition"] = composition
+            runtime["run_budget"] = run_budget
+            runtime["retained_brief"] = retained_brief
+            runtime["jev_policy"] = jev_policy
+            return {"status": "planned", "goal": "g", "dag": {"nodes": []},
+                    "nodes": [], "total_nodes": 0}
+
+        opts = SimpleNamespace(
+            goal="g", file=None, frontier_model=None, execute=True,
+            plan_consensus=False, resume=None, task_max_cost=None,
+            max_cost=None, allow_heuristic_preview=False, out=None,
+            stage_gate=None, max_workers=1, keep_going=False, model=None,
+            max_tokens=None, allow_escalation=False, reasoning_effort=None,
+            max_rotations=1, final_gate=None, persist_state=None)
+        settings = SimpleNamespace(frontier_model=None, use_free=True,
+                                   allow_escalation=False)
+        engine = SimpleNamespace(
+            governor=SimpleNamespace(max_cost=1.0), transport=object(),
+            api_key="test")
+        fake_results = {"node": {"status": "ok", "cost": 0.0}}
+        alignment = {"native": True, "supported": 0.5, "aligned": False,
+                     "threshold": 0.99}
+        driven = {
+            "all_results": {"r1/node": {"status": "ok", "cost": 0.0,
+                                         "node_id": "node"}},
+            "last_round_results": fake_results,
+            "total_cost": 0.0, "rounds_history": [],
+            "final_all_ok": False, "remaining_scope": "unaligned",
+            "final_alignment": alignment, "plan": {
+                "status": "planned", "goal": "g", "dag": {"nodes": []},
+                "nodes": [], "total_nodes": 0,
+                "composition": {"stages": []},
+            },
+        }
+        with mock.patch.object(cli, "_resolve_hourglass", return_value={
+                "confirm": False, "decompose": False, "parallel": False,
+                "isolate": False, "require_diff_authorization": False}), \
+             mock.patch.object(cli, "_session", return_value=engine), \
+             mock.patch.object(cli, "_plan_compose",
+                               side_effect=fake_plan_compose), \
+             mock.patch.object(cli.TaskDAG, "from_dict",
+                               return_value=SimpleNamespace(nodes=[])), \
+             mock.patch.object(cli, "PlanExecutor") as executor, \
+             mock.patch.object(cli, "aggregate_structural", return_value=None), \
+             mock.patch.object(cli, "drive", return_value=driven) as drive_run, \
+             mock.patch.object(cli, "_emit_by_status") as emit:
+            executor.return_value.execute.return_value = fake_results
+            cli._cmd_plan(opts, settings)
+
+        self.assertIs(executor.call_args.kwargs["token_budget"], execution_budget)
+        self.assertTrue(drive_run.call_args.kwargs["alignment_only"])
+        self.assertEqual(drive_run.call_args.kwargs["goal"], "g")
+        self.assertEqual(drive_run.call_args.kwargs["retained_brief"](),
+                         retained_brief)
+        self.assertIs(drive_run.call_args.kwargs["jev_policy"], jev_policy)
+        self.assertIs(drive_run.call_args.kwargs["jev_token_budget"], run_budget)
+        result = emit.call_args.args[0]
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["final_alignment"]["supported"], 0.5)
+
+
+class PlanRefusalExecutionGuardTests(unittest.TestCase):
+    def test_composed_refusal_never_constructs_executor(self):
+        """A composed evidence request is terminal even for --execute."""
+        from types import SimpleNamespace
+
+        refusal = {
+            "status": "refused",
+            "reason": "planning requested evidence",
+            "planning": {"outcome": "evidence_request"},
+        }
+        opts = SimpleNamespace(
+            goal="Plan a risky change", execute=True, file=None,
+            frontier_model=None, plan_consensus=False, resume=None,
+            task_max_cost=None, max_cost=None, allow_heuristic_preview=False,
+            out=None)
+        settings = SimpleNamespace(frontier_model=None)
+        engine = SimpleNamespace(governor=object(), transport=object(),
+                                 api_key="test")
+        with mock.patch.object(cli, "_resolve_hourglass", return_value={
+                "confirm": False, "decompose": True}), \
+             mock.patch.object(cli, "_session", return_value=engine), \
+             mock.patch.object(cli, "_plan_compose", return_value=refusal), \
+             mock.patch.object(cli, "PlanExecutor") as executor, \
+             mock.patch.object(cli, "_emit_by_status") as emit:
+            cli._cmd_plan(opts, settings)
+
+        executor.assert_not_called()
+        emit.assert_called_once_with(refusal, None)
+
 
 class MaxCostWiringTests(unittest.TestCase):
     def test_verify_max_cost_reaches_governor(self):
@@ -424,7 +547,8 @@ class EngineKeyWiringTests(unittest.TestCase):
                 settings.jev_api_key = None
                 return real_policy_for(settings, **kwargs)
 
-            with mock.patch.object(session, "governor_for", side_effect=fake_governor), \
+            with mock.patch.dict(os.environ, {"HARNESS_USE_FREE": "true"}), \
+                 mock.patch.object(session, "governor_for", side_effect=fake_governor), \
                  mock.patch.object(session, "HttpTransport", TransportStub), \
                  mock.patch.object(session, "ledger_for", return_value=led), \
                  mock.patch.object(session, "policy_for",

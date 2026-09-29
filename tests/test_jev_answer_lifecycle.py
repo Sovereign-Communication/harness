@@ -12,7 +12,8 @@ from harness.jev import JevEvaluationResult
 from harness.jev_policy import policy_for
 from harness.ledger import AutonomyLedger
 from harness.spend import SpendGovernor
-from tests._fake import FakeTransport
+from harness.token_budget import TokenBudget
+from tests._fake import FakeTransport, NativeJevPolicy
 
 
 class _AnswerTransport:
@@ -34,6 +35,53 @@ def _noul(value):
 
 
 class AnswerPolicyTests(unittest.TestCase):
+    def test_context_limit_can_be_raised_and_defaults_remain_compatible(self):
+        class _CaptureEvaluator:
+            api_key = "k"
+            model = "stub"
+
+            def __init__(self):
+                self.states = []
+
+            def evaluate(self, state, questions):
+                self.states.append(state)
+                return JevEvaluationResult(
+                    "pass", 0.9, 0.9,
+                    {"answer_sufficient": 0.9, "iteration_required": 0.1,
+                     "plan_required": 0.1}, ["ok"], model="stub")
+
+        settings = load_settings({"jev_api_key": "jev-key"})
+        evaluator = _CaptureEvaluator()
+        policy = policy_for(
+            settings, evaluator=evaluator,
+            governor=SpendGovernor(FakeTransport(), "sk-test", max_cost=0.50))
+        retained = "x" * 1900
+
+        policy.evaluate_answer("q", "a", retained,
+                               max_context_chars=2200)
+        policy.evaluate_answer("q", "a", retained)
+
+        self.assertEqual(evaluator.states[0]["retained_context"], retained)
+        self.assertEqual(len(evaluator.states[1]["retained_context"]), 1400)
+
+    def test_answer_call_settles_run_token_budget_without_open_allowance(self):
+        settings = load_settings({"jev_api_key": "jev-key"})
+        policy = policy_for(settings, transport=_AnswerTransport({
+            "answer_sufficient": _noul(0.9),
+            "iteration_required": _noul(0.1),
+            "plan_required": _noul(0.1),
+        }), governor=SpendGovernor(FakeTransport(), "sk-test", max_cost=0.50))
+        budget = TokenBudget("run", max_input_tokens=1200,
+                             max_output_tokens=50)
+
+        policy.evaluate_answer("q", "a", "c", max_input_tokens=600,
+                               token_budget=budget)
+
+        self.assertEqual(budget.open_allowances, 0)
+        self.assertEqual(budget.reserved(), 0)
+        self.assertEqual(budget.used_input(), 20)
+        self.assertEqual(budget.used_output(), 2)
+
     def test_keyed_answer_policy_exposes_native_signals_and_one_ledger_event(self):
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)
@@ -546,7 +594,9 @@ class HandleEditJevCompletionTests(unittest.TestCase):
             mock_engine.apply_edit.side_effect = fake_apply_edit
             test_gov = SpendGovernor(FakeTransport(), "sk-test", max_cost=1.0)
 
-            with patch("harness.agent.apply_session", return_value=mock_engine), \
+            with patch("harness.agent.policy_for",
+                       return_value=NativeJevPolicy()), \
+                 patch("harness.agent.apply_session", return_value=mock_engine), \
                  patch("harness.agent.governor_for",
                       return_value=(None, test_gov)), \
                  patch.object(AutonomousAgent, "_orchestrator_chat_fn",

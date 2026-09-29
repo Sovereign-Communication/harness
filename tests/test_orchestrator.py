@@ -68,6 +68,50 @@ class AssessCompletionTests(unittest.TestCase):
 
 
 class DriveTruthTests(unittest.TestCase):
+    def test_consent_block_stops_without_judge_or_replan(self):
+        plan = {"total_nodes": 1, "total_cost_ceiling": 0.0,
+                "nodes": [{"node_id": "n1", "instruction": "edit",
+                            "target_files": ["a.py"]}],
+                "dag": {"nodes": [{"node_id": "n1"}]}}
+
+        def unexpected(*args, **kwargs):
+            raise AssertionError("consent handoff must stop further dispatch")
+
+        driven = orch.drive(
+            goal="edit a.py", target_files=[], initial_plan=plan,
+            root_dir=".", plan_round=unexpected,
+            execute_plan=lambda current: {
+                "n1": {"status": "consent_blocked", "reason": "review needed"}},
+            completion_chat=unexpected, emit=lambda *args, **kwargs: None,
+            max_rounds=3)
+
+        self.assertFalse(driven["final_all_ok"])
+        self.assertIn("consent_blocked", driven["remaining_scope"])
+        self.assertIn("review needed", driven["remaining_scope"])
+        self.assertEqual(len(driven["rounds_history"]), 1)
+
+    def test_explicit_defer_stops_without_judge_or_replan(self):
+        plan = {"total_nodes": 1, "total_cost_ceiling": 0.0,
+                "nodes": [{"node_id": "n1", "instruction": "edit",
+                            "target_files": ["a.py"]}],
+                "dag": {"nodes": [{"node_id": "n1"}]}}
+
+        def unexpected(*args, **kwargs):
+            raise AssertionError("explicit defer must stop further dispatch")
+
+        driven = orch.drive(
+            goal="edit a.py", target_files=[], initial_plan=plan,
+            root_dir=".", plan_round=unexpected,
+            execute_plan=lambda current: {
+                "n1": {"status": "deferred", "remaining_scope": "operator handoff"}},
+            completion_chat=unexpected, emit=lambda *args, **kwargs: None,
+            max_rounds=3)
+
+        self.assertFalse(driven["final_all_ok"])
+        self.assertIn("deferred", driven["remaining_scope"])
+        self.assertIn("operator handoff", driven["remaining_scope"])
+        self.assertEqual(len(driven["rounds_history"]), 1)
+
     def test_failed_node_overrides_complete_judge(self):
         plan = {"total_nodes": 1, "total_cost_ceiling": 0.0,
                 "nodes": [{"node_id": "n1", "instruction": "edit",
@@ -142,6 +186,193 @@ class DriveTruthTests(unittest.TestCase):
             max_rounds=1)
 
         self.assertTrue(driven["final_all_ok"])
+
+    def test_final_alignment_preserves_full_brief_and_exact_request(self):
+        brief = {"text": "retained " + ("context " * 3000),
+                 "sources": [{"uri": "doc://source", "quote": "verbatim"}]}
+        captured = {}
+
+        class Policy:
+            def evaluate_answer(self, request, answer, context, **kwargs):
+                captured.update(request=request, answer=answer, context=context,
+                                kwargs=kwargs)
+                result = JevEvaluationResult(
+                    "pass", 1.0, 1.0,
+                    {"answer_sufficient": 1.0, "iteration_required": False,
+                     "plan_required": False}, [], is_fallback=False)
+                return result, {"native": True}
+
+        original = "  keep bytes exactly\n"
+        result, alignment = orch.assess_final_alignment(
+            goal=original, candidate={"facts": ["all"]},
+            retained_brief=brief, jev_policy=Policy())
+        self.assertEqual(captured["request"], original)
+        self.assertIn("doc://source", captured["context"])
+        self.assertIn("retained " + ("context " * 3000), captured["context"])
+        self.assertEqual(captured["kwargs"]["max_context_chars"],
+                         len(captured["context"]))
+        self.assertGreater(captured["kwargs"]["max_input_tokens"], 512)
+        self.assertTrue(alignment["aligned"])
+
+    def test_alignment_unavailable_and_below_threshold_block_completion(self):
+        plan = {"total_nodes": 1, "total_cost_ceiling": 0.0,
+                "nodes": [{"node_id": "n1", "instruction": "work"}],
+                "dag": {"nodes": [{"node_id": "n1"}]}}
+
+        class Policy:
+            def __init__(self, fallback, score):
+                self.fallback, self.score = fallback, score
+            def evaluate_completion_nouls(self, *args, **kwargs):
+                result = JevEvaluationResult(
+                    "pass", 1.0, 1.0, {"goal_achieved": 1.0}, [],
+                    is_fallback=False)
+                return result, {"cannot_complete": False}
+            def evaluate_answer(self, *args, **kwargs):
+                result = JevEvaluationResult(
+                    "pass", 1.0, self.score,
+                    {"answer_sufficient": self.score,
+                     "iteration_required": False, "plan_required": False}, [],
+                    is_fallback=self.fallback)
+                return result, {"native": not self.fallback}
+
+        for policy in (Policy(True, 1.0), Policy(False, 0.8)):
+            driven = orch.drive(
+                goal="g", target_files=[], initial_plan=plan, root_dir=".",
+                plan_round=lambda goal: plan,
+                execute_plan=lambda current: {"n1": {"status": "ok"}},
+                completion_chat=lambda prompt: '{"complete": true}',
+                emit=lambda *args, **kwargs: None, jev_policy=policy,
+                retained_brief={"brief": "full"}, max_rounds=1)
+            self.assertFalse(driven["final_all_ok"])
+
+    def test_validated_alignment_restart_preserves_prior_results(self):
+        first_plan = {"total_nodes": 1, "total_cost_ceiling": 0.01,
+                      "nodes": [{"node_id": "n1",
+                                 "instruction": "implement base",
+                                 "target_files": ["a.py"],
+                                 "cost_ceiling": 0.01,
+                                 "route": {"cost_ceiling": 0.01}}],
+                      "dag": {"nodes": [{"node_id": "n1",
+                                          "instruction": "implement base",
+                                          "target_files": ["a.py"]}]}}
+        amendment_plan = {
+            "total_nodes": 2, "total_cost_ceiling": 0.02,
+            "nodes": [
+                {"node_id": "n1", "instruction": "implement base",
+                 "target_files": ["a.py"], "cost_ceiling": 0.01,
+                 "route": {"cost_ceiling": 0.01}},
+                {"node_id": "n2", "instruction": "close alignment gap",
+                 "target_files": ["a.py"], "dependencies": ["n1"],
+                 "cost_ceiling": 0.01,
+                 "route": {"cost_ceiling": 0.01}},
+            ],
+            "dag": {"nodes": [
+                {"node_id": "n1", "instruction": "implement base",
+                 "target_files": ["a.py"]},
+                {"node_id": "n2", "instruction": "close alignment gap",
+                 "target_files": ["a.py"], "dependencies": ["n1"]},
+            ]},
+        }
+        calls = {"executed": [], "amendment": None,
+                 "restart_dimension": None}
+
+        class Policy:
+            def __init__(self):
+                self.alignment_calls = 0
+            def evaluate_completion_nouls(self, *args, **kwargs):
+                return JevEvaluationResult("pass", 1, 1,
+                    {"goal_achieved": 1}, [], is_fallback=False), {
+                        "cannot_complete": False}
+            def evaluate_answer(self, *args, **kwargs):
+                self.alignment_calls += 1
+                support = 0.5 if self.alignment_calls == 1 else 1.0
+                return JevEvaluationResult("pass", support, support,
+                    {"answer_sufficient": support,
+                     "iteration_required": self.alignment_calls == 1,
+                     "plan_required": False}, [], is_fallback=False), {
+                         "native": True}
+            def evaluate_hourglass_stage(self, dimension, state, **kwargs):
+                calls["restart_dimension"] = dimension
+                return JevEvaluationResult("pass", 1, 1,
+                    {"restart_target": {"target": "context"}}, [],
+                    is_fallback=False), {"native": True}
+
+        def plan_round(_goal):
+            self.fail("alignment retries must use the amendment handler")
+        def plan_amendment(amendment_goal, request):
+            calls["amendment"] = (amendment_goal, request)
+            return amendment_plan
+        def execute(current):
+            node_ids = [node["node_id"] for node in current["dag"]["nodes"]]
+            calls["executed"].append(node_ids)
+            return {node_id: {"status": "ok", "evidence": node_id}
+                    for node_id in node_ids}
+
+        driven = orch.drive(
+            goal="original intent", target_files=[], initial_plan=first_plan,
+            root_dir=".", plan_round=plan_round, execute_plan=execute,
+            completion_chat=lambda prompt: '{"complete": true}',
+            emit=lambda *args, **kwargs: None, jev_policy=Policy(),
+            retained_brief={"brief": "complete"}, max_rounds=2,
+            completed_stages=["context", "planning"],
+            plan_amendment=plan_amendment)
+        self.assertEqual(set(driven["all_results"]), {"r1/n1", "r2/n2"})
+        self.assertTrue(driven["final_all_ok"])
+        self.assertEqual(driven["rounds_history"][0]["restart"]["target"],
+                         "context")
+        self.assertEqual(calls["executed"], [["n1"], ["n2"]])
+        self.assertIn("original intent", calls["amendment"][0])
+        self.assertIn("bounded delta plan", calls["amendment"][0])
+        self.assertEqual(calls["amendment"][1]["target"], "context")
+        self.assertEqual(calls["restart_dimension"], "restart_target")
+        self.assertEqual(
+            driven["rounds_history"][0]["restart"]["preserved_stages"],
+            ["context", "planning", "execution"])
+        self.assertTrue(driven["rounds_history"][0]["restart"][
+            "consent_renewal_required"])
+
+    def test_alignment_restart_without_amendment_handler_fails_closed(self):
+        plan = {"total_nodes": 1, "total_cost_ceiling": 0.0,
+                "nodes": [{"node_id": "n1", "instruction": "work"}],
+                "dag": {"nodes": [{"node_id": "n1",
+                                    "instruction": "work"}]}}
+
+        class Policy:
+            def evaluate_completion_nouls(self, *args, **kwargs):
+                return JevEvaluationResult("pass", 1, 1,
+                    {"goal_achieved": 1}, [], is_fallback=False), {
+                        "cannot_complete": False}
+            def evaluate_answer(self, *args, **kwargs):
+                return JevEvaluationResult("fail", 0.5, 0.5,
+                    {"answer_sufficient": 0.5, "iteration_required": True,
+                     "plan_required": False}, [], is_fallback=False), {
+                         "native": True}
+            def evaluate_hourglass_stage(self, dimension, state, **kwargs):
+                return JevEvaluationResult("pass", 1, 1,
+                    {"restart_target": {"target": "context"}}, [],
+                    is_fallback=False), {"native": True}
+
+        driven = orch.drive(
+            goal="intent", target_files=[], initial_plan=plan, root_dir=".",
+            plan_round=lambda _goal: self.fail("must not generic-replan"),
+            execute_plan=lambda _plan: {"n1": {"status": "ok"}},
+            completion_chat=lambda _prompt: self.fail("must not complete"),
+            emit=lambda *args, **kwargs: None, jev_policy=Policy(),
+            retained_brief={"brief": "complete"}, max_rounds=2,
+            completed_stages=["context", "planning"])
+        self.assertFalse(driven["final_all_ok"])
+        self.assertIn("handler is unavailable",
+                      driven["rounds_history"][0]["restart"]["reason"])
+        self.assertEqual(len(driven["all_results"]), 1)
+
+    def test_restart_validator_refuses_completed_and_unknown_stages(self):
+        from harness.jev_packs import validate_restart_request
+        completed = validate_restart_request(
+            "execution", "context", completed_stages=["context"])
+        unknown = validate_restart_request(
+            "execution", "invented", completed_stages=[])
+        self.assertFalse(completed["allowed"])
+        self.assertFalse(unknown["allowed"])
 
 
 class TriageFilesTests(unittest.TestCase):

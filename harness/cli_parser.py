@@ -8,6 +8,31 @@ harness.service or any face module (it is the bottom of the cli stack).
 import argparse
 
 
+HOURGLASS_STAGES = ("context", "planning", "execution", "verification")
+
+
+def _nonnegative_tokens(value):
+    """Parse a non-negative whole token cap for an Hourglass run."""
+    try:
+        tokens = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            "must be a non-negative whole token count") from None
+    if tokens < 0 or str(tokens) != str(value).strip():
+        raise argparse.ArgumentTypeError("must be a non-negative whole token count")
+    return tokens
+
+
+class _UniqueStageAction(argparse.Action):
+    """Append a selected stage once, rejecting ambiguous duplicate input."""
+    def __call__(self, parser, namespace, value, option_string=None):
+        selected = list(getattr(namespace, self.dest, None) or ())
+        if value in selected:
+            raise argparse.ArgumentError(self, "stage may be selected only once")
+        selected.append(value)
+        setattr(namespace, self.dest, selected)
+
+
 def _add_engine_flags(p, *, max_tokens_default, verify_required=False,
                       task_max_cost_help=None):
     """Flags shared by apply, continue, and dogfood -- the dispatches into the
@@ -204,6 +229,14 @@ def build_parser():
                     help="command to run after each parallel stage completes (e.g. the "
                          "full test suite); a failing gate stops the run before "
                          "dependent stages start")
+    pp.add_argument("--hourglass-stage", dest="hourglass_stages", action=_UniqueStageAction,
+                    choices=HOURGLASS_STAGES, default=None,
+                    help="select a composable Hourglass stage; repeat to select multiple "
+                         "(default: all stages, in pipeline order)")
+    pp.add_argument("--max-input-tokens", type=_nonnegative_tokens, default=None,
+                    help="maximum input tokens for the Hourglass run")
+    pp.add_argument("--max-output-tokens", type=_nonnegative_tokens, default=None,
+                    help="maximum output tokens for the Hourglass run")
     pp.add_argument("--keep-going", dest="keep_going", action="store_true", default=False, help="continue past a failed subtask")
     pp.add_argument("--max-cost", type=float, default=None,
                     help="maximum spend ceiling for the entire plan run; "

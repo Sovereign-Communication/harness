@@ -22,7 +22,8 @@ from .chat import (
     REASONING_FALLBACK_PREFIX, _reported_cost, _chat_reservation_slots,
 )
 from . import events as _events
-from .consent import probe_consent, consent_renew
+from .consent import (consent_binding, consent_staleness, probe_consent,
+                      consent_renew)
 from .errors import HarnessError, ToolCancelled
 from .output import eprint
 from .prompts import build_apply_prompt, consent_mechanics_text
@@ -43,6 +44,8 @@ class ApplyEngineMixin:
         if isinstance(result, dict):
             if state.structural is not None:
                 result.setdefault("structural", state.structural)
+            if state.hourglass_consent is not None:
+                result.setdefault("hourglass_consent", state.hourglass_consent)
             rounds = result.get("rounds") or state.rounds
             result.update(model_envelope(
                 model_requested=state.model_requested,
@@ -98,11 +101,21 @@ class ApplyEngineMixin:
             # target hash remains the original on-disk baseline; only the
             # in-memory proposal starts from this saved partial.
             current_content=req.continuation.get("partial_content") or req.original)
+        if req.cancel_check and req.cancel_check():
+            raise ToolCancelled()
         consent = self._initial_consent(req)
         if consent is not None and consent.get("decision") != "accept":
             return {"status": "consent_blocked", "task_id": req.task_id, **consent}
         state.consent_attempts = (consent.get("attempts", [])
                                   if isinstance(consent, dict) else [])
+        state.consent_binding = (consent.get("binding")
+                                 if isinstance(consent, dict) else None)
+        if req.cancel_check and req.cancel_check():
+            raise ToolCancelled()
+        consent_veto = self._evaluate_hourglass_consent(
+            req, consent, state)
+        if consent_veto is not None:
+            return self._attach_envelopes(consent_veto, state)
 
         self.ledger.append("dispatch_start", task_id=req.task_id, model=req.model,
                            continuation=bool(req.continuation))
@@ -175,17 +188,55 @@ class ApplyEngineMixin:
 
     def _initial_consent(self, req):
         """Sovereignty gate: the judge model accepts the visible work or the
-        task never dispatches. Returns the consent record, or None when the
-        probe is disabled or this is a continuation (already consented)."""
-        if not req.want_consent or req.continuation:
+        task never dispatches. A continuation reuses its previous decision
+        only when its bound work, model pool, and limits still match."""
+        if not req.want_consent:
             return None
+        execution_models = (req.ordered if req.profiles is not None
+                            else self.router.apply_pool)
+        # An explicit per-request primary is dispatched ahead of this pool by
+        # _candidate_models; consent must bind that effective order too.
+        execution_models = list(dict.fromkeys(
+            ([req.model] if req.model else []) + list(execution_models or [])))
+        proposed_content = (req.continuation.get("partial_content")
+                            or req.original)
+        current_binding = consent_binding(
+            file_path=req.file_path, file_content=req.original,
+            proposed_content=proposed_content,
+            instruction=req.instruction, edit_snippet=req.edit_snippet,
+            backend=req.backend, max_lines=req.max_lines,
+            execution_models=execution_models,
+            consent_models=[self.router.judge] + list(self.router.panel_pool),
+            max_tokens=req.max_tokens, task_max_cost=req.task_max_cost,
+            run_max_cost=getattr(self.governor, "max_cost", None),
+            token_budget=req.token_budget,
+            package=req.consent_package)
+        if req.continuation:
+            stale = consent_staleness(
+                req.continuation.get("consent_binding"), current_binding)
+            if not stale:
+                return {
+                    "decision": "accept",
+                    "attempts": req.continuation.get("consent_attempts") or [],
+                    "binding": current_binding,
+                    "reused": True,
+                }
+            self.ledger.append(
+                "consent_stale", task_id=req.task_id,
+                events=[event.value for event in stale],
+                missing_binding=("consent_binding" not in req.continuation))
         consent = probe_consent(
             transport=self.transport, api_key=self.api_key, governor=self.governor,
             task_id=req.task_id, task=consent_mechanics_text(
-                req.file_path, req.original, req.instruction),
+                req.file_path, proposed_content, req.instruction,
+                package=req.consent_package),
             model=self.router.judge, ledger=self.ledger, required=True,
             fallback_pool=self.router.panel_pool,
-            min_confidence=req.min_confidence)
+            min_confidence=req.min_confidence,
+            token_budget=req.token_budget)
+        if consent.get("decision") == "accept":
+            consent = dict(consent)
+            consent["binding"] = current_binding
         if self.governor.spent - req.task_start_spent > req.task_max_cost:
             raise HarnessError(
                 f"consent cost exceeded task ceiling ${req.task_max_cost:.6f}; refusing to dispatch")
@@ -210,13 +261,18 @@ class ApplyEngineMixin:
         cr = consent_renew(
             transport=self.transport, api_key=self.api_key, governor=self.governor,
             task_id=req.task_id, task=consent_mechanics_text(
-                req.file_path, state.current_content, req.instruction),
+                req.file_path, state.current_content, req.instruction,
+                package=req.consent_package),
             model=renew_model, ledger=self.ledger, required=True,
-            fallback_pool=renew_pool, min_confidence=req.min_confidence)
+            fallback_pool=renew_pool, min_confidence=req.min_confidence,
+            token_budget=req.token_budget)
         if self.governor.spent - req.task_start_spent > req.task_max_cost:
             raise HarnessError(
                 f"consent renewal exceeded task ceiling ${req.task_max_cost:.6f}; refusing to continue")
         if cr["decision"] != "accept":
+            # A mid-task revocation invalidates the prior acceptance. The next
+            # continuation must ask again even when the instruction is same.
+            state.consent_binding = None
             self.ledger.append("defer_midtask", task_id=req.task_id, category="consent",
                                reason=cr["reason"], confidence=cr.get("confidence"),
                                model=renew_model)
@@ -225,7 +281,63 @@ class ApplyEngineMixin:
                 reason=cr["reason"], remaining_scope=req.instruction,
                 rounds=state.rounds, history=state.history, cost=self.governor.spent,
                 backend=req.backend, verify_only=req.verify_only, max_lines=req.max_lines,
-                edit_snippet=req.edit_snippet, verify_cmd=req.verify_cmd)
+                edit_snippet=req.edit_snippet, verify_cmd=req.verify_cmd,
+                consent_binding=state.consent_binding,
+                consent_attempts=state.consent_attempts)
+        return None
+
+    def _evaluate_hourglass_consent(self, req, consent, state):
+        """Apply HV-1's typed consent judgment to an exact planned package.
+
+        The policy is advisory when unavailable; independent apply consent
+        and write gates remain authoritative. A native defer or stale-binding
+        judgment is a hard veto. Native escalation evidence can narrow, never
+        widen, the caller's existing escalation permission.
+        """
+        if not isinstance(req.consent_package, dict):
+            return None
+        policy = (req.consent_policy or getattr(self, "jev_policy", None))
+        evaluate = getattr(policy, "evaluate_hourglass_stage", None)
+        if not callable(evaluate):
+            return None
+        binding = consent.get("binding") if isinstance(consent, dict) else None
+        fresh = bool(isinstance(binding, dict)
+                     and consent.get("decision") == "accept")
+        facts = {
+            "package": req.consent_package,
+            "consent_decision": (consent.get("decision")
+                                  if isinstance(consent, dict) else None),
+            "consent_binding": binding,
+            "consent_fresh": fresh,
+            "consent_defer_required": False,
+            "escalation_allowed_by_caller": req.allow_escalation,
+        }
+        _result, judgment = evaluate(
+            "consent", facts, site="hourglass_consent",
+            task_id=req.task_id,
+            node_id=req.consent_package.get("package_id"),
+            token_budget=req.token_budget)
+        if not isinstance(judgment, dict):
+            return None
+        state.hourglass_consent = judgment
+        if not judgment.get("native"):
+            return None
+        fresh_signal = judgment.get("consent_fresh")
+        defer_signal = judgment.get("consent_defer_required")
+        if (fresh_signal is None or fresh_signal < 0.5
+                or (defer_signal is not None and defer_signal >= 0.5)):
+            reason = ("typed consent judgment found the package assignment "
+                      "stale or recommended deferral")
+            return {
+                "status": "deferred", "task_id": req.task_id,
+                "category": "consent", "reason": reason,
+                "remaining_scope": req.instruction,
+                "consent_binding": state.consent_binding,
+                "consent_attempts": state.consent_attempts,
+            }
+        escalation = judgment.get("escalation_justified")
+        if escalation is not None:
+            state.jev_escalation_justified = escalation >= 0.5
         return None
 
     def _round_context(self, req, state):
@@ -324,9 +436,14 @@ class ApplyEngineMixin:
             )
             _events.emit("attempt_start", task_id=req.task_id, model=attempt_model,
                          round=state.round_no, backend=req.backend)
-            status, resp = chat(self.transport, self.api_key, attempt_model,
-                                [{"role": "user", "content": prompt}], req.max_tokens,
-                                req.reasoning, self.reasoning_token_budget, self.governor)
+            token_kwargs = ({"token_budget": req.token_budget,
+                             "token_label": "apply"}
+                            if req.token_budget is not None else {})
+            status, resp = chat(
+                self.transport, self.api_key, attempt_model,
+                [{"role": "user", "content": prompt}], req.max_tokens,
+                req.reasoning, self.reasoning_token_budget, self.governor,
+                **token_kwargs)
             outcome.resp = resp
             if status != 200:
                 err = _http_error(status, resp)
@@ -432,7 +549,9 @@ class ApplyEngineMixin:
             reason=reason, remaining_scope=req.instruction,
             rounds=state.rounds, history=state.history, cost=self.governor.spent,
             backend=req.backend, verify_only=req.verify_only, max_lines=req.max_lines,
-            edit_snippet=req.edit_snippet, verify_cmd=req.verify_cmd)
+            edit_snippet=req.edit_snippet, verify_cmd=req.verify_cmd,
+            consent_binding=state.consent_binding,
+            consent_attempts=state.consent_attempts)
 
     def _capability_deferral(self, req, state, outcome):
         """The model hit its capability limit (HARNESS_DEFER marker): stop,
@@ -467,7 +586,9 @@ class ApplyEngineMixin:
             history=state.history, cost=self.governor.spent,
             backend=req.backend, verify_only=req.verify_only, max_lines=req.max_lines,
             edit_snippet=req.edit_snippet, verify_cmd=req.verify_cmd,
-            partial_content=deferred_partial)
+            partial_content=deferred_partial,
+            consent_binding=state.consent_binding,
+            consent_attempts=state.consent_attempts)
 
     def _merge_or_extract(self, req, state, outcome):
         """Diff backend only: merge the proposed unified diff. A malformed or
@@ -487,6 +608,8 @@ class ApplyEngineMixin:
 
     def _escalate(self, req, state):
         """Multi-rung escalation when a ladder is configured; else legacy rung."""
+        if state.jev_escalation_justified is False:
+            return None
         if req.verify_only or not req.verify_cmd or state.gate_broken:
             return None
         if not self.router.escalation_pool:
@@ -529,8 +652,10 @@ class ApplyEngineMixin:
                     [f"instruction: {req.instruction}",
                      f"rounds tried: {state.round_no}",
                      f"last verify output: {tail}"])
+                token_kwargs = ({"token_budget": req.token_budget}
+                                if req.token_budget is not None else {})
                 jev_result, _structural = self.jev_policy.evaluate_escalation_decision(
-                    failure_context, task_id=req.task_id)
+                    failure_context, task_id=req.task_id, **token_kwargs)
                 if jev_result is not None:
                     state.pending_jev_directive = jev_escalation_directive(
                         jev_result, ladder_size=len(self.router.escalation_pool),
@@ -635,9 +760,14 @@ class ApplyEngineMixin:
             [(f"escalation attempt {i + 1}/{esc_slots}", esc["model"], req.max_tokens, 0)
              for i in range(esc_slots)],
         )
-        status, resp = chat(self.transport, self.api_key, esc["model"],
-                            [{"role": "user", "content": prompt}], req.max_tokens,
-                            "high", self.reasoning_token_budget, self.governor)
+        token_kwargs = ({"token_budget": req.token_budget,
+                         "token_label": "escalation"}
+                        if req.token_budget is not None else {})
+        status, resp = chat(
+            self.transport, self.api_key, esc["model"],
+            [{"role": "user", "content": prompt}], req.max_tokens,
+            "high", self.reasoning_token_budget, self.governor,
+            **token_kwargs)
         if status != 200:
             err = _http_error(status, resp)
             self._record_billable(req, esc["model"], _reported_cost(resp), "error",
@@ -671,5 +801,3 @@ class ApplyEngineMixin:
             _annotate_escalation(result, from_model=req.model,
                                  to_model=esc["model"], rungs=[esc["model"]])
         return result
-
-

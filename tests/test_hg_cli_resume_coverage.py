@@ -8,6 +8,14 @@ from unittest.mock import MagicMock, patch
 
 from harness.cli import _cmd_plan
 from harness.pyramid_state import persist_state
+from harness.token_budget import TokenBudget
+from harness.waist import STAGE_EXECUTION, compose_stages
+
+
+def _canned_compose(plan, composition_runtime):
+    composition_runtime["composition"] = compose_stages(
+        budget=TokenBudget(label="test-run"), declared=[STAGE_EXECUTION])
+    return plan
 
 
 class CliResumeCoverageTests(unittest.TestCase):
@@ -66,7 +74,8 @@ class CliResumeCoverageTests(unittest.TestCase):
         }
         emitted = {}
         with patch("harness.cli._session", return_value=engine), \
-             patch("harness.cli._compose_plan", return_value=canned), \
+             patch("harness.cli._compose_plan", side_effect=lambda *args, **kwargs:
+                   _canned_compose(canned, kwargs["composition_runtime"])), \
              patch("harness.cli.PlanExecutor", side_effect=SpyExec), \
              patch("harness.cli._emit_by_status", side_effect=lambda r, o=None: emitted.update(r)):
             _cmd_plan(self._opts(resume=state_path), self._settings())
@@ -121,7 +130,8 @@ class CliResumeCoverageTests(unittest.TestCase):
                        "route": {"ladder": ["m/a"], "cost_ceiling": 0.0}}],
         }
         with patch("harness.cli._session", return_value=engine), \
-             patch("harness.cli._compose_plan", return_value=canned), \
+             patch("harness.cli._compose_plan", side_effect=lambda *args, **kwargs:
+                   _canned_compose(canned, kwargs["composition_runtime"])), \
              patch("harness.cli.PlanExecutor", side_effect=spy), \
              patch("harness.cli._emit_by_status"):
             _cmd_plan(self._opts(final_gate="python -m unittest tests.test_tokens"),

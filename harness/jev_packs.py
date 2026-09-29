@@ -906,15 +906,15 @@ def validate_restart_request(current_stage: Any, requested_target: Any, *,
     and it never discards completed work:
 
     - the target must be a declared stage, else ``allowed=False``;
-    - a restart may not re-enter a stage that is already recorded complete --
-      completed work and its evidence are preserved, so the operator resumes
-      rather than repeating;
-    - a forward move (execution -> nothing later) is not a restart and is
-      refused; the workflow may only walk back down
-      context -> planning -> execution;
-    - when consent is known stale (``consent_fresh=False``) the restart is
-      permitted but ``consent_renewal_required`` is set, because a changed
-      assignment must re-derive consent before any dispatch.
+    - an ordinary restart may not re-enter a stage that is already recorded
+      complete; completed work and its evidence are preserved;
+    - final alignment may authorize a bounded amendment from any declared
+      target, including a previously completed stage. This is a new delta
+      assignment, not deletion or repetition of the recorded work;
+    - a forward move or same-stage move is refused. Ordinary workflow stages
+      may only walk back down context -> planning -> execution;
+    - a final-alignment amendment always requires fresh package consent. Any
+      request with explicitly stale consent is refused until consent is renewed.
 
     Returns a typed decision dict; it never raises, so a caller can report
     the refusal instead of crashing a run.
@@ -922,6 +922,10 @@ def validate_restart_request(current_stage: Any, requested_target: Any, *,
     reasons: List[str] = []
     target = normalize_restart_target(requested_target)
     current = normalize_restart_target(current_stage)
+    if (current is None and isinstance(current_stage, str)
+            and current_stage.strip().lower() == "final_alignment"):
+        current = "final_alignment"
+    alignment_amendment = current == "final_alignment"
     if target is None:
         return {
             "allowed": False,
@@ -936,12 +940,16 @@ def validate_restart_request(current_stage: Any, requested_target: Any, *,
     preserved = [stage for stage in done if stage is not None]
     consent_renewal = consent_fresh is False
 
-    if current is not None and HOURGLASS_STAGE_ORDER[target] >= \
-            HOURGLASS_STAGE_ORDER[current]:
+    if current is None:
+        reasons.append("current stage is not a declared workflow stage: "
+                       + repr(current_stage))
+    elif (HOURGLASS_STAGE_ORDER[target] >= len(HOURGLASS_STAGES)
+          if alignment_amendment else
+          HOURGLASS_STAGE_ORDER[target] >= HOURGLASS_STAGE_ORDER[current]):
         reasons.append(
             "restart target {0} is not earlier than the current stage {1}"
             .format(target, current))
-    if target in preserved:
+    if target in preserved and not alignment_amendment:
         reasons.append(
             "restart target {0} is already recorded complete; its work and "
             "evidence are preserved and the run resumes instead".format(target))
@@ -953,7 +961,8 @@ def validate_restart_request(current_stage: Any, requested_target: Any, *,
         "allowed": not reasons,
         "target": target,
         "current_stage": current,
-        "consent_renewal_required": consent_renewal,
+        "mode": "amendment" if alignment_amendment else "restart",
+        "consent_renewal_required": consent_renewal or alignment_amendment,
         "preserved_stages": preserved,
         "reasons": reasons,
     }

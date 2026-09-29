@@ -29,7 +29,7 @@ from harness.router import Router
 from harness.spend import SpendGovernor
 from harness.waist import (HOURGLASS_DEFAULT_STAGES, STAGE_CONTEXT,
                            compose_plan)
-from tests._fake import FakeTransport, comp, m
+from tests._fake import FakeTransport, NativeJevPolicy, comp, m
 
 
 ORIGINAL = "x = 1\n"
@@ -90,6 +90,20 @@ class LaneParityTests(unittest.TestCase):
     def _policy(self):
         return policy_for(self.settings)
 
+    def _policy_with_native_context_intake(self):
+        policy = self._policy()
+        native = NativeJevPolicy()
+        fallback_stage = policy.evaluate_hourglass_stage
+
+        def evaluate_stage(dimension, state, **kwargs):
+            if dimension == "context_intake":
+                return native.evaluate_hourglass_stage(
+                    dimension, state, **kwargs)
+            return fallback_stage(dimension, state, **kwargs)
+
+        policy.evaluate_hourglass_stage = evaluate_stage
+        return policy
+
     def _engine(self, *, posts=None, policy=None):
         """Disarmed hermetic apply engine.
 
@@ -141,7 +155,9 @@ class LaneParityTests(unittest.TestCase):
             execute=False, out=None, decompose_llm=False,
             allow_escalation=False, max_tokens=None, max_cost=None,
         )
-        with patch("harness.cli._emit") as emit:
+        policy = self._policy_with_native_context_intake()
+        with patch("harness.cli.policy_for", return_value=policy), \
+             patch("harness.cli._emit") as emit:
             _cmd_plan(opts, settings)
         result = emit.call_args[0][0]
         self.assertIn("structural", result)
@@ -150,7 +166,7 @@ class LaneParityTests(unittest.TestCase):
 
     def test_mcp_plan_preview_exposes_structural_envelope(self):
         from harness.mcp import McpServer
-        policy = self._policy()
+        policy = self._policy_with_native_context_intake()
         engine = MagicMock()
         engine.jev_policy = policy
         server = McpServer(

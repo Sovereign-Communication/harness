@@ -28,7 +28,11 @@ from .session import apply_session, attest_model_for, governor_for, jev_for, led
 from .jev_policy import (
     JevPolicy, aggregate_structural, jev_cost_ceiling, policy_for,
 )
-from .waist import compose_arguments, compose_plan, resolve_scout_ladder
+from .waist import (STAGE_CONTEXT, STAGE_EXECUTION, STAGE_PLANNING,
+                    compose_arguments, compose_plan, compose_stages,
+                    resolve_scout_ladder, runtime_stage_budget,
+                    stage_selection_from_settings)
+from .token_budget import budget_from_settings
 from .web import DEFAULT_FETCH_HOSTS, gather_web_context
 
 # Consumers import history/repo_scope/web helpers from their owners
@@ -45,6 +49,18 @@ __all__ = [
     "load_chat_history",
     "save_chat_turn",
 ]
+
+
+def _completed_stages_from_envelope(envelope):
+    """Return only stages the composition envelope records as completed."""
+    if not isinstance(envelope, dict):
+        return []
+    completed = list(envelope.get("completed") or [])
+    completed.extend(
+        row.get("stage") for row in envelope.get("stages") or ()
+        if isinstance(row, dict) and row.get("state") == "completed")
+    return list(dict.fromkeys(name for name in completed if isinstance(name, str)))
+
 
 DEFAULT_CHAT_SYSTEM_PROMPT = (
     "You are Sovereign Harness, an autonomous, cost-bounded software engineering AI. "
@@ -788,7 +804,8 @@ class AutonomousAgent:
         emit("chat_response", intent="audit", verified=ok)
         return result
 
-    def _orchestrator_chat_fn(self, gov):
+    def _orchestrator_chat_fn(self, gov, *, token_budget=None,
+                              token_label="planning", max_tokens=2048):
         """Injected chat_fn for orchestration calls (decompose/triage/judge):
         governed, tier-0 scout head -- the cheapest rung of the same sliding
         scale that classifies nodes. Raises HarnessError on failure; callers
@@ -803,9 +820,13 @@ class AutonomousAgent:
             last = None
             for model in ladder:
                 try:
+                    token_kwargs = ({"token_budget": token_budget,
+                                     "token_label": token_label}
+                                    if token_budget is not None else {})
                     content, _ = governed_text(self.transport, api_key, gov,
-                                               model, prompt_text, 2048,
-                                               label="orchestrate")
+                                               model, prompt_text, max_tokens,
+                                               label="orchestrate",
+                                               **token_kwargs)
                     return content
                 except HarnessError as e:
                     last = e
@@ -813,7 +834,23 @@ class AutonomousAgent:
 
         return chat_fn
 
-    def _plan_round(self, goal, candidate_files, gov, confirm=None):
+    def _budgeted_orchestrator_chat_fn(self, gov, *, token_budget,
+                                       token_label, max_tokens):
+        """Bind a budgeted callback while preserving one-arg test seams."""
+        try:
+            return self._orchestrator_chat_fn(
+                gov, token_budget=token_budget, token_label=token_label,
+                max_tokens=max_tokens)
+        except TypeError as exc:
+            # Existing injected lane fakes/embedders may still expose the
+            # original one-argument factory. Production accepts the budget.
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            return self._orchestrator_chat_fn(gov)
+
+    def _plan_round(self, goal, candidate_files, gov, confirm=None, *,
+                    composition_runtime=None, token_budget=None,
+                    jev_policy=None, composition_arguments=None):
         """One planning pass through the ONE plan composer
         (harness/waist.py:compose_plan): cheap-LLM decomposition when the
         orchestration ladder answers, tier classification, then (hourglass)
@@ -823,9 +860,10 @@ class AutonomousAgent:
         so there is no second plan lane to keep in sync. A confirmation
         failure raises (fail-closed): an unconfirmed plan never executes.
         """
-        jev_policy = policy_for(
-            self.settings, transport=self.transport, governor=gov,
-            ledger=ledger_for(self.settings, caller="agent"))
+        if jev_policy is None:
+            jev_policy = policy_for(
+                self.settings, transport=self.transport, governor=gov,
+                ledger=ledger_for(self.settings, caller="agent"))
         plan = compose_plan(
             transport=self.transport, api_key=resolve_api_key(),
             governor=gov, ledger=ledger_for(self.settings),
@@ -837,18 +875,26 @@ class AutonomousAgent:
             # The lane's tree: a node's target size is measured against the
             # files this run actually edits, not the server's CWD.
             root=str(self.root_dir),
-            chat_fn=lambda prompt_text: (
-                self._orchestrator_chat_fn(gov)(prompt_text), 0.0),
+            budgeted_chat_fn=lambda prompt_text, stage_budget,
+                token_label, max_tokens: (
+                    self._budgeted_orchestrator_chat_fn(
+                        gov, token_budget=stage_budget,
+                        token_label=token_label,
+                        max_tokens=max_tokens)(prompt_text), 0.0),
             execute=True,
             allow_escalation=bool(getattr(self.settings, "allow_escalation", False)),
             jev_policy=jev_policy,
+            require_context_intake=True,
             # HV-4/HV-2-use: the GUI lane composes through the same owner the
             # CLI and MCP lanes use, so "which stages ran, what each was
             # allowed, and what evidence it started from" is answerable from
             # the envelope here too instead of only from the caller's head.
-            **compose_arguments(self.settings, goal=goal,
-                                files=candidate_files,
-                                root=self.root_dir))
+            **(composition_arguments if composition_arguments is not None
+               else compose_arguments(self.settings, goal=goal,
+                                      files=candidate_files,
+                                      root=self.root_dir,
+                                      token_budget=token_budget)),
+            composition_runtime=composition_runtime)
         if str(plan.get("decomposition", "")).startswith("heuristic"):
             # compose_plan degrades to the heuristic only after the LLM
             # decomposition failed (execute=True); the GUI needs that on the
@@ -872,6 +918,8 @@ class AutonomousAgent:
             "dag": plan.get("dag"),
             "confirmation": confirmation,
             "cost": float(confirmation.get("cost") or 0.0),
+            **({"context_intake": dict(plan["context_intake"])}
+               if isinstance(plan.get("context_intake"), dict) else {}),
             **({"structural": plan["structural"]}
                if isinstance(plan.get("structural"), dict) else {}),
         }
@@ -879,7 +927,7 @@ class AutonomousAgent:
         emit("chat_response", intent="edit", status="refused")
         return result
 
-    def _triage_scope(self, prompt):
+    def _triage_scope(self, prompt, *, token_budget=None, allow_model=True):
         """The relevance first pass over the whole repo: explicit prompt
         files win; else the model triages the bounded repo listing (paid-key
         arming decided by the ladder itself failing); else keyword overlap."""
@@ -890,9 +938,17 @@ class AutonomousAgent:
         if not repo_files:
             return []
         try:
-            gov = governor_for(self.settings)[1]
-            picked = triage_files(prompt, repo_files,
-                                  self._orchestrator_chat_fn(gov))
+            if allow_model:
+                gov = governor_for(self.settings)[1]
+                if token_budget is None:
+                    chat_fn = self._orchestrator_chat_fn(gov)
+                else:
+                    chat_fn = self._budgeted_orchestrator_chat_fn(
+                        gov, token_budget=token_budget,
+                        token_label="context_triage", max_tokens=2048)
+                picked = triage_files(prompt, repo_files, chat_fn)
+            else:
+                picked = []
         except HarnessError:
             picked = []
         if not picked:
@@ -918,7 +974,20 @@ class AutonomousAgent:
         # attestation), then a completion judge round that re-plans remaining
         # scope until the goal is met or the round budget is spent.
         hourglass = resolve_hourglass(self.settings)
-        target_files = self._triage_scope(prompt)
+        run_token_budget = budget_from_settings(self.settings,
+                                                label="agent-run")
+        initial_composition = compose_stages(
+            budget=run_token_budget,
+            declared=stage_selection_from_settings(self.settings))
+        composition_runtime = {
+            "composition": initial_composition,
+            "run_budget": run_token_budget,
+        }
+        context_budget = runtime_stage_budget(
+            composition_runtime, STAGE_CONTEXT)
+        target_files = self._triage_scope(
+            prompt, token_budget=context_budget,
+            allow_model=context_budget is not None)
         emit("files_discovered", target_files=target_files)
 
         # Condense candidate file contexts
@@ -949,21 +1018,17 @@ class AutonomousAgent:
         plan_policy = policy_for(
             self.settings, transport=self.transport, governor=gov,
             ledger=ledger_for(self.settings, caller="agent"))
-        plan_prompt = prompt
-        plan_eval, plan_structural = plan_policy.evaluate_plan(
-            prompt, target_files, site="agent-plan", task_id=session_id)
-        if plan_eval.answers.get("requires_iteration"):
-            emit("orchestration_note",
-                 note="Jev structural analysis detected algorithmic iteration; injecting DAG loop directive")
-            plan_prompt = (
-                f"{prompt}\n\n[STRUCTURAL GUIDELINE]: This goal requires iterative "
-                "control flow, conditional branching, or multi-step execution. "
-                "Ensure the decomposed DAG explicitly breaks down the iterative "
-                "loop and discrete steps into executable nodes.")
-        plan = self._plan_round(plan_prompt, target_files, gov,
-                                confirm=hourglass["confirm"])
-        if isinstance(plan_structural, dict):
-            plan["structural"] = plan_structural
+        intake_arguments = compose_arguments(
+            self.settings, goal=prompt, files=target_files,
+            root=self.root_dir, token_budget=run_token_budget)
+        retained_brief = (intake_arguments.get("brief")
+                          or brief.to_brief_pack())
+        execution_budgets = []
+        plan = self._plan_round(
+            prompt, target_files, gov, confirm=hourglass["confirm"],
+            composition_runtime=composition_runtime,
+            token_budget=run_token_budget, jev_policy=plan_policy,
+            composition_arguments=intake_arguments)
         if plan.get("status") == "refused":
             return self._refused_edit(plan, prompt, target_files, session_id)
         emit("dag_planned", total_nodes=plan["total_nodes"],
@@ -1047,7 +1112,8 @@ class AutonomousAgent:
                 instruction=node.instruction,
                 verify_cmd=gate,
                 allow_verify=True,
-                require_consent=False,
+                require_consent=True,
+                renew_consent=True,
                 require_diff_authorization=hourglass["require_diff_authorization"],
                 **apply_kwargs,
             )
@@ -1085,7 +1151,8 @@ class AutonomousAgent:
                         instruction=healing_inst,
                         verify_cmd=gate,
                         allow_verify=True,
-                        require_consent=False,
+                        require_consent=True,
+                        renew_consent=True,
                         require_diff_authorization=hourglass["require_diff_authorization"],
                         **apply_kwargs,
                     )
@@ -1105,7 +1172,8 @@ class AutonomousAgent:
                     instruction=healing_inst,
                     verify_cmd=gate,
                     allow_verify=True,
-                    require_consent=False,
+                    require_consent=True,
+                    renew_consent=True,
                     require_diff_authorization=hourglass["require_diff_authorization"],
                     **apply_kwargs,
                 )
@@ -1123,6 +1191,11 @@ class AutonomousAgent:
                 if isinstance(n, dict) and n.get("local_gate"):
                     run_gate = n["local_gate"]
                     break
+            execution_budget = runtime_stage_budget(
+                composition_runtime, STAGE_EXECUTION)
+            if execution_budget is None:
+                raise HarnessError(
+                    "execution stage has no composed TokenBudget allowance")
             plan_exec = PlanExecutor(
                 engine, node_routes,
                 parallel=hourglass["parallel"], isolate=hourglass["isolate"],
@@ -1134,24 +1207,105 @@ class AutonomousAgent:
                     attest_model=attest_model_for(self.settings)),
                 repo=str(self.root_dir), run_ceiling=gov.max_cost,
                 apply=apply_node,
+                token_budget=execution_budget,
+                jev_policy=plan_policy,
+                consent_context=composition_runtime.get("retained_brief"),
                 # HG-final-gate: default ON when a verify command was
                 # discovered/declared; shared with CLI/MCP via PlanExecutor.
                 final_gate=hourglass.get("final_gate"),
                 run_gate=run_gate)
-            return plan_exec.execute(dag)
+            try:
+                results = plan_exec.execute(dag)
+                if results and all(
+                        isinstance(result, dict)
+                        and result.get("status") in SUCCESS_STATUSES
+                        for result in results.values()):
+                    composition = plan_to_run.get("composition")
+                    if isinstance(composition, dict):
+                        for row in composition.get("stages") or ():
+                            if (isinstance(row, dict)
+                                    and row.get("stage") == STAGE_EXECUTION):
+                                row["state"] = "completed"
+                    completed_stages[:] = _completed_stages_from_envelope(
+                        composition)
+                    if STAGE_EXECUTION not in completed_stages:
+                        completed_stages.append(STAGE_EXECUTION)
+                return results
+            finally:
+                # Keep metering evidence if an adapter raises after provider
+                # calls have already settled.
+                execution_budgets.append(execution_budget.snapshot())
+
+        completed_stages = _completed_stages_from_envelope(
+            plan.get("composition"))
+        current_intake_arguments = [intake_arguments]
+
+        def plan_next_round(next_goal):
+            nonlocal plan
+            next_plan = self._plan_round(
+                next_goal, target_files, gov, confirm=hourglass["confirm"],
+                composition_runtime=composition_runtime,
+                token_budget=run_token_budget, jev_policy=plan_policy,
+                composition_arguments=current_intake_arguments[0])
+            plan = next_plan
+            completed_stages[:] = _completed_stages_from_envelope(
+                next_plan.get("composition"))
+            return next_plan
+
+        def plan_alignment_amendment(next_goal, request):
+            """Refresh the selected stage, then plan only the alignment delta."""
+            nonlocal plan
+            arguments = current_intake_arguments[0]
+            if request.get("target") == STAGE_CONTEXT:
+                if context_budget is None:
+                    return {
+                        "status": "refused",
+                        "reason": ("final-alignment amendment selected the "
+                                   "context stage, but context is not selected "
+                                   "for this run"),
+                    }
+                arguments = compose_arguments(
+                    self.settings, goal=prompt, files=target_files,
+                    root=self.root_dir, token_budget=run_token_budget)
+                refreshed_brief = (arguments.get("brief")
+                                   or brief.to_brief_pack())
+                composition_runtime["retained_brief"] = refreshed_brief
+                current_intake_arguments[0] = arguments
+
+            amended_plan = self._plan_round(
+                next_goal, target_files, gov, confirm=hourglass["confirm"],
+                composition_runtime=composition_runtime,
+                token_budget=run_token_budget, jev_policy=plan_policy,
+                composition_arguments=arguments)
+            plan = amended_plan
+            completed_stages[:] = _completed_stages_from_envelope(
+                amended_plan.get("composition"))
+            return amended_plan
 
         drive_kwargs = dict(
             goal=prompt, target_files=target_files, initial_plan=plan,
-            root_dir=self.root_dir, plan_round=lambda next_goal: self._plan_round(
-                next_goal, target_files, gov, confirm=hourglass["confirm"]),
+            root_dir=self.root_dir, plan_round=plan_next_round,
             execute_plan=execute_plan,
-            completion_chat=lambda prompt_text: self._orchestrator_chat_fn(gov)(prompt_text),
+            completion_chat=lambda prompt_text: self._budgeted_orchestrator_chat_fn(
+                gov,
+                token_budget=(runtime_stage_budget(
+                    composition_runtime, STAGE_PLANNING) or run_token_budget),
+                token_label="planning_completion",
+                max_tokens=2048)(prompt_text),
             emit=emit, cancel_check=cancel_check,
             refused=lambda refused_plan: self._refused_edit(
                 refused_plan, prompt, target_files, session_id))
+        drive_kwargs.update(
+            jev_policy=plan_policy,
+            retained_brief=lambda: composition_runtime.get(
+                "retained_brief", retained_brief),
+            completed_stages=completed_stages,
+                jev_token_budget=run_token_budget,
+                jev_stage_token_budget=lambda stage: runtime_stage_budget(
+                    composition_runtime, stage),
+            plan_amendment=plan_alignment_amendment)
         if use_jev_completion:
-            drive_kwargs.update(jev_policy=plan_policy,
-                                jev_completion_threshold=0.99)
+            drive_kwargs["jev_completion_threshold"] = 0.99
         driven = drive(**drive_kwargs)
         if driven.get("status") == "refused":
             return driven
@@ -1161,6 +1315,17 @@ class AutonomousAgent:
         final_all_ok = driven["final_all_ok"]
         remaining_scope = driven["remaining_scope"]
         plan = driven["plan"]
+
+        final_composition = plan.get("composition")
+        if isinstance(final_composition, dict):
+            final_composition = dict(final_composition)
+            stage_rows = []
+            for entry in final_composition.get("stages", []):
+                row = dict(entry)
+                if row.get("stage") == STAGE_EXECUTION and final_all_ok:
+                    row["state"] = "completed"
+                stage_rows.append(row)
+            final_composition["stages"] = stage_rows
 
         # Evidence-bound escalation. The deferral note is a HANDOFF, not proof
         # that a rung ran: a run that planned, handoff-routed, and executed
@@ -1236,7 +1401,14 @@ class AutonomousAgent:
             "rounds": rounds_history,
             "settings": hourglass,
             "source": "agent_edit_lane",
+            "token_budget": run_token_budget.snapshot(),
+            "execution_budgets": execution_budgets,
         }
+        if final_composition is not None:
+            hourglass_evidence["composition"] = final_composition
+        if isinstance(composition_runtime.get("context_intake"), dict):
+            hourglass_evidence["context_intake"] = dict(
+                composition_runtime["context_intake"])
         result = {
             "status": "ok" if final_all_ok else "failed",
             **({"escalated_from_defer":

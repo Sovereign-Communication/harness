@@ -39,6 +39,10 @@ class ApplyRequest:
     require_diff_authorization: bool = False
     attest_model: object = None
     min_confidence: float = 0.70
+    token_budget: object = None
+    consent_package: object = None
+    write_guard: object = None
+    consent_policy: object = None
 
 
 @dataclass
@@ -56,6 +60,7 @@ class RunState:
     rotations: int = 0
     backup: object = None
     consent_attempts: list = field(default_factory=list)
+    consent_binding: object = None
     # Auto-escalation / de-escalation state
     escalation_condensed_context: str = ""
     de_escalation_target_rung: int = 0
@@ -63,6 +68,8 @@ class RunState:
     # for the escalation driver (ONE consumer); None = no Jev signal.
     pending_jev_directive: object = None
     structural: object = None
+    hourglass_consent: object = None
+    jev_escalation_justified: object = None
     # MS envelope: the requested primary for this run (ApplyRequest.model).
     # rounds[] already record every model that actually served (observed).
     model_requested: object = None

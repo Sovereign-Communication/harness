@@ -9,6 +9,7 @@ from harness.executor import PlanExecutor
 from harness.pyramid_state import (
     completed_node_ids, dag_for_pending, load_state, pending_node_details,
     persist_state)
+from tests._fake import NativeJevPolicy
 
 
 class PyramidStateTests(unittest.TestCase):
@@ -45,6 +46,7 @@ class PyramidStateTests(unittest.TestCase):
 
             dispatched = []
             engine = MagicMock()
+            engine.jev_policy = None
             routes = {"task_2": {"node_id": "task_2",
                                  "route": {"ladder": ["m/b"], "cost_ceiling": 0.0}}}
 
@@ -91,7 +93,7 @@ class PyramidStateTests(unittest.TestCase):
 
             opts = SimpleNamespace(
                 goal="Cold start task",
-                file=["harness/sync.py"],
+                file=["harness/cli.py"],
                 frontier_model=None,
                 execute=True,
                 parallel=False,
@@ -137,8 +139,20 @@ class PyramidStateTests(unittest.TestCase):
                 ],
                 "composed_worst_case": {"composed_worst_case": 0.0},
             }
+            from harness.token_budget import TokenBudget
+            from harness.waist import STAGE_EXECUTION, compose_stages
+
+            def compose_plan(*args, composition_runtime=None, **kwargs):
+                composition_runtime["composition"] = compose_stages(
+                    budget=TokenBudget(label="test-run"),
+                    declared=[STAGE_EXECUTION])
+                composition_runtime["retained_brief"] = {
+                    "request": "Cold start task"}
+                composition_runtime["jev_policy"] = NativeJevPolicy()
+                return canned_plan
 
             engine = MagicMock()
+            engine.jev_policy = None
             engine.governor = MagicMock()
             engine.governor.max_cost = 1.0
 
@@ -151,9 +165,10 @@ class PyramidStateTests(unittest.TestCase):
 
             emitted1 = {}
             with patch("harness.cli._session", return_value=engine), \
-                 patch("harness.cli._compose_plan", return_value=canned_plan), \
-                 patch("harness.cli.PlanExecutor", side_effect=SpyExec), \
+                 patch("harness.cli._compose_plan", side_effect=compose_plan), \
+                 patch("harness.cli.PlanExecutor", side_effect=SpyExec) as executor_cls, \
                  patch("harness.cli._emit_by_status", side_effect=lambda r, o=None: emitted1.update(r)):
+                executor_cls.summarize.side_effect = PlanExecutor.summarize
                 _cmd_plan(opts, settings)
 
             self.assertEqual(emitted1.get("status"), "ok")
@@ -165,9 +180,10 @@ class PyramidStateTests(unittest.TestCase):
             # Run 2: resume should detect task_1 is already complete and short-circuit
             emitted2 = {}
             with patch("harness.cli._session", return_value=engine), \
-                 patch("harness.cli._compose_plan", return_value=canned_plan), \
-                 patch("harness.cli.PlanExecutor", side_effect=SpyExec), \
+                 patch("harness.cli._compose_plan", side_effect=compose_plan), \
+                 patch("harness.cli.PlanExecutor", side_effect=SpyExec) as executor_cls, \
                  patch("harness.cli._emit_by_status", side_effect=lambda r, o=None: emitted2.update(r)):
+                executor_cls.summarize.side_effect = PlanExecutor.summarize
                 _cmd_plan(opts, settings)
 
             self.assertEqual(emitted2.get("status"), "ok")

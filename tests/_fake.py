@@ -1,5 +1,6 @@
 """Shared fakes for hermetic (no-network) tests."""
 import json
+from types import SimpleNamespace
 
 from harness.spend import SpendGovernor
 
@@ -15,6 +16,87 @@ JEV_URL = "https://api.typesafe.ai/v1/systemone"
 def _gov(fake, **kw):
     """A SpendGovernor over ``fake`` with the standard test key."""
     return SpendGovernor(fake, "sk-test", **kw)
+
+
+class NativeJevPolicy:
+    """Small, explicit native judgments for lane wiring tests.
+
+    This fake is only for tests that exercise downstream lane behavior. Tests
+    of Jev parsing, fallback, or fail-closed decisions should use their own
+    deliberately malformed or unavailable policy instead.
+    """
+
+    keyed = True
+
+    @staticmethod
+    def _result(answers=None):
+        return SimpleNamespace(
+            answers=dict(answers or {}), is_fallback=False, cost=0.0,
+            reasons=[], model="test-native", input_tokens=0,
+            output_tokens=0)
+
+    def evaluate_hourglass_stage(self, dimension, state, **kwargs):
+        signals = {
+            "context_intake": {
+                "context_relevant": 0.99,
+                "context_coverage_sufficient": 0.99,
+                "context_conflict_present": 0.01,
+            },
+            "plan_soundness": {
+                "plan_sound": 0.99,
+                "plan_evidence_requested": 0.01,
+            },
+            "execution": {
+                "execution_suitable": 0.99,
+                "checkpoint_required": 0.01,
+            },
+            "consent": {
+                "consent_fresh": 0.99,
+                "consent_defer_required": 0.01,
+                "escalation_justified": 0.01,
+            },
+        }
+        if dimension == "restart_target":
+            target = {"target": "planning"}
+            return self._result({"restart_target": target}), {
+                "native": True, "restart_target": target,
+            }
+        values = signals.get(dimension, {})
+        return self._result(values), {"native": True, **values}
+
+    def evaluate_answer(self, prompt, answer, context, **kwargs):
+        return self._result({
+            "answer_sufficient": {"noul": 0.999},
+            "iteration_required": False,
+            "plan_required": False,
+        }), {"native": True, "answer_sufficient": 0.999}
+
+    def evaluate_completion_nouls(self, goal, state_summary, **kwargs):
+        from pathlib import Path
+
+        artifacts = kwargs.get("named_artifacts") or ()
+        root = Path(kwargs.get("root_dir") or ".")
+        missing = []
+        for item in artifacts:
+            if isinstance(item, dict):
+                path = str(item.get("path") or "")
+                present = (bool(item.get("present"))
+                           if "present" in item else
+                           bool(path) and (root / path).is_file())
+            else:
+                path = str(item or "")
+                present = bool(path) and (root / path).is_file()
+            if path and not present:
+                missing.append(path)
+        result = self._result({
+            "named_artifacts_present": {"noul": 0.0 if missing else 0.999},
+            "goal_achieved": {"noul": 0.0 if missing else 0.999},
+        })
+        return result, {
+            "native": True,
+            "cannot_complete": bool(missing),
+            "missing_artifacts": missing,
+        }
 
 
 class FakeTransport:

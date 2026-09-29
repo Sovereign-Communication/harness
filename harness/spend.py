@@ -570,6 +570,12 @@ class NodeReserver:
         return None
 
     def reserve(self, node):
+        # A plan executor may be given a deliberately minimal fake engine in
+        # hermetic tests. In that case there is no governor to reserve against;
+        # return the same sentinel used by unmetered nodes instead of failing
+        # while trying to access ``reserve`` on None.
+        if self.governor is None:
+            return None
         amount = self.declared_ceiling(node)
         reason = "planned route ceiling"
         if amount is None:
@@ -597,7 +603,8 @@ class NodeReserver:
         return None
 
     def reconcile(self, token, actual):
-        self.governor.reconcile(token, actual)
+        if self.governor is not None:
+            self.governor.reconcile(token, actual)
 
 
 def _dollar_amount(value):

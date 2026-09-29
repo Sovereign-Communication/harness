@@ -318,6 +318,52 @@ class ConcurrencyTests(unittest.TestCase):
         self.assertEqual(run.open_allowances, 0)
         self.assertEqual(run.snapshot()["usage_sources"][USAGE_ACTUAL], 40)
 
+    def test_racing_settle_and_cancel_transition_an_allowance_once(self):
+        # Both workers start together on the same allowance. Exactly one
+        # transition may win, regardless of whether they request the same or
+        # conflicting terminal operation.
+        for operations in (
+                ("settle", "settle"),
+                ("cancel", "cancel"),
+                ("settle", "cancel")):
+            with self.subTest(operations=operations):
+                run = TokenBudget(max_input_tokens=100, max_output_tokens=10)
+                call = run.allowance(20, max_output_tokens=5)
+                start = threading.Barrier(3)
+                outcomes = []
+                outcome_lock = threading.Lock()
+
+                def worker(operation):
+                    start.wait()
+                    try:
+                        if operation == "settle":
+                            run.settle(call, input_tokens=20, output_tokens=3)
+                        else:
+                            run.cancel(call)
+                        result = "ok"
+                    except HarnessError:
+                        result = "rejected"
+                    with outcome_lock:
+                        outcomes.append(result)
+
+                threads = [threading.Thread(target=worker, args=(op,))
+                           for op in operations]
+                for thread in threads:
+                    thread.start()
+                start.wait()
+                for thread in threads:
+                    thread.join()
+
+                self.assertEqual(outcomes.count("ok"), 1)
+                self.assertEqual(outcomes.count("rejected"), 1)
+                snap = run.snapshot()
+                self.assertEqual(snap["open_allowances"], 0)
+                self.assertEqual(snap["reserved_input_tokens"], 0)
+                self.assertEqual(snap["reserved_output_tokens"], 0)
+                self.assertEqual(snap["calls"] + snap["cancelled"], 1)
+                self.assertTrue(call.settled)
+                self.assertEqual(call.cancelled, snap["cancelled"] == 1)
+
 
 class IndependenceFromDollarsTests(unittest.TestCase):
     def test_token_allowances_are_enforced_independently_of_spend(self):

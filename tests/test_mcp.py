@@ -972,6 +972,149 @@ class PlanWaistTests(unittest.TestCase):
         self.assertEqual(plan["confirmation"]["evidence"], "brief: task_2 is concurrency")
 
 
+class PlanRefusalExecutionGuardTests(unittest.TestCase):
+    def test_composed_refusal_never_constructs_executor(self):
+        """An MCP evidence request is terminal even when execution is asked."""
+        from harness import mcp
+
+        refusal = {
+            "status": "refused",
+            "reason": "planning requested evidence",
+            "planning": {"outcome": "evidence_request"},
+        }
+        _, server = make_server()
+        with mock.patch.object(mcp, "compose_plan", return_value=refusal), \
+             mock.patch.object(mcp, "PlanExecutor") as executor:
+            result = server._invoke("plan_and_execute", {
+                "goal": "Plan a risky change", "execute": True,
+                "allow_write": True, "decompose_llm": True,
+            })
+
+        self.assertEqual(result, refusal)
+        executor.assert_not_called()
+
+
+class PlanExecutionBudgetWiringTests(unittest.TestCase):
+    def test_mcp_rejects_invalid_hourglass_inputs_before_planning(self):
+        from harness.errors import HarnessError
+
+        invalid = [
+            {"hourglass_stages": ["invented"]},
+            {"hourglass_stages": ["planning", "planning"]},
+            {"max_input_tokens": -1},
+            {"max_output_tokens": 1.5},
+            {"max_input_tokens": True},
+        ]
+        for extra in invalid:
+            with self.subTest(extra=extra):
+                _, server = make_server()
+                with self.assertRaises(HarnessError):
+                    server._invoke("plan_and_execute", {"goal": "ship", **extra})
+
+    def test_mcp_surface_caps_and_selected_stages_reach_composer(self):
+        from harness import mcp
+        from harness.waist import STAGE_EXECUTION, compose_stages
+
+        captured = {}
+        _, server = make_server()
+        server.settings = SimpleNamespace(
+            token_budget_input=5000, token_budget_output=500,
+            hourglass_stages=["context", "planning"], use_free=True,
+            allow_escalation=False)
+        server.engine.jev_policy = object()
+        retained_brief = {"request": "g", "evidence": ["full brief"]}
+
+        def fake_compose_plan(**kwargs):
+            captured.update(kwargs)
+            budget = kwargs["token_budget"]
+            composed = compose_stages(budget=budget,
+                                      declared=kwargs["stages"])
+            runtime = kwargs["composition_runtime"]
+            runtime["composition"] = composed
+            runtime["run_budget"] = budget
+            runtime["retained_brief"] = retained_brief
+            return {"status": "planned", "goal": "g", "dag": {"nodes": []},
+                    "nodes": [], "total_nodes": 0}
+
+        aligned = {"native": True, "supported": 0.5, "aligned": False,
+                   "threshold": 0.99}
+        driven = {
+            "all_results": {"r1/node": {"status": "ok", "cost": 0.0,
+                                         "node_id": "node"}},
+            "last_round_results": {"node": {"status": "ok", "cost": 0.0}},
+            "total_cost": 0.0, "rounds_history": [],
+            "final_all_ok": False, "remaining_scope": "unaligned",
+            "final_alignment": aligned,
+            "plan": {"status": "planned", "goal": "g",
+                     "dag": {"nodes": []}, "nodes": [], "total_nodes": 0},
+        }
+
+        with mock.patch.object(mcp, "compose_plan",
+                               side_effect=fake_compose_plan), \
+             mock.patch.object(mcp.TaskDAG, "from_dict",
+                               return_value=SimpleNamespace(nodes=[])), \
+             mock.patch.object(mcp, "PlanExecutor") as executor, \
+             mock.patch.object(mcp, "aggregate_structural", return_value=None), \
+             mock.patch.object(mcp, "drive", return_value=driven) as drive_run:
+            executor.return_value.execute.return_value = {
+                "node": {"status": "ok", "cost": 0.0}}
+            result = server._invoke("plan_and_execute", {
+                "goal": "g", "execute": True, "allow_write": True,
+                "confirm": False, "decompose_llm": False,
+                "parallel": False, "max_workers": 1,
+                "hourglass_stages": [STAGE_EXECUTION],
+                "max_input_tokens": 1200, "max_output_tokens": 100})
+
+        self.assertEqual(captured["stages"], [STAGE_EXECUTION])
+        self.assertEqual((captured["token_budget"].max_input_tokens,
+                          captured["token_budget"].max_output_tokens),
+                         (1200, 100))
+        self.assertTrue(drive_run.call_args.kwargs["alignment_only"])
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["final_alignment"]["supported"], 0.5)
+
+    def test_mcp_passes_the_live_execution_child_to_executor(self):
+        from harness import mcp
+        from harness.token_budget import TokenBudget
+        from harness.waist import STAGE_EXECUTION, compose_stages, stage_budget
+
+        run_budget = TokenBudget("run")
+        composition = compose_stages(
+            budget=run_budget, declared=[STAGE_EXECUTION])
+        execution_budget = stage_budget(composition, STAGE_EXECUTION)
+        settings = SimpleNamespace(
+            token_budget_input=200000, token_budget_output=64000,
+            hourglass_stages=[STAGE_EXECUTION], use_free=True,
+            allow_escalation=False)
+        _, server = make_server()
+        server.settings = settings
+
+        def fake_compose_plan(**kwargs):
+            runtime = kwargs["composition_runtime"]
+            runtime["composition"] = composition
+            runtime["run_budget"] = run_budget
+            return {"status": "planned", "goal": "g", "dag": {"nodes": []},
+                    "nodes": [], "total_nodes": 0}
+
+        with mock.patch.object(mcp, "compose_plan",
+                               side_effect=fake_compose_plan), \
+             mock.patch.object(mcp.TaskDAG, "from_dict",
+                               return_value=SimpleNamespace(nodes=[])), \
+             mock.patch.object(mcp, "PlanExecutor") as executor, \
+             mock.patch.object(mcp, "aggregate_structural", return_value=None):
+            executor.return_value.execute.return_value = {
+                "node": {"status": "ok", "cost": 0.0}}
+            executor.summarize.return_value = {
+                "all_ok": True, "completed": 1, "total_cost": 0.0,
+                "final_gate": None}
+            server._invoke("plan_and_execute", {
+                "goal": "g", "execute": True, "allow_write": True,
+                "confirm": False, "decompose_llm": False,
+                "parallel": False, "max_workers": 1})
+
+        self.assertIs(executor.call_args.kwargs["token_budget"], execution_budget)
+
+
 class LaneSchedulingTests(unittest.TestCase):
     """The lane contract mcp.py's pool wiring depends on: LANES is the
     pool-creation order and lane_for routes every tool contract name.
@@ -1268,7 +1411,8 @@ class ContinueWorkToolTests(unittest.TestCase):
         with open(target, "w", encoding="utf-8") as f:
             f.write(ORIGINAL)
         transport, server = make_server(
-            posts=[comp(consent_json("accept")), comp(CHANGED)], allow_write=False)
+            posts=[comp(consent_json("accept")),
+                   comp(consent_json("accept")), comp(CHANGED)], allow_write=False)
         continuation = {"file_path": target, "verify_only": True,
                         "remaining_scope": "add zero"}
         result = server._invoke("continue_work", {"continuation": continuation})
@@ -1285,7 +1429,7 @@ class ContinueWorkToolTests(unittest.TestCase):
             f.write(ORIGINAL)
         verify_cmd = 'python -c "pass"'
         transport, server = make_server(
-            posts=[comp(consent_json("accept")),
+            posts=[comp(consent_json("accept")), comp(consent_json("accept")),
                    comp("HARNESS_READY: confident\n" + CHANGED),
                    comp("verify ok")])
         continuation = {"file_path": target, "verify_only": False,
@@ -1314,7 +1458,7 @@ class ContinueWorkToolTests(unittest.TestCase):
             f.write(ORIGINAL)
         verify_cmd = 'python -c "pass"'
         transport, server = make_server(
-            posts=[comp(consent_json("accept")),
+            posts=[comp(consent_json("accept")), comp(consent_json("accept")),
                    comp("HARNESS_READY: confident\n" + CHANGED),
                    comp("verify ok")])
         continuation = {"file_path": target, "verify_only": False,
@@ -1439,7 +1583,8 @@ class ContinueWorkToolTests(unittest.TestCase):
         with open(target, "w", encoding="utf-8") as f:
             f.write(ORIGINAL)
         transport, server = make_server(
-            posts=[comp(consent_json("accept")), comp("HARNESS_READY: confident\n" + CHANGED)])
+            posts=[comp(consent_json("accept")), comp(consent_json("accept")),
+                   comp("HARNESS_READY: confident\n" + CHANGED)])
         continuation = {"file_path": target, "verify_only": True,
                         "remaining_scope": "add zero"}
         result = server._invoke("continue_work", {

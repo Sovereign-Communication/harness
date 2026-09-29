@@ -13,6 +13,7 @@ regression: a drifted brief that skipped intake, and a selected stage that
 was silently absent, are both failures this slice exists to prevent.
 """
 import os
+import tempfile
 import unittest
 
 from harness.brief import build_brief, freshness_report
@@ -21,6 +22,8 @@ from harness.errors import HarnessError
 from harness.token_budget import TokenBudget
 from harness.waist import (
     HOURGLASS_DEFAULT_STAGES,
+    OUTCOME_PLAN,
+    OUTCOME_SUFFICIENT,
     STAGE_CONTEXT,
     STAGE_EXECUTION,
     STAGE_ORDER,
@@ -33,8 +36,10 @@ from harness.waist import (
     compose_stages,
     composition_envelope,
     resolve_stages,
+    runtime_stage_budget,
     stage_budget,
     stage_states,
+    run_planning,
 )
 
 
@@ -143,6 +148,37 @@ class CompositionOwnershipTests(unittest.TestCase):
         self.assertIsNone(stage_budget(comp, STAGE_CONTEXT))
         self.assertIsNone(stage_budget(comp, "no-such-stage"))
 
+    def test_bypassed_context_keeps_planning_narrower_than_execution(self):
+        run = self._budget()
+        comp = compose_stages(budget=run, supplied_brief=True)
+        planning = stage_budget(comp, STAGE_PLANNING)
+        execution = runtime_stage_budget(
+            {"composition": comp, "run_budget": run}, STAGE_EXECUTION)
+
+        self.assertIsNone(stage_budget(comp, STAGE_CONTEXT))
+        self.assertLess(planning.max_input_tokens, run.max_input_tokens)
+        self.assertLess(planning.max_output_tokens, run.max_output_tokens)
+        self.assertGreater(execution.max_input_tokens,
+                           planning.max_input_tokens)
+        self.assertGreater(execution.max_output_tokens,
+                           planning.max_output_tokens)
+        self.assertEqual(execution.snapshot()["parent"], run.label)
+
+    def test_runtime_budget_is_the_live_child_from_composition(self):
+        run = self._budget()
+        comp = compose_stages(budget=run)
+        runtime = {"composition": comp, "run_budget": run}
+
+        planning = runtime_stage_budget(runtime, STAGE_PLANNING)
+        execution = runtime_stage_budget(runtime, STAGE_EXECUTION)
+        self.assertIsNot(execution, stage_budget(comp, STAGE_EXECUTION))
+        self.assertEqual(execution.snapshot()["parent"], "run")
+        self.assertGreater(execution.max_input_tokens,
+                           planning.max_input_tokens)
+        self.assertGreater(execution.max_output_tokens,
+                           planning.max_output_tokens)
+        self.assertIsNone(runtime_stage_budget({}, STAGE_EXECUTION))
+
     def test_a_supplied_artifact_leaves_no_budget_for_the_skipped_stage(self):
         comp = compose_stages(budget=self._budget(), supplied_plan=True)
         self.assertIsNone(stage_budget(comp, STAGE_PLANNING))
@@ -198,6 +234,68 @@ class PlanLaneWiringTests(unittest.TestCase):
         plan = self._plan(token_budget=TokenBudget("run"))
         json.dumps(plan["composition"])  # budgets stay out of the envelope
 
+    def test_composer_retains_the_live_execution_budget_for_dispatch(self):
+        run = TokenBudget("run")
+        runtime = {}
+        plan = self._plan(
+            execute=True, token_budget=run, stages=[STAGE_EXECUTION],
+            composition_runtime=runtime)
+
+        self.assertNotEqual(plan.get("status"), "refused")
+        self.assertIs(runtime["run_budget"], run)
+        execution = runtime_stage_budget(runtime, STAGE_EXECUTION)
+        self.assertIs(execution, stage_budget(runtime["composition"],
+                                               STAGE_EXECUTION))
+        self.assertEqual(execution.snapshot()["parent"], "run")
+
+    def test_persisted_resume_plan_skips_fresh_decomposition(self):
+        from unittest.mock import patch
+
+        runtime = {}
+        persisted = {
+            "goal": "saved goal",
+            "dag": {"nodes": [
+                {"node_id": "pending", "instruction": "resume exact work",
+                 "target_files": ["harness/sync.py"], "dependencies": []},
+            ]},
+            "nodes": [{"node_id": "pending",
+                       "route": {"ladder": ["m/cheap"],
+                                 "cost_ceiling": 0.0}}],
+        }
+        budget = TokenBudget("resume")
+        with patch("harness.waist.plan_task",
+                   side_effect=AssertionError("resume must not replan")):
+            plan = self._plan(
+                execute=True, token_budget=budget,
+                stages=[STAGE_PLANNING, STAGE_EXECUTION],
+                composition_runtime=runtime,
+                persisted_plan=persisted)
+
+        self.assertEqual(plan["status"], "planned")
+        self.assertEqual(plan["resume_source"], "pyramid_state")
+        self.assertEqual(plan["goal"], "saved goal")
+        from harness.dag import TaskDAG
+        self.assertEqual(plan["dag"], TaskDAG.from_dict(persisted["dag"]).to_dict())
+        self.assertEqual(plan["decomposition"], "persisted_state")
+        self.assertIn(STAGE_PLANNING, plan["composition"]["bypassed"])
+        self.assertIsNotNone(runtime_stage_budget(runtime, STAGE_EXECUTION))
+
+    def test_persisted_resume_rejects_an_invalid_saved_dag(self):
+        persisted = {"dag": {"nodes": [
+            {"node_id": "broken", "instruction": "x",
+             "dependencies": ["missing"]},
+        ]}}
+        with self.assertRaisesRegex(HarnessError, "persisted plan DAG is invalid"):
+            self._plan(token_budget=TokenBudget("resume"),
+                       persisted_plan=persisted)
+
+    def test_execution_request_refuses_when_execution_stage_is_not_selected(self):
+        plan = self._plan(
+            execute=True, token_budget=TokenBudget("run"),
+            stages=[STAGE_CONTEXT, STAGE_PLANNING])
+        self.assertEqual(plan["status"], "refused")
+        self.assertIn("no composed TokenBudget", plan["reason"])
+
     def test_a_declared_subset_narrows_what_the_lane_composes(self):
         plan = self._plan(token_budget=TokenBudget("run"),
                           stages=[STAGE_CONTEXT, STAGE_PLANNING])
@@ -228,6 +326,180 @@ class PlanLaneWiringTests(unittest.TestCase):
                      if s["stage"] == STAGE_PLANNING)
         self.assertEqual(stage["state"], "completed")
 
+    def test_replanning_reuses_execution_budget_and_only_allows_remainder(self):
+        run = TokenBudget("run", max_input_tokens=20000,
+                          max_output_tokens=4000)
+        runtime = {}
+        self._plan(execute=True, token_budget=run,
+                   stages=[STAGE_EXECUTION], composition_runtime=runtime)
+        execution = runtime_stage_budget(runtime, STAGE_EXECUTION)
+        allowance = execution.allowance(300, max_output_tokens=100,
+                                        label="test-execution")
+        execution.settle(allowance, input_tokens=300, output_tokens=100)
+
+        self._plan(execute=True, token_budget=run,
+                   stages=[STAGE_EXECUTION], composition_runtime=runtime)
+        next_execution = runtime_stage_budget(runtime, STAGE_EXECUTION)
+        self.assertIsNot(next_execution, execution)
+        self.assertIs(next_execution._parent, execution)
+        self.assertEqual(next_execution.snapshot()["used_input_tokens"], 0)
+        self.assertEqual(next_execution.snapshot()["used_output_tokens"], 0)
+        self.assertEqual(next_execution._parent.snapshot()["used_input_tokens"],
+                         300)
+
+    def test_bypassed_earlier_stage_cannot_widen_execution_on_replan(self):
+        from harness.waist import _carry_runtime_stage_budget
+
+        run = TokenBudget("run", max_input_tokens=20000,
+                          max_output_tokens=4000)
+        previous = compose_stages(
+            budget=run, declared=[STAGE_CONTEXT, STAGE_EXECUTION])
+        previous_execution = stage_budget(previous, STAGE_EXECUTION)
+        # Once context has produced a supplied brief, execution becomes the
+        # first newly selected stage; its default ceiling must not grow.
+        replanned = compose_stages(
+            budget=run, declared=[STAGE_EXECUTION], supplied_brief=True,
+            brief={"estimated_tokens": 1000, "grounding": {"sources": []}})
+        _carry_runtime_stage_budget(replanned, previous, STAGE_EXECUTION)
+        carried = stage_budget(replanned, STAGE_EXECUTION)
+
+        self.assertIs(carried._parent, previous_execution)
+        self.assertEqual(carried.max_input_tokens,
+                         previous_execution.max_input_tokens)
+        self.assertEqual(carried.max_output_tokens,
+                         previous_execution.max_output_tokens)
+
+    def test_replanning_reuses_planning_budget_and_only_allows_remainder(self):
+        run = TokenBudget("run", max_input_tokens=20000,
+                          max_output_tokens=4000)
+        runtime = {}
+        self._plan(token_budget=run, stages=[STAGE_PLANNING],
+                   composition_runtime=runtime)
+        planning = runtime_stage_budget(runtime, STAGE_PLANNING)
+        allowance = planning.allowance(300, max_output_tokens=100,
+                                       label="test-planning")
+        planning.settle(allowance, input_tokens=300, output_tokens=100)
+
+        self._plan(token_budget=run, stages=[STAGE_PLANNING],
+                   composition_runtime=runtime)
+        next_planning = runtime_stage_budget(runtime, STAGE_PLANNING)
+        self.assertIsNot(next_planning, planning)
+        self.assertIs(next_planning._parent, planning)
+        self.assertEqual(next_planning.max_input_tokens,
+                         planning.max_input_tokens - 300)
+        self.assertEqual(next_planning.max_output_tokens,
+                         planning.max_output_tokens - 100)
+        self.assertEqual(planning.snapshot()["used_input_tokens"], 300)
+        self.assertEqual(planning.snapshot()["used_output_tokens"], 100)
+
+    def test_all_default_plan_provider_calls_are_accounted_in_planning_stage(self):
+        import json
+        from harness.spend import SpendGovernor
+        from harness.waist import compose_plan
+        from tests._fake import FakeTransport, comp as completion, m
+
+        decomposition = json.dumps({"nodes": [{
+            "node_id": "task_1", "instruction": "Update the helper",
+            "target_files": ["harness/token_budget.py"], "dependencies": [],
+            "local_gate": None, "complexity_tier": 0,
+        }]})
+        fake = FakeTransport(
+            models=[m("m/cheap")],
+            posts=[completion(content=decomposition),
+                   completion(content='{"sound": true}'),
+                   completion(content='{"verdict": "approve"}')])
+        governor = SpendGovernor(fake, "sk-test", max_cost=1.0)
+        run = TokenBudget("run", max_input_tokens=200000,
+                          max_output_tokens=64000)
+        runtime = {}
+
+        compose_plan(
+            transport=fake, api_key="sk-test", governor=governor,
+            ledger=None, opts_goal="Update the helper",
+            candidate_files=["harness/token_budget.py"],
+            root=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            frontier_model="m/cheap", decompose_model="m/cheap",
+            decompose_llm=True, plan_consensus=True, confirm=True,
+            token_budget=run, stages=[STAGE_PLANNING],
+            composition_runtime=runtime)
+
+        self.assertEqual(len(fake.chat_posts()), 3)
+        planning = runtime_stage_budget(runtime, STAGE_PLANNING)
+        self.assertEqual(planning.snapshot()["calls"], 3)
+        self.assertEqual(planning.snapshot()["by_label"]["decompose"]["calls"], 1)
+        self.assertEqual(
+            planning.snapshot()["by_label"]["planning_consensus"]["calls"], 1)
+        self.assertEqual(
+            planning.snapshot()["by_label"]["planning_confirmation"]["calls"], 1)
+        self.assertEqual(run.snapshot()["calls"], 3)
+
+    def test_exhausted_planning_budget_refuses_before_decomposition_dispatch(self):
+        from harness.spend import SpendGovernor
+        from harness.waist import compose_plan
+        from tests._fake import FakeTransport, m
+
+        fake = FakeTransport(models=[m("m/cheap")])
+        governor = SpendGovernor(fake, "sk-test", max_cost=1.0)
+        run = TokenBudget("run", max_input_tokens=20000,
+                          max_output_tokens=1)
+        compose_plan(
+            transport=fake, api_key="sk-test", governor=governor,
+            ledger=None, opts_goal="Update the helper",
+            candidate_files=["harness/sync.py"],
+            root=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            frontier_model="m/cheap", decompose_model="m/cheap",
+            decompose_llm=True, execute=True, allow_heuristic_preview=True,
+            token_budget=run, stages=[STAGE_PLANNING])
+
+        self.assertEqual(fake.chat_posts(), [])
+        self.assertEqual(run.snapshot()["calls"], 0)
+        self.assertEqual(run.snapshot()["open_allowances"], 0)
+
+    def test_plan_soundness_judgment_is_preserved_in_outcome(self):
+        from types import SimpleNamespace
+
+        class Policy:
+            def __init__(self):
+                self.kwargs = None
+
+            def evaluate_hourglass_stage(self, dimension, state, **kwargs):
+                self.kwargs = kwargs
+                return SimpleNamespace(answers={}), {
+                    "native": False, "result_state": "unavailable",
+                    "fallback_state": "fallback", "dimension": dimension,
+                }
+
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "evidence.py")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("value = 1\n")
+
+            def reader(name):
+                with open(os.path.join(root, name), encoding="utf-8") as f:
+                    return f.read()
+
+            brief = build_brief("inspect evidence", ["evidence.py"],
+                                reader=reader)
+            brief["conflicts"] = [{
+                "source_ids": [brief["grounding"]["sources"][0]["id"]],
+                "description": "candidate evidence conflicts",
+            }]
+            budget = TokenBudget("run", max_input_tokens=20000,
+                                 max_output_tokens=4000)
+            composition = compose_stages(
+                budget=budget, declared=[STAGE_PLANNING], brief=brief,
+                supplied_brief=True, reader=reader)
+            planning_stage = stage_budget(composition, STAGE_PLANNING)
+            policy = Policy()
+            outcome = run_planning(
+                goal="inspect evidence", budget=budget,
+                stage_budget=planning_stage, files=["evidence.py"],
+                reader=reader, brief=brief, jev_policy=policy)
+        self.assertIs(policy.kwargs["token_budget"], budget)
+        self.assertIs(policy.kwargs["token_stage_budget"], planning_stage)
+        self.assertEqual(outcome.to_dict()["jev_judgment"]["fallback_state"],
+                         "fallback")
+
     def test_planning_outcomes_gate_only_the_composed_dag_when_not_sufficient(self):
         from unittest.mock import patch
         from harness.waist import (
@@ -236,7 +508,8 @@ class PlanLaneWiringTests(unittest.TestCase):
         )
 
         outcomes = [
-            (PlanningOutcome(OUTCOME_SUFFICIENT), "planned", None),
+            (PlanningOutcome(OUTCOME_SUFFICIENT), "refused",
+             "did not validate the exact composed execution DAG"),
             (PlanningOutcome(OUTCOME_DEFER, reason="evidence conflicts"),
              "refused", "evidence conflicts"),
             (PlanningOutcome(
@@ -245,7 +518,7 @@ class PlanLaneWiringTests(unittest.TestCase):
              "refused", "need a source"),
             (PlanningOutcome(OUTCOME_PLAN, reason="validated_bounded_plan",
                              plan={"nodes": []}), "refused",
-             "separate plan without an adapter"),
+             "did not validate the exact composed execution DAG"),
             (type("UnknownOutcome", (), {
                 "to_dict": lambda self: {"kind": "unexpected"},
             })(), "refused", "unsupported outcome"),
@@ -257,7 +530,7 @@ class PlanLaneWiringTests(unittest.TestCase):
                 with patch("harness.waist.run_planning", return_value=outcome):
                     plan = self._plan(
                         execute=True, token_budget=budget,
-                        stages=[STAGE_PLANNING])
+                        stages=[STAGE_PLANNING, STAGE_EXECUTION])
                 self.assertEqual(plan["status"], expected_status)
                 self.assertEqual(plan["planning"], outcome.to_dict())
                 if expected_status == "refused":
@@ -267,20 +540,70 @@ class PlanLaneWiringTests(unittest.TestCase):
                 else:
                     self.assertNotIn("confirmation", plan)
 
-    def test_selected_planning_composes_real_defer_once_without_a_live_judge(self):
+    def test_validated_plan_outcome_accepts_the_exact_composed_dag(self):
+        from unittest.mock import patch
+        from harness.dag import TaskDAG
+        from harness.waist import PlanningOutcome, OUTCOME_PLAN
+
+        def validate_existing_plan(**kwargs):
+            composed = kwargs["planner"](kwargs["goal"], kwargs.get("brief"))
+            return PlanningOutcome(
+                OUTCOME_PLAN, reason="validated_bounded_plan",
+                plan=TaskDAG.from_dict(composed))
+
+        with patch("harness.waist.run_planning",
+                   side_effect=validate_existing_plan) as run:
+            plan = self._plan(
+                execute=True, token_budget=TokenBudget("run"),
+                stages=[STAGE_PLANNING, STAGE_EXECUTION])
+
+        run.assert_called_once()
+        self.assertEqual(plan["status"], "planned")
+        self.assertEqual(plan["planning"]["kind"], OUTCOME_PLAN)
+        self.assertEqual(plan["planning"]["plan"], plan["dag"])
+
+    def test_selected_planning_validates_existing_dag_without_live_judge(self):
         brief = {"estimated_tokens": 17, "grounding": {"sources": []}}
         budget = TokenBudget("run", max_input_tokens=20000,
                              max_output_tokens=4000)
         plan = self._plan(token_budget=budget,
                           stages=[STAGE_PLANNING], brief=brief)
 
-        self.assertEqual(plan["planning"]["kind"], "defer")
-        self.assertEqual(plan["planning"]["reason"], "no_evidence_cited")
+        self.assertEqual(plan["planning"]["kind"], OUTCOME_PLAN)
+        self.assertNotEqual(plan["planning"]["kind"], OUTCOME_SUFFICIENT)
         stage = next(s for s in plan["composition"]["stages"]
                      if s["stage"] == STAGE_PLANNING)
         self.assertEqual(stage["state"], "completed")
         self.assertNotIn(STAGE_PLANNING, plan["composition"]["completed"])
         self.assertNotIn(STAGE_PLANNING, plan["composition"]["skipped"])
+
+    def test_sufficient_brief_still_validates_the_execution_dag(self):
+        from harness.dag import TaskDAG
+
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "evidence.py")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("value = 1\n")
+
+            def reader(name):
+                with open(os.path.join(root, name), encoding="utf-8") as f:
+                    return f.read()
+
+            brief = build_brief("inspect evidence", ["evidence.py"],
+                                reader=reader)
+            dag = TaskDAG.from_dict({"nodes": [{
+                "node_id": "task_1", "instruction": "Inspect evidence",
+                "target_files": ["evidence.py"], "dependencies": [],
+            }]})
+            budget = TokenBudget("run", max_input_tokens=20000,
+                                 max_output_tokens=4000)
+            outcome = run_planning(
+                goal="inspect evidence", budget=budget,
+                brief=brief, files=["evidence.py"], reader=reader,
+                planner=lambda _goal, _brief: dag.to_dict())
+
+        self.assertEqual(outcome.kind, OUTCOME_SUFFICIENT)
+        self.assertEqual(outcome.to_dict()["plan"], dag.to_dict())
 
     def test_unselected_planning_does_not_invoke_owner(self):
         from unittest.mock import patch
@@ -544,18 +867,16 @@ class IntakeBriefTests(unittest.TestCase):
         self.assertIn(STAGE_CONTEXT, comp["bypassed"])
         self.assertIn(STAGE_CONTEXT, comp["completed"])
         self.assertNotIn(STAGE_CONTEXT, comp["skipped"])
-        # Its measured size is what caps the LATER stages. `planning` is the
-        # first *composed* stage here (the context stage did not compose), and
-        # HV-4's contract is that the first composing stage inherits the run's
-        # own ceiling -- so the brief's cap lands on the stage after it,
-        # floored at the contract's minimum stage allowance. That is what
-        # "preflights the later stages" means, and this pins both halves.
+        # Its measured size caps the later stages. Context bypass means
+        # planning is first in the stage list, but it remains narrower than
+        # the run ceiling when execution is also selected, leaving room for
+        # HV-5's wider execution allowance.
         from harness.waist import MIN_STAGE_INPUT_TOKENS
         planning = [entry for entry in comp["stages"]
                     if entry["stage"] == STAGE_PLANNING][0]
         execution = [entry for entry in comp["stages"]
                      if entry["stage"] == STAGE_EXECUTION][0]
-        self.assertEqual(planning["max_input_tokens"], 200000)
+        self.assertLess(planning["max_input_tokens"], 200000)
         self.assertLessEqual(execution["max_input_tokens"],
                              max(arguments["brief_tokens"],
                                  MIN_STAGE_INPUT_TOKENS))

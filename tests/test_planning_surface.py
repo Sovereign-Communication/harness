@@ -13,7 +13,9 @@ from harness.mcp_lanes import lane_for
 from harness.mcp_schemas import TOOL_SCHEMAS
 from harness.repo_scope import _gate_python, rebase_gate
 from harness.token_budget import TokenBudget
-from harness.waist import HOURGLASS_DEFAULT_STAGES
+from harness.waist import (HOURGLASS_DEFAULT_STAGES,
+                           compose_stages)
+from tests._fake import NativeJevPolicy
 
 
 def composed_settings():
@@ -43,6 +45,27 @@ def settings_without_planning(settings):
     return settings
 
 
+def _finish_fake_composition(kwargs):
+    """Stand-in for compose_plan's runtime budget capture in patched lanes."""
+    runtime = kwargs.get("composition_runtime")
+    budget = kwargs.get("token_budget")
+    if not isinstance(runtime, dict) or not isinstance(budget, TokenBudget):
+        return
+    runtime["composition"] = compose_stages(
+        budget=budget, declared=kwargs.get("stages"),
+        supplied_brief=kwargs.get("supplied_brief", False),
+        supplied_plan=kwargs.get("supplied_plan", False),
+        brief=kwargs.get("brief"),
+        brief_tokens=kwargs.get("brief_tokens"),
+        reader=kwargs.get("reader"))
+    runtime["run_budget"] = budget
+    runtime["retained_brief"] = (kwargs.get("brief") or {
+        "request": kwargs.get("opts_goal", "")})
+    # The planner is stubbed in these tests, so use an explicit native policy
+    # for the downstream execution and final-alignment wiring too.
+    runtime["jev_policy"] = NativeJevPolicy()
+
+
 @contextmanager
 def _temporary_git_cwd():
     """Give isolation tests private Git metadata instead of operator .git."""
@@ -50,7 +73,7 @@ def _temporary_git_cwd():
     with _tempfile.TemporaryDirectory() as repo:
         subprocess.run(["git", "init", "-q", repo], check=True,
                        capture_output=True, text=True)
-        for name in ("iso_a.py", "iso_b.py"):
+        for name in ("iso_a.py", "iso_b.py", "iso_c.py", "iso_d.py"):
             with open(os.path.join(repo, name), "w", encoding="utf-8") as f:
                 f.write("value = 1\n")
         subprocess.run(["git", "-C", repo, "add", "."], check=True,
@@ -218,6 +241,7 @@ class TestPlanningSurface(unittest.TestCase):
         mock_router.judge = "judge-model"
         mock_router.panel_pool = ["m1"]
         mock_engine = MagicMock()
+        mock_engine.jev_policy = NativeJevPolicy()
         mock_engine.reasoning_token_budget = 0.4
         mock_engine.reasoning_effort = "auto"
         mock_engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
@@ -260,7 +284,7 @@ class TestPlanningSurface(unittest.TestCase):
 
         # 3. Execution mode with allow_write succeeds and exercises target_files
         server.allow_write = True
-        exec_res = server._invoke("plan_and_execute", {"goal": "Step A", "file": ["foo.py"], "execute": True, "confirm": False, "require_diff_authorization": False, "decompose_llm": False, "final_gate": False})
+        exec_res = server._invoke("plan_and_execute", {"goal": "Step A", "file": ["harness/cli.py"], "execute": True, "confirm": False, "require_diff_authorization": False, "decompose_llm": False, "final_gate": False})
         self.assertEqual(exec_res["status"], "ok")
         self.assertEqual(exec_res["completed_nodes"], 1)
         mock_engine.apply_edit.assert_called()
@@ -285,10 +309,13 @@ class TestPlanningSurface(unittest.TestCase):
                                    hourglass_confirm=False,
                                    hourglass_parallel=False,
                                    hourglass_decompose=False,
+                                   jev_api_key=None,
                                    hourglass_stages=["context", "execution",
                                                      "verification"])
 
-        with patch("harness.cli._emit") as mock_emit:
+        with patch("harness.cli.policy_for",
+                   return_value=NativeJevPolicy()), \
+             patch("harness.cli._emit") as mock_emit:
             _cmd_plan(opts, settings)
             mock_emit.assert_called_once()
             res = mock_emit.call_args[0][0]
@@ -301,12 +328,13 @@ class TestPlanningSurface(unittest.TestCase):
         from unittest.mock import MagicMock, patch
 
         mock_engine = MagicMock()
+        mock_engine.jev_policy = NativeJevPolicy()
         mock_engine.apply_edit.return_value = {"status": "ok", "cost": 0.002}
 
         # 1. Sequential execution (parallel=False)
         opts_seq = SimpleNamespace(
             goal="Refactor auth system",
-            file=["harness/auth.py"],
+            file=["harness/cli.py"],
             frontier_model="fable-5.1",
             execute=True,
             parallel=False,
@@ -328,10 +356,14 @@ class TestPlanningSurface(unittest.TestCase):
                                    hourglass_isolate=False,
                                    hourglass_require_attestation=False,
                                    hourglass_decompose=False,
+                                   jev_api_key=None,
                                    hourglass_stages=["context", "execution",
                                                      "verification"])
 
-        with patch("harness.cli._session", return_value=mock_engine), patch("harness.cli._emit_by_status") as mock_emit:
+        with patch("harness.cli._session", return_value=mock_engine), \
+             patch("harness.cli.policy_for",
+                   return_value=NativeJevPolicy()), \
+             patch("harness.cli._emit_by_status") as mock_emit:
             _cmd_plan(opts_seq, settings)
             mock_emit.assert_called_once()
             res = mock_emit.call_args[0][0]
@@ -363,7 +395,10 @@ class TestPlanningSurface(unittest.TestCase):
             decompose_llm=False,
             final_gate=False,
         )
-        with patch("harness.cli._session", return_value=mock_engine), patch("harness.cli._emit_by_status") as mock_emit:
+        with patch("harness.cli._session", return_value=mock_engine), \
+             patch("harness.cli.policy_for",
+                   return_value=NativeJevPolicy()), \
+             patch("harness.cli._emit_by_status") as mock_emit:
             _cmd_plan(opts_par, settings)
             mock_emit.assert_called_once()
             res = mock_emit.call_args[0][0]
@@ -450,6 +485,7 @@ class TestPlanningSurface(unittest.TestCase):
         from harness.cli import _cmd_plan
 
         mock_engine = MagicMock()
+        mock_engine.jev_policy = NativeJevPolicy()
         mock_engine.apply_edit.return_value = {"status": "ok", "cost": 0.002}
         goal = "Refactor concurrency architecture and eliminate race condition"
         opts = SimpleNamespace(
@@ -473,10 +509,13 @@ class TestPlanningSurface(unittest.TestCase):
                                    hourglass_confirm=False,
                                    hourglass_isolate=False,
                                    hourglass_require_attestation=False,
+                                   jev_api_key=None,
                                    hourglass_stages=["context", "execution",
                                                      "verification"])
 
         with patch("harness.cli._session", return_value=mock_engine), \
+             patch("harness.cli.policy_for",
+                   return_value=NativeJevPolicy()), \
              patch("harness.cli._emit_by_status") as mock_emit:
             _cmd_plan(opts, settings)
             self.assertEqual(mock_emit.call_count, 1)
@@ -543,6 +582,7 @@ class TestPlanningSurface(unittest.TestCase):
         """compose_plan stand-in for execute-lane tests: the hourglass
         defaults are resolved UPSTREAM of this owner, so the lane tests
         only need a valid planned DAG."""
+        _finish_fake_composition(kwargs)
         return {
             "status": "planned",
             "goal": kwargs.get("opts_goal", ""),
@@ -571,6 +611,7 @@ class TestPlanningSurface(unittest.TestCase):
             return {"status": "ok", "cost": 0.001}
 
         mock_engine = MagicMock()
+        mock_engine.jev_policy = NativeJevPolicy()
         mock_engine.apply_edit.side_effect = fake_apply
         opts = SimpleNamespace(
             goal="Update the modules",
@@ -672,18 +713,20 @@ class TestPlanningSurface(unittest.TestCase):
             return captured["exec"]
 
         def single_node_plan(*args, **kwargs):
+            _finish_fake_composition(kwargs)
+            targets = kwargs.get("candidate_files") or ["iso_a.py"]
             return {
                 "status": "planned", "goal": kwargs.get("opts_goal", ""),
                 "dag": {"nodes": [
                     {"node_id": "task_1", "instruction": "do a",
-                     "target_files": ["iso_a.py"], "dependencies": []}]},
+                     "target_files": list(targets), "dependencies": []}]},
                 "nodes": [
                     {"node_id": "task_1",
                      "route": {"ladder": ["m/a"], "cost_ceiling": 0.04}}],
             }
 
         opts = SimpleNamespace(
-            goal="Update the module", file=["iso_a.py"],
+            goal="Update the module", file=["harness/cli.py"],
             frontier_model=None, execute=True, parallel=True, max_workers=2,
             max_cost=None, keep_going=False, out=None, model=None,
             max_tokens=None, task_max_cost=None, allow_escalation=False,
@@ -696,9 +739,12 @@ class TestPlanningSurface(unittest.TestCase):
         engine = _StubEngine(gov)
 
         with patch("harness.cli._session", return_value=engine), \
+             patch("harness.cli.policy_for", return_value=NativeJevPolicy()), \
              patch("harness.cli._compose_plan", side_effect=single_node_plan), \
-             patch("harness.cli.PlanExecutor", side_effect=spy), \
+             patch("harness.cli.PlanExecutor", side_effect=spy) as executor_cls, \
              patch("harness.cli._emit_by_status") as mock_emit:
+            executor_cls.summarize.side_effect = \
+                executor_module.PlanExecutor.summarize
             _cmd_plan(opts, settings)
         res = mock_emit.call_args[0][0]
         self.assertEqual(res["status"], "ok")
@@ -715,7 +761,8 @@ class TestPlanningSurface(unittest.TestCase):
         from harness.cli import _cmd_plan
 
         mock_engine = MagicMock()
-        mock_engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
+        mock_engine.jev_policy = NativeJevPolicy()
+        mock_engine.apply_edit.side_effect = lambda **kwargs: {"status": "ok", "cost": 0.001}
         opts = SimpleNamespace(
             goal="Update the modules",
             file=["iso_a.py", "iso_b.py"],
@@ -749,7 +796,8 @@ class TestPlanningSurface(unittest.TestCase):
              patch("harness.executor.eprint") as mock_eprint, \
              patch("harness.cli._emit_by_status") as mock_emit:
             mock_iso_cls.return_value.available.return_value = False
-            _cmd_plan(opts, settings)
+            with _temporary_git_cwd():
+                _cmd_plan(opts, settings)
         res = mock_emit.call_args[0][0]
         # Degraded but usable: shared-tree mutex execution still runs.
         self.assertEqual(res["status"], "ok")
@@ -786,6 +834,7 @@ class TestPlanningSurface(unittest.TestCase):
         from harness.cli import _cmd_plan
 
         mock_engine = MagicMock()
+        mock_engine.jev_policy = NativeJevPolicy()
         mock_engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
         opts = SimpleNamespace(
             goal="Refactor auth system",
@@ -828,6 +877,7 @@ class TestPlanningSurface(unittest.TestCase):
         from harness.mcp import McpServer
 
         mock_engine = MagicMock()
+        mock_engine.jev_policy = NativeJevPolicy()
         mock_engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
         mock_gov = MagicMock()
         mock_gov.spent = 0.0
@@ -853,13 +903,17 @@ class TestPlanningSurface(unittest.TestCase):
             "status": "planned", "goal": "Refactor auth system",
             "dag": {"nodes": [
                 {"node_id": "task_1", "instruction": "Refactor auth system",
-                 "target_files": ["iso_e.py"], "dependencies": []}]},
+                 "target_files": ["harness/cli.py"], "dependencies": []}]},
             "nodes": [{"node_id": "task_1",
                        "route": {"ladder": ["m/a"], "cost_ceiling": 0.04}}],
         }
-        with patch("harness.mcp.compose_plan", return_value=canned) as cp:
+        def composed_canned(**kwargs):
+            _finish_fake_composition(kwargs)
+            return canned
+
+        with patch("harness.mcp.compose_plan", side_effect=composed_canned) as cp:
             plan_res = server._invoke("plan_and_execute", {
-                "goal": "Refactor auth system", "file": ["iso_e.py"],
+                "goal": "Refactor auth system", "file": ["harness/cli.py"],
                 "execute": True, "allow_write": True, "final_gate": False,
             })
         self.assertEqual(plan_res["status"], "ok")
@@ -907,6 +961,7 @@ class TestPlanningSurface(unittest.TestCase):
         from harness.mcp import McpServer
 
         mock_engine = MagicMock()
+        mock_engine.jev_policy = NativeJevPolicy()
         mock_engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
         server = McpServer(
             transport=MagicMock(), api_key="key",
@@ -919,13 +974,17 @@ class TestPlanningSurface(unittest.TestCase):
             "status": "planned", "goal": "g",
             "dag": {"nodes": [
                 {"node_id": "task_1", "instruction": "do a",
-                 "target_files": ["iso_e.py"], "dependencies": []}]},
+                 "target_files": ["harness/cli.py"], "dependencies": []}]},
             "nodes": [{"node_id": "task_1",
                        "route": {"ladder": ["m/a"], "cost_ceiling": 0.04}}],
         }
-        with patch("harness.mcp.compose_plan", return_value=canned) as cp:
+        def composed_canned(**kwargs):
+            _finish_fake_composition(kwargs)
+            return canned
+
+        with patch("harness.mcp.compose_plan", side_effect=composed_canned) as cp:
             server._invoke("plan_and_execute", {
-                "goal": "g", "file": ["iso_e.py"],
+                "goal": "g", "file": ["harness/cli.py"],
                 "execute": True, "allow_write": True,
                 "confirm": False, "parallel": False,
                 "require_diff_authorization": False,
@@ -955,6 +1014,7 @@ class TestPlanningSurface(unittest.TestCase):
         mock_router.judge = "judge-model"
         mock_router.panel_pool = ["m1"]
         mock_engine = MagicMock()
+        mock_engine.jev_policy = NativeJevPolicy()
         mock_engine.reasoning_token_budget = 0.4
         mock_engine.reasoning_effort = "auto"
         mock_engine.apply_edit.side_effect = fake_apply

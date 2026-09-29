@@ -15,6 +15,7 @@ class FinalGateTests(unittest.TestCase):
         """Nodes all report ok, but the discovered/declared final gate fails
         -- the run must NOT summarize as all_ok (composed tree is red)."""
         engine = MagicMock()
+        engine.jev_policy = None
         routes = {
             "task_1": {"node_id": "task_1",
                        "route": {"ladder": ["m/a"], "cost_ceiling": 0.0}},
@@ -44,6 +45,7 @@ class FinalGateTests(unittest.TestCase):
 
     def test_final_gate_opt_out_keeps_node_verdict(self):
         engine = MagicMock()
+        engine.jev_policy = None
         routes = {"task_1": {"node_id": "task_1",
                              "route": {"ladder": ["m/a"], "cost_ceiling": 0.0}}}
         dag = TaskDAG(nodes={
@@ -65,6 +67,7 @@ class FinalGateTests(unittest.TestCase):
 
     def test_final_gate_override_command_is_used(self):
         engine = MagicMock()
+        engine.jev_policy = None
         routes = {}
         dag = TaskDAG(nodes={
             "task_1": DAGNode(
@@ -88,6 +91,7 @@ class FinalGateTests(unittest.TestCase):
 
     def test_no_declared_gate_means_no_default_final_gate(self):
         engine = MagicMock()
+        engine.jev_policy = None
         dag = TaskDAG(nodes={
             "task_1": DAGNode(
                 node_id="task_1", instruction="edit a",

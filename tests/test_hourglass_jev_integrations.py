@@ -78,6 +78,7 @@ class FakeEvaluator:
         return JevEvaluationResult(
             "pass", 0.9, 0.9, dict(self.answers), [],
             cost=self.cost, input_tokens=self.input_tokens, output_tokens=10,
+            input_tokens_observed=True, output_tokens_observed=True,
             is_fallback=self.fallback, model=self.model,
             discarded=self.discard)
 
@@ -148,6 +149,18 @@ class RestartTransitionGuardTests(unittest.TestCase):
         # The preserved work is reported so a caller can resume, not repeat.
         self.assertEqual(sorted(decision["preserved_stages"]),
                          ["context", "planning"])
+
+    def test_final_alignment_can_open_a_new_amendment_from_completed_stage(self):
+        decision = validate_restart_request(
+            "final_alignment", "context",
+            completed_stages=["context", "planning", "execution"],
+            consent_fresh=True)
+        self.assertTrue(decision["allowed"])
+        self.assertEqual(decision["mode"], "amendment")
+        self.assertEqual(decision["target"], "context")
+        self.assertEqual(sorted(decision["preserved_stages"]),
+                         ["context", "execution", "planning"])
+        self.assertTrue(decision["consent_renewal_required"])
 
     def test_a_forward_or_same_stage_move_is_not_a_restart(self):
         for target in ("execution",):
@@ -506,6 +519,201 @@ class StageRequirementPolicyTests(unittest.TestCase):
         self.assertNotIn("skip_reason", structural)
         self.assertEqual(
             [e["event"] for e in self.ledger.entries()], ["jev_eval"])
+
+    def test_token_budget_refusal_happens_before_judgment_dispatch(self):
+        from harness.token_budget import TokenBudget
+
+        evaluator = FakeEvaluator(self._good_answers("plan_soundness"),
+                                  input_tokens=100)
+        run = TokenBudget("run", max_input_tokens=50000,
+                          max_output_tokens=1)
+        stage = run.stage("planning", max_input_tokens=1,
+                          max_output_tokens=1)
+        _result, structural = self._keyed_policy(evaluator).evaluate_hourglass_stage(
+            "plan_soundness", {"brief_render": "small"},
+            token_budget=run, token_stage_budget=stage)
+        self.assertEqual(evaluator.calls, [])
+        self.assertFalse(structural["dispatched"])
+        self.assertEqual(structural["result_state"], "unavailable")
+        self.assertEqual(run.snapshot()["open_allowances"], 0)
+
+    def test_planning_child_requires_its_matching_run_budget(self):
+        from harness.token_budget import TokenBudget
+
+        for with_run in (False, True):
+            with self.subTest(with_run=with_run):
+                evaluator = FakeEvaluator(self._good_answers("plan_soundness"))
+                run = TokenBudget("run", max_input_tokens=50000,
+                                  max_output_tokens=5000)
+                stage = run.stage("planning", max_input_tokens=30000,
+                                  max_output_tokens=3000)
+                other_run = TokenBudget("other", max_input_tokens=50000,
+                                        max_output_tokens=5000)
+                kwargs = {"token_stage_budget": stage}
+                if with_run:
+                    kwargs["token_budget"] = other_run
+                _result, structural = self._keyed_policy(
+                    evaluator).evaluate_hourglass_stage(
+                        "plan_soundness", {"brief_render": "small"}, **kwargs)
+                self.assertEqual(evaluator.calls, [])
+                self.assertFalse(structural["dispatched"])
+                self.assertEqual(run.snapshot()["open_allowances"], 0)
+                self.assertEqual(other_run.snapshot()["open_allowances"], 0)
+
+    def test_token_usage_is_settled_against_run_and_planning_child(self):
+        from harness.token_budget import TokenBudget
+
+        evaluator = FakeEvaluator(self._good_answers("plan_soundness"),
+                                  input_tokens=100)
+        run = TokenBudget("run", max_input_tokens=50000,
+                          max_output_tokens=5000)
+        stage = run.stage("planning", max_input_tokens=30000,
+                          max_output_tokens=3000)
+        _result, structural = self._keyed_policy(evaluator).evaluate_hourglass_stage(
+            "plan_soundness", {"brief_render": "small"},
+            token_budget=run, token_stage_budget=stage)
+        self.assertTrue(structural["dispatched"])
+        self.assertEqual(run.snapshot()["used_input_tokens"], 100)
+        self.assertEqual(stage.snapshot()["used_input_tokens"], 100)
+        self.assertEqual(run.snapshot()["used_output_tokens"], 10)
+        self.assertEqual(stage.snapshot()["used_output_tokens"], 10)
+
+    def test_token_stage_budget_matches_each_dispatched_dimension(self):
+        from harness.token_budget import TokenBudget
+
+        for dimension, stage_name in (
+                ("context_intake", "context"),
+                ("plan_soundness", "planning"),
+                ("execution", "execution"),
+                ("consent", "execution")):
+            with self.subTest(dimension=dimension):
+                run = TokenBudget("run", max_input_tokens=50000,
+                                  max_output_tokens=5000)
+                stage = run.stage(stage_name, max_input_tokens=30000,
+                                  max_output_tokens=3000)
+                evaluator = FakeEvaluator(self._good_answers(dimension),
+                                          input_tokens=100)
+                _result, structural = self._keyed_policy(
+                    evaluator).evaluate_hourglass_stage(
+                        dimension, {"decision": "bounded"},
+                        token_budget=run, token_stage_budget=stage)
+                self.assertTrue(structural["native"])
+                self.assertTrue(structural["dispatched"])
+                self.assertEqual(run.snapshot()["used_input_tokens"], 100)
+                self.assertEqual(stage.snapshot()["used_input_tokens"], 100)
+
+    def test_restart_target_uses_verification_stage_allowance(self):
+        from harness.token_budget import TokenBudget
+
+        run = TokenBudget("run", max_input_tokens=50000,
+                          max_output_tokens=5000)
+        stage = run.stage("verification", max_input_tokens=30000,
+                          max_output_tokens=3000)
+        evaluator = FakeEvaluator({"restart_target": {
+            "type": "choice", "choice": "planning", "confidence": 0.9,
+            "probabilities": {"planning": 1.0},
+        }}, input_tokens=100)
+        _result, structural = self._keyed_policy(evaluator).evaluate_hourglass_stage(
+            "restart_target", {"alignment": "needs a bounded amendment"},
+            token_budget=run, token_stage_budget=stage)
+
+        self.assertTrue(structural["native"])
+        self.assertEqual(run.snapshot()["used_input_tokens"], 100)
+        self.assertEqual(stage.snapshot()["used_input_tokens"], 100)
+
+    def test_unexpected_dispatch_exception_settles_token_reservation(self):
+        from harness.token_budget import TokenBudget, USAGE_UNAVAILABLE
+
+        evaluator = FakeEvaluator(self._good_answers("plan_soundness"))
+        evaluator.evaluate = mock.Mock(
+            side_effect=RuntimeError("adapter failed"))
+        run = TokenBudget("run", max_input_tokens=50000,
+                          max_output_tokens=5000)
+        stage = run.stage("planning", max_input_tokens=30000,
+                          max_output_tokens=3000)
+
+        with self.assertRaisesRegex(RuntimeError, "adapter failed"):
+            self._keyed_policy(evaluator).evaluate_hourglass_stage(
+                "plan_soundness", {"brief_render": "small"},
+                token_budget=run, token_stage_budget=stage)
+
+        self.assertEqual(run.snapshot()["open_allowances"], 0)
+        self.assertEqual(stage.snapshot()["open_allowances"], 0)
+        self.assertGreater(run.snapshot()["used_input_tokens"], 0)
+        self.assertGreater(stage.snapshot()["used_output_tokens"], 0)
+        self.assertEqual(
+            run.snapshot()["usage_sources"][USAGE_UNAVAILABLE], 1)
+        self.assertEqual(
+            stage.snapshot()["usage_sources"][USAGE_UNAVAILABLE], 1)
+        self.assertEqual(len(self.governor.reservations), 1)
+        self.assertEqual(len(self.governor.settlements), 1)
+        self.assertEqual(self.governor.settlements[0][1], 0.0)
+
+    def test_unexpected_errors_release_all_budgeted_jev_reservations(self):
+        from harness.token_budget import TokenBudget, USAGE_UNAVAILABLE
+
+        for operation in ("diff", "escalation", "route"):
+            with self.subTest(operation=operation):
+                self.governor.reservations.clear()
+                self.governor.settlements.clear()
+                evaluator = FakeEvaluator({})
+                if operation == "diff":
+                    def fail_after_preflight(
+                            diff, instruction, file_path, *, candidate=None,
+                            preflight=None):
+                        preflight()
+                        raise RuntimeError("adapter failed")
+
+                    evaluator.verify_diff_mechanics = mock.Mock(
+                        side_effect=fail_after_preflight)
+                else:
+                    evaluator.evaluate = mock.Mock(
+                        side_effect=RuntimeError("adapter failed"))
+
+                run = TokenBudget("run", max_input_tokens=50000,
+                                  max_output_tokens=5000)
+                policy = self._keyed_policy(evaluator)
+                with self.assertRaisesRegex(RuntimeError, "adapter failed"):
+                    if operation == "diff":
+                        policy.evaluate_diff(
+                            "diff", "instruction", "file.py",
+                            token_budget=run)
+                    elif operation == "escalation":
+                        policy.evaluate_escalation_decision(
+                            "failure context", token_budget=run)
+                    else:
+                        policy.evaluate_route(
+                            "prompt", ["file.py"], token_budget=run)
+
+                snapshot = run.snapshot()
+                self.assertEqual(snapshot["open_allowances"], 0)
+                self.assertEqual(
+                    snapshot["usage_sources"][USAGE_UNAVAILABLE], 1)
+                self.assertEqual(len(self.governor.reservations), 1)
+                self.assertEqual(len(self.governor.settlements), 1)
+                self.assertEqual(
+                    self.governor.settlements[0][0],
+                    self.governor.reservations[0][0])
+                self.assertEqual(self.governor.settlements[0][1], 0.0)
+
+    def test_escalation_preflight_refusal_cancels_token_allowance(self):
+        from harness.token_budget import TokenBudget
+
+        evaluator = FakeEvaluator({})
+        self.governor.reserve = mock.Mock(
+            side_effect=HarnessError("budget refused"))
+        run = TokenBudget("run", max_input_tokens=50000,
+                          max_output_tokens=5000)
+
+        result, _structural = self._keyed_policy(evaluator).evaluate_escalation_decision(
+            "failure context", token_budget=run)
+
+        self.assertEqual(result.verdict, "fail")
+        self.assertEqual(evaluator.calls, [])
+        self.assertEqual(run.snapshot()["open_allowances"], 0)
+        self.assertEqual(run.snapshot()["cancelled"], 1)
+        self.assertEqual(run.snapshot()["calls"], 0)
+        self.assertEqual(self.governor.settlements, [])
 
     def test_unkeyed_required_a_judgment_it_could_not_make(self):
         """The honest envelope: a judgment WAS required and could not be

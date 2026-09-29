@@ -17,7 +17,11 @@ preserved and the continuation mode hands it to the next iteration. The apply
 prompt encodes that instruction; the consent ledger records these as
 category="capability" deferrals.
 """
+import hashlib
+import json
 import math
+import os
+from enum import Enum
 
 from . import events as _events
 from .chat import (chat, extract_content_and_cost, _extract_json, _reported_cost,
@@ -40,6 +44,97 @@ CONSENT_SYSTEM_PROMPT = (
 )
 
 DECISIONS = ("accept", "decline", "defer", "redirect")
+
+
+class ConsentStalenessEvent(str, Enum):
+    """Stable reasons that make an existing consent decision stale."""
+
+    CHANGED_FILES = "changed_files"
+    CHANGED_INSTRUCTION = "changed_instruction"
+    CHANGED_MODEL = "changed_model"
+    CHANGED_TOKEN_COST_LIMITS = "changed_token_cost_limits"
+    CHANGED_PACKAGE = "changed_package"
+
+    def __str__(self):
+        return self.value
+
+
+def consent_binding(*, file_path, file_content, proposed_content=None,
+                    instruction, edit_snippet,
+                    backend, max_lines, execution_models, consent_models,
+                    max_tokens, task_max_cost, run_max_cost=None,
+                    token_budget=None, package=None):
+    """Fingerprint the work and limits covered by one consent decision.
+
+    The stored values are hashes, so a continuation records what changed
+    without copying source text or prompts into its metadata.
+    """
+    def digest(value):
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=False, default=str).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    path = os.path.normcase(os.path.normpath(str(file_path))).replace("\\", "/")
+    file_fact = {
+        "path": path,
+        "sha256": hashlib.sha256(
+            str(file_content or "").encode("utf-8")).hexdigest(),
+        "proposed_sha256": hashlib.sha256(
+            str(file_content if proposed_content is None else proposed_content
+                ).encode("utf-8")).hexdigest(),
+    }
+    instruction_fact = {
+        "instruction": str(instruction or ""),
+        "edit_snippet": edit_snippet,
+        "backend": backend,
+        "max_lines": max_lines,
+    }
+    model_fact = {
+        "execution": list(execution_models or []),
+        "consent": list(consent_models or []),
+    }
+    token_limits = None
+    if token_budget is not None:
+        snapshot = token_budget.snapshot()
+        token_limits = {
+            "input": snapshot.get("max_input_tokens"),
+            "output": snapshot.get("max_output_tokens"),
+        }
+    limits_fact = {
+        "request_max_tokens": max_tokens,
+        "task_max_cost": task_max_cost,
+        "run_max_cost": run_max_cost,
+        "token_budget": token_limits,
+    }
+    return {
+        "version": 1,
+        "fingerprints": {
+            ConsentStalenessEvent.CHANGED_FILES.value: digest(file_fact),
+            ConsentStalenessEvent.CHANGED_INSTRUCTION.value: digest(
+                instruction_fact),
+            ConsentStalenessEvent.CHANGED_MODEL.value: digest(model_fact),
+            ConsentStalenessEvent.CHANGED_TOKEN_COST_LIMITS.value: digest(
+                limits_fact),
+            ConsentStalenessEvent.CHANGED_PACKAGE.value: digest(
+                package or {}),
+        },
+    }
+
+
+def consent_staleness(previous, current):
+    """Return the stable reasons a saved consent binding no longer applies.
+
+    Legacy continuations have no binding, so every dimension is stale and a
+    fresh consent probe is required before dispatch.
+    """
+    events = tuple(ConsentStalenessEvent)
+    if (not isinstance(previous, dict) or previous.get("version") != 1
+            or not isinstance(previous.get("fingerprints"), dict)):
+        return events
+    old = previous["fingerprints"]
+    new = current.get("fingerprints", {}) if isinstance(current, dict) else {}
+    return tuple(event for event in events
+                 if old.get(event.value) != new.get(event.value))
 
 PREVIEW_WHOLE_CHARS = 12000
 PREVIEW_HEAD_CHARS = 9000
@@ -72,7 +167,8 @@ _EVENT_FOR = {
 
 def probe_consent(*, transport, api_key, governor, task_id, task, model,
                   context=None, max_tokens=512, ledger=None, required=True,
-                  fallback_pool=None, min_confidence=0.70):
+                  fallback_pool=None, min_confidence=0.70,
+                  token_budget=None):
     """Ask a model whether it accepts the work. Returns a consent dict.
 
     The probe is itself a rotating lane: ``model`` is asked first, then
@@ -159,10 +255,14 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
     last_content = None
     byok_rejected = False
     for m_ in usable:
+        token_kwargs = ({"token_budget": token_budget,
+                         "token_label": "consent"}
+                        if token_budget is not None else {})
         status, resp = chat(transport, api_key, m_,
                             [{"role": "system", "content": CONSENT_SYSTEM_PROMPT},
                              {"role": "user", "content": user}],
-                            max_tokens, reasoning_effort="none", governor=governor)
+                            max_tokens, reasoning_effort="none", governor=governor,
+                            **token_kwargs)
         content, parsed, tracked_cost, reported_cost, byok, fail_reason = _take(
             status, resp, m_)
         tracked_total += tracked_cost
@@ -262,7 +362,8 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
 
 def consent_renew(*, transport, api_key, governor, task_id, task, model,
                   context=None, max_tokens=512, ledger=None, required=True,
-                  fallback_pool=None, min_confidence=0.70):
+                  fallback_pool=None, min_confidence=0.70,
+                  token_budget=None):
     """Re-check consent at a verification checkpoint (continued consensus).
 
     Returns the probe result; records a consent_renew_* event. Any deferral
@@ -272,7 +373,8 @@ def consent_renew(*, transport, api_key, governor, task_id, task, model,
     base = probe_consent(transport=transport, api_key=api_key, governor=governor,
                           task_id=task_id, task=task, model=model, context=context,
                           max_tokens=max_tokens, ledger=None, required=required,
-                          fallback_pool=fallback_pool, min_confidence=min_confidence)
+                          fallback_pool=fallback_pool, min_confidence=min_confidence,
+                          token_budget=token_budget)
     if ledger:
         # Attribute to the model that ANSWERED (post-rotation), not the
         # requested primary: billing a rotated renewal to the wrong model

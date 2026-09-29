@@ -741,7 +741,7 @@ def parse_plan_consensus(response_text: str) -> Dict[str, Any]:
 
 
 def plan_consensus(*, transport, api_key, governor, ledger, plan_result,
-                   model, chat_fn=None) -> Dict[str, Any]:
+                   model, chat_fn=None, token_budget=None) -> Dict[str, Any]:
     """Optional cheap soundness check that runs BEFORE the waist.
 
     Returns ``{sound, reasons, cost, model}``. Ledger event:
@@ -752,8 +752,12 @@ def plan_consensus(*, transport, api_key, governor, ledger, plan_result,
         raise HarnessError("plan consensus requires a model")
     if chat_fn is None:
         def chat_fn(prompt):
-            return governed_text(transport, api_key, governor, model, prompt,
-                                 256, label="plan_consensus")
+            budget_kwargs = ({"token_budget": token_budget,
+                              "token_label": "planning_consensus"}
+                             if token_budget is not None else {})
+            return governed_text(
+                transport, api_key, governor, model, prompt,
+                256, label="plan_consensus", **budget_kwargs)
     spent_before = governor.spent if governor is not None else 0.0
     raw = chat_fn(build_consensus_prompt(plan_result))
     if isinstance(raw, tuple):
@@ -1166,6 +1170,7 @@ def confirm_plan(*, transport, api_key, governor, ledger, plan_result,
                  chat_fn=None, reader=read_window,
                  root=None, run_gate=None,
                  consensus=None,
+                 token_budget=None,
                  max_rounds=MAX_WAIST_ROUNDS) -> Dict[str, Any]:
     """Run the waist: frontier confirms/repairs the plan; return the plan.
 
@@ -1186,8 +1191,12 @@ def confirm_plan(*, transport, api_key, governor, ledger, plan_result,
             "(--frontier-model or HARNESS_FRONTIER_MODEL)")
     if chat_fn is None:
         def chat_fn(prompt):
-            return governed_text(transport, api_key, governor, model, prompt,
-                                 WAIST_MAX_TOKENS, label="waist")
+            budget_kwargs = ({"token_budget": token_budget,
+                              "token_label": "planning_confirmation"}
+                             if token_budget is not None else {})
+            return governed_text(
+                transport, api_key, governor, model, prompt,
+                WAIST_MAX_TOKENS, label="waist", **budget_kwargs)
     brief = _brief_for(plan_result)
     task_id = plan_task_id(plan_result)
     window_context = ""
@@ -1259,7 +1268,8 @@ def confirm_plan(*, transport, api_key, governor, ledger, plan_result,
 def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                  candidate_files=None, frontier_model=None, use_free=True,
                  decompose_llm=False, confirm=False, decompose_model=None,
-                 chat_fn=None, max_cost=None, keep_going=False, out=None,
+                 chat_fn=None, budgeted_chat_fn=None, max_cost=None,
+                 keep_going=False, out=None,
                  execute=False, root=None, max_tokens=None,
                  allow_escalation: bool = False,
                  plan_consensus: bool = False,
@@ -1267,12 +1277,15 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                  issue_sort_pack=None,
                  allow_heuristic_preview: bool = False,
                  token_budget=None,
-                 stages: Optional[Sequence[str]] = None,
-                 supplied_brief: bool = False,
-                 supplied_plan: bool = False,
+                  stages: Optional[Sequence[str]] = None,
+                  supplied_brief: bool = False,
+                  supplied_plan: bool = False,
                  brief: Optional[Dict[str, Any]] = None,
                  brief_tokens: Optional[int] = None,
-                 reader=None) -> Dict[str, Any]:
+                 reader=None,
+                 composition_runtime=None,
+                 persisted_plan: Optional[Dict[str, Any]] = None,
+                 require_context_intake: bool = False) -> Dict[str, Any]:
     """ONE owner of the plan-lane flow (CLI and MCP call this).
 
     Order: optional cheap-LLM decomposition (M1, condensed signatures) ->
@@ -1330,8 +1343,151 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     it does not perform them, so a caller that actually produced the
     artifact is the one that can say the stage is done.
     """
-    if (decompose_llm or confirm or plan_consensus) and governor is None:
+    if (persisted_plan is None
+            and (decompose_llm or confirm or plan_consensus)
+            and governor is None):
         raise HarnessError("LLM plan features require a governor")
+
+    if composition_runtime is not None and not isinstance(composition_runtime, dict):
+        raise HarnessError("composition_runtime must be a dict")
+    if composition_runtime is not None:
+        composition_runtime["original_request"] = opts_goal
+        if isinstance(brief, dict):
+            # Keep the actual evidence pack and source refs for final
+            # alignment; never re-condense this with a generative model.
+            composition_runtime["retained_brief"] = brief
+
+    # Compose the stage children before planning can dispatch. Decomposition,
+    # Jev routing, consensus, confirmation, and the planning waist all spend
+    # from this same planning child; the final envelope is attached below.
+    composition = None
+    planning_stage = None
+    execution_stage = None
+    planning_budget = None
+    context_intake = None
+    if token_budget is not None:
+        composition = compose_stages(
+            budget=token_budget, declared=stages,
+            supplied_brief=supplied_brief,
+            supplied_plan=(supplied_plan or persisted_plan is not None),
+            brief=brief, brief_tokens=brief_tokens, reader=reader)
+        previous = (composition_runtime.get("composition")
+                    if composition_runtime is not None else None)
+        previous_context = (composition_runtime.get(
+            "context_intake_composition")
+            if composition_runtime is not None else None)
+        if (previous_context is None and previous is not None
+                and stage_budget(previous, STAGE_CONTEXT) is not None):
+            previous_context = previous
+        for stage_name in (STAGE_CONTEXT, STAGE_PLANNING, STAGE_EXECUTION):
+            _carry_runtime_stage_budget(composition, previous, stage_name)
+        if (previous_context is not None and previous_context is not previous
+                and stage_budget(composition, STAGE_CONTEXT) is not None):
+            _carry_runtime_stage_budget(
+                composition, previous_context, STAGE_CONTEXT)
+        planning_stage = next(
+            (entry for entry in composition["stages"]
+             if entry["stage"] == STAGE_PLANNING), None)
+        execution_stage = next(
+            (entry for entry in composition["stages"]
+             if entry["stage"] == STAGE_EXECUTION), None)
+        planning_budget = (planning_stage.get("budget")
+                           if planning_stage is not None else token_budget)
+        if composition_runtime is not None:
+            composition_runtime["composition"] = composition
+            composition_runtime["run_budget"] = token_budget
+
+        # A supplied brief can bypass production of the context artifact, but
+        # it does not bypass the native judgment that checks whether that
+        # artifact is relevant, sufficient, and conflict-free. Reuse the
+        # composed context child when present; otherwise retain a sibling
+        # context allowance so a fresh brief is still judged before planning.
+        if (require_context_intake
+                and STAGE_CONTEXT in composition.get("declared", ())):
+            context_intake_composition = composition
+            if stage_budget(context_intake_composition, STAGE_CONTEXT) is None:
+                context_intake_composition = compose_stages(
+                    budget=token_budget,
+                    declared=composition.get("declared"))
+                _carry_runtime_stage_budget(
+                    context_intake_composition, previous_context,
+                    STAGE_CONTEXT)
+            context_stage_budget = stage_budget(
+                context_intake_composition, STAGE_CONTEXT)
+            if composition_runtime is not None:
+                composition_runtime["context_intake_composition"] = (
+                    context_intake_composition)
+            from .orchestrator import assess_context_intake
+            _context_result, context_intake = assess_context_intake(
+                request=opts_goal, retained_brief=brief,
+                jev_policy=jev_policy, token_budget=token_budget,
+                token_stage_budget=context_stage_budget,
+                site="hourglass-context-intake",
+                threshold=float(getattr(
+                    getattr(jev_policy, "settings", None),
+                    "min_confidence", 0.7)))
+            context_intake["token_budget"] = context_stage_budget.snapshot()
+            if composition_runtime is not None:
+                composition_runtime["context_intake"] = context_intake
+            if not context_intake.get("approved"):
+                reason = context_intake.get("reason") or (
+                    "context intake unavailable or insufficient; "
+                    "planning and execution stopped")
+                refused = {
+                    "status": "refused", "goal": opts_goal,
+                    "total_nodes": 0, "nodes": [],
+                    "reason": reason,
+                    "context_intake": context_intake,
+                    "confirmation": {
+                        "verdict": "refused", "model": "context-intake",
+                        "rounds": 0, "reason": reason,
+                        "cost": context_intake.get("cost", 0.0),
+                    },
+                }
+                states = stage_states(composition)
+                if stage_budget(composition, STAGE_CONTEXT) is not None:
+                    states[STAGE_CONTEXT] = STATE_COMPLETED
+                refused["composition"] = composition_envelope(
+                    composition, states=states)
+                return refused
+
+    if persisted_plan is not None:
+        # A saved pyramid state is authoritative on resume. Do not spend on a
+        # fresh decomposition or let a different new DAG refuse the work that
+        # will actually execute. Validate the stored pending graph structurally
+        # here; per-package consent and verification still guard every write.
+        plan_result = dict(persisted_plan)
+        try:
+            saved_dag = TaskDAG.from_dict(plan_result.get("dag") or {})
+        except HarnessError as exc:
+            raise HarnessError(
+                "persisted plan DAG is invalid; refusing to resume: {0}".format(exc)
+            ) from exc
+        plan_result["dag"] = saved_dag.to_dict()
+        plan_result["goal"] = plan_result.get("goal") or opts_goal
+        plan_result["nodes"] = list(plan_result.get("nodes") or [])
+        plan_result["status"] = "planned"
+        plan_result["decomposition"] = "persisted_state"
+        plan_result["resumed"] = True
+        plan_result["resume_source"] = "pyramid_state"
+        composed = composed_worst_case(
+            plan_result, governor=governor, decompose_llm=False,
+            confirm=False, decompose_model=decompose_model,
+            frontier_model=frontier_model, use_free=use_free,
+            allow_escalation=False, plan_consensus=False)
+        plan_result["composed_worst_case"] = composed
+        if (execute and governor is not None
+                and composed.get("exceeds_remaining")):
+            return _refuse_composed_ceiling(plan_result, composed)
+        if composition is not None:
+            states = stage_states(composition)
+            if execute and execution_stage is None and saved_dag.nodes:
+                plan_result = refuse_unbudgeted_execution(plan_result)
+            if brief is not None and STAGE_CONTEXT in (composition.get("bypassed") or {}):
+                states[STAGE_CONTEXT] = STATE_COMPLETED
+            plan_result["composition"] = composition_envelope(
+                composition, states=states)
+        return plan_result
 
     plan_goal = opts_goal
     plan_structural = None
@@ -1342,9 +1498,11 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     if isinstance(jev_policy, JevPolicy):
         # JEV-P3-route: one typed route choice through the policy owner.
         route_eval, route_envelope = jev_policy.evaluate_route(
-            opts_goal, candidate_files, site="route")
+            opts_goal, candidate_files, site="route",
+            token_budget=planning_budget)
         plan_eval, plan_structural = jev_policy.evaluate_plan(
-            opts_goal, candidate_files, site="waist")
+            opts_goal, candidate_files, site="waist",
+            token_budget=planning_budget)
         plan_triage = dict(route_envelope)
         plan_triage["route"] = route_eval.answers.get("route", "free-distill")
         plan_triage["route_is_fallback"] = bool(route_eval.is_fallback)
@@ -1374,6 +1532,27 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     # verification instead of dispatching an unverifiable write.
     run_gate = discover_verification_gate(list(candidate_files or []), root)
 
+    def planning_chat(prompt, *, label, max_tokens):
+        """Dispatch one planning call through its composed stage child."""
+        if budgeted_chat_fn is not None:
+            response = budgeted_chat_fn(
+                prompt, planning_budget, label, max_tokens)
+        elif chat_fn is not None:
+            # Legacy injected callbacks are retained for hermetic/library
+            # seams. Production callers with a run budget use the budget-aware
+            # callback or the governed default below.
+            response = chat_fn(prompt)
+        else:
+            budget_kwargs = ({"token_budget": planning_budget,
+                              "token_label": label}
+                             if planning_budget is not None else {})
+            response = governed_text(
+                transport, api_key, governor, decompose_model, prompt,
+                max_tokens, label=label, **budget_kwargs)
+        if isinstance(response, tuple):
+            return response
+        return response, 0.0
+
     decomposed = None
     decomposition = "heuristic"
     # DF-HG-3b: set only when a plan-only preview degraded to the heuristic
@@ -1382,14 +1561,11 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     # approved) a plan the operator never got the LLM decomposition for.
     _degraded_preview_heuristic = False
     if decompose_llm:
-        if chat_fn is None:
+        if budgeted_chat_fn is None and chat_fn is None:
             if not decompose_model:
                 scout = resolve_scout_ladder(use_free=use_free,
                                              custom_frontier=frontier_model)
                 decompose_model = scout[0]
-            def chat_fn(prompt):
-                return governed_text(transport, api_key, governor, decompose_model,
-                                     prompt, DECOMPOSE_MAX_TOKENS, label="decompose")
         # DF-HG-3: one strict retry on LLM decomposition failure, then loud heuristic fallback in preview too
         last_exc = None
         for attempt in (1, 2):
@@ -1407,7 +1583,10 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                     repo_context = decision_ctx + "\n\n" + str(sig_ctx).strip()
                 else:
                     repo_context = decision_ctx
-                decomposed = decompose_via_llm(lambda p: chat_fn(p)[0], plan_goal,
+                decomposed = decompose_via_llm(
+                    lambda p: planning_chat(
+                        p, label="decompose",
+                        max_tokens=DECOMPOSE_MAX_TOKENS)[0], plan_goal,
                                                candidate_files=candidate_files,
                                                repo_context=repo_context)
                 decomposition = (f"llm:{decompose_model}"
@@ -1483,7 +1662,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             consensus = plan_consensus_check(
                 transport=transport, api_key=api_key, governor=governor,
                 ledger=ledger, plan_result=plan_result,
-                model=consensus_model, chat_fn=None)
+                model=consensus_model, chat_fn=None,
+                token_budget=planning_budget)
         except HarnessError as exc:
             # Fail closed on unparseable consensus when the operator armed it.
             if not execute:
@@ -1522,7 +1702,7 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                     ledger=ledger, plan_result=plan_result, model=candidate_model,
                     use_free=use_free, custom_frontier=frontier_model,
                     root=root, run_gate=run_gate, chat_fn=None,
-                    consensus=consensus)
+                    consensus=consensus, token_budget=planning_budget)
                 plan_result_confirmed = res
                 break
             except HarnessError as exc:
@@ -1560,7 +1740,9 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                         critique_prompt, candidate_files, root=root,
                         ledger=ledger)
                     re_decomposed = decompose_via_llm(
-                        lambda p: chat_fn(p)[0], critique_prompt,
+                        lambda p: planning_chat(
+                            p, label="decompose_critique",
+                            max_tokens=DECOMPOSE_MAX_TOKENS)[0], critique_prompt,
                         candidate_files=candidate_files,
                         repo_context=critique_context)
                     re_plan = plan_task(
@@ -1581,7 +1763,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                                 ledger=ledger, plan_result=re_plan, model=candidate_model,
                                 use_free=use_free, custom_frontier=frontier_model,
                                 root=root, run_gate=run_gate, chat_fn=None,
-                                consensus=consensus)
+                                consensus=consensus,
+                                token_budget=planning_budget)
                             if re_res.get("status") != "refused":
                                 plan_result = re_res
                                 break
@@ -1660,50 +1843,66 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             note=("composed pyramid ceiling exceeds remaining budget; "
                   "refusing before execute spend"))
         plan_result = _refuse_composed_ceiling(plan_result, composed)
-    if token_budget is not None:
+    if composition is not None:
         # HV-4: the composition decision is evidence, so it rides on the
         # envelope rather than living only in the caller's head. Attached
         # last, so it survives the degraded/refused envelope copies above.
-        composition = compose_stages(
-            budget=token_budget, declared=stages,
-            supplied_brief=supplied_brief, supplied_plan=supplied_plan,
-            brief=brief, brief_tokens=brief_tokens, reader=reader)
         states = stage_states(composition)
-        planning_stage = next(
-            (entry for entry in composition["stages"]
-             if entry["stage"] == STAGE_PLANNING), None)
+        if (execute and execution_stage is None
+                and plan_result.get("status") != "refused"):
+            plan_result = refuse_unbudgeted_execution(plan_result)
         if planning_stage is not None and plan_result.get("status") != "refused":
             # HV-5: composition selects and budgets the planning stage; the
-            # waist remains its sole production owner. Give it the composed
-            # child allowance and the same intake artifact/reader the lane
-            # used to make the composition decision.
+            # waist remains its sole production owner. The waist already
+            # produced the outer DAG above; hand that exact DAG to the typed
+            # planning stage so it can validate and report it rather than
+            # asking a second planner to invent a competing DAG.
+            composed_dag = plan_result.get("dag")
+
+            def validate_composed_dag(_goal, _brief):
+                return composed_dag
+
             planning = run_planning(
                 goal=opts_goal,
                 budget=token_budget,
                 stage_budget=planning_stage["budget"],
                 files=candidate_files or (), reader=reader, brief=brief,
-                jev_policy=jev_policy)
+                jev_policy=jev_policy,
+                planner=(validate_composed_dag
+                         if isinstance(composed_dag, dict) else None))
+            if (composition_runtime is not None
+                    and not isinstance(composition_runtime.get("retained_brief"), dict)
+                    and isinstance(planning.brief, dict)):
+                composition_runtime["retained_brief"] = planning.brief
             planning_payload = planning.to_dict()
             plan_result["planning"] = planning_payload
             states[STAGE_PLANNING] = STATE_COMPLETED
-            # Only sufficiency authorizes the already-composed outer DAG.
-            # A proposed planning DAG has no adapter into that outer plan,
-            # and an evidence request/defer explicitly says the available
-            # evidence cannot support execution. Fail closed while preserving
-            # the full typed result for the caller.
+            # Sufficiency means the brief itself is adequate. A `plan` means
+            # the typed stage independently validated the exact DAG produced
+            # by this waist. Both outcomes authorize that DAG; an evidence
+            # request or defer still stops execution with its full evidence.
             kind = (planning_payload.get("kind")
                     if isinstance(planning_payload, dict) else None)
-            if kind != OUTCOME_SUFFICIENT:
+            plan_matches = False
+            if kind in (OUTCOME_PLAN, OUTCOME_SUFFICIENT) \
+                    and isinstance(composed_dag, dict):
+                try:
+                    plan_matches = (
+                        TaskDAG.from_dict(planning_payload.get("plan") or {})
+                        == TaskDAG.from_dict(composed_dag))
+                except HarnessError:
+                    plan_matches = False
+            if kind not in (OUTCOME_SUFFICIENT, OUTCOME_PLAN) \
+                    or not plan_matches:
                 if kind == OUTCOME_DEFER:
                     reason = (planning_payload.get("reason")
                               or "planning deferred execution")
                 elif kind == OUTCOME_EVIDENCE_REQUEST:
                     reason = (planning_payload.get("reason")
                               or "planning requires additional evidence")
-                elif kind == OUTCOME_PLAN:
+                elif kind in (OUTCOME_PLAN, OUTCOME_SUFFICIENT):
                     reason = (
-                        "planning produced a separate plan without an adapter "
-                        "to the composed execution DAG")
+                        "planning did not validate the exact composed execution DAG")
                 else:
                     reason = "planning returned an unsupported outcome"
                 plan_result["status"] = "refused"
@@ -1724,6 +1923,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             states[STAGE_CONTEXT] = STATE_COMPLETED
         plan_result["composition"] = composition_envelope(composition,
                                                           states=states)
+    if context_intake is not None:
+        plan_result["context_intake"] = context_intake
     return plan_result
 
 
@@ -1952,7 +2153,7 @@ def tree_reader(root):
 
 
 def compose_arguments(settings, *, goal, files, root=None,
-                      reader=None) -> Dict[str, Any]:
+                      reader=None, token_budget=None) -> Dict[str, Any]:
     """Everything ``compose_plan`` needs to compose one run (HV-2-use).
 
     ONE owner for *how a lane composes*, so the CLI, MCP and agent lanes
@@ -1985,8 +2186,10 @@ def compose_arguments(settings, *, goal, files, root=None,
     stages = stage_selection_from_settings(settings)
     if reader is None and root is not None:
         reader = tree_reader(root)
+    if token_budget is not None and not isinstance(token_budget, TokenBudget):
+        raise HarnessError("compose_arguments token_budget must be a TokenBudget")
     arguments: Dict[str, Any] = {
-        "token_budget": budget_from_settings(settings),
+        "token_budget": token_budget or budget_from_settings(settings),
         "stages": stages,
         "reader": reader,
     }
@@ -2312,6 +2515,9 @@ def compose_stages(*, budget, declared: Optional[Sequence[str]] = None,
     and when the caller measured the curated brief it just produced
     (``brief_tokens``) each later stage is additionally capped at that brief,
     so planning is preflighted against the evidence it will actually read.
+    When context is bypassed but both planning and execution are selected,
+    planning is still narrowed below the run ceiling so execution can receive
+    its separately composed wider allowance.
 
     Returns the stage list, the bypassed stages with their reasons, and each
     stage's child budget, so a caller reserves from exactly the right one.
@@ -2335,9 +2541,15 @@ def compose_stages(*, budget, declared: Optional[Sequence[str]] = None,
     prev_in = budget.max_input_tokens
     prev_out = budget.max_output_tokens
     for stage in selection["stages"]:
-        if not stages:
-            # The first stage inherits the run's own ceilings; it is the
-            # parent, so it cannot exceed them by construction.
+        reserve_execution = (
+            stage == STAGE_PLANNING
+            and STAGE_EXECUTION in selection["stages"])
+        if not stages and not reserve_execution:
+            # The first stage normally inherits the run's own ceilings; it
+            # is the parent, so it cannot exceed them by construction. When
+            # context is bypassed but planning and execution are selected,
+            # planning remains a waist so execution can receive a wider
+            # allowance later.
             want_in, want_out = prev_in, prev_out
         else:
             want_in = _narrow(prev_in, STAGE_INPUT_DECAY,
@@ -2364,6 +2576,18 @@ def compose_stages(*, budget, declared: Optional[Sequence[str]] = None,
                 "denied": selection["denied"],
                 "declared": selection["declared"],
                 "run_budget": budget.label}
+    planning_budget = stage_budget(composed, STAGE_PLANNING)
+    execution_stage = stage_budget(composed, STAGE_EXECUTION)
+    if planning_budget is not None and execution_stage is not None:
+        composed["execution_dispatch_allowance"] = {
+            "parent": budget.label,
+            "max_input_tokens": budget.max_input_tokens,
+            "max_output_tokens": budget.max_output_tokens,
+            "widened_after": STAGE_PLANNING,
+            "available": (
+                budget.max_input_tokens > planning_budget.max_input_tokens
+                and budget.max_output_tokens > planning_budget.max_output_tokens),
+        }
     if "recondense" in selection:
         # The decision rides with the composition, so "did this run re-condense,
         # and why" is answerable from the envelope alone.
@@ -2377,6 +2601,83 @@ def stage_budget(composition: Dict[str, Any], stage: str):
         if entry.get("stage") == stage:
             return entry.get("budget")
     return None
+
+
+def runtime_stage_budget(composition_runtime, stage: str):
+    """Return a live stage budget captured during composition, if present."""
+    if not isinstance(composition_runtime, dict):
+        return None
+    composition = composition_runtime.get("composition")
+    if not isinstance(composition, dict):
+        return None
+    selected = stage_budget(composition, stage)
+    if stage != STAGE_EXECUTION or selected is None:
+        return selected
+    planning = stage_budget(composition, STAGE_PLANNING)
+    if planning is None:
+        return selected
+    run_budget = composition_runtime.get("run_budget")
+    if not isinstance(run_budget, TokenBudget):
+        return selected
+    existing = composition_runtime.get("execution_dispatch_budget")
+    if existing is None:
+        # Imported at call time to avoid the executor <-> waist module cycle.
+        from .executor import execution_budget
+        existing = execution_budget(run_budget, selected, planning)
+        composition_runtime["execution_dispatch_budget"] = existing
+    return existing
+
+
+def _carry_runtime_stage_budget(composition, previous, stage):
+    """Give a replanned stage only the capacity left under its prior child."""
+    previous_budget = (stage_budget(previous, stage)
+                       if isinstance(previous, dict) else None)
+    current_budget = stage_budget(composition, stage)
+    if previous_budget is None or current_budget is None:
+        return
+    prior = previous_budget.snapshot()
+    if prior["open_allowances"]:
+        raise HarnessError(
+            "cannot replan while {0} token allowances are open".format(stage))
+    # A supplied artifact can remove an earlier stage from the new ordering,
+    # which would otherwise promote a later stage to the first (full-run)
+    # allowance. Runtime history is authoritative: re-planning may shrink a
+    # stage further, but never widen it because another stage was bypassed.
+    remaining_input = max(
+        0, min(current_budget.max_input_tokens,
+               previous_budget.max_input_tokens)
+        - prior["used_input_tokens"] - prior["reserved_input_tokens"])
+    remaining_output = max(
+        0, min(current_budget.max_output_tokens,
+               previous_budget.max_output_tokens)
+        - prior["used_output_tokens"] - prior["reserved_output_tokens"])
+    # Nest the next attempt under the prior stage child. Its ancestors retain
+    # cumulative usage and prevent a replan from resetting the stage ceiling.
+    runtime_budget = previous_budget.stage(
+        stage, max_input_tokens=remaining_input,
+        max_output_tokens=remaining_output)
+    composition["stages"] = [
+        dict(entry, budget=runtime_budget,
+             max_input_tokens=remaining_input,
+             max_output_tokens=remaining_output)
+        if entry.get("stage") == stage else entry
+        for entry in composition["stages"]]
+
+
+def refuse_unbudgeted_execution(plan_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Make an uncomposed execution request terminal and visible."""
+    result = dict(plan_result or {})
+    reason = "execution stage has no composed TokenBudget allowance"
+    result["status"] = "refused"
+    result["reason"] = reason
+    result["confirmation"] = {
+        "verdict": "refused",
+        "model": "token-budget",
+        "rounds": 0,
+        "reason": reason,
+        "cost": 0.0,
+    }
+    return result
 
 
 def stage_states(composition: Dict[str, Any]) -> Dict[str, str]:
@@ -2434,6 +2735,10 @@ def composition_envelope(composition: Dict[str, Any], *,
                       and name not in {entry.get("stage")
                                        for entry in composition.get("stages") or []}],
         "bypassed": dict(composition.get("bypassed") or {}),
+        **({"execution_dispatch_allowance": dict(
+            composition["execution_dispatch_allowance"])}
+           if isinstance(composition.get("execution_dispatch_allowance"), dict)
+           else {}),
         "denied_bypass": dict(composition.get("denied") or {}),
         # Added only when a stage actually ran and supplied its evidence: a
         # stable key would have to say *something* for the pre-composition
@@ -2598,7 +2903,8 @@ def _evidence_request(pack, *, max_items=MAX_EVIDENCE_QUESTIONS):
     return items[:max_items]
 
 
-def _jev_sufficiency(jev_policy, goal, pack, *, site):
+def _jev_sufficiency(jev_policy, goal, pack, *, site, token_budget=None,
+                     stage_budget=None):
     """Ask the one declared dimension that owns 'is this enough to plan on?'.
 
     Returns ``(signals, native)``. A policy that fails, falls back, or
@@ -2619,12 +2925,13 @@ def _jev_sufficiency(jev_policy, goal, pack, *, site):
         "brief_render": render_brief(pack),
     }
     _result, structural = jev_policy.evaluate_hourglass_stage(
-        "plan_soundness", state, site=site)
+        "plan_soundness", state, site=site, token_budget=token_budget,
+        token_stage_budget=stage_budget)
     structural = structural or {}
     declared = HOURGLASS_STAGE_DIMENSIONS["plan_soundness"]["signals"]
     signals = {name: structural.get(name) for name in declared
                if structural.get(name) is not None}
-    return signals, bool(structural.get("native"))
+    return signals, bool(structural.get("native")), structural
 
 
 def _validated_plan(plan_data, *, max_nodes=DEFAULT_MAX_PLAN_NODES):
@@ -2659,6 +2966,7 @@ class PlanningOutcome:
     evidence_request: Sequence[Dict[str, Any]] = ()
     rounds: Sequence[Dict[str, Any]] = ()
     jev_signals: Dict[str, Any] = field(default_factory=dict)
+    jev_judgment: Optional[Dict[str, Any]] = None
     budget: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -2688,6 +2996,8 @@ class PlanningOutcome:
             "evidence_request": [dict(item) for item in self.evidence_request],
             "rounds": [dict(item) for item in self.rounds],
             "jev_signals": dict(self.jev_signals),
+            "jev_judgment": (dict(self.jev_judgment)
+                             if self.jev_judgment is not None else None),
             "budget": dict(self.budget),
         }
 
@@ -2720,7 +3030,7 @@ def run_planning(*, goal, budget, stage_budget=None, files=(), reader=None, brie
         raise HarnessError("planning stage_budget must be a TokenBudget")
     if stage_budget is not None and (
             stage_budget.label != STAGE_PLANNING
-            or stage_budget._parent is not budget):
+            or budget not in stage_budget._chain()):
         raise HarnessError(
             "planning stage_budget must be the planning child of budget")
 
@@ -2728,6 +3038,7 @@ def run_planning(*, goal, budget, stage_budget=None, files=(), reader=None, brie
     ladder = planning_ladder(stage, rounds=rounds)
     round_log: List[Dict[str, Any]] = []
     jev_signals: Dict[str, Any] = {}
+    jev_judgment: Optional[Dict[str, Any]] = None
     pack = brief
 
     for index, round_budget in enumerate(ladder, start=1):
@@ -2773,8 +3084,9 @@ def run_planning(*, goal, budget, stage_budget=None, files=(), reader=None, brie
         if lint_clean and sources > 0 and jev_policy is not None \
                 and not sufficient:
             try:
-                jev_signals, native = _jev_sufficiency(jev_policy, goal, pack,
-                                                      site=site)
+                jev_signals, native, jev_judgment = _jev_sufficiency(
+                    jev_policy, goal, pack, site=site, token_budget=budget,
+                    stage_budget=stage)
             except HarnessError:
                 jev_signals, native = {}, False
             if native and sources > 0:
@@ -2798,13 +3110,27 @@ def run_planning(*, goal, budget, stage_budget=None, files=(), reader=None, brie
             "jev_native": native,
         })
         if sufficient:
+            validated_plan = None
+            if planner is not None:
+                try:
+                    validated_plan = _validated_plan(
+                        planner(goal, pack), max_nodes=max_nodes)
+                except HarnessError as exc:
+                    return PlanningOutcome(
+                        OUTCOME_DEFER,
+                        reason="plan_rejected: {0}".format(exc),
+                        brief=pack, rounds=round_log,
+                        jev_signals=jev_signals,
+                        jev_judgment=jev_judgment,
+                        budget=stage.snapshot())
             # Route through the one terminal contract, so the verdict a run
             # reports is the same checked verdict a caller would get.
             plan_outcome(OUTCOME_SUFFICIENT)
             return PlanningOutcome(
                 OUTCOME_SUFFICIENT, reason="brief_covers_the_request",
-                brief=pack, rounds=round_log, jev_signals=jev_signals,
-                budget=stage.snapshot())
+                brief=pack, plan=validated_plan,
+                rounds=round_log, jev_signals=jev_signals,
+                jev_judgment=jev_judgment, budget=stage.snapshot())
 
     if planner is not None and pack is not None:
         try:
@@ -2818,6 +3144,7 @@ def run_planning(*, goal, budget, stage_budget=None, files=(), reader=None, brie
         return PlanningOutcome(
             OUTCOME_PLAN, reason="validated_bounded_plan", brief=pack,
             plan=dag, rounds=round_log, jev_signals=jev_signals,
+            jev_judgment=jev_judgment,
             budget=stage.snapshot())
 
     request = _evidence_request(pack, max_items=max_evidence_items) \
@@ -2841,4 +3168,5 @@ def run_planning(*, goal, budget, stage_budget=None, files=(), reader=None, brie
     return PlanningOutcome(
         OUTCOME_EVIDENCE_REQUEST if request else OUTCOME_DEFER,
         reason=reason, brief=pack, evidence_request=request, rounds=round_log,
-        jev_signals=jev_signals, budget=stage.snapshot())
+        jev_signals=jev_signals, jev_judgment=jev_judgment,
+        budget=stage.snapshot())

@@ -18,7 +18,7 @@ from harness.history import get_default_history_dir
 from harness.config import load_settings
 from harness.errors import HarnessError, ToolCancelled
 from harness.repo_scope import _gate_python
-from tests._fake import FakeTransport, _gov
+from tests._fake import FakeTransport, NativeJevPolicy, _gov
 
 
 # The agent suite must remain hermetic on CI: production governor_for correctly
@@ -137,7 +137,17 @@ class TestAgentClassificationAndDiscovery(unittest.TestCase):
             self.assertEqual(load_chat_history("unknown_session", history_dir=hdir), [])
 
 
-class TestAutonomousAgent(unittest.TestCase):
+class _NativePolicyLaneTest(unittest.TestCase):
+    """Keep lane behavior tests hermetic while modeling native Jev success."""
+
+    def setUp(self):
+        self._policy_patch = patch(
+            "harness.agent.policy_for", return_value=NativeJevPolicy())
+        self._policy_patch.start()
+        self.addCleanup(self._policy_patch.stop)
+
+
+class TestAutonomousAgent(_NativePolicyLaneTest):
     def test_empty_prompt_raises(self):
         agent = AutonomousAgent()
         with self.assertRaises(HarnessError):
@@ -886,7 +896,7 @@ class TestChatTruncation(unittest.TestCase):
         self.assertIn("never emit <tool_call>", sysmsg)
 
 
-class TestChatAutoEscalation(unittest.TestCase):
+class TestChatAutoEscalation(_NativePolicyLaneTest):
     """A capability defer with the paid key armed does not stop at a handoff
     note: the request routes itself into the hourglass plan lane
     (frontier-planned DAG, governed apply with paid escalation rungs)."""
@@ -1124,7 +1134,7 @@ class TestChatAutoEscalation(unittest.TestCase):
                 self.assertTrue(gated_on._auto_escalation_armed())
 
 
-class TestOrchestratorDrive(unittest.TestCase):
+class TestOrchestratorDrive(_NativePolicyLaneTest):
     """The orchestrator loop: plan -> execute every node -> completion judge
     -> re-plan remaining scope -- until complete or the round budget is
     spent. Failures feed the judge instead of aborting (keep_going).
@@ -1160,7 +1170,9 @@ class TestOrchestratorDrive(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "util.py").write_text("x = 1\n", encoding="utf-8")
-            agent = AutonomousAgent(settings=_lane_settings(), root_dir=root,
+            with patch("harness.config.CONFIG_DIR", str(root)):
+                settings = _lane_settings()
+            agent = AutonomousAgent(settings=settings, root_dir=root,
                                     history_dir=root)
             engine = MagicMock()
             engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
@@ -1172,6 +1184,42 @@ class TestOrchestratorDrive(unittest.TestCase):
         # round 2 was planned from the judge's remaining scope
         self.assertEqual(res["orchestrator_history"][1]["goal"],
                          "add the second function")
+
+    def test_replans_share_one_cumulative_execution_stage_budget(self):
+        verdicts = [{"complete": False, "remaining": "continue", "reason": "more"},
+                    {"complete": True, "remaining": "", "reason": "done"}]
+        seen = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "util.py").write_text("x = 1\n", encoding="utf-8")
+            with patch("harness.config.CONFIG_DIR", str(root)):
+                settings = _lane_settings()
+            agent = AutonomousAgent(settings=settings, root_dir=root,
+                                    history_dir=root)
+            engine = MagicMock()
+            engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
+
+            def fake_execute(executor, dag):
+                budget = executor.token_budget
+                seen.append(budget)
+                allowance = budget.allowance(100, max_output_tokens=20,
+                                              label="test-node")
+                budget.settle(allowance, input_tokens=100, output_tokens=20)
+                return {"node": {"status": "ok", "cost": 0.001}}
+
+            with patch("harness.agent.apply_session", return_value=engine), \
+                 self._scripted_seam(verdicts), \
+                 patch("harness.executor.PlanExecutor.execute",
+                       new=fake_execute):
+                agent.run_prompt("Update util.py", auto_apply=True)
+
+        self.assertEqual(len(seen), 2)
+        self.assertIsNot(seen[0], seen[1])
+        self.assertIs(seen[1]._parent, seen[0])
+        self.assertEqual(seen[0].snapshot()["used_input_tokens"], 200)
+        self.assertEqual(seen[0].snapshot()["used_output_tokens"], 40)
+        self.assertEqual(seen[1].snapshot()["used_input_tokens"], 100)
+        self.assertEqual(seen[1].snapshot()["used_output_tokens"], 20)
 
     def test_node_failure_feeds_judge_not_abort(self):
         # keep_going: a failed node still lets the rest of the plan run, and
@@ -1219,7 +1267,7 @@ class TestOrchestratorDrive(unittest.TestCase):
         self.assertEqual(res["orchestrator_rounds"], 1)
 
 
-class TestOrchestratorWiring(unittest.TestCase):
+class TestOrchestratorWiring(_NativePolicyLaneTest):
     """The orchestrator wiring the scripted-seam drive tests patch over:
     the real repo enumeration, the real orchestration chat seam (ladder
     iteration over governed_text), the triage scope decision (explicit >
@@ -1458,10 +1506,9 @@ class TestOrchestratorWiring(unittest.TestCase):
         self.assertEqual(res["status"], "ok")
         self.assertEqual(seen.get("backend"), "diff")
 
-    def test_complete_verdict_overridden_while_named_artifact_missing(self):
-        # A judge verdict cannot make a missing artifact exist: with the
-        # prompt naming test_util.py and only util.py on disk, a lazy
-        # "complete" is overridden and the remaining scope names the truth.
+    def test_missing_named_artifact_blocks_completion_before_judge(self):
+        # With test_util.py absent, code-owned artifact truth blocks before
+        # the generative judge can issue a misleading complete verdict.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "util.py").write_text("def slugify(t):\n    return t\n",
@@ -1487,7 +1534,7 @@ class TestOrchestratorWiring(unittest.TestCase):
                     auto_apply=True)
         self.assertEqual(res["status"], "failed")
         self.assertIn("test_util.py", res["remaining_scope"])
-        self.assertEqual(rounds["n"], 3)
+        self.assertEqual(rounds["n"], 0)
 
     def test_judge_down_with_failed_nodes_reports_honest_scope(self):
         # Judge dies AND nodes fail: the loop must not fake a completion --
@@ -1513,7 +1560,7 @@ class TestOrchestratorWiring(unittest.TestCase):
         self.assertIn("completion judge unavailable", res["remaining_scope"])
 
 
-class TestHourglassLane(unittest.TestCase):
+class TestHourglassLane(_NativePolicyLaneTest):
     """The lane the GUI actually drives (server.run_chat_task ->
     AutonomousAgent._handle_edit) must run the SAME hourglass the CLI/MCP
     lanes run: waist confirmation through the ONE plan composer, then the
@@ -1719,29 +1766,41 @@ class TestHourglassLane(unittest.TestCase):
                 "confirmation": {"reason": "planning requires evidence"},
                 "dag": {"nodes": []}, "nodes": [],
             }
-            with patch.object(agent, "_plan_round", return_value=refused):
+            with patch.object(agent, "_plan_round", return_value=refused), \
+                    patch("harness.agent.PlanExecutor") as executor:
                 res = agent._handle_edit("Update util.py", "hg5_plan", True)
         self.assertEqual(res["status"], "refused")
         self.assertIn("planning requires evidence", res["response"])
         engine.apply_edit.assert_not_called()
+        executor.assert_not_called()
 
     def test_jev_preplanning_injects_algorithmic_guideline(self):
+        from harness.jev_policy import policy_for
+
         with tempfile.TemporaryDirectory() as tmp:
-            agent, engine = self._lane(Path(tmp))
-            planned_prompts = []
-            orig_plan_round = agent._plan_round
+            root = Path(tmp)
+            (root / "util.py").write_text("value = 1\n", encoding="utf-8")
+            settings = self._armed(
+                hourglass_stages=["execution", "verification"])
+            agent = AutonomousAgent(settings=settings, root_dir=root,
+                                    history_dir=root)
+            policy = policy_for(settings)
+            planning_prompts = []
 
-            def track_plan(goal, candidate_files, gov, confirm=None):
-                planned_prompts.append(goal)
-                return orig_plan_round(goal, candidate_files, gov, confirm=False)
+            def planning_seam(gov):
+                def chat_fn(prompt_text):
+                    planning_prompts.append(prompt_text)
+                    return self._DAG_JSON
+                return chat_fn
 
-            with patch.object(agent, "_plan_round", side_effect=track_plan), \
-                 self._decompose_seam():
+            with patch.object(AutonomousAgent, "_orchestrator_chat_fn",
+                              side_effect=planning_seam), \
+                 patch("harness.agent.policy_for", return_value=policy):
                 agent._handle_edit("Implement an iterative convergence loop over util.py", "sid_jev", False)
 
-        self.assertTrue(len(planned_prompts) > 0)
-        self.assertIn("[STRUCTURAL GUIDELINE]", planned_prompts[0])
-        self.assertIn("iterative control flow", planned_prompts[0])
+        self.assertTrue(len(planning_prompts) > 0)
+        self.assertIn("[STRUCTURAL GUIDELINE]", planning_prompts[0])
+        self.assertIn("iterative control flow", planning_prompts[0])
 
     def test_agent_lane_measures_its_own_root(self):
         """The planning owner reads the LANE's tree: the target's size is
@@ -1784,6 +1843,8 @@ class TestHourglassLane(unittest.TestCase):
         from harness.waist import HOURGLASS_DEFAULT_STAGES
 
         captured = {}
+        run_budget = TokenBudget("agent-run")
+        runtime = {}
 
         def fake_compose_plan(**kwargs):
             captured.update(kwargs)
@@ -1797,7 +1858,9 @@ class TestHourglassLane(unittest.TestCase):
             with patch("harness.agent.compose_plan",
                        side_effect=fake_compose_plan):
                 agent._plan_round("Add a docstring", [], MagicMock(),
-                                  confirm=False)
+                                  confirm=False,
+                                  composition_runtime=runtime,
+                                  token_budget=run_budget)
             # The lane's own tree still rides along: the composition seam is
             # additive, not a replacement for wiring that was already here.
             # Compared as paths, not strings: one temp directory legitimately
@@ -1808,7 +1871,53 @@ class TestHourglassLane(unittest.TestCase):
             self.assertTrue(os.path.samefile(captured["root"], str(root)))
 
         self.assertIsInstance(captured["token_budget"], TokenBudget)
+        self.assertIs(captured["token_budget"], run_budget)
+        self.assertIs(captured["composition_runtime"], runtime)
         self.assertEqual(captured["stages"], list(HOURGLASS_DEFAULT_STAGES))
+
+    def test_edit_triage_spends_from_the_composed_context_child(self):
+        """Agent relevance triage is context-stage work, not unassigned run use."""
+        from harness.waist import STAGE_CONTEXT, runtime_stage_budget
+
+        captured = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "util.py").write_text("value = 1\n", encoding="utf-8")
+            agent = AutonomousAgent(settings=self._armed(), root_dir=root,
+                                    history_dir=root)
+
+            def triage(_prompt, *, token_budget, allow_model):
+                captured["triage_budget"] = token_budget
+                self.assertTrue(allow_model)
+                allowance = token_budget.allowance(
+                    20, max_output_tokens=8, label="test-context-triage")
+                token_budget.settle(allowance, input_tokens=20,
+                                    output_tokens=8)
+                return ["util.py"]
+
+            def stop_after_plan(_goal, _files, _gov, *, composition_runtime,
+                                token_budget, **_kwargs):
+                captured["composition_runtime"] = composition_runtime
+                captured["run_budget"] = token_budget
+                return {"status": "refused"}
+
+            with patch.object(agent, "_triage_scope", side_effect=triage), \
+                 patch("harness.agent.policy_for",
+                       return_value=NativeJevPolicy()), \
+                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                 patch.object(agent, "_plan_round", side_effect=stop_after_plan), \
+                 patch.object(agent, "_refused_edit",
+                              return_value={"status": "refused"}):
+                result = agent._handle_edit(
+                    "Improve util.py", "session", False)
+
+        self.assertEqual(result["status"], "refused")
+        runtime = captured["composition_runtime"]
+        context = runtime_stage_budget(runtime, STAGE_CONTEXT)
+        self.assertIs(captured["triage_budget"], context)
+        self.assertIs(context._parent, captured["run_budget"])
+        self.assertEqual(context.snapshot()["used_input_tokens"], 20)
+        self.assertEqual(captured["run_budget"].snapshot()["used_input_tokens"], 20)
 
     def test_plan_round_curates_the_intake_brief_against_its_own_tree(self):
         """HV-2-use: the GUI lane's brief reads ITS tree, not the CWD.

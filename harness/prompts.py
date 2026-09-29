@@ -8,6 +8,7 @@ must match the source exactly before anything is written.
 """
 import os
 import re
+import json
 
 from .consent import consent_preview
 from .errors import HarnessError
@@ -20,7 +21,7 @@ CAPABILITY_MARKER = "HARNESS_DEFER:"
 READY_MARKER = "HARNESS_READY:"
 
 
-def consent_mechanics_text(file_path, content, instruction):
+def consent_mechanics_text(file_path, content, instruction, package=None):
     """The consent prompt text shared by the initial probe and every renewal.
     The model can only make an honest accept/defer call if it sees the work
     as the dispatcher will run it: the file content it is being asked to
@@ -32,6 +33,26 @@ def consent_mechanics_text(file_path, content, instruction):
     'I can only see the first 60 lines'. Show the same content the apply
     model will edit, honestly labeled.)"""
     n_lines, label, preview = consent_preview(content)
+    package_text = ""
+    if isinstance(package, dict):
+        # Keep the assignment fields readable and the context honest. The
+        # binding fingerprints the complete package even when a large context
+        # excerpt must be shortened for the consent call.
+        core = {key: package.get(key) for key in (
+            "package_id", "target_files", "dependencies", "verification_gate",
+            "route", "execution_models", "limits") if key in package}
+        context = package.get("context")
+        if context is not None:
+            context_text = json.dumps(
+                context, ensure_ascii=False, sort_keys=True, default=str)
+            core["context"] = context_text[:3000]
+            core["context_truncated"] = len(context_text) > 3000
+        rendered = json.dumps(
+            core, ensure_ascii=False, sort_keys=False, default=str, indent=2)
+        if len(rendered) > 5000:
+            rendered = rendered[:5000] + (
+                "\n[truncated for display; consent binding covers the full package]")
+        package_text = "\nWORK PACKAGE AND LIMITS (bound to this consent):\n" + rendered
     return (
         "WORK MECHANICS: you do NOT need any tool or filesystem access. "
         "The file content is shown here in this prompt; you will reply "
@@ -39,7 +60,8 @@ def consent_mechanics_text(file_path, content, instruction):
         "dispatcher writes it and runs an automated verification gate.\n"
         f"FILE {file_path} ({n_lines} lines; {label}):\n"
         f"{preview}\n"
-        f"REQUESTED CHANGE: {instruction[:1200]}")
+        f"REQUESTED CHANGE: {instruction[:1200]}"
+        f"{package_text}")
 
 _READY_INSTRUCTION = (
     "Your response MUST begin with exactly one line of the form "

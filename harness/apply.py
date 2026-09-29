@@ -55,6 +55,7 @@ from .batch import run_batch
 from .continuation import validate_continuation
 from .errors import HarnessError
 from .validation import validate_apply_request
+from .token_budget import TokenBudget
 
 
 
@@ -195,6 +196,9 @@ class ApplyEngine(ApplyEngineMixin):
         """Validate the request and freeze engine defaults into one request
         object. All argument policy lives here exactly once; phases read the
         request and never re-derive defaults."""
+        token_budget = kwargs.get("token_budget")
+        if token_budget is not None and not isinstance(token_budget, TokenBudget):
+            raise HarnessError("apply token_budget must be a TokenBudget")
         continuation = validate_continuation(kwargs.get("continuation"))
         resumed = bool(continuation)
         if resumed and kwargs.get("instruction"):
@@ -391,9 +395,12 @@ class ApplyEngine(ApplyEngineMixin):
             trust_combined=_trust_decision["combined"],
             trust_correctness=_trust_decision["correctness"],
             require_diff_authorization=require_auth,
-            attest_model=attest_model, min_confidence=self.min_confidence)
+            attest_model=attest_model, min_confidence=self.min_confidence,
+            token_budget=token_budget,
+            consent_package=kwargs.get("consent_package"),
+            write_guard=kwargs.get("write_guard"),
+            consent_policy=kwargs.get("consent_policy"))
 
     def apply_batch(self, files, **kwargs):
         """Run the shared multi-file policy over this engine."""
         return run_batch(self, files, **kwargs)
-

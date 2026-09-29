@@ -33,6 +33,7 @@ class PartitionTests(unittest.TestCase):
 class HybridIsolateExecutionTests(unittest.TestCase):
     def test_overlapping_stage_runs_serially_in_shared_tree(self):
         engine = MagicMock()
+        engine.jev_policy = None
         order = []
         active = {"n": 0, "max": 0}
 
@@ -83,6 +84,7 @@ class HybridIsolateExecutionTests(unittest.TestCase):
 
     def test_overlap_free_stage_uses_worktrees(self):
         engine = MagicMock()
+        engine.jev_policy = None
         seen_runners = []
 
         def apply(target, node, route_kwargs, task_runner):

@@ -244,6 +244,17 @@ class ReservationTests(unittest.TestCase):
         reserver.reserve(DAGNode(node_id="unknown", instruction="x"))
         self.assertEqual(gov.outstanding, 0.02)
 
+    def test_node_reserver_without_governor_is_unmetered(self):
+        """A fake engine without budget accounting remains executable."""
+        from harness.dag import DAGNode
+        from harness.spend import NodeReserver
+
+        reserver = NodeReserver(None, {}, 0.10)
+        token = reserver.reserve(DAGNode(node_id="fake", instruction="x"))
+        self.assertIsNone(token)
+        self.assertIsNone(reserver.remaining())
+        reserver.reconcile(token, 0.0)
+
     def test_node_reserver_paid_ceiling_is_still_used_verbatim(self):
         """A real (nonzero) tier ceiling is the node's worst case: reserving
         it is what keeps W concurrent workers from overcommitting."""

@@ -11,6 +11,7 @@ import os
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from .errors import HarnessError
+from .token_budget import USAGE_ACTUAL, USAGE_UNAVAILABLE
 from .config import HARD_MAX_COST
 from .jev import (JevEvaluationResult, JevEvaluator, jev_cost,
                   triage_question_pack)
@@ -28,6 +29,7 @@ from .jev_packs import (
     HOURGLASS_STAGE_PACK_ID,
     HOURGLASS_STAGE_PACK_VERSION,
     HOURGLASS_STAGE_SITE,
+    HOURGLASS_STAGES,
     hourglass_stage_question_pack,
     normalize_restart_target,
     stage_judgment_requirement,
@@ -80,6 +82,8 @@ from .jev_packs import (
     validate_operator_pack,
     validate_repo_summary_pack,
 )
+
+HOURGLASS_BUDGET_STAGES = (*HOURGLASS_STAGES, "verification")
 
 JEV_MAX_INPUT_TOKENS = 1024
 
@@ -175,6 +179,32 @@ class JevPolicy:
                 f"Jev worst-case cost ${worst:.6f} exceeds the remaining budget")
         return None
 
+    @staticmethod
+    def _reserve_token_call(token_budget, *, max_input_tokens, label):
+        if token_budget is None:
+            return None
+        # Jev's HTTP adapter has no output-cap field. Hold the stage's full
+        # remaining output allowance while its single typed response is in
+        # flight, then settle reported usage or conservatively charge it all.
+        remaining_output = token_budget.remaining_output()
+        if remaining_output <= 0:
+            raise HarnessError(
+                "Jev call has no remaining execution output allowance")
+        return token_budget.allowance(
+            max_input_tokens,
+            max_output_tokens=remaining_output, label=label)
+
+    @staticmethod
+    def _settle_token_call(token_budget, reservation, result):
+        if reservation is None:
+            return
+        if (result.input_tokens_observed and result.output_tokens_observed):
+            token_budget.settle(
+                reservation, input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens, source=USAGE_ACTUAL)
+        else:
+            token_budget.settle(reservation, source=USAGE_UNAVAILABLE)
+
     def _structural(self, result: JevEvaluationResult, site: str) -> Dict[str, Any]:
         return {
             "verdict": result.verdict,
@@ -257,12 +287,26 @@ class JevPolicy:
                       *, candidate: Optional[str] = None,
                       site: str = "apply", task_id: Optional[str] = None,
                       node_id: Optional[str] = None,
-                      max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+                      max_input_tokens: int = JEV_MAX_INPUT_TOKENS,
+                      token_budget=None):
         """Run local mechanics first, then the answerable semantic pack."""
         reservation = None
         try:
             def reserve_for_evaluator():
                 nonlocal reservation
+                if self.keyed and token_budget is not None:
+                    token_reservation = self._reserve_token_call(
+                        token_budget, max_input_tokens=max_input_tokens,
+                        label="jev_candidate")
+                    try:
+                        reservation = self._preflight(
+                            site=site, max_input_tokens=max_input_tokens)
+                    except BaseException:
+                        token_budget.cancel(token_reservation)
+                        reserve_for_evaluator.token_reservation = None
+                        raise
+                    reserve_for_evaluator.token_reservation = token_reservation
+                    return
                 reservation = self._preflight(
                     site=site, max_input_tokens=max_input_tokens)
 
@@ -270,6 +314,10 @@ class JevPolicy:
                 diff, instruction, file_path, candidate=candidate,
                 preflight=reserve_for_evaluator,
             )
+            token_reservation = getattr(
+                reserve_for_evaluator, "token_reservation", None)
+            if token_reservation is not None:
+                self._settle_token_call(token_budget, token_reservation, result)
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id,
                 reservation=reservation,
@@ -277,6 +325,14 @@ class JevPolicy:
             reservation = None
             return result, structural
         except HarnessError as exc:
+            token_reservation = getattr(
+                locals().get("reserve_for_evaluator"),
+                "token_reservation", None)
+            if (token_reservation is not None
+                    and not token_reservation.settled
+                    and not token_reservation.cancelled):
+                token_budget.settle(token_reservation,
+                                    source=USAGE_UNAVAILABLE)
             if reservation is not None and self.governor is not None:
                 try:
                     self.governor.reconcile(reservation, 0.0)
@@ -284,6 +340,21 @@ class JevPolicy:
                     pass
             return self._record_refusal(
                 str(exc), site=site, task_id=task_id, node_id=node_id)
+        except BaseException:
+            token_reservation = getattr(
+                locals().get("reserve_for_evaluator"),
+                "token_reservation", None)
+            if (token_reservation is not None
+                    and not token_reservation.settled
+                    and not token_reservation.cancelled):
+                token_budget.settle(token_reservation,
+                                    source=USAGE_UNAVAILABLE)
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            raise
 
     def evaluate_hourglass_stage(
             self, dimension: str, state: Any, *,
@@ -292,7 +363,9 @@ class JevPolicy:
             node_id: Optional[str] = None,
             max_input_tokens: int = JEV_MAX_INPUT_TOKENS,
             subject_supplied: bool = True,
-            superseded: bool = False):
+            superseded: bool = False,
+            token_budget=None,
+            token_stage_budget=None):
         """Judge ONE declared Hourglass stage dimension (HV-1).
 
         Selectable typed integrations, one owner, one contract:
@@ -447,8 +520,38 @@ class JevPolicy:
             return finish(fallback, values, False)
 
         reservation = None
+        token_reservation = None
+        stage = token_stage_budget or token_budget
         try:
-            reservation = self._preflight(site=site, max_input_tokens=max_input_tokens)
+            if token_stage_budget is not None and token_budget is None:
+                raise HarnessError(
+                    "token_stage_budget requires its run token_budget")
+            if token_budget is not None:
+                required_stage = {
+                    "context_intake": "context",
+                    "plan_soundness": "planning",
+                    "execution": "execution",
+                    "consent": "execution",
+                    "restart_target": "verification",
+                }.get(dimension)
+                if token_stage_budget is not None and (
+                        required_stage not in HOURGLASS_BUDGET_STAGES
+                        or token_stage_budget.label != required_stage
+                        or token_budget not in token_stage_budget._chain()):
+                    raise HarnessError(
+                        "token_stage_budget must be the matching Hourglass "
+                        "stage child of token_budget")
+                token_reservation = self._reserve_token_call(
+                    stage, max_input_tokens=max_input_tokens,
+                    label="jev_" + dimension)
+            try:
+                reservation = self._preflight(
+                    site=site, max_input_tokens=max_input_tokens)
+            except BaseException:
+                if token_reservation is not None:
+                    stage.cancel(token_reservation)
+                    token_reservation = None
+                raise
             raw = self.evaluator.evaluate(state, questions)
             answers = raw.answers if isinstance(raw.answers, dict) else {}
             values = read(answers)
@@ -464,7 +567,13 @@ class JevPolicy:
                 cost=raw.cost, input_tokens=raw.input_tokens,
                 output_tokens=raw.output_tokens,
                 is_fallback=bool(raw.is_fallback), model=raw.model,
+                usage_observed=bool(raw.usage_observed),
+                model_observed=bool(raw.model_observed),
+                input_tokens_observed=bool(raw.input_tokens_observed),
+                output_tokens_observed=bool(raw.output_tokens_observed),
                 discarded=bool(raw.discarded))
+            if token_reservation is not None:
+                self._settle_token_call(stage, token_reservation, result)
             settled = self._account(
                 result, site=site, task_id=task_id, node_id=node_id,
                 reservation=reservation,
@@ -495,6 +604,9 @@ class JevPolicy:
             })
             return result, structural
         except HarnessError as exc:
+            if (token_reservation is not None
+                    and not token_reservation.settled):
+                stage.settle(token_reservation, source=USAGE_UNAVAILABLE)
             if reservation is not None and self.governor is not None:
                 try:
                     self.governor.reconcile(reservation, 0.0)
@@ -506,11 +618,28 @@ class JevPolicy:
                 ["hourglass stage judgment unavailable: " + str(exc)],
                 is_fallback=False, model=self.evaluator.model)
             return finish(fallback, values, False)
+        except BaseException:
+            # Provider adapters may raise exceptions outside HarnessError.
+            # The token reservation still represents a dispatched request, so
+            # conservatively settle it before preserving the exception.
+            if (token_reservation is not None
+                    and not token_reservation.settled):
+                stage.settle(token_reservation, source=USAGE_UNAVAILABLE)
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            raise
 
     def evaluate_answer(
             self, prompt: str, answer: str, context: str = "", *,
             site: str = "answer", task_id: Optional[str] = None,
-            max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+            max_input_tokens: int = JEV_MAX_INPUT_TOKENS,
+            max_request_chars: int = 1400,
+            max_candidate_chars: int = 1800,
+            max_context_chars: int = 1400,
+            token_budget=None):
         """Assess a candidate answer and expose explicit loop signals.
 
         This is deliberately a narrow Jev capability rather than a second
@@ -520,9 +649,9 @@ class JevPolicy:
         allowed to look like a sufficient/native answer.
         """
         state = {
-            "request": str(prompt or "")[:1400],
-            "candidate_answer": str(answer or "")[:1800],
-            "retained_context": str(context or "")[:1400],
+            "request": str(prompt or "")[:max_request_chars],
+            "candidate_answer": str(answer or "")[:max_candidate_chars],
+            "retained_context": str(context or "")[:max_context_chars],
         }
         questions = answer_question_pack()
 
@@ -555,6 +684,11 @@ class JevPolicy:
                     # this distinction so reported provider usage is settled.
                     is_fallback=bool(result.is_fallback),
                     model=result.model,
+                    usage_observed=result.usage_observed,
+                    model_observed=result.model_observed,
+                    input_tokens_observed=result.input_tokens_observed,
+                    output_tokens_observed=result.output_tokens_observed,
+                    discarded=result.discarded,
                 )
                 return fallback, values, False
             normalized = {
@@ -571,6 +705,11 @@ class JevPolicy:
                 cost=result.cost, input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens, is_fallback=False,
                 model=result.model,
+                usage_observed=result.usage_observed,
+                model_observed=result.model_observed,
+                input_tokens_observed=result.input_tokens_observed,
+                output_tokens_observed=result.output_tokens_observed,
+                discarded=result.discarded,
             ), values, True
 
         if not self.keyed:
@@ -592,10 +731,28 @@ class JevPolicy:
             return fallback, structural
 
         reservation = None
+        token_reservation = None
+        dispatched = False
         try:
-            reservation = self._preflight(site=site, max_input_tokens=max_input_tokens)
+            # Reserve run-level accounting before spend preflight; if either
+            # preflight refuses, this call has not dispatched and is refunded.
+            if token_budget is not None:
+                token_reservation = self._reserve_token_call(
+                    token_budget, max_input_tokens=max_input_tokens,
+                    label="jev_answer")
+            try:
+                reservation = self._preflight(
+                    site=site, max_input_tokens=max_input_tokens)
+            except BaseException:
+                if token_reservation is not None:
+                    token_budget.cancel(token_reservation)
+                    token_reservation = None
+                raise
+            dispatched = True
             raw_result = self.evaluator.evaluate(state, questions)
             result, values, live = normalize(raw_result)
+            self._settle_token_call(token_budget, token_reservation, result)
+            token_reservation = None
             structural = self._account(
                 result, site=site, task_id=task_id, reservation=reservation)
             reservation = None
@@ -613,6 +770,12 @@ class JevPolicy:
             })
             return result, structural
         except HarnessError as exc:
+            if token_reservation is not None and not token_reservation.settled:
+                if dispatched:
+                    token_budget.settle(token_reservation,
+                                        source=USAGE_UNAVAILABLE)
+                else:
+                    token_budget.cancel(token_reservation)
             if reservation is not None and self.governor is not None:
                 try:
                     self.governor.reconcile(reservation, 0.0)
@@ -634,12 +797,26 @@ class JevPolicy:
                 "plan_required": None,
             })
             return refusal, structural
+        except BaseException:
+            if token_reservation is not None and not token_reservation.settled:
+                if dispatched:
+                    token_budget.settle(token_reservation,
+                                        source=USAGE_UNAVAILABLE)
+                else:
+                    token_budget.cancel(token_reservation)
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            raise
 
     def evaluate_candidate(self, original: str, candidate: str, instruction: str,
                            file_path: str, *, site: str = "apply",
                            task_id: Optional[str] = None,
                            node_id: Optional[str] = None,
-                           max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+                           max_input_tokens: int = JEV_MAX_INPUT_TOKENS,
+                           token_budget=None):
         """Evaluate a candidate diff before the verification gate can write it."""
         diff = "".join(difflib.unified_diff(
             original.splitlines(keepends=True),
@@ -650,6 +827,7 @@ class JevPolicy:
         return self.evaluate_diff(
             diff, instruction, file_path, candidate=candidate, site=site,
             task_id=task_id, node_id=node_id, max_input_tokens=max_input_tokens,
+            token_budget=token_budget,
         )
 
     def evaluate_triage(self, prompt: str, target_files=None, *,
@@ -694,7 +872,8 @@ class JevPolicy:
     def evaluate_escalation_decision(
             self, failure_context: str, *, site: str = "escalation-decision",
             task_id: Optional[str] = None,
-            max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+            max_input_tokens: int = JEV_MAX_INPUT_TOKENS,
+            token_budget=None):
         """Jev-directed escalation signals for the P2 decision pipeline
         (JEV-P2-dead-code: wire, not delete).
 
@@ -714,17 +893,34 @@ class JevPolicy:
         reservation and refuse honestly. Returns ``(result, structural)``.
         """
         reservation = None
+        token_reservation = None
         try:
-            reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
+            if self.keyed and token_budget is not None:
+                token_reservation = self._reserve_token_call(
+                    token_budget, max_input_tokens=max_input_tokens,
+                    label="jev_escalation_decision")
+            try:
+                reservation = self._preflight(
+                    site=site, max_input_tokens=max_input_tokens)
+            except BaseException:
+                if token_reservation is not None:
+                    token_budget.cancel(token_reservation)
+                    token_reservation = None
+                raise
             result = self.evaluator.evaluate(
                 {"context": failure_context or ""},
                 escalation_decision_pack())
+            self._settle_token_call(token_budget, token_reservation, result)
             structural = self._account(
                 result, site=site, task_id=task_id, reservation=reservation)
             reservation = None
             return result, structural
         except HarnessError as exc:
+            if (token_reservation is not None
+                    and not token_reservation.settled
+                    and not token_reservation.cancelled):
+                token_budget.settle(token_reservation,
+                                    source=USAGE_UNAVAILABLE)
             if reservation is not None and self.governor is not None:
                 try:
                     self.governor.reconcile(reservation, 0.0)
@@ -732,6 +928,18 @@ class JevPolicy:
                     pass
             return self._record_refusal(
                 str(exc), site=site, task_id=task_id)
+        except BaseException:
+            if (token_reservation is not None
+                    and not token_reservation.settled
+                    and not token_reservation.cancelled):
+                token_budget.settle(token_reservation,
+                                    source=USAGE_UNAVAILABLE)
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            raise
 
     def evaluate_decision(self, action: str, end_state: str, context: str = "",
                           *, site: str = DECISION_SITE,
@@ -814,14 +1022,27 @@ class JevPolicy:
 
     def evaluate_plan(self, prompt: str, target_files=None, *, site: str = "waist",
                       task_id: Optional[str] = None, node_id: Optional[str] = None,
-                      max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+                      max_input_tokens: int = JEV_MAX_INPUT_TOKENS,
+                      token_budget=None):
         """Evaluate the bounded plan pack and account it like every other site."""
         reservation = None
+        token_reservation = None
         try:
-            reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
+            if self.keyed and token_budget is not None:
+                token_reservation = self._reserve_token_call(
+                    token_budget, max_input_tokens=max_input_tokens,
+                    label="jev_plan")
+            try:
+                reservation = self._preflight(
+                    site=site, max_input_tokens=max_input_tokens)
+            except BaseException:
+                if token_reservation is not None:
+                    token_budget.cancel(token_reservation)
+                    token_reservation = None
+                raise
             result = self.evaluator.evaluate_plan_requirements(
                 prompt, target_files)
+            self._settle_token_call(token_budget, token_reservation, result)
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id,
                 reservation=reservation,
@@ -829,6 +1050,10 @@ class JevPolicy:
             reservation = None
             return result, structural
         except HarnessError as exc:
+            if (token_reservation is not None
+                    and not token_reservation.settled):
+                token_budget.settle(token_reservation,
+                                    source=USAGE_UNAVAILABLE)
             if reservation is not None and self.governor is not None:
                 try:
                     self.governor.reconcile(reservation, 0.0)
@@ -836,20 +1061,43 @@ class JevPolicy:
                     pass
             return self._record_refusal(
                 str(exc), site=site, task_id=task_id, node_id=node_id)
+        except BaseException:
+            if (token_reservation is not None
+                    and not token_reservation.settled):
+                token_budget.settle(token_reservation,
+                                    source=USAGE_UNAVAILABLE)
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            raise
 
     def evaluate_route(self, prompt: str, target_files=None, *,
                        site: str = "route", task_id: Optional[str] = None,
                        node_id: Optional[str] = None,
-                       max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+                       max_input_tokens: int = JEV_MAX_INPUT_TOKENS,
+                       token_budget=None):
         """JEV-P3-route: typed route choice over the shared vocabulary.
 
         Keyed answers use the route pack; unkeyed/transport failure returns
         the existing heuristic with ``is_fallback=True`` (never brand ids).
         """
         reservation = None
+        token_reservation = None
         try:
-            reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
+            if self.keyed and token_budget is not None:
+                token_reservation = self._reserve_token_call(
+                    token_budget, max_input_tokens=max_input_tokens,
+                    label="jev_route")
+            try:
+                reservation = self._preflight(
+                    site=site, max_input_tokens=max_input_tokens)
+            except BaseException:
+                if token_reservation is not None:
+                    token_budget.cancel(token_reservation)
+                    token_reservation = None
+                raise
             result = self.evaluator.evaluate(
                 {"prompt": prompt or "", "target_files": list(target_files or [])},
                 route_question_pack())
@@ -866,7 +1114,12 @@ class JevPolicy:
                     "pass", 0.0, 1.0, answers, result.reasons,
                     cost=result.cost, input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
-                    is_fallback=True, model=result.model)
+                    is_fallback=True, model=result.model,
+                    usage_observed=result.usage_observed,
+                    model_observed=result.model_observed,
+                    input_tokens_observed=result.input_tokens_observed,
+                    output_tokens_observed=result.output_tokens_observed,
+                    discarded=result.discarded)
             else:
                 # Normalize live choice into the vocabulary (or fall back).
                 normalized = normalize_route(
@@ -883,7 +1136,12 @@ class JevPolicy:
                             "live route outside vocabulary; heuristic applied"],
                         cost=result.cost, input_tokens=result.input_tokens,
                         output_tokens=result.output_tokens,
-                        is_fallback=True, model=result.model)
+                        is_fallback=True, model=result.model,
+                        usage_observed=result.usage_observed,
+                        model_observed=result.model_observed,
+                        input_tokens_observed=result.input_tokens_observed,
+                        output_tokens_observed=result.output_tokens_observed,
+                        discarded=result.discarded)
                 else:
                     answers = dict(answers)
                     answers["route"] = normalized
@@ -897,12 +1155,22 @@ class JevPolicy:
                         answers, result.reasons,
                         cost=result.cost, input_tokens=result.input_tokens,
                         output_tokens=result.output_tokens,
-                        is_fallback=False, model=result.model)
+                        is_fallback=False, model=result.model,
+                        usage_observed=result.usage_observed,
+                        model_observed=result.model_observed,
+                        input_tokens_observed=result.input_tokens_observed,
+                        output_tokens_observed=result.output_tokens_observed,
+                        discarded=result.discarded)
+            self._settle_token_call(token_budget, token_reservation, result)
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id,
                 reservation=reservation)
             return result, structural
         except HarnessError as exc:
+            if (token_reservation is not None
+                    and not token_reservation.settled):
+                token_budget.settle(token_reservation,
+                                    source=USAGE_UNAVAILABLE)
             if reservation is not None and self.governor is not None:
                 try:
                     self.governor.reconcile(reservation, 0.0)
@@ -917,6 +1185,18 @@ class JevPolicy:
                 "pass", 0.0, 1.0, answers, [str(exc)],
                 is_fallback=True, model=self.evaluator.model)
             return fallback, self._structural(fallback, site)
+        except BaseException:
+            if (token_reservation is not None
+                    and not token_reservation.settled
+                    and not token_reservation.cancelled):
+                token_budget.settle(token_reservation,
+                                    source=USAGE_UNAVAILABLE)
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            raise
 
     def evaluate_file_triage(self, goal: str, candidates: Sequence[str],
                              known_files: Optional[Sequence[str]] = None, *,
@@ -1089,7 +1369,8 @@ class JevPolicy:
                                   named_artifacts=None, root_dir=None, *,
                                   site: str = "completion",
                                   task_id: Optional[str] = None,
-                                  max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+                                  max_input_tokens: int = JEV_MAX_INPUT_TOKENS,
+                                  token_budget=None):
         """JEV-P3-completion: artifact/goal nouls before the generative judge.
 
         Missing named artifact is code-owned truth: the envelope cannot
@@ -1139,9 +1420,20 @@ class JevPolicy:
             structural["missing_artifacts"] = missing
             return result, structural
         reservation = None
+        token_reservation = None
         try:
-            reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
+            if self.keyed and token_budget is not None:
+                token_reservation = self._reserve_token_call(
+                    token_budget, max_input_tokens=max_input_tokens,
+                    label="jev_completion")
+            try:
+                reservation = self._preflight(
+                    site=site, max_input_tokens=max_input_tokens)
+            except BaseException:
+                if token_reservation is not None:
+                    token_budget.cancel(token_reservation)
+                    token_reservation = None
+                raise
             result = self.evaluator.evaluate(
                 {
                     "goal": goal or "",
@@ -1160,7 +1452,12 @@ class JevPolicy:
                     "pass", 0.0, 1.0, answers, result.reasons,
                     cost=result.cost, input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
-                    is_fallback=True, model=result.model)
+                    is_fallback=True, model=result.model,
+                    usage_observed=result.usage_observed,
+                    model_observed=result.model_observed,
+                    input_tokens_observed=result.input_tokens_observed,
+                    output_tokens_observed=result.output_tokens_observed,
+                    discarded=result.discarded)
             else:
                 present = answers.get("named_artifacts_present")
                 achieved = answers.get("goal_achieved")
@@ -1177,14 +1474,24 @@ class JevPolicy:
                     answers, result.reasons,
                     cost=result.cost, input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
-                    is_fallback=False, model=result.model)
+                    is_fallback=False, model=result.model,
+                    usage_observed=result.usage_observed,
+                    model_observed=result.model_observed,
+                    input_tokens_observed=result.input_tokens_observed,
+                    output_tokens_observed=result.output_tokens_observed,
+                    discarded=result.discarded)
                 cannot = present_p < 0.5 or achieved_p < 0.5
+            self._settle_token_call(token_budget, token_reservation, result)
             structural = self._account(
                 result, site=site, task_id=task_id, reservation=reservation)
             structural["cannot_complete"] = bool(cannot)
             structural["missing_artifacts"] = missing
             return result, structural
         except HarnessError as exc:
+            if (token_reservation is not None
+                    and not token_reservation.settled):
+                token_budget.settle(token_reservation,
+                                    source=USAGE_UNAVAILABLE)
             if reservation is not None and self.governor is not None:
                 try:
                     self.governor.reconcile(reservation, 0.0)
@@ -1203,6 +1510,17 @@ class JevPolicy:
             structural["missing_artifacts"] = missing
             structural["reason"] = str(exc)
             return fallback, structural
+        except BaseException:
+            if (token_reservation is not None
+                    and not token_reservation.settled):
+                token_budget.settle(token_reservation,
+                                    source=USAGE_UNAVAILABLE)
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            raise
 
     @staticmethod
     def _scope_noul(answers: Dict[str, Any], key: str) -> Optional[float]:

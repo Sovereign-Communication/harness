@@ -624,15 +624,14 @@ def _e2e_plumbing() -> bool:
     can all be correct while the wiring between them is not: an earlier draft
     put the waiver lookup after a `return`, so every unit case passed and a
     waived document still failed. A regression test that never touches
-    validate_paths would not have noticed. Scratch lives under the repository's
-    own `tmp/` (never the system temp dir) and is removed in a finally block.
+    validate_paths would not have noticed. Scratch lives in a unique OS temp
+    directory so the self-test works in read-only repository checkouts.
     """
     import json
+    import tempfile
 
-    root = Path(__file__).resolve().parents[1] / "tmp" / "handoff-scope-selftest"
-    try:
-        if root.exists():
-            return False
+    with tempfile.TemporaryDirectory(prefix="handoff-scope-selftest-") as scratch:
+        root = Path(scratch)
         (root / "handoff" / "selftest").mkdir(parents=True)
         (root / "handoff" / "selftest" / "DIRTY.md").write_text(
             "Harness notes." + chr(10) + chr(10) + "Driven through SCMessenger." + chr(10),
@@ -668,10 +667,6 @@ def _e2e_plumbing() -> bool:
         unstamp = validate_paths(["handoff/selftest/UNSTAMPED.md"], POLICY, root)
         other = validate_paths(["handoff/selftest/STILL_DIRTY.md"], POLICY, root)
         return waived == [] and bool(unstamp) and bool(other)
-    finally:
-        import shutil
-
-        shutil.rmtree(root, ignore_errors=True)
 
 
 # Each case is (name, thunk, expected): the thunk's result must equal the
