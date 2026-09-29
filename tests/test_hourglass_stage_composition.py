@@ -177,11 +177,12 @@ class PlanLaneWiringTests(unittest.TestCase):
         from tests._fake import FakeTransport, m
         fake = FakeTransport(models=[m("m/cheap")])
         gov = SpendGovernor(fake, "sk-test", max_cost=1.0)
+        execute = kwargs.pop("execute", False)
         return compose_plan(
             transport=fake, api_key="k", governor=gov, ledger=None,
             opts_goal="Update the shipments helper", candidate_files=[],
             root=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            execute=False, **kwargs)
+            execute=execute, **kwargs)
 
     def test_the_plan_envelope_carries_the_composition(self):
         plan = self._plan(token_budget=TokenBudget(
@@ -202,6 +203,125 @@ class PlanLaneWiringTests(unittest.TestCase):
                           stages=[STAGE_CONTEXT, STAGE_PLANNING])
         self.assertEqual([s["stage"] for s in plan["composition"]["stages"]],
                          [STAGE_CONTEXT, STAGE_PLANNING])
+
+    def test_selected_planning_invokes_owner_and_reports_result_and_allowance(self):
+        from unittest.mock import patch
+        from harness.waist import PlanningOutcome, OUTCOME_DEFER
+        brief = {"estimated_tokens": 17, "grounding": {"sources": []}}
+        outcome = PlanningOutcome(OUTCOME_DEFER, reason="no_evidence_cited",
+                                  brief=brief,
+                                  budget={"label": "planning", "max_input_tokens": 8000})
+        budget = TokenBudget("run", max_input_tokens=20000,
+                             max_output_tokens=4000)
+        with patch("harness.waist.run_planning", return_value=outcome) as run:
+            plan = self._plan(token_budget=budget,
+                              stages=[STAGE_PLANNING], brief=brief)
+        run.assert_called_once()
+        args = run.call_args.kwargs
+        self.assertEqual(args["goal"], "Update the shipments helper")
+        self.assertIs(args["brief"], brief)
+        self.assertIs(args["budget"], budget)
+        self.assertEqual(args["stage_budget"].snapshot()["parent"], "run")
+        self.assertEqual(plan["planning"]["kind"], OUTCOME_DEFER)
+        self.assertEqual(plan["planning"]["budget"]["label"], "planning")
+        stage = next(s for s in plan["composition"]["stages"]
+                     if s["stage"] == STAGE_PLANNING)
+        self.assertEqual(stage["state"], "completed")
+
+    def test_planning_outcomes_gate_only_the_composed_dag_when_not_sufficient(self):
+        from unittest.mock import patch
+        from harness.waist import (
+            PlanningOutcome, OUTCOME_DEFER, OUTCOME_EVIDENCE_REQUEST,
+            OUTCOME_PLAN, OUTCOME_SUFFICIENT,
+        )
+
+        outcomes = [
+            (PlanningOutcome(OUTCOME_SUFFICIENT), "planned", None),
+            (PlanningOutcome(OUTCOME_DEFER, reason="evidence conflicts"),
+             "refused", "evidence conflicts"),
+            (PlanningOutcome(
+                OUTCOME_EVIDENCE_REQUEST, reason="need a source",
+                evidence_request=[{"source": "README.md", "reason": "verify"}]),
+             "refused", "need a source"),
+            (type("ReasonlessDefer", (), {
+                "to_dict": lambda self: {"kind": OUTCOME_DEFER, "reason": ""},
+            })(), "refused", "planning deferred execution"),
+            (type("ReasonlessEvidenceRequest", (), {
+                "to_dict": lambda self: {
+                    "kind": OUTCOME_EVIDENCE_REQUEST,
+                    "reason": None,
+                    "evidence_request": [
+                        {"source": "README.md", "reason": "verify"}],
+                },
+            })(), "refused", "planning requires additional evidence"),
+            (PlanningOutcome(OUTCOME_PLAN, reason="validated_bounded_plan",
+                             plan={"nodes": []}), "refused",
+             "separate plan without an adapter"),
+            (type("UnknownOutcome", (), {
+                "to_dict": lambda self: {"kind": "unexpected"},
+            })(), "refused", "unsupported outcome"),
+            (type("NonMappingOutcome", (), {
+                "to_dict": lambda self: None,
+            })(), "refused", "unsupported outcome"),
+        ]
+        for outcome, expected_status, reason_fragment in outcomes:
+            payload = outcome.to_dict()
+            with self.subTest(kind=(payload or {}).get("kind")):
+                budget = TokenBudget("run", max_input_tokens=20000,
+                                     max_output_tokens=4000)
+                with patch("harness.waist.run_planning", return_value=outcome):
+                    plan = self._plan(
+                        execute=True, token_budget=budget,
+                        stages=[STAGE_PLANNING])
+                self.assertEqual(plan["status"], expected_status)
+                self.assertEqual(plan["planning"], outcome.to_dict())
+                if expected_status == "refused":
+                    self.assertEqual(plan["confirmation"]["verdict"], "refused")
+                    self.assertIn(reason_fragment,
+                                  plan["confirmation"]["reason"])
+                else:
+                    self.assertNotIn("confirmation", plan)
+
+    def test_selected_planning_composes_real_defer_once_without_a_live_judge(self):
+        brief = {"estimated_tokens": 17, "grounding": {"sources": []}}
+        budget = TokenBudget("run", max_input_tokens=20000,
+                             max_output_tokens=4000)
+        plan = self._plan(token_budget=budget,
+                          stages=[STAGE_PLANNING], brief=brief)
+
+        self.assertEqual(plan["planning"]["kind"], "defer")
+        self.assertEqual(plan["planning"]["reason"], "no_evidence_cited")
+        stage = next(s for s in plan["composition"]["stages"]
+                     if s["stage"] == STAGE_PLANNING)
+        self.assertEqual(stage["state"], "completed")
+        self.assertNotIn(STAGE_PLANNING, plan["composition"]["completed"])
+        self.assertNotIn(STAGE_PLANNING, plan["composition"]["skipped"])
+
+    def test_unselected_planning_does_not_invoke_owner(self):
+        from unittest.mock import patch
+        with patch("harness.waist.run_planning") as run:
+            plan = self._plan(token_budget=TokenBudget("run"),
+                              stages=[STAGE_CONTEXT])
+        run.assert_not_called()
+        self.assertNotIn("planning", plan)
+        self.assertIn(STAGE_PLANNING, plan["composition"]["skipped"])
+
+    def test_refused_composed_budget_does_not_invoke_planning(self):
+        from unittest.mock import patch
+        composed = {
+            "composed_worst_case": 2.0, "node_ceiling": 1.0,
+            "decompose": 0.0, "waist": 1.0, "consensus": 0.0,
+            "remaining": 1.0, "plan_ceiling": 1.0,
+            "exceeds_remaining": True,
+        }
+        with patch("harness.waist.composed_worst_case", return_value=composed), \
+                patch("harness.waist.run_planning") as run:
+            plan = self._plan(
+                execute=True, token_budget=TokenBudget("run"),
+                stages=[STAGE_PLANNING])
+        self.assertEqual(plan["status"], "refused")
+        run.assert_not_called()
+        self.assertNotIn("planning", plan)
 
     def test_a_supplied_artifact_is_visible_on_the_envelope(self):
         plan = self._plan(token_budget=TokenBudget("run"), supplied_brief=True)

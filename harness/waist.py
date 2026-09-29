@@ -1669,6 +1669,51 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             supplied_brief=supplied_brief, supplied_plan=supplied_plan,
             brief=brief, brief_tokens=brief_tokens, reader=reader)
         states = stage_states(composition)
+        planning_stage = next(
+            (entry for entry in composition["stages"]
+             if entry["stage"] == STAGE_PLANNING), None)
+        if planning_stage is not None and plan_result.get("status") != "refused":
+            # HV-5: composition selects and budgets the planning stage; the
+            # waist remains its sole production owner. Give it the composed
+            # child allowance and the same intake artifact/reader the lane
+            # used to make the composition decision.
+            planning = run_planning(
+                goal=opts_goal,
+                budget=token_budget,
+                stage_budget=planning_stage["budget"],
+                files=candidate_files or (), reader=reader, brief=brief,
+                jev_policy=jev_policy)
+            planning_payload = planning.to_dict()
+            plan_result["planning"] = planning_payload
+            states[STAGE_PLANNING] = STATE_COMPLETED
+            # Only sufficiency authorizes the already-composed outer DAG.
+            # A proposed planning DAG has no adapter into that outer plan,
+            # and an evidence request/defer explicitly says the available
+            # evidence cannot support execution. Fail closed while preserving
+            # the full typed result for the caller.
+            kind = (planning_payload.get("kind")
+                    if isinstance(planning_payload, dict) else None)
+            if kind != OUTCOME_SUFFICIENT:
+                if kind == OUTCOME_DEFER:
+                    reason = (planning_payload.get("reason")
+                              or "planning deferred execution")
+                elif kind == OUTCOME_EVIDENCE_REQUEST:
+                    reason = (planning_payload.get("reason")
+                              or "planning requires additional evidence")
+                elif kind == OUTCOME_PLAN:
+                    reason = (
+                        "planning produced a separate plan without an adapter "
+                        "to the composed execution DAG")
+                else:
+                    reason = "planning returned an unsupported outcome"
+                plan_result["status"] = "refused"
+                plan_result["confirmation"] = {
+                    "verdict": "refused",
+                    "model": "planning-outcome",
+                    "rounds": 0,
+                    "reason": reason,
+                    "cost": 0.0,
+                }
         if brief is not None and STAGE_CONTEXT in (composition.get("bypassed")
                                                   or {}):
             # HV-2-use: the brief IS the context stage's artifact, and the
@@ -2385,7 +2430,9 @@ def composition_envelope(composition: Dict[str, Any], *,
         # NO bucket, and "every declared stage sits in exactly one of
         # completed/skipped/pending" is the invariant this envelope keeps.
         "completed": [name for name, state in resolved.items()
-                      if state == STATE_COMPLETED],
+                      if state == STATE_COMPLETED
+                      and name not in {entry.get("stage")
+                                       for entry in composition.get("stages") or []}],
         "bypassed": dict(composition.get("bypassed") or {}),
         "denied_bypass": dict(composition.get("denied") or {}),
         # Added only when a stage actually ran and supplied its evidence: a
@@ -2645,7 +2692,7 @@ class PlanningOutcome:
         }
 
 
-def run_planning(*, goal, budget, files=(), reader=None, brief=None,
+def run_planning(*, goal, budget, stage_budget=None, files=(), reader=None, brief=None,
                  jev_policy=None, planner=None, rounds=2,
                  max_nodes=DEFAULT_MAX_PLAN_NODES,
                  max_evidence_items=MAX_EVIDENCE_QUESTIONS,
@@ -2669,8 +2716,15 @@ def run_planning(*, goal, budget, files=(), reader=None, brief=None,
         raise HarnessError("planner must be callable")
     if not isinstance(budget, TokenBudget):
         raise HarnessError("planning needs a TokenBudget to spend from")
+    if stage_budget is not None and not isinstance(stage_budget, TokenBudget):
+        raise HarnessError("planning stage_budget must be a TokenBudget")
+    if stage_budget is not None and (
+            stage_budget.label != STAGE_PLANNING
+            or stage_budget._parent is not budget):
+        raise HarnessError(
+            "planning stage_budget must be the planning child of budget")
 
-    stage = budget.stage(STAGE_PLANNING)
+    stage = stage_budget or budget.stage(STAGE_PLANNING)
     ladder = planning_ladder(stage, rounds=rounds)
     round_log: List[Dict[str, Any]] = []
     jev_signals: Dict[str, Any] = {}

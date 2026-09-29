@@ -49,27 +49,7 @@ def _lane_settings(**overrides):
     settings.hourglass_isolate = False
     settings.hourglass_parallel = False
     settings.hourglass_require_attestation = False
-    for key, value in overrides.items():
-        setattr(settings, key, value)
-    return settings
-
-
-def _lane_settings(**overrides):
-    """Agent-lane settings with the hourglass DISARMED explicitly.
-
-    These tests pin lane mechanics (round drive, healing retry, artifact
-    truth, escalation evidence) that are independent of the plan gate, and
-    the hourglass switch must come from the test -- never from whatever
-    config file happens to be on the machine running the suite. The armed
-    lane is covered by TestHourglassLane, which scripts the waist verdict.
-    """
-    settings = load_settings()
-    # Hermetic agent tests must never inherit the operator's live Jev key.
-    settings.jev_api_key = None
-    settings.hourglass_confirm = False
-    settings.hourglass_isolate = False
-    settings.hourglass_parallel = False
-    settings.hourglass_require_attestation = False
+    settings.hourglass_stages = ["context", "execution", "verification"]
     for key, value in overrides.items():
         setattr(settings, key, value)
     return settings
@@ -1557,6 +1537,7 @@ class TestHourglassLane(unittest.TestCase):
         settings.hourglass_isolate = True
         settings.hourglass_parallel = True
         settings.hourglass_require_attestation = True
+        settings.hourglass_stages = ["context", "execution", "verification"]
         for key, value in overrides.items():
             setattr(settings, key, value)
         return settings
@@ -1728,6 +1709,22 @@ class TestHourglassLane(unittest.TestCase):
         engine.apply_edit.assert_not_called()
         self.assertEqual(res["cost"], 0.0)
 
+    def test_planning_outcome_refusal_dispatches_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent, engine = self._lane(Path(tmp))
+            refused = {
+                "status": "refused",
+                "planning": {"kind": "evidence_request",
+                             "evidence_request": [{"source": "util.py"}]},
+                "confirmation": {"reason": "planning requires evidence"},
+                "dag": {"nodes": []}, "nodes": [],
+            }
+            with patch.object(agent, "_plan_round", return_value=refused):
+                res = agent._handle_edit("Update util.py", "hg5_plan", True)
+        self.assertEqual(res["status"], "refused")
+        self.assertIn("planning requires evidence", res["response"])
+        engine.apply_edit.assert_not_called()
+
     def test_jev_preplanning_injects_algorithmic_guideline(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent, engine = self._lane(Path(tmp))
@@ -1794,7 +1791,8 @@ class TestHourglassLane(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            agent = AutonomousAgent(settings=self._armed(), root_dir=root,
+            agent = AutonomousAgent(settings=self._armed(
+                hourglass_stages=list(HOURGLASS_DEFAULT_STAGES)), root_dir=root,
                                     history_dir=root)
             with patch("harness.agent.compose_plan",
                        side_effect=fake_compose_plan):
