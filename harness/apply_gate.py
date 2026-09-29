@@ -54,7 +54,8 @@ class GatePolicy:
                 task_id=req.task_id, model=req.attest_model,
                 file_path=req.file_path, instruction=req.instruction,
                 current_content=state.current_content, new_content=content,
-                round_no=state.round_no, max_tokens=req.max_tokens)
+                round_no=state.round_no, max_tokens=req.max_tokens,
+                token_budget=req.token_budget)
         if state.backup is None:
             state.backup = backup_file(req.file_path, req.task_id,
                                        marker or state.round_no)

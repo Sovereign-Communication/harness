@@ -187,7 +187,7 @@ def _new_nonce():
 
 def authorize_diff(transport, api_key, governor, ledger, *, task_id, model,
                    file_path, instruction, current_content, new_content,
-                   round_no, max_tokens=4096):
+                   round_no, max_tokens=4096, token_budget=None):
     """Ask the independent verifier model to authorize the EXACT bytes about
     to be written. Returns the attestation record (also ledgered). Raises
     HarnessError on deny, unparseable output, transport error -- every
@@ -209,10 +209,14 @@ def authorize_diff(transport, api_key, governor, ledger, *, task_id, model,
         preflight(DIFF_AUTH_SYSTEM_PROMPT + "\n" + user,
                   [(f"attest:{model}", model, max_tokens, 0)])
     governor.check_byok(model)
+    token_kwargs = ({"token_budget": token_budget,
+                     "token_label": "diff_authorization"}
+                    if token_budget is not None else {})
     status, resp = chat(transport, api_key, model,
                         [{"role": "system", "content": DIFF_AUTH_SYSTEM_PROMPT},
                          {"role": "user", "content": user}],
-                        max_tokens, reasoning_effort="none", governor=governor)
+                        max_tokens, reasoning_effort="none", governor=governor,
+                        **token_kwargs)
     raw = ""
     if status == 200:
         content, _, _, is_byok = extract_content_and_cost(resp)

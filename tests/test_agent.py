@@ -49,6 +49,7 @@ def _lane_settings(**overrides):
     settings.hourglass_isolate = False
     settings.hourglass_parallel = False
     settings.hourglass_require_attestation = False
+    settings.hourglass_stages = ["context", "execution", "verification"]
     for key, value in overrides.items():
         setattr(settings, key, value)
     return settings
@@ -1652,7 +1653,8 @@ class TestHourglassLane(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "util.py").write_text("x = 1\n", encoding="utf-8")
-            agent = AutonomousAgent(settings=self._armed(), root_dir=root,
+            agent = AutonomousAgent(settings=self._armed(
+                hourglass_stages=list(HOURGLASS_DEFAULT_STAGES)), root_dir=root,
                                     history_dir=root)
             gov = _gov(FakeTransport(), max_cost=0.05)
             self.assertEqual(agent.settings.max_cost, 0.05)

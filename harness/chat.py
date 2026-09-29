@@ -276,7 +276,8 @@ def _ensure_accounted(governor, model, resp, usage):
 
 def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto",
          reasoning_token_budget=0.4, governor=None, enable_floor=True,
-         max_price=None, provider_sort="price"):
+         max_price=None, provider_sort="price", token_budget=None,
+         token_label="chat"):
     """One chat completion with the spend governor's payload guards.
 
     Reasoning is included whenever the effort mode resolves to a value --
@@ -318,8 +319,69 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
                 _ensure_accounted(governor, canonical_model, resp, usage)
         return status, resp
 
+    def _dispatch(payload):
+        """Account one actual HTTP attempt, including reasoning fallbacks."""
+        reservation = None
+        if token_budget is not None:
+            from .token_budget import (USAGE_ACTUAL, USAGE_ESTIMATED,
+                                       USAGE_UNAVAILABLE)
+            from .tokens import estimate_prompt_tokens
+            prompt = "\n".join(
+                str(message.get("content", ""))
+                for message in messages if isinstance(message, dict))
+            reservation = token_budget.allowance(
+                estimate_prompt_tokens(prompt),
+                max_output_tokens=max_tokens, label=token_label)
+        try:
+            status, resp = transport.post(
+                OPENROUTER_CHAT_URL, api_key, payload)
+        except BaseException:
+            if reservation is not None:
+                token_budget.settle(reservation, source=USAGE_UNAVAILABLE)
+            raise
+        if reservation is not None:
+            usage = resp.get("usage") if isinstance(resp, dict) else None
+            observed = None
+            if isinstance(usage, dict):
+                for input_key, output_key in (
+                        ("input_tokens", "output_tokens"),
+                        ("prompt_tokens", "completion_tokens")):
+                    input_count, output_count = (usage.get(input_key),
+                                                 usage.get(output_key))
+                    if (isinstance(input_count, int)
+                            and not isinstance(input_count, bool)
+                            and input_count >= 0
+                            and isinstance(output_count, int)
+                            and not isinstance(output_count, bool)
+                            and output_count >= 0):
+                        observed = (input_count, output_count)
+                        break
+            if observed is not None:
+                token_budget.settle(
+                    reservation, input_tokens=observed[0],
+                    output_tokens=observed[1], source=USAGE_ACTUAL)
+            elif status == 200 and isinstance(resp, dict):
+                try:
+                    content = resp["choices"][0]["message"]["content"]
+                except (KeyError, IndexError, TypeError):
+                    content = ""
+                if isinstance(content, list):
+                    content = " ".join(
+                        part.get("text", "") for part in content
+                        if isinstance(part, dict))
+                token_budget.settle(
+                    reservation,
+                    input_tokens=reservation.input_tokens,
+                    output_tokens=(estimate_prompt_tokens(content)
+                                   if isinstance(content, str) and content else 0),
+                    source=USAGE_ESTIMATED)
+            else:
+                token_budget.settle(reservation,
+                                    source=USAGE_UNAVAILABLE)
+        return status, resp
+
     want_reasoning = _effort_to_send(reasoning_effort, model) is not None
-    status, resp = transport.post(OPENROUTER_CHAT_URL, api_key, build(want_reasoning))
+    status, resp = _dispatch(build(want_reasoning))
     if want_reasoning and status != 200:
         err = str(resp.get("error", {}).get("message", resp)
                   if isinstance(resp, dict) else resp).lower()
@@ -329,8 +391,7 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
             _events.emit("rotation", model=model, reason="reasoning_param_rejected",
                          note="provider retry without the reasoning parameter")
             prior_cost = _reported_cost(resp)
-            retry_status, retry_resp = transport.post(
-                OPENROUTER_CHAT_URL, api_key, build(False))
+            retry_status, retry_resp = _dispatch(build(False))
             return _account(retry_status,
                             _merge_retry_cost(retry_resp, prior_cost))
     return _account(status, resp)
