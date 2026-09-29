@@ -1067,6 +1067,55 @@ class MainCliFlagsTests(unittest.TestCase):
             self.assertEqual(mcp.main(["--help"]), 0)
             self.assertIn("usage: harness-mcp", out.getvalue())
 
+    def test_main_passes_the_settings_seam_to_the_server(self):
+        """HV-4/HV-3-use reachability: `main` must wire the settings seam.
+
+        `McpServer` takes the seam explicitly and its engine never carries
+        one, so a `main` that forgot it would leave this lane *publishing*
+        composition without ever reaching it -- the exact defect the
+        composed-run caller closes. That composition then executes given a
+        real settings object is proved separately (the MCP parity and
+        planning-surface tests); this test pins the wiring that makes it
+        reachable in the shipped entry point. Inert patches only: no stdio,
+        no network, no key, no settings load.
+        """
+        from harness import mcp
+        from harness import session as composition
+
+        captured = {}
+
+        class FakeServer:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def serve_forever(self):
+                return None
+
+        settings = mock.MagicMock()
+        with mock.patch.object(mcp, "McpServer", FakeServer), \
+             mock.patch.object(mcp, "_handle_cli_flags", return_value=None), \
+             mock.patch.object(mcp, "load_settings", return_value=settings), \
+             mock.patch.object(mcp, "resolve_hourglass", return_value={}), \
+             mock.patch.object(composition, "HttpTransport",
+                               lambda *a, **kw: object()), \
+             mock.patch.object(composition, "governor_for",
+                               lambda *a, **kw: ("k", object())), \
+             mock.patch.object(composition, "ledger_for",
+                               lambda *a, **kw: object()), \
+             mock.patch.object(composition, "router_for",
+                               lambda *a, **kw: object()), \
+             mock.patch.object(composition, "engine_for",
+                               lambda *a, **kw: object()), \
+             mock.patch.object(composition, "pre_run_warning",
+                               lambda **kw: None):
+            mcp.main([])
+
+        self.assertIs(captured.get("settings"), settings)
+        # The seam is additive: the settings-derived scalars the server has
+        # always taken still ride along, so nothing regressed by adding it.
+        self.assertIn("hourglass", captured)
+        self.assertEqual(captured["max_panelists"], settings.max_panelists)
+
 
 class MissionStatusToolTests(unittest.TestCase):
     """DF-UI-3: mission_status is a thin, read-only face over the HUL-A

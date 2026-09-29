@@ -1776,6 +1776,42 @@ class TestHourglassLane(unittest.TestCase):
         self.assertEqual(plan["nodes"][0]["backend"], "diff")
         self.assertNotIn("chunking", plan)
 
+    def test_plan_round_reaches_the_composed_path(self):
+        """HV-4/HV-3-use: the GUI lane reaches composition too.
+
+        The agent plans through the same composer the CLI and MCP lanes use,
+        so it must name the run's allowance for the same reason they do --
+        otherwise `compose_plan` publishes composition that never executes.
+        """
+        from harness.token_budget import TokenBudget
+        from harness.waist import HOURGLASS_DEFAULT_STAGES
+
+        captured = {}
+
+        def fake_compose_plan(**kwargs):
+            captured.update(kwargs)
+            return {"status": "planned", "goal": "g"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=self._armed(), root_dir=root,
+                                    history_dir=root)
+            with patch("harness.agent.compose_plan",
+                       side_effect=fake_compose_plan):
+                agent._plan_round("Add a docstring", [], MagicMock(),
+                                  confirm=False)
+            # The lane's own tree still rides along: the composition seam is
+            # additive, not a replacement for wiring that was already here.
+            # Compared as paths, not strings: one temp directory legitimately
+            # has more than one name -- Windows reports it as both
+            # `runneradmin` and the 8.3 `RUNNER~1`, macOS as both `/var` and
+            # `/private/var` -- so equality of the strings is a platform test,
+            # not a wiring test.
+            self.assertTrue(os.path.samefile(captured["root"], str(root)))
+
+        self.assertIsInstance(captured["token_budget"], TokenBudget)
+        self.assertEqual(captured["stages"], list(HOURGLASS_DEFAULT_STAGES))
+
     def test_disarmed_lane_stays_serial_single_tree(self):
         import harness.executor as executor_module
 

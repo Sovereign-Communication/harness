@@ -10,6 +10,29 @@ from harness.errors import HarnessError
 from harness.mcp_lanes import lane_for
 from harness.mcp_schemas import TOOL_SCHEMAS
 from harness.repo_scope import _gate_python, rebase_gate
+from harness.token_budget import TokenBudget
+from harness.waist import HOURGLASS_DEFAULT_STAGES
+
+
+def composed_settings():
+    """A real ``Settings`` with deterministic composition inputs.
+
+    ``McpServer`` takes the settings seam explicitly, so the MCP plan lane
+    reaches the composed path only when a caller hands it one. These tests
+    pass a real object rather than leaving the seam empty, both so the
+    composed path actually executes here and so the ceilings are real token
+    counts -- a bare ``MagicMock`` auto-creates ``token_budget_input``, and
+    ``budget_from_settings`` is right to fail closed on that non-integer
+    rather than accept it. Forced after ``load_settings()`` for the same
+    reason ``hermetic_settings`` in ``test_jev_lane_parity`` does: the
+    operator's own config must not reach a unit test.
+    """
+    from harness.config import load_settings
+    settings = load_settings()
+    settings.hourglass_stages = None          # default: every stage
+    settings.token_budget_input = 200000
+    settings.token_budget_output = 64000
+    return settings
 
 
 class TestPlanningSurface(unittest.TestCase):
@@ -177,6 +200,7 @@ class TestPlanningSurface(unittest.TestCase):
             engine=mock_engine,
             allow_write=True,
             allow_verify=True,
+            settings=composed_settings(),
         )
 
         # 1. Preview mode (execute=False); the hourglass defaults are ON,
@@ -185,6 +209,18 @@ class TestPlanningSurface(unittest.TestCase):
         preview_res = server._invoke("plan_and_execute", {"goal": "1. Step A\n2. Step B", "execute": False, "confirm": False, "decompose_llm": False})
         self.assertEqual(preview_res["status"], "planned")
         self.assertEqual(preview_res["total_nodes"], 2)
+        # HV-4/HV-3-use: this lane now REACHES the composed path instead of
+        # publishing it. The run's allowance and the operator's stage subset
+        # arrive from the owners that already exist, so the composition
+        # decision is evidence on the envelope rather than something only
+        # the caller knew.
+        self.assertIn("composition", preview_res)
+        composed = preview_res["composition"]
+        self.assertEqual([entry["stage"] for entry in composed["stages"]],
+                         list(HOURGLASS_DEFAULT_STAGES))
+        self.assertEqual(composed["run_budget"], "run")
+        self.assertTrue(all(entry["max_output_tokens"]
+                            for entry in composed["stages"]))
 
         # 2. Execution mode without allow_write on server or call fails
         server.allow_write = False
@@ -747,6 +783,7 @@ class TestPlanningSurface(unittest.TestCase):
             engine=mock_engine,
             allow_write=True,
             allow_verify=True,
+            settings=composed_settings(),
         )
         canned = {
             "status": "planned", "goal": "Refactor auth system",
@@ -764,6 +801,15 @@ class TestPlanningSurface(unittest.TestCase):
         self.assertEqual(plan_res["status"], "ok")
         # The waist-confirmation default reached the ONE owner.
         self.assertTrue(cp.call_args[1]["confirm"])
+        # HV-4/HV-3-use: the composition arguments reached the ONE owner too.
+        # The allowance is the settings' own ceilings and the selection is the
+        # documented default (every stage), both produced by their owners
+        # rather than assembled here.
+        budget = cp.call_args[1]["token_budget"]
+        self.assertIsInstance(budget, TokenBudget)
+        self.assertEqual(budget.max_input_tokens, 200000)
+        self.assertEqual(cp.call_args[1]["stages"],
+                         list(HOURGLASS_DEFAULT_STAGES))
         # The write-attestation default reached every node write.
         call = mock_engine.apply_edit.call_args
         self.assertTrue(call[1]["require_diff_authorization"])
@@ -782,6 +828,7 @@ class TestPlanningSurface(unittest.TestCase):
             governor=MagicMock(), ledger=MagicMock(),
             router=MagicMock(), engine=mock_engine,
             allow_write=True, allow_verify=True,
+            settings=composed_settings(),
         )
         canned = {
             "status": "planned", "goal": "g",
@@ -836,6 +883,7 @@ class TestPlanningSurface(unittest.TestCase):
             engine=mock_engine,
             allow_write=True,
             allow_verify=True,
+            settings=composed_settings(),
         )
         exec_res = server._invoke("plan_and_execute", {
             "goal": "Update the modules",

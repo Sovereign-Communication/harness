@@ -28,7 +28,9 @@ from .session import apply_session, attest_model_for, governor_for, jev_for, led
 from .jev_policy import (
     JevPolicy, aggregate_structural, jev_cost_ceiling, policy_for,
 )
+from .token_budget import budget_from_settings
 from .waist import compose_plan, resolve_scout_ladder
+from .waist import stage_selection_from_settings
 from .web import DEFAULT_FETCH_HOSTS, gather_web_context
 
 # Consumers import history/repo_scope/web helpers from their owners
@@ -841,7 +843,13 @@ class AutonomousAgent:
                 self._orchestrator_chat_fn(gov)(prompt_text), 0.0),
             execute=True,
             allow_escalation=bool(getattr(self.settings, "allow_escalation", False)),
-            jev_policy=jev_policy)
+            jev_policy=jev_policy,
+            # HV-4: the GUI lane reaches the composed path through the same
+            # two owners the CLI and MCP lanes use, so "which stages ran and
+            # what each was allowed" is answerable from the envelope here too
+            # instead of only from the caller's head.
+            token_budget=budget_from_settings(self.settings),
+            stages=stage_selection_from_settings(self.settings))
         if str(plan.get("decomposition", "")).startswith("heuristic"):
             # compose_plan degrades to the heuristic only after the LLM
             # decomposition failed (execute=True); the GUI needs that on the
