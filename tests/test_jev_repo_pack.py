@@ -229,10 +229,10 @@ class ValidatorEdgeTests(unittest.TestCase):
 
 class SeedEconomyContractTests(unittest.TestCase):
     """The shipped seed is part of the condense contract: its question
-    floor is pinned so wording edits cannot silently re-inflate the price
-    of every keyed call."""
+    upper bound is pinned so full definitions stay useful without letting
+    the per-element question payload grow without limit."""
 
-    SEED_MAX_QUESTION_CHARS = 1900
+    SEED_MAX_QUESTION_CHARS = 3400
 
     def _seed(self):
         path = (Path(__file__).resolve().parent.parent
@@ -249,6 +249,16 @@ class SeedEconomyContractTests(unittest.TestCase):
         size = len(json.dumps(questions))
         self.assertLessEqual(size, self.SEED_MAX_QUESTION_CHARS,
                              f"seed question floor grew to {size} chars")
+
+    def test_seed_definitions_are_not_abbreviated(self):
+        doc = validate_repo_summary_pack(self._seed())
+        labels = [label for spec in doc["axes"].values()
+                  for label in spec["criteria"].values()]
+        labels.extend(doc["score"]["levels"])
+        labels.extend(text for spec in doc["nouls"].values()
+                      for text in (spec["instructions"], spec["true"], spec["false"]))
+        short = [label for label in labels if len(label) < 40]
+        self.assertEqual(short, [], f"criteria need full meanings: {short}")
 
 
 if __name__ == "__main__":

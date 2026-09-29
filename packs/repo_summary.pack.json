@@ -2,55 +2,55 @@
   "id": "harness-repo-summary-v1",
   "axes": {
     "stage": {
-      "instructions": "Choose the hourglass stage this element serves. Declared keys only.",
+      "instructions": "Classify the element by its main role in the hourglass pipeline. Use path, kind, and summary together; choose one dominant stage.",
       "criteria": {
-        "prep": "inventory, decompose, route",
-        "condense": "brief, signature, or context construction",
-        "waist": "frontier confirm, verdicts, escalation",
-        "dispatch": "apply, write, locks, batches",
-        "adjudicate": "verify: gates, tests, ledger, audits",
-        "cross_cutting": "config, spend, trust, surfaces"
+        "prep": "Find or rank inputs, scope, work items, or routes before a plan exists.",
+        "condense": "Reduce gathered context into a brief, signatures, or bounded evidence set.",
+        "waist": "Confirm or amend a plan; decide sufficiency, verdict, or escalation.",
+        "dispatch": "Carry out accepted work: apply edits, write outputs, batch tasks, or isolate locks.",
+        "adjudicate": "Check outcomes or claims against tests, gates, audits, ledger, or consent rules.",
+        "cross_cutting": "Support multiple stages through shared config, budgets, trust, or surfaces."
       }
     },
     "brief_treatment": {
-      "instructions": "How should this element appear in a brief for an expensive seat? Declared keys only.",
+      "instructions": "Choose the main evidence form a downstream expensive model needs. Preserve only decision-relevant facts and provenance.",
       "criteria": {
-        "signature": "signatures alone suffice",
-        "cited_window": "attach a hash-pinned window",
-        "failure_evidence": "value is gate or test output",
-        "grounded_claim": "grounded fact with sources",
-        "exclude_raw": "facts only, never raw content"
+        "signature": "A function, class, or schema signature is enough; implementation bodies are unnecessary.",
+        "cited_window": "Include a hash-pinned source excerpt when exact code, policy, protocol, or contract wording matters.",
+        "failure_evidence": "Include relevant test or gate output when the claim concerns observed behavior.",
+        "grounded_claim": "State a concrete claim and cite its source path, section, or line.",
+        "exclude_raw": "When raw contents should not cross the boundary, omit file, ledger, or credential text and give a safe summary."
       }
     },
     "handling": {
-      "instructions": "Least capable handling tier that can safely work on this element. Declared keys only.",
+      "instructions": "Choose the least capable tier that can safely make the likely edit. Judge required context and risk, not item size.",
       "criteria": {
-        "code_owned": "no model: paths, counts, gates",
-        "scout": "bounded mechanical edits",
-        "standard": "multi-file contextual work",
-        "frontier": "architectural or waist-level"
+        "code_owned": "No model edit is needed: exact mechanical facts or steps can be computed in code without semantic judgment.",
+        "scout": "One bounded mechanical change, such as a rename, typo fix, or narrow file-local edit.",
+        "standard": "Routine implementation or refactor requires context across files.",
+        "frontier": "Architecture, safety, protocol, or waist-level judgment makes mistakes costly."
       }
     }
   },
   "score": {
     "id": "attention",
-    "instructions": "How central is this element to the hourglass pipeline?",
+    "instructions": "Rate how much this element matters to the repo-wide waist decision, not how prominent its name looks.",
     "levels": [
-      "background: omit from a tight brief",
-      "notable: include when goal touches it",
-      "central: in any repo-wide waist brief"
+      "background: omit from a tight brief unless a specific goal reaches it.",
+      "notable: include when the current goal touches or depends on it.",
+      "central: include in every repo-wide waist brief; it shapes policy, contracts, or outcomes."
     ]
   },
   "nouls": {
     "waist_relevant": {
-      "instructions": "Must the waist brief cite this element?",
-      "true": "Confirmation needs its facts or a window.",
-      "false": "Plan confirms without citing it."
+      "instructions": "Would omitting this weaken repo-wide plan confirmation or change its decision? Answer from evidence in state.",
+      "true": "Yes: core policy, contract, implementation, or evidence is required; cite its source.",
+      "false": "No: peripheral, redundant, or the same evidence is covered elsewhere."
     },
     "parallel_safe": {
-      "instructions": "Can parallel dispatch mutate this without isolation?",
-      "true": "Low-conflict or serialized edits.",
-      "false": "Concurrent edits interfere; isolate."
+      "instructions": "Could workers edit in parallel safely? Use known ownership and overlap, never element size.",
+      "true": "Yes: work has separate files or state and no dependency between results.",
+      "false": "No: edits overlap files or shared state, or depend on another unfinished result."
     }
   },
   "keywords": {
