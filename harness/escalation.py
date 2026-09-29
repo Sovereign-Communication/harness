@@ -11,8 +11,8 @@ context is prepended for rungs after the first. This module does not invent
 plans from apply output (apply returns file content, not judge JSON).
 """
 from . import events as _events
-from .chat import (_chat_reservation_slots, chat, extract_content_and_cost,
-                   assess_output)
+from .chat import (_chat_reservation_slots, _reported_cost, chat,
+                   extract_content_and_cost, assess_output)
 from .config import effective_lane_policy
 from .errors import HarnessError
 from .output import eprint
@@ -328,16 +328,14 @@ class EscalationDriver:
                                 self.reasoning_token_budget, self.governor)
 
             if status != 200:
-                error_cost = 0.0
+                error_cost = _reported_cost(resp)
                 error = str(resp)
                 try:
                     if isinstance(resp, dict):
-                        error_cost = float(resp.get("error", {}).get("cost", 0) or 0)
                         error = str(resp.get("error", {}).get("message", resp))
-                except (TypeError, ValueError):
+                except (AttributeError, TypeError, ValueError):
                     pass
-                if error_cost:
-                    self.governor.record_actual(error_cost, model)
+                self.governor.record_actual(error_cost, model)
                 eprint(f"[escalation] rung {rung} model {model}: HTTP {status}; {error}")
                 state.rounds.append({
                     "phase": "escalation", "rung": rung, "model": model,

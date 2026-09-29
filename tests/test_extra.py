@@ -99,7 +99,8 @@ class DiscoveryTests(unittest.TestCase):
 class PanelRotationTests(unittest.TestCase):
     def test_failed_panel_member_rotates_to_next(self):
         fake = FakeTransport(models=[m(P1), m(P2), m(JUDGE)],
-                             posts=[(500, {"error": {"message": "down"}}),
+                             posts=[(500, {"error": {"message": "down"},
+                                           "usage": {"cost": 0.0}}),
                                     comp("take two"), comp("verdict json")])
         gov = SpendGovernor(fake, "sk-test")
         result = panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",

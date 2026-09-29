@@ -34,12 +34,18 @@ class _PreflightSpy:
     def __init__(self, gov):
         self.rows = []
         original = gov.preflight
+        original_with_lease = gov.preflight_with_lease
 
         def spy(prompt, calls):
             self.rows.extend(calls)
             return original(prompt, calls)
 
+        def spy_with_lease(prompt, calls):
+            self.rows.extend(calls)
+            return original_with_lease(prompt, calls)
+
         gov.preflight = spy
+        gov.preflight_with_lease = spy_with_lease
 
 
 class PanelReserveParityTests(unittest.TestCase):

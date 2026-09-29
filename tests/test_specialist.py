@@ -31,7 +31,8 @@ class SpecialistRotationTests(unittest.TestCase):
         so its consensus is never mistaken for coverage-complete."""
         judge_v = ("{\"verdict\":\"x\",\"agreement\":\"low\",\"confidence\":0.4,"
                    "\"claims\":{}}")
-        rate_limited = (429, {"error": {"message": "rate limited"}})
+        rate_limited = (429, {"error": {"message": "rate limited"},
+                              "usage": {"cost": 0.0}})
         fake = FakeTransport(
             models=[m(P1), m(P2), m(JUDGE), m(JUDGE)],
             posts=[comp(json.dumps({"c1": {"real": True, "confidence": 0.9}})),
@@ -52,7 +53,8 @@ class SpecialistRotationTests(unittest.TestCase):
             posts=[comp(json.dumps({"c1": {"real": False, "confidence": 0.9}})),
                    comp(json.dumps({"c1": {"real": False, "confidence": 0.9}})),
                    comp("judge"),
-                   (500, {"error": {"message": "overloaded"}}),
+                   (500, {"error": {"message": "overloaded"},
+                          "usage": {"cost": 0.0}}),
                    comp(self.SPEC)])
         result = self._panel(fake, JUDGE)
         conv = result["convergence"]

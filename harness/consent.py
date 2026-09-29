@@ -110,16 +110,22 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
         usable.append(m_)
 
     preflight = getattr(governor, "preflight", None)
+    phase_lease = None
     if preflight is not None:
         # Include the system instruction in the estimate; it is part of the
         # billable prompt just like the work-item text. Slots come from the
         # same owner as every other lane: an explicit-disable ("none") probe
         # can draw the mandatory-reasoning 400 and its no-reasoning retry, so
         # one governed logical request may be two provider calls.
-        preflight(CONSENT_SYSTEM_PROMPT + "\n" + user,
-                  [(f"consent:{m_}", m_, max_tokens, 0)
-                   for m_ in usable
-                   for _ in range(_chat_reservation_slots(m_, "none"))])
+        calls = [(f"consent:{m_}", m_, max_tokens, 0)
+                 for m_ in usable
+                 for _ in range(_chat_reservation_slots(m_, "none"))]
+        preflight_with_lease = getattr(governor, "preflight_with_lease", None)
+        if callable(preflight_with_lease):
+            _total, _breakdown, phase_lease = preflight_with_lease(
+                CONSENT_SYSTEM_PROMPT + "\n" + user, calls)
+        else:
+            preflight(CONSENT_SYSTEM_PROMPT + "\n" + user, calls)
 
     if ledger:
         ledger.append("offer", task_id=task_id, model=model, required=required)
@@ -130,9 +136,8 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
         tracked_cost = 0.0
         if status != 200:
             reported = _reported_cost(resp)
-            if reported:
-                governor.record_actual(reported, m_)
-                tracked_cost = reported
+            governor.record_actual(reported, m_)
+            tracked_cost = reported
             return None, None, tracked_cost, reported, False, f"HTTP {status}"
         content, _, _, is_byok = extract_content_and_cost(resp)
         reported = _reported_cost(resp)
@@ -140,9 +145,8 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
             # Paid BYOK route: spend is invisible to the tracked key; fail closed.
             governor.record_byok(m_)
             return None, None, 0.0, reported, True, "paid BYOK route"
-        if reported:
-            governor.record_actual(reported, m_)
-            tracked_cost = reported
+        governor.record_actual(reported, m_)
+        tracked_cost = reported
         if not content:
             return content, None, tracked_cost, reported, False, "empty response"
         if content.startswith(REASONING_FALLBACK_PREFIX):
@@ -162,7 +166,8 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
         status, resp = chat(transport, api_key, m_,
                             [{"role": "system", "content": CONSENT_SYSTEM_PROMPT},
                              {"role": "user", "content": user}],
-                            max_tokens, reasoning_effort="none", governor=governor)
+                            max_tokens, reasoning_effort="none", governor=governor,
+                            phase_lease=phase_lease)
         content, parsed, tracked_cost, reported_cost, byok, fail_reason = _take(
             status, resp, m_)
         tracked_total += tracked_cost

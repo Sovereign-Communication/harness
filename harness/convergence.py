@@ -429,7 +429,7 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
         slots = _chat_reservation_slots(m_, reasoning_effort)
         for s in range(slots):
             calls.append((f"convergence {m_} attempt {s + 1}/{slots}", m_, max_tokens, 0))
-    governor.preflight(prompt, calls)
+    _total, _breakdown, phase_lease = governor.preflight_with_lease(prompt, calls)
 
     def _bill_event(m_, ok, ev_status, cost):
         if ledger and task_id:
@@ -443,12 +443,12 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
               "error": "no specialist candidate available", "cost": 0.0}
     for m_ in candidates:
         status, resp = chat(transport, api_key, m_, [{"role": "user", "content": prompt}],
-                            max_tokens, reasoning_effort, reasoning_token_budget, governor)
+                            max_tokens, reasoning_effort, reasoning_token_budget, governor,
+                            phase_lease=phase_lease)
         if status != 200:
             error_cost = _reported_cost(resp)
-            if error_cost:
-                governor.record_actual(error_cost, m_)
-                total_cost += error_cost
+            governor.record_actual(error_cost, m_)
+            total_cost += error_cost
             error = (resp.get("error", {}).get("message", str(resp))
                      if isinstance(resp, dict) else str(resp))
             attempts.append({"model": m_, "status": "error", "error": error,

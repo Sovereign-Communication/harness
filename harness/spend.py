@@ -15,6 +15,8 @@ terminal. Mission packs store the same numbers via :mod:`harness.mission_record`
 which delegates the formula here — no second governor.
 """
 import threading
+from contextvars import ContextVar
+from typing import NamedTuple
 import time
 
 from .config import (
@@ -31,6 +33,12 @@ from .validation import finite_number
 PHASE_ATTEMPT = "attempt"
 PHASE_TERMINAL = "terminal"
 _PHASES = frozenset((PHASE_ATTEMPT, PHASE_TERMINAL))
+_AMBIGUOUS_PREFLIGHT_PHASE = object()
+
+
+class _DispatchPhaseLease(NamedTuple):
+    phase: str
+    generation: int
 
 
 def normalize_phase(phase):
@@ -148,6 +156,19 @@ class SpendGovernor:
         self.spent = 0.0
         self._outstanding = 0.0
         self._reservations = []
+        self._settlements_in_progress = 0
+        self._settling_reservation_ids = set()
+        self._dispatches_in_progress = 0
+        self._dispatch_tokens_by_thread = {}
+        self._dispatch_thread_by_id = {}
+        self._phase_generation = 0
+        self._preflight_phase = ContextVar(
+            f"harness_spend_preflight_{id(self)}", default=None)
+        # A billed response can exceed its pre-dispatch estimate. Keep that
+        # phase closed to new dispatches, even when spent is clamped at the
+        # global ceiling for result-envelope compatibility.
+        self._budget_breached_phases = set()
+        self._settlement_unknown = False
         self._cost_by_model = {}
         # Fan-out safety (#10): spend mutations happen from panel threads.
         self._spend_lock = threading.RLock()
@@ -202,10 +223,21 @@ class SpendGovernor:
 
         Terminal unlocks spending into ``terminal_reserve``. Mission packs
         additionally require the pack itself to be terminal before they
-        record findings spend (mission_record owns that gate).
+        record findings spend (mission_record owns that gate). Phase changes
+        wait until every dispatched reservation has settled.
         """
-        self._phase = normalize_phase(phase)
-        return self._phase
+        next_phase = normalize_phase(phase)
+        with self._spend_lock:
+            if (next_phase != self._phase
+                    and (self._reservations or self._settlements_in_progress
+                         or self._dispatches_in_progress)):
+                raise HarnessError(
+                    "cannot change spend phase while provider dispatches, "
+                    "reservations, or settlements are in flight")
+            if next_phase != self._phase:
+                self._phase_generation += 1
+                self._phase = next_phase
+            return self._phase
 
     @property
     def phase(self):
@@ -231,6 +263,17 @@ class SpendGovernor:
             if self._phase == PHASE_TERMINAL:
                 return float(self.max_cost)
             return max(0.0, float(self.max_cost) - float(self.terminal_reserve))
+
+    def _refuse_if_budget_breached(self):
+        """Block new dispatches in a phase after a billed overrun."""
+        if self._settlement_unknown:
+            raise HarnessError(
+                "a prior billed response has unaccounted cost; refusing "
+                "further dispatch")
+        if self._phase in self._budget_breached_phases:
+            raise HarnessError(
+                f"a prior billed response exceeded the {self._phase} spend "
+                "ceiling; refusing further dispatch")
 
     def snapshot(self):
         """Return the synchronized spend state for result envelopes.
@@ -275,6 +318,10 @@ class SpendGovernor:
         """Persist an observed BYOK org-prefix so future runs skip it."""
         prefix = model_id.split("/", 1)[0] + "/"
         self._learned_byok.add(prefix)
+        # A chat response routed through BYOK is deliberately not recorded as
+        # spend on this key, but it still closes the in-flight phase guard.
+        with self._spend_lock:
+            self._finish_current_dispatch_locked()
         try:
             save_byok_prefixes(self._byok_path, self._learned_byok)
         except OSError:
@@ -343,6 +390,7 @@ class SpendGovernor:
         from .jev import jev_cost
         worst = jev_cost(input_tokens)
         with self._spend_lock:
+            self._refuse_if_budget_breached()
             ceiling = self._phase_ceiling()
             if self.spent + self._outstanding + worst > ceiling:
                 raise HarnessError(
@@ -351,7 +399,7 @@ class SpendGovernor:
                     f"(phase={self._phase}, ceiling=${ceiling:.6f}); refusing.")
         return worst
 
-    def preflight(self, prompt_text, calls):
+    def _preflight(self, prompt_text, calls):
         """calls = [(label, model, max_tokens, extra_input)] -> (total, breakdown).
 
         Worst-case: every call maxes its max_tokens. extra_input accounts for
@@ -364,7 +412,11 @@ class SpendGovernor:
         """
         if not calls:
             # Pre-guard kept for clarity: an empty call list costs nothing.
-            return 0.0, []
+            return 0.0, [], None
+        with self._spend_lock:
+            self._refuse_if_budget_breached()
+            phase_at_start = self._phase
+            generation_at_start = self._phase_generation
         models = [m_ for _, m_, _, _ in calls]
         pricing = self.fetch_pricing(models)
         prompt_tokens = estimate_prompt_tokens(prompt_text)
@@ -376,6 +428,11 @@ class SpendGovernor:
             breakdown.append((label, model, cost))
             total += cost
         with self._spend_lock:
+            self._refuse_if_budget_breached()
+            if self._phase_generation != generation_at_start:
+                raise HarnessError(
+                    "spend phase changed during preflight; rerun preflight "
+                    "in the current phase")
             ceiling = self._phase_ceiling()
             if self.spent + self._outstanding + total > ceiling:
                 if (self._phase == PHASE_ATTEMPT
@@ -390,7 +447,107 @@ class SpendGovernor:
                     f"exceeds remaining ceiling ${ceiling:.6f} "
                     f"(outstanding reservations: ${self._outstanding:.6f}; "
                     f"phase={self._phase}). Refusing.")
+            lease = _DispatchPhaseLease(phase_at_start, generation_at_start)
+        return total, breakdown, lease
+
+    def preflight(self, prompt_text, calls):
+        """Check worst-case cost and bind the result to this execution context.
+
+        The historical ``(total, breakdown)`` return shape is retained. Calls
+        dispatched in this context consume the associated phase snapshot;
+        callers that move dispatch to another thread should use
+        :meth:`preflight_with_lease` and pass that lease to ``begin_dispatch``.
+        """
+        total, breakdown, lease = self._preflight(prompt_text, calls)
+        if lease is not None:
+            previous = self._preflight_phase.get()
+            if previous is None:
+                self._preflight_phase.set(lease)
+            else:
+                # A single implicit stamp represents exactly one future
+                # dispatch. Even equal snapshots may belong to distinct
+                # operations, so require callers that preflight twice before
+                # dispatch (or share one preflight across attempts) to carry
+                # the intended reusable lease explicitly.
+                self._preflight_phase.set(_AMBIGUOUS_PREFLIGHT_PHASE)
         return total, breakdown
+
+    def preflight_with_lease(self, prompt_text, calls):
+        """Return the ordinary result and an explicit reusable dispatch lease.
+
+        Use this when preflight and dispatch happen in different contexts or
+        when one preflight covers several provider attempts.
+        """
+        total, breakdown, lease = self._preflight(prompt_text, calls)
+        return total, breakdown, lease
+
+    def begin_dispatch(self, phase_lease=None):
+        """Pin the current phase across one unreserved provider call.
+
+        This is a control-plane guard only: it adds no dollar liability.
+        ``chat`` pairs it with ``record_actual`` (or ``record_byok``) so a
+        phase transition cannot reclassify an unreserved request while its
+        provider call or billing settlement is in flight. Callers needing a
+        dollar guarantee must still use reserve/reconcile.
+        """
+        thread_id = threading.get_ident()
+        consume_implicit = phase_lease is None
+        if phase_lease is None:
+            phase_lease = self._preflight_phase.get()
+            if phase_lease is _AMBIGUOUS_PREFLIGHT_PHASE:
+                raise HarnessError(
+                    "multiple pending preflights in this execution context; "
+                    "pass the intended phase lease to dispatch")
+        elif not isinstance(phase_lease, _DispatchPhaseLease):
+            raise HarnessError("invalid spend preflight phase lease")
+        token = object()
+        with self._spend_lock:
+            self._refuse_if_budget_breached()
+            if (phase_lease is not None
+                    and (phase_lease.phase != self._phase
+                         or phase_lease.generation != self._phase_generation)):
+                raise HarnessError(
+                    "spend phase changed after preflight; rerun preflight "
+                    "before dispatch")
+            if consume_implicit:
+                # Consume only after the stamp has been validated under the
+                # same lock as phase changes. Failed attempts keep the stale
+                # or ambiguous marker so retrying begin_dispatch() cannot
+                # silently become an unbound dispatch.
+                self._preflight_phase.set(None)
+            self._dispatch_tokens_by_thread.setdefault(thread_id, []).append(token)
+            self._dispatch_thread_by_id[id(token)] = thread_id
+            self._dispatches_in_progress += 1
+        return token
+
+    def fail_dispatch(self, token, *, unknown_cost=True):
+        """Close a failed provider call, failing closed if its bill is unknown."""
+        with self._spend_lock:
+            if unknown_cost:
+                self._settlement_unknown = True
+            self._finish_dispatch_locked(token)
+
+    def _finish_dispatch_locked(self, token):
+        thread_id = self._dispatch_thread_by_id.get(id(token))
+        if thread_id is None:
+            return False
+        tokens = self._dispatch_tokens_by_thread.get(thread_id, [])
+        for index, current in enumerate(tokens):
+            if current is token:
+                tokens.pop(index)
+                break
+        else:
+            return False
+        self._dispatch_thread_by_id.pop(id(token), None)
+        if not tokens:
+            self._dispatch_tokens_by_thread.pop(thread_id, None)
+        self._dispatches_in_progress -= 1
+        return True
+
+    def _finish_current_dispatch_locked(self):
+        tokens = self._dispatch_tokens_by_thread.get(threading.get_ident(), [])
+        if tokens:
+            self._finish_dispatch_locked(tokens[-1])
 
     # 4b
     def reserve(self, amount, label):
@@ -406,6 +563,7 @@ class SpendGovernor:
         """
         amount = finite_number(amount or 0.0, "reservation", 0.0)
         with self._spend_lock:
+            self._refuse_if_budget_breached()
             ceiling = self._phase_ceiling()
             if self.spent + self._outstanding + amount > ceiling:
                 if (self._phase == PHASE_ATTEMPT
@@ -427,35 +585,73 @@ class SpendGovernor:
             return token
 
     def reconcile(self, token, actual):
-        """Settle a reservation: release the worst-case liability, record
-        the billed actual. The reservation is released even when ``actual``
-        would fail the ceiling check (the liability was already counted)."""
+        """Settle billed spend and latch a phase that exceeded its ceiling.
+
+        The reservation is released even when actual exceeds the phase
+        ceiling. Spend is retained up to the global ceiling so a later
+        terminal phase sees any remaining budget accurately.
+        """
+        token_id = id(token)
         with self._spend_lock:
-            try:
-                self._reservations.remove(token)
-            except ValueError:
+            if not any(reservation is token for reservation in self._reservations):
                 raise HarnessError(
                     "reconcile of an unknown reservation token") from None
-            self._outstanding = max(0.0, self._outstanding - token[1])
+            if token_id in self._settling_reservation_ids:
+                raise HarnessError(
+                    "reservation token is already being settled")
+            self._settling_reservation_ids.add(token_id)
+            self._settlements_in_progress += 1
         label = token[0]
         try:
-            actual_f = finite_number(actual or 0.0, "reported cost", 0.0)
-        except HarnessError:
-            raise HarnessError(f"invalid reported cost {actual!r} (after '{label}').") from None
-        with self._spend_lock:
-            ceiling = self._phase_ceiling()
-            if self.spent + actual_f > ceiling:
-                if (self._phase == PHASE_ATTEMPT
-                        and self.terminal_reserve > 0.0):
-                    raise HarnessError(
-                        f"actual running cost ${self.spent + actual_f:.6f} would "
-                        f"exceed ceiling ${ceiling:.6f} by eating terminal_reserve "
-                        f"${self.terminal_reserve:.6f} (after '{label}'). Aborting.")
+            try:
+                if actual is None or isinstance(actual, bool):
+                    raise HarnessError("reported cost must be a number")
+                actual_f = finite_number(actual, "reported cost", 0.0)
+            except HarnessError:
+                with self._spend_lock:
+                    self._settlement_unknown = True
+                    self._release_reservation_locked(token)
                 raise HarnessError(
-                    f"actual running cost ${self.spent + actual_f:.6f} would exceed ceiling "
-                    f"${ceiling:.6f} (after '{label}'; phase={self._phase}). Aborting.")
-            self.spent += actual_f
-            self._cost_by_model[label] = (self._cost_by_model.get(label, 0.0) + actual_f)
+                    f"invalid reported cost {actual!r} (after '{label}').") from None
+            with self._spend_lock:
+                ceiling = self._phase_ceiling()
+                # Replace this reservation with its billed actual atomically.
+                # Keep this and every other settling token outstanding until
+                # its own commit so concurrent settlements cannot disappear
+                # from the ceiling calculation.
+                running_total = (self.spent + self._outstanding
+                                 - token[1] + actual_f)
+                self._release_reservation_locked(token)
+                if running_total > ceiling:
+                    self._budget_breached_phases.add(self._phase)
+                    self.spent = min(self.max_cost, self.spent + actual_f)
+                    self._cost_by_model[label] = (
+                        self._cost_by_model.get(label, 0.0) + actual_f)
+                    if (self._phase == PHASE_ATTEMPT
+                            and self.terminal_reserve > 0.0):
+                        raise HarnessError(
+                            f"actual running cost ${running_total:.6f} would "
+                            f"exceed ceiling ${ceiling:.6f} by eating terminal_reserve "
+                            f"${self.terminal_reserve:.6f} (after '{label}'). Aborting.")
+                    raise HarnessError(
+                        f"actual running cost ${running_total:.6f} would exceed ceiling "
+                        f"${ceiling:.6f} (after '{label}'; phase={self._phase}). Aborting.")
+                self.spent += actual_f
+                self._cost_by_model[label] = (
+                    self._cost_by_model.get(label, 0.0) + actual_f)
+        finally:
+            with self._spend_lock:
+                self._settling_reservation_ids.discard(token_id)
+                self._settlements_in_progress -= 1
+
+    def _release_reservation_locked(self, token):
+        """Remove one live token and its liability while holding the lock."""
+        index = next((i for i, reservation in enumerate(self._reservations)
+                      if reservation is token), None)
+        if index is None:
+            raise HarnessError("reconcile of an unknown reservation token")
+        self._reservations.pop(index)
+        self._outstanding = max(0.0, self._outstanding - token[1])
 
     @property
     def outstanding(self):
@@ -479,28 +675,41 @@ class SpendGovernor:
 
     # 5
     def record_actual(self, cost, label):
-        """Record a billable response without ever moving ``spent`` over the
-        phase ceiling (attempt ceiling excludes terminal_reserve)."""
+        """Record billed actual and latch any phase-ceiling overrun."""
         try:
-            actual = finite_number(cost or 0.0, "reported cost", 0.0)
+            if cost is None or isinstance(cost, bool):
+                raise HarnessError("reported cost must be a number")
+            actual = finite_number(cost, "reported cost", 0.0)
         except HarnessError:
+            with self._spend_lock:
+                self._settlement_unknown = True
+                self._finish_current_dispatch_locked()
             raise HarnessError(f"invalid reported cost {cost!r} (after '{label}').") from None
         with self._spend_lock:
-            ceiling = self._phase_ceiling()
-            if self.spent + self._outstanding + actual > ceiling:
-                if (self._phase == PHASE_ATTEMPT
-                        and self.terminal_reserve > 0.0):
+            try:
+                ceiling = self._phase_ceiling()
+                running_total = self.spent + self._outstanding + actual
+                if running_total > ceiling:
+                    self._budget_breached_phases.add(self._phase)
+                    self.spent = min(self.max_cost, self.spent + actual)
+                    self._cost_by_model[label] = (
+                        self._cost_by_model.get(label, 0.0) + actual)
+                    if (self._phase == PHASE_ATTEMPT
+                            and self.terminal_reserve > 0.0):
+                        raise HarnessError(
+                            f"actual running cost ${running_total:.6f} "
+                            f"would exceed ceiling ${ceiling:.6f} by eating terminal_reserve "
+                            f"${self.terminal_reserve:.6f} (after '{label}'). Aborting.")
                     raise HarnessError(
-                        f"actual running cost ${self.spent + self._outstanding + actual:.6f} "
-                        f"would exceed ceiling ${ceiling:.6f} by eating terminal_reserve "
-                        f"${self.terminal_reserve:.6f} (after '{label}'). Aborting.")
-                raise HarnessError(
-                    f"actual running cost ${self.spent + self._outstanding + actual:.6f} "
-                    f"would exceed ceiling ${ceiling:.6f} "
-                    f"(outstanding reservations: ${self._outstanding:.6f}; "
-                    f"after '{label}'; phase={self._phase}). Aborting.")
-            self.spent += actual
-            self._cost_by_model[label] = (self._cost_by_model.get(label, 0.0) + actual)
+                        f"actual running cost ${running_total:.6f} "
+                        f"would exceed ceiling ${ceiling:.6f} "
+                        f"(outstanding reservations: ${self._outstanding:.6f}; "
+                        f"after '{label}'; phase={self._phase}). Aborting.")
+                self.spent += actual
+                self._cost_by_model[label] = (
+                    self._cost_by_model.get(label, 0.0) + actual)
+            finally:
+                self._finish_current_dispatch_locked()
 
 
 # ------------------------- live discovery -------------------------

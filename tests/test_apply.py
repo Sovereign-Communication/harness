@@ -242,7 +242,8 @@ class ApplyTests(ApplyFixture):
     def test_rotation_on_model_error(self):
         p = self.make_file()
         fake, _, _, engine = self.make_env(
-            posts=[(429, {"error": {"message": "rate limited"}}), comp(CHANGED)],
+            posts=[(429, {"error": {"message": "rate limited"},
+                          "usage": {"cost": 0.0}}), comp(CHANGED)],
             run=scripted_run([(0, "")]),
             router_kw={"apply_pool": [CODER_A, CODER_B]})
         result = engine.apply_edit(task_id="t1", file_path=p, instruction="change",
@@ -335,7 +336,8 @@ class ApplyTests(ApplyFixture):
         in the terminal round: the CLI's saturation guidance reads that text."""
         p = self.make_file()
         body = {"error": {"message": "Rate limit exceeded: free-models-per-day. "
-                                     "Please try again later."}}
+                                     "Please try again later."},
+                "usage": {"cost": 0.0}}
         fake, _, _, engine = self.make_env(
             posts=[("429", body), ("429", body), ("429", body)],
             run=scripted_run([(0, "")]),

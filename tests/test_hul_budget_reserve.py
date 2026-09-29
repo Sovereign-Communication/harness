@@ -133,7 +133,14 @@ class GovernorAttemptPreflightTests(unittest.TestCase):
         with self.assertRaises(HarnessError) as cm:
             gov.record_actual(0.02, "apply-over")
         self.assertIn("terminal_reserve", str(cm.exception))
-        self.assertAlmostEqual(gov.spent, 0.04)
+        self.assertIn("actual running cost $0.060000", str(cm.exception))
+        self.assertAlmostEqual(gov.spent, 0.06)
+        with self.assertRaisesRegex(HarnessError, "prior billed response"):
+            gov.reserve(0.001, "attempt-after-overrun")
+        gov.set_phase(PHASE_TERMINAL)
+        self.assertAlmostEqual(gov.remaining(), 0.04)
+        gov.record_actual(0.04, "terminal")
+        self.assertAlmostEqual(gov.spent, 0.10)
 
     def test_attempt_preflight_jev_refused_when_eats_reserve(self):
         gov = _gov(FakeTransport(), max_cost=0.01, terminal_reserve=0.005)
@@ -407,9 +414,152 @@ class InvalidPhaseAndOwnerTests(unittest.TestCase):
         with self.assertRaises(HarnessError) as cm:
             gov.reconcile(token, 0.06)
         self.assertIn("ceiling", str(cm.exception))
-        # Liability is still released after the hard raise path settles.
-        # (reconcile releases reservation before the ceiling re-check.)
-        self.assertAlmostEqual(gov.spent, 0.0)
+        self.assertIn("actual running cost $0.060000", str(cm.exception))
+        # The reservation is released; actual spend is retained and prevents
+        # another attempt dispatch while preserving only true global headroom.
+        self.assertAlmostEqual(gov.spent, 0.06)
+        self.assertAlmostEqual(gov.outstanding, 0.0)
+        with self.assertRaisesRegex(HarnessError, "prior billed response"):
+            gov.reserve(0.001, "attempt-after-overrun")
+        gov.set_phase(PHASE_TERMINAL)
+        token = gov.reserve(0.04, "terminal")
+        gov.reconcile(token, 0.04)
+        self.assertAlmostEqual(gov.spent, 0.10)
+
+    def test_phase_overrun_blocks_preflights_before_provider_access(self):
+        fake = FakeTransport(models=[m(P1, prompt="0.000001", completion="0.000002")])
+        gov = _gov(fake, max_cost=0.01)
+        with self.assertRaises(HarnessError):
+            gov.record_actual(0.02, "already-billed")
+
+        with self.assertRaisesRegex(HarnessError, "prior billed response"):
+            gov.preflight_jev(100)
+        with self.assertRaisesRegex(HarnessError, "prior billed response"):
+            gov.preflight("prompt", [(P1, P1, 10, 0)])
+        self.assertEqual(fake.calls, [])
+
+    def test_invalid_reported_cost_latches_phase_after_settlement(self):
+        gov = _gov(FakeTransport(), max_cost=0.01)
+        token = gov.reserve(0.001, "apply")
+        with self.assertRaisesRegex(HarnessError, "invalid reported cost"):
+            gov.reconcile(token, "not-a-cost")
+        self.assertAlmostEqual(gov.outstanding, 0.0)
+        with self.assertRaisesRegex(HarnessError, "prior billed response"):
+            gov.reserve(0.001, "after-invalid-cost")
+        gov.set_phase(PHASE_TERMINAL)
+        with self.assertRaisesRegex(HarnessError, "unaccounted cost"):
+            gov.reserve(0.001, "terminal-after-invalid-cost")
+
+        unreserved = _gov(FakeTransport(), max_cost=0.01)
+        with self.assertRaisesRegex(HarnessError, "invalid reported cost"):
+            unreserved.record_actual("not-a-cost", "apply")
+        with self.assertRaisesRegex(HarnessError, "prior billed response"):
+            unreserved.reserve(0.001, "after-invalid-cost")
+
+    def test_missing_and_boolean_reported_costs_are_not_zero(self):
+        for invalid in (None, False, ""):
+            with self.subTest(invalid=invalid):
+                gov = _gov(FakeTransport(), max_cost=0.01)
+                token = gov.reserve(0.001, "apply")
+                with self.assertRaisesRegex(HarnessError, "invalid reported cost"):
+                    gov.reconcile(token, invalid)
+                self.assertEqual(gov.outstanding, 0.0)
+                with self.assertRaisesRegex(HarnessError, "unaccounted cost"):
+                    gov.reserve(0.001, "after-unknown-cost")
+
+                unreserved = _gov(FakeTransport(), max_cost=0.01)
+                with self.assertRaisesRegex(HarnessError, "invalid reported cost"):
+                    unreserved.record_actual(invalid, "apply")
+                with self.assertRaisesRegex(HarnessError, "unaccounted cost"):
+                    unreserved.preflight_jev(10)
+
+    def test_phase_cannot_change_with_an_in_flight_reservation(self):
+        gov = _gov(FakeTransport(), max_cost=0.10, terminal_reserve=0.05)
+        token = gov.reserve(0.01, "attempt")
+        with self.assertRaisesRegex(HarnessError, "provider dispatches, reservations, or settlements"):
+            gov.set_phase(PHASE_TERMINAL)
+        gov.reconcile(token, 0.005)
+        self.assertEqual(gov.set_phase(PHASE_TERMINAL), PHASE_TERMINAL)
+
+    def test_phase_cannot_change_during_reconcile_settlement(self):
+        import threading
+        from unittest.mock import patch
+        import harness.spend as spend_module
+
+        gov = _gov(FakeTransport(), max_cost=0.10, terminal_reserve=0.05)
+        token = gov.reserve(0.01, "attempt")
+        validating = threading.Event()
+        continue_settlement = threading.Event()
+        settled = []
+        original_finite_number = spend_module.finite_number
+
+        def pause_cost_validation(value, label, *args, **kwargs):
+            if label == "reported cost":
+                validating.set()
+                self.assertTrue(continue_settlement.wait(timeout=2))
+            return original_finite_number(value, label, *args, **kwargs)
+
+        def reconcile():
+            try:
+                gov.reconcile(token, 0.005)
+            except Exception as exc:  # surfaced to the test thread below
+                settled.append(exc)
+
+        with patch.object(spend_module, "finite_number", side_effect=pause_cost_validation):
+            worker = threading.Thread(target=reconcile)
+            worker.start()
+            self.assertTrue(validating.wait(timeout=2))
+            with self.assertRaisesRegex(HarnessError, "provider dispatches, reservations, or settlements"):
+                gov.set_phase(PHASE_TERMINAL)
+            with self.assertRaisesRegex(HarnessError, "reservation"):
+                gov.reserve(0.045, "while-settling")
+            self.assertAlmostEqual(gov.outstanding, 0.01)
+            continue_settlement.set()
+            worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(settled, [])
+        self.assertEqual(gov.phase, PHASE_ATTEMPT)
+        self.assertAlmostEqual(gov.spent, 0.005)
+        self.assertEqual(gov.set_phase(PHASE_TERMINAL), PHASE_TERMINAL)
+
+    def test_overlapping_reconciliations_keep_each_liability_visible(self):
+        import threading
+        from unittest.mock import patch
+        import harness.spend as spend_module
+
+        gov = _gov(FakeTransport(), max_cost=0.01)
+        tokens = [gov.reserve(0.005, f"worker-{i}") for i in range(2)]
+        both_validating = threading.Barrier(2)
+        errors = []
+        original_finite_number = spend_module.finite_number
+
+        def synchronize_validation(value, label, *args, **kwargs):
+            if label == "reported cost":
+                both_validating.wait(timeout=2)
+            return original_finite_number(value, label, *args, **kwargs)
+
+        def settle(token):
+            try:
+                gov.reconcile(token, 0.006)
+            except HarnessError as exc:
+                errors.append(str(exc))
+
+        with patch.object(spend_module, "finite_number",
+                          side_effect=synchronize_validation):
+            workers = [threading.Thread(target=settle, args=(token,))
+                       for token in tokens]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=3)
+
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual(len(errors), 2)
+        self.assertIn(PHASE_ATTEMPT, gov._budget_breached_phases)
+        self.assertLessEqual(gov.spent, gov.max_cost)
+        self.assertAlmostEqual(sum(gov.cost_by_model().values()), 0.012)
+        self.assertEqual(gov.outstanding, 0.0)
 
     def test_mission_preflight_and_record_ghost_pack(self):
         with tempfile.TemporaryDirectory() as tmp:

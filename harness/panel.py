@@ -81,7 +81,7 @@ def _judge_fallback_reserve(pool, judge, governor, judge_reserve_tokens,
 def _run_judge_attempt(*, transport, api_key, governor, judge_prompt, model,
                        judge_reserve_tokens, reasoning_effort,
                        reasoning_token_budget, task_id, ledger, task_type,
-                       cancel_check=None, retry=False):
+                       phase_lease=None, cancel_check=None, retry=False):
     """One judge-seat attempt: call, classify, bill, ledger, emit.
 
     The ONE owner of attempt mechanics, shared by the primary seat, the
@@ -102,7 +102,8 @@ def _run_judge_attempt(*, transport, api_key, governor, judge_prompt, model,
     status, resp = chat(transport, api_key, model,
                         [{"role": "user", "content": judge_prompt}],
                         judge_reserve_tokens, reasoning_effort,
-                        reasoning_token_budget, governor)
+                        reasoning_token_budget, governor,
+                        phase_lease=phase_lease)
     cost = _reported_cost(resp)
     err = (resp.get("error", {}).get("message", str(resp))
            if isinstance(resp, dict) else str(resp))
@@ -122,7 +123,7 @@ def _run_judge_attempt(*, transport, api_key, governor, judge_prompt, model,
             note = ("parseable" if _extract_json(content) is not None
                     else ("truncated" if looks_truncated(content)
                           else "unparseable"))
-    if cost and not paid_byok:
+    if not paid_byok:
         governor.record_actual(cost, model)
     if ledger and task_id:
         fields = dict(event_note="judge", model=model, task_type=task_type,
@@ -295,7 +296,8 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             calls.append((f"{spec_model} (convergence attempt {i + 1}/{spec_slots})",
                           spec_model, policy.specialist.tokens,
                           target * policy.vote.tokens + 100))
-    total_estimate, breakdown = governor.preflight(prompt, calls)
+    total_estimate, breakdown, dispatch_phase = governor.preflight_with_lease(
+        prompt, calls)
     _events.emit("preflight", task_id=task_id, lane="panel",
                  worst_case=total_estimate, ceiling=governor.max_cost,
                  calls=[{"label": label, "model": model, "cost": cost}
@@ -322,16 +324,35 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         while True:
             status, resp = chat(transport, api_key, model,
                                 [{"role": "user", "content": prompt}], policy.vote.tokens,
-                                policy.vote.effort, reasoning_token_budget, governor)
+                                policy.vote.effort, reasoning_token_budget, governor,
+                                phase_lease=dispatch_phase)
             if cancel_check and cancel_check():
+                # Cancellation can arrive while the provider is running. The
+                # response is already billable, so settle it (and close chat's
+                # dispatch lease) before propagating cancellation.
+                response_cost = _reported_cost(resp)
+                usage = resp.get("usage", {}) if isinstance(resp, dict) else {}
+                if (status == 200 and isinstance(usage, dict)
+                        and usage.get("is_byok") and not governor.is_free(model)):
+                    governor.record_byok(model)
+                else:
+                    governor.record_actual(response_cost, model)
+                if ledger and task_id:
+                    ledger.append(
+                        "model_result", task_id=task_id, event_note="panel",
+                        model=model,
+                        task_type="structured" if run_convergence else "panel",
+                        json_expected=run_convergence,
+                        json_ok=False if run_convergence else None,
+                        status="cancelled", cost=response_cost,
+                        retries=retry_count, cancelled_after_response=True)
                 from .errors import ToolCancelled
                 raise ToolCancelled()
             response_cost = _reported_cost(resp)
             response_cost_recorded = False
             if status != 429 or retry_count >= MAX_429_RETRIES:
                 break
-            if response_cost:
-                governor.record_actual(response_cost, f"{model} (429 retry)")
+            governor.record_actual(response_cost, f"{model} (429 retry)")
             response_cost_recorded = True
             if ledger and task_id:
                 ledger.append("model_result", task_id=task_id, event_note="panel",
@@ -357,7 +378,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         if status != 200:
             err = resp.get("error", {}).get("message", str(resp)) if isinstance(resp, dict) else str(resp)
             cost = response_cost
-            if cost and not response_cost_recorded:
+            if not response_cost_recorded:
                 governor.record_actual(cost, model)
             panel_failures.append({"model": model, "reason": err,
                                    "status": status, "cost": cost,
@@ -573,6 +594,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                        judge_reserve_tokens=judge_reserve_tokens,
                        reasoning_effort=policy.judge.effort,
                        reasoning_token_budget=reasoning_token_budget,
+                       phase_lease=dispatch_phase,
                        task_id=task_id, ledger=ledger,
                        task_type=judge_task_type, cancel_check=cancel_check)
     if judge_blocked:
