@@ -1,7 +1,9 @@
 """Hermetic unit tests for the high-level planning surface (CLI & MCP)."""
 import os
+import subprocess
 import tempfile as _tempfile
 import unittest
+from contextlib import contextmanager
 from unittest.mock import MagicMock
 
 from harness.cli_parser import build_parser
@@ -33,6 +35,35 @@ def composed_settings():
     settings.token_budget_input = 200000
     settings.token_budget_output = 64000
     return settings
+
+
+def settings_without_planning(settings):
+    """Keep tests of unrelated lane/executor mechanics out of HV-5 gating."""
+    settings.hourglass_stages = ["context", "execution", "verification"]
+    return settings
+
+
+@contextmanager
+def _temporary_git_cwd():
+    """Give isolation tests private Git metadata instead of operator .git."""
+    previous = os.getcwd()
+    with _tempfile.TemporaryDirectory() as repo:
+        subprocess.run(["git", "init", "-q", repo], check=True,
+                       capture_output=True, text=True)
+        for name in ("iso_a.py", "iso_b.py"):
+            with open(os.path.join(repo, name), "w", encoding="utf-8") as f:
+                f.write("value = 1\n")
+        subprocess.run(["git", "-C", repo, "add", "."], check=True,
+                       capture_output=True, text=True)
+        subprocess.run(["git", "-C", repo, "-c", "user.name=Harness Tests",
+                        "-c", "user.email=tests@example.invalid", "commit",
+                        "-q", "-m", "base"], check=True,
+                       capture_output=True, text=True)
+        os.chdir(repo)
+        try:
+            yield repo
+        finally:
+            os.chdir(previous)
 
 
 class TestPlanningSurface(unittest.TestCase):
@@ -200,7 +231,7 @@ class TestPlanningSurface(unittest.TestCase):
             engine=mock_engine,
             allow_write=True,
             allow_verify=True,
-            settings=composed_settings(),
+            settings=settings_without_planning(composed_settings()),
         )
 
         # 1. Preview mode (execute=False); the hourglass defaults are ON,
@@ -217,7 +248,7 @@ class TestPlanningSurface(unittest.TestCase):
         self.assertIn("composition", preview_res)
         composed = preview_res["composition"]
         self.assertEqual([entry["stage"] for entry in composed["stages"]],
-                         list(HOURGLASS_DEFAULT_STAGES))
+                         ["context", "execution", "verification"])
         self.assertEqual(composed["run_budget"], "run")
         self.assertTrue(all(entry["max_output_tokens"]
                             for entry in composed["stages"]))
@@ -253,7 +284,9 @@ class TestPlanningSurface(unittest.TestCase):
         settings = SimpleNamespace(use_free=True, frontier_model=None,
                                    hourglass_confirm=False,
                                    hourglass_parallel=False,
-                                   hourglass_decompose=False)
+                                   hourglass_decompose=False,
+                                   hourglass_stages=["context", "execution",
+                                                     "verification"])
 
         with patch("harness.cli._emit") as mock_emit:
             _cmd_plan(opts, settings)
@@ -294,7 +327,9 @@ class TestPlanningSurface(unittest.TestCase):
                                    hourglass_confirm=False,
                                    hourglass_isolate=False,
                                    hourglass_require_attestation=False,
-                                   hourglass_decompose=False)
+                                   hourglass_decompose=False,
+                                   hourglass_stages=["context", "execution",
+                                                     "verification"])
 
         with patch("harness.cli._session", return_value=mock_engine), patch("harness.cli._emit_by_status") as mock_emit:
             _cmd_plan(opts_seq, settings)
@@ -437,7 +472,9 @@ class TestPlanningSurface(unittest.TestCase):
         settings = SimpleNamespace(use_free=False, frontier_model=None,
                                    hourglass_confirm=False,
                                    hourglass_isolate=False,
-                                   hourglass_require_attestation=False)
+                                   hourglass_require_attestation=False,
+                                   hourglass_stages=["context", "execution",
+                                                     "verification"])
 
         with patch("harness.cli._session", return_value=mock_engine), \
              patch("harness.cli._emit_by_status") as mock_emit:
@@ -560,10 +597,13 @@ class TestPlanningSurface(unittest.TestCase):
                                    hourglass_confirm=True,
                                    hourglass_require_attestation=False,
                                    hourglass_decompose=False,
+                                   hourglass_stages=["context", "execution",
+                                                     "verification"],
                                    ledger_path=os.path.join(
                                        _tempfile.mkdtemp(), 'l.jsonl'))
 
-        with patch("harness.cli._session", return_value=mock_engine), \
+        with _temporary_git_cwd(), \
+             patch("harness.cli._session", return_value=mock_engine), \
              patch("harness.cli._compose_plan", side_effect=self._canned_plan) as cp, \
              patch("harness.cli._emit_by_status") as mock_emit:
             _cmd_plan(opts, settings)
@@ -575,6 +615,30 @@ class TestPlanningSurface(unittest.TestCase):
         # The isolated lane hands apply_edit a worktree-scoped runner.
         for call in mock_engine.apply_edit.call_args_list:
             self.assertIn("task_runner", call[1])
+
+    def test_cli_refusal_from_planning_outcome_never_builds_executor(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from harness.cli import _cmd_plan
+
+        refused = {"status": "refused", "planning": {"kind": "defer"},
+                   "confirmation": {"verdict": "refused",
+                                    "reason": "evidence missing"}}
+        opts = SimpleNamespace(
+            goal="Update module", file=["module.py"], frontier_model=None,
+            execute=True, task_max_cost=None, max_cost=None, resume=None,
+            out=None)
+        settings = SimpleNamespace()
+        engine = MagicMock()
+        with patch("harness.cli._resolve_hourglass", return_value={
+                "confirm": False, "decompose": False}), \
+             patch("harness.cli._session", return_value=engine), \
+             patch("harness.cli._plan_compose", return_value=refused), \
+             patch("harness.cli.PlanExecutor") as executor, \
+             patch("harness.cli._emit_by_status") as emit:
+            _cmd_plan(opts, settings)
+        executor.assert_not_called()
+        emit.assert_called_once_with(refused, None)
 
     def test_cli_plan_lane_passes_its_run_ceiling_to_the_executor(self):
         """The CLI lane tells the shared assembly the budget it is really
@@ -814,6 +878,27 @@ class TestPlanningSurface(unittest.TestCase):
         call = mock_engine.apply_edit.call_args
         self.assertTrue(call[1]["require_diff_authorization"])
 
+    def test_mcp_refusal_from_planning_outcome_never_builds_executor(self):
+        from unittest.mock import patch
+        from harness.mcp import McpServer
+
+        engine = MagicMock()
+        server = McpServer(
+            transport=MagicMock(), api_key="key", governor=MagicMock(),
+            ledger=MagicMock(), router=MagicMock(), engine=engine,
+            allow_write=True, allow_verify=True, settings=composed_settings())
+        refused = {"status": "refused", "planning": {
+            "kind": "evidence_request", "reason": "need source",
+            "evidence_request": [{"source": "module.py"}]}}
+        with patch("harness.mcp.compose_plan", return_value=refused), \
+             patch("harness.mcp.PlanExecutor") as executor:
+            result = server._invoke("plan_and_execute", {
+                "goal": "Update module", "file": ["module.py"],
+                "execute": True, "allow_write": True})
+        self.assertIs(result, refused)
+        executor.assert_not_called()
+        engine.apply_edit.assert_not_called()
+
     def test_mcp_plan_and_execute_per_request_opt_out_wins(self):
         """A host can still run a bare lane: per-request args override the
         hourglass defaults."""
@@ -883,14 +968,16 @@ class TestPlanningSurface(unittest.TestCase):
             engine=mock_engine,
             allow_write=True,
             allow_verify=True,
-            settings=composed_settings(),
+            settings=settings_without_planning(composed_settings()),
         )
-        exec_res = server._invoke("plan_and_execute", {
-            "goal": "Update the modules",
-            "file": ["iso_c.py", "iso_d.py"],
-            "execute": True, "allow_write": True, "parallel": True,
-            "confirm": False, "decompose_llm": False, "final_gate": False,
-        })
+        with _temporary_git_cwd():
+            exec_res = server._invoke("plan_and_execute", {
+                "goal": "Update the modules",
+                "file": ["iso_c.py", "iso_d.py"],
+                "execute": True, "allow_write": True, "parallel": True,
+                "confirm": False, "decompose_llm": False,
+                "final_gate": False,
+            })
         self.assertEqual(exec_res["status"], "ok")
         self.assertEqual(exec_res["completed_nodes"], 2)
         # MCP parity with the CLI isolate lane: worktree-scoped runners.
