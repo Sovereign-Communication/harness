@@ -137,11 +137,11 @@ class GovernorAttemptPreflightTests(unittest.TestCase):
 
     def test_attempt_preflight_jev_refused_when_eats_reserve(self):
         gov = _gov(FakeTransport(), max_cost=0.01, terminal_reserve=0.005)
-        # jev_cost(200) = 200 * 42 / 1e6 = 0.0084 > working remaining 0.005
-        worst = jev_cost(200)
+        # jev_cost(2_000_000) = 2e6 * 0.0042 / 1e6 = 0.0084 > working remaining 0.005
+        worst = jev_cost(2_000_000)
         self.assertGreater(worst, gov.working_remaining())
         with self.assertRaises(HarnessError):
-            gov.preflight_jev(200, label="jev:apply")
+            gov.preflight_jev(2_000_000, label="jev:apply")
 
     def test_snapshot_exposes_dual_envelope_when_reserve_armed(self):
         gov = _gov(FakeTransport(), max_cost=0.10, terminal_reserve=0.05)

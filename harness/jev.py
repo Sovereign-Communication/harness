@@ -13,7 +13,10 @@ from typing import Any, Dict, List, Optional
 
 from ._http import HttpTransport
 
-JEV_INPUT_PRICE_PER_MILLION = 42.0
+# Operator-verified TypeSafe account rate for this installation.  Keep this
+# as the single shared pricing input: reservations, settlement, and reports
+# must all use the account rate rather than the old list-price placeholder.
+JEV_INPUT_PRICE_PER_MILLION = 0.0042
 _PRIMITIVES = frozenset(("noul", "choice", "score"))
 
 

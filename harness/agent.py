@@ -25,7 +25,9 @@ from .repo_scope import (
 )
 from .results import SUCCESS_STATUSES, _http_error, model_envelope
 from .session import apply_session, attest_model_for, governor_for, jev_for, ledger_for
-from .jev_policy import JevPolicy, aggregate_structural, policy_for
+from .jev_policy import (
+    JevPolicy, aggregate_structural, jev_cost_ceiling, policy_for,
+)
 from .waist import compose_plan, resolve_scout_ladder
 from .web import DEFAULT_FETCH_HOSTS, gather_web_context
 
@@ -87,6 +89,10 @@ _WEB_CAPABILITY_NOTE = (
 
 _MAX_WEB_SOURCES = 3
 _MAX_WEB_CONTEXT_CHARS = 6000
+_MAX_HOURGLASS_CONTEXT_FILES = 8
+_MAX_HOURGLASS_CONTEXT_CHARS = 6000
+_DEFAULT_HOURGLASS_CONFIDENCE = 0.99
+_MAX_HOURGLASS_ANSWER_ROUNDS = 3
 
 MUTATION_KEYWORDS = frozenset({
     "fix", "implement", "add", "refactor", "update", "change", "write",
@@ -228,6 +234,313 @@ class AutonomousAgent:
             if cls._REFUSAL_RE.search(sentence):
                 return " ".join(sentence.split())[:200]
         return None
+
+    def _hourglass_request_context(self, prompt: str, web: bool = False):
+        """Gather a bounded, cheap intake brief for a non-edit request.
+
+        Intake is local and deterministic: explicit paths win, then filename
+        overlap, then no context.  It never feeds an unbounded repository to a
+        model.  Web evidence is added only when the caller explicitly enables
+        the existing bounded web lane.
+        """
+        candidates = discover_target_files(prompt, self.root_dir)
+        if not candidates:
+            candidates = keyword_fallback(
+                prompt, enumerate_repo_files(self.root_dir),
+                max_files=_MAX_HOURGLASS_CONTEXT_FILES)
+        files = {}
+        for rel in candidates[:_MAX_HOURGLASS_CONTEXT_FILES]:
+            path = self.root_dir / rel
+            try:
+                if path.is_file():
+                    files[rel] = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+        brief = distill_context(
+            files=files, summary=prompt, max_tokens=1800)
+        context = brief.to_prompt_context()[:_MAX_HOURGLASS_CONTEXT_CHARS]
+        web_sources = []
+        if web:
+            try:
+                web_sources = self._gather_web_context(prompt)
+            except Exception as exc:  # context failure must not kill the lane
+                web_sources = [{"kind": "web", "ok": False,
+                                "note": f"web tools error: {type(exc).__name__}"}]
+            for source in web_sources:
+                if source.get("ok"):
+                    body = str(source.get("text") or "")[:_MAX_WEB_CONTEXT_CHARS]
+                    context += "\n\nWEB EVIDENCE:\n" + body
+            context = context[:_MAX_HOURGLASS_CONTEXT_CHARS]
+        emit("context_condensed", estimated_tokens=brief.estimated_tokens,
+             files=list(files), web_sources=len(web_sources))
+        return context, files, brief, web_sources
+
+    def _hourglass_answer_once(self, prompt: str, context: str,
+                               prior: Optional[Dict[str, Any]] = None,
+                               model_offset: int = 0,
+                               cancel_check=None, governor=None,
+                               api_key=None) -> Dict[str, Any]:
+        """Run one cheap-to-capable answer attempt through the shared ladder."""
+        if cancel_check and cancel_check():
+            raise ToolCancelled("Prompt execution was cancelled by user")
+        if governor is None:
+            api_key, governor = governor_for(self.settings)
+        if api_key is None:
+            api_key = resolve_api_key()
+        gov = governor
+        # The ordinary chat helper puts the judge first because it optimizes
+        # structured chat.  The all-request answer loop instead starts with
+        # the configured panel/scout pool, then adds judge and escalation
+        # rungs; this keeps the first paid attempt cheap and capability grows
+        # only when Jev asks for another iteration.
+        ladder = []
+        for source in (getattr(self.settings, "panel_pool", ()),
+                       (getattr(self.settings, "judge", None),),
+                       (getattr(self.settings, "convergence_model", None),),
+                       getattr(self.settings, "escalation_pool", ())):
+            for model in source:
+                if model and model not in ladder:
+                    ladder.append(model)
+        if not ladder:
+            raise HarnessError("answer ladder is empty")
+        start = max(0, min(int(model_offset), len(ladder) - 1))
+        ordered = ladder[start:] + ladder[:start]
+        system = DEFAULT_CHAT_SYSTEM_PROMPT + "\n\n" + _NO_WEB_DISCLOSURE
+        if context:
+            system += ("\n\n[Retained local context — use it as evidence, "
+                       "but do not claim facts that it does not contain]\n"
+                       + context)
+        user = prompt
+        if prior:
+            user += ("\n\n[Previous candidate and bounded Jev review]\n"
+                     "Candidate answer:\n"
+                     + str(prior.get("answer") or "")[:2400]
+                     + "\nJev review:\n"
+                     + str(prior.get("feedback") or "")[:1200]
+                     + "\nProduce a fresh, corrected answer. Do not mention the "
+                       "review process unless it helps the user.")
+        messages = [{"role": "system", "content": system},
+                    {"role": "user", "content": user}]
+        prompt_text = user
+        attempts = []
+        best_truncated = None
+        for model in ordered:
+            if cancel_check and cancel_check():
+                raise ToolCancelled("Prompt execution was cancelled by user")
+            try:
+                gov.preflight(prompt_text, [("answer", model, 4096, 0)])
+                status, response = chat(
+                    transport=self.transport, api_key=api_key, model=model,
+                    messages=messages, max_tokens=4096,
+                    reasoning_effort="off", governor=gov)
+            except HarnessError as exc:
+                attempts.append(f"{model}: {exc}")
+                continue
+            if status != 200:
+                attempts.append(f"{model}: HTTP {status}")
+                emit("rotation", model=model, reason="answer_ladder_advance",
+                     note=f"HTTP {status}")
+                continue
+            content, finish_reason, cost, is_byok = \
+                extract_content_and_cost(response)
+            if is_byok:
+                gov.record_byok(model)
+                attempts.append(f"{model}: BYOK route refused")
+                continue
+            if cost:
+                gov.record_actual(cost, model)
+            usable, why = assess_output(content, finish_reason)
+            if usable and looks_truncated(content):
+                usable, why = False, "response truncated mid-body"
+            if not usable:
+                attempts.append(f"{model}: {why}")
+                if content and len(content) > len(best_truncated or ""):
+                    best_truncated = content
+                emit("rotation", model=model, reason="answer_ladder_advance",
+                     note=why)
+                continue
+            return {"model": model, "answer": content.strip(), "cost": cost}
+        if best_truncated:
+            raise HarnessError("answer truncated on every usable ladder rung")
+        raise HarnessError("answer failed on every ladder model: "
+                           + "; ".join(attempts))
+
+    @staticmethod
+    def _jev_answer_envelope(result, structural: Dict[str, Any],
+                             threshold: float) -> Dict[str, Any]:
+        answers = result.answers if isinstance(result.answers, dict) else {}
+        sufficient = structural.get("answer_sufficient")
+        native = bool(structural.get("native"))
+        passed = bool(native and isinstance(sufficient, (int, float))
+                      and float(sufficient) >= threshold
+                      and not bool(structural.get("iteration_required")))
+        return {
+            "native": native,
+            "is_fallback": bool(result.is_fallback),
+            "verdict": result.verdict,
+            "supported": result.supported,
+            "answers": answers,
+            "reasons": list(result.reasons or []),
+            "cost": float(structural.get("cost") or 0.0),
+            "input_tokens": int(structural.get("input_tokens") or 0),
+            "output_tokens": int(structural.get("output_tokens") or 0),
+            "model": result.model,
+            "pack_version": structural.get("pack_version"),
+            "confidence": {
+                "threshold": threshold,
+                "observed": sufficient,
+                "passed": passed,
+                "source": "jev.noul.answer_sufficient",
+            },
+        }
+
+    def run_hourglass_request(
+            self, prompt: str, *, session_id: Optional[str] = None,
+            cancel_check=None, web: bool = False,
+            confidence_threshold: float = _DEFAULT_HOURGLASS_CONFIDENCE,
+            max_rounds: int = _MAX_HOURGLASS_ANSWER_ROUNDS,
+            auto_apply: bool = True) -> Dict[str, Any]:
+        """Run the all-request composition used by external local drivers.
+
+        Edit requests enter the existing hourglass plan/executor lane. Direct
+        answers use local context intake, the cheapest configured answer rung,
+        and native Jev sufficiency/iteration signals in a bounded escalation
+        loop.  A plan signal is advisory: only an explicit edit/action request
+        can cross the write boundary.
+        """
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise HarnessError("Prompt cannot be empty")
+        threshold = float(confidence_threshold)
+        if threshold < 0.0 or threshold > 1.0:
+            raise HarnessError("confidence_threshold must be between 0 and 1")
+        rounds = max(1, min(int(max_rounds), _MAX_HOURGLASS_ANSWER_ROUNDS))
+        sid = session_id or "default"
+        intent = classify_prompt_intent(prompt)
+        hourglass_policy = resolve_hourglass(self.settings)
+        emit("hourglass_request", intent=intent, confidence_threshold=threshold,
+             max_rounds=rounds)
+        if intent == "audit":
+            return self._handle_audit(prompt, sid, cancel_check)
+        if intent == "edit":
+            result = self._handle_edit(
+                prompt, sid, auto_apply, cancel_check,
+                use_jev_completion=True)
+            result.setdefault("hourglass", {
+                "stages": ["context_intake", "planning_waist", "execution",
+                           "completion_jev"],
+                "source": "agent_edit_lane",
+            })
+            return result
+
+        context, files, brief, web_sources = self._hourglass_request_context(
+            prompt, web=web)
+        api_key, gov = governor_for(self.settings)
+        policy = policy_for(
+            self.settings, transport=self.transport, governor=gov,
+            ledger=ledger_for(self.settings, caller="agent"))
+        prior = None
+        history = []
+        total_cost = 0.0
+        answer = ""
+        model = None
+        jev_result = None
+        jev_structural = None
+        last_envelope = None
+        best_envelope = None
+        stop_reason = None
+        status = "needs_iteration"
+        for round_no in range(1, rounds + 1):
+            if cancel_check and cancel_check():
+                raise ToolCancelled("Prompt execution was cancelled by user")
+            if round_no > 1:
+                remaining = (gov.working_remaining()
+                             if callable(getattr(gov, "working_remaining", None))
+                             else None)
+                if remaining is not None and remaining < jev_cost_ceiling():
+                    status = "deferred"
+                    stop_reason = (
+                        "Jev budget cannot safely reserve another answer review")
+                    break
+            attempt = self._hourglass_answer_once(
+                prompt, context, prior=prior, model_offset=round_no - 1,
+                cancel_check=cancel_check, governor=gov, api_key=api_key)
+            answer = attempt["answer"]
+            model = attempt["model"]
+            total_cost += float(attempt.get("cost") or 0.0)
+            jev_result, jev_structural = policy.evaluate_answer(
+                prompt, answer, context, site="answer", task_id=sid)
+            total_cost += float(jev_structural.get("cost") or 0.0)
+            envelope = self._jev_answer_envelope(
+                jev_result, jev_structural, threshold)
+            last_envelope = envelope
+            observed = envelope["confidence"].get("observed")
+            if (envelope["native"]
+                    and (best_envelope is None
+                         or not isinstance(observed, (int, float))
+                         or float(observed) > float(
+                             best_envelope["confidence"].get("observed") or 0.0))):
+                best_envelope = envelope
+            history.append({"round": round_no, "model": model,
+                            "jev": envelope})
+            emit("answer_judged", round=round_no, model=model,
+                 native=envelope["native"],
+                 confidence=envelope["confidence"]["observed"],
+                 iteration_required=bool(jev_structural.get("iteration_required")))
+            if not envelope["native"]:
+                status = "deferred"
+                break
+            if jev_structural.get("plan_required"):
+                # A direct-answer request must not turn an advisory Jev signal
+                # into a write.  The edit lane owns plan/execute; callers can
+                # explicitly resubmit this request as an edit when appropriate.
+                status = "plan_required"
+                break
+            if envelope["confidence"]["passed"]:
+                status = "ok"
+                break
+            prior = {
+                "answer": answer,
+                "feedback": "Jev says another answer attempt is needed: "
+                            + "; ".join(envelope["reasons"]),
+            }
+            if round_no == rounds:
+                status = "needs_iteration"
+
+        result = {
+            "status": status,
+            "intent": intent,
+            "prompt": prompt,
+            "response": answer,
+            "model": model,
+            "cost": round(total_cost, 6),
+            "confidence": ((best_envelope or last_envelope or {}).get(
+                "confidence", {"threshold": threshold, "observed": None,
+                               "passed": False,
+                               "source": "jev.noul.answer_sufficient"})),
+            "jev": (best_envelope or last_envelope),
+            **({"jev_last": last_envelope}
+               if last_envelope is not best_envelope else {}),
+            "hourglass": {
+                "stages": ["context_intake", "answer", "jev_review"],
+                "skipped": ["planning_waist", "execution"],
+                "settings": hourglass_policy,
+                "context_files": list(files),
+                "context_tokens": brief.estimated_tokens,
+                "rounds": history,
+                "web_sources": [
+                    {k: s[k] for k in ("kind", "ok", "url") if k in s}
+                    for s in web_sources],
+            },
+        }
+        if status == "needs_iteration":
+            result["remaining_scope"] = (
+                "Jev did not establish the requested confidence threshold")
+        elif stop_reason:
+            result["remaining_scope"] = stop_reason
+        save_chat_turn(sid, result, self.history_dir)
+        emit("hourglass_complete", status=status,
+             confidence=result["confidence"].get("observed"))
+        return result
 
     def _auto_escalation_armed(self) -> bool:
         # Auto-escalation routes a chat defer into paid-capable plan
@@ -583,6 +896,7 @@ class AutonomousAgent:
         auto_apply: bool,
         cancel_check: Optional[Callable[[], bool]] = None,
         escalation_note: Optional[str] = None,
+        use_jev_completion: bool = False,
     ) -> Dict[str, Any]:
         # Handle code edit/refactor requests: the orchestrator drives the
         # hourglass -- relevance triage over the whole repo, DAG decomposition
@@ -811,15 +1125,19 @@ class AutonomousAgent:
                 run_gate=run_gate)
             return plan_exec.execute(dag)
 
-        driven = drive(
+        drive_kwargs = dict(
             goal=prompt, target_files=target_files, initial_plan=plan,
             root_dir=self.root_dir, plan_round=lambda next_goal: self._plan_round(
                 next_goal, target_files, gov, confirm=hourglass["confirm"]),
             execute_plan=execute_plan,
-            completion_chat=lambda prompt_text: self._orchestrator_chat_fn(gov)(prompt_text), emit=emit,
-            cancel_check=cancel_check,
+            completion_chat=lambda prompt_text: self._orchestrator_chat_fn(gov)(prompt_text),
+            emit=emit, cancel_check=cancel_check,
             refused=lambda refused_plan: self._refused_edit(
                 refused_plan, prompt, target_files, session_id))
+        if use_jev_completion:
+            drive_kwargs.update(jev_policy=plan_policy,
+                                jev_completion_threshold=0.99)
+        driven = drive(**drive_kwargs)
         if driven.get("status") == "refused":
             return driven
         all_results = driven["all_results"]
@@ -894,6 +1212,16 @@ class AutonomousAgent:
         if agent_structural is None and isinstance(plan.get("structural"), dict):
             agent_structural = dict(plan["structural"])
             agent_structural["site"] = "agent"
+        last_jev = next((r.get("jev") for r in reversed(rounds_history)
+                         if isinstance(r, dict) and r.get("jev")), None)
+        hourglass_evidence = {
+            "stages": ["context_intake", "planning_waist", "execution",
+                       "completion_jev"] if use_jev_completion else
+                      ["context_intake", "planning_waist", "execution"],
+            "rounds": rounds_history,
+            "settings": hourglass,
+            "source": "agent_edit_lane",
+        }
         result = {
             "status": "ok" if final_all_ok else "failed",
             **({"escalated_from_defer":
@@ -927,6 +1255,17 @@ class AutonomousAgent:
             "results": list(all_results.values()),
             "orchestrator_rounds": len(rounds_history),
             "orchestrator_history": rounds_history,
+            "hourglass": hourglass_evidence,
+            **({"confidence": {
+                "threshold": 0.99,
+                "observed": (last_jev or {}).get("supported"),
+                "passed": bool(
+                    final_all_ok
+                    and (last_jev or {}).get("native")
+                    and isinstance((last_jev or {}).get("supported"), (int, float))
+                    and float((last_jev or {}).get("supported")) >= 0.99),
+                "source": "jev.noul.goal_achieved",
+            }} if last_jev else {}),
             **({"remaining_scope": remaining_scope} if not final_all_ok else {}),
         }
 

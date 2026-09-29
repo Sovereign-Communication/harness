@@ -5,9 +5,14 @@ beyond its goal -- every factual line is a cited, hash-pinned window, and
 the lint rejects drifted sources, non-span windows, unknown citations,
 and uncited claims.
 """
+import contextlib
+import io
+import json
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from harness.brief import build_brief, validate_brief
 from harness.errors import HarnessError
@@ -92,26 +97,60 @@ class ValidateBriefTests(unittest.TestCase):
 
 
 class CliBriefTests(unittest.TestCase):
-    def test_cmd_brief_builds_and_lints_hermetically(self):
-        from types import SimpleNamespace
-        from unittest.mock import patch
-
+    def _run_brief(self, target, *, issues=None):
+        """Exercise _cmd_brief through the real emitter and exit policy."""
         from harness.cli import _cmd_brief
 
+        opts = SimpleNamespace(
+            goal="make x better",
+            files=[target],
+            validate=True,
+            out=None,
+            quiet=True,
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            if issues is None:
+                _cmd_brief(opts)
+                exit_code = 0
+            else:
+                with patch("harness.cli.validate_brief", return_value=issues):
+                    with self.assertRaises(SystemExit) as raised:
+                        _cmd_brief(opts)
+                exit_code = raised.exception.code
+        return exit_code, json.loads(stdout.getvalue()), stderr.getvalue()
+
+    def test_valid_brief_uses_real_report_and_success_exit(self):
         with tempfile.TemporaryDirectory() as d:
             target = os.path.join(d, "a.py")
             with open(target, "w", encoding="utf-8") as f:
                 f.write("def x(): pass\n")
-            opts = SimpleNamespace(goal="make x better", files=[target],
-                                   validate=True, out=None, quiet=True)
-            with patch("harness.cli._emit_by_status") as emit:
-                _cmd_brief(opts)
-        out = emit.call_args[0][0]
-        pack = out["brief"]
-        self.assertEqual(pack["goal"], "make x better")
-        self.assertEqual(pack["grounding"]["claims"], [])
+            exit_code, out, stderr = self._run_brief(target)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(out["status"], "ok")
+        self.assertEqual(out["brief"]["goal"], "make x better")
+        self.assertEqual(out["brief"]["grounding"]["claims"], [])
         self.assertEqual(out["grounding_issues"], [])
         self.assertTrue(out["ok"])
+        self.assertEqual(stderr, "")
+
+    def test_invalid_brief_uses_real_report_and_lint_exit(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "a.py")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("def x(): pass\n")
+            exit_code, out, stderr = self._run_brief(
+                target, issues=["source content drifted"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(out["status"], "failed")
+        self.assertEqual(out["brief"]["goal"], "make x better")
+        self.assertEqual(out["grounding_issues"], ["source content drifted"])
+        self.assertFalse(out["ok"])
+        self.assertEqual(stderr, "")
+
 
 
 if __name__ == "__main__":

@@ -511,7 +511,10 @@ class PolicyFactoryTests(unittest.TestCase):
         self.assertLessEqual(policy.governor.max_cost, 0.10)
         # ...and cumulative + worst-case beyond the run budget refuses.
         from harness.jev_policy import jev_cost_ceiling
-        self.assertIsNone(factory(0.05 - 0.0001 + jev_cost_ceiling()))
+        # Put cumulative spend just below the run budget, but leave less
+        # than one current-rate Jev worst-case above it.
+        self.assertIsNone(factory(
+            0.05 - jev_cost_ceiling() + 0.000001))
 
     def test_unkeyed_factory_never_budget_stops(self):
         settings = load_settings()

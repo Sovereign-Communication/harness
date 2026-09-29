@@ -4,6 +4,7 @@ Subcommands (flags are back-compatible with SCMessenger's fusion_lite.py and
 morph_lite.py, plus delegate_task.py's --verify/--max-rounds):
 
   harness verify   panel + judge verification (with model rotation + consensus)
+  harness dogfood-coordinator  local SCMessenger/Harness audit rotation
   harness apply    scoped code edit + verify loop + consent continuation
   harness offer    ask a model for consent on a work item
   harness defer    record a mid-task deferral / consent revocation
@@ -59,6 +60,7 @@ from .mission_driver import pack_probe_attempt as _mission_pack_probe
 from .mission_driver import run_mission as _mission_run
 from .capability import capabilities_payload as _capability_payload_owner
 from .brief import build_brief, validate_brief
+from .dogfood_coordinator import CoordinatorConfig, coordinate as _coordinate_dogfood
 from .dag import TaskDAG, node_apply_kwargs
 from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
 from .pyramid_state import (
@@ -341,11 +343,27 @@ def _cmd_brief(opts, settings=None):
     """Build the grounded context pack (MR-8 spec). Hermetic: no key, no
     network; the pack asserts nothing beyond the goal."""
     pack = build_brief(opts.goal, opts.files)
-    out = {"brief": pack}
+    # _emit_by_status is the shared CLI exit-code consumer; every envelope
+    # it receives must carry a terminal status. Keep the brief-specific
+    # fields below unchanged for callers that consume the JSON directly.
+    out = {"brief": pack, "status": "ok"}
     if opts.validate:
         out["grounding_issues"] = validate_brief(pack)
         out["ok"] = not out["grounding_issues"]
+        out["status"] = "ok" if out["ok"] else "failed"
     _emit_by_status(out, opts.out)
+
+
+def _cmd_dogfood_coordinator(opts, settings=None):
+    result = _coordinate_dogfood(CoordinatorConfig(
+        harness_repo=opts.harness_repo,
+        scmessenger_repo=opts.scmessenger_repo,
+        state_dir=opts.state_dir,
+        apply=opts.apply,
+        remote=opts.remote,
+        branch=opts.branch,
+    ))
+    _emit_by_status(result, opts.out)
 
 
 def _cmd_lint_claims(opts, settings=None):
@@ -1216,6 +1234,7 @@ _DISPATCH = {
     "verify": _cmd_verify,
     "lint-claims": _cmd_lint_claims,
     "brief": _cmd_brief,
+    "dogfood-coordinator": _cmd_dogfood_coordinator,
     "apply": _cmd_apply,
     "plan": _cmd_plan,
     "dogfood": _cmd_dogfood,

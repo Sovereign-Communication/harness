@@ -390,6 +390,23 @@ def build_parser():
                      help="run the grounding lint over the built pack")
     _add_output_flags(pbr)
 
+    pcoord = sub.add_parser(
+        "dogfood-coordinator",
+        help="Inspect or rotate local SCMessenger/Harness audit candidates")
+    pcoord.add_argument("--harness-repo", required=True,
+                        help="local Harness Git worktree")
+    pcoord.add_argument("--scmessenger-repo", required=True,
+                        help="local SCMessenger Git worktree")
+    pcoord.add_argument("--state-dir", required=True,
+                        help="coordinator state, candidate worktrees, and receipts")
+    pcoord.add_argument("--apply", action="store_true",
+                        help="deliberately fetch, validate, audit, and promote candidates")
+    pcoord.add_argument("--remote", default="origin",
+                        help="remote consulted for candidate revisions (default: origin)")
+    pcoord.add_argument("--branch", default="main",
+                        help="remote branch consulted for candidates (default: main)")
+    _add_output_flags(pcoord)
+
     pcap = sub.add_parser("capabilities", help="Model capability profiles + reliability "
                                                 "(hypothesis from /models, corrected by observed evidence)")
     pcap.add_argument("--refresh", action="store_true",

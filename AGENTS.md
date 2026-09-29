@@ -77,3 +77,10 @@ coding agent's own tiers (Opus orchestrates; Haiku/Sonnet do the work) is in `CL
 5. Do not game `audits/self/coverage_baseline.json` to hide untested new lines; refresh only after real tests execute those lines.
 6. Report blocked with exact command/output — never “will do”.
 7. Every change to `main` — STATUS and docs included — lands through a PR with green CI; never push directly to `main` (2026-09-22: direct STATUS pushes left `main` red, `DF-GOV-1`).
+
+## Dogfood safety and publication
+
+- **Never interrupt WIP.** Before any action that could change or terminate work in a shared checkout or worktree, verify the current branch, `git status --short --branch`, and the relevant diff. Never reset, overwrite, clean, stash, kill/terminate, or delete work you do not own. If status or ownership is unclear, stop and report the evidence.
+- **Verify before publishing.** Before every commit or push, re-check status and the staged diff; stage only the intended documentation.
+- **Docs-only commits and pushes.** During dogfood, every commit and push must contain documentation only, including recommended remediations. Do not commit or push source, tests, generated files, or other code WIP; leave those changes in place and report them. Code fixes may be prepared and validated locally, but are not publishable under this rule.
+- **Route handoffs to the owning product repository.** Commit Harness handoff files and Harness recommended remediations in the Harness repository; commit SCMessenger handoff files and SCMessenger recommended remediations in the SCMessenger repository. Do not put one product's handoff in the other product's repository. A handoff commit remains docs-only and does not authorize publishing code WIP.

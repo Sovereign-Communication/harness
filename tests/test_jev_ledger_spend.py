@@ -4,7 +4,8 @@ import tempfile
 import unittest
 
 from harness.config import load_settings
-from harness.jev_policy import policy_for
+from harness.jev import jev_cost
+from harness.jev_policy import JEV_MAX_INPUT_TOKENS, policy_for
 from harness.ledger import AutonomyLedger
 from harness.spend import SpendGovernor
 from tests._fake import FakeTransport, m
@@ -42,7 +43,7 @@ class JevLedgerSpendTests(unittest.TestCase):
             self._diff(), "change x", "x.py", site="agent-apply",
             task_id="task-1", node_id="node-1")
 
-        expected = 120 * 42 / 1_000_000
+        expected = 120 * 0.0042 / 1_000_000
         self.assertEqual(result.cost, expected)
         self.assertEqual(governor.spent, expected)
         events = [entry for entry in ledger.entries()
@@ -115,11 +116,15 @@ class JevLedgerSpendTests(unittest.TestCase):
                              jev_policy=policy, default_require_consent=False,
                              default_renew_consent=False)
 
-        # When task_max_cost is smaller than Jev worst-case (~$0.043), preflight must refuse
+        # When task_max_cost is smaller than Jev worst-case (~$0.0000043),
+        # preflight must refuse. A verification gate is required so this
+        # assertion reaches the budget check rather than the independent
+        # unknown-trust write refusal.
         with self.assertRaises(HarnessError) as ctx:
             engine.apply_edit(file_path=target, instruction="edit x",
-                              task_max_cost=0.001, require_consent=False,
-                              renew_consent=False)
+                              verify_cmd="python -c pass",
+                              task_max_cost=jev_cost(JEV_MAX_INPUT_TOKENS) / 2,
+                              require_consent=False, renew_consent=False)
         self.assertIn("exceeds --task-max-cost", str(ctx.exception))
 
         # With sufficient budget and governor having preflight_jev, line 315 executes
@@ -167,12 +172,14 @@ class JevLedgerSpendTests(unittest.TestCase):
                              jev_policy=policy, default_require_consent=False,
                              default_renew_consent=False)
 
-        # 1. When task_max_cost is small during escalation (0.046), lines 623-628 execute and raise
+        # 1. Leave enough headroom for the first candidate, but not for the
+        # actual first response plus the next Jev worst-case reservation.
+        # The model prices above are zero, so this isolates the Jev reserve.
         with self.assertRaises(HarnessError) as ctx:
             engine.apply_edit(file_path=target, instruction="edit x",
                               verify_cmd="python -c exit(1)", max_rounds=1,
-                              task_max_cost=0.046, require_consent=False,
-                              renew_consent=False)
+                              task_max_cost=jev_cost(JEV_MAX_INPUT_TOKENS) * 1.1,
+                              require_consent=False, renew_consent=False)
         self.assertIn("exceeds --task-max-cost", str(ctx.exception))
 
         # 2. When task_max_cost is sufficient (0.060), lines 623-625, 631-632 execute
