@@ -19,7 +19,8 @@ from . import trust as trust_policy
 from .batch import BatchOptions
 from .consent import probe_consent
 from .continuation import validate_continuation
-from .config import resolve_hourglass
+from .config import (freeze_jev_settings, load_settings, resolve_hourglass,
+                     validate_jev_model_id)
 from .dag import TaskDAG
 from .waist import compose_plan
 from .errors import HarnessError, ToolCancelled
@@ -851,6 +852,36 @@ class McpServer:
             phase = validate_text(args.get("phase"), "phase", 256, required=True)
             return dogfood_phase(repo_root, phase, settings=None,
                                  use_live_jev=False, min_score=min_score)
+        if name == "jev_freeze":
+            # Thin face over config.freeze_jev_settings (GAP-freeze-face): the
+            # same ONE owner the CLI `jev-freeze` command calls. A preview is
+            # read-only and always available; `persist` writes the OPERATOR's
+            # config.json, so it is write-gated exactly like every other MCP
+            # write -- reaching this server must never be enough to repin the
+            # account's Jev model or threshold.
+            raw_model = args.get("model")
+            model_arg = None
+            if raw_model is not None:
+                model_arg = validate_jev_model_id(
+                    validate_text(raw_model, "model", 128, required=True))
+            confidence = None
+            if args.get("min_confidence") is not None:
+                confidence = finite_number(args["min_confidence"],
+                                           "min_confidence", 0.0, 1.0)
+            persist = validate_mcp_bool(args.get("persist", False), "persist")
+            allow_write = validate_mcp_bool(args.get("allow_write", False),
+                                            "allow_write")
+            if persist and not (self.allow_write or allow_write):
+                self._refuse(
+                    "mcp config write without allow_write",
+                    "freezing Jev settings writes the operator config file; "
+                    "re-send with allow_write=true or configure "
+                    "allow_write=True explicitly")
+            frozen = freeze_jev_settings(
+                load_settings(), jev_model=model_arg,
+                min_confidence=confidence, persist=persist)
+            return {"status": "frozen" if frozen["persisted"] else "preview",
+                    "freeze": frozen}
         if name == "ledger_status":
             limit = validate_mcp_limit(args.get("limit"))
             ok, bad_seq = self.ledger.verify()
@@ -1057,7 +1088,6 @@ def main(argv=None):  # pragma: no cover - thin wiring; exercised via smoke test
     if exit_code is not None:
         return exit_code
 
-    from .config import load_settings
     from . import session as composition
 
     settings = load_settings()

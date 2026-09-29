@@ -17,7 +17,8 @@ run concurrently with each other.
 # The lane registry, in pool-creation order.
 LANES = ("mutation", "spendy", "observe")
 
-MUTATION_LANE = {"apply_edit", "plan_and_execute", "continue_work"}
+MUTATION_LANE = {"apply_edit", "plan_and_execute", "continue_work",
+                 "jev_freeze"}
 SPENDY_LANE = {"panel_verify", "offer_work", "log_judgment", "route_query"}
 
 

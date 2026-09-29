@@ -990,6 +990,7 @@ class LaneSchedulingTests(unittest.TestCase):
             {"apply_edit": "mutation",
              "plan_and_execute": "mutation",
              "continue_work": "mutation",
+             "jev_freeze": "mutation",
              "panel_verify": "spendy",
              "offer_work": "spendy",
              "log_judgment": "spendy",

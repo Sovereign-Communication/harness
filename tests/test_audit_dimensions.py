@@ -627,5 +627,42 @@ class AuditCompositionTests(unittest.TestCase):
         make_gov.assert_called_once_with(settings, 0.05)
 
 
+class AuditReceiptLineEndingTests(unittest.TestCase):
+    """PLAT-parity: the tracked round-2 receipt is LF on every platform.
+
+    Found while gating `GAP-freeze-face`: a plain `Path.write_text` translates
+    `\\n` to `os.linesep`, so on Windows an audit run left
+    `audits/self/round2_scores.json` CRLF in a tree whose `.gitattributes`
+    pins `audits/**` to `eol=lf`. That is a dirty tree immediately after the
+    gate that is supposed to prove the tree green -- and per .gitattributes a
+    dirty tree reads to the apply engine as an undeclared node write.
+    """
+
+    def test_receipt_bytes_are_lf_only_and_still_valid_json(self):
+        from audits.self import audit
+
+        payload = {"scores": {"A": 10.0}, "checks": [{"id": "D1"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "round2_scores.json")
+            audit._write_receipt(path, payload)
+            with open(path, "rb") as handle:
+                raw = handle.read()
+        self.assertNotIn(b"\r", raw, "receipt must never carry CRLF")
+        self.assertIn(b"\n", raw)
+        # The next `--dim` run re-reads this file to merge prior scores, so it
+        # has to stay valid JSON, and byte-stable across platforms.
+        self.assertEqual(json.loads(raw.decode("utf-8")), payload)
+
+    def test_main_writes_the_receipt_through_that_seam(self):
+        import inspect
+
+        from audits.self import audit
+
+        source = inspect.getsource(audit.main)
+        self.assertIn("_write_receipt(", source)
+        # No platform-newline write path may come back.
+        self.assertNotIn("out.write_text(", source)
+
+
 if __name__ == "__main__":
     unittest.main()

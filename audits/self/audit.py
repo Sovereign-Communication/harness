@@ -1303,6 +1303,23 @@ DIM_NAMES = {"A": "Security", "R": "Reliability",
              "SD": "Documentation & release integrity"}
 
 
+def _write_receipt(path, payload):
+    """Write the tracked round-2 receipt through the OS boundary, as LF.
+
+    The receipt lives under `audits/**`, which `.gitattributes` pins to
+    `eol=lf`, and the tree being clean is not cosmetic -- the apply engine
+    reads `git status --porcelain` as a node's diff, so a dirty receipt shows
+    up as an undeclared write. A plain `Path.write_text` translates `\n` to
+    `os.linesep`, which on Windows left this file CRLF straight after every
+    audit run: the file disagreed with its own attribute and the tree was
+    dirty. `osal.write_text` is the ONE owner of evidence bytes and defaults
+    to LF, so the same audit produces the same bytes on every platform.
+    """
+    from harness import osal  # deferred: a broken import fails this write, not the audit
+
+    return osal.write_text(path, json.dumps(payload, indent=2))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dim", choices=sorted(CHECKS), default=None)
@@ -1416,7 +1433,7 @@ def main():
             "checks": results,
         }
 
-    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    _write_receipt(out, payload)
     print(f"scores: {payload['scores']}  (written to {out.relative_to(ROOT)})")
     print("verdict:", "ALL EVALUATED DIMENSIONS >= 9.5 (JEV 95%+ TRUE GATE MET) — bar met" if total_ok
           else "BAR NOT MET — iterate on the failing checks above")

@@ -282,4 +282,31 @@ TOOL_SCHEMAS = [
              "properties": {"all": {"const": True}}},
         ]},
     },
+    {
+        "name": "jev_freeze",
+        "title": "Freeze JEV model pin + confidence threshold",
+        "description": "Thin face over harness.config.freeze_jev_settings (the "
+                       "same owner the CLI `jev-freeze` command calls). A "
+                       "preview (persist=false, the default) reports the pin/"
+                       "threshold the freeze would apply and writes nothing; "
+                       "persist=true writes the operator config.json and "
+                       "requires allow_write. Refused fail-closed when the "
+                       "environment pins the same key, since the pin would "
+                       "not take effect.",
+        "inputSchema": {"type": "object", "properties": {
+            "model": {"type": "string",
+                      "description": "Model id to pin (e.g. jev-1.13.0); omit "
+                                     "to keep the current pin"},
+            "min_confidence": {"type": "number", "minimum": 0, "maximum": 1,
+                               "description": "Abstain/escalate threshold; omit "
+                                              "to keep the current value"},
+            "persist": {"type": "boolean", "default": False,
+                        "description": "Write the named keys into the operator "
+                                       "config.json (requires allow_write)"},
+            "allow_write": {"type": "boolean",
+                            "description": "Explicit confirmation for a config "
+                                           "write in this request"},
+            "task_id": {"type": "string"},
+        }},
+    },
 ]
