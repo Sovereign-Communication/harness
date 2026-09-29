@@ -160,6 +160,67 @@ class PlanAllowHeuristicPreviewWiringTests(unittest.TestCase):
         self.assertTrue(captured["allow_heuristic_preview"])
 
 
+class PlanCompositionWiringTests(unittest.TestCase):
+    """HV-4/HV-3-use: the CLI lane must REACH the composed path.
+
+    ``compose_plan`` composes only when a caller names the run's allowance,
+    which is why the composed path was published-but-unreachable. Both
+    arguments come from owners that already exist -- the ceilings from
+    settings, the stage subset from ``waist.stage_selection_from_settings``
+    -- so these tests pin that the lane supplies them rather than that the
+    composer works (its own tests cover that).
+    """
+
+    def _capture(self, settings):
+        from types import SimpleNamespace
+        captured = {}
+
+        def fake_compose_plan(**kwargs):
+            captured.update(kwargs)
+            return {}
+
+        opts = SimpleNamespace(goal="g", allow_escalation=None,
+                              max_tokens=None, plan_consensus=False)
+        with mock.patch.object(cli, "_compose_plan",
+                               side_effect=fake_compose_plan):
+            cli._plan_compose(
+                settings, opts, None, None, None,
+                candidate_files=None, frontier_model=None, execute=False,
+                confirm=False, decompose_llm=False, plan_consensus=False,
+                hourglass={"confirm": False, "decompose": False})
+        return captured
+
+    def test_settings_ceilings_and_stage_subset_reach_compose_plan(self):
+        from types import SimpleNamespace
+
+        from harness.token_budget import TokenBudget
+        captured = self._capture(SimpleNamespace(
+            use_free=True, allow_escalation=False,
+            token_budget_input=1234, token_budget_output=99,
+            hourglass_stages=["context", "planning"]))
+        budget = captured["token_budget"]
+        self.assertIsInstance(budget, TokenBudget)
+        # The operator's own numbers, not a lane-local guess.
+        self.assertEqual(budget.max_input_tokens, 1234)
+        self.assertEqual(budget.max_output_tokens, 99)
+        # ...and the operator's stage subset, in pipeline order.
+        self.assertEqual(captured["stages"], ["context", "planning"])
+
+    def test_a_plan_only_settings_object_defaults_to_every_stage(self):
+        from types import SimpleNamespace
+
+        from harness.token_budget import DEFAULT_RUN_INPUT_TOKENS
+        from harness.waist import HOURGLASS_DEFAULT_STAGES
+        # The shape a real plan-only settings object has: no ceilings and no
+        # stage key at all. Both owners default rather than refuse, so the
+        # pre-composition posture (every stage) is what such a lane composes.
+        captured = self._capture(SimpleNamespace(use_free=True,
+                                                allow_escalation=False))
+        self.assertEqual(captured["token_budget"].max_input_tokens,
+                         DEFAULT_RUN_INPUT_TOKENS)
+        self.assertEqual(captured["stages"], list(HOURGLASS_DEFAULT_STAGES))
+
+
 class MaxCostWiringTests(unittest.TestCase):
     def test_verify_max_cost_reaches_governor(self):
         """Regression: verify --max-cost was parsed but never wired, so the

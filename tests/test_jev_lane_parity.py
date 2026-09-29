@@ -27,7 +27,7 @@ from harness.jev_policy import JevPolicy, policy_for
 from harness.ledger import AutonomyLedger
 from harness.router import Router
 from harness.spend import SpendGovernor
-from harness.waist import compose_plan
+from harness.waist import HOURGLASS_DEFAULT_STAGES, compose_plan
 from tests._fake import FakeTransport, comp, m
 
 
@@ -156,6 +156,7 @@ class LaneParityTests(unittest.TestCase):
             transport=MagicMock(), api_key=None,
             governor=MagicMock(), ledger=self.ledger,
             router=MagicMock(judge=JUDGE, panel_pool=[]), engine=engine,
+            settings=self.settings,
         )
         result = server._invoke("plan_and_execute", {
             "goal": "Update x.py", "file": [self.target],
@@ -165,6 +166,15 @@ class LaneParityTests(unittest.TestCase):
         self.assertIn("structural", result)
         self.assertTrue(result["structural"]["is_fallback"])
         self.assertEqual(result["structural"]["site"], "mcp")
+        # HV-4/HV-3-use, on the parity surface: the MCP lane reaches the
+        # composed path through the same settings seam, so `composition`
+        # lands here exactly as it does on the CLI lane -- same owner, same
+        # stage order, same allowance. That is what "lane parity" means for
+        # the waist, not merely the same structural block.
+        self.assertIn("composition", result)
+        self.assertEqual(
+            [entry["stage"] for entry in result["composition"]["stages"]],
+            list(HOURGLASS_DEFAULT_STAGES))
 
     def test_batch_aggregates_child_structural_envelopes(self):
         engine, transport = self._engine(

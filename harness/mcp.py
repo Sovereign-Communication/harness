@@ -22,7 +22,9 @@ from .continuation import validate_continuation
 from .config import (freeze_jev_settings, load_settings, resolve_hourglass,
                      validate_jev_model_id)
 from .dag import TaskDAG
+from .token_budget import budget_from_settings
 from .waist import compose_plan
+from .waist import stage_selection_from_settings
 from .errors import HarnessError, ToolCancelled
 from . import osal
 from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
@@ -106,13 +108,20 @@ class McpServer:
                  max_panelists=3, use_free=True, stdin=None, stdout=None,
                  allow_verify=False, allow_write=False, allowed_roots=None,
                  tool_timeout=None, caller=None, auth_token=None,
-                 hourglass=None):
+                 hourglass=None, settings=None):
         self.transport = transport
         self.api_key = api_key
         self.governor = governor
         self.ledger = ledger
         self.router = router
         self.engine = engine
+        # The settings seam, alongside the settings-derived scalars the
+        # server already takes (`hourglass`, `use_free`). The engine does NOT
+        # carry settings -- `session.engine_for` resolves policy into it and
+        # keeps none -- so a lane that needs the object (composition needs the
+        # run's allowance and the operator's stage subset) must be handed it
+        # rather than digging for it on an engine that never had it.
+        self.settings = settings
         self.max_panelists = max_panelists
         self.use_free = use_free
         self.stdin = stdin or sys.stdin
@@ -941,6 +950,23 @@ class McpServer:
                     jev_policy = policy_for(
                         settings, transport=self.transport,
                         governor=self.governor, ledger=self.ledger)
+            # HV-4: only a caller can name the run's allowance, which is why
+            # the composed path was published but unreachable. Both arguments
+            # come from owners that already exist -- the ceilings from
+            # `token_budget.budget_from_settings`, the operator's stage subset
+            # from `waist.stage_selection_from_settings` (default: every
+            # stage, i.e. the pre-slice posture) -- so this lane reaches the
+            # composed path instead of publishing it.
+            #
+            # Built per request on purpose: a `TokenBudget` accounts for ONE
+            # run, so a server-level budget would carry one plan's usage into
+            # the next plan on the same connection. When no settings seam was
+            # supplied the lane behaves exactly as before rather than
+            # inventing an allowance, which composition refuses to do.
+            composition = (
+                {"token_budget": budget_from_settings(self.settings),
+                 "stages": stage_selection_from_settings(self.settings)}
+                if self.settings is not None else {})
             plan_result = compose_plan(
                 transport=self.transport, api_key=self.api_key,
                 governor=self.governor, ledger=self.ledger, opts_goal=goal,
@@ -949,7 +975,7 @@ class McpServer:
                 confirm=confirm, execute=execute,
                 allow_escalation=allow_escalation,
                 plan_consensus=plan_consensus,
-                jev_policy=jev_policy)
+                jev_policy=jev_policy, **composition)
             if plan_result.get("status") == "refused":
                 # Waist refusal / composed-ceiling / unreachable-waist is
                 # terminal evidence: the plan never executes.
@@ -1107,6 +1133,7 @@ def main(argv=None):  # pragma: no cover - thin wiring; exercised via smoke test
         tool_timeout=settings.mcp_tool_timeout,
         auth_token=settings.mcp_auth_token,
         hourglass=resolve_hourglass(settings),
+        settings=settings,
     ).serve_forever()
 
 

@@ -52,7 +52,9 @@ from .rankings import build_rankings_report as _rankings_report
 from .route_pack import validate_route_pack
 from .site_export import export_bundle as _site_export_bundle
 from .site_export import write_bundle as _site_export_write
+from .token_budget import budget_from_settings
 from .waist import compose_plan as _compose_plan
+from .waist import stage_selection_from_settings
 from .jev import jev_cost
 from .jev_policy import JEV_MAX_INPUT_TOKENS, aggregate_structural, policy_for
 from .jev_completion import dogfood_phase, score_all_phases
@@ -993,7 +995,16 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
         # DF-HG-3b: opt-in only (CLI: --allow-heuristic-preview); the
         # default stays fail-closed for a plan-only preview whose LLM
         # decomposition fails.
-        allow_heuristic_preview=allow_heuristic_preview)
+        allow_heuristic_preview=allow_heuristic_preview,
+        # HV-4 published a composed path that no production caller reached,
+        # because only a caller can name the run's allowance. Both arguments
+        # come from the owners that already exist: `token_budget.py` for the
+        # ceilings, `waist.stage_selection_from_settings` for the operator's
+        # stage subset (default: every stage, i.e. the pre-slice posture).
+        # Supplying them attaches `composition` to the envelope as evidence
+        # -- it is not a second budget and it refuses no run by itself.
+        token_budget=budget_from_settings(settings),
+        stages=stage_selection_from_settings(settings))
 
 
 def _resolve_hourglass(opts, settings):
