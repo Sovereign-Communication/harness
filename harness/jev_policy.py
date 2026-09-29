@@ -7,6 +7,7 @@ lanes. P3 utilization packs live in :mod:`harness.jev_packs` and are imported
 here — still ONE policy owner, never a second Jev client.
 """
 import difflib
+import math
 import os
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
@@ -31,6 +32,19 @@ from .jev_packs import (
     VISION_ASSESSMENT_PACK_VERSION,
     VisionAssessmentEnvelope,
     VisionCategoryAssessment,
+    HOURGLASS_JEV_DEFAULT_MAX_INPUT_TOKENS,
+    HOURGLASS_JEV_INTEGRATION_MATRIX,
+    HOURGLASS_JEV_MAX_INPUT_TOKENS,
+    HOURGLASS_JEV_MIN_CONFIDENCE,
+    HOURGLASS_JEV_REVIEW_CONFIDENCE,
+    hourglass_jev_blocking_facts,
+    hourglass_jev_decision_evidence,
+    hourglass_jev_evidence_refs,
+    hourglass_jev_preflight,
+    hourglass_jev_question_pack,
+    prepare_hourglass_restart,
+    validate_hourglass_jev_answers,
+    validate_hourglass_jev_state,
     SCOPE_COVERAGE_HOLD,
     SCOPE_NOUL_HOLD,
     answer_question_pack,
@@ -69,6 +83,30 @@ from .jev_packs import (
 )
 
 JEV_MAX_INPUT_TOKENS = 1024
+_HOURGLASS_PREFLIGHT_FIELDS = (
+    "payload_utf8_bytes", "estimated_input_tokens",
+    "estimated_state_longest_question_tokens", "max_input_tokens",
+    "request_margin_tokens", "state_longest_question_margin_tokens",
+    "fits_context",
+)
+
+
+def _hourglass_preflight_summary(preflight):
+    """Keep only bounded accounting diagnostics; never return the payload."""
+    if not isinstance(preflight, dict):
+        return None
+    summary = {key: preflight[key] for key in _HOURGLASS_PREFLIGHT_FIELDS
+               if key in preflight}
+    summary["estimator"] = "harness.tokens.estimate_prompt_tokens"
+    return summary
+
+
+def _hourglass_observed_count(value, observed):
+    """Return a non-negative provider count only when its flag and value agree."""
+    if (observed is not True or isinstance(value, bool)
+            or not isinstance(value, int) or value < 0):
+        return None
+    return value
 
 
 def jev_cost_ceiling(max_input_tokens: int = JEV_MAX_INPUT_TOKENS) -> float:
@@ -186,13 +224,14 @@ class JevPolicy:
         )
         structural = self._structural(result, site)
         if self.ledger is not None:
-            metadata = event_metadata or {}
+            metadata = dict(event_metadata or {})
+            fallback = bool(metadata.pop("is_fallback", False))
+            observed_model = metadata.pop(
+                "observed_model", metadata.pop("model", result.model))
             self.ledger.append(
                 "jev_refusal", task_id=task_id, node_id=node_id, site=site,
-                model=metadata.get("observed_model", result.model),
-                reason=reason, cost=0.0,
-                input_tokens=0, is_fallback=False,
-                **metadata,
+                model=observed_model, reason=reason, cost=0.0,
+                input_tokens=0, is_fallback=fallback, **metadata,
             )
         return result, structural
 
@@ -396,6 +435,599 @@ class JevPolicy:
                 "plan_required": None,
             })
             return refusal, structural
+
+    def evaluate_hourglass(
+            self, capability: str, state: Any, *,
+            current_stage: Optional[str] = None,
+            site: Optional[str] = None, task_id: Optional[str] = None,
+            max_input_tokens: int = HOURGLASS_JEV_DEFAULT_MAX_INPUT_TOKENS,
+            min_confidence: Optional[float] = None):
+        """Run one bounded, typed Hourglass judgment through the shared owner.
+
+        Code owns schema, authorization, budgets, transitions, provenance,
+        and completion. TypeSafe contributes only the declared typed answer.
+        This method makes at most one no-retry request and never dispatches an
+        execution action.
+        """
+        if not isinstance(capability, str) or capability not in HOURGLASS_JEV_INTEGRATION_MATRIX:
+            raise HarnessError("unknown Hourglass JEV capability")
+        contract = HOURGLASS_JEV_INTEGRATION_MATRIX[capability]
+        if (site is not None
+                and (not isinstance(site, str) or not site.strip()
+                     or len(site) > 128)):
+            return self._hourglass_refusal(
+                capability, contract, contract["site"],
+                "Hourglass JEV site label is invalid or exceeds its declared bound",
+                task_id=task_id, fallback_state="invalid_preflight")
+        selected_site = site or contract["site"]
+        if (isinstance(max_input_tokens, bool)
+                or not isinstance(max_input_tokens, int)
+                or max_input_tokens <= 0
+                or max_input_tokens > HOURGLASS_JEV_MAX_INPUT_TOKENS):
+            return self._hourglass_refusal(
+                capability, contract, selected_site,
+                "Hourglass JEV max_input_tokens is outside its declared bounds",
+                task_id=task_id, fallback_state="invalid_preflight")
+        if min_confidence is None:
+            min_confidence = getattr(
+                self.settings, "min_confidence",
+                getattr(self.evaluator, "min_confidence",
+                 HOURGLASS_JEV_MIN_CONFIDENCE))
+        if (isinstance(min_confidence, bool)
+                or not isinstance(min_confidence, (int, float))):
+            return self._hourglass_refusal(
+                capability, contract, selected_site,
+                "Hourglass JEV confidence threshold must be in [0, 1]",
+                task_id=task_id, fallback_state="invalid_preflight")
+        try:
+            confidence_threshold = float(min_confidence)
+        except (OverflowError, TypeError, ValueError):
+            confidence_threshold = float("nan")
+        if (not math.isfinite(confidence_threshold)
+                or not 0.0 <= confidence_threshold <= 1.0):
+            return self._hourglass_refusal(
+                capability, contract, selected_site,
+                "Hourglass JEV confidence threshold must be in [0, 1]",
+                task_id=task_id, fallback_state="invalid_preflight")
+
+        model = getattr(self.evaluator, "model", None)
+        if not isinstance(model, str) or not model.strip():
+            model = "jev-latest"
+        normalized = None
+        questions = {}
+        preflight = None
+        evidence_map = {}
+        evidence_refs = []
+        try:
+            normalized = validate_hourglass_jev_state(capability, state)
+            if capability == "restart_target":
+                if current_stage is not None and current_stage != normalized["current_stage"]:
+                    raise ValueError("current_stage disagrees with the typed restart state")
+                current_stage = normalized["current_stage"]
+            blocking_facts = hourglass_jev_blocking_facts(
+                capability, normalized["code_facts"])
+            if blocking_facts:
+                return self._hourglass_blocked(
+                    capability, contract, selected_site, normalized,
+                    "code-owned prerequisites failed: " + ", ".join(blocking_facts),
+                    task_id=task_id)
+            questions = hourglass_jev_question_pack(capability, normalized)
+            if not questions and capability == "restart_target":
+                return self._hourglass_skipped(
+                    capability, contract, selected_site, normalized,
+                    "no code-legal restart target is available", task_id=task_id)
+            if not questions:
+                raise ValueError("capability requires at least one declared JEV question")
+            evidence_map = hourglass_jev_decision_evidence(capability, normalized)
+            if set(evidence_map) != set(questions):
+                raise ValueError("question evidence mapping does not match declared question ids")
+            evidence_refs = hourglass_jev_evidence_refs(capability, normalized)
+            preflight = hourglass_jev_preflight(
+                capability, normalized, model, max_input_tokens)
+            if not preflight["fits_context"]:
+                raise ValueError("exact serialized request exceeds the declared token bounds")
+        except (OverflowError, TypeError, ValueError) as exc:
+            return self._hourglass_refusal(
+                capability, contract, selected_site,
+                "invalid or oversized Hourglass JEV request: " + str(exc),
+                task_id=task_id, normalized=normalized, questions=questions,
+                preflight=preflight, evidence_map=evidence_map,
+                evidence_refs=evidence_refs,
+                fallback_state=("preflight_refused" if isinstance(exc, ValueError)
+                                and "token bounds" in str(exc)
+                                else "invalid_request"))
+
+        if not self.keyed:
+            return self._hourglass_refusal(
+                capability, contract, selected_site,
+                "TypeSafe key unavailable; judgment is unassessed",
+                task_id=task_id, normalized=normalized, questions=questions,
+                preflight=preflight, evidence_map=evidence_map,
+                evidence_refs=evidence_refs, fallback_state="unkeyed")
+
+        transport = getattr(self.evaluator, "transport", None)
+        if (not callable(getattr(self.evaluator, "evaluate_once", None))
+                or not callable(getattr(transport, "post_once", None))):
+            return self._hourglass_refusal(
+                capability, contract, selected_site,
+                "one-attempt TypeSafe transport is unavailable",
+                task_id=task_id, normalized=normalized, questions=questions,
+                preflight=preflight, evidence_map=evidence_map,
+                evidence_refs=evidence_refs,
+                fallback_state="unavailable_transport")
+        if not callable(getattr(self.ledger, "append", None)):
+            return self._hourglass_refusal(
+                capability, contract, selected_site,
+                "autonomy ledger unavailable; refusing keyed dispatch",
+                task_id=task_id, normalized=normalized, questions=questions,
+                preflight=preflight, evidence_map=evidence_map,
+                evidence_refs=evidence_refs)
+        if (self.governor is None
+                or not callable(getattr(self.governor, "reserve", None))
+                or not callable(getattr(self.governor, "reconcile", None))):
+            return self._hourglass_refusal(
+                capability, contract, selected_site,
+                "shared spend governor cannot reserve and reconcile a one-shot call",
+                task_id=task_id, normalized=normalized, questions=questions,
+                preflight=preflight, evidence_map=evidence_map,
+                evidence_refs=evidence_refs)
+
+        estimated_input_tokens = int(preflight["estimated_input_tokens"])
+        estimated_cost = jev_cost(estimated_input_tokens)
+        max_reserve_cost = jev_cost(max_input_tokens)
+        if max_reserve_cost > HARD_MAX_COST:
+            return self._hourglass_refusal(
+                capability, contract, selected_site,
+                "worst-case Hourglass JEV reserve exceeds HARD_MAX_COST",
+                task_id=task_id, normalized=normalized, questions=questions,
+                preflight=preflight, evidence_map=evidence_map,
+                evidence_refs=evidence_refs, fallback_state="budget_refused")
+
+        reservation = None
+        try:
+            reservation = self._preflight(
+                site=selected_site, max_input_tokens=max_input_tokens)
+            if reservation is None:
+                raise HarnessError("shared spend governor did not return a reservation")
+        except Exception as exc:
+            return self._hourglass_refusal(
+                capability, contract, selected_site,
+                "Hourglass JEV budget preflight refused: " + str(exc),
+                task_id=task_id, normalized=normalized, questions=questions,
+                preflight=preflight, evidence_map=evidence_map,
+                evidence_refs=evidence_refs, fallback_state="budget_refused")
+
+        # The dispatch path is explicitly one-shot. A raised exception after
+        # entering evaluate_once counts as a dispatched attempt, not a refusal.
+        raw = None
+        try:
+            raw = self.evaluator.evaluate_once(
+                normalized, questions)
+        except Exception as exc:
+            raw = JevEvaluationResult(
+                "fail", 0.0, 0.0, {},
+                ["TypeSafe one-attempt evaluation failed ({}).".format(
+                    type(exc).__name__)],
+                is_fallback=False, model=None)
+
+        result_state = "unassessed"
+        fallback_state = "invalid_response"
+        usage_source = "estimated"
+        settlement_tokens = estimated_input_tokens
+        observed_model = None
+        model_observed = False
+        observed_input = None
+        observed_output = None
+        actual_answers = {}
+        confidence_values = []
+        settlement_cost = estimated_cost
+        if isinstance(raw, JevEvaluationResult):
+            model_observed = bool(raw.model_observed and isinstance(raw.model, str)
+                                  and raw.model.strip())
+            observed_model = raw.model if model_observed else None
+            observed_input = _hourglass_observed_count(
+                raw.input_tokens, raw.input_tokens_observed)
+            observed_output = _hourglass_observed_count(
+                raw.output_tokens, raw.output_tokens_observed)
+            input_observed = observed_input is not None
+            output_observed = observed_output is not None
+            if input_observed:
+                settlement_tokens = observed_input
+                settlement_cost = jev_cost(settlement_tokens)
+                usage_source = "actual" if output_observed else "actual_partial"
+                if not output_observed:
+                    fallback_state = "usage_partial_missing_output"
+            elif output_observed:
+                usage_source = "actual_partial"
+                # Output-only usage is genuine partial evidence, but the
+                # input-priced settlement still uses the bounded estimate.
+                fallback_state = "usage_partial_estimated_input"
+            if raw.is_fallback:
+                fallback_state = "evaluator_fallback"
+            elif raw.reasons and raw.verdict == "fail" and not raw.answers:
+                fallback_state = "request_failed"
+            try:
+                actual_answers = validate_hourglass_jev_answers(raw.answers, questions)
+            except (TypeError, ValueError, OverflowError):
+                actual_answers = {}
+            else:
+                if (model_observed and input_observed and output_observed
+                        and not raw.is_fallback and raw.verdict in ("pass", "fail")):
+                    action_answers = [
+                        answer for answer in actual_answers.values()
+                        if answer["type"] in ("choice", "score")]
+                    confidence_values = [answer["confidence"]
+                                         for answer in action_answers]
+                    low_confidence = (
+                        bool(HOURGLASS_JEV_REVIEW_CONFIDENCE and action_answers)
+                        and min(confidence_values) < confidence_threshold)
+                    result_state = "review_required" if low_confidence else "judged"
+                    fallback_state = "low_confidence" if low_confidence else "none"
+            if usage_source.startswith("actual"):
+                fallback_state = (fallback_state if fallback_state != "none"
+                                  else "none")
+        else:
+            model_observed = False
+
+        valid_live = bool(
+            isinstance(raw, JevEvaluationResult)
+            and not raw.is_fallback
+            and isinstance(raw.model, str) and bool(raw.model.strip())
+            and actual_answers
+            and model_observed and raw.verdict in ("pass", "fail")
+            and observed_input is not None
+            and observed_input <= max_input_tokens
+            and observed_output is not None)
+        if valid_live and result_state == "unassessed":
+            result_state = "judged"
+            fallback_state = "none"
+        if not valid_live:
+            if observed_input is not None and observed_input > max_input_tokens:
+                fallback_state = "observed_input_exceeded_limit"
+            actual_answers = {}
+            confidence_values = []
+            result_state = "unassessed"
+
+        settlement_error = None
+        # SpendGovernor removes a reservation before validating/charging.
+        # Clear it before calling so even an over-ceiling error cannot trigger
+        # a second reconcile/refund attempt.
+        try:
+            self.governor.reconcile(reservation, settlement_cost)
+        except Exception as exc:
+            settlement_error = type(exc).__name__
+
+        if settlement_error:
+            result_state = "unassessed"
+            fallback_state = "settlement_failed"
+            actual_answers = {}
+            confidence_values = []
+        reported_input_tokens = (
+            _hourglass_observed_count(raw.input_tokens, raw.input_tokens_observed)
+            if isinstance(raw, JevEvaluationResult) else None)
+        reported_output_tokens = (
+            _hourglass_observed_count(raw.output_tokens, raw.output_tokens_observed)
+            if isinstance(raw, JevEvaluationResult) else None)
+        decision = {
+            "capability": capability,
+            "pack_id": contract["pack_id"],
+            "pack_version": contract["pack_version"],
+            "result_state": result_state,
+            "fallback_state": fallback_state,
+            "usage_source": usage_source,
+            "is_fallback": result_state == "unassessed",
+            "input_tokens": reported_input_tokens,
+            "output_tokens": reported_output_tokens,
+            "settled_input_tokens": settlement_tokens,
+            "estimated_input_tokens": estimated_input_tokens,
+            "cost": settlement_cost,
+            "cost_source": "actual_input" if reported_input_tokens is not None else "estimated_input",
+            "model": observed_model,
+            "model_observed": model_observed,
+            "confidence_threshold": confidence_threshold,
+            "confidence_review_required": result_state == "review_required",
+            "answers": actual_answers,
+            "decision_evidence": evidence_map,
+            "evidence_refs": evidence_refs,
+            "authority": contract["authority"],
+            "dispatch_authorized": False,
+            "restart": None,
+            "preflight": _hourglass_preflight_summary(preflight),
+        }
+
+        if (result_state in ("judged", "review_required")
+                and capability == "restart_target"):
+            try:
+                choice = actual_answers["restart_target"]["choice"]
+                handoff = prepare_hourglass_restart(
+                    choice, current_stage, normalized)
+            except (KeyError, TypeError, ValueError):
+                result_state = "unassessed"
+                fallback_state = "invalid_restart_transition"
+                actual_answers = {}
+                confidence_values = []
+                decision["result_state"] = result_state
+                decision["fallback_state"] = fallback_state
+                decision["answers"] = actual_answers
+                decision["is_fallback"] = True
+                decision["confidence_review_required"] = False
+            else:
+                decision["restart"] = handoff
+                decision["restart_requested"] = handoff["restart_requested"]
+
+        # One metadata-only ledger event for every dispatched attempt. Never
+        # include state, payload, raw response, request text, or credential.
+        event = {
+            "capability": capability,
+            "pack_id": contract["pack_id"],
+            "pack_version": contract["pack_version"],
+            "result_state": result_state,
+            "fallback_state": fallback_state,
+            "usage_source": usage_source,
+            "input_tokens": reported_input_tokens,
+            "output_tokens": reported_output_tokens,
+            "settled_input_tokens": settlement_tokens,
+            "estimated_input_tokens": estimated_input_tokens,
+            "cost": settlement_cost,
+            "cost_source": decision["cost_source"],
+            "model": observed_model,
+            "model_observed": model_observed,
+            "confidence_threshold": confidence_threshold,
+            "confidence_review_required": result_state == "review_required",
+            "question_count": len(questions),
+            "decision_question_count": len(evidence_map),
+            "max_input_tokens": preflight["max_input_tokens"],
+            "payload_utf8_bytes": preflight["payload_utf8_bytes"],
+            "estimated_state_longest_question_tokens": (
+                preflight["estimated_state_longest_question_tokens"]),
+            "request_margin_tokens": preflight["request_margin_tokens"],
+            "state_longest_question_margin_tokens": (
+                preflight["state_longest_question_margin_tokens"]),
+            "authority": contract["authority"],
+            "dispatch_authorized": False,
+            "is_fallback": result_state == "unassessed",
+            "settlement_error": settlement_error,
+        }
+        ledger_error = None
+        try:
+            self.ledger.append(
+                "jev_eval", task_id=task_id, site=selected_site, **event)
+        except Exception:
+            ledger_error = "ledger_append_failed"
+            result_state = "unassessed"
+            fallback_state = "ledger_append_failed"
+            actual_answers = {}
+            confidence_values = []
+            decision["result_state"] = result_state
+            decision["fallback_state"] = fallback_state
+            decision["answers"] = {}
+            decision["is_fallback"] = True
+            decision["confidence"] = None
+            decision["action_confidence"] = None
+            decision["supported"] = 0.0
+            decision["noul_min_probability"] = None
+            decision["confidence_review_required"] = False
+            decision["restart"] = None
+            decision["restart_requested"] = False
+
+        action_confidence = min(confidence_values) if confidence_values else None
+        result_confidence = action_confidence if action_confidence is not None else 0.0
+        nouls = [answer["noul"] for answer in actual_answers.values()
+                 if answer["type"] == "noul"]
+        supported = (min(nouls) if nouls else
+                     (1.0 if result_state in ("judged", "review_required") else 0.0))
+        decision["confidence"] = action_confidence
+        decision["action_confidence"] = action_confidence
+        decision["supported"] = supported
+        decision["noul_min_probability"] = min(nouls) if nouls else None
+        if result_state == "unassessed":
+            action_confidence = None
+            result_confidence = 0.0
+            supported = 0.0
+            nouls = []
+        if result_state == "judged":
+            result = JevEvaluationResult(
+                raw.verdict, result_confidence, supported, actual_answers,
+                list(raw.reasons or []), cost=settlement_cost,
+                input_tokens=reported_input_tokens or 0,
+                output_tokens=reported_output_tokens or 0,
+                is_fallback=False, model=observed_model,
+                usage_observed=usage_source == "actual",
+                model_observed=model_observed,
+                input_tokens_observed=reported_input_tokens is not None,
+                output_tokens_observed=reported_output_tokens is not None)
+        elif result_state == "review_required":
+            result = JevEvaluationResult(
+                "fail", result_confidence, supported, actual_answers,
+                ["typed result requires confidence review"],
+                cost=settlement_cost,
+                input_tokens=reported_input_tokens or 0,
+                output_tokens=reported_output_tokens or 0,
+                is_fallback=False, model=observed_model,
+                usage_observed=usage_source == "actual",
+                model_observed=model_observed,
+                input_tokens_observed=reported_input_tokens is not None,
+                output_tokens_observed=reported_output_tokens is not None)
+        else:
+            reasons = list(raw.reasons or []) if isinstance(raw, JevEvaluationResult) else []
+            if settlement_error:
+                reasons.append("Jev settlement failed; answers are unassessed")
+            if ledger_error:
+                reasons.append("Jev ledger event could not be persisted; answers are unassessed")
+            result = JevEvaluationResult(
+                "fail", 0.0, 0.0, {}, reasons or ["Jev answer is unassessed"],
+                cost=settlement_cost,
+                input_tokens=reported_input_tokens or 0,
+                output_tokens=reported_output_tokens or 0,
+                is_fallback=True, model=observed_model or model,
+                usage_observed=usage_source == "actual",
+                model_observed=model_observed,
+                input_tokens_observed=reported_input_tokens is not None,
+                output_tokens_observed=reported_output_tokens is not None)
+
+        decision["result_state"] = result_state
+        decision["fallback_state"] = fallback_state
+        decision["answers"] = actual_answers
+        decision["is_fallback"] = result_state == "unassessed"
+        decision["confidence_review_required"] = result_state == "review_required"
+        decision["native"] = result_state in ("judged", "review_required")
+        decision["judgment_status"] = result_state
+        decision["confidence"] = action_confidence
+        decision["action_confidence"] = action_confidence
+        decision["supported"] = supported
+        decision["noul_min_probability"] = min(nouls) if nouls else None
+        decision["is_fallback"] = result_state == "unassessed"
+        decision["confidence_review_required"] = result_state == "review_required"
+        decision["cost"] = settlement_cost
+        decision["usage_source"] = usage_source
+        decision["dispatch_authorized"] = False
+        decision["model"] = observed_model
+        return result, decision
+
+    def _hourglass_record_refusal(self, reason, *, site, task_id=None,
+                                  event_metadata=None):
+        """Write a redacted refusal event without letting ledger failure mask it."""
+        metadata = dict(event_metadata or {})
+        fallback = bool(metadata.pop("is_fallback", True))
+        observed_model = metadata.pop("observed_model", None)
+        if observed_model is None:
+            observed_model = metadata.pop("model", None)
+        else:
+            metadata.pop("model", None)
+        result = JevEvaluationResult(
+            "fail", 0.0, 0.0, {}, [reason], cost=0.0,
+            input_tokens=0, output_tokens=0, is_fallback=fallback,
+            model=observed_model, model_observed=False)
+        structural = self._structural(result, site)
+        if self.ledger is not None:
+            try:
+                self.ledger.append(
+                    "jev_refusal", task_id=task_id, site=site,
+                    model=observed_model, reason=reason, cost=0.0,
+                    input_tokens=0, is_fallback=fallback, **metadata)
+            except Exception:
+                structural["ledger_error"] = "ledger_append_failed"
+        return result, structural
+
+    def _hourglass_skipped(self, capability, contract, site, state, reason,
+                           *, task_id=None):
+        """Record a selected restart capability with no legal action as skipped."""
+        result, structural = self._hourglass_record_refusal(
+            reason, site=site, task_id=task_id,
+            event_metadata={
+                "capability": capability, "pack_id": contract["pack_id"],
+                "pack_version": contract["pack_version"],
+                "result_state": "skipped",
+                "fallback_state": "no_legal_restart_transition",
+                "usage_source": "unavailable", "observed_model": None,
+                "model_observed": False, "cost_source": "unavailable",
+                "is_fallback": True,
+            })
+        result = JevEvaluationResult(
+            "fail", 0.0, 0.0, {}, [reason], cost=0.0,
+            is_fallback=True, model=None, model_observed=False)
+        structural.update({
+            "capability": capability, "pack_id": contract["pack_id"],
+            "pack_version": contract["pack_version"],
+            "result_state": "skipped",
+            "judgment_status": "skipped",
+            "fallback_state": "no_legal_restart_transition",
+            "usage_source": "unavailable", "answers": {},
+            "decision_evidence": hourglass_jev_decision_evidence(
+                capability, state),
+            "evidence_refs": hourglass_jev_evidence_refs(capability, state),
+            "authority": contract["authority"],
+            "dispatch_authorized": False, "native": False,
+            "is_fallback": True, "model": None, "model_observed": False,
+            "confidence": None, "action_confidence": None,
+            "confidence_review_required": False, "supported": 0.0,
+            "cost": 0.0, "noul_min_probability": None,
+            "cost_source": "unavailable", "input_tokens": None,
+            "output_tokens": None,
+        })
+        return result, structural
+
+    def _hourglass_blocked(self, capability, contract, site, state, reason,
+                           *, task_id=None):
+        result, structural = self._hourglass_record_refusal(
+            reason, site=site, task_id=task_id,
+            event_metadata={
+                "capability": capability, "pack_id": contract["pack_id"],
+                "pack_version": contract["pack_version"],
+                "result_state": "blocked_by_code_fact",
+                "fallback_state": "code_fact_blocked",
+                "usage_source": "unavailable", "observed_model": None,
+                "model_observed": False, "cost_source": "unavailable",
+                "is_fallback": True,
+            })
+        result = JevEvaluationResult(
+            "fail", 0.0, 0.0, {}, [reason], cost=0.0,
+            is_fallback=True, model=None, model_observed=False)
+        structural.update({
+            "capability": capability, "pack_id": contract["pack_id"],
+            "pack_version": contract["pack_version"],
+            "result_state": "blocked_by_code_fact",
+            "fallback_state": "code_fact_blocked",
+            "usage_source": "unavailable",
+            "answers": {},
+            "decision_evidence": {},
+            "judgment_status": "blocked_by_code_fact", "native": False,
+            "is_fallback": True, "model": None, "model_observed": False,
+            "confidence": None, "action_confidence": None,
+            "confidence_review_required": False, "supported": 0.0,
+            "cost": 0.0, "cost_source": "unavailable",
+            "input_tokens": None, "output_tokens": None,
+            "noul_min_probability": None,
+            "evidence_refs": hourglass_jev_evidence_refs(capability, state),
+            "authority": contract["authority"],
+            "dispatch_authorized": False,
+        })
+        return result, structural
+
+    def _hourglass_refusal(self, capability, contract, site, reason, *,
+                           task_id=None, normalized=None, questions=None,
+                           preflight=None, evidence_map=None, evidence_refs=None,
+                           fallback_state="not_dispatched"):
+        metadata = {
+            "capability": capability, "pack_id": contract["pack_id"],
+            "pack_version": contract["pack_version"],
+            "result_state": ("blocked_by_code_fact" if fallback_state == "code_fact_blocked"
+                             else "unassessed"),
+            "fallback_state": fallback_state,
+            "usage_source": "unavailable", "model_observed": False,
+            "observed_model": None, "cost_source": "unavailable",
+            "is_fallback": True,
+        }
+        result, structural = self._hourglass_record_refusal(
+            reason, site=site, task_id=task_id, event_metadata=metadata)
+        if fallback_state == "code_fact_blocked":
+            structural["result_state"] = "blocked_by_code_fact"
+            structural["judgment_status"] = "blocked_by_code_fact"
+        refusal = JevEvaluationResult(
+            "fail", 0.0, 0.0,
+            {key: None for key in (questions or {})},
+            [reason], cost=0.0, is_fallback=True, model=None,
+            model_observed=False)
+        structural.update({
+            "capability": capability, "pack_id": contract["pack_id"],
+            "pack_version": contract["pack_version"], "native": False,
+            "is_fallback": True, "model": None, "model_observed": False,
+            "result_state": ("blocked_by_code_fact" if fallback_state == "code_fact_blocked"
+                             else "unassessed"),
+            "judgment_status": ("blocked_by_code_fact" if fallback_state == "code_fact_blocked"
+                                else "unassessed"),
+            "fallback_state": fallback_state, "usage_source": "unavailable",
+            "answers": {key: None for key in (questions or {})},
+            "decision_evidence": evidence_map or {},
+            "evidence_refs": evidence_refs or [],
+            "authority": contract["authority"],
+            "dispatch_authorized": False,
+            "confidence": None, "action_confidence": None,
+            "confidence_review_required": False, "supported": 0.0,
+            "cost_source": "unavailable", "noul_min_probability": None,
+            "preflight": _hourglass_preflight_summary(preflight),
+        })
+        return refusal, structural
 
     def evaluate_candidate(self, original: str, candidate: str, instruction: str,
                            file_path: str, *, site: str = "apply",
