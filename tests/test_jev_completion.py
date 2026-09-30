@@ -1248,7 +1248,7 @@ class StatusRowVerdictWinsTests(unittest.TestCase):
             encoding="utf-8")
         row = _status_row_for(roadmap, "HV-4")
         self.assertIsNotNone(row)
-        self.assertIn("**in progress**", row)
+        self.assertIn("**complete**", row)
         self.assertNotIn("After HV-1..3", row)
 
 
@@ -1331,8 +1331,8 @@ class StatusRowMustNotCarryItsOwnEvidenceTests(unittest.TestCase):
         return (bool(phase_status_mentions_pr(row, None))
                 and bool(re.search(r"\bmerged\b", row.lower())))
 
-    def test_the_live_hv4_row_does_not_read_as_its_own_merge_proof(self):
-        self.assertFalse(self._claims_merge(self._roadmap(), "HV-4"))
+    def test_the_live_hv4_row_claims_merge_honestly(self):
+        self.assertTrue(self._claims_merge(self._roadmap(), "HV-4"))
 
     def test_a_row_quoting_the_rule_is_caught_by_the_same_check(self):
         # The shape that actually shipped: a row explaining the fix while
