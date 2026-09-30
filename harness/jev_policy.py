@@ -734,11 +734,9 @@ class JevPolicy:
         reservation and refuse honestly. Returns ``(result, structural)``.
         """
         reservation = None
-        dispatched = False
         try:
             reservation = self._preflight(
                 site=site, max_input_tokens=max_input_tokens)
-            dispatched = True
             result = self.evaluator.evaluate(
                 {"context": failure_context or ""},
                 escalation_decision_pack())

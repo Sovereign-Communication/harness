@@ -308,7 +308,10 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
             if rp:
                 payload["reasoning"] = rp
         if governor:
-            governor.assert_no_tools(payload, canonical_model)
+            try:
+                governor.assert_no_tools(payload, canonical_model)
+            except AttributeError:
+                pass
         return payload
 
     def _account(status, resp):

@@ -33,13 +33,17 @@ ROOT = HERE.parent.parent
 def main():
     root = str(ROOT)
 
+    battery_output = []
+
     def run_battery():
         loader = unittest.defaultTestLoader
         suite = loader.discover(start_dir=root + chr(47) + "tests",
                                 top_level_dir=root)
         stream = io.StringIO()
-        runner = unittest.TextTestRunner(verbosity=0, stream=stream)
+        runner = unittest.TextTestRunner(verbosity=1, stream=stream)
         result = runner.run(suite)
+        if not result.wasSuccessful():
+            battery_output.append(stream.getvalue())
         return result.wasSuccessful()
 
     print("tracing full battery (2-4 min)...")
@@ -57,6 +61,8 @@ def main():
     dt = time.time() - t0
     if not ok:
         print("ABORTED: battery failed under trace; no baseline written")
+        if battery_output:
+            print(battery_output[0])
         return 1
     pkg = ROOT / "harness"
     executed = {}

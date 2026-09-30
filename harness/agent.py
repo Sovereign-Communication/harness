@@ -38,17 +38,11 @@ from .jev_packs import (
 from .token_budget import budget_from_settings
 from .waist import (
     STAGE_EXECUTION,
-    STAGE_PLANNING,
     STATE_COMPLETED,
     STATE_PENDING,
     compose_arguments,
     compose_plan,
-    compose_stages,
-    composition_envelope,
     resolve_scout_ladder,
-    stage_budget,
-    stage_selection_from_settings,
-    stage_states,
 )
 from .web import DEFAULT_FETCH_HOSTS, gather_web_context
 
@@ -319,6 +313,7 @@ class AutonomousAgent:
                                model_offset: int = 0,
                                cancel_check=None, governor=None,
                                api_key=None, past_turns=None,
+                               web: bool = False,
                                web_sources=None) -> Dict[str, Any]:
         """Run one cheap-to-capable answer attempt through the shared ladder."""
         if cancel_check and cancel_check():
@@ -346,11 +341,11 @@ class AutonomousAgent:
         start = max(0, min(int(model_offset), len(ladder) - 1))
         ordered = ladder[start:] + ladder[:start]
         system = DEFAULT_CHAT_SYSTEM_PROMPT
-        if web_sources:
+        if web:
             hosts = ", ".join(sorted(DEFAULT_FETCH_HOSTS)) or "(none configured)"
             system += "\n\n" + _WEB_CAPABILITY_NOTE.format(hosts=hosts)
             lines = []
-            for source in web_sources:
+            for source in (web_sources or []):
                 if source.get("ok"):
                     lines.append(f"SOURCE ({source.get('kind')}): {source.get('title') or ''} {source.get('url')}\n" + str(source.get("text") or "")[:_MAX_WEB_CONTEXT_CHARS])
                 else:
@@ -516,7 +511,7 @@ class AutonomousAgent:
                 remaining = (gov.working_remaining()
                              if callable(getattr(gov, "working_remaining", None))
                              else None)
-                if remaining is not None and remaining < jev_cost_ceiling():
+                if isinstance(remaining, (int, float)) and remaining < jev_cost_ceiling():
                     status = "deferred"
                     stop_reason = (
                         "Jev budget cannot safely reserve another answer review")
@@ -524,7 +519,7 @@ class AutonomousAgent:
             attempt = self._hourglass_answer_once(
                 prompt, context, prior=prior, model_offset=round_no - 1,
                 cancel_check=cancel_check, governor=gov, api_key=api_key,
-                past_turns=past_turns, web_sources=web_sources)
+                past_turns=past_turns, web=web, web_sources=web_sources)
             answer = attempt["answer"]
             model = attempt["model"]
             total_cost += float(attempt.get("cost") or 0.0)
@@ -615,6 +610,10 @@ class AutonomousAgent:
             "response": answer,
             "model": model,
             "cost": round(total_cost, 6),
+            "web_used": bool(web_sources and any(s.get("ok") for s in web_sources)),
+            "web_sources": [
+                {k: s[k] for k in ("kind", "ok", "url") if k in s}
+                for s in web_sources],
             "confidence": ((best_envelope or last_envelope or {}).get(
                 "confidence", {"threshold": threshold, "observed": None,
                                "passed": False,

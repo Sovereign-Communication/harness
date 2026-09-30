@@ -255,6 +255,21 @@ class HourglassAnswerOnceTests(unittest.TestCase):
         gov.record_byok.assert_called_once_with("p2")
         gov.record_actual.assert_any_call(0.002, "c1")
 
+    def test_answer_once_with_web_sources_discloses_capability(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp))
+            gov = MagicMock()
+            sources = [
+                {"ok": True, "kind": "fetch", "title": "Example", "url": "https://example.com", "text": "web info"},
+                {"ok": False, "kind": "search", "url": "https://bad.com", "note": "failed"},
+            ]
+            with patch("harness.agent.chat", return_value=(200, {"choices": [{"message": {"content": "ok"}}], "usage": {"cost": 0.0}})) as mc:
+                agent._hourglass_answer_once(
+                    "q", "context", governor=gov, api_key="k", web=True, web_sources=sources)
+            sysmsg = mc.call_args[1]["messages"][0]["content"]
+            self.assertIn("SOURCE (fetch): Example https://example.com", sysmsg)
+            self.assertIn("SOURCE (search) FAILED: https://bad.com failed", sysmsg)
+
     def test_every_rung_fails_raises_with_attempt_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))

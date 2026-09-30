@@ -110,8 +110,9 @@ class JevP0Tests(unittest.TestCase):
             disabled = load_settings({"jev_api_key": "configured"})
         local = JevEvaluator(settings=disabled, transport=FakeTransport()).evaluate(
             {"code": "x = 1"})
-        missing = JevEvaluator(settings=load_settings({'jev_api_key': None})).evaluate(
-            {"code": "x = 1"})
+        with mock.patch("harness.config.resolve_jev_key", return_value=None):
+            missing = JevEvaluator(settings=load_settings({"jev_api_key": ""})).evaluate(
+                {"code": "x = 1"})
         self.assertEqual(local.fallback_reason, "explicit_disable")
         self.assertEqual(missing.fallback_reason, "missing_key")
 

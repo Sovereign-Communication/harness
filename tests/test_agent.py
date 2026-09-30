@@ -28,10 +28,16 @@ _TEST_GOVERNOR = _gov(FakeTransport(), max_cost=0.05)
 _TEST_GOVERNOR_PATCH = patch("harness.agent.governor_for",
                             return_value=(None, _TEST_GOVERNOR))
 _TEST_GOVERNOR_PATCH.start()
+_TEST_JEV_KEY_PATCH = patch("harness.config.resolve_jev_key", return_value=None)
+_TEST_JEV_KEY_PATCH.start()
+_TEST_JEV_ENV_PATCH = patch.dict(os.environ, {"HARNESS_JEV_DISABLE": "1"})
+_TEST_JEV_ENV_PATCH.start()
 
 
 def tearDownModule():
     _TEST_GOVERNOR_PATCH.stop()
+    _TEST_JEV_KEY_PATCH.stop()
+    _TEST_JEV_ENV_PATCH.stop()
 
 
 def _lane_settings(**overrides):
