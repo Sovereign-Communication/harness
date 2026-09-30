@@ -642,7 +642,8 @@ def update_config(values):
     if unknown:
         raise HarnessError(
             "unknown setting(s): " + ", ".join(sorted(unknown)))
-    allowed = {"use_free", "allow_escalation", "max_cost", "task_max_cost"}
+    allowed = {"use_free", "allow_escalation", "max_cost", "task_max_cost",
+               "hourglass_stages", "token_budget_input", "token_budget_output"}
     allowed |= set(JEV_FREEZE_KEYS)
     disallowed = set(values) - allowed
     if disallowed:
@@ -650,6 +651,17 @@ def update_config(values):
             "setting(s) not runtime-updatable: " + ", ".join(sorted(disallowed)))
     if "jev_model" in values:
         validate_jev_model_id(values["jev_model"])
+    if "hourglass_stages" in values:
+        raw_stages = values["hourglass_stages"]
+        if isinstance(raw_stages, str):
+            stage_list = [s.strip() for s in raw_stages.split(",") if s.strip()]
+        elif isinstance(raw_stages, (list, tuple)):
+            stage_list = list(raw_stages)
+        else:
+            raise HarnessError(
+                "hourglass_stages must be a list or comma-separated string")
+        from .waist import resolve_stages
+        resolve_stages(stage_list)
 
     cfg_path = os.path.join(CONFIG_DIR, "config.json")
     cfg = {}

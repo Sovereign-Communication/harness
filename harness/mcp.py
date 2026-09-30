@@ -35,6 +35,7 @@ from .jev_packs import validate_log_pack, validate_operator_pack
 from .route_pack import validate_route_pack
 from .log_analysis import analyze_log
 from .service import run_verify as _service_run_verify
+from .service import run_dogfood as _service_run_dogfood
 from .validation import (
     MAX_LINES,
     MAX_ROUNDS,
@@ -961,9 +962,16 @@ class McpServer:
             # the next plan on the same connection. When no settings seam was
             # supplied the lane behaves exactly as before rather than
             # inventing an allowance, which composition refuses to do.
+            stages = args.get("stages")
+            brief = args.get("brief")
+            token_budget_input = args.get("token_budget_input")
+            token_budget_output = args.get("token_budget_output")
             composition = (
-                compose_arguments(self.settings, goal=goal,
-                                  files=candidate_files)
+                compose_arguments(
+                    self.settings, goal=goal, files=candidate_files,
+                    stages=stages, brief=brief,
+                    max_input_tokens=token_budget_input,
+                    max_output_tokens=token_budget_output)
                 if self.settings is not None else {})
             plan_result = compose_plan(
                 transport=self.transport, api_key=self.api_key,
@@ -1025,6 +1033,10 @@ class McpServer:
                 "composed_worst_case": plan_result.get("composed_worst_case"),
                 "final_gate": summary.get("final_gate"),
             }
+            for field in ("composition", "planning", "token_budget", "brief",
+                          "stage_judgments", "stage_states"):
+                if plan_result.get(field) is not None:
+                    output[field] = plan_result[field]
             structural = aggregate_structural(
                 list(all_results.values()), site="mcp")
             if structural is None and isinstance(plan_result.get("structural"), dict):
@@ -1033,6 +1045,43 @@ class McpServer:
             if structural is not None:
                 output["structural"] = structural
             return output
+        if name == "dogfood":
+            raw_file = args.get("file")
+            if not raw_file or not isinstance(raw_file, str):
+                raise HarnessError("dogfood requires 'file' as a string")
+            instruction = args.get("instruction")
+            if not instruction or not isinstance(instruction, str):
+                raise HarnessError("dogfood requires 'instruction' as a string")
+            allow_write = validate_mcp_bool(args.get("allow_write", False), "allow_write")
+            if not (self.allow_write or allow_write):
+                self._refuse(
+                    "mcp file write without allow_write",
+                    "dogfood file writes are disabled for this session; "
+                    "re-send with allow_write=true or configure allow_write=True explicitly")
+            verify_cmd = args.get("verify")
+            if verify_cmd is not None:
+                verify_cmd = validate_text(verify_cmd, "verify", 10000, required=True)
+            claims_file = args.get("claims_file")
+            source_file = args.get("source_file")
+            definitions_file = args.get("definitions_file")
+            claim_context = args.get("claim_context")
+            max_cost = args.get("max_cost")
+            if max_cost is not None:
+                max_cost = finite_number(max_cost, "max_cost", 0.0, 0.25)
+            max_rounds = int(args.get("max_rounds", 3) or 3)
+            task_id = args.get("task_id") or uuid.uuid4().hex[:8]
+            return _service_run_dogfood(
+                self.settings,
+                file=raw_file,
+                instruction=instruction,
+                verify_cmd=verify_cmd,
+                claims_file=claims_file,
+                source_file=source_file,
+                definitions_file=definitions_file,
+                claim_context=claim_context,
+                task_id=task_id,
+                max_cost=max_cost,
+                max_rounds=max_rounds)
         raise ValueError(f"unknown tool: {name}")
 
     # ---------------- notifications/progress streaming ----------------

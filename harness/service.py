@@ -19,9 +19,11 @@ from dataclasses import dataclass
 from .errors import HarnessError, ToolCancelled
 from .panel import panel_judge
 from ._http import HttpTransport
-from .saturation import pre_run_warning
+from .saturation import advise, pre_run_warning
 from .claims import build_claims_prompt, load_claims_manifest, load_definitions_file
-from .session import governor_for, ledger_for, run_meta
+from .session import apply_session, governor_for, ledger_for, run_meta
+from .filesafety import validate_target_file, validate_verify_command
+from .batch import BatchOptions
 
 # BOM-tolerant reader: Windows tooling (PowerShell ``>`` redirects) emits
 # BOM'd text; ONE reader for every interface (the utf-8-sig rule).
@@ -255,3 +257,139 @@ def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
         if settings is not None:
             result["meta"] = run_meta(settings, gov)
     return result
+
+
+def run_dogfood(settings=None, *,
+                file,
+                instruction,
+                verify_cmd=None,
+                claims_file=None,
+                source_file=None,
+                definitions_file=None,
+                claims=None,
+                source_text=None,
+                claim_context=None,
+                task_id=None,
+                max_cost=None,
+                max_rounds=3,
+                require_consent=False,
+                model=None,
+                max_tokens=None,
+                task_max_cost=None,
+                allow_escalation=False,
+                reasoning_effort=None,
+                renew_consent=False,
+                require_diff_authorization=None,
+                max_rotations=3,
+                backend="harness",
+                max_lines=None,
+                on_phase=None,
+                cancel_check=None,
+                run_verify_fn=None,
+                apply_session_fn=None):
+    """The ONE dogfood loop: audit the harness with the harness (DF-UI-2 / HV-6).
+
+    Three fail-closed phases, each reusing its existing lane:
+      1. GROUND  -- hermetic claims lint of the fixture vs its source window
+                    (no network; an ungrounded claim never reaches a model).
+      2. VERIFY  -- live panel + convergence tally; the defect must be
+                    panel-confirmed before any edit is attempted.
+      3. APPLY   -- self-edit via ApplyEngine, the operator's verify command
+                    as the gate; a failed run leaves the tree untouched.
+    """
+    if task_id is None:
+        task_id = uuid.uuid4().hex[:8]
+
+    report = {"phases": []}
+
+    def _emit_phase(name, payload):
+        report["phases"].append({"phase": name, **payload})
+        if on_phase is not None and callable(on_phase):
+            on_phase(name, payload)
+
+    # ---- phase 1: hermetic ground ----
+    if claims is None or source_text is None:
+        if not claims_file or not source_file:
+            raise HarnessError(
+                "dogfood requires claims_file and source_file, or parsed claims and source_text")
+        manifest_ctx, parsed_claims = load_claims_manifest(claims_file)
+        quoted = read_text_file(source_file, "source file")
+        claims_to_use = parsed_claims
+        ctx_to_use = claim_context if claim_context is not None else manifest_ctx
+    else:
+        claims_to_use = claims
+        quoted = source_text
+        ctx_to_use = claim_context
+
+    defs = load_definitions_file(definitions_file) if definitions_file else {}
+    prompt, lint = build_claims_prompt(claims_to_use, quoted, source_index=defs,
+                                       context=ctx_to_use)
+
+    validate_target_file(file)
+    if verify_cmd:
+        validate_verify_command(verify_cmd)
+
+    if not lint.get("ok"):
+        _emit_phase("ground", {"status": "rejected", "lint": lint})
+        report["status"] = "ungrounded"
+        return report
+
+    _emit_phase("ground", {"status": "ok", "claims": len(claims_to_use)})
+
+    if cancel_check is not None and cancel_check():
+        raise ToolCancelled("dogfood cancelled")
+
+    # ---- phase 2: live panel verify ----
+    reassurance = ",".join(getattr(c, "claim_id", "") for c in claims_to_use
+                           if getattr(c, "kind", "") == "reassurance" and getattr(c, "claim_id", ""))
+    verify_caller = run_verify_fn if run_verify_fn is not None else run_verify
+    verdict = verify_caller(
+        settings, prompt=prompt, task_id=task_id,
+        converge=True, reassurance_claims=reassurance,
+        max_cost=max_cost, cancel_check=cancel_check)
+
+    tally = verdict.get("convergence", {}).get("tally") or {}
+    per_claim = tally.get("claims", {})
+    confirmed = sorted(cid for cid, c in per_claim.items()
+                       if c.get("converged") and c.get("verdict") == "real")
+    saturated = advise(panel_failures=verdict.get("panel_failures"))
+    if saturated:
+        report["saturated"] = True
+
+    _emit_phase("verify", {"status": "ok", "confirmed_claims": confirmed,
+                           "tally": tally})
+    report["verify"] = verdict
+
+    if not confirmed:
+        report["status"] = "not_confirmed"
+        return report
+
+    if cancel_check is not None and cancel_check():
+        raise ToolCancelled("dogfood cancelled")
+
+    # ---- phase 3: gated self-apply ----
+    session_caller = apply_session_fn if apply_session_fn is not None else apply_session
+    engine = session_caller(settings)
+    result = engine.apply_batch(
+        [file], task_id=task_id, cancel_check=cancel_check,
+        options=BatchOptions(
+            instruction=instruction,
+            verify_cmd=verify_cmd,
+            max_rounds=max_rounds,
+            require_consent=require_consent,
+            model=model,
+            max_tokens=max_tokens,
+            task_max_cost=task_max_cost,
+            allow_escalation=allow_escalation,
+            reasoning_effort=reasoning_effort,
+            renew_consent=renew_consent,
+            require_diff_authorization=require_diff_authorization,
+            max_rotations=max_rotations,
+            backend=backend,
+            max_lines=max_lines))
+
+    _emit_phase("apply", {"status": result.get("status"), "cost": result.get("cost")})
+    report["apply"] = result
+    report["status"] = ("ok" if result.get("status") in ("ok", "success")
+                        else "incomplete")
+    return report

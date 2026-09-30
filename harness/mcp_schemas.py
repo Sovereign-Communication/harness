@@ -162,6 +162,30 @@ TOOL_SCHEMAS = [
                          {"type": "array", "items": {"type": "string"}, "minItems": 1},
                      ],
                      "description": "Optional allowed file paths"},
+            "stages": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                ],
+                "description": "Subset of pipeline stages to execute (context, planning, execution, verification)",
+            },
+            "brief": {
+                "anyOf": [
+                    {"type": "object"},
+                    {"type": "string"},
+                ],
+                "description": "Supplied context brief artifact or path to JSON pack file",
+            },
+            "token_budget_input": {
+                "type": "integer",
+                "minimum": 1024,
+                "description": "Override input token allowance ceiling for the composed run",
+            },
+            "token_budget_output": {
+                "type": "integer",
+                "minimum": 256,
+                "description": "Override output token allowance ceiling for the composed run",
+            },
             "max_cost": {"type": "number", "minimum": 0, "maximum": 0.25},
             "allow_write": {"type": "boolean", "description": "Confirm permission to write files when execute=true"},
         }, "required": ["goal"]},
@@ -308,5 +332,32 @@ TOOL_SCHEMAS = [
                                            "write in this request"},
             "task_id": {"type": "string"},
         }},
+    },
+    {
+        "name": "dogfood",
+        "title": "Three-phase self-hosting dogfood audit and gated repair",
+        "description": "DF-UI-2 / HV-6: Run the self-hosting dogfood loop "
+                       "(ground -> verify -> apply) over claims and source window.",
+        "inputSchema": {"type": "object", "properties": {
+            "file": {"type": "string",
+                     "description": "Target file to repair under apply gate"},
+            "instruction": {"type": "string",
+                            "description": "Apply repair instruction"},
+            "verify": {"type": "string",
+                       "description": "Verify gate command for apply phase"},
+            "claims_file": {"type": "string",
+                            "description": "Path to claims JSON file"},
+            "source_file": {"type": "string",
+                            "description": "Path to source text window file"},
+            "definitions_file": {"type": "string",
+                                 "description": "Optional path to definitions JSON file"},
+            "claim_context": {"type": "string",
+                              "description": "Optional context override string"},
+            "max_cost": {"type": "number", "minimum": 0, "maximum": 0.25},
+            "max_rounds": {"type": "integer", "minimum": 1, "maximum": 8, "default": 3},
+            "allow_write": {"type": "boolean",
+                            "description": "Confirm permission to write target file"},
+            "task_id": {"type": "string"},
+        }, "required": ["file", "instruction"]},
     },
 ]
