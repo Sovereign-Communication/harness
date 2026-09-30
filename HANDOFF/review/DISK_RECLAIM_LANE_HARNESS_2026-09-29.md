@@ -1,5 +1,20 @@
 # DISK RECLAIM LANE — Harness
 
+> ## ⚠ SUPERSEDED 2026-09-29 13:52 — do not act from this document
+>
+> **Current authority: `WORKSPACE_MISSIONS\30_Harness_family.md`**
+> (worktree lifecycle: `31_worktree_lifecycle.md` · budget rule and register:
+> `00_WORKSPACE_POLICY.md`)
+>
+> Where this packet and the mission doc disagree, **the mission doc wins** — it
+> was written later, against live measurement. This packet says "34 dirty files";
+> the lane measured **1 dirty** on the main repo plus 3 dirty worktrees, and 3
+> worktrees with **no upstream configured** (`ahead=NA`) — which is the risk that
+> actually matters and that this packet does not flag.
+>
+> Nothing here has been executed. **The stash is still on disk** — capture it to
+> a branch, never `pop` or `drop`.
+
 **Lane owner:** Harness · **Repo + 8 worktrees, 34 dirty files, 1 stash**
 **Packet written:** 2026-09-29 ~11:50 HST · **Status:** WIP, idle (newest edit 05:17)
 
