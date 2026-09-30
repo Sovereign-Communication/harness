@@ -2267,6 +2267,8 @@ class JevPolicy:
     def _audit_dimension_text(dimension_evidence: Any) -> str:
         lines = ["Harness 4-Dimensional Self-Audit Evidence:"]
         for dim in ("A", "R", "SM", "SD"):
+            if isinstance(dimension_evidence, dict) and dim not in dimension_evidence:
+                continue
             ev = (dimension_evidence or {}).get(dim, {})
             score = ev.get("score", 0.0) if isinstance(ev, dict) else 0.0
             satisfied = ev.get("checks_satisfied", 0)

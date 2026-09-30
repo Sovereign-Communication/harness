@@ -974,8 +974,6 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
     jev_policy = (policy_for(settings, transport=transport,
                              governor=gov, ledger=plan_ledger)
                   if hasattr(settings, "jev_api_key") else None)
-    if composition_runtime is not None:
-        composition_runtime["jev_policy"] = jev_policy
     return _compose_plan(
         transport=transport, api_key=api_key, governor=gov,
         ledger=plan_ledger if (confirm or plan_consensus) else None,
@@ -1171,30 +1169,6 @@ def _cmd_plan(opts, settings):
         "composed_worst_case": plan_result.get("composed_worst_case"),
         "final_gate": summary.get("final_gate"),
     }
-    if summary["all_ok"]:
-        retained_brief = composition_runtime.get("retained_brief")
-        alignment_policy = composition_runtime.get("jev_policy")
-        if isinstance(retained_brief, dict) and alignment_policy is not None:
-            _, alignment = assess_final_alignment(
-                goal=plan_result.get("goal") or opts.goal,
-                candidate={
-                    "original_request": opts.goal,
-                    "dag": plan_result.get("dag"),
-                    "results": output["results"],
-                    "artifacts": [r.get("artifacts") for r in output["results"]
-                                  if isinstance(r, dict) and r.get("artifacts")],
-                    "final_gate": output["final_gate"],
-                },
-                retained_brief=retained_brief,
-                jev_policy=alignment_policy,
-                token_budget=composition_runtime.get("run_budget"))
-        else:
-            alignment = {"native": False, "supported": None,
-                         "aligned": False, "threshold": 0.99,
-                         "reason": "retained brief or Jev policy unavailable"}
-        output["final_alignment"] = alignment
-        if not alignment.get("aligned"):
-            output["status"] = "failed"
     if pending_state is not None:
         output["resumed"] = True
         output["skipped_completed"] = sorted(

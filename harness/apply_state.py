@@ -39,6 +39,7 @@ class ApplyRequest:
     require_diff_authorization: bool = False
     attest_model: object = None
     min_confidence: float = 0.70
+    token_budget: object = None
 
 
 @dataclass

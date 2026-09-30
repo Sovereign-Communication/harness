@@ -39,6 +39,7 @@ class ModelSlateParityTests(unittest.TestCase):
     def test_no_ad_hoc_fallback_string_in_chat_py(self):
         source = (PKG / "chat.py").read_text(encoding="utf-8")
         self.assertNotIn("inclusionai/ling-3.0-flash-fin:free", source)
+        self.assertNotIn("inclusionai/ling-3.0-flash-sante:free", source)
         self.assertNotIn("qwen/qwen3.8-max-0902", source)
         # No bare model-id string literals assigned as ladder heads.
         tree = ast.parse(source)

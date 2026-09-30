@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 2310 tests in 424.577s\n\nOK"
+        "evidence": "unittest: Ran 2341 tests in 363.823s\n\nOK"
       },
       {
         "id": "R14",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed"
+        "evidence": "SKIP (fail-open): git diff against baseline unavailable"
       }
     ]
   }

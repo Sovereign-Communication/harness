@@ -210,7 +210,7 @@ def save_byok_prefixes(path, prefixes):
 FREE_PANEL_POOL = [
     "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
-    "inclusionai/ling-3.0-flash-fin:free",
+    "inclusionai/ling-3.0-flash-sante:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "cohere/north-mini-code:free",
     "openrouter/free",
@@ -233,7 +233,7 @@ FREE_JUDGE = "google/gemma-4-31b-it:free"
 FREE_APPLY_POOL = [
     "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
-    "inclusionai/ling-3.0-flash-fin:free",
+    "inclusionai/ling-3.0-flash-sante:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "cohere/north-mini-code:free",
     "openrouter/free",

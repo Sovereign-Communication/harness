@@ -159,8 +159,8 @@
       ]
     },
     {
-      "id": "inclusionai/ling-3.0-flash-fin:free",
-      "name": "Ling 3.0 Flash Fin (free)",
+      "id": "inclusionai/ling-3.0-flash-sante:free",
+      "name": "Ling 3.0 Flash Sante (free)",
       "context_length": 262144,
       "architecture": {
         "modality": "text->text",

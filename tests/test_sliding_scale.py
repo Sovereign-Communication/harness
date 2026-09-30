@@ -210,7 +210,7 @@ class TestSlidingScale(unittest.TestCase):
                                      DEFAULT_APPLY_POOL_PAID)
 
         # In rotation: still present in the free apply pool...
-        self.assertIn("inclusionai/ling-3.0-flash-fin:free", FREE_APPLY_POOL)
+        self.assertIn("inclusionai/ling-3.0-flash-sante:free", FREE_APPLY_POOL)
         # ...but never leading it.
         self.assertNotIn("ling", FREE_APPLY_POOL[0].lower())
 
