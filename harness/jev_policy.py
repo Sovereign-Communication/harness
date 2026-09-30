@@ -123,6 +123,9 @@ def aggregate_structural(
                             for value in values),
         "is_fallback": all(bool(value.get("is_fallback"))
                            for value in values),
+        "fallback_reason": ";".join(sorted({str(value.get("fallback_reason"))
+                                               for value in values
+                                               if value.get("fallback_reason")})) or None,
         "model": next(iter(models)) if len(models) == 1 else "mixed",
         "site": site,
     }
@@ -184,6 +187,7 @@ class JevPolicy:
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
             "is_fallback": result.is_fallback,
+            "fallback_reason": result.fallback_reason,
             "model": result.model,
             "site": site,
             # DF-JEV-3: a billed call whose answer could not be used. Carried
@@ -249,6 +253,7 @@ class JevPolicy:
                 confidence=0.0 if settlement_error is not None else result.confidence,
                 input_tokens=result.input_tokens, output_tokens=result.output_tokens,
                 cost=cost, is_fallback=result.is_fallback,
+                fallback_reason=result.fallback_reason,
                 **metadata,
             )
         return structural
