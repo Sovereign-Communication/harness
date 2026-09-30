@@ -14,11 +14,40 @@ tracking ref.
 
 ---
 
+> ## ⚠ CORRECTION NOTICE — 2026-09-30
+>
+> This document was a 2026-09-29 12:34 snapshot. Three things in it are now
+> superseded. Read §8 before acting on any verdict.
+>
+> 1. **§0 is resolved.** The disk-only commit `3c3fc5a` has been rescued and
+>    pushed as `freebuff/chat-topic-title-request-9531ead7`. It is no longer
+>    disk-only.
+> 2. **§3 was wrong about `harness-finalize`.** It is described above as an
+>    unexplained disappearance. It was a clean `git worktree remove`, and
+>    `31_worktree_lifecycle.md` (measured 15:10) records 25 registrations with 0
+>    orphaned and nothing to prune.
+> 3. **§5's "currently idle" was already stale when merged.** Another lane went
+>    active during the merge and created a worktree that the table below does not
+>    contain. See §8.
+>
+> The counts in §1 are a point-in-time measurement, not a current inventory; the
+> registration count rose from 24 to 26 as lanes created worktrees during the
+> session. §8 records the verified end state.
+
+---
+
 ## 0. HEADLINE: ONE COMMIT EXISTS ONLY ON THIS DISK
 
 **`.freebuff/worktrees/9531ead7-ccad-4d47-bb73-3b909123fff8` is checked out at a
 DETACHED HEAD `3c3fc5a350a58de3d35a5b76ba6b32b421381ab7`, and that commit is on
 nothing.**
+
+> **RESOLVED 2026-09-30.** This was true at audit time and no longer is. The
+> commit has been rescued: the worktree now sits on branch
+> `freebuff/chat-topic-title-request-9531ead7` and the commit is pushed to
+> `origin` at the same hash. Worktree 18 below is no longer NEEDS ACTION FIRST.
+> The finding is kept because it documents the failure mode, not because it is
+> still live.
 
 - not on `origin` (`git branch -r --contains 3c3fc5a` → empty)
 - not on any **local** branch either (`git for-each-ref --contains 3c3fc5a` → empty)
@@ -140,27 +169,42 @@ from `harness/agent.py` lines 1044, 1082, 1102, 1123).
 
 ---
 
-## 3. THE DISAPPEARED WORKTREE — RESOLVED, NOTHING LOST
+## 3. THE REMOVED WORKTREE — RESOLVED, NOTHING LOST
 
-`.codex/worktrees/harness-finalize/Harness` vanished from
-`git worktree list --porcelain` during the preservation pass. It was not removed
-by that pass, which ran no `worktree remove`, `prune`, or delete against that
-path; it was the same worktree observed going from 2 dirty entries to clean
-earlier in the session, so another lane was active there.
+> **CORRECTED 2026-09-30.** This section originally read "THE DISAPPEARED
+> WORKTREE" and described the removal as unexplained, ending with "I could not
+> fully account for it". That framing was wrong. See the correction below.
 
-Re-verified now:
+`.codex/worktrees/harness-finalize/Harness` was no longer in
+`git worktree list --porcelain` by the time this audit ran. It was not removed by
+the preservation pass, which ran no `worktree remove`, `prune`, or delete against
+that path.
 
-- the directory still exists on disk but is **empty of repository content**
-  (`ls -A …/Harness` → 24 entries, no `.git`; `git -C` → "not a git repository"),
-  and there is no admin record under `.git/worktrees/`
+`WORKSPACE_MISSIONS/31_worktree_lifecycle.md` (measured 2026-09-29 15:10) settles
+what actually happened: the previously-orphaned worktrees had **already been
+removed cleanly**, going through `git worktree remove`, which cleans the
+registration together with the directory. It states plainly that `Harness` has 25
+registrations with **0 orphaned** and that `git worktree prune --dry-run -v`
+returns **no output** — "there is nothing to prune."
+
+So the correct reading is not a mystery disappearance but a **complete,
+well-formed removal**: registration gone, directory content gone. The original
+audit was right that another lane did it and right that no work was lost, but
+wrong to imply the removal was partial or unaccounted for. The residual empty
+directory was leftover from the removal, not evidence of an interrupted one.
+
+Verified independently at audit time:
+
+- no admin record under `.git/worktrees/`, and `git -C` on the path → "not a git
+  repository"
 - its last known HEAD `bff19c9f210cd47255b63a037bec5433b0449f9a` is **still on the
   remote**: `git ls-remote origin refs/heads/feat/hv5-execution-handoffs` →
   `bff19c9`
 - `git rev-list bff19c9 --not --remotes` → **0 commits**
 
 **No work was lost.** Its committed history is on GitHub, and it was clean at last
-observation so there was nothing uncommitted to lose. The lingering directory is
-empty and can be reclaimed, but that is a cleanup action, not an audit action.
+observation so there was nothing uncommitted to lose. The empty directory is
+reclaimable; that is a cleanup action, not an audit action.
 
 ---
 
@@ -239,3 +283,60 @@ this snapshot.
 4. Re-run the §0 reachability check immediately before each removal.
 5. Then, and only then, remove the 22 SAFE TO REMOVE worktrees, the empty
    `harness-finalize` directory, and this document's scratch worktree.
+
+---
+
+## 8. VERIFIED END STATE — 2026-09-30
+
+Everything the audit flagged has since been closed. Measured after the audit was
+merged, on a machine where other lanes were actively working.
+
+### 8.1 Disk-only work: none remains in the Harness repo
+
+- **26 registered worktrees, every one clean** — no real uncommitted entries
+  anywhere (only `.venv/`/`.l3venv/`/probe jsonl noise).
+- **No local branch** has a commit not contained in a remote branch.
+- **No worktree HEAD** is absent from every remote branch.
+
+### 8.2 What was pushed to close the findings
+
+| Finding | Action | Now at |
+|---|---|---|
+| §0 — `3c3fc5a` disk-only | branched and pushed | `freebuff/chat-topic-title-request-9531ead7` @ `3c3fc5a` |
+| §4 — stashes | already preserved by another lane | `wip/stash-*` ×4 on `origin`; all 4 still in the stash list, none dropped |
+| §5 — active lane appeared mid-session | committed on **its own** branch, working tree untouched | `codex/hv5-sovereignty-20260929` @ `4c33536` (+73/−12, Jev fallback honesty) |
+| operator tree edit | handled by that lane, not by this pass | `wip/session-close-20260929` @ `62de41f`, 0 unpushed |
+
+The active lane's five files were last written ~38 minutes before capture, and
+mtimes were sampled twice four seconds apart to confirm no file was being written
+mid-commit. Its worktree was never switched or edited — only its own branch was
+pushed to.
+
+### 8.3 The count moved during the session
+
+The §1 table lists 24 registered worktrees (+1 scratch). The count rose to 25 by
+15:10 — matching `31_worktree_lifecycle.md` — and to 26 after
+`.codex/worktrees/pr141-civicscope-contract` was created. **The table is a
+point-in-time measurement and is now short by two.** Neither added worktree was
+dirty at removal time; both were clean and pushed.
+
+### 8.4 What is still NOT on GitHub anywhere
+
+`C:\Users\SCM\Documents\WORKSPACE_MISSIONS\` — 19 files, 192 KB, outside every git
+repository on this machine. It holds `30_Harness_family.md`,
+`31_worktree_lifecycle.md` and `00_WORKSPACE_POLICY.md`, which the reclaim-lane
+packet now defers to as current authority. It is deliberately uncommitted: its
+own policy file records *"Status: FOR REVIEW — nothing committed, pushed, or
+deleted in producing this"*, and it spans 45 lanes and unrelated projects
+(SCMessenger, ComfyUI, OxAlphaAPI), so committing it into the Harness repository
+would misfile it. **It is the only genuinely unpreserved artifact on this
+machine**, and that is a decision for the operator, not an oversight.
+
+### 8.5 Why no WIP branch was merged to `main`
+
+The preservation branches are `wip(` commits and several are known-broken by
+their own commit messages: `add-civicscope-completion-contract` raises
+`AttributeError` on any `require_diff_authorization` path, and the stashed HV-4
+waist refactor is annotated "broken: 2 ruff errors, 4+16 test failures". Pushing
+preserves them; merging would publish broken code onto the operator's `main`.
+Only documentation has been merged.
