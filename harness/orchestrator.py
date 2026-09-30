@@ -252,6 +252,7 @@ def drive(*, goal: str, target_files: List[str], initial_plan: Dict,
     rounds_history: List[Dict] = []
     final_all_ok = False
     remaining_scope = ""
+    consent_handoff = None
     current_goal = goal
     plan = initial_plan
 
@@ -295,6 +296,27 @@ def drive(*, goal: str, target_files: List[str], initial_plan: Dict,
             "nodes": len(nodes), "all_nodes_ok": round_ok,
             "cost": round(round_cost, 6),
         })
+
+        # A consent decline/defer is a sovereign stop. Preserve the completed
+        # node results and return a handoff envelope instead of
+        # asking a completion model to override the decision or planning a
+        # fresh package in the same run.
+        blocked = next((result for result in round_results.values()
+                        if isinstance(result, dict) and result.get("status")
+                        in {"consent_blocked", "deferred"}), None)
+        if blocked is not None:
+            remaining_scope = str(blocked.get("reason") or
+                                  "execution consent deferred")
+            consent_handoff = {
+                "schema": "jev-work-package-handoff-v1",
+                "status": blocked.get("status"),
+                "node_id": blocked.get("node_id"),
+                "assignment_id": blocked.get("assignment_id"),
+                "assignment_digest": blocked.get("assignment_digest"),
+                "completed_results": dict(all_results),
+                "reason": remaining_scope,
+            }
+            break
 
         artifact_notes = []
         seen_paths = set()
@@ -401,6 +423,8 @@ def drive(*, goal: str, target_files: List[str], initial_plan: Dict,
         current_goal = remaining_scope or goal
 
     return {
+        **({"status": "deferred", "handoff": consent_handoff}
+           if consent_handoff is not None else {}),
         "all_results": all_results,
         "total_cost": total_cost,
         "rounds_history": rounds_history,

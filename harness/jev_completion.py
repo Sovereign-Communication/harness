@@ -389,6 +389,18 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         ],
         "user_facing": False,
     },
+    "HV-5": {
+        # The row must cite a real merged PR before the phase can pass.
+        "pr_pattern": None,
+        "required_tests": [
+            "tests/test_hourglass_execution_budget.py",
+            "tests/test_hourglass_consent_handoff.py",
+        ],
+        "required_files": [
+            "harness/agent.py",
+        ],
+        "user_facing": False,
+    },
     "HV-2": {
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,

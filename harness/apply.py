@@ -391,9 +391,10 @@ class ApplyEngine(ApplyEngineMixin):
             trust_combined=_trust_decision["combined"],
             trust_correctness=_trust_decision["correctness"],
             require_diff_authorization=require_auth,
-            attest_model=attest_model, min_confidence=self.min_confidence)
+            attest_model=attest_model, min_confidence=self.min_confidence,
+            token_budget=kwargs.get("token_budget"),
+            assignment_context=kwargs.get("assignment_context"))
 
     def apply_batch(self, files, **kwargs):
         """Run the shared multi-file policy over this engine."""
         return run_batch(self, files, **kwargs)
-

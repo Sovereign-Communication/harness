@@ -6,6 +6,8 @@ import unittest
 from harness.consent import probe_consent, consent_renew
 from harness.spend import SpendGovernor
 from harness.ledger import AutonomyLedger
+from harness.token_budget import TokenBudget, USAGE_UNAVAILABLE
+from harness.errors import HarnessError
 from tests._fake import FakeTransport, m, comp, consent
 
 JUDGE = "inclusionai/ling-2.6-flash"
@@ -96,6 +98,56 @@ class ConsentProbeTests(unittest.TestCase):
 
     def tearDown(self):
         self.dir.cleanup()
+
+    def test_assignment_context_is_bound_by_digest_without_raw_ledger_payload(self):
+        fake = FakeTransport(models=self.models, posts=[consent("accept")])
+        gov = SpendGovernor(fake, "sk-test")
+        assignment = {"assignment_id": "pkg-7", "source": "private source body",
+                      "model": JUDGE, "limits": {"tokens": 80}}
+        result = probe_consent(
+            transport=fake, api_key="k", governor=gov, task_id="bound",
+            task="work", model=JUDGE, ledger=self.ledger,
+            assignment_context=assignment)
+        self.assertEqual(result["decision"], "accept")
+        self.assertEqual(result["assignment_id"], "pkg-7")
+        self.assertEqual(len(result["assignment_digest"]), 64)
+        record = self.ledger.entries()[-1]
+        self.assertEqual(record.get("assignment_id"), "pkg-7")
+        self.assertEqual(record.get("assignment_digest"), result["assignment_digest"])
+        self.assertNotIn("private source body", json.dumps(record))
+
+    def test_token_budget_settles_reported_usage(self):
+        response = consent("accept")
+        response["usage"].update(prompt_tokens=31, completion_tokens=7)
+        fake = FakeTransport(models=self.models, posts=[response])
+        budget = TokenBudget(max_input_tokens=1000, max_output_tokens=1000)
+        result = probe_consent(transport=fake, api_key="k",
+                               governor=SpendGovernor(fake, "sk-test"),
+                               task_id="budget-actual", task="work", model=JUDGE,
+                               token_budget=budget)
+        self.assertEqual(result["decision"], "accept")
+        self.assertEqual((budget.used_input(), budget.used_output()), (31, 7))
+
+    def test_token_budget_charges_full_reservation_without_usage(self):
+        fake = FakeTransport(models=self.models, posts=[consent("accept")])
+        budget = TokenBudget(max_input_tokens=1000, max_output_tokens=1000)
+        probe_consent(transport=fake, api_key="k",
+                      governor=SpendGovernor(fake, "sk-test"),
+                      task_id="budget-unknown", task="work", model=JUDGE,
+                      max_tokens=64, token_budget=budget)
+        self.assertEqual(budget.snapshot()["usage_sources"][USAGE_UNAVAILABLE], 1)
+        self.assertGreater(budget.used_input(), 0)
+        self.assertGreaterEqual(budget.used_output(), 64)
+
+    def test_exhausted_token_budget_refuses_before_consent_dispatch(self):
+        fake = FakeTransport(models=self.models, posts=[consent("accept")])
+        budget = TokenBudget(max_input_tokens=0, max_output_tokens=1000)
+        with self.assertRaises(HarnessError):
+            probe_consent(transport=fake, api_key="k",
+                          governor=SpendGovernor(fake, "sk-test"),
+                          task_id="budget-refused", task="work", model=JUDGE,
+                          token_budget=budget)
+        self.assertEqual(fake.chat_posts(), [])
 
     def probe(self, response, model=JUDGE):
         fake = FakeTransport(models=self.models, posts=[response])

@@ -18,6 +18,8 @@ prompt encodes that instruction; the consent ledger records these as
 category="capability" deferrals.
 """
 import math
+import hashlib
+import json
 
 from . import events as _events
 from .chat import (chat, extract_content_and_cost, _extract_json, _reported_cost,
@@ -25,6 +27,8 @@ from .chat import (chat, extract_content_and_cost, _extract_json, _reported_cost
                    REASONING_FALLBACK_PREFIX)  # noqa: F401
 from .errors import HarnessError
 from .output import eprint
+from .tokens import estimate_prompt_tokens
+from .token_budget import USAGE_ACTUAL, USAGE_UNAVAILABLE
 
 CONSENT_SYSTEM_PROMPT = (
     "You are an independent contractor in a work market. You are being offered a "
@@ -72,7 +76,8 @@ _EVENT_FOR = {
 
 def probe_consent(*, transport, api_key, governor, task_id, task, model,
                   context=None, max_tokens=512, ledger=None, required=True,
-                  fallback_pool=None, min_confidence=0.70):
+                  fallback_pool=None, min_confidence=0.70,
+                  assignment_context=None, token_budget=None):
     """Ask a model whether it accepts the work. Returns a consent dict.
 
     The probe is itself a rotating lane: ``model`` is asked first, then
@@ -91,6 +96,17 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
     user = f"WORK ITEM:\n{task_text}"
     if context:
         user += f"\n\nCONTEXT:\n{context[:2000]}"
+    assignment_id = None
+    assignment_digest = None
+    if assignment_context is not None:
+        # Bind this probe to caller-supplied assignment details, while keeping
+        # potentially sensitive source text out of the durable ledger.
+        encoded = json.dumps(assignment_context, sort_keys=True,
+                             separators=(",", ":"), default=str)
+        assignment_digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        assignment_id = (assignment_context.get("assignment_id")
+                         if isinstance(assignment_context, dict) else None)
+        user += "\n\nEXACT ASSIGNMENT (accept only this assignment):\n" + encoded
 
     candidates = [model]
     for m_ in (fallback_pool or []):
@@ -122,7 +138,9 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
                    for _ in range(_chat_reservation_slots(m_, "none"))])
 
     if ledger:
-        ledger.append("offer", task_id=task_id, model=model, required=required)
+        ledger.append("offer", task_id=task_id, model=model, required=required,
+                      assignment_id=assignment_id,
+                      assignment_digest=assignment_digest)
 
     def _take(status, resp, m_):
         """Run one candidate attempt; return (content, parsed, tracked_cost,
@@ -159,10 +177,35 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
     last_content = None
     byok_rejected = False
     for m_ in usable:
-        status, resp = chat(transport, api_key, m_,
-                            [{"role": "system", "content": CONSENT_SYSTEM_PROMPT},
-                             {"role": "user", "content": user}],
-                            max_tokens, reasoning_effort="none", governor=governor)
+        messages = [{"role": "system", "content": CONSENT_SYSTEM_PROMPT},
+                    {"role": "user", "content": user}]
+        allowance = None
+        if token_budget is not None:
+            prompt = CONSENT_SYSTEM_PROMPT + "\n" + user
+            slots = _chat_reservation_slots(m_, "none")
+            max_out = max_tokens * slots
+            if token_budget.max_output_tokens is not None:
+                max_out = min(max_out, token_budget.max_output_tokens)
+            allowance = token_budget.allowance(
+                estimate_prompt_tokens(prompt) * slots,
+                max_output_tokens=max_out,
+                label=f"consent:{task_id}:{m_}")
+        try:
+            status, resp = chat(transport, api_key, m_, messages, max_tokens,
+                                reasoning_effort="none", governor=governor)
+        except Exception:
+            if allowance is not None:
+                token_budget.settle(allowance, source=USAGE_UNAVAILABLE)
+            raise
+        if allowance is not None:
+            usage = resp.get("usage") if isinstance(resp, dict) else None
+            if (isinstance(usage, dict) and "prompt_tokens" in usage
+                    and "completion_tokens" in usage):
+                token_budget.settle(
+                    allowance, input_tokens=usage["prompt_tokens"],
+                    output_tokens=usage["completion_tokens"], source=USAGE_ACTUAL)
+            else:
+                token_budget.settle(allowance, source=USAGE_UNAVAILABLE)
         content, parsed, tracked_cost, reported_cost, byok, fail_reason = _take(
             status, resp, m_)
         tracked_total += tracked_cost
@@ -205,6 +248,8 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
             "reported_cost": reported_total,
             "raw": last_content,
             "attempts": attempts,
+            "assignment_id": assignment_id,
+            "assignment_digest": assignment_digest,
         }
         if ledger:
             ledger.append("consent_defer", task_id=task_id, model=model, reason=reason,
@@ -247,13 +292,17 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
         "reported_cost": reported_total,
         "raw": content,
         "attempts": attempts,
+        "assignment_id": assignment_id,
+        "assignment_digest": assignment_digest,
     }
     if ledger:
         ledger.append(_EVENT_FOR[result["decision"]], task_id=task_id, model=answered,
                       reason=reason, confidence=confidence,
                       redirect_model=result["redirect_model"],
-                      scope_suggestion=result["scope_suggestion"], cost=tracked_total,
-                      billable_cost=tracked_total)
+                          scope_suggestion=result["scope_suggestion"], cost=tracked_total,
+                      billable_cost=tracked_total,
+                      assignment_id=assignment_id,
+                      assignment_digest=assignment_digest)
     _events.emit("consent_result", task_id=task_id, model=answered,
                  decision=result["decision"], reason=reason,
                  redirect_model=result["redirect_model"], cost=tracked_total)
@@ -262,7 +311,8 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
 
 def consent_renew(*, transport, api_key, governor, task_id, task, model,
                   context=None, max_tokens=512, ledger=None, required=True,
-                  fallback_pool=None, min_confidence=0.70):
+                  fallback_pool=None, min_confidence=0.70,
+                  assignment_context=None, token_budget=None):
     """Re-check consent at a verification checkpoint (continued consensus).
 
     Returns the probe result; records a consent_renew_* event. Any deferral
@@ -272,7 +322,9 @@ def consent_renew(*, transport, api_key, governor, task_id, task, model,
     base = probe_consent(transport=transport, api_key=api_key, governor=governor,
                           task_id=task_id, task=task, model=model, context=context,
                           max_tokens=max_tokens, ledger=None, required=required,
-                          fallback_pool=fallback_pool, min_confidence=min_confidence)
+                          fallback_pool=fallback_pool, min_confidence=min_confidence,
+                          assignment_context=assignment_context,
+                          token_budget=token_budget)
     if ledger:
         # Attribute to the model that ANSWERED (post-rotation), not the
         # requested primary: billing a rotated renewal to the wrong model

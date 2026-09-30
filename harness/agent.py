@@ -1,6 +1,8 @@
 # Autonomous agent orchestrator (#PR-Chat-1)
 # Drives natural language prompts to conclusion automatically with zero UI clutter.
 import difflib
+import hashlib
+import json
 import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -28,7 +30,26 @@ from .session import apply_session, attest_model_for, governor_for, jev_for, led
 from .jev_policy import (
     JevPolicy, aggregate_structural, jev_cost_ceiling, policy_for,
 )
-from .waist import compose_arguments, compose_plan, resolve_scout_ladder
+from .jev_packs import (
+    HOURGLASS_STAGE_SITE,
+    declared_restart_targets,
+    validate_restart_request,
+)
+from .token_budget import budget_from_settings
+from .waist import (
+    STAGE_EXECUTION,
+    STAGE_PLANNING,
+    STATE_COMPLETED,
+    STATE_PENDING,
+    compose_arguments,
+    compose_plan,
+    compose_stages,
+    composition_envelope,
+    resolve_scout_ladder,
+    stage_budget,
+    stage_selection_from_settings,
+    stage_states,
+)
 from .web import DEFAULT_FETCH_HOSTS, gather_web_context
 
 # Consumers import history/repo_scope/web helpers from their owners
@@ -813,7 +834,193 @@ class AutonomousAgent:
 
         return chat_fn
 
-    def _plan_round(self, goal, candidate_files, gov, confirm=None):
+    def _run_execution_stage(self, goal, plan, *, jev_policy,
+                             completed_stages=()):
+        """HV-5: judge the work package, then let CODE decide any restart.
+
+        ``HV-1`` published five typed stage dimensions and, until now, no
+        production path asked for any of them: the single call site sat inside
+        the planning stage, which only asks its question when the brief is
+        NOT already sufficient -- so on a clean run the dimension never
+        executed. This is the execution stage's own call, and it is the one
+        place the ``execution`` and ``restart_target`` dimensions mean
+        anything: the package about to be handed to a worker, and the
+        decision to walk back to an earlier stage instead.
+
+        The restart split is ``HV-1``'s, and this caller keeps it: Jev may
+        only RECOMMEND a declared target, and
+        :func:`~harness.jev_packs.validate_restart_request` -- code -- decides
+        whether that transition is allowed, preserving completed work and
+        forcing consent renewal for a changed assignment. When no native
+        answer arrives the recommendation is derived from the execution
+        signals, and the same code-owned guard decides it, so the decision
+        path exists whether or not a model was reachable.
+
+        Returns the judgment as evidence. It deliberately does NOT mark the
+        stage ``completed``: judging a package is not dispatching it, and
+        dispatch is the next ``HV-5`` slice. Reporting ``completed`` here
+        would claim work this code does not do.
+        """
+        judgment: Dict[str, Any] = {
+            "dimension": "execution",
+            "state": STATE_PENDING,
+            "dispatched": False,
+            "signals": {},
+            "native": False,
+            "restart": None,
+        }
+        nodes = [
+            {"node_id": n.get("node_id"), "instruction": n.get("instruction"),
+             "target": (n.get("target_files") or [""])[0]}
+            for n in (plan.get("nodes") or [])
+        ]
+        package = {
+            "goal": goal,
+            "status": plan.get("status"),
+            "decomposition": plan.get("decomposition"),
+            "total_nodes": plan.get("total_nodes") or len(nodes),
+            "nodes": nodes,
+        }
+        if jev_policy is not None:
+            judgment.update(self._ask_stage_dimension(
+                "execution", package, jev_policy, task_id=None))
+        judgment["restart"] = self._restart_decision(
+            goal, jev_policy, judgment, completed_stages=completed_stages)
+        return judgment
+
+    def _ask_stage_dimension(self, dimension, state, jev_policy, *,
+                             task_id=None):
+        """Ask one declared ``HV-1`` dimension and read its signals.
+
+        The dimension name, the question pack and the signal vocabulary are
+        all ``HV-1``'s (``harness/jev_packs.py``); this only calls the owner
+        and reports what came back. A fallback, a transport failure or a
+        malformed answer is never promoted to a native signal -- that is the
+        owner's contract, and this caller does not second-guess it.
+        """
+        from .jev_packs import HOURGLASS_STAGE_DIMENSIONS
+        try:
+            _result, structural = jev_policy.evaluate_hourglass_stage(
+                dimension, state, site=HOURGLASS_STAGE_SITE, task_id=task_id)
+        except HarnessError as exc:
+            return {"signals": {}, "native": False,
+                    "error": "{0}: {1}".format(type(exc).__name__, exc)}
+        structural = structural or {}
+        declared = HOURGLASS_STAGE_DIMENSIONS[dimension]["signals"]
+        signals = {name: structural.get(name) for name in declared
+                   if structural.get(name) is not None}
+        return {"signals": signals,
+                "native": bool(structural.get("native"))}
+
+    def _restart_decision(self, goal, jev_policy, judgment, *,
+                          completed_stages=()):
+        """Ask for a restart target, then let code rule on the transition."""
+        recommendation = None
+        source = "none"
+        if jev_policy is not None:
+            asked = self._ask_stage_dimension(
+                "restart_target",
+                {"goal": goal, "completed_stages": list(completed_stages)},
+                jev_policy)
+            choice = asked["signals"].get("restart_target")
+            if isinstance(choice, dict) and choice.get("target"):
+                recommendation = choice["target"]
+                source = "jev"
+        if recommendation is None:
+            # No native answer. The recommendation is then DERIVED from the
+            # execution signals -- an underspecified package or a required
+            # checkpoint both mean the work is not ready where it is -- and
+            # it is still only a DECLARED stage: the walk-back target is read
+            # out of `HV-1`'s own vocabulary rather than hardcoded here, so
+            # this caller and the pack cannot disagree about what a restart
+            # may even name. The decision below is code either way.
+            walk_back = self._declared_walk_back()
+            signals = judgment.get("signals") or {}
+            unsuitable = signals.get("execution_suitable")
+            checkpoint = signals.get("checkpoint_required")
+            if walk_back is not None and (
+                    (unsuitable is not None and unsuitable < 0.5)
+                    or (checkpoint is not None and checkpoint >= 0.5)):
+                recommendation, source = walk_back, "derived"
+        if recommendation is not None and \
+                recommendation not in declared_restart_targets():
+            # Belt and braces: a recommendation that is not in the declared
+            # vocabulary is discarded here rather than handed to the guard as
+            # something it would have to reject.
+            recommendation, source = None, "undeclared_discarded"
+
+        # `consent_fresh` is deliberately None, not True. Nothing has
+        # changed the assignment yet -- no work package has been dispatched,
+        # so no new consent question exists -- and claiming freshness the run
+        # has not re-derived would be exactly the kind of invented signal
+        # this stage is meant to avoid. None means "no evidence it is
+        # stale", so no renewal is forced here; the dispatch slice is where
+        # consent is actually re-derived.
+        decision = validate_restart_request(
+            STAGE_EXECUTION, recommendation,
+            completed_stages=completed_stages, consent_fresh=None)
+        decision["recommendation_source"] = source
+        return decision
+
+    @staticmethod
+    def _declared_walk_back():
+        """The declared stage a restart from ``execution`` should name.
+
+        Read from `HV-1`'s declared vocabulary, not hardcoded: a restart may
+        only ever name a declared stage, and the stage immediately preceding
+        execution in that vocabulary is the furthest-back legal target. If
+        execution is not in the vocabulary, or nothing precedes it, there is
+        no legal walk-back and the caller reports none.
+        """
+        declared = declared_restart_targets()
+        if STAGE_EXECUTION not in declared:
+            return None
+        index = declared.index(STAGE_EXECUTION)
+        return declared[index - 1] if index > 0 else None
+
+    def _compose_run_stages(self, goal, candidate_files, jev_policy=None,
+                            plan=None):
+        """Attach execution-stage judgments to the composition from waist.
+
+        ``compose_plan`` already performs planning when selected. This agent
+        hook must consume that result rather than composing or planning again.
+        """
+        envelope = (dict(plan.get("composition") or {})
+                    if isinstance(plan, dict) else {})
+        stages = envelope.get("stages") or []
+        selected = any(isinstance(item, dict)
+                       and item.get("stage") == STAGE_EXECUTION
+                       and item.get("state") != "skipped"
+                       for item in stages)
+        judgments: Dict[str, Any] = {}
+        if selected and isinstance(plan, dict):
+            completed = tuple(
+                item.get("stage") for item in stages
+                if isinstance(item, dict) and item.get("state") == STATE_COMPLETED)
+            judgments["execution"] = self._run_execution_stage(
+                goal, plan, jev_policy=jev_policy, completed_stages=completed)
+        return (envelope, None, judgments)
+    def _evidence_reader(self):
+        """A reader for brief intake, bound to this run's own root.
+
+        Brief intake is allowed to report a read failure as a read failure --
+        it must not curate a different evidence set to work around one -- so
+        this raises :class:`HarnessError` rather than letting an ``OSError``
+        escape as an unhandled crash. The caller's refusal path is already
+        fail-soft: it emits a visible note and leaves the gated plan intact.
+        """
+        def read(rel):
+            try:
+                return (self.root_dir / rel).read_text(
+                    encoding="utf-8", errors="replace")
+            except OSError as exc:
+                raise HarnessError(
+                    "could not read evidence {0!r}: {1}".format(rel, exc)
+                ) from exc
+        return read
+
+    def _plan_round(self, goal, candidate_files, gov, confirm=None,
+                    token_budget=None):
         """One planning pass through the ONE plan composer
         (harness/waist.py:compose_plan): cheap-LLM decomposition when the
         orchestration ladder answers, tier classification, then (hourglass)
@@ -826,6 +1033,11 @@ class AutonomousAgent:
         jev_policy = policy_for(
             self.settings, transport=self.transport, governor=gov,
             ledger=ledger_for(self.settings, caller="agent"))
+        compose_args = compose_arguments(
+            self.settings, goal=goal, files=candidate_files,
+            root=self.root_dir)
+        if token_budget is not None:
+            compose_args["token_budget"] = token_budget
         plan = compose_plan(
             transport=self.transport, api_key=resolve_api_key(),
             governor=gov, ledger=ledger_for(self.settings),
@@ -846,15 +1058,36 @@ class AutonomousAgent:
             # CLI and MCP lanes use, so "which stages ran, what each was
             # allowed, and what evidence it started from" is answerable from
             # the envelope here too instead of only from the caller's head.
-            **compose_arguments(self.settings, goal=goal,
-                                files=candidate_files,
-                                root=self.root_dir))
+            **compose_args)
         if str(plan.get("decomposition", "")).startswith("heuristic"):
             # compose_plan degrades to the heuristic only after the LLM
             # decomposition failed (execute=True); the GUI needs that on the
             # event stream, not just on stderr.
             emit("orchestration_note",
                  note="LLM decomposition unavailable; heuristic plan in use")
+
+        try:
+            _, _, judgments = self._compose_run_stages(
+                goal, candidate_files, jev_policy=jev_policy, plan=plan)
+            if judgments:
+                plan["stage_judgments"] = judgments
+                restart = (judgments.get("execution") or {}).get("restart") or {}
+                emit("execution_stage",
+                     signals=dict((judgments.get("execution") or {}).get("signals") or {}),
+                     native=bool((judgments.get("execution") or {}).get("native")),
+                     restart=restart.get("allowed"))
+                if restart.get("target") is not None:
+                    plan["status"] = "refused"
+                    plan["confirmation"] = {
+                        "verdict": "refused",
+                        "model": "restart-guard",
+                        "reason": ("validated restart to {0} requires a resumable "
+                                   "stage runner: {1}".format(
+                                       restart.get("target"),
+                                       "; ".join(restart.get("reasons") or []))),
+                    }
+        except HarnessError:
+            pass
         return plan
 
     def _refused_edit(self, plan, prompt, target_files, session_id):
@@ -871,6 +1104,15 @@ class AutonomousAgent:
             "target_files": target_files,
             "dag": plan.get("dag"),
             "confirmation": confirmation,
+            # A refused run still composed, still ran planning and still
+            # judged execution; the refusal is about the plan, not about
+            # erasing what the run did. Same three keys, same reason.
+            **({"composition": dict(plan["composition"])}
+               if isinstance(plan.get("composition"), dict) else {}),
+            **({"planning": dict(plan["planning"])}
+               if isinstance(plan.get("planning"), dict) else {}),
+            **({"stage_judgments": dict(plan["stage_judgments"])}
+               if isinstance(plan.get("stage_judgments"), dict) else {}),
             "cost": float(confirmation.get("cost") or 0.0),
             **({"structural": plan["structural"]}
                if isinstance(plan.get("structural"), dict) else {}),
@@ -946,6 +1188,7 @@ class AutonomousAgent:
         # governor. Jev's own key controls only the typed structural call;
         # an unkeyed Jev evaluator remains the explicit local fallback.
         _, gov = governor_for(self.settings)
+        run_token_budget = budget_from_settings(self.settings, label="edit")
         plan_policy = policy_for(
             self.settings, transport=self.transport, governor=gov,
             ledger=ledger_for(self.settings, caller="agent"))
@@ -960,11 +1203,25 @@ class AutonomousAgent:
                 "control flow, conditional branching, or multi-step execution. "
                 "Ensure the decomposed DAG explicitly breaks down the iterative "
                 "loop and discrete steps into executable nodes.")
-        plan = self._plan_round(plan_prompt, target_files, gov,
-                                confirm=hourglass["confirm"])
+        try:
+            plan = self._plan_round(plan_prompt, target_files, gov,
+                                    confirm=hourglass["confirm"],
+                                    token_budget=run_token_budget)
+        except TypeError:
+            plan = self._plan_round(plan_prompt, target_files, gov,
+                                    confirm=hourglass["confirm"])
         if isinstance(plan_structural, dict):
             plan["structural"] = plan_structural
         if plan.get("status") == "refused":
+            return self._refused_edit(plan, prompt, target_files, session_id)
+        if not any(isinstance(entry, dict)
+                   and entry.get("stage") == STAGE_EXECUTION
+                   for entry in (plan.get("composition") or {}).get("stages", [])):
+            plan["status"] = "refused"
+            plan["confirmation"] = {
+                "verdict": "refused", "model": "execution-budget",
+                "reason": "execution stage is not selected; refusing dispatch",
+            }
             return self._refused_edit(plan, prompt, target_files, session_id)
         emit("dag_planned", total_nodes=plan["total_nodes"],
              total_ceiling=plan["total_cost_ceiling"],
@@ -987,6 +1244,17 @@ class AutonomousAgent:
                 "verification_gate": verification_gate,
                 "cost_ceiling": plan["total_cost_ceiling"],
                 "cost": 0.0,
+                # HV-5: the composed stages and the planning outcome are part
+                # of what the caller asked for, so they are part of the
+                # answer. A run that reports a plan without saying which
+                # stages it was allowed to spend, and how planning ended,
+                # is asking the reader to take the composition on trust.
+                **({"composition": dict(plan["composition"])}
+                   if isinstance(plan.get("composition"), dict) else {}),
+                **({"planning": dict(plan["planning"])}
+                   if isinstance(plan.get("planning"), dict) else {}),
+                **({"stage_judgments": dict(plan["stage_judgments"])}
+                   if isinstance(plan.get("stage_judgments"), dict) else {}),
                 **({"structural": dict(plan["structural"])}
                    if isinstance(plan.get("structural"), dict) else {}),
             }
@@ -1005,6 +1273,20 @@ class AutonomousAgent:
         # lane; otherwise a dogfood/test transport silently fell back to live
         # HTTP during node execution.
         engine = apply_session(self.settings, transport=self.transport)
+
+        # Recreate the exact execution-stage ceiling reported by compose_plan,
+        # as a child of the SAME run budget. The live child is shared by all
+        # node calls, so concurrent reservations are accounted atomically.
+        execution_record = next((entry for entry in
+                                 (plan.get("composition") or {}).get("stages", [])
+                                 if isinstance(entry, dict)
+                                 and entry.get("stage") == STAGE_EXECUTION), None)
+        execution_budget = None
+        if execution_record:
+            execution_budget = run_token_budget.stage(
+                STAGE_EXECUTION,
+                max_input_tokens=execution_record.get("max_input_tokens"),
+                max_output_tokens=execution_record.get("max_output_tokens"))
 
         def apply_node(target, node: DAGNode, route_kwargs, task_runner):
             """One node's engine call for the agent lane: the absolute target
@@ -1040,6 +1322,52 @@ class AutonomousAgent:
                     route_kwargs.setdefault("backend", "diff")
 
             apply_kwargs = dict(route_kwargs)
+            if execution_budget is not None:
+                apply_kwargs["token_budget"] = execution_budget
+            # Consent is bound to this exact node assignment and source pins.
+            # Pin contents are represented by digests; no prior chat history
+            # or web response bodies enter the consent prompt.
+            source_pins = {}
+            for rel in target_files:
+                source = self.root_dir / rel
+                if source.is_file():
+                    try:
+                        source_pins[str(rel)] = hashlib.sha256(
+                            source.read_bytes()).hexdigest()
+                    except OSError:
+                        source_pins[str(rel)] = "unreadable"
+            task_limit = route_kwargs.get(
+                "task_max_cost", engine.default_task_max_cost)
+            assignment = {
+                "schema": "jev-work-package-v1",
+                "request": prompt,
+                "node_id": node.node_id,
+                "instruction": node.instruction,
+                "target": str(target or ""),
+                "verification_gate": gate,
+                "context_pins": source_pins,
+                "model_policy": {
+                    "pinned_model": route_kwargs.get("model"),
+                    "apply_pool": list(route_kwargs.get("apply_pool") or
+                                        engine.router.apply_pool),
+                    "allow_escalation": bool(route_kwargs.get(
+                        "allow_escalation", self.settings.allow_escalation)),
+                },
+                "limits": {
+                    "task_max_cost": task_limit,
+                    "run_max_cost": gov.max_cost,
+                    "run_remaining_cost": gov.remaining(),
+                    "max_input_tokens": (execution_budget.max_input_tokens
+                                          if execution_budget else None),
+                    "max_output_tokens": (execution_budget.max_output_tokens
+                                           if execution_budget else None),
+                },
+            }
+            encoded = json.dumps(assignment, sort_keys=True,
+                                 separators=(",", ":"), default=str)
+            assignment["assignment_id"] = "wp-" + hashlib.sha256(
+                encoded.encode("utf-8")).hexdigest()[:24]
+            apply_kwargs["assignment_context"] = assignment
             if task_runner is not None:
                 apply_kwargs["task_runner"] = task_runner
             res = engine.apply_edit(
@@ -1047,10 +1375,17 @@ class AutonomousAgent:
                 instruction=node.instruction,
                 verify_cmd=gate,
                 allow_verify=True,
-                require_consent=False,
+                require_consent=True,
                 require_diff_authorization=hourglass["require_diff_authorization"],
                 **apply_kwargs,
             )
+            if isinstance(res, dict):
+                res.setdefault("assignment_id", assignment["assignment_id"])
+                res.setdefault("assignment_digest", hashlib.sha256(
+                    json.dumps(assignment, sort_keys=True, separators=(",", ":"),
+                               default=str).encode("utf-8")).hexdigest())
+                if execution_budget is not None:
+                    res["token_usage"] = execution_budget.snapshot()
 
             # The shared engine gate owns Jev when it was composed normally.
             # A lightweight injected engine (used by library callers/tests)
@@ -1085,7 +1420,7 @@ class AutonomousAgent:
                         instruction=healing_inst,
                         verify_cmd=gate,
                         allow_verify=True,
-                        require_consent=False,
+                        require_consent=True,
                         require_diff_authorization=hourglass["require_diff_authorization"],
                         **apply_kwargs,
                     )
@@ -1105,7 +1440,7 @@ class AutonomousAgent:
                     instruction=healing_inst,
                     verify_cmd=gate,
                     allow_verify=True,
-                    require_consent=False,
+                    require_consent=True,
                     require_diff_authorization=hourglass["require_diff_authorization"],
                     **apply_kwargs,
                 )
@@ -1143,7 +1478,8 @@ class AutonomousAgent:
         drive_kwargs = dict(
             goal=prompt, target_files=target_files, initial_plan=plan,
             root_dir=self.root_dir, plan_round=lambda next_goal: self._plan_round(
-                next_goal, target_files, gov, confirm=hourglass["confirm"]),
+                next_goal, target_files, gov, confirm=hourglass["confirm"],
+                token_budget=run_token_budget),
             execute_plan=execute_plan,
             completion_chat=lambda prompt_text: self._orchestrator_chat_fn(gov)(prompt_text),
             emit=emit, cancel_check=cancel_check,
@@ -1160,6 +1496,7 @@ class AutonomousAgent:
         rounds_history = driven["rounds_history"]
         final_all_ok = driven["final_all_ok"]
         remaining_scope = driven["remaining_scope"]
+        handoff = driven.get("handoff")
         plan = driven["plan"]
 
         # Evidence-bound escalation. The deferral note is a HANDOFF, not proof
@@ -1196,7 +1533,10 @@ class AutonomousAgent:
         unified_diff_str = "\n".join(diffs).strip()
 
         # Synthesize clear natural language conclusion
-        if final_all_ok:
+        if handoff:
+            response_msg = ("Execution stopped at the consent boundary. "
+                            "Completed node evidence is retained in the handoff.")
+        elif final_all_ok:
             response_msg = (
                 f"Orchestrator complete after {len(rounds_history)} round(s). "
                 f"Modified {len(target_files)} file(s); the completion judge "
@@ -1235,10 +1575,12 @@ class AutonomousAgent:
                       ["context_intake", "planning_waist", "execution"],
             "rounds": rounds_history,
             "settings": hourglass,
+            "token_usage": run_token_budget.snapshot(),
             "source": "agent_edit_lane",
         }
         result = {
-            "status": "ok" if final_all_ok else "failed",
+            "status": "deferred" if handoff else
+                      ("ok" if final_all_ok else "failed"),
             **({"escalated_from_defer":
                 escalation_note or "free model capability defer"}
                if escalation_ev is not None else {}),
@@ -1266,11 +1608,26 @@ class AutonomousAgent:
                                 if isinstance(r, dict)
                                 for m in (r.get("model_observed") or [])]),
             "cost": round(total_cost, 6),
+            # HV-5: the composed stages, the planning outcome and the
+            # execution-stage judgment are the same evidence the review-first
+            # envelope already carried, and `auto_apply` DEFAULTS TO TRUE --
+            # so leaving them on the preview branch only would have made the
+            # whole slice invisible on an ordinary autonomous run. They ride
+            # the final plan, next to the `hourglass` block that already
+            # carries stage evidence, because a reader of a completed run has
+            # at least as much claim to them as a reader of a preview.
+            **({"composition": dict(plan["composition"])}
+               if isinstance(plan.get("composition"), dict) else {}),
+            **({"planning": dict(plan["planning"])}
+               if isinstance(plan.get("planning"), dict) else {}),
+            **({"stage_judgments": dict(plan["stage_judgments"])}
+               if isinstance(plan.get("stage_judgments"), dict) else {}),
             **engine.governor.snapshot(),
             "results": list(all_results.values()),
             "orchestrator_rounds": len(rounds_history),
             "orchestrator_history": rounds_history,
             "hourglass": hourglass_evidence,
+            **({"handoff": handoff} if handoff else {}),
             **({"confidence": {
                 "threshold": 0.99,
                 "observed": (last_jev or {}).get("supported"),
