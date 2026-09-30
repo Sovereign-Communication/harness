@@ -2,6 +2,7 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from harness.config import load_settings
 from harness.jev_policy import (
@@ -61,6 +62,21 @@ class JevPolicyTests(unittest.TestCase):
         self.assertEqual(structural["input_tokens"], 0)
         self.assertEqual(structural["site"], "apply")
 
+    def test_explicit_disable_ignores_injected_keyed_evaluator(self):
+        class KeyedEvaluator:
+            api_key = "separately-supplied"
+            def evaluate(self, *args, **kwargs):
+                raise AssertionError("disabled policy invoked injected evaluator")
+
+        with patch.dict(os.environ, {"HARNESS_JEV_DISABLE": "1"}):
+            settings = load_settings({"jev_api_key": "configured"})
+        policy = policy_for(settings, evaluator=KeyedEvaluator())
+        result, _ = policy.evaluate_diff(
+            "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n",
+            "change x", "x.py", site="apply")
+        self.assertFalse(policy.keyed)
+        self.assertEqual(result.fallback_reason, "explicit_disable")
+
     def test_fallback_reason_is_recorded_in_ledger(self):
         ledger = self._ledger()
         policy = policy_for(self._unkeyed_settings(), ledger=ledger)
@@ -70,6 +86,35 @@ class JevPolicyTests(unittest.TestCase):
         self.assertEqual(structural["fallback_reason"], "missing_key")
         event = ledger.entries()[0]
         self.assertEqual(event["fallback_reason"], "missing_key")
+
+    def test_completion_transport_fallback_reason_survives_policy_wrapper(self):
+        class BrokenTransport:
+            def post(self, *args, **kwargs):
+                raise OSError("offline")
+
+        settings = load_settings({"jev_api_key": "jev-key"})
+        governor = SpendGovernor(FakeTransport(), "sk-test", max_cost=0.50)
+        result, structural = policy_for(
+            settings, transport=BrokenTransport(), governor=governor
+        ).evaluate_completion_nouls(
+            "fulfill the request", "work is done", named_artifacts=[])
+        self.assertTrue(result.is_fallback)
+        self.assertEqual(result.fallback_reason, "transport_failure")
+        self.assertEqual(structural["fallback_reason"], "transport_failure")
+
+    def test_answer_preflight_refusal_is_not_a_fallback(self):
+        class NeverCalledTransport:
+            def post(self, *args, **kwargs):
+                raise AssertionError("preflight refusal must happen before dispatch")
+
+        settings = load_settings({"jev_api_key": "jev-key"})
+        governor = SpendGovernor(FakeTransport(), "sk-test", max_cost=0.000001)
+        result, structural = policy_for(
+            settings, transport=NeverCalledTransport(), governor=governor
+        ).evaluate_answer("question", "candidate", "context")
+        self.assertFalse(result.is_fallback)
+        self.assertFalse(structural["is_fallback"])
+        self.assertFalse(structural["native"])
 
     def test_live_call_reserves_and_records_actual_once(self):
         transport = _JevTransport(self._response(tokens=100))
