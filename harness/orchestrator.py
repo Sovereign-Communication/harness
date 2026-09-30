@@ -341,6 +341,8 @@ def drive(*, goal: str, target_files: List[str], initial_plan: Dict,
                 "supported": pre_judge.get("jev_supported"),
                 "cannot_complete": bool(pre_judge.get("cannot_complete")),
                 "reason": pre_judge.get("reason"),
+                "fallback_reason": getattr(
+                    pre_judge.get("result"), "fallback_reason", None),
             }
             if pre_judge["cannot_complete"]:
                 emit("orchestration_note",

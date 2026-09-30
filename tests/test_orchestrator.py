@@ -114,7 +114,35 @@ class DriveTruthTests(unittest.TestCase):
         self.assertEqual(driven["rounds_history"][-1]["jev"],
                          {"native": True, "supported": 0.5,
                           "cannot_complete": False,
-                          "reason": "completion nouls passed"})
+                          "reason": "completion nouls passed",
+                          "fallback_reason": None})
+
+    def test_round_metadata_preserves_completion_fallback_reason(self):
+        plan = {"total_nodes": 1, "total_cost_ceiling": 0.0,
+                "nodes": [{"node_id": "n1", "instruction": "edit",
+                            "target_files": ["a.py"]}],
+                "dag": {"nodes": [{"node_id": "n1"}]}}
+
+        class _FakeJevPolicy:
+            def evaluate_completion_nouls(self, goal, state_summary, *,
+                                          named_artifacts=None, root_dir=None,
+                                          site="completion"):
+                result = JevEvaluationResult(
+                    "fail", 0.0, 0.0, {}, ["key unavailable"],
+                    is_fallback=True, model="jev-test",
+                    fallback_reason="transport_failure")
+                return result, {"cannot_complete": False,
+                                "missing_artifacts": []}
+
+        driven = orch.drive(
+            goal="edit a.py", target_files=[], initial_plan=plan,
+            root_dir=".", plan_round=lambda goal: plan,
+            execute_plan=lambda current: {"n1": {"status": "ok"}},
+            completion_chat=lambda prompt: '{"complete": true}',
+            emit=lambda *args, **kwargs: None,
+            jev_policy=_FakeJevPolicy(), max_rounds=1)
+        self.assertEqual(driven["rounds_history"][-1]["jev"]["fallback_reason"],
+                         "transport_failure")
 
     def test_jev_native_support_at_threshold_falls_through_to_judge(self):
         plan = {"total_nodes": 1, "total_cost_ceiling": 0.0,
