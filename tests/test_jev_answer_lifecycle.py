@@ -68,9 +68,34 @@ class AnswerPolicyTests(unittest.TestCase):
         result, structural = policy_for(settings).evaluate_answer(
             "question", "candidate", "context")
         self.assertTrue(result.is_fallback)
+        self.assertEqual(result.fallback_reason, "missing_key")
+        self.assertEqual(structural["fallback_reason"], "missing_key")
         self.assertFalse(structural["native"])
         self.assertIsNone(structural["answer_sufficient"])
         self.assertTrue(structural["iteration_required"])
+
+    def test_explicitly_disabled_answer_reports_disable_reason(self):
+        with patch.dict(os.environ, {"HARNESS_JEV_DISABLE": "1"}):
+            settings = load_settings({"jev_api_key": "configured"})
+        result, structural = policy_for(settings).evaluate_answer(
+            "question", "candidate", "context")
+        self.assertTrue(result.is_fallback)
+        self.assertEqual(result.fallback_reason, "explicit_disable")
+        self.assertEqual(structural["fallback_reason"], "explicit_disable")
+
+    def test_answer_transport_fallback_reason_survives_policy_wrapper(self):
+        class BrokenTransport:
+            def post(self, *args, **kwargs):
+                raise OSError("offline")
+
+        settings = load_settings({"jev_api_key": "jev-key"})
+        governor = SpendGovernor(FakeTransport(), "sk-test", max_cost=0.50)
+        result, structural = policy_for(
+            settings, transport=BrokenTransport(), governor=governor
+        ).evaluate_answer("question", "candidate", "context")
+        self.assertTrue(result.is_fallback)
+        self.assertEqual(result.fallback_reason, "transport_failure")
+        self.assertEqual(structural["fallback_reason"], "transport_failure")
 
     def test_missing_answer_key_is_a_fallback_not_a_live_pass(self):
         td = tempfile.TemporaryDirectory()
@@ -230,6 +255,21 @@ class HourglassAnswerOnceTests(unittest.TestCase):
         gov.record_byok.assert_called_once_with("p2")
         gov.record_actual.assert_any_call(0.002, "c1")
 
+    def test_answer_once_with_web_sources_discloses_capability(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp))
+            gov = MagicMock()
+            sources = [
+                {"ok": True, "kind": "fetch", "title": "Example", "url": "https://example.com", "text": "web info"},
+                {"ok": False, "kind": "search", "url": "https://bad.com", "note": "failed"},
+            ]
+            with patch("harness.agent.chat", return_value=(200, {"choices": [{"message": {"content": "ok"}}], "usage": {"cost": 0.0}})) as mc:
+                agent._hourglass_answer_once(
+                    "q", "context", governor=gov, api_key="k", web=True, web_sources=sources)
+            sysmsg = mc.call_args[1]["messages"][0]["content"]
+            self.assertIn("SOURCE (fetch): Example https://example.com", sysmsg)
+            self.assertIn("SOURCE (search) FAILED: https://bad.com failed", sysmsg)
+
     def test_every_rung_fails_raises_with_attempt_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
@@ -374,6 +414,8 @@ class AgentAnswerLoopTests(unittest.TestCase):
         ])
         with patch("harness.agent.policy_for", return_value=policy), \
              patch("harness.agent.governor_for", return_value=(None, object())), \
+             patch("harness.agent.assess_completion",
+                   return_value={"complete": True, "remaining": "", "reason": "fulfilled"}), \
              patch.object(agent, "_hourglass_answer_once",
                           side_effect=lambda *a, **k: next(answers)), \
              patch("harness.agent.save_chat_turn"):
@@ -387,6 +429,145 @@ class AgentAnswerLoopTests(unittest.TestCase):
         self.assertEqual(result["confidence"]["threshold"], 0.99)
         self.assertTrue(result["confidence"]["passed"])
         self.assertEqual(len(result["hourglass"]["rounds"]), 2)
+
+    def test_high_jev_score_does_not_finish_when_independent_judge_says_incomplete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = load_settings()
+            agent = AutonomousAgent(settings=settings, root_dir=root,
+                                    history_dir=root)
+            policy = _FakePolicy([(0.999, False, False), (0.999, False, False)])
+            attempts = iter([{"model": "m1", "answer": "partial", "cost": 0},
+                             {"model": "m2", "answer": "complete", "cost": 0}])
+            judges = iter([{"complete": False, "remaining": "explain edge case", "reason": "missing"},
+                           {"complete": True, "remaining": "", "reason": "done"}])
+            with patch("harness.agent.policy_for", return_value=policy), \
+                 patch("harness.agent.governor_for", return_value=(None, object())), \
+                 patch("harness.agent.assess_completion", side_effect=lambda *a: next(judges)), \
+                 patch.object(agent, "_hourglass_answer_once", side_effect=lambda *a, **k: next(attempts)), \
+                 patch("harness.agent.save_chat_turn"):
+                result = agent.run_hourglass_request("Explain router behavior", max_rounds=2)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(len(result["hourglass"]["rounds"]), 2)
+            self.assertFalse(result["hourglass"]["rounds"][0]["completion"]["complete"])
+
+    def test_fallback_reason_is_visible_and_independent_judge_can_verify_fulfillment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=load_settings(), root_dir=Path(tmp),
+                                    history_dir=Path(tmp))
+            class FallbackPolicy:
+                def evaluate_answer(self, *args, **kwargs):
+                    result = JevEvaluationResult(
+                        "fail", 0.0, 0.0, {}, ["Jev unavailable"],
+                        is_fallback=True, fallback_reason="transport_error")
+                    return result, {"native": False, "answer_sufficient": None,
+                                    "iteration_required": True, "plan_required": None,
+                                    "cost": 0.0, "input_tokens": 0,
+                                    "output_tokens": 0,
+                                    "pack_version": "answer-sufficiency-v1"}
+            with patch("harness.agent.policy_for", return_value=FallbackPolicy()), \
+                 patch("harness.agent.governor_for", return_value=(None, object())), \
+                 patch("harness.agent.assess_completion", return_value={
+                     "complete": True, "remaining": "", "reason": "fulfilled"}), \
+                 patch.object(agent, "_hourglass_answer_once", return_value={
+                     "model": "m", "answer": "verified answer", "cost": 0}), \
+                 patch("harness.agent.save_chat_turn"):
+                result = agent.run_hourglass_request("Answer a question")
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["jev"]["fallback_reason"], "transport_error")
+
+    def test_unusable_live_jev_response_defers_without_completion_approval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=load_settings(), root_dir=Path(tmp),
+                                    history_dir=Path(tmp))
+
+            class RejectedPolicy:
+                def evaluate_answer(self, *args, **kwargs):
+                    result = JevEvaluationResult(
+                        "fail", 0.0, 0.0, {},
+                        ["TypeSafe request rejected (HTTP 401)"],
+                        is_fallback=False, fallback_reason=None)
+                    return result, {"native": False, "is_fallback": False,
+                                    "fallback_reason": None,
+                                    "answer_sufficient": None,
+                                    "iteration_required": True,
+                                    "plan_required": None, "cost": 0.0,
+                                    "input_tokens": 0, "output_tokens": 0,
+                                    "pack_version": "answer-sufficiency-v1"}
+
+            with patch("harness.agent.policy_for", return_value=RejectedPolicy()), \
+                 patch("harness.agent.governor_for", return_value=(None, object())), \
+                 patch.object(agent, "_hourglass_answer_once", return_value={
+                     "model": "m", "answer": "candidate", "cost": 0.0}), \
+                 patch("harness.agent.assess_completion") as completion, \
+                 patch("harness.agent.save_chat_turn"):
+                result = agent.run_hourglass_request("Answer a question")
+            self.assertEqual(result["status"], "deferred")
+            self.assertIn("HTTP 401", result["remaining_scope"])
+            completion.assert_not_called()
+
+    def test_default_entrypoints_route_apply_edits_to_jev_completion(self):
+        agent = AutonomousAgent(settings=load_settings(), root_dir=Path("."))
+        with patch.object(agent, "_live_jev_available", return_value=True), \
+             patch.object(agent, "_handle_edit", return_value={"status": "ok"}) as edit:
+            agent.run_prompt("Update widget.py")
+        self.assertTrue(edit.call_args.kwargs["use_jev_completion"])
+        with patch.object(agent, "_live_jev_available", return_value=True), \
+             patch.object(agent, "_handle_edit", return_value={"status": "ok"}) as edit:
+            agent.run_prompt("Update widget.py", force_conversation=True,
+                             auto_apply=True)
+        self.assertTrue(edit.call_args.kwargs["use_jev_completion"])
+        with patch.object(agent, "_live_jev_available", return_value=True), \
+             patch.object(agent, "_handle_conversation", return_value={"status": "preview"}) as convo, \
+             patch.object(agent, "_handle_edit", return_value={"status": "preview"}) as edit:
+            agent.run_prompt("Update widget.py", force_conversation=True,
+                             auto_apply=False)
+        edit.assert_not_called()
+        convo.assert_called_once()
+
+    def test_live_jev_conversation_routes_to_hourglass(self):
+        agent = AutonomousAgent(settings=load_settings(), root_dir=Path("."))
+        with patch.object(agent, "_live_jev_available", return_value=True), \
+             patch.object(agent, "run_hourglass_request", return_value={"status": "ok"}) as run:
+            agent.run_prompt("Explain a concept")
+        run.assert_called_once()
+
+    def test_answer_generation_keeps_history_web_but_jev_payload_excludes_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_ladder_settings(), root_dir=Path(tmp),
+                                    history_dir=Path(tmp))
+            policy = _FakePolicy([(0.2, True, False), (0.999, False, False)])
+            seen_generation = []
+            attempts = iter([{"model": "m1", "answer": "retry me", "cost": 0},
+                             {"model": "m2", "answer": "answered", "cost": 0}])
+
+            def answer_once(*args, **kwargs):
+                seen_generation.append(kwargs)
+                return next(attempts)
+
+            with patch("harness.agent.policy_for", return_value=policy), \
+                 patch("harness.agent.governor_for", return_value=(None, object())), \
+                 patch("harness.agent.load_chat_history", return_value=[
+                     {"prompt": "private prior question", "response": "prior answer"}]), \
+                 patch.object(agent, "_hourglass_request_context", return_value=(
+                     "WEB EVIDENCE: fetched secret body", {},
+                     MagicMock(estimated_tokens=4), [{"kind": "web", "ok": True,
+                         "url": "https://example.test", "title": "Result",
+                         "text": "fetched secret body"}])), \
+                 patch.object(agent, "_hourglass_answer_once", side_effect=answer_once), \
+                 patch("harness.agent.assess_completion", return_value={
+                     "complete": True, "remaining": "", "reason": "fulfilled"}), \
+                 patch("harness.agent.save_chat_turn"):
+                result = agent.run_hourglass_request("current question", web=True,
+                                                     max_rounds=2)
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(len(seen_generation), 2)
+            self.assertEqual(seen_generation[0]["past_turns"][0]["prompt"],
+                             "private prior question")
+            self.assertIn("fetched secret body",
+                          seen_generation[0]["web_sources"][0]["text"])
+            self.assertEqual([call[2] for call in policy.calls], ["", ""])
 
     def test_edit_request_uses_existing_hourglass_executor_with_jev_completion(self):
         agent = AutonomousAgent(settings=load_settings(), root_dir=Path("."))
@@ -442,7 +623,7 @@ class AgentAnswerLoopTests(unittest.TestCase):
             def evaluate_answer(self, prompt, answer, context, **kwargs):
                 result = JevEvaluationResult(
                     "fail", 0.0, 0.0, {}, ["unkeyed"], is_fallback=True,
-                    model="jev-latest")
+                    model="jev-latest", fallback_reason="missing_key")
                 return result, {"capability": "answer", "native": False,
                                "answer_sufficient": None,
                                "iteration_required": True, "plan_required": None,
@@ -451,6 +632,7 @@ class AgentAnswerLoopTests(unittest.TestCase):
 
         with patch("harness.agent.policy_for", return_value=_UnkeyedPolicy()), \
              patch("harness.agent.governor_for", return_value=(None, object())), \
+             patch("harness.agent.assess_completion", return_value=None), \
              patch.object(agent, "_hourglass_answer_once",
                           return_value={"model": "m", "answer": "a", "cost": 0.0}), \
              patch("harness.agent.save_chat_turn"):
@@ -458,6 +640,7 @@ class AgentAnswerLoopTests(unittest.TestCase):
                 "How does the router work?", session_id="deferred-1")
 
         self.assertEqual(result["status"], "deferred")
+        self.assertTrue(result["jev"]["fallback_reason"])
 
     def test_plan_required_stops_before_any_write(self):
         td = tempfile.TemporaryDirectory()

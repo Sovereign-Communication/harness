@@ -15,6 +15,7 @@ from harness.agent import (
     save_chat_turn,
 )
 from harness.history import get_default_history_dir
+from harness.jev import JevEvaluationResult
 from harness.config import load_settings
 from harness.errors import HarnessError, ToolCancelled
 from harness.repo_scope import _gate_python
@@ -27,10 +28,16 @@ _TEST_GOVERNOR = _gov(FakeTransport(), max_cost=0.05)
 _TEST_GOVERNOR_PATCH = patch("harness.agent.governor_for",
                             return_value=(None, _TEST_GOVERNOR))
 _TEST_GOVERNOR_PATCH.start()
+_TEST_JEV_KEY_PATCH = patch("harness.config.resolve_jev_key", return_value=None)
+_TEST_JEV_KEY_PATCH.start()
+_TEST_JEV_ENV_PATCH = patch.dict(os.environ, {"HARNESS_JEV_DISABLE": "1"})
+_TEST_JEV_ENV_PATCH.start()
 
 
 def tearDownModule():
     _TEST_GOVERNOR_PATCH.stop()
+    _TEST_JEV_KEY_PATCH.stop()
+    _TEST_JEV_ENV_PATCH.stop()
 
 
 def _lane_settings(**overrides):
@@ -138,6 +145,17 @@ class TestAgentClassificationAndDiscovery(unittest.TestCase):
 
 
 class TestAutonomousAgent(unittest.TestCase):
+    def test_jev_answer_envelope_preserves_fallback_reason(self):
+        result = JevEvaluationResult(
+            "fail", 0.0, 0.0, {}, ["unkeyed"], is_fallback=True,
+            fallback_reason="explicit_disable")
+        envelope = AutonomousAgent._jev_answer_envelope(
+            result, {"native": False, "answer_sufficient": None,
+                     "cost": 0.0, "input_tokens": 0, "output_tokens": 0},
+            0.7)
+        self.assertTrue(envelope["is_fallback"])
+        self.assertEqual(envelope["fallback_reason"], "explicit_disable")
+
     def test_empty_prompt_raises(self):
         agent = AutonomousAgent()
         with self.assertRaises(HarnessError):

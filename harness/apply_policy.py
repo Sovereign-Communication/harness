@@ -24,6 +24,7 @@ from .chat import (
 from . import events as _events
 from .consent import probe_consent, consent_renew
 from .errors import HarnessError, ToolCancelled
+from .token_budget import USAGE_ACTUAL, USAGE_UNAVAILABLE
 from .output import eprint
 from .prompts import build_apply_prompt, consent_mechanics_text
 from .tokens import estimate_prompt_tokens
@@ -185,7 +186,9 @@ class ApplyEngineMixin:
                 req.file_path, req.original, req.instruction),
             model=self.router.judge, ledger=self.ledger, required=True,
             fallback_pool=self.router.panel_pool,
-            min_confidence=req.min_confidence)
+            min_confidence=req.min_confidence,
+            assignment_context=req.assignment_context,
+            token_budget=req.token_budget)
         if self.governor.spent - req.task_start_spent > req.task_max_cost:
             raise HarnessError(
                 f"consent cost exceeded task ceiling ${req.task_max_cost:.6f}; refusing to dispatch")
@@ -212,7 +215,9 @@ class ApplyEngineMixin:
             task_id=req.task_id, task=consent_mechanics_text(
                 req.file_path, state.current_content, req.instruction),
             model=renew_model, ledger=self.ledger, required=True,
-            fallback_pool=renew_pool, min_confidence=req.min_confidence)
+            fallback_pool=renew_pool, min_confidence=req.min_confidence,
+            assignment_context=req.assignment_context,
+            token_budget=req.token_budget)
         if self.governor.spent - req.task_start_spent > req.task_max_cost:
             raise HarnessError(
                 f"consent renewal exceeded task ceiling ${req.task_max_cost:.6f}; refusing to continue")
@@ -300,6 +305,7 @@ class ApplyEngineMixin:
             a_pp, a_cp = self.governor.fetch_pricing([attempt_model])[attempt_model]
             est = estimate_prompt_tokens(prompt)
             slots = _chat_reservation_slots(attempt_model, req.reasoning, 0)
+            token_allowance = None
             per_call_estimate = slots * (est * a_pp + req.max_tokens * a_cp)
             jev_worst = 0.0
             if getattr(self, "jev_policy", None) is not None and getattr(self.jev_policy, "keyed", False):
@@ -322,11 +328,32 @@ class ApplyEngineMixin:
                 [(f"apply attempt {i + 1}/{slots}", attempt_model, req.max_tokens, 0)
                  for i in range(slots)],
             )
+            if req.token_budget is not None:
+                token_allowance = req.token_budget.allowance(
+                    est * slots, max_output_tokens=req.max_tokens * slots,
+                    label=f"apply:{req.task_id}:round-{state.round_no}")
             _events.emit("attempt_start", task_id=req.task_id, model=attempt_model,
                          round=state.round_no, backend=req.backend)
-            status, resp = chat(self.transport, self.api_key, attempt_model,
-                                [{"role": "user", "content": prompt}], req.max_tokens,
-                                req.reasoning, self.reasoning_token_budget, self.governor)
+            try:
+                status, resp = chat(self.transport, self.api_key, attempt_model,
+                                    [{"role": "user", "content": prompt}], req.max_tokens,
+                                    req.reasoning, self.reasoning_token_budget, self.governor)
+            except Exception:
+                if token_allowance is not None:
+                    req.token_budget.settle(token_allowance,
+                                            source=USAGE_UNAVAILABLE)
+                raise
+            if token_allowance is not None:
+                usage = resp.get("usage") if isinstance(resp, dict) else None
+                if isinstance(usage, dict) and "prompt_tokens" in usage and "completion_tokens" in usage:
+                    req.token_budget.settle(
+                        token_allowance,
+                        input_tokens=usage.get("prompt_tokens"),
+                        output_tokens=usage.get("completion_tokens"),
+                        source=USAGE_ACTUAL)
+                else:
+                    req.token_budget.settle(token_allowance,
+                                            source=USAGE_UNAVAILABLE)
             outcome.resp = resp
             if status != 200:
                 err = _http_error(status, resp)
@@ -671,5 +698,3 @@ class ApplyEngineMixin:
             _annotate_escalation(result, from_model=req.model,
                                  to_model=esc["model"], rungs=[esc["model"]])
         return result
-
-

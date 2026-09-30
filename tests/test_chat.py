@@ -58,6 +58,17 @@ class CostAccountingTests(unittest.TestCase):
         self.assertEqual(resp["usage"]["cost"], 0.004)
         self.assertNotIn("cost_estimated", resp["usage"])
 
+    def test_mock_governor_without_assert_no_tools(self):
+        class _BareGovernor:
+            def check_byok(self, model):
+                pass
+        fake = FakeTransport(models=[m("free/x", "0", "0")],
+                             posts=[_resp(cost=0.0)])
+        status, resp = chat(fake, "k", "free/x",
+                            [{"role": "user", "content": "hi"}], 64,
+                            governor=_BareGovernor())
+        self.assertEqual(status, 200)
+
     def test_missing_cost_on_free_model_fills_zero(self):
         fake = FakeTransport(models=[m("free/x", "0", "0")],
                              posts=[_resp(prompt_tokens=10,

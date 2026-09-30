@@ -51,6 +51,9 @@ class JevEvaluationResult:
     # Cost stays settled and honest; this flag is what lets a run report its
     # effective coverage instead of quietly presenting a paid call as signal.
     discarded: bool = False
+    # Set only when the result is a local fallback. Values describe why live
+    # Jev did not provide this judgment.
+    fallback_reason: Optional[str] = None
 
     def is_passing(self, min_confidence: float = 0.70) -> bool:
         """Apply the configured action threshold without conflating signals."""
@@ -204,7 +207,10 @@ def _parse_answer(answer: Any, expected: str, key: str,
 class JevEvaluator:
     def __init__(self, api_key: Optional[str] = None, endpoint: str = "https://api.typesafe.ai/v1/systemone",
                  transport: Optional[HttpTransport] = None, settings: Optional[Any] = None):
-        self.api_key = api_key or (getattr(settings, "jev_api_key", None) if settings else None)
+        self.explicitly_disabled = bool(getattr(settings, "jev_disabled", False)) if settings else False
+        self.api_key = (None if self.explicitly_disabled else
+                        api_key or (getattr(settings, "jev_api_key", None)
+                                    if settings else None))
         self.endpoint = (getattr(settings, "jev_endpoint", endpoint) if settings else endpoint) or endpoint
         self.model = getattr(settings, "jev_model", "jev-latest") if settings else "jev-latest"
         self.min_confidence = getattr(settings, "min_confidence", 0.70) if settings else 0.70
@@ -245,9 +251,17 @@ class JevEvaluator:
                             discarded=input_tokens > 0)
                 if status in (401, 422):
                     return self._failure(f"TypeSafe request rejected (HTTP {status})", fallback=False)
+                return self._local_structural_eval(
+                    state if isinstance(state, dict) else {"content": str(state)},
+                    fallback_reason="http_fallback")
             except Exception:
-                pass
-        return self._local_structural_eval(state if isinstance(state, dict) else {"content": str(state)})
+                return self._local_structural_eval(
+                    state if isinstance(state, dict) else {"content": str(state)},
+                    fallback_reason="transport_failure")
+        reason = "explicit_disable" if self.explicitly_disabled else "missing_key"
+        return self._local_structural_eval(
+            state if isinstance(state, dict) else {"content": str(state)},
+            fallback_reason=reason)
 
     def evaluate_once(self, state: Any,
                       questions: Dict[str, Any]) -> JevEvaluationResult:
@@ -264,7 +278,9 @@ class JevEvaluator:
             return self._failure("invalid TypeSafe question pack: " + str(exc),
                                  fallback=False)
         if not self.api_key:
-            return self._failure("TypeSafe key unavailable", fallback=True)
+            reason = "explicit_disable" if self.explicitly_disabled else "missing_key"
+            return self._failure("TypeSafe key unavailable", fallback=True,
+                                 fallback_reason=reason)
 
         payload = {"model": self.model, "state": state,
                    "questions": active}
@@ -361,7 +377,8 @@ class JevEvaluator:
                  model_observed: bool = False,
                  input_tokens_observed: bool = False,
                  output_tokens_observed: bool = False,
-                 discarded: bool = False) -> JevEvaluationResult:
+                 discarded: bool = False,
+                 fallback_reason: Optional[str] = None) -> JevEvaluationResult:
         return JevEvaluationResult(
             "fail", 0.0, 0.0, {}, [reason],
             cost=jev_cost(input_tokens), input_tokens=input_tokens,
@@ -370,7 +387,7 @@ class JevEvaluator:
             model_observed=model_observed,
             input_tokens_observed=input_tokens_observed,
             output_tokens_observed=output_tokens_observed,
-            discarded=discarded)
+            discarded=discarded, fallback_reason=fallback_reason)
 
     def _parse_jev_response(self, resp: Dict[str, Any], questions: Dict[str, Any]) -> JevEvaluationResult:
         if not isinstance(resp.get("answers"), dict) or not isinstance(resp.get("usage"), dict):
@@ -413,19 +430,20 @@ class JevEvaluator:
                                    input_tokens_observed=True,
                                    output_tokens_observed=True)
 
-    def _local_structural_eval(self, state: Dict[str, Any], fallback: bool = True) -> JevEvaluationResult:
+    def _local_structural_eval(self, state: Dict[str, Any], fallback: bool = True,
+                               fallback_reason: Optional[str] = "missing_key") -> JevEvaluationResult:
         code = state.get("code") or state.get("content") or ""
         json_content = state.get("json_content") or ""
         if json_content:
             try:
                 json.loads(json_content)
             except Exception as exc:
-                return self._failure(f"Invalid JSON: {exc}", fallback)
+                return self._failure(f"Invalid JSON: {exc}", fallback, fallback_reason=fallback_reason if fallback else None)
         if code and not state.get("diff"):
             try:
                 ast.parse(code)
             except SyntaxError as exc:
-                return self._failure(f"Python SyntaxError: {exc.msg} at line {exc.lineno}", fallback)
+                return self._failure(f"Python SyntaxError: {exc.msg} at line {exc.lineno}", fallback, fallback_reason=fallback_reason if fallback else None)
         if state.get("diff"):
             facts = state
             checks = [("hunk_shape_ok", bool(facts.get("hunk_shape_ok", False)), "diff hunk shape"),
@@ -435,18 +453,22 @@ class JevEvaluator:
                 checks.append(("ast_parse_ok", bool(facts["ast_parse_ok"]), "AST parse"))
             for _, ok, label in checks:
                 if not ok:
-                    return JevEvaluationResult("fail", 0.0, 0.0, {}, [f"Code-owned {label} check failed."], is_fallback=fallback, model=self.model)
+                    return JevEvaluationResult("fail", 0.0, 0.0, {}, [f"Code-owned {label} check failed."], is_fallback=fallback, model=self.model, fallback_reason=fallback_reason if fallback else None)
         elif not code and not json_content and not state.get("response") and not state.get("prompt"):
-            return self._failure("Empty candidate state returned.", fallback)
+            return self._failure("Empty candidate state returned.", fallback, fallback_reason=fallback_reason if fallback else None)
         return JevEvaluationResult("pass", 0.0, 1.0,
                                    {"mechanical_checks": "passed"},
-                                   ["All local code-owned structural checks passed."], is_fallback=fallback, model=self.model)
+                                   ["All local code-owned structural checks passed."], is_fallback=fallback, model=self.model, fallback_reason=fallback_reason if fallback else None)
 
     def check_diff_mechanics(self, diff: str, instruction: str = "", file_path: str = "",
                              candidate: Optional[str] = None):
         """Return the code-owned diff state and its local verdict."""
         state = _diff_state(diff or "", instruction or "", file_path or "", candidate=candidate)
-        return state, self._local_structural_eval(state, fallback=not bool(self.api_key))
+        fallback = not bool(self.api_key)
+        fallback_reason = ("explicit_disable" if self.explicitly_disabled
+                           else "missing_key") if fallback else None
+        return state, self._local_structural_eval(
+            state, fallback=fallback, fallback_reason=fallback_reason)
 
     def verify_diff_mechanics(self, diff: str, instruction: str = "", file_path: str = "",
                               candidate: Optional[str] = None, preflight=None) -> JevEvaluationResult:
@@ -467,11 +489,14 @@ class JevEvaluator:
             return JevEvaluationResult(result.verdict, result.confidence, result.supported,
                                        {"requires_iteration": answer["noul"] >= 0.5, "raw": result.answers},
                                        result.reasons, result.cost, result.input_tokens,
-                                       result.output_tokens, False, result.model)
+                                       result.output_tokens, False, result.model,
+                                       fallback_reason=result.fallback_reason)
         lower = prompt.lower()
         has_iter = any(word in lower for word in ("loop", "iterat", "branch", "recur", "dag", "retry", "traverse", "graph", "algorithm", "cycle"))
         return JevEvaluationResult("pass", 0.0, 1.0, {"requires_iteration": has_iter},
-                                   ["Detected iterative/algorithmic requirements" if has_iter else "Standard declarative edit flow"], is_fallback=True)
+                                   ["Detected iterative/algorithmic requirements" if has_iter else "Standard declarative edit flow"],
+                                   is_fallback=True, model=result.model,
+                                   fallback_reason=result.fallback_reason)
 
 
 def _looks_like_diff(diff: str) -> bool:

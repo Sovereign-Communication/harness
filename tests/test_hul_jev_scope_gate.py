@@ -404,6 +404,7 @@ class MissionPackScopeStorageTests(unittest.TestCase):
         self.assertEqual(len(evals), 1)
         self.assertEqual(evals[0]["site"], "hul_scope")
         self.assertFalse(evals[0]["determination"]["complete"])
+        self.assertEqual(evals[0]["fallback_reason"], "missing_key")
         self.assertTrue(evals[0]["verifier_holds"])
         ledger_events = _jev_evals(self.ledger)
         self.assertEqual(len(ledger_events), 1)
