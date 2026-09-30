@@ -31,7 +31,7 @@ counted in ``over_input_tokens`` instead of being clamped away or raised
 after the tokens are already spent.
 """
 import threading
-from typing import Dict, NamedTuple
+from typing import Dict, NamedTuple, Optional
 
 from .errors import HarnessError
 
@@ -348,11 +348,15 @@ class TokenBudget:
                 f"{'cancelled' if allowance.cancelled else 'settled'}")
 
 
-def budget_from_settings(settings, *, label="run"):
+def budget_from_settings(settings, *, label="run",
+                         max_input_tokens: Optional[int] = None,
+                         max_output_tokens: Optional[int] = None):
     """The run budget declared by configuration (the settings seam)."""
+    inp = max_input_tokens if max_input_tokens is not None else getattr(
+        settings, "token_budget_input", DEFAULT_RUN_INPUT_TOKENS)
+    out = max_output_tokens if max_output_tokens is not None else getattr(
+        settings, "token_budget_output", DEFAULT_RUN_OUTPUT_TOKENS)
     return TokenBudget(
         label,
-        max_input_tokens=getattr(settings, "token_budget_input",
-                                 DEFAULT_RUN_INPUT_TOKENS),
-        max_output_tokens=getattr(settings, "token_budget_output",
-                                  DEFAULT_RUN_OUTPUT_TOKENS))
+        max_input_tokens=inp,
+        max_output_tokens=out)

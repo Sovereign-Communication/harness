@@ -48,6 +48,7 @@ from .session import (apply_session as _session, governor_for as _governor,
 from .service import prepare_verify as _prepare_verify
 from .service import run_verify as _service_verify
 from .service import read_text_file as _service_read_text
+from .service import run_dogfood as _service_run_dogfood
 from .rankings import build_rankings_report as _rankings_report
 from .route_pack import validate_route_pack
 from .site_export import export_bundle as _site_export_bundle
@@ -267,91 +268,70 @@ def _cmd_dogfood(opts, settings):
                f"ledger; evidence window written to {source_path}")
         manifest_ctx, claims = parse_claims(manifest)
         quoted = source_text
+        claims_arg = claims
+        source_text_arg = quoted
+        claims_file_arg = None
+        source_file_arg = source_path
     else:
         if not opts.claims_file or not opts.source_file:
             raise HarnessError(
                 "dogfood requires --claims-file and --source-file, or --from-ledger")
-        manifest_ctx, claims = load_claims_manifest(opts.claims_file)
-        quoted = _read_text(opts.source_file, "--source-file")
+        claims_arg = None
+        source_text_arg = None
+        claims_file_arg = opts.claims_file
+        source_file_arg = opts.source_file
     if opts.from_ledger:
         with open(opts.claims_out, "w", encoding="utf-8", newline="\n") as f:
             f.write(fixture)
         eprint(f"[dogfood] curated manifest written to {opts.claims_out}")
-    defs = load_definitions_file(opts.definitions_file) if opts.definitions_file else {}
-    context = opts.claim_context if opts.claim_context is not None else manifest_ctx
-    prompt, lint = build_claims_prompt(claims, quoted, source_index=defs,
-                                       context=context)
-    # Preflight the apply-phase inputs BEFORE any phase runs: a typo'd target
-    # path or gate command must fail here, hermetically -- not after the
-    # panel has been paid for.
-    validate_target_file(opts.file)
-    validate_verify_command(opts.verify)
 
-    report = {"phases": []}
-
-    def _phase(name, payload):
-        # One emit site per dogfood phase: stream event AND report record.
+    def on_phase(name, payload):
         _emit({"dogfood_phase": name, **payload}, None)
-        report["phases"].append({"phase": name, **payload})
 
-    if not lint["ok"]:
-        _phase("ground", {"status": "rejected", "lint": lint})
-        report["status"] = "ungrounded"
-        _emit(report, opts.out)
+    validate_target_file(opts.file)
+    if opts.verify:
+        validate_verify_command(opts.verify)
+
+    report = _service_run_dogfood(
+        settings,
+        file=opts.file,
+        instruction=opts.instruction,
+        verify_cmd=opts.verify,
+        claims_file=claims_file_arg,
+        source_file=source_file_arg,
+        definitions_file=opts.definitions_file,
+        claims=claims_arg,
+        source_text=source_text_arg,
+        claim_context=opts.claim_context,
+        task_id=opts.task_id,
+        max_cost=opts.max_cost,
+        max_rounds=opts.max_rounds,
+        require_consent=opts.require_consent,
+        model=opts.model,
+        max_tokens=opts.max_tokens,
+        task_max_cost=opts.task_max_cost,
+        allow_escalation=opts.allow_escalation,
+        reasoning_effort=opts.reasoning_effort,
+        renew_consent=opts.renew_consent,
+        require_diff_authorization=getattr(
+            opts, "require_diff_authorization", None),
+        max_rotations=opts.max_rotations,
+        backend=opts.backend,
+        max_lines=opts.max_lines,
+        on_phase=on_phase,
+        run_verify_fn=_run_claims_verify,
+        apply_session_fn=_session)
+
+    _emit(report, opts.out)
+    if report.get("status") == "ungrounded":
         sys.exit(2)
-    _phase("ground", {"status": "ok", "claims": len(claims)})
-
-    # ---- phase 2: live panel verify (defect must be panel-confirmed) ------
-    reassurance = ",".join(c.claim_id for c in claims if c.kind == "reassurance")
-    verdict = _run_claims_verify(
-        settings, prompt=prompt, task_id=opts.task_id,
-        converge=True, reassurance_claims=reassurance,
-        max_cost=opts.max_cost)
-    tally = verdict.get("convergence", {}).get("tally") or {}
-    per_claim = tally.get("claims", {})
-    confirmed = sorted(cid for cid, c in per_claim.items()
-                       if c.get("converged") and c.get("verdict") == "real")
-    # Same policy owner as verify: a saturated tier fail-closes the phase and
-    # says why in plain language, and the report carries the verdict.
-    saturated = advise(panel_failures=verdict.get("panel_failures"))
-    if saturated:
-        report["saturated"] = True
-    _phase("verify", {"status": "ok", "confirmed_claims": confirmed,
-                      "tally": tally})
-    if not confirmed:
-        report["status"] = "not_confirmed"
-        report["verify"] = verdict
-        _emit(report, opts.out)
+    if report.get("status") == "not_confirmed":
         eprint("[dogfood] no defect survived the panel tally; nothing to apply.")
         sys.exit(3)
-    report["verify"] = verdict
-
-    # ---- phase 3: gated self-apply ----------------------------------------
-    engine = _session(settings)
-    result = engine.apply_batch(
-        [opts.file], task_id=opts.task_id,
-        options=BatchOptions(
-            instruction=opts.instruction, verify_cmd=opts.verify,
-            max_rounds=opts.max_rounds,
-            require_consent=opts.require_consent, model=opts.model,
-            max_tokens=opts.max_tokens,
-            task_max_cost=opts.task_max_cost,
-            allow_escalation=opts.allow_escalation,
-            reasoning_effort=opts.reasoning_effort,
-            renew_consent=opts.renew_consent,
-            require_diff_authorization=getattr(
-                opts, "require_diff_authorization", None),
-            max_rotations=opts.max_rotations, backend=opts.backend,
-            max_lines=opts.max_lines))
-    _phase("apply", {"status": result["status"], "cost": result.get("cost")})
-    report["apply"] = result
-    report["status"] = ("ok" if result["status"] == "ok"
-                        else "incomplete")
-    _emit(report, opts.out)
-    # Same status-meaning policy as _emit_by_status: one def site (results.py).
-    code = terminal_exit_code(result["status"])
-    if code:
-        sys.exit(code)
+    if "apply" in report:
+        code = terminal_exit_code(report["apply"].get("status"))
+        if code:
+            sys.exit(code)
 
 
 def _cmd_brief(opts, settings=None):
@@ -995,13 +975,17 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
         # default stays fail-closed for a plan-only preview whose LLM
         # decomposition fails.
         allow_heuristic_preview=allow_heuristic_preview,
-        # HV-4/HV-2-use: everything a lane must hand the ONE composer, taken
+        # HV-4/HV-2-use / HV-6: everything a lane must hand the ONE composer, taken
         # from the owner of that decision rather than assembled here -- the
         # run's allowance, the operator's stage subset, and the intake brief
         # the `context` stage produces. Attaching composition is evidence;
         # it is not a second budget and it refuses no run by itself.
         **compose_arguments(settings, goal=opts.goal,
-                            files=candidate_files))
+                            files=candidate_files,
+                            stages=getattr(opts, "stages", None),
+                            brief=getattr(opts, "brief", None),
+                            max_input_tokens=getattr(opts, "token_budget_input", None),
+                            max_output_tokens=getattr(opts, "token_budget_output", None)))
 
 
 def _resolve_hourglass(opts, settings):
@@ -1178,6 +1162,10 @@ def _cmd_plan(opts, settings):
         "composed_worst_case": plan_result.get("composed_worst_case"),
         "final_gate": summary.get("final_gate"),
     }
+    for field in ("composition", "planning", "token_budget", "brief",
+                  "stage_judgments", "stage_states"):
+        if plan_result.get(field) is not None:
+            output[field] = plan_result[field]
     if pending_state is not None:
         output["resumed"] = True
         output["skipped_completed"] = sorted(

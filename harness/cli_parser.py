@@ -227,6 +227,15 @@ def build_parser():
                          "(waist confirmation is skipped on the degraded path). "
                          "--execute is unaffected: it always falls back to the "
                          "heuristic on decomposition failure, opt-in or not.")
+    pp.add_argument("--stages", dest="stages", default=None,
+                    help="comma-separated subset of pipeline stages to run "
+                         "(context,planning,execution,verification)")
+    pp.add_argument("--brief", dest="brief", default=None,
+                    help="path to evidence-bearing brief JSON pack to use for intake")
+    pp.add_argument("--token-budget-input", dest="token_budget_input", type=int, default=None,
+                    help="maximum input token allowance for the composed run")
+    pp.add_argument("--token-budget-output", dest="token_budget_output", type=int, default=None,
+                    help="maximum output token allowance for the composed run")
     _add_output_flags(pp)
 
     pc = sub.add_parser("continue", help="Continue a deferred/incomplete apply task")

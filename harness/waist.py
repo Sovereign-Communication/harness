@@ -1685,6 +1685,10 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                 jev_policy=jev_policy)
             planning_payload = planning.to_dict()
             plan_result["planning"] = planning_payload
+            if isinstance(planning_payload, dict) and planning_payload.get("jev_signals"):
+                if "stage_judgments" not in plan_result:
+                    plan_result["stage_judgments"] = {}
+                plan_result["stage_judgments"]["planning"] = planning_payload["jev_signals"]
             states[STAGE_PLANNING] = STATE_COMPLETED
             # Only sufficiency authorizes the already-composed outer DAG.
             # A proposed planning DAG has no adapter into that outer plan,
@@ -1724,6 +1728,10 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             states[STAGE_CONTEXT] = STATE_COMPLETED
         plan_result["composition"] = composition_envelope(composition,
                                                           states=states)
+        plan_result["stage_states"] = states
+        plan_result["token_budget"] = token_budget.snapshot()
+    if brief is not None:
+        plan_result["brief"] = brief
     return plan_result
 
 
@@ -1949,48 +1957,66 @@ def tree_reader(root):
         return read_text(name)
 
     return read
-
-
 def compose_arguments(settings, *, goal, files, root=None,
-                      reader=None) -> Dict[str, Any]:
-    """Everything ``compose_plan`` needs to compose one run (HV-2-use).
+                      reader=None, stages=None, brief=None,
+                      token_budget=None,
+                      max_input_tokens: Optional[int] = None,
+                      max_output_tokens: Optional[int] = None) -> Dict[str, Any]:
+    """Everything ``compose_plan`` needs to compose one run (HV-2-use / HV-6).
 
     ONE owner for *how a lane composes*, so the CLI, MCP and agent lanes
     cannot drift apart on what a composed run is:
 
-    * the allowance from ``budget_from_settings`` -- the owner of
-      settings-defined ceilings, never a lane-local guess;
-    * the stage subset from ``stage_selection_from_settings`` (default: every
-      stage, i.e. the pre-composition posture); and
-    * when the ``context`` stage is selected, the intake brief that stage
-      produces, from :func:`intake_brief`, together with its measured token
-      count.
-
-    The brief is built only when ``context`` is actually selected: a run that
-    dropped the stage would pay to curate an artifact nothing consumes, and
-    the composition already reports that stage as ``skipped``.
-
-    ``supplied_brief`` is set only alongside a real pack. A lane must never
-    assert the flag without the artifact -- that is the difference between
-    "the context artifact exists" and "the caller hopes it does", and it is
-    the difference the composition decides the bypass on.
-
-    ``root`` is the tree the run edits. When it is given, the brief is read
-    relative to it and the SAME reader is handed to ``compose_plan``, because
-    the composition re-reads the pack's sources to decide whether it has
-    drifted: a pack built through one reader and checked through another
-    would report phantom drift -- or hide real drift -- on exactly the
-    platforms where the two disagree.
+    * the allowance from ``budget_from_settings`` or explicit overrides;
+    * the stage subset from ``stage_selection_from_settings`` or caller overrides;
+    * when supplied or ``context`` is selected, the intake brief pack.
     """
-    stages = stage_selection_from_settings(settings)
+    if stages is not None:
+        if isinstance(stages, str):
+            stage_candidates = [s.strip() for s in stages.split(",") if s.strip()]
+        else:
+            stage_candidates = list(stages)
+        resolved = resolve_stages(stage_candidates)
+        stages_subset = list(resolved["stages"])
+    else:
+        stages_subset = stage_selection_from_settings(settings)
+
     if reader is None and root is not None:
         reader = tree_reader(root)
+
+    if token_budget is not None:
+        tb = token_budget
+    elif settings is not None:
+        tb = budget_from_settings(settings, max_input_tokens=max_input_tokens,
+                                 max_output_tokens=max_output_tokens)
+    else:
+        tb = None
+
     arguments: Dict[str, Any] = {
-        "token_budget": budget_from_settings(settings),
-        "stages": stages,
+        "token_budget": tb,
+        "stages": stages_subset,
         "reader": reader,
     }
-    if STAGE_CONTEXT in stages:
+
+    brief_pack = None
+    if brief is not None:
+        if isinstance(brief, str):
+            if os.path.isfile(brief):
+                with open(brief, encoding="utf-8") as f:
+                    brief_pack = json.load(f)
+            else:
+                try:
+                    brief_pack = json.loads(brief)
+                except Exception:
+                    brief_pack = None
+        elif isinstance(brief, dict):
+            brief_pack = brief
+
+    if brief_pack is not None:
+        arguments["brief"] = brief_pack
+        arguments["brief_tokens"] = estimate_brief_tokens(brief_pack)
+        arguments["supplied_brief"] = True
+    elif STAGE_CONTEXT in stages_subset:
         intake = intake_brief(goal, files, reader=reader)
         arguments["brief"] = intake["brief"]
         arguments["brief_tokens"] = intake["tokens"]

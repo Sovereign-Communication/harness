@@ -401,6 +401,22 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         ],
         "user_facing": False,
     },
+    "HV-6": {
+        # The row must cite a real merged PR before the phase can pass.
+        "pr_pattern": None,
+        "required_tests": [
+            "tests/test_hourglass_surface_parity.py",
+            "tests/test_hourglass_end_to_end.py",
+        ],
+        "required_files": [
+            "harness/cli_parser.py",
+            "harness/cli.py",
+            "harness/mcp.py",
+            "harness/mcp_schemas.py",
+            "harness/server.py",
+        ],
+        "user_facing": True,
+    },
     "HV-2": {
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,

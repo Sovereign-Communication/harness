@@ -167,7 +167,7 @@ def _opt_bool(args, key):
 def validate_dispatch(kind, args):
     """CLI-boundary validation for UI dispatch. Same discipline as the CLI
     parsers: untrusted input is range-checked before anything runs."""
-    if kind not in ("apply", "verify", "continue", "bench", "chat"):
+    if kind not in ("apply", "verify", "continue", "bench", "chat", "dogfood"):
         raise HarnessError(f"unknown dispatch kind '{kind}'")
     args = dict(args or {})
     if kind == "chat":
@@ -180,6 +180,26 @@ def validate_dispatch(kind, args):
         _opt_bool(args, "web")
         _opt_bool(args, "allow_paid")
         _opt_bool(args, "allow_escalation")
+    elif kind == "dogfood":
+        f = _opt_str(args, "file", required=True)
+        if not os.path.isfile(f):
+            raise HarnessError(f"--file target does not exist: {f}")
+        _opt_str(args, "instruction", required=True)
+        _opt_str(args, "verify")
+        cf = _opt_str(args, "claims_file")
+        if cf and not os.path.isfile(cf):
+            raise HarnessError(f"claims_file does not exist: {cf}")
+        sf = _opt_str(args, "source_file")
+        if sf and not os.path.isfile(sf):
+            raise HarnessError(f"source_file does not exist: {sf}")
+        df = _opt_str(args, "definitions_file")
+        if df and not os.path.isfile(df):
+            raise HarnessError(f"definitions_file does not exist: {df}")
+        _opt_str(args, "claim_context")
+        _opt_int(args, "max_rounds", 1, 8, 3)
+        if args.get("max_cost") is not None:
+            args["max_cost"] = _finite_float(args["max_cost"], "max_cost",
+                                             0.0, HARD_MAX_COST)
     elif kind == "apply":
         f = _opt_str(args, "file", required=True)
         if not os.path.isfile(f):
@@ -346,12 +366,31 @@ def run_chat_task(task_id, args, cancel_check):
     )
 
 
+def run_dogfood_task(task_id, args, cancel_check):
+    from .service import run_dogfood
+    settings = load_settings()
+    return run_dogfood(
+        settings,
+        file=args["file"],
+        instruction=args["instruction"],
+        verify_cmd=args.get("verify"),
+        claims_file=args.get("claims_file"),
+        source_file=args.get("source_file"),
+        definitions_file=args.get("definitions_file"),
+        claim_context=args.get("claim_context"),
+        task_id=task_id,
+        max_cost=args.get("max_cost"),
+        max_rounds=args.get("max_rounds") or 3,
+        cancel_check=cancel_check)
+
+
 RUNNERS = {
     "apply": run_apply_task,
     "verify": run_verify_task,
     "continue": run_continue_task,
     "bench": run_bench_task,
     "chat": run_chat_task,
+    "dogfood": run_dogfood_task,
 }
 
 
