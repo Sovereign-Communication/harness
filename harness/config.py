@@ -516,6 +516,7 @@ class Settings:
                   hourglass_stages=None,
                   openrouter_floor_default=True, max_price_prompt=None,
                   max_price_completion=None, jev_api_key=None,
+                  jev_disabled=False,
                   jev_endpoint="https://api.typesafe.ai/v1/systemone",
                   jev_model="jev-latest", min_confidence=0.70,
                   token_budget_input=DEFAULT_TOKEN_BUDGET_INPUT,
@@ -575,6 +576,7 @@ class Settings:
         self.max_price_prompt = max_price_prompt
         self.max_price_completion = max_price_completion
         self.jev_api_key = jev_api_key
+        self.jev_disabled = bool(jev_disabled)
         self.jev_endpoint = jev_endpoint
         self.jev_model = jev_model or "jev-latest"
         self.min_confidence = min_confidence
@@ -599,7 +601,7 @@ class Settings:
             "hourglass_isolate", "hourglass_parallel",
             "hourglass_require_attestation", "hourglass_decompose",
             "openrouter_floor_default",
-            "max_price_prompt", "max_price_completion", "jev_api_key",
+            "max_price_prompt", "max_price_completion", "jev_api_key", "jev_disabled",
             "jev_endpoint", "jev_model", "min_confidence",
             "token_budget_input", "token_budget_output",
             "hourglass_stages")}
@@ -825,6 +827,7 @@ def load_settings(overrides=None):
                           if get("max_price_prompt", None) is not None else None),
         max_price_completion=(float(get("max_price_completion", None))
                               if get("max_price_completion", None) is not None else None),
+        jev_disabled=(os.environ.get("HARNESS_JEV_DISABLE") == "1"),
         jev_api_key=(None if os.environ.get("HARNESS_JEV_DISABLE") == "1"
                      else (get("jev_api_key", None) or resolve_jev_key())),
         jev_endpoint=str(get("jev_endpoint", "https://api.typesafe.ai/v1/systemone")),

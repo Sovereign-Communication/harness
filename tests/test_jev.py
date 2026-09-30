@@ -15,6 +15,12 @@ class FakeTransport:
         return self.status, self.response
 
 
+class RaisingTransport(FakeTransport):
+    def post(self, url, key, payload):
+        self.calls.append((url, key, payload))
+        raise OSError("offline")
+
+
 def live_response(answers=None, input_tokens=100, output_tokens=20):
     return {"model": "jev-1.13.0", "answers": answers or {
         "supported": {"type": "noul", "noul": 0.94},
@@ -93,10 +99,30 @@ class JevP0Tests(unittest.TestCase):
     def test_unkeyed_local_fallback_and_keyed_rejection(self):
         local = JevEvaluator().evaluate({"code": "x = 1\n"})
         self.assertTrue(local.is_fallback)
+        self.assertEqual(local.fallback_reason, "missing_key")
         for status in (401, 422):
             rejected = JevEvaluator(api_key="key", transport=FakeTransport(status=status, response={})).evaluate({"code": "x = 1"})
             self.assertFalse(rejected.is_fallback)
             self.assertEqual(rejected.verdict, "fail")
+
+    def test_explicit_disable_is_distinct_from_missing_key(self):
+        with mock.patch.dict("os.environ", {"HARNESS_JEV_DISABLE": "1"}):
+            disabled = load_settings({"jev_api_key": "configured"})
+        local = JevEvaluator(settings=disabled, transport=FakeTransport()).evaluate(
+            {"code": "x = 1"})
+        missing = JevEvaluator(settings=load_settings()).evaluate(
+            {"code": "x = 1"})
+        self.assertEqual(local.fallback_reason, "explicit_disable")
+        self.assertEqual(missing.fallback_reason, "missing_key")
+
+    def test_transport_and_http_failures_are_labeled_fallbacks(self):
+        state = {"code": "x = 1"}
+        transport = JevEvaluator(api_key="key", transport=RaisingTransport()).evaluate(state)
+        http = JevEvaluator(api_key="key", transport=FakeTransport(status=503)).evaluate(state)
+        self.assertTrue(transport.is_fallback)
+        self.assertEqual(transport.fallback_reason, "transport_failure")
+        self.assertTrue(http.is_fallback)
+        self.assertEqual(http.fallback_reason, "http_fallback")
 
     def test_local_diff_rejects_noop_and_empty_hunks(self):
         evaluator = JevEvaluator()
