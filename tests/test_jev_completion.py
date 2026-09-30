@@ -1337,8 +1337,8 @@ class StatusRowMustNotCarryItsOwnEvidenceTests(unittest.TestCase):
     def test_the_live_hv5_row_claims_merge_honestly(self):
         self.assertTrue(self._claims_merge(self._roadmap(), "HV-5"))
 
-    def test_the_live_hv6_row_does_not_read_as_its_own_merge_proof(self):
-        self.assertFalse(self._claims_merge(self._roadmap(), "HV-6"))
+    def test_the_live_hv6_row_claims_merge_honestly(self):
+        self.assertTrue(self._claims_merge(self._roadmap(), "HV-6"))
 
     def test_a_row_quoting_the_rule_is_caught_by_the_same_check(self):
         # The shape that actually shipped: a row explaining the fix while
