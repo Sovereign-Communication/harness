@@ -171,7 +171,8 @@ class PolicyExceptAndNormalizeCoverage(unittest.TestCase):
         (root / "ok.md").write_text("x\n", encoding="utf-8")
         r3, s3 = policy.evaluate_completion_nouls(
             "write ok.md", "state", named_artifacts=["ok.md"], root_dir=root)
-        self.assertTrue(r3.is_fallback)
+        self.assertFalse(r3.is_fallback)
+        self.assertFalse(s3["is_fallback"])
         self.assertTrue(s3["cannot_complete"])
 
     def test_completion_named_artifacts_none_scans_goal(self):

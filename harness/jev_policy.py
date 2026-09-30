@@ -142,12 +142,18 @@ class JevPolicy:
         self.transport = transport
         self.governor = governor
         self.ledger = ledger
-        self.evaluator = evaluator or JevEvaluator(
+        explicitly_disabled = bool(getattr(settings, "jev_disabled", False))
+        self.evaluator = (JevEvaluator(
+            api_key=None,
+            endpoint=getattr(settings, "jev_endpoint", None),
+            transport=transport,
+            settings=settings,
+        ) if explicitly_disabled else evaluator or JevEvaluator(
             api_key=getattr(settings, "jev_api_key", None),
             endpoint=getattr(settings, "jev_endpoint", None),
             transport=transport,
             settings=settings,
-        )
+        ))
 
     @property
     def keyed(self) -> bool:
@@ -560,6 +566,7 @@ class JevPolicy:
                     # this distinction so reported provider usage is settled.
                     is_fallback=bool(result.is_fallback),
                     model=result.model,
+                    fallback_reason=result.fallback_reason,
                 )
                 return fallback, values, False
             normalized = {
@@ -584,6 +591,10 @@ class JevPolicy:
                 {key: None for key in questions} | {"pack_version": ANSWER_PACK_VERSION},
                 ["unkeyed Jev cannot establish answer sufficiency"],
                 is_fallback=True, model=self.evaluator.model,
+                fallback_reason=("explicit_disable"
+                                 if getattr(self.evaluator,
+                                            "explicitly_disabled", False)
+                                 else "missing_key"),
             )
             structural = self._account(fallback, site=site, task_id=task_id)
             structural.update({
@@ -597,8 +608,10 @@ class JevPolicy:
             return fallback, structural
 
         reservation = None
+        dispatched = False
         try:
             reservation = self._preflight(site=site, max_input_tokens=max_input_tokens)
+            dispatched = True
             raw_result = self.evaluator.evaluate(state, questions)
             result, values, live = normalize(raw_result)
             structural = self._account(
@@ -628,7 +641,9 @@ class JevPolicy:
             refusal = JevEvaluationResult(
                 "fail", 0.0, 0.0,
                 {key: None for key in questions} | {"pack_version": ANSWER_PACK_VERSION},
-                list(refusal.reasons), is_fallback=True, model=refusal.model,
+                list(refusal.reasons), is_fallback=dispatched,
+                model=refusal.model,
+                fallback_reason=("transport_failure" if dispatched else None),
             )
             structural.update({
                 "capability": "answer",
@@ -719,9 +734,11 @@ class JevPolicy:
         reservation and refuse honestly. Returns ``(result, structural)``.
         """
         reservation = None
+        dispatched = False
         try:
             reservation = self._preflight(
                 site=site, max_input_tokens=max_input_tokens)
+            dispatched = True
             result = self.evaluator.evaluate(
                 {"context": failure_context or ""},
                 escalation_decision_pack())
@@ -1137,16 +1154,18 @@ class JevPolicy:
             result = JevEvaluationResult(
                 "fail", 0.0, 0.0, answers,
                 [f"named artifact missing: {p}" for p in missing],
-                is_fallback=True, model=self.evaluator.model)
+                is_fallback=False, model=self.evaluator.model)
             structural = self._account(
                 result, site=site, task_id=task_id, reservation=None)
             structural["cannot_complete"] = True
             structural["missing_artifacts"] = missing
             return result, structural
         reservation = None
+        dispatched = False
         try:
             reservation = self._preflight(
                 site=site, max_input_tokens=max_input_tokens)
+            dispatched = True
             result = self.evaluator.evaluate(
                 {
                     "goal": goal or "",
@@ -1165,7 +1184,8 @@ class JevPolicy:
                     "pass", 0.0, 1.0, answers, result.reasons,
                     cost=result.cost, input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
-                    is_fallback=True, model=result.model)
+                    is_fallback=True, model=result.model,
+                    fallback_reason=result.fallback_reason)
             else:
                 present = answers.get("named_artifacts_present")
                 achieved = answers.get("goal_achieved")
@@ -1202,7 +1222,8 @@ class JevPolicy:
             }
             fallback = JevEvaluationResult(
                 "pass", 0.0, 0.5, answers, [str(exc)],
-                is_fallback=True, model=self.evaluator.model)
+                is_fallback=dispatched, model=self.evaluator.model,
+                fallback_reason=("transport_failure" if dispatched else None))
             structural = self._structural(fallback, site)
             structural["cannot_complete"] = True
             structural["missing_artifacts"] = missing

@@ -115,6 +115,17 @@ class JevP0Tests(unittest.TestCase):
         self.assertEqual(local.fallback_reason, "explicit_disable")
         self.assertEqual(missing.fallback_reason, "missing_key")
 
+    def test_explicit_disable_cannot_be_overridden_by_constructor_api_key(self):
+        with mock.patch.dict("os.environ", {"HARNESS_JEV_DISABLE": "1"}):
+            disabled = load_settings({"jev_api_key": "configured"})
+        transport = FakeTransport()
+        evaluator = JevEvaluator(api_key="separately-supplied", settings=disabled,
+                                 transport=transport)
+        result = evaluator.evaluate({"code": "x = 1"})
+        self.assertIsNone(evaluator.api_key)
+        self.assertEqual(result.fallback_reason, "explicit_disable")
+        self.assertEqual(transport.calls, [])
+
     def test_explicit_disable_provenance_survives_early_diff_failure(self):
         with mock.patch.dict("os.environ", {"HARNESS_JEV_DISABLE": "1"}):
             disabled = load_settings({"jev_api_key": "configured"})

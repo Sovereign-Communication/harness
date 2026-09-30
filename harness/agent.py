@@ -15,7 +15,7 @@ from .dag import TaskDAG, DAGNode, node_apply_kwargs
 from .prompts import MAX_FILE_LINES
 from .errors import HarnessError, ToolCancelled
 from .events import emit
-from .orchestrator import drive, keyword_fallback, triage_files
+from .orchestrator import assess_completion, drive, keyword_fallback, triage_files
 from .prompts import CAPABILITY_MARKER
 from .escalation import escalation_evidence, escalation_evidence_fields
 from .executor import PlanExecutor
@@ -201,7 +201,11 @@ class AutonomousAgent:
             if intent == "edit" and auto_apply:
                 emit("chat_escalated", reason="edit-intent in auto mode",
                      target="plan_lane")
-                return self._handle_edit(prompt, sid, auto_apply, cancel_check)
+                return self._handle_edit(prompt, sid, auto_apply, cancel_check,
+                                         use_jev_completion=self._live_jev_available())
+            if intent == "conversation" and self._live_jev_available():
+                return self.run_hourglass_request(
+                    prompt, session_id=sid, cancel_check=cancel_check, web=web)
             return self._handle_conversation(prompt, sid, cancel_check, web=web)
 
         intent = classify_prompt_intent(prompt)
@@ -211,11 +215,20 @@ class AutonomousAgent:
             raise ToolCancelled("Prompt execution was cancelled by user")
 
         if intent == "conversation":
+            if self._live_jev_available():
+                return self.run_hourglass_request(
+                    prompt, session_id=sid, cancel_check=cancel_check, web=web)
             return self._handle_conversation(prompt, sid, cancel_check, web=web)
         elif intent == "audit":
             return self._handle_audit(prompt, sid, cancel_check)
         else:
-            return self._handle_edit(prompt, sid, auto_apply, cancel_check)
+            return self._handle_edit(prompt, sid, auto_apply, cancel_check,
+                                     use_jev_completion=(auto_apply
+                                                         and self._live_jev_available()))
+
+    def _live_jev_available(self) -> bool:
+        return bool(getattr(self.settings, "jev_api_key", None)
+                    and not getattr(self.settings, "jev_disabled", False))
 
     def _gather_web_context(self, prompt: str) -> List[Dict[str, Any]]:
         # Web owns the network seams; pass those module functions through so
@@ -305,7 +318,8 @@ class AutonomousAgent:
                                prior: Optional[Dict[str, Any]] = None,
                                model_offset: int = 0,
                                cancel_check=None, governor=None,
-                               api_key=None) -> Dict[str, Any]:
+                               api_key=None, past_turns=None,
+                               web_sources=None) -> Dict[str, Any]:
         """Run one cheap-to-capable answer attempt through the shared ladder."""
         if cancel_check and cancel_check():
             raise ToolCancelled("Prompt execution was cancelled by user")
@@ -331,7 +345,20 @@ class AutonomousAgent:
             raise HarnessError("answer ladder is empty")
         start = max(0, min(int(model_offset), len(ladder) - 1))
         ordered = ladder[start:] + ladder[:start]
-        system = DEFAULT_CHAT_SYSTEM_PROMPT + "\n\n" + _NO_WEB_DISCLOSURE
+        system = DEFAULT_CHAT_SYSTEM_PROMPT
+        if web_sources:
+            hosts = ", ".join(sorted(DEFAULT_FETCH_HOSTS)) or "(none configured)"
+            system += "\n\n" + _WEB_CAPABILITY_NOTE.format(hosts=hosts)
+            lines = []
+            for source in web_sources:
+                if source.get("ok"):
+                    lines.append(f"SOURCE ({source.get('kind')}): {source.get('title') or ''} {source.get('url')}\n" + str(source.get("text") or "")[:_MAX_WEB_CONTEXT_CHARS])
+                else:
+                    lines.append(f"SOURCE ({source.get('kind')}) FAILED: {source.get('url') or ''} {source.get('note')}")
+            if lines:
+                system += "\n\n[Web tool results for this turn -- cite only these; do not invent others]\n" + "\n\n".join(lines)
+        else:
+            system += "\n\n" + _NO_WEB_DISCLOSURE
         if context:
             system += ("\n\n[Retained local context — use it as evidence, "
                        "but do not claim facts that it does not contain]\n"
@@ -345,8 +372,13 @@ class AutonomousAgent:
                      + str(prior.get("feedback") or "")[:1200]
                      + "\nProduce a fresh, corrected answer. Do not mention the "
                        "review process unless it helps the user.")
-        messages = [{"role": "system", "content": system},
-                    {"role": "user", "content": user}]
+        messages = [{"role": "system", "content": system}]
+        for turn in (past_turns or [])[-10:]:
+            if turn.get("prompt"):
+                messages.append({"role": "user", "content": turn["prompt"]})
+            if turn.get("response"):
+                messages.append({"role": "assistant", "content": turn["response"]})
+        messages.append({"role": "user", "content": user})
         prompt_text = user
         attempts = []
         best_truncated = None
@@ -461,6 +493,7 @@ class AutonomousAgent:
 
         context, files, brief, web_sources = self._hourglass_request_context(
             prompt, web=web)
+        past_turns = load_chat_history(sid, self.history_dir)[-10:]
         api_key, gov = governor_for(self.settings)
         policy = policy_for(
             self.settings, transport=self.transport, governor=gov,
@@ -490,12 +523,13 @@ class AutonomousAgent:
                     break
             attempt = self._hourglass_answer_once(
                 prompt, context, prior=prior, model_offset=round_no - 1,
-                cancel_check=cancel_check, governor=gov, api_key=api_key)
+                cancel_check=cancel_check, governor=gov, api_key=api_key,
+                past_turns=past_turns, web_sources=web_sources)
             answer = attempt["answer"]
             model = attempt["model"]
             total_cost += float(attempt.get("cost") or 0.0)
             jev_result, jev_structural = policy.evaluate_answer(
-                prompt, answer, context, site="answer", task_id=sid)
+                prompt, answer, "", site="answer", task_id=sid)
             total_cost += float(jev_structural.get("cost") or 0.0)
             envelope = self._jev_answer_envelope(
                 jev_result, jev_structural, threshold)
@@ -513,9 +547,6 @@ class AutonomousAgent:
                  native=envelope["native"],
                  confidence=envelope["confidence"]["observed"],
                  iteration_required=bool(jev_structural.get("iteration_required")))
-            if not envelope["native"]:
-                status = "deferred"
-                break
             if jev_structural.get("plan_required"):
                 # A direct-answer request must not turn an advisory Jev signal
                 # into a write.  The edit lane owns plan/execute; callers can
@@ -523,8 +554,52 @@ class AutonomousAgent:
                 status = "plan_required"
                 break
             if envelope["confidence"]["passed"]:
-                status = "ok"
+                completion = assess_completion(
+                    prompt,
+                    "Candidate answer:\n" + answer + "\n\nRetained context:\n" + context,
+                    self._orchestrator_chat_fn(gov))
+                history[-1]["completion"] = completion
+                if completion and completion.get("complete") is True:
+                    status = "ok"
+                    break
+                prior = {
+                    "answer": answer,
+                    "feedback": ((completion or {}).get("remaining")
+                                 or (completion or {}).get("reason")
+                                 or "Independent completion judge could not verify fulfillment"),
+                }
+                if round_no == rounds:
+                    status = "needs_iteration"
+                continue
+            if not envelope["native"] and not envelope["is_fallback"]:
+                # A rejected, malformed, or preflight-refused live request is
+                # not an allowed local fallback and cannot use the independent
+                # fulfillment check to turn it into approval.
+                status = "deferred"
+                stop_reason = "; ".join(envelope["reasons"] or []) or (
+                    "Jev could not produce a usable live judgment")
                 break
+            if not envelope["native"] and envelope["is_fallback"]:
+                # Live Jev is unavailable. Its local fallback remains visible,
+                # while the independent fulfillment judge decides completion.
+                completion = assess_completion(
+                    prompt,
+                    "Candidate answer:\n" + answer + "\n\nRetained context:\n" + context,
+                    self._orchestrator_chat_fn(gov))
+                history[-1]["completion"] = completion
+                if completion and completion.get("complete") is True:
+                    status = "ok"
+                    break
+                if round_no == rounds:
+                    status = "deferred"
+                    stop_reason = ((completion or {}).get("remaining")
+                                   or "Live Jev unavailable; independent fulfillment was not established")
+                else:
+                    prior = {"answer": answer,
+                             "feedback": ((completion or {}).get("remaining")
+                                          or (completion or {}).get("reason")
+                                          or "Independent completion judge could not verify fulfillment")}
+                continue
             prior = {
                 "answer": answer,
                 "feedback": "Jev says another answer attempt is needed: "
@@ -561,7 +636,7 @@ class AutonomousAgent:
         }
         if status == "needs_iteration":
             result["remaining_scope"] = (
-                "Jev did not establish the requested confidence threshold")
+                "Jev and the independent completion judge did not establish fulfillment")
         elif stop_reason:
             result["remaining_scope"] = stop_reason
         save_chat_turn(sid, result, self.history_dir)
