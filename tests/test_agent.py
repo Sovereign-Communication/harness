@@ -15,6 +15,7 @@ from harness.agent import (
     save_chat_turn,
 )
 from harness.history import get_default_history_dir
+from harness.jev import JevEvaluationResult
 from harness.config import load_settings
 from harness.errors import HarnessError, ToolCancelled
 from harness.repo_scope import _gate_python
@@ -138,6 +139,17 @@ class TestAgentClassificationAndDiscovery(unittest.TestCase):
 
 
 class TestAutonomousAgent(unittest.TestCase):
+    def test_jev_answer_envelope_preserves_fallback_reason(self):
+        result = JevEvaluationResult(
+            "fail", 0.0, 0.0, {}, ["unkeyed"], is_fallback=True,
+            fallback_reason="explicit_disable")
+        envelope = AutonomousAgent._jev_answer_envelope(
+            result, {"native": False, "answer_sufficient": None,
+                     "cost": 0.0, "input_tokens": 0, "output_tokens": 0},
+            0.7)
+        self.assertTrue(envelope["is_fallback"])
+        self.assertEqual(envelope["fallback_reason"], "explicit_disable")
+
     def test_empty_prompt_raises(self):
         agent = AutonomousAgent()
         with self.assertRaises(HarnessError):

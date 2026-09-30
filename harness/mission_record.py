@@ -934,6 +934,7 @@ def evaluate_scope_on_pack(
         "cost": float(result.cost or 0.0),
         "input_tokens": result.input_tokens,
         "is_fallback": bool(result.is_fallback),
+        "fallback_reason": result.fallback_reason,
         "model": result.model,
         "determination": determination,
         "structural": structural,

@@ -462,7 +462,11 @@ class JevEvaluator:
                              candidate: Optional[str] = None):
         """Return the code-owned diff state and its local verdict."""
         state = _diff_state(diff or "", instruction or "", file_path or "", candidate=candidate)
-        return state, self._local_structural_eval(state, fallback=not bool(self.api_key))
+        fallback = not bool(self.api_key)
+        fallback_reason = ("explicit_disable" if self.explicitly_disabled
+                           else "missing_key") if fallback else None
+        return state, self._local_structural_eval(
+            state, fallback=fallback, fallback_reason=fallback_reason)
 
     def verify_diff_mechanics(self, diff: str, instruction: str = "", file_path: str = "",
                               candidate: Optional[str] = None, preflight=None) -> JevEvaluationResult:
@@ -483,11 +487,14 @@ class JevEvaluator:
             return JevEvaluationResult(result.verdict, result.confidence, result.supported,
                                        {"requires_iteration": answer["noul"] >= 0.5, "raw": result.answers},
                                        result.reasons, result.cost, result.input_tokens,
-                                       result.output_tokens, False, result.model)
+                                       result.output_tokens, False, result.model,
+                                       fallback_reason=result.fallback_reason)
         lower = prompt.lower()
         has_iter = any(word in lower for word in ("loop", "iterat", "branch", "recur", "dag", "retry", "traverse", "graph", "algorithm", "cycle"))
         return JevEvaluationResult("pass", 0.0, 1.0, {"requires_iteration": has_iter},
-                                   ["Detected iterative/algorithmic requirements" if has_iter else "Standard declarative edit flow"], is_fallback=True)
+                                   ["Detected iterative/algorithmic requirements" if has_iter else "Standard declarative edit flow"],
+                                   is_fallback=True, model=result.model,
+                                   fallback_reason=result.fallback_reason)
 
 
 def _looks_like_diff(diff: str) -> bool:
