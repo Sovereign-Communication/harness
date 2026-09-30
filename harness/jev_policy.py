@@ -1408,7 +1408,11 @@ class JevPolicy:
             result = JevEvaluationResult(
                 "fail" if not determination["complete"] else "pass",
                 0.0, 0.0, answers, determination["reasons"],
-                is_fallback=True, model=self.evaluator.model)
+                is_fallback=True, model=self.evaluator.model,
+                fallback_reason=("explicit_disable"
+                                 if getattr(self.evaluator,
+                                            "explicitly_disabled", False)
+                                 else "missing_key"))
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id)
             structural["determination"] = determination
@@ -1463,7 +1467,8 @@ class JevPolicy:
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
                 is_fallback=is_fallback,
-                model=result.model)
+                model=result.model,
+                fallback_reason=result.fallback_reason)
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id,
                 reservation=reservation)

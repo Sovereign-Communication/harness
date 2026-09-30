@@ -110,10 +110,27 @@ class JevP0Tests(unittest.TestCase):
             disabled = load_settings({"jev_api_key": "configured"})
         local = JevEvaluator(settings=disabled, transport=FakeTransport()).evaluate(
             {"code": "x = 1"})
-        missing = JevEvaluator(settings=load_settings()).evaluate(
+        missing = JevEvaluator(settings=load_settings({'jev_api_key': None})).evaluate(
             {"code": "x = 1"})
         self.assertEqual(local.fallback_reason, "explicit_disable")
         self.assertEqual(missing.fallback_reason, "missing_key")
+
+    def test_explicit_disable_provenance_survives_early_diff_failure(self):
+        with mock.patch.dict("os.environ", {"HARNESS_JEV_DISABLE": "1"}):
+            disabled = load_settings({"jev_api_key": "configured"})
+        result = JevEvaluator(settings=disabled).verify_diff_mechanics(
+            "", "change it", "foo.py")
+        self.assertEqual(result.verdict, "fail")
+        self.assertTrue(result.is_fallback)
+        self.assertEqual(result.fallback_reason, "explicit_disable")
+
+    def test_plan_requirement_wrapper_preserves_fallback_provenance(self):
+        with mock.patch.dict("os.environ", {"HARNESS_JEV_DISABLE": "1"}):
+            disabled = load_settings({"jev_api_key": "configured"})
+        result = JevEvaluator(settings=disabled).evaluate_plan_requirements(
+            "Implement a loop")
+        self.assertTrue(result.is_fallback)
+        self.assertEqual(result.fallback_reason, "explicit_disable")
 
     def test_transport_and_http_failures_are_labeled_fallbacks(self):
         state = {"code": "x = 1"}

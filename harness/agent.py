@@ -403,6 +403,7 @@ class AutonomousAgent:
         return {
             "native": native,
             "is_fallback": bool(result.is_fallback),
+            "fallback_reason": result.fallback_reason,
             "verdict": result.verdict,
             "supported": result.supported,
             "answers": answers,
