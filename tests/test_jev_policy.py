@@ -57,8 +57,19 @@ class JevPolicyTests(unittest.TestCase):
         self.assertTrue(result.is_fallback)
         self.assertEqual(result.cost, 0.0)
         self.assertTrue(structural["is_fallback"])
+        self.assertEqual(structural["fallback_reason"], "missing_key")
         self.assertEqual(structural["input_tokens"], 0)
         self.assertEqual(structural["site"], "apply")
+
+    def test_fallback_reason_is_recorded_in_ledger(self):
+        ledger = self._ledger()
+        policy = policy_for(self._unkeyed_settings(), ledger=ledger)
+        _, structural = policy.evaluate_diff(
+            "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n",
+            "change x", "x.py", site="apply")
+        self.assertEqual(structural["fallback_reason"], "missing_key")
+        event = ledger.entries()[0]
+        self.assertEqual(event["fallback_reason"], "missing_key")
 
     def test_live_call_reserves_and_records_actual_once(self):
         transport = _JevTransport(self._response(tokens=100))
