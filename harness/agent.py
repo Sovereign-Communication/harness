@@ -41,6 +41,7 @@ from .jev_packs import (
 )
 from .token_budget import budget_from_settings
 from .waist import (
+    STAGE_CONTEXT,
     STAGE_EXECUTION,
     STATE_COMPLETED,
     STATE_PENDING,
@@ -1077,9 +1078,13 @@ class AutonomousAgent:
         """
         from .jev_packs import HOURGLASS_STAGE_DIMENSIONS
         try:
-            _result, structural = jev_policy.evaluate_hourglass_stage(
+            eval_res = jev_policy.evaluate_hourglass_stage(
                 dimension, state, site=HOURGLASS_STAGE_SITE, task_id=task_id)
-        except HarnessError as exc:
+            if isinstance(eval_res, tuple) and len(eval_res) >= 2:
+                _result, structural = eval_res[0], eval_res[1]
+            else:
+                _result, structural = None, getattr(eval_res, "structural", {}) or {}
+        except (HarnessError, TypeError, ValueError) as exc:
             return {"signals": {}, "native": False,
                     "error": "{0}: {1}".format(type(exc).__name__, exc)}
         structural = structural or {}
@@ -1126,16 +1131,22 @@ class AutonomousAgent:
             # something it would have to reject.
             recommendation, source = None, "undeclared_discarded"
 
-        # `consent_fresh` is deliberately None, not True. Nothing has
-        # changed the assignment yet -- no work package has been dispatched,
-        # so no new consent question exists -- and claiming freshness the run
-        # has not re-derived would be exactly the kind of invented signal
-        # this stage is meant to avoid. None means "no evidence it is
-        # stale", so no renewal is forced here; the dispatch slice is where
-        # consent is actually re-derived.
+        consent_fresh = None
+        if jev_policy is not None:
+            consent_eval = self._ask_stage_dimension(
+                "consent",
+                {"assignment": goal, "stages": list(completed_stages)},
+                jev_policy)
+            judgment["consent"] = consent_eval
+            fresh_sig = (consent_eval.get("signals") or {}).get("consent_fresh")
+            if isinstance(fresh_sig, (int, float)) and not isinstance(fresh_sig, bool):
+                consent_fresh = fresh_sig >= 0.70
+            elif consent_eval.get("native") is False:
+                consent_fresh = None
+
         decision = validate_restart_request(
             STAGE_EXECUTION, recommendation,
-            completed_stages=completed_stages, consent_fresh=None)
+            completed_stages=completed_stages, consent_fresh=consent_fresh)
         decision["recommendation_source"] = source
         return decision
 
@@ -1165,12 +1176,21 @@ class AutonomousAgent:
         envelope = (dict(plan.get("composition") or {})
                     if isinstance(plan, dict) else {})
         stages = envelope.get("stages") or []
-        selected = any(isinstance(item, dict)
-                       and item.get("stage") == STAGE_EXECUTION
-                       and item.get("state") != "skipped"
-                       for item in stages)
+        selected_execution = any(isinstance(item, dict)
+                                 and item.get("stage") == STAGE_EXECUTION
+                                 and item.get("state") != "skipped"
+                                 for item in stages)
+        selected_context = any(isinstance(item, dict)
+                               and item.get("stage") == STAGE_CONTEXT
+                               and item.get("state") != "skipped"
+                               for item in stages)
         judgments: Dict[str, Any] = {}
-        if selected and isinstance(plan, dict):
+        if selected_context and jev_policy is not None:
+            judgments["context"] = self._ask_stage_dimension(
+                "context_intake",
+                {"request": goal, "files": list(candidate_files or [])},
+                jev_policy)
+        if selected_execution and isinstance(plan, dict):
             completed = tuple(
                 item.get("stage") for item in stages
                 if isinstance(item, dict) and item.get("state") == STATE_COMPLETED)
@@ -1247,7 +1267,7 @@ class AutonomousAgent:
             _, _, judgments = self._compose_run_stages(
                 goal, candidate_files, jev_policy=jev_policy, plan=plan)
             if judgments:
-                plan["stage_judgments"] = judgments
+                plan["stage_judgments"] = {**plan.get("stage_judgments", {}), **judgments}
                 restart = (judgments.get("execution") or {}).get("restart") or {}
                 emit("execution_stage",
                      signals=dict((judgments.get("execution") or {}).get("signals") or {}),

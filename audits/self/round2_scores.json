@@ -7,63 +7,63 @@
   },
   "jev_scores": {
     "A": 10.0,
-    "R": 10.0,
+    "R": 5.0,
     "SM": 10.0,
     "SD": 10.0
   },
-  "jev_gate_pass": true,
+  "jev_gate_pass": false,
   "jev_eval": {
     "dimensions": {
       "A": {
         "name": "Security",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
-        "evaluated": true
+        "level_index": null,
+        "level": "not_evaluated",
+        "score": null,
+        "bar_met": false,
+        "confidence": null,
+        "evaluated": false
       },
       "R": {
         "name": "Reliability",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 0,
+        "level": "failing \u2014 severe defect or broken guarantee (<7.0)",
+        "score": 5.0,
+        "bar_met": false,
+        "confidence": 0.52,
         "evaluated": true
       },
       "SM": {
         "name": "Structural hygiene & maintainability",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
-        "evaluated": true
+        "level_index": null,
+        "level": "not_evaluated",
+        "score": null,
+        "bar_met": false,
+        "confidence": null,
+        "evaluated": false
       },
       "SD": {
         "name": "Documentation & release integrity",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.96,
-        "evaluated": true
+        "level_index": null,
+        "level": "not_evaluated",
+        "score": null,
+        "bar_met": false,
+        "confidence": null,
+        "evaluated": false
       }
     },
     "scores": {
-      "A": 10.0,
-      "R": 10.0,
-      "SM": 10.0,
-      "SD": 10.0
+      "A": null,
+      "R": 5.0,
+      "SM": null,
+      "SD": null
     },
-    "bar_95_pass": true,
-    "min_score": 10.0,
+    "bar_95_pass": false,
+    "min_score": 5.0,
     "is_fallback": false,
     "reasons": [],
     "model": "jev-1.13.0",
-    "cost": 5.5565999999999995e-06,
-    "input_tokens": 1323,
+    "cost": 4.6788e-06,
+    "input_tokens": 1114,
     "output_tokens": 60
   },
   "checks": {
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 2697 tests in 235.012s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 2755 tests in 185.116s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -268,7 +268,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "75/75 modules imported by tests"
+        "evidence": "76/76 modules imported by tests"
       },
       {
         "id": "S7",
@@ -324,7 +324,7 @@
         "id": "D7",
         "label": "docs reference only real modules",
         "score": 1.0,
-        "evidence": "all module references across 27 docs resolve to real files"
+        "evidence": "all module references across 28 docs resolve to real files"
       },
       {
         "id": "D8",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 56/56 = 100% (bar 95%) vs baseline 97c46c7b84)"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 51/51 = 100% (bar 95%) vs baseline b56029f982)"
       }
     ]
   }

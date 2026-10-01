@@ -1718,6 +1718,41 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                     "reason": reason,
                     "cost": 0.0,
                 }
+        context_stage = next(
+            (entry for entry in composition["stages"]
+             if entry["stage"] == STAGE_CONTEXT), None)
+        if context_stage is not None and plan_result.get("status") != "refused":
+            if jev_policy is not None and hasattr(jev_policy, "evaluate_hourglass_stage"):
+                if "stage_judgments" not in plan_result:
+                    plan_result["stage_judgments"] = {}
+                if "context" not in plan_result["stage_judgments"]:
+                    state = {
+                        "request": opts_goal,
+                        "goal": opts_goal,
+                        "files": list(candidate_files or []),
+                    }
+                    if brief is not None:
+                        state["brief_tokens"] = brief_tokens or brief.get("estimated_tokens")
+                    try:
+                        eval_res = jev_policy.evaluate_hourglass_stage(
+                            "context_intake", state, site="hourglass-intake")
+                        if isinstance(eval_res, tuple) and len(eval_res) >= 2:
+                            _res, structural = eval_res[0], eval_res[1]
+                        else:
+                            _res, structural = None, getattr(eval_res, "structural", {}) or {}
+                        from .jev_packs import HOURGLASS_STAGE_DIMENSIONS
+                        declared = HOURGLASS_STAGE_DIMENSIONS["context_intake"]["signals"]
+                        signals = {name: (structural or {}).get(name) for name in declared
+                                   if (structural or {}).get(name) is not None}
+                        plan_result["stage_judgments"]["context"] = {
+                            "dimension": "context_intake",
+                            "signals": signals,
+                            "native": bool((structural or {}).get("native")),
+                        }
+                    except (HarnessError, TypeError, ValueError):
+                        plan_result["stage_judgments"]["context"] = {
+                            "dimension": "context_intake", "signals": {}, "native": False
+                        }
         if brief is not None and STAGE_CONTEXT in (composition.get("bypassed")
                                                   or {}):
             # HV-2-use: the brief IS the context stage's artifact, and the
@@ -2024,7 +2059,8 @@ def compose_arguments(settings, *, goal, files, root=None,
     return arguments
 
 
-def intake_brief(goal, files, *, reader=None) -> Dict[str, Any]:
+def intake_brief(goal, files, *, reader=None, jev_policy=None,
+                 site="hourglass-intake") -> Dict[str, Any]:
     """The ``context`` stage's artifact for a composed plan run (HV-2-use).
 
     ONE owner for "the brief a plan run starts from", so no lane invents its
@@ -2067,11 +2103,39 @@ def intake_brief(goal, files, *, reader=None) -> Dict[str, Any]:
         else:
             usable.append(path)
     pack = build_brief(goal, usable, reader=reader, scope=excluded)
+    judgment = None
+    if jev_policy is not None and hasattr(jev_policy, "evaluate_hourglass_stage"):
+        state = {
+            "request": goal,
+            "goal": goal,
+            "sources": usable,
+            "omitted": excluded,
+            "brief_render": render_brief(pack),
+        }
+        try:
+            eval_res = jev_policy.evaluate_hourglass_stage(
+                "context_intake", state, site=site)
+            if isinstance(eval_res, tuple) and len(eval_res) >= 2:
+                _result, structural = eval_res[0], eval_res[1]
+            else:
+                _result, structural = None, getattr(eval_res, "structural", {}) or {}
+            from .jev_packs import HOURGLASS_STAGE_DIMENSIONS
+            declared = HOURGLASS_STAGE_DIMENSIONS["context_intake"]["signals"]
+            signals = {name: (structural or {}).get(name) for name in declared
+                       if (structural or {}).get(name) is not None}
+            judgment = {
+                "dimension": "context_intake",
+                "signals": signals,
+                "native": bool((structural or {}).get("native")),
+            }
+        except (HarnessError, TypeError, ValueError):
+            judgment = {"dimension": "context_intake", "signals": {}, "native": False}
     return {
         "brief": pack,
         "tokens": estimate_brief_tokens(pack),
         "issues": list(validate_brief(pack, reader=reader) or []),
         "excluded": excluded,
+        "judgment": judgment,
     }
 
 

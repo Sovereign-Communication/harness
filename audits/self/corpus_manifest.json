@@ -3,6 +3,7 @@
   "files": {
     "audits/self/audit_report.md": "e98765affe29d7d685b3313dd57149235d38707fe2134cdc756c55c93a0b249c",
     "audits/self/dogfood/HV0_LIVE_PILOT_2026-09-26.md": "631ba5898c6255b91db07e32a38206d6bc0f7b8cd357567ec0fecffd4c36f5f8",
+    "audits/self/dogfood/HV1_LIVE_PILOT_2026-10-01.md": "d1e0118bbafe334aa2bc795a9f10e3c7d69a89e2241b46a192736767f1da97e3",
     "audits/self/dogfood/HV3_LIVE_2026-09-28.json": "015655b9f31957977e0df49bd4193346932b37b1ca6a063047c63db2cffea858",
     "audits/self/dogfood/JEV_LOG_SELF_DOGFOOD.md": "53a315fce95aa47ffa86970c06e4108d0d51caaee84432cdc719714924e4e7e4",
     "audits/self/dogfood/item1-ledger-anchor.claims.json": "d055bdcabd1cb04487c9289d5da4b26c98c522c49e995a0dee32c3da35518bc9",
