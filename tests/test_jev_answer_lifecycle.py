@@ -281,18 +281,20 @@ class HourglassAnswerOnceTests(unittest.TestCase):
                         "q", "", governor=gov, api_key="k")
         self.assertIn("answer failed on every ladder model", str(ctx.exception))
 
-    def test_every_rung_truncated_raises_truncated_message(self):
+    def test_every_rung_truncated_returns_substantive_truncated_answer(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
             gov = MagicMock()
+            cut_text = "```never closes and has enough body to matter"
             truncated = (200, {"choices": [{"message": {
-                "content": "```never closes and has enough body to matter"},
+                "content": cut_text},
                 "finish_reason": "stop"}], "usage": {"cost": 0.0}})
             with patch("harness.agent.chat", return_value=truncated):
-                with self.assertRaises(HarnessError) as ctx:
-                    agent._hourglass_answer_once(
-                        "q", "", governor=gov, api_key="k")
-        self.assertIn("truncated on every usable ladder rung", str(ctx.exception))
+                res = agent._hourglass_answer_once(
+                    "q", "", governor=gov, api_key="k")
+            self.assertTrue(res.get("truncated"))
+            self.assertIn(cut_text, res["answer"])
+            self.assertIn("truncated", res["answer"])
 
     def test_empty_ladder_raises(self):
         with tempfile.TemporaryDirectory() as tmp:

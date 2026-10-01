@@ -10,7 +10,11 @@ from typing import Any, Callable, Dict, List, Optional
 from ._http import HttpTransport
 from .chat import assess_output, chat, extract_content_and_cost, governed_text, looks_truncated
 from .condenser import distill_context, condense_error_log
-from .config import Settings, load_settings, resolve_api_key, resolve_hourglass
+from .config import (
+    Settings, effective_lane_policy, load_settings, resolve_api_key,
+    resolve_hourglass,
+)
+from .tokens import estimate_prompt_tokens
 from .dag import TaskDAG, DAGNode, node_apply_kwargs
 from .prompts import MAX_FILE_LINES
 from .errors import HarnessError, ToolCancelled
@@ -60,6 +64,53 @@ __all__ = [
     "load_chat_history",
     "save_chat_turn",
 ]
+
+TRUNCATION_NOTICE = (
+    "\n\n[Note: This response reached the maximum output token limit and was truncated.]"
+)
+
+
+def _resolve_lane_max_tokens(
+    gov: Optional[Any],
+    model: str,
+    prompt_text: str,
+    target_tokens: int,
+    *,
+    token_budget: Optional[Any] = None,
+) -> int:
+    """Dynamically allocate output tokens for a turn or stage.
+
+    Starts with `target_tokens` (from :func:`effective_lane_policy`), then
+    narrows:
+    1. If `token_budget` is provided and has `remaining_output()`, bounds by
+       available output tokens.
+    2. If `gov` is provided and has pricing with a non-zero completion price,
+       bounds by remaining dollar budget under current phase:
+       max_output_tokens = max(0, int((rem_dollar - prompt_cost) / completion_price)).
+    3. Never inflates above `target_tokens`.
+    """
+    allocated = int(target_tokens)
+    if token_budget is not None and callable(getattr(token_budget, "remaining_output", None)):
+        rem_out = token_budget.remaining_output()
+        if isinstance(rem_out, (int, float)):
+            allocated = min(allocated, int(rem_out))
+    if gov is not None and callable(getattr(gov, "fetch_pricing", None)):
+        try:
+            pricing = gov.fetch_pricing([model])
+            if isinstance(pricing, dict) and model in pricing:
+                pp, cp = pricing[model]
+                if isinstance(cp, (int, float)) and cp > 0.0 and callable(getattr(gov, "remaining", None)):
+                    rem_dollars = gov.remaining()
+                    if isinstance(rem_dollars, (int, float)):
+                        prompt_tok = estimate_prompt_tokens(prompt_text)
+                        pp_val = float(pp) if isinstance(pp, (int, float)) else 0.0
+                        avail_dollar = max(0.0, float(rem_dollars) - prompt_tok * pp_val)
+                        dollar_tokens = int(avail_dollar / float(cp))
+                        allocated = min(allocated, dollar_tokens)
+        except Exception:
+            pass
+    return max(0, allocated)
+
 
 DEFAULT_CHAT_SYSTEM_PROMPT = (
     "You are Sovereign Harness, an autonomous, cost-bounded software engineering AI. "
@@ -170,6 +221,9 @@ class AutonomousAgent:
         cancel_check: Optional[Callable[[], bool]] = None,
         force_conversation: bool = False,
         web: bool = False,
+        max_tokens: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+        token_budget: Optional[Any] = None,
     ) -> Dict[str, Any]:
         # Process a natural language prompt from intent to verified conclusion.
         # When force_conversation=True (e.g. UI chat box), skip the intent
@@ -199,8 +253,13 @@ class AutonomousAgent:
                                          use_jev_completion=self._live_jev_available())
             if intent == "conversation" and self._live_jev_available():
                 return self.run_hourglass_request(
-                    prompt, session_id=sid, cancel_check=cancel_check, web=web)
-            return self._handle_conversation(prompt, sid, cancel_check, web=web)
+                    prompt, session_id=sid, cancel_check=cancel_check, web=web,
+                    max_tokens=max_tokens, reasoning_effort=reasoning_effort,
+                    token_budget=token_budget)
+            return self._handle_conversation(
+                prompt, sid, cancel_check, web=web,
+                max_tokens=max_tokens, reasoning_effort=reasoning_effort,
+                token_budget=token_budget)
 
         intent = classify_prompt_intent(prompt)
         emit("intent_classified", intent=intent, prompt=prompt)
@@ -211,8 +270,13 @@ class AutonomousAgent:
         if intent == "conversation":
             if self._live_jev_available():
                 return self.run_hourglass_request(
-                    prompt, session_id=sid, cancel_check=cancel_check, web=web)
-            return self._handle_conversation(prompt, sid, cancel_check, web=web)
+                    prompt, session_id=sid, cancel_check=cancel_check, web=web,
+                    max_tokens=max_tokens, reasoning_effort=reasoning_effort,
+                    token_budget=token_budget)
+            return self._handle_conversation(
+                prompt, sid, cancel_check, web=web,
+                max_tokens=max_tokens, reasoning_effort=reasoning_effort,
+                token_budget=token_budget)
         elif intent == "audit":
             return self._handle_audit(prompt, sid, cancel_check)
         else:
@@ -314,7 +378,10 @@ class AutonomousAgent:
                                cancel_check=None, governor=None,
                                api_key=None, past_turns=None,
                                web: bool = False,
-                               web_sources=None) -> Dict[str, Any]:
+                               web_sources=None,
+                               max_tokens: Optional[int] = None,
+                               reasoning_effort: Optional[str] = None,
+                               token_budget: Optional[Any] = None) -> Dict[str, Any]:
         """Run one cheap-to-capable answer attempt through the shared ladder."""
         if cancel_check and cancel_check():
             raise ToolCancelled("Prompt execution was cancelled by user")
@@ -323,6 +390,8 @@ class AutonomousAgent:
         if api_key is None:
             api_key = resolve_api_key()
         gov = governor
+        target_tokens, lane_effort = effective_lane_policy(
+            "answer", max_tokens=max_tokens, reasoning_effort=reasoning_effort)
         # The ordinary chat helper puts the judge first because it optimizes
         # structured chat.  The all-request answer loop instead starts with
         # the configured panel/scout pool, then adds judge and escalation
@@ -376,16 +445,23 @@ class AutonomousAgent:
         messages.append({"role": "user", "content": user})
         prompt_text = user
         attempts = []
-        best_truncated = None
+        best_truncated_content = None
+        best_truncated_model = None
+        best_truncated_cost = 0.0
         for model in ordered:
             if cancel_check and cancel_check():
                 raise ToolCancelled("Prompt execution was cancelled by user")
+            allocated_tokens = _resolve_lane_max_tokens(
+                gov, model, prompt_text, target_tokens, token_budget=token_budget)
+            if allocated_tokens < 1:
+                attempts.append(f"{model}: insufficient budget for output tokens")
+                continue
             try:
-                gov.preflight(prompt_text, [("answer", model, 4096, 0)])
+                gov.preflight(prompt_text, [("answer", model, allocated_tokens, 0)])
                 status, response = chat(
                     transport=self.transport, api_key=api_key, model=model,
-                    messages=messages, max_tokens=4096,
-                    reasoning_effort="off", governor=gov)
+                    messages=messages, max_tokens=allocated_tokens,
+                    reasoning_effort=lane_effort, governor=gov)
             except HarnessError as exc:
                 attempts.append(f"{model}: {exc}")
                 continue
@@ -407,14 +483,21 @@ class AutonomousAgent:
                 usable, why = False, "response truncated mid-body"
             if not usable:
                 attempts.append(f"{model}: {why}")
-                if content and len(content) > len(best_truncated or ""):
-                    best_truncated = content
+                if content and len(content) > len(best_truncated_content or ""):
+                    best_truncated_content = content
+                    best_truncated_model = model
+                    best_truncated_cost = cost
                 emit("rotation", model=model, reason="answer_ladder_advance",
                      note=why)
                 continue
-            return {"model": model, "answer": content.strip(), "cost": cost}
-        if best_truncated:
-            raise HarnessError("answer truncated on every usable ladder rung")
+            return {"model": model, "answer": content.strip(), "cost": cost, "truncated": False}
+        if best_truncated_content:
+            return {
+                "model": best_truncated_model,
+                "answer": best_truncated_content.strip() + TRUNCATION_NOTICE,
+                "cost": best_truncated_cost,
+                "truncated": True,
+            }
         raise HarnessError("answer failed on every ladder model: "
                            + "; ".join(attempts))
 
@@ -453,7 +536,10 @@ class AutonomousAgent:
             cancel_check=None, web: bool = False,
             confidence_threshold: float = _DEFAULT_HOURGLASS_CONFIDENCE,
             max_rounds: int = _MAX_HOURGLASS_ANSWER_ROUNDS,
-            auto_apply: bool = True) -> Dict[str, Any]:
+            auto_apply: bool = True,
+            max_tokens: Optional[int] = None,
+            reasoning_effort: Optional[str] = None,
+            token_budget: Optional[Any] = None) -> Dict[str, Any]:
         """Run the all-request composition used by external local drivers.
 
         Edit requests enter the existing hourglass plan/executor lane. Direct
@@ -504,6 +590,7 @@ class AutonomousAgent:
         best_envelope = None
         stop_reason = None
         status = "needs_iteration"
+        attempt = {}
         for round_no in range(1, rounds + 1):
             if cancel_check and cancel_check():
                 raise ToolCancelled("Prompt execution was cancelled by user")
@@ -519,7 +606,9 @@ class AutonomousAgent:
             attempt = self._hourglass_answer_once(
                 prompt, context, prior=prior, model_offset=round_no - 1,
                 cancel_check=cancel_check, governor=gov, api_key=api_key,
-                past_turns=past_turns, web=web, web_sources=web_sources)
+                past_turns=past_turns, web=web, web_sources=web_sources,
+                max_tokens=max_tokens, reasoning_effort=reasoning_effort,
+                token_budget=token_budget)
             answer = attempt["answer"]
             model = attempt["model"]
             total_cost += float(attempt.get("cost") or 0.0)
@@ -603,6 +692,7 @@ class AutonomousAgent:
             if round_no == rounds:
                 status = "needs_iteration"
 
+        is_truncated = bool(attempt.get("truncated"))
         result = {
             "status": status,
             "intent": intent,
@@ -610,6 +700,7 @@ class AutonomousAgent:
             "response": answer,
             "model": model,
             "cost": round(total_cost, 6),
+            **({"truncated": True} if is_truncated else {}),
             "web_used": bool(web_sources and any(s.get("ok") for s in web_sources)),
             "web_sources": [
                 {k: s[k] for k in ("kind", "ok", "url") if k in s}
@@ -658,9 +749,14 @@ class AutonomousAgent:
         session_id: str,
         cancel_check: Optional[Callable[[], bool]] = None,
         web: bool = False,
+        max_tokens: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+        token_budget: Optional[Any] = None,
     ) -> Dict[str, Any]:
         # Handle informational or technical questions with conversational routing
         api_key, gov = governor_for(self.settings)
+        target_tokens, lane_effort = effective_lane_policy(
+            "chat", max_tokens=max_tokens, reasoning_effort=reasoning_effort)
 
         system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
         web_sources: List[Dict[str, Any]] = []
@@ -711,15 +807,20 @@ class AutonomousAgent:
                 raise ToolCancelled("Prompt execution was cancelled by user")
             note = None
             content, cost = None, 0.0
+            allocated_tokens = _resolve_lane_max_tokens(
+                gov, model, prompt, target_tokens, token_budget=token_budget)
+            if allocated_tokens < 1:
+                attempts.append(f"{model}: insufficient budget for output tokens")
+                continue
             try:
-                gov.preflight(prompt, [("chat", model, 4096, 0)])
+                gov.preflight(prompt, [("chat", model, allocated_tokens, 0)])
                 status, resp = chat(
                     transport=self.transport,
                     api_key=api_key,
                     model=model,
                     messages=messages,
-                    max_tokens=4096,
-                    reasoning_effort="off",
+                    max_tokens=allocated_tokens,
+                    reasoning_effort=lane_effort,
                     governor=gov,
                 )
             except HarnessError as e:
@@ -765,8 +866,8 @@ class AutonomousAgent:
             # content: defer honestly, keeping the content. Rotating more
             # cannot finish a body that exceeds the output cap.
             model, response_text, cost = best_truncated
-            defer_reason = ("response truncated at the token cap on every "
-                            "ladder model (max_tokens=4096)")
+            defer_reason = (f"response truncated at the token cap on every "
+                            f"ladder model (max_tokens={target_tokens})")
             marker_defer = False
             truncation_defer = True
         elif answered is None:
@@ -838,6 +939,7 @@ class AutonomousAgent:
             "response": response_text,
             "model": model,
             "cost": round(cost, 6),
+            **({"truncated": True} if truncation_defer else {}),
             **({"defer_reason": defer_reason,
                 # The resume hint a deferral owes the operator (render.py's
                 # contract): what to do instead of this lane's refusal.

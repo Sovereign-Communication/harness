@@ -95,6 +95,8 @@ DEFAULT_HOURGLASS_STAGES = ("context", "planning", "execution",
 # wins over these defaults. Apply keeps its own 4096 budget untouched.
 MIN_VOTE_TOKENS = 4096
 MIN_SYNTHESIS_TOKENS = 8192
+MIN_ANSWER_TOKENS = 4096
+DEFAULT_ANSWER_TOKENS = 16384
 # Structured claim votes are frequently longer than ordinary prose; the vote
 # lane raises its floor when convergence is requested (kept next to the other
 # lane minima as the ONE policy home; convergence.py imports it back for its
@@ -106,12 +108,14 @@ def effective_lane_policy(role, max_tokens=None, reasoning_effort=None):
     """The ONE owner of per-lane token budgets and reasoning modes.
 
     role is one of "vote" (panel/claim votes), "judge" (judge synthesis and
-    the convergence specialist), "escalation" (deep rungs), or "apply"
-    (unchanged historical behavior). Returns ``(max_tokens, reasoning_effort)``
-    with the lane minimum applied and the reasoning mode resolved: an explicit
-    caller effort always passes through; otherwise votes disable reasoning
-    ("off" -- an explicit ``{"effort": "none"}`` payload post-patch) and
-    synthesis/escalation lanes default to "auto".
+    the convergence specialist), "escalation" (deep rungs), "apply"
+    (unchanged historical behavior), or "answer"/"chat" (conversation and direct
+    answers: dynamically bounded default up to 16384 tokens with floor 4096).
+    Returns ``(max_tokens, reasoning_effort)`` with the lane minimum applied
+    and the reasoning mode resolved: an explicit caller effort always passes
+    through; otherwise votes disable reasoning ("off" -- an explicit
+    ``{"effort": "none"}`` payload post-patch) and synthesis/escalation/answer
+    lanes default to "auto".
     """
     requested = int(max_tokens or 0)
     if role == "vote":
@@ -120,6 +124,10 @@ def effective_lane_policy(role, max_tokens=None, reasoning_effort=None):
     if role in ("judge", "escalation"):
         effort = reasoning_effort or "auto"
         return max(requested, MIN_SYNTHESIS_TOKENS), effort
+    if role in ("answer", "chat"):
+        effort = reasoning_effort or "auto"
+        tokens = max(requested, MIN_ANSWER_TOKENS) if requested else DEFAULT_ANSWER_TOKENS
+        return tokens, effort
     if role == "apply":
         return requested, (reasoning_effort or "auto")
     raise ValueError(f"unknown lane role: {role}")
