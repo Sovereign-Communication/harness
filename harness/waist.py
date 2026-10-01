@@ -1376,6 +1376,7 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
 
     decomposed = None
     decomposition = "heuristic"
+    last_exc = None
     # DF-HG-3b: set only when a plan-only preview degraded to the heuristic
     # after an opted-in LLM decomposition failure -- the waist confirmation
     # step is then skipped rather than confirming (and reporting as
@@ -1448,6 +1449,9 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         decomposed_dag=decomposed, root=root, run_gate=run_gate,
         allow_escalation=allow_escalation, jev_route=jev_route_feed)
     plan_result["decomposition"] = decomposition
+    if last_exc is not None:
+        plan_result["degraded"] = True
+        plan_result["degrade_reason"] = "decomposition_unavailable"
     if plan_triage is not None:
         plan_result["triage"] = plan_triage
     if plan_structural is not None:
@@ -1626,6 +1630,13 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                    f"degrading to local-gate execution (verdict=unavailable)")
             degraded = dict(plan_result)
             degraded["status"] = "planned"
+            degraded["degraded"] = True
+            degraded["degrade_reason"] = "waist_unavailable"
+            resume_hash = hashlib.sha256(
+                f"{opts_goal}:{plan_result.get('total_nodes', 1)}".encode("utf-8")
+            ).hexdigest()[:16]
+            resume_token = f"waist-resume-{resume_hash}"
+            degraded["resume_token"] = resume_token
             degraded["confirmation"] = {
                 "verdict": "unavailable",
                 "model": first_model,
@@ -1634,6 +1645,9 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                           "executing under local structural gate only",
                 "evidence": str(last_exc) if last_exc is not None else "",
                 "cost": 0.0,
+                "degraded": True,
+                "degrade_reason": "waist_unavailable",
+                "resume_token": resume_token,
             }
             plan_result = degraded
 
