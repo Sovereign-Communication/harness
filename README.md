@@ -412,7 +412,10 @@ Wire into any MCP host (Claude Code, Cursor, your own agents):
 Tools (`tools/list` order): `panel_verify`, `apply_edit`, `offer_work`, `defer_work`,
 `ledger_status`, `participation_report`, `spend_status`, `trust_status`, `plan_and_execute`,
 `issue_sort`, `route_query`, `mission_status`, `continue_work`, `log_judgment`, `jev_phase`,
-`jev_freeze`.
+`jev_freeze`, `dogfood`, `generate_brief`.
+`generate_brief` is a hermetic face over `harness.brief.build_brief` (HV-2):
+cites exact file windows, estimates prompt token size, and optionally evaluates
+source freshness reports and renders human-readable markdown without touching the network.
 `jev_freeze` is a thin face over `harness.config.freeze_jev_settings` (the same
 owner `harness jev-freeze` calls): a preview reports the pin/threshold the
 freeze would apply and writes nothing, while `persist: true` writes the

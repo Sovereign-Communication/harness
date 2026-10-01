@@ -360,4 +360,22 @@ TOOL_SCHEMAS = [
             "task_id": {"type": "string"},
         }, "required": ["file", "instruction"]},
     },
+    {
+        "name": "generate_brief",
+        "title": "Build an evidence-bearing context pack",
+        "description": "Generate a grounded context pack (HV-2 brief) for a goal from source files. "
+                       "Cites exact windows, estimates tokens, checks freshness, and tracks omissions. "
+                       "Hermetic: no network, no model call.",
+        "inputSchema": {"type": "object", "properties": {
+            "goal": {"type": "string", "description": "High-level goal or instruction to brief"},
+            "files": {"type": "array", "items": {"type": "string"},
+                      "description": "Source file paths to inspect and cite"},
+            "budget": {"type": "integer", "default": 48000,
+                       "description": "Maximum character budget for cited windows (default: 48000)"},
+            "freshness": {"type": "boolean", "default": False,
+                          "description": "Evaluate and attach source freshness report"},
+            "render": {"type": "boolean", "default": False,
+                       "description": "Render markdown prose representation instead of raw JSON"},
+        }, "required": ["goal"]},
+    },
 ]

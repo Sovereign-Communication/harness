@@ -167,10 +167,19 @@ def _opt_bool(args, key):
 def validate_dispatch(kind, args):
     """CLI-boundary validation for UI dispatch. Same discipline as the CLI
     parsers: untrusted input is range-checked before anything runs."""
-    if kind not in ("apply", "verify", "continue", "bench", "chat", "dogfood"):
+    if kind not in ("apply", "verify", "continue", "bench", "chat", "dogfood", "plan"):
         raise HarnessError(f"unknown dispatch kind '{kind}'")
     args = dict(args or {})
-    if kind == "chat":
+    if kind == "plan":
+        _opt_str(args, "goal", required=True)
+        args["execute"] = _opt_bool(args, "execute")
+        _opt_str(args, "frontier_model")
+        _opt_int(args, "max_workers", 1, 16, 4)
+        if args.get("task_max_cost") is not None:
+            args["task_max_cost"] = _finite_float(args["task_max_cost"], "task_max_cost", 0.0, HARD_TASK_MAX_COST)
+        if args.get("max_cost") is not None:
+            args["max_cost"] = _finite_float(args["max_cost"], "max_cost", 0.0, HARD_MAX_COST)
+    elif kind == "chat":
         _opt_str(args, "prompt", required=True)
         args["auto_apply"] = _opt_bool(args, "auto_apply") if "auto_apply" in args else True
         _opt_str(args, "session_id")
@@ -386,6 +395,94 @@ def run_dogfood_task(task_id, args, cancel_check):
         cancel_check=cancel_check)
 
 
+def run_plan_task(task_id, args, cancel_check):
+    """Run an asynchronous plan or plan+execute task (GAP-plan-http)."""
+    from ._http import HttpTransport
+    from .config import resolve_hourglass
+    from .dag import TaskDAG
+    from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
+    from .jev_policy import policy_for
+    from .waist import compose_arguments, compose_plan
+
+    settings = load_settings()
+    goal = args["goal"]
+    execute = bool(args.get("execute", False))
+    candidate_files = args.get("files") or args.get("file")
+    frontier_model = args.get("frontier_model") or getattr(settings, "frontier_model", None)
+    plan_ceiling = args.get("task_max_cost") or args.get("max_cost")
+
+    if execute:
+        engine = apply_session(settings, max_cost=plan_ceiling)
+        gov, transport, api_key = engine.governor, engine.transport, engine.api_key
+    else:
+        api_key, gov = governor_for(settings, plan_ceiling)
+        transport = HttpTransport()
+
+    hourglass = resolve_hourglass(settings)
+    confirm = args.get("confirm", hourglass.get("confirm", True))
+    decompose_llm = args.get("decompose_llm", hourglass.get("decompose", True))
+    plan_consensus = bool(args.get("plan_consensus", False))
+
+    brief = args.get("brief")
+    token_budget_input = args.get("token_budget_input")
+    token_budget_output = args.get("token_budget_output")
+    stages = args.get("stages")
+
+    composition = compose_arguments(
+        settings,
+        goal=goal,
+        files=candidate_files or [],
+        stages=stages,
+        brief=brief,
+        max_input_tokens=token_budget_input,
+        max_output_tokens=token_budget_output,
+    )
+
+    jev_policy = policy_for(settings, transport=transport, governor=gov)
+
+    plan_result = compose_plan(
+        goal,
+        settings=settings,
+        transport=transport,
+        api_key=api_key,
+        governor=gov,
+        task_id=task_id,
+        candidate_files=candidate_files,
+        frontier_model=frontier_model,
+        decompose_llm=decompose_llm,
+        confirm=confirm,
+        plan_consensus=plan_consensus,
+        jev_policy=jev_policy,
+        cancel_check=cancel_check,
+        **composition,
+    )
+
+    if not execute or plan_result.get("status") == "refused":
+        return plan_result
+
+    dag_dict = plan_result.get("dag")
+    if not dag_dict or not dag_dict.get("nodes"):
+        return plan_result
+
+    dag = TaskDAG.from_dict(dag_dict)
+    executor = PlanExecutor(
+        engine=engine,
+        dag=dag,
+        max_workers=int(args.get("max_workers") or DEFAULT_PLAN_WORKERS),
+        parallel=bool(args.get("parallel", hourglass.get("parallel", True))),
+        isolate=bool(args.get("isolate", True)),
+        require_diff_authorization=bool(
+            args.get("require_diff_authorization", hourglass.get("require_diff_authorization", True))
+        ),
+        final_gate=args.get("final_gate"),
+        keep_going=bool(args.get("keep_going", False)),
+        task_id=task_id,
+        cancel_check=cancel_check,
+    )
+    exec_result = executor.execute()
+    return {"plan": plan_result, "execution": exec_result, "status": exec_result.get("status", "ok")}
+
+
 RUNNERS = {
     "apply": run_apply_task,
     "verify": run_verify_task,
@@ -393,6 +490,7 @@ RUNNERS = {
     "bench": run_bench_task,
     "chat": run_chat_task,
     "dogfood": run_dogfood_task,
+    "plan": run_plan_task,
 }
 
 
