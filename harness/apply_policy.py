@@ -210,6 +210,7 @@ class ApplyEngineMixin:
             if getattr(self.router, "cheap_judge", None) and not req.allow_escalation
             else self.router.judge
         )
+        stale_reason = getattr(req, "staleness_reason", None) or getattr(state, "consent_staleness_reason", None)
         cr = consent_renew(
             transport=self.transport, api_key=self.api_key, governor=self.governor,
             task_id=req.task_id, task=consent_mechanics_text(
@@ -217,7 +218,8 @@ class ApplyEngineMixin:
             model=renew_model, ledger=self.ledger, required=True,
             fallback_pool=renew_pool, min_confidence=req.min_confidence,
             assignment_context=req.assignment_context,
-            token_budget=req.token_budget)
+            token_budget=req.token_budget,
+            staleness_reason=stale_reason)
         if self.governor.spent - req.task_start_spent > req.task_max_cost:
             raise HarnessError(
                 f"consent renewal exceeded task ceiling ${req.task_max_cost:.6f}; refusing to continue")

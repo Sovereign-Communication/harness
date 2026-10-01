@@ -20,6 +20,8 @@ category="capability" deferrals.
 import math
 import hashlib
 import json
+from enum import Enum
+from typing import Optional, Dict, Any, Tuple
 
 from . import events as _events
 from .chat import (chat, extract_content_and_cost, _extract_json, _reported_cost,
@@ -29,6 +31,80 @@ from .errors import HarnessError
 from .output import eprint
 from .tokens import estimate_prompt_tokens
 from .token_budget import USAGE_ACTUAL, USAGE_UNAVAILABLE
+
+
+class ConsentStalenessReason(str, Enum):
+    """Declared reasons why previously granted consent is stale (GAP-consent-stale)."""
+    INSTRUCTION_AMENDED = "instruction_amended"
+    TARGET_FILES_CHANGED = "target_files_changed"
+    MODEL_UPGRADED = "model_upgraded"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    RESTART_TARGETED = "restart_targeted"
+    EXPIRED = "expired"
+    UNSPECIFIED = "unspecified"
+
+
+CONSENT_STALENESS_REASONS = tuple(r.value for r in ConsentStalenessReason)
+
+
+def check_consent_staleness(
+    previous_assignment: Optional[Dict[str, Any]],
+    current_assignment: Optional[Dict[str, Any]],
+    *,
+    consent_freshness: Optional[float] = None,
+    min_freshness: float = 0.70,
+) -> Tuple[bool, Optional[ConsentStalenessReason]]:
+    """Determine whether previously granted consent is stale under current conditions.
+
+    A changed assignment, upgraded model, exceeded budget, or low freshness
+    signal invalidates previous consent fail-closed.
+    """
+    if previous_assignment is None:
+        return False, None
+
+    if current_assignment is None:
+        return True, ConsentStalenessReason.UNSPECIFIED
+
+    # Check instruction changes
+    prev_instr = previous_assignment.get("instruction") or previous_assignment.get("goal")
+    curr_instr = current_assignment.get("instruction") or current_assignment.get("goal")
+    if prev_instr and curr_instr and prev_instr != curr_instr:
+        return True, ConsentStalenessReason.INSTRUCTION_AMENDED
+
+    # Check target files changes
+    prev_files = sorted(
+        previous_assignment.get("target_files")
+        or previous_assignment.get("files")
+        or ([previous_assignment["file_path"]] if "file_path" in previous_assignment else [])
+    )
+    curr_files = sorted(
+        current_assignment.get("target_files")
+        or current_assignment.get("files")
+        or ([current_assignment["file_path"]] if "file_path" in current_assignment else [])
+    )
+    if prev_files and curr_files and prev_files != curr_files:
+        return True, ConsentStalenessReason.TARGET_FILES_CHANGED
+
+    # Check model upgrades
+    prev_model = previous_assignment.get("model")
+    curr_model = current_assignment.get("model")
+    if prev_model and curr_model and prev_model != curr_model:
+        return True, ConsentStalenessReason.MODEL_UPGRADED
+
+    # Check restart target
+    if current_assignment.get("restart_target") or current_assignment.get("restart_targeted"):
+        return True, ConsentStalenessReason.RESTART_TARGETED
+
+    # Check token/cost budget changes
+    if previous_assignment.get("max_cost") is not None and current_assignment.get("max_cost") is not None:
+        if current_assignment["max_cost"] > previous_assignment["max_cost"]:
+            return True, ConsentStalenessReason.BUDGET_EXCEEDED
+
+    # Check Jev consent_freshness signal if provided
+    if consent_freshness is not None and consent_freshness < min_freshness:
+        return True, ConsentStalenessReason.EXPIRED
+
+    return False, None
 
 CONSENT_SYSTEM_PROMPT = (
     "You are an independent contractor in a work market. You are being offered a "
@@ -312,7 +388,8 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
 def consent_renew(*, transport, api_key, governor, task_id, task, model,
                   context=None, max_tokens=512, ledger=None, required=True,
                   fallback_pool=None, min_confidence=0.70,
-                  assignment_context=None, token_budget=None):
+                  assignment_context=None, token_budget=None,
+                  staleness_reason=None):
     """Re-check consent at a verification checkpoint (continued consensus).
 
     Returns the probe result; records a consent_renew_* event. Any deferral
@@ -325,6 +402,9 @@ def consent_renew(*, transport, api_key, governor, task_id, task, model,
                           fallback_pool=fallback_pool, min_confidence=min_confidence,
                           assignment_context=assignment_context,
                           token_budget=token_budget)
+    stale_str = staleness_reason.value if hasattr(staleness_reason, "value") else (str(staleness_reason) if staleness_reason else None)
+    if stale_str:
+        base["staleness_reason"] = stale_str
     if ledger:
         # Attribute to the model that ANSWERED (post-rotation), not the
         # requested primary: billing a rotated renewal to the wrong model
@@ -332,7 +412,17 @@ def consent_renew(*, transport, api_key, governor, task_id, task, model,
         # renewal's rotation evidence is not silently dropped (the probe
         # runs ledger-less here to avoid double-counting offers).
         event = "consent_renew_accept" if base["decision"] == "accept" else "consent_renew_defer"
-        ledger.append(event, task_id=task_id, model=base.get("model") or model,
-                      reason=base["reason"], confidence=base.get("confidence"),
-                      cost=base["cost"], attempts=base.get("attempts") or [])
+        entry_kwargs = {
+            "task_id": task_id,
+            "model": base.get("model") or model,
+            "reason": base["reason"],
+            "confidence": base.get("confidence"),
+            "cost": base["cost"],
+            "attempts": base.get("attempts") or [],
+        }
+        if stale_str:
+            entry_kwargs["staleness_reason"] = stale_str
+        ledger.append(event, **entry_kwargs)
+    _events.emit("consent_renew", task_id=task_id, model=base.get("model") or model,
+                 decision=base["decision"], staleness_reason=stale_str, cost=base["cost"])
     return base

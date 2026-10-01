@@ -41,6 +41,7 @@ class ApplyRequest:
     min_confidence: float = 0.70
     token_budget: object = None
     assignment_context: object = None
+    staleness_reason: object = None
 
 
 @dataclass
@@ -68,6 +69,8 @@ class RunState:
     # MS envelope: the requested primary for this run (ApplyRequest.model).
     # rounds[] already record every model that actually served (observed).
     model_requested: object = None
+    diff_auth: object = None
+    consent_staleness_reason: object = None
 
 
 @dataclass
