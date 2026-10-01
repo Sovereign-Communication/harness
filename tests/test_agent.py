@@ -16,7 +16,11 @@ from harness.agent import (
 )
 from harness.history import get_default_history_dir
 from harness.jev import JevEvaluationResult
-from harness.config import load_settings
+from harness.config import (
+    DEFAULT_MAX_COST,
+    DEFAULT_TASK_MAX_COST,
+    load_settings,
+)
 from harness.errors import HarnessError, ToolCancelled
 from harness.repo_scope import _gate_python
 from tests._fake import FakeTransport, _gov
@@ -50,6 +54,9 @@ def _lane_settings(**overrides):
     lane is covered by TestHourglassLane, which scripts the waist verdict.
     """
     settings = load_settings()
+    # Hermetically isolate test from ambient ~/.config/harness/config.json
+    settings.max_cost = overrides.pop("max_cost", DEFAULT_MAX_COST)
+    settings.task_max_cost = overrides.pop("task_max_cost", DEFAULT_TASK_MAX_COST)
     # Hermetic agent tests must never inherit the operator's live Jev key.
     settings.jev_api_key = None
     settings.hourglass_confirm = False
@@ -1549,6 +1556,9 @@ class TestHourglassLane(unittest.TestCase):
     @staticmethod
     def _armed(**overrides):
         settings = load_settings()
+        # Hermetically isolate test from ambient ~/.config/harness/config.json
+        settings.max_cost = overrides.pop("max_cost", DEFAULT_MAX_COST)
+        settings.task_max_cost = overrides.pop("task_max_cost", DEFAULT_TASK_MAX_COST)
         # The armed lane scripts the waist/model seams; keep this test network-free.
         settings.jev_api_key = None
         settings.hourglass_confirm = True
