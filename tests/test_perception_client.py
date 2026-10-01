@@ -97,6 +97,13 @@ def _http_error(code, payload):
     )
 
 
+def _http_error_raw(code, body):
+    return urllib.error.HTTPError(
+        url="http://example.invalid", code=code, msg="err",
+        hdrs=None, fp=io.BytesIO(body),
+    )
+
+
 def _ok_envelope(**over):
     env = {
         "step_id": "abc123", "ok": True, "stopped_at": None, "reason": None,
@@ -236,6 +243,15 @@ class TransportFailureTests(unittest.TestCase):
         adapter, _ = _adapter([_RawResponse(b"<html>not json</html>")])
         with self.assertRaises(PerceptionUnavailable):
             adapter.step("file-manager")
+
+    def test_an_http_error_with_a_non_json_body_still_names_the_code(self):
+        """A proxy or an unrelated service can answer an error with HTML.
+        Losing the status code there would leave the caller with no way to
+        tell a 401 from a 500."""
+        adapter, _ = _adapter([_http_error_raw(502, b"<html>bad gateway</html>")])
+        with self.assertRaises(PerceptionUnavailable) as ctx:
+            adapter.step("file-manager")
+        self.assertIn("HTTP 502", str(ctx.exception))
 
 
 class ContractViolationTests(unittest.TestCase):
@@ -486,6 +502,29 @@ class CliFaceTests(unittest.TestCase):
                                                 "reason": "chain_altered"}}])
         self.assertEqual(code, 1)
         self.assertIn("chain_altered", out)
+
+    def test_verify_exits_zero_on_a_clean_chain(self):
+        code, out, _, _ = self._run(
+            ["verify"], [{"ok": True,
+                          "audit": {"ok": True, "records": 3},
+                          "budget": {"spent_usd": 0.0000642}}])
+        self.assertEqual(code, 0)
+        self.assertIn("records", out)
+
+    def test_schemas_prints_the_declared_schemas(self):
+        code, out, _, opener = self._run(["schemas"],
+                                         [{"ok": True,
+                                           "schemas": [{"name": "screen"}]}])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["schemas"][0]["name"], "screen")
+        self.assertTrue(opener.calls[0]["url"].endswith("/schemas"))
+
+    def test_vocabulary_prints_the_closed_action_vocabulary(self):
+        code, out, _, opener = self._run(
+            ["vocabulary"], [{"ok": True, "vocabulary": {"actions": []}}])
+        self.assertEqual(code, 0)
+        self.assertIn("vocabulary", out)
+        self.assertTrue(opener.calls[0]["url"].endswith("/vocabulary"))
 
     def test_allow_unstable_inverts_require_stable(self):
         _, _, _, opener = self._run(["step", "f", "--allow-unstable"],
