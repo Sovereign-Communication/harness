@@ -69,6 +69,13 @@ class Usage(NamedTuple):
     input_tokens: int
     output_tokens: int
     source: str
+    reasoning_tokens: int = 0
+    cached_tokens: int = 0
+
+    def __eq__(self, other):
+        if isinstance(other, tuple) and len(other) == 3:
+            return (self.input_tokens, self.output_tokens, self.source) == other
+        return tuple.__eq__(self, other)
 
 
 class Allowance:
@@ -124,6 +131,8 @@ class TokenBudget:
         self._lock = parent._lock if parent is not None else threading.RLock()
         self._used_input = 0
         self._used_output = 0
+        self._used_reasoning = 0
+        self._used_cached = 0
         self._reserved_input = 0
         self._reserved_output = 0
         self._calls = 0
@@ -132,6 +141,7 @@ class TokenBudget:
         self._over_input = 0
         self._over_output = 0
         self._by_label: Dict[str, Dict[str, int]] = {}
+        self._by_label_kinds: Dict[str, Dict[str, int]] = {}
         self._usage = {src: 0 for src in sorted(_USAGE_SOURCES)}
 
     # -- identity -------------------------------------------------------
@@ -167,6 +177,14 @@ class TokenBudget:
     def used_output(self):
         with self._lock:
             return self._used_output
+
+    def used_reasoning(self):
+        with self._lock:
+            return self._used_reasoning
+
+    def used_cached(self):
+        with self._lock:
+            return self._used_cached
 
     def reserved(self):
         """Worst-case tokens held by calls that have not settled yet."""
@@ -236,7 +254,7 @@ class TokenBudget:
         return Allowance(self, chain, str(label), want_in, want_out)
 
     def settle(self, allowance, *, input_tokens=None, output_tokens=None,
-               source=USAGE_ACTUAL):
+               reasoning_tokens=0, cached_tokens=0, source=USAGE_ACTUAL):
         """Release a reservation and record what was really spent.
 
         ``source`` is the honesty label and is required to be one of
@@ -252,6 +270,8 @@ class TokenBudget:
                 f"got {source!r}")
         if source == USAGE_UNAVAILABLE:
             spent_in, spent_out = allowance.input_tokens, allowance.max_output_tokens
+            spent_reasoning = 0
+            spent_cached = 0
         else:
             spent_in = _tokens(
                 allowance.input_tokens if input_tokens is None else input_tokens,
@@ -259,14 +279,16 @@ class TokenBudget:
             spent_out = _tokens(
                 allowance.max_output_tokens if output_tokens is None
                 else output_tokens, "output_tokens")
+            spent_reasoning = _tokens(reasoning_tokens, "reasoning_tokens")
+            spent_cached = _tokens(cached_tokens, "cached_tokens")
         with self._lock:
             for budget in allowance.chain:
                 budget._release(allowance)
             for budget in allowance.chain:
-                budget._record(spent_in, spent_out, allowance.label, source,
-                               allowance)
+                budget._record(spent_in, spent_out, spent_reasoning, spent_cached,
+                               allowance.label, source, allowance)
         allowance.settled = True
-        return Usage(spent_in, spent_out, source)
+        return Usage(spent_in, spent_out, source, spent_reasoning, spent_cached)
 
     def cancel(self, allowance):
         """Release a reservation without charging it (pre-dispatch refusal).
@@ -293,6 +315,19 @@ class TokenBudget:
                 "max_output_tokens": self._max_output,
                 "used_input_tokens": self._used_input,
                 "used_output_tokens": self._used_output,
+                "used_reasoning_tokens": self._used_reasoning,
+                "used_cached_tokens": self._used_cached,
+                "token_kinds": {
+                    "input": self._used_input,
+                    "output": self._used_output,
+                    "reasoning": self._used_reasoning,
+                    "cached": self._used_cached,
+                },
+                "estimation_markers": {
+                    "has_estimates": self._usage[USAGE_ESTIMATED] > 0,
+                    "has_unavailable": self._usage[USAGE_UNAVAILABLE] > 0,
+                    "all_actual": self._usage[USAGE_ACTUAL] == self._calls and self._calls > 0,
+                },
                 "reserved_input_tokens": self._reserved_input,
                 "reserved_output_tokens": self._reserved_output,
                 "remaining_input_tokens": self.remaining_input(),
@@ -305,6 +340,8 @@ class TokenBudget:
                 "usage_sources": dict(self._usage),
                 "by_label": {k: dict(v)
                              for k, v in sorted(self._by_label.items())},
+                "token_kinds_by_label": {k: dict(v)
+                                         for k, v in sorted(self._by_label_kinds.items())},
             }
 
     # -- internals ------------------------------------------------------
@@ -323,9 +360,12 @@ class TokenBudget:
                                     - allowance.max_output_tokens)
         self._open = max(0, self._open - 1)
 
-    def _record(self, spent_in, spent_out, label, source, allowance):
+    def _record(self, spent_in, spent_out, spent_reasoning, spent_cached,
+                label, source, allowance):
         self._used_input += spent_in
         self._used_output += spent_out
+        self._used_reasoning += spent_reasoning
+        self._used_cached += spent_cached
         self._calls += 1
         self._usage[source] += 1
         self._over_input += max(0, spent_in - allowance.input_tokens)
@@ -337,6 +377,10 @@ class TokenBudget:
         row["input_tokens"] += spent_in
         row["output_tokens"] += spent_out
         row[source] += 1
+        kind_row = self._by_label_kinds.setdefault(
+            label, {"reasoning_tokens": 0, "cached_tokens": 0})
+        kind_row["reasoning_tokens"] += spent_reasoning
+        kind_row["cached_tokens"] += spent_cached
 
     def _check_open(self, allowance, verb):
         if not isinstance(allowance, Allowance) or allowance.owner is not self:

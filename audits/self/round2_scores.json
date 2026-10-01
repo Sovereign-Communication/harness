@@ -38,7 +38,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.99,
+        "confidence": 0.98,
         "evaluated": true
       },
       "SD": {
@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.95,
+        "confidence": 0.97,
         "evaluated": true
       }
     },
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 2805 tests in 164.117s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 2811 tests in 161.200s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -312,7 +312,7 @@
         "id": "D5",
         "label": "version single-sourced",
         "score": 1.0,
-        "evidence": "pyproject=0.4.1 __version__=0.4.1 (one source)"
+        "evidence": "pyproject=0.4.2 __version__=0.4.2 (one source)"
       },
       {
         "id": "D6",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 37/37 = 100% (bar 95%) vs baseline 36d4782c9c)"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 31/32 = 97% (bar 95%) vs baseline 53d2b45a48; untested: __init__.py:11)"
       }
     ]
   }
