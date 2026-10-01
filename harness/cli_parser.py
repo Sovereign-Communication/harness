@@ -407,11 +407,21 @@ def build_parser():
     _add_output_flags(plint)
 
     pbr = sub.add_parser("brief",
-                         help="Build a grounded context pack for a goal "
-                              "(hermetic: no network; MR-8 grounding spec)")
-    pbr.add_argument("goal")
+                         help="Build an evidence-bearing context pack for a goal (HV-2)")
+    pbr.add_argument("goal_pos", nargs="?", default=None, metavar="goal",
+                     help="high-level goal or instruction (positional)")
+    pbr.add_argument("--goal", dest="goal_opt", default=None,
+                     help="high-level goal or instruction to contextually brief")
     pbr.add_argument("--file", dest="files", action="append", default=[],
                      help="source file to cite as a window (repeatable)")
+    pbr.add_argument("--files", dest="files_csv", default=None,
+                     help="comma-separated list of source files to cite")
+    pbr.add_argument("--budget", type=int, default=48000,
+                     help="maximum total window characters cap (default: 48000)")
+    pbr.add_argument("--freshness", action="store_true", default=False,
+                     help="evaluate and attach source freshness report")
+    pbr.add_argument("--render", action="store_true", default=False,
+                     help="render human-readable markdown format instead of JSON")
     pbr.add_argument("--validate", action="store_true",
                      help="run the grounding lint over the built pack")
     _add_output_flags(pbr)

@@ -283,6 +283,66 @@ async function renderContinue(root) {
   });
 }
 
+async function renderApply(root) {
+  root.append($("h2", {}, "Apply"),
+    $("p", { class: "muted" },
+      "Scoped code edit with verification and model rotation (same run kind the CLI's ",
+      $("code", {}, "harness apply"), " uses)."));
+  await runDispatchForm(root, {
+    kind: "apply",
+    resultLabel: "Apply",
+    fields: [
+      ["file", "Target file path", { placeholder: "/path/to/target.py" }],
+      ["instruction", "Instruction", { placeholder: "What to change..." }],
+      ["verify", "Verify command (optional)", { placeholder: "e.g. pytest -q" }],
+      ["backend", "Backend (harness | morph | diff)", { placeholder: "harness" }],
+      ["max_rounds", "Max rounds (optional)", { placeholder: "3", type: "number", min: "1", max: "8" }],
+      ["task_max_cost", "Max cost USD (optional)", { placeholder: "0.10", type: "number", step: "0.01" }],
+    ],
+    buildArgs: (f) => {
+      const args = {
+        file: f.file.value.trim(),
+        instruction: f.instruction.value.trim(),
+      };
+      if (f.verify.value.trim()) args.verify = f.verify.value.trim();
+      if (f.backend.value.trim()) args.backend = f.backend.value.trim();
+      if (f.max_rounds.value) args.max_rounds = Number(f.max_rounds.value);
+      if (f.task_max_cost.value) args.task_max_cost = Number(f.task_max_cost.value);
+      return args;
+    },
+  });
+}
+
+async function renderDogfood(root) {
+  root.append($("h2", {}, "Dogfood"),
+    $("p", { class: "muted" },
+      "Dogfood self-grounding run against claims manifest (same run kind the CLI's ",
+      $("code", {}, "harness dogfood"), " uses)."));
+  await runDispatchForm(root, {
+    kind: "dogfood",
+    resultLabel: "Dogfood",
+    fields: [
+      ["file", "Target file path", { placeholder: "/path/to/target.py" }],
+      ["instruction", "Instruction", { placeholder: "Instruction to run" }],
+      ["claims_file", "Claims JSON file (optional)", { placeholder: "/path/to/claims.json" }],
+      ["source_file", "Source file (optional)", { placeholder: "/path/to/source.py" }],
+      ["verify", "Verify command (optional)", { placeholder: "e.g. pytest -q" }],
+      ["max_cost", "Max cost USD (optional)", { placeholder: "0.05", type: "number", step: "0.01" }],
+    ],
+    buildArgs: (f) => {
+      const args = {
+        file: f.file.value.trim(),
+        instruction: f.instruction.value.trim(),
+      };
+      if (f.claims_file.value.trim()) args.claims_file = f.claims_file.value.trim();
+      if (f.source_file.value.trim()) args.source_file = f.source_file.value.trim();
+      if (f.verify.value.trim()) args.verify = f.verify.value.trim();
+      if (f.max_cost.value) args.max_cost = Number(f.max_cost.value);
+      return args;
+    },
+  });
+}
+
 // ---- Legacy API pane (the consolidated manual-fetch directory) ----------
 
 const LEGACY_ENDPOINTS = [
@@ -338,8 +398,10 @@ async function renderLegacy(root) {
 const PANES = [
   ["proof", "Proof", renderProof],
   ["insights", "Insights", renderInsights],
+  ["apply", "Apply", renderApply],
   ["verify", "Verify", renderVerify],
   ["continue", "Continue", renderContinue],
+  ["dogfood", "Dogfood", renderDogfood],
   ["legacy", "Legacy API", renderLegacy],
 ];
 

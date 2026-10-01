@@ -36,6 +36,7 @@ from .route_pack import validate_route_pack
 from .log_analysis import analyze_log
 from .service import run_verify as _service_run_verify
 from .service import run_dogfood as _service_run_dogfood
+from .brief import build_brief, freshness_report, render_brief
 from .validation import (
     MAX_LINES,
     MAX_ROUNDS,
@@ -1082,6 +1083,22 @@ class McpServer:
                 task_id=task_id,
                 max_cost=max_cost,
                 max_rounds=max_rounds)
+        if name == "generate_brief":
+            goal = validate_text(args.get("goal"), "goal", 20000, required=True)
+            raw_files = args.get("files") or []
+            if isinstance(raw_files, str):
+                raw_files = [raw_files]
+            if not isinstance(raw_files, list):
+                raise HarnessError("files must be a list of strings")
+            files = [str(f) for f in raw_files]
+            budget = bounded_int(args.get("budget", 48000), "budget", 100, 500000)
+            pack = build_brief(goal, files, max_total_chars=budget)
+            result = {"brief": pack, "status": "ok"}
+            if args.get("freshness"):
+                result["freshness_report"] = freshness_report(pack)
+            if args.get("render"):
+                result["rendered"] = render_brief(pack)
+            return result
         raise ValueError(f"unknown tool: {name}")
 
     # ---------------- notifications/progress streaming ----------------

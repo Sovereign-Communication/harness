@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.96,
+        "confidence": 0.97,
         "evaluated": true
       }
     },
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 2779 tests in 188.049s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 2797 tests in 161.478s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -288,7 +288,7 @@
         "id": "D1",
         "label": "MCP tool parity with README",
         "score": 1.0,
-        "evidence": "README documents all 17 MCP tools, no stale names"
+        "evidence": "README documents all 18 MCP tools, no stale names"
       },
       {
         "id": "D2",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 105/105 = 100% (bar 95%) vs baseline aa09a97cbb)"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 97/97 = 100% (bar 95%) vs baseline 3538c0a632)"
       }
     ]
   }

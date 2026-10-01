@@ -1003,6 +1003,7 @@ class LaneSchedulingTests(unittest.TestCase):
              "trust_status": "observe",
              "issue_sort": "observe",
              "mission_status": "observe",
+             "generate_brief": "observe",
              "jev_phase": "observe"})
 
     def test_unknown_and_missing_names_ride_observe(self):

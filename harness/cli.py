@@ -75,7 +75,7 @@ from .log_analysis import analyze_log as _log_analyze, load_log_text as _log_loa
 from .mission_driver import pack_probe_attempt as _mission_pack_probe
 from .mission_driver import run_mission as _mission_run
 from .capability import capabilities_payload as _capability_payload_owner
-from .brief import build_brief, validate_brief
+from .brief import build_brief, freshness_report, render_brief, validate_brief
 from .dag import TaskDAG, node_apply_kwargs
 from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
 from .pyramid_state import (
@@ -335,16 +335,37 @@ def _cmd_dogfood(opts, settings):
 
 
 def _cmd_brief(opts, settings=None):
-    """Build the grounded context pack (MR-8 spec). Hermetic: no key, no
+    """Build the grounded context pack (MR-8 spec / HV-2). Hermetic: no key, no
     network; the pack asserts nothing beyond the goal."""
-    pack = build_brief(opts.goal, opts.files)
+    goal = getattr(opts, "goal_opt", None) or getattr(opts, "goal_pos", None) or getattr(opts, "goal", None)
+    if not goal:
+        raise HarnessError("brief requires a goal (via argument or --goal)")
+    raw_files = list(getattr(opts, "files", []) or [])
+    files_csv = getattr(opts, "files_csv", None)
+    if files_csv:
+        raw_files.extend([f.strip() for f in files_csv.split(",") if f.strip()])
+    seen = set()
+    files = []
+    for f in raw_files:
+        if f not in seen:
+            seen.add(f)
+            files.append(f)
+    budget = getattr(opts, "budget", 48000) or 48000
+    pack = build_brief(goal, files, max_total_chars=budget)
+    if getattr(opts, "freshness", False):
+        pack["freshness_report"] = freshness_report(pack)
+    if getattr(opts, "render", False):
+        rendered = render_brief(pack)
+        if getattr(opts, "out", None):
+            with open(opts.out, "w", encoding="utf-8") as f:
+                f.write(rendered)
+        else:
+            sys.stdout.write(rendered)
+        return
     out = {"brief": pack}
-    if opts.validate:
+    if getattr(opts, "validate", False):
         out["grounding_issues"] = validate_brief(pack)
         out["ok"] = not out["grounding_issues"]
-    # The ONE exit-code policy needs a terminal status; without it this face
-    # raised KeyError('status') on every run, and `--validate` had no way to
-    # report a failed grounding lint as anything but a crash.
     out["status"] = "ok" if out.get("ok", True) else "incomplete"
     _emit_by_status(out, opts.out)
 
