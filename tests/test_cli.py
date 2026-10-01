@@ -802,7 +802,8 @@ class CliParserSurfaceTests(unittest.TestCase):
         sub_action = next(a for a in build_parser()._actions
                           if isinstance(a, argparse._SubParsersAction))
         registered = set(sub_action.choices)
-        self.assertEqual(registered, set(_DISPATCH) | {"serve", "desktop", "media"})
+        self.assertEqual(registered,
+                         set(_DISPATCH) | {"serve", "desktop", "media", "driver"})
 
     def test_handler_seams_stay_importable_from_cli(self):
         import harness.cli as cli
@@ -821,6 +822,31 @@ class CliParserSurfaceTests(unittest.TestCase):
             rc = cli.main(["media", "balance", "--project", "demo"])
         fake_run_cli.assert_called_once_with(["balance", "--project", "demo"])
         self.assertEqual(rc, 0)
+
+    def test_driver_early_intercept_dispatches_to_perception_client(self):
+        """`harness driver ...` is intercepted the same way, and lands on the
+        driver-core adapter rather than in _DISPATCH."""
+        from harness import perception_client
+
+        with mock.patch.object(perception_client, "run_cli",
+                               return_value=0) as fake_run_cli:
+            rc = cli.main(["driver", "step", "file-manager"])
+        fake_run_cli.assert_called_once_with(["step", "file-manager"])
+        self.assertEqual(rc, 0)
+
+    def test_the_early_intercepts_do_not_displace_each_other(self):
+        """media and driver are two early returns in one block; a shared
+        early-return bug would make one silently unreachable."""
+        from harness import media_client, perception_client
+
+        with mock.patch.object(media_client, "run_cli",
+                               return_value=0) as media_run, \
+                mock.patch.object(perception_client, "run_cli",
+                                  return_value=0) as driver_run:
+            self.assertEqual(cli.main(["media", "health"]), 0)
+            self.assertEqual(cli.main(["driver", "health"]), 0)
+        media_run.assert_called_once()
+        driver_run.assert_called_once()
 
 
 class CliPresentationOwnerTests(unittest.TestCase):

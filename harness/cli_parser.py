@@ -86,6 +86,14 @@ def build_parser():
     sub.add_parser("media", help="Image/video generation via sovereign-media "
                                  "(cost-bounded, credentials stay service-side)")
 
+    # Verified extraction -> Jev decision -> deterministic action via
+    # driver-core (adapter in harness/perception_client.py; parses its own
+    # subarguments). The driver verifies an extraction BEFORE the decision,
+    # so nothing here acts on an unverified read of the machine.
+    sub.add_parser("driver", help="Run one verified-extraction/Jev-decision "
+                                  "step via driver-core (closed action "
+                                  "vocabulary, consent bound to action+params)")
+
     # Structured so --help lists the UI faces alongside the data commands.
     sub.add_parser("serve", help="Local web UI + JSON API over the core (loopback; "
                                  "--auth-token optional, HARNESS_UI_AUTH_TOKEN)")

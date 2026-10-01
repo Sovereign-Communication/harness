@@ -357,6 +357,18 @@ harness media image "a cabin in snowy woods" --project scmessenger --quality low
 harness media video "ocean waves" --provider your-video-provider --model your-model --seconds 4 --project scmessenger
 harness media jobs --project scmessenger
 harness media balance --project scmessenger
+
+# DRV-1: verified extraction -> Jev decision -> deterministic action, via the
+# driver-core sibling service. Extraction is cross-verified BEFORE the
+# decision, so nothing here acts on an unverified read of the machine. A
+# refusal is HTTP 200 ok:false and comes back as an envelope with a named
+# reason -- only transport failures raise. Endpoint/token are config- or
+# env-resolved (DRIVER_BASE_URL, DRIVER_TOKEN); the adapter names no provider.
+# See docs/driver.md for the refusal-vs-transport contract and consent rules.
+harness driver health
+harness driver step "file-manager" --schema screen          # read-only: no consent sent
+harness driver step "file-manager" --action open_window --params '{"path": "~/notes"}' --by operator
+harness driver verify        # audit-chain verdict + spend snapshot
 ```
 
 Exit codes: `0` ok, `1` fatal, `2` verify/lint failure (or unconfirmed run),

@@ -1461,6 +1461,12 @@ def main(argv=None):
         # subarguments; mirrors the serve/desktop early-intercept pattern).
         from .media_client import run_cli as _media_cli
         return _media_cli(args[1:])
+    if args[:1] == ["driver"]:
+        # Verified extraction -> Jev decision -> deterministic action via
+        # driver-core. The driver owns the ordering, the extraction
+        # consensus, and the action; this adapter only carries the envelope.
+        from .perception_client import run_cli as _driver_cli
+        return _driver_cli(args[1:])
     ap = build_parser()
     opts = ap.parse_args(args)
     import harness.output as _output
