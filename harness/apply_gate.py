@@ -5,16 +5,130 @@ verification, preview results, and failed-run rewind. Model selection and
 provider dispatch stay in ``apply.py``; this policy receives request and run
 state records and returns the shared result shapes.
 """
+import hashlib
 import os
+from typing import Optional, Sequence, Dict, Any, List
 
 from . import events as _events
 from . import attest as attest_policy
 from . import trust as trust_policy
 from .continuation import bound_gate, gate_id
-from .errors import ToolCancelled
+from .errors import HarnessError, ToolCancelled
 from .filesafety import _atomic_write, backup_file, file_content_hash
 from .output import eprint
 from .results import _content_diff, _round_entry, _terminal_result
+
+
+def authorize_proposed_diff(
+    diff_text: Optional[str],
+    instruction: str = "",
+    allowed_files: Optional[Sequence[str]] = None,
+    *,
+    ledger: Optional[Any] = None,
+    task_id: Optional[str] = None,
+    max_diff_lines: int = 5000,
+    max_diff_bytes: int = 500000,
+    allow_empty: bool = False,
+) -> Dict[str, Any]:
+    """Authorize a proposed diff before writing candidate bytes (GAP-diff-auth).
+
+    Enforces structural bounds, hunk validity, and file scope constraints.
+    Rejects path traversal, unauthorized file touches, and oversized diffs.
+    Fails closed by raising HarnessError on any violation.
+    """
+    if diff_text is None or not str(diff_text).strip():
+        if allow_empty:
+            return {
+                "authorized": True,
+                "diff_hash": None,
+                "touched_files": [],
+                "hunks_count": 0,
+                "lines_added": 0,
+                "lines_deleted": 0,
+                "instruction": instruction,
+            }
+        raise HarnessError("Diff authorization rejected: diff content is empty")
+
+    diff_str = str(diff_text)
+    diff_bytes = diff_str.encode("utf-8")
+
+    if len(diff_bytes) > max_diff_bytes:
+        raise HarnessError(
+            f"Diff authorization rejected: diff size ({len(diff_bytes)} bytes) exceeds limit ({max_diff_bytes} bytes)"
+        )
+
+    lines = diff_str.splitlines()
+    if len(lines) > max_diff_lines:
+        raise HarnessError(
+            f"Diff authorization rejected: diff lines ({len(lines)}) exceeds limit ({max_diff_lines})"
+        )
+
+    touched_files: List[str] = []
+    hunks_count = 0
+    lines_added = 0
+    lines_deleted = 0
+
+    for line in lines:
+        if line.startswith("--- ") or line.startswith("+++ "):
+            header_content = line[4:].strip().split("\t")[0].split()
+            if header_content:
+                raw_path = header_content[0].strip()
+                if raw_path in ("/dev/null", "dev/null", "a", "b"):
+                    continue
+                if raw_path.startswith("a/") or raw_path.startswith("b/"):
+                    raw_path = raw_path[2:]
+                norm = os.path.normpath(raw_path).replace("\\", "/")
+                parts = [p for p in norm.split("/") if p]
+                if ".." in parts or norm.startswith("../"):
+                    raise HarnessError(
+                        f"Diff authorization rejected: path traversal detected in diff target {raw_path!r}"
+                    )
+                if norm not in touched_files:
+                    touched_files.append(norm)
+        elif line.startswith("@@ ") and " @@" in line[3:]:
+            hunks_count += 1
+        elif line.startswith("+") and not line.startswith("+++"):
+            lines_added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            lines_deleted += 1
+
+    if not allow_empty and hunks_count == 0 and lines_added == 0 and lines_deleted == 0:
+        raise HarnessError("Diff authorization rejected: diff contains no valid change hunks")
+
+    if allowed_files is not None and touched_files:
+        norm_allowed = [os.path.normpath(str(f)).replace("\\", "/") for f in allowed_files]
+        allowed_basenames = {os.path.basename(a) for a in norm_allowed}
+        for touched in touched_files:
+            touched_norm = os.path.normpath(touched).replace("\\", "/")
+            touched_base = os.path.basename(touched_norm)
+            matched = any(
+                touched_norm == a or a.endswith("/" + touched_norm) or touched_base in allowed_basenames
+                for a in norm_allowed
+            )
+            if not matched:
+                raise HarnessError(
+                    f"Diff authorization rejected: modified file {touched!r} is not in allowed files"
+                )
+
+    diff_hash = hashlib.sha256(diff_bytes).hexdigest()
+
+    result = {
+        "authorized": True,
+        "diff_hash": diff_hash,
+        "touched_files": touched_files,
+        "hunks_count": hunks_count,
+        "lines_added": lines_added,
+        "lines_deleted": lines_deleted,
+        "instruction": instruction,
+    }
+
+    if ledger is not None and task_id:
+        ledger.append("diff_authorized", task_id=task_id, diff_hash=diff_hash,
+                      touched_files=touched_files, hunks_count=hunks_count)
+    _events.emit("diff_authorized", task_id=task_id, diff_hash=diff_hash,
+                 hunks=hunks_count, files=touched_files)
+
+    return result
 
 
 class GatePolicy:
@@ -44,6 +158,13 @@ class GatePolicy:
             ledger=self.ledger, combined=getattr(req, "trust_combined", 0),
             verify_cmd=req.verify_cmd, task_id=req.task_id,
             model=getattr(req, "model", None))
+        diff_text = _content_diff(state.current_content or "", content)
+        allowed = [req.file_path] if getattr(req, "file_path", None) else None
+        state.diff_auth = authorize_proposed_diff(
+            diff_text, getattr(req, "instruction", ""), allowed_files=allowed,
+            ledger=self.ledger if getattr(req, "require_diff_authorization", False) else None,
+            task_id=getattr(req, "task_id", None),
+            allow_empty=True)
         # Diff-bound independent authorization (M4 phase 2, opt-in): the
         # verifier model sees the EXACT bytes about to be written and must
         # allow them. Deny, unparseable verdict, and transport error all
