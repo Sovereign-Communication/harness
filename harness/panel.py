@@ -618,6 +618,14 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         "agreement": "unknown", "confidence": None, "disagreements": [],
         "defer": True, "verdict": "[raw panel outputs only -- no synthesis available]",
     }
+    if judge_synthesis_status != "parseable":
+        consensus["judge_fallback"] = True
+        consensus["judge_fallback_reason"] = judge_synthesis_status
+        consensus["deterministic_tally_fallback"] = True
+        consensus["verdict_status"] = "inconclusive"
+        consensus["draw"] = True
+        consensus["defer"] = True
+        consensus.setdefault("defer_reason", "judge_unavailable")
 
     # Optional structured-claims convergence step: a dedicated specialist
     # renders the final verdict from the panel's per-claim JSON (defaults to the
@@ -669,9 +677,21 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         # the authority statement. Same deterministic tally the (parseable)
         # judge verdict is held to, computed before this point from full
         # votes.
-        if judge_synthesis_status != "parseable":
+        has_synthesis = (judge_synthesis_status == "parseable" or
+                         (isinstance(spec.get("specialist"), dict) and spec.get("status") == "ok"))
+        if not has_synthesis:
+                consensus["judge_fallback"] = True
+                consensus["judge_fallback_reason"] = judge_synthesis_status
+                consensus["deterministic_tally_fallback"] = True
+                consensus["verdict_status"] = "inconclusive"
+                consensus["draw"] = True
+                consensus["defer"] = True
+                consensus.setdefault("defer_reason", "judge_unavailable")
                 consensus["tally_artifact"] = {
                 "authoritative": False,
+                "judge_fallback": True,
+                "draw": True,
+                "verdict_status": "inconclusive",
                 "note": ("deterministic vote tally rendered without a parseable "
                          "judge synthesis; informational only -- not a verdict"),
                 "judge_synthesis_status": judge_synthesis_status,
@@ -714,7 +734,11 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         else:
             consensus["agreement"] = "low" if convergence_tally["disagreement"] else "unknown"
             consensus["confidence"] = convergence_tally["convergence_rate"] or 0.0
-        consensus["defer"] = not convergence_tally["converged"]
+        if not has_synthesis:
+            consensus["defer"] = True
+            consensus.setdefault("defer_reason", "judge_unavailable")
+        else:
+            consensus["defer"] = not convergence_tally["converged"]
         consensus["panel_shortfall"] = convergence_tally["panel_shortfall"]
         consensus["missing_votes"] = convergence_tally["missing_votes"]
         consensus["voted_by"] = convergence_tally["voted_by"]
@@ -777,6 +801,10 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
 
     consensus_payload = {k: consensus[k] for k in
                          ("agreement", "confidence", "disagreements", "defer")}
+    for key in ("judge_fallback", "judge_fallback_reason", "deterministic_tally_fallback",
+                "verdict_status", "draw", "defer_reason"):
+        if key in consensus:
+            consensus_payload[key] = consensus[key]
     if convergence_tally is not None:
         consensus_payload.update({
             "panel_shortfall": convergence_tally["panel_shortfall"],

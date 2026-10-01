@@ -36,6 +36,7 @@ def _parse_consensus(judge_text):
         return {"agreement": "unknown", "confidence": None, "disagreements": [],
                 "defer": True, "verdict": judge_text or "",
                 "defer_reason": "unparseable_judge_output",
+                "judge_fallback": True, "verdict_status": "inconclusive", "draw": True,
                 "escalation": None, "plan": None}
     verdict = parsed.get("verdict")
     agreement = str(parsed.get("agreement", "unknown")).lower()
@@ -508,4 +509,8 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
                   "error": "specialist returned no parseable JSON",
                   "cost": total_cost}
     result["attempts"] = attempts
+    result["judge_fallback"] = True
+    result["verdict_status"] = "inconclusive"
+    result["draw"] = True
+    result["degrade_reason"] = "specialist_unavailable"
     return result
