@@ -363,6 +363,8 @@ def run_chat_task(task_id, args, cancel_check):
         session_id=args.get("session_id"),
         cancel_check=cancel_check,
         force_conversation=classify_prompt_intent(prompt) != "edit",
+        max_tokens=args.get("max_tokens"),
+        reasoning_effort=args.get("reasoning_effort"),
     )
 
 

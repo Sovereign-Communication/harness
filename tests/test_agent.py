@@ -1911,6 +1911,134 @@ class TestHourglassLane(unittest.TestCase):
             self.assertIn("STRUCTURAL EVALUATION FAILED", engine.apply_edit.call_args[1]["instruction"])
 
 
+class TestDynamicTokenAllocation(unittest.TestCase):
+    """Dynamic token budget resolution and graceful truncation handling."""
+
+    def test_resolve_lane_max_tokens_unconstrained(self):
+        from harness.agent import _resolve_lane_max_tokens
+        # No governor, no token budget -> allocates full target
+        tokens = _resolve_lane_max_tokens(None, "model/a", "hello", 16384)
+        self.assertEqual(tokens, 16384)
+
+    def test_resolve_lane_max_tokens_bounded_by_token_budget(self):
+        from harness.agent import _resolve_lane_max_tokens
+        from harness.token_budget import TokenBudget
+        tb = TokenBudget("run", max_input_tokens=10000, max_output_tokens=5000)
+        tokens = _resolve_lane_max_tokens(None, "model/a", "hello", 16384, token_budget=tb)
+        self.assertEqual(tokens, 5000)
+
+    def test_resolve_lane_max_tokens_bounded_by_governor_dollar_budget(self):
+        from harness.agent import _resolve_lane_max_tokens
+        fake_gov = MagicMock()
+        # $0.0001 / token completion price, prompt price 0
+        fake_gov.fetch_pricing.return_value = {"model/paid": (0.0, 0.0001)}
+        # $0.50 remaining
+        fake_gov.remaining.return_value = 0.50
+        # 0.50 / 0.0001 = 5000 tokens
+        tokens = _resolve_lane_max_tokens(fake_gov, "model/paid", "hello", 16384)
+        self.assertEqual(tokens, 5000)
+
+    def test_resolve_lane_max_tokens_free_model_not_dollar_bounded(self):
+        from harness.agent import _resolve_lane_max_tokens
+        fake_gov = MagicMock()
+        fake_gov.fetch_pricing.return_value = {"model/free": (0.0, 0.0)}
+        fake_gov.remaining.return_value = 0.00001
+        tokens = _resolve_lane_max_tokens(fake_gov, "model/free", "hello", 16384)
+        self.assertEqual(tokens, 16384)
+
+    def test_hourglass_answer_once_dynamic_tokens_and_truncation_recovery(self):
+        from harness.agent import TRUNCATION_NOTICE
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(), history_dir=Path(tmp))
+            cut_content = "This is a long mathematical proof of the Riemann hypothesis that got cut..."
+            truncated_resp = {
+                "choices": [{"message": {"content": cut_content}, "finish_reason": "length"}],
+                "usage": {"cost": 0.001},
+            }
+            fake_gov = MagicMock()
+            fake_gov.remaining.return_value = 1.0
+            fake_gov.fetch_pricing.return_value = {"m": (0.0, 0.0)}
+            with patch("harness.agent.chat", return_value=(200, truncated_resp)) as mock_chat:
+                res = agent._hourglass_answer_once(
+                    "push the zero bound", "context", governor=fake_gov, api_key="test-key"
+                )
+            self.assertTrue(res.get("truncated"))
+            self.assertIn(cut_content, res["answer"])
+            self.assertIn(TRUNCATION_NOTICE.strip(), res["answer"])
+            # Verify chat was called with dynamic budget (16384), not hardcoded 4096
+            self.assertEqual(mock_chat.call_args[1]["max_tokens"], 16384)
+            self.assertEqual(mock_chat.call_args[1]["reasoning_effort"], "auto")
+
+    def test_hourglass_answer_once_explicit_max_tokens_respected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(), history_dir=Path(tmp))
+            complete_resp = {
+                "choices": [{"message": {"content": "exact answer"}, "finish_reason": "stop"}],
+                "usage": {"cost": 0.0},
+            }
+            with patch("harness.agent.chat", return_value=(200, complete_resp)) as mock_chat, \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())):
+                res = agent._hourglass_answer_once(
+                    "hello", "context", max_tokens=8192
+                )
+            self.assertFalse(res.get("truncated"))
+            self.assertEqual(res["answer"], "exact answer")
+            self.assertEqual(mock_chat.call_args[1]["max_tokens"], 8192)
+
+    def test_server_run_chat_task_passes_max_tokens_and_reasoning_effort(self):
+        from harness.server import run_chat_task
+        with patch.object(AutonomousAgent, "run_prompt", return_value={"status": "ok"}) as mock_run:
+            args = {
+                "prompt": "test prompt",
+                "max_tokens": 12000,
+                "reasoning_effort": "high",
+            }
+            run_chat_task("task-1", args, None)
+            mock_run.assert_called_once()
+            self.assertEqual(mock_run.call_args[1]["max_tokens"], 12000)
+            self.assertEqual(mock_run.call_args[1]["reasoning_effort"], "high")
+
+    def test_resolve_lane_max_tokens_pricing_exception_handled(self):
+        from harness.agent import _resolve_lane_max_tokens
+        fake_gov = MagicMock()
+        fake_gov.fetch_pricing.side_effect = RuntimeError("network failure")
+        tokens = _resolve_lane_max_tokens(fake_gov, "model/a", "hello", 16384)
+        self.assertEqual(tokens, 16384)
+
+    def test_hourglass_answer_once_rotates_when_allocated_tokens_exhausted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(), history_dir=Path(tmp))
+            complete_resp = {
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"cost": 0.0},
+            }
+            zero_tb = MagicMock()
+            zero_tb.remaining_output.side_effect = [0, 5000]
+            with patch("harness.agent.chat", return_value=(200, complete_resp)) as mock_chat, \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())):
+                res = agent._hourglass_answer_once(
+                    "hello", "context", token_budget=zero_tb
+                )
+            self.assertEqual(res["answer"], "ok")
+            mock_chat.assert_called_once()
+
+    def test_handle_conversation_rotates_when_allocated_tokens_exhausted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(), history_dir=Path(tmp))
+            complete_resp = {
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"cost": 0.0},
+            }
+            zero_tb = MagicMock()
+            zero_tb.remaining_output.side_effect = [0, 5000]
+            with patch("harness.agent.chat", return_value=(200, complete_resp)) as mock_chat, \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())):
+                res = agent._handle_conversation(
+                    "hello", "t_zero", token_budget=zero_tb
+                )
+            self.assertEqual(res["status"], "ok")
+            self.assertEqual(res["response"], "ok")
+            mock_chat.assert_called_once()
 
 
 if __name__ == "__main__":

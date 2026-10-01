@@ -41,6 +41,27 @@ class LanePolicyUnitTests(unittest.TestCase):
         self.assertEqual(tokens, 4096)
         self.assertEqual(effort, "medium")
 
+    def test_answer_default_and_effort(self):
+        tokens, effort = effective_lane_policy("answer")
+        self.assertEqual(tokens, 16384)
+        self.assertEqual(effort, "auto")
+
+    def test_answer_floor_with_low_request(self):
+        tokens, effort = effective_lane_policy("answer", max_tokens=2048)
+        self.assertEqual(tokens, 4096)
+        self.assertEqual(effort, "auto")
+
+    def test_answer_explicit_caller_wins(self):
+        tokens, effort = effective_lane_policy("answer", max_tokens=32768,
+                                               reasoning_effort="high")
+        self.assertEqual(tokens, 32768)
+        self.assertEqual(effort, "high")
+
+    def test_chat_alias_matches_answer(self):
+        tokens, effort = effective_lane_policy("chat")
+        self.assertEqual(tokens, 16384)
+        self.assertEqual(effort, "auto")
+
     def test_unknown_role_raises(self):
         with self.assertRaises(ValueError):
             effective_lane_policy("specialist")
