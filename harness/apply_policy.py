@@ -348,10 +348,16 @@ class ApplyEngineMixin:
             if token_allowance is not None:
                 usage = resp.get("usage") if isinstance(resp, dict) else None
                 if isinstance(usage, dict) and "prompt_tokens" in usage and "completion_tokens" in usage:
+                    comp_details = usage.get("completion_tokens_details") or {}
+                    prompt_details = usage.get("prompt_tokens_details") or {}
+                    reasoning_toks = comp_details.get("reasoning_tokens") or usage.get("reasoning_tokens") or 0
+                    cached_toks = prompt_details.get("cached_tokens") or usage.get("cached_tokens") or 0
                     req.token_budget.settle(
                         token_allowance,
                         input_tokens=usage.get("prompt_tokens"),
                         output_tokens=usage.get("completion_tokens"),
+                        reasoning_tokens=reasoning_toks,
+                        cached_tokens=cached_toks,
                         source=USAGE_ACTUAL)
                 else:
                     req.token_budget.settle(token_allowance,

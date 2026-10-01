@@ -54,6 +54,50 @@ class ApplyTests(ApplyFixture):
         events = [e["event"] for e in ledger.entries()]
         self.assertEqual(events, ["dispatch_start", "model_result", "verify_round", "complete"])
 
+    def test_apply_with_token_budget_and_token_details(self):
+        from harness.token_budget import TokenBudget
+        p = self.make_file()
+        tb = TokenBudget(max_input_tokens=100000, max_output_tokens=16384)
+        resp_data = {
+            "choices": [{"message": {"content": CHANGED}, "finish_reason": "stop"}],
+            "usage": {
+                "cost": 0.000001,
+                "prompt_tokens": 120,
+                "completion_tokens": 45,
+                "completion_tokens_details": {"reasoning_tokens": 15},
+                "prompt_tokens_details": {"cached_tokens": 30},
+            },
+        }
+        fake, gov, ledger, engine = self.make_env(
+            posts=[resp_data], run=scripted_run([(0, "")]))
+        result = engine.apply_edit(task_id="t1", file_path=p, instruction="add +0",
+                                   verify_cmd="python -m py_compile math.py",
+                                   require_consent=False, token_budget=tb)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tb.used_reasoning(), 15)
+        self.assertEqual(tb.used_cached(), 30)
+
+        p2 = self.make_file()
+        tb2 = TokenBudget(max_input_tokens=100000, max_output_tokens=16384)
+        resp_data2 = {
+            "choices": [{"message": {"content": CHANGED}, "finish_reason": "stop"}],
+            "usage": {
+                "cost": 0.000001,
+                "prompt_tokens": 100,
+                "completion_tokens": 40,
+                "reasoning_tokens": 10,
+                "cached_tokens": 20,
+            },
+        }
+        fake2, gov2, ledger2, engine2 = self.make_env(
+            posts=[resp_data2], run=scripted_run([(0, "")]))
+        result2 = engine2.apply_edit(task_id="t2", file_path=p2, instruction="add +0",
+                                     verify_cmd="python -m py_compile math.py",
+                                     require_consent=False, token_budget=tb2)
+        self.assertEqual(result2["status"], "ok")
+        self.assertEqual(tb2.used_reasoning(), 10)
+        self.assertEqual(tb2.used_cached(), 20)
+
     def test_verify_fail_then_pass(self):
         p = self.make_file()
         _, _, _, engine = self.make_env(

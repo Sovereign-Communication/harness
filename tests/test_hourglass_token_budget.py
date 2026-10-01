@@ -342,5 +342,73 @@ class IndependenceFromDollarsTests(unittest.TestCase):
         self.assertEqual(free.remaining_input(), 10)
 
 
+class TokenKindsTests(unittest.TestCase):
+    def test_usage_tuple_compatibility_and_attributes(self):
+        from harness.token_budget import Usage
+        u = Usage(100, 20, USAGE_ACTUAL, 15, 40)
+        # 3-tuple backward-compatibility
+        self.assertEqual(u, (100, 20, USAGE_ACTUAL))
+        # 5-tuple equality
+        self.assertEqual(u, (100, 20, USAGE_ACTUAL, 15, 40))
+        # Field access
+        self.assertEqual(u.input_tokens, 100)
+        self.assertEqual(u.output_tokens, 20)
+        self.assertEqual(u.source, USAGE_ACTUAL)
+        self.assertEqual(u.reasoning_tokens, 15)
+        self.assertEqual(u.cached_tokens, 40)
+
+    def test_settle_tracks_reasoning_and_cached_tokens(self):
+        run = TokenBudget(max_input_tokens=1000, max_output_tokens=200)
+        call = run.allowance(200, max_output_tokens=50, label="reasoning_call")
+        usage = run.settle(call, input_tokens=180, output_tokens=40,
+                           reasoning_tokens=25, cached_tokens=50,
+                           source=USAGE_ACTUAL)
+        self.assertEqual(usage.reasoning_tokens, 25)
+        self.assertEqual(usage.cached_tokens, 50)
+        self.assertEqual(run.used_reasoning(), 25)
+        self.assertEqual(run.used_cached(), 50)
+
+        snap = run.snapshot()
+        self.assertEqual(snap["used_reasoning_tokens"], 25)
+        self.assertEqual(snap["used_cached_tokens"], 50)
+        self.assertEqual(snap["token_kinds"], {
+            "input": 180,
+            "output": 40,
+            "reasoning": 25,
+            "cached": 50,
+        })
+        self.assertEqual(snap["token_kinds_by_label"]["reasoning_call"]["reasoning_tokens"], 25)
+        self.assertEqual(snap["token_kinds_by_label"]["reasoning_call"]["cached_tokens"], 50)
+        self.assertTrue(snap["estimation_markers"]["all_actual"])
+        self.assertFalse(snap["estimation_markers"]["has_estimates"])
+        self.assertFalse(snap["estimation_markers"]["has_unavailable"])
+
+    def test_estimation_markers_honestly_reflect_sources(self):
+        run = TokenBudget(max_input_tokens=1000, max_output_tokens=200)
+        c1 = run.allowance(100, max_output_tokens=20, label="c1")
+        c2 = run.allowance(100, max_output_tokens=20, label="c2")
+        c3 = run.allowance(100, max_output_tokens=20, label="c3")
+
+        run.settle(c1, input_tokens=80, output_tokens=10, source=USAGE_ACTUAL)
+        run.settle(c2, input_tokens=90, output_tokens=15, source=USAGE_ESTIMATED)
+        run.settle(c3, source=USAGE_UNAVAILABLE)
+
+        snap = run.snapshot()
+        self.assertFalse(snap["estimation_markers"]["all_actual"])
+        self.assertTrue(snap["estimation_markers"]["has_estimates"])
+        self.assertTrue(snap["estimation_markers"]["has_unavailable"])
+
+    def test_refuse_invalid_token_kind_counts(self):
+        run = TokenBudget(max_input_tokens=500, max_output_tokens=100)
+        call = run.allowance(50, max_output_tokens=10)
+        for bad in (-1, 1.5, "10", True):
+            with self.assertRaises(HarnessError):
+                run.settle(call, input_tokens=50, output_tokens=10,
+                           reasoning_tokens=bad)
+            with self.assertRaises(HarnessError):
+                run.settle(call, input_tokens=50, output_tokens=10,
+                           cached_tokens=bad)
+
+
 if __name__ == "__main__":
     unittest.main()
