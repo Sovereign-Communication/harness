@@ -56,8 +56,8 @@ def main():
     }
     out = HERE / "corpus_manifest.json"
     old = out.read_bytes() if out.exists() else None
-    out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + chr(10),
-                   encoding="utf-8", newline=chr(10))
+    content = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    out.write_bytes(content)
     if old is None:
         print(f"created {out.name}: {len(entries)} files pinned")
     elif old == out.read_bytes():

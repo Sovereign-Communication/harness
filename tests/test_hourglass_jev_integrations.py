@@ -572,5 +572,174 @@ class StageRequirementPolicyTests(unittest.TestCase):
         self.assertNotIn("skip_reason", seen["judged"])
 
 
+class StageCallingLanesIntegrationTests(unittest.TestCase):
+    """Pin that the 5 declared HV-1 stage dimensions are genuinely reached
+    from the production calling lanes (waist context intake, composition,
+    and agent stage execution/restart/consent), with honest degradation."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.ledger = AutonomyLedger(str(Path(self.tmp.name) / "ledger.jsonl"))
+        self.governor = RecordingGovernor()
+
+    def _policy(self, evaluator):
+        settings = load_settings({
+            "jev_api_key": "test-key",
+            "jev_model": "jev-test",
+        })
+        return policy_for(settings, transport=None, governor=self.governor,
+                          ledger=self.ledger, evaluator=evaluator)
+
+    def test_intake_brief_invokes_context_intake_dimension(self):
+        from harness.waist import intake_brief
+        from pathlib import Path
+        f = Path(self.tmp.name) / "sample.py"
+        f.write_text("x = 1\n", encoding="utf-8")
+        evaluator = FakeEvaluator({
+            "context_relevant": noul(0.95),
+            "context_coverage_sufficient": noul(0.85),
+            "context_conflict_present": noul(0.02),
+        })
+        policy = self._policy(evaluator)
+        intake = intake_brief("refactor sample.py", [str(f)], jev_policy=policy)
+        self.assertIsNotNone(intake.get("judgment"))
+        self.assertEqual(intake["judgment"]["dimension"], "context_intake")
+        self.assertTrue(intake["judgment"]["native"])
+        self.assertAlmostEqual(intake["judgment"]["signals"]["context_relevant"], 0.95)
+        self.assertAlmostEqual(intake["judgment"]["signals"]["context_coverage_sufficient"], 0.85)
+
+    def test_intake_brief_degrades_gracefully_when_unkeyed(self):
+        from harness.waist import intake_brief
+        from pathlib import Path
+        f = Path(self.tmp.name) / "sample.py"
+        f.write_text("x = 1\n", encoding="utf-8")
+        evaluator = FakeEvaluator({}, api_key=None)
+        settings = load_settings({"jev_api_key": None})
+        policy = policy_for(settings, transport=None, governor=self.governor,
+                            ledger=self.ledger, evaluator=evaluator)
+        intake = intake_brief("refactor sample.py", [str(f)], jev_policy=policy)
+        self.assertIsNotNone(intake.get("judgment"))
+        self.assertFalse(intake["judgment"]["native"])
+        self.assertEqual(intake["judgment"]["signals"], {})
+
+    def test_compose_run_stages_evaluates_selected_context_and_execution(self):
+        from harness.agent import AutonomousAgent
+        from pathlib import Path
+        evaluator = FakeEvaluator({
+            "context_relevant": noul(0.95),
+            "context_coverage_sufficient": noul(0.85),
+            "context_conflict_present": noul(0.02),
+            "execution_suitable": noul(0.90),
+            "checkpoint_required": noul(0.10),
+            "restart_target": choice("execution"),
+            "consent_fresh": noul(0.92),
+            "consent_defer_required": noul(0.05),
+            "escalation_justified": noul(0.10),
+        })
+        policy = self._policy(evaluator)
+        agent = AutonomousAgent(settings=load_settings(), root_dir=Path(self.tmp.name))
+        plan = {
+            "composition": {
+                "stages": [
+                    {"stage": "context", "state": "pending"},
+                    {"stage": "execution", "state": "pending"},
+                ]
+            },
+            "nodes": [{"node_id": "n1", "instruction": "edit sample.py", "target_files": ["sample.py"]}],
+        }
+        envelope, _, judgments = agent._compose_run_stages(
+            "refactor sample.py", ["sample.py"], jev_policy=policy, plan=plan)
+        self.assertIn("context", judgments)
+        self.assertIn("execution", judgments)
+        self.assertTrue(judgments["context"]["native"])
+        self.assertTrue(judgments["execution"]["native"])
+        self.assertIn("consent", judgments["execution"])
+        self.assertTrue(judgments["execution"]["consent"]["native"])
+        self.assertAlmostEqual(judgments["execution"]["consent"]["signals"]["consent_fresh"], 0.92)
+
+    def test_restart_decision_forces_renewal_when_consent_stale(self):
+        from harness.agent import AutonomousAgent
+        from pathlib import Path
+        evaluator = FakeEvaluator({
+            "execution_suitable": noul(0.90),
+            "checkpoint_required": noul(0.10),
+            "restart_target": choice("planning"),
+            "consent_fresh": noul(0.30),  # Stale!
+            "consent_defer_required": noul(0.80),
+            "escalation_justified": noul(0.50),
+        })
+        policy = self._policy(evaluator)
+        agent = AutonomousAgent(settings=load_settings(), root_dir=Path(self.tmp.name))
+        decision = agent._restart_decision("refactor sample.py", policy, {}, completed_stages=())
+        self.assertTrue(decision["consent_renewal_required"])
+        self.assertIn("consent no longer covers this assignment", " ".join(decision["reasons"]))
+
+    def test_intake_brief_handles_non_tuple_and_exception(self):
+        from harness.waist import intake_brief
+        from unittest.mock import MagicMock
+        from pathlib import Path
+        f = Path(self.tmp.name) / "sample.py"
+        f.write_text("x = 1\n", encoding="utf-8")
+
+        # Non-tuple return with structural attribute
+        mock_policy = MagicMock()
+        class NonTupleRes:
+            structural = {
+                "context_relevant": 0.88,
+                "context_coverage_sufficient": 0.77,
+                "native": True,
+            }
+        mock_policy.evaluate_hourglass_stage.return_value = NonTupleRes()
+        intake = intake_brief("test", [str(f)], jev_policy=mock_policy)
+        self.assertTrue(intake["judgment"]["native"])
+        self.assertAlmostEqual(intake["judgment"]["signals"]["context_relevant"], 0.88)
+
+        # Exception raised
+        mock_policy.evaluate_hourglass_stage.side_effect = HarnessError("eval error")
+        intake_exc = intake_brief("test", [str(f)], jev_policy=mock_policy)
+        self.assertFalse(intake_exc["judgment"]["native"])
+        self.assertEqual(intake_exc["judgment"]["signals"], {})
+
+    def test_compose_plan_context_stage_exception_handling(self):
+        from harness.waist import compose_plan
+        from harness.token_budget import TokenBudget
+        from unittest.mock import MagicMock
+        from pathlib import Path
+        f = Path(self.tmp.name) / "sample.py"
+        f.write_text("x = 1\n", encoding="utf-8")
+        mock_policy = MagicMock()
+        mock_policy.evaluate_hourglass_stage.side_effect = HarnessError("plan eval error")
+        budget = TokenBudget(max_input_tokens=10000, max_output_tokens=1000)
+        plan = compose_plan(
+            transport=None, api_key=None, governor=None, ledger=None,
+            opts_goal="refactor", candidate_files=[str(f)],
+            token_budget=budget, stages=["context"],
+            jev_policy=mock_policy)
+        self.assertIn("stage_judgments", plan)
+        self.assertIn("context", plan["stage_judgments"])
+        self.assertFalse(plan["stage_judgments"]["context"]["native"])
+        self.assertEqual(plan["stage_judgments"]["context"]["signals"], {})
+
+    def test_agent_ask_stage_dimension_non_tuple_return(self):
+        from harness.agent import AutonomousAgent
+        from unittest.mock import MagicMock
+        from pathlib import Path
+        agent = AutonomousAgent(settings=load_settings(), root_dir=Path(self.tmp.name))
+        mock_policy = MagicMock()
+        class NonTupleRes:
+            structural = {
+                "execution_suitable": 0.95,
+                "checkpoint_required": 0.05,
+                "native": True,
+            }
+        mock_policy.evaluate_hourglass_stage.return_value = NonTupleRes()
+        res = agent._ask_stage_dimension("execution", {}, jev_policy=mock_policy)
+        self.assertTrue(res["native"])
+        self.assertAlmostEqual(res["signals"]["execution_suitable"], 0.95)
+
+
 if __name__ == "__main__":
     unittest.main()
