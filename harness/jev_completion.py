@@ -417,6 +417,34 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         ],
         "user_facing": True,
     },
+    "DRV-1": {
+        # The row must cite a real merged PR before the phase can pass.
+        "pr_pattern": None,
+        "required_tests": [
+            "tests/test_perception_client.py",
+            "tests/test_server_driver.py",
+            "tests/test_mcp_driver.py",
+            "tests/test_driver_conformance.py",
+        ],
+        "required_files": [
+            "harness/perception_client.py",
+            "driver_core/driver.py",
+            "driver_core/server.py",
+        ],
+        "user_facing": True,
+    },
+    "DRV-2": {
+        # Closes only with a registered input backend and a live step.
+        "pr_pattern": None,
+        "required_tests": [
+            "tests/test_driver_conformance.py",
+        ],
+        "required_files": [
+            "driver_core/osal.py",
+            "driver_core/executor_registry.py",
+        ],
+        "user_facing": True,
+    },
     "HV-2": {
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,
@@ -835,6 +863,8 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         # descriptive phrase can never act as a substring mention.
         "HV-5": re.compile(r"\bHV-5\b", re.I),
         "HV-6": re.compile(r"\bHV-6\b", re.I),
+        "DRV-1": re.compile(r"\bDRV-1\b", re.I),
+        "DRV-2": re.compile(r"\bDRV-2\b", re.I),
         "CLAUDE-LANE": re.compile(r"CLAUDE-LANE", re.I),
         "OC-HANDOFF": re.compile(r"OC-HANDOFF", re.I),
     }
