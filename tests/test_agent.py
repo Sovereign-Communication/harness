@@ -77,17 +77,90 @@ class TestAgentClassificationAndDiscovery(unittest.TestCase):
         self.assertEqual(classify_prompt_intent("Explain the difference between Scout and Distiller"), "conversation")
         self.assertEqual(classify_prompt_intent("verify the claim about the riemann"), "conversation")
 
-        # Edit / Mutation
+        # Edit / Mutation / Execution Directives
         self.assertEqual(classify_prompt_intent("How can I refactor executor.py?"), "edit")
         self.assertEqual(classify_prompt_intent("Fix the bug in executor.py"), "edit")
         self.assertEqual(classify_prompt_intent("Implement rate limiting in session.py"), "edit")
         self.assertEqual(classify_prompt_intent("Refactor concurrency architecture"), "edit")
         self.assertEqual(classify_prompt_intent("Add tests for config.py"), "edit")
         self.assertEqual(classify_prompt_intent("Update README.md"), "edit")
+        self.assertEqual(classify_prompt_intent("execute the plan and see if it works"), "edit")
+        self.assertEqual(classify_prompt_intent("run the plan"), "edit")
+        self.assertEqual(classify_prompt_intent("apply the plan"), "edit")
+        self.assertEqual(classify_prompt_intent("test the plan"), "edit")
+        self.assertEqual(classify_prompt_intent("see if it works"), "edit")
+        self.assertEqual(classify_prompt_intent("can you execute the plan and see if it works?"), "edit")
+        self.assertEqual(classify_prompt_intent("run the tests"), "edit")
 
         # Audit
         self.assertEqual(classify_prompt_intent("Verify chain and check ledger integrity"), "audit")
         self.assertEqual(classify_prompt_intent("Audit ledger status"), "audit")
+
+        # Driver
+        self.assertEqual(classify_prompt_intent("run driver task"), "driver")
+        self.assertEqual(classify_prompt_intent("machine drive request"), "driver")
+
+    @patch("harness.server.run_driver_task")
+    def test_run_prompt_driver_intent(self, mock_run_driver):
+        mock_run_driver.return_value = {
+            "status": "done",
+            "total_steps": 1,
+            "summary": "Completed driver action",
+            "steps": [{"step_number": 1, "aspect": "cli", "target": "cli",
+                       "envelope": {"stopped_at": "execute", "ok": True}}],
+            "audit": {"ok": True},
+            "budget": {"spent_usd": 0.0001},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            agent = AutonomousAgent(settings=_lane_settings(),
+                                    history_dir=tmp_path,
+                                    root_dir=tmp_path)
+            res = agent.run_prompt("run driver task to inspect status", session_id="drv_s1")
+            self.assertEqual(res["intent"], "driver")
+            self.assertEqual(res["status"], "done")
+            self.assertTrue(mock_run_driver.called)
+
+    def test_execute_plan_continuation_from_prior_turn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            agent = AutonomousAgent(settings=_lane_settings(),
+                                    history_dir=tmp_path,
+                                    root_dir=tmp_path)
+            (tmp_path / "harness").mkdir()
+            (tmp_path / "harness" / "web.py").write_text("# web module", encoding="utf-8")
+
+            # Simulate Turn 1: Preview plan formulated and saved
+            save_chat_turn("session_exec", {
+                "status": "preview_ready",
+                "intent": "edit",
+                "prompt": "Add docstring to harness/web.py",
+                "target_files": ["harness/web.py"],
+                "dag": {"nodes": [{"node_id": "task_1", "instruction": "Add docstring", "target_files": ["harness/web.py"]}]},
+                "verification_gate": "python -m py_compile harness/web.py",
+            }, history_dir=tmp_path)
+
+            # Turn 2: User says "execute the plan and see if it works"
+            with patch.object(AutonomousAgent, "_plan_round") as mock_plan, \
+                 patch.object(AutonomousAgent, "_orchestrator_chat_fn", return_value=lambda p: "{}"), \
+                 patch("harness.agent.governor_for", return_value=("k", MagicMock())), \
+                 patch("harness.agent.apply_session", return_value=MagicMock()), \
+                 patch("harness.agent.drive", return_value={
+                     "status": "ok", "all_results": {"task_1": {"status": "ok"}},
+                     "total_cost": 0.0, "rounds_history": [], "final_all_ok": True,
+                     "remaining_scope": "", "plan": {"nodes": []}
+                 }):
+                mock_plan.return_value = {
+                    "total_nodes": 1,
+                    "total_cost_ceiling": 0.05,
+                    "nodes": [{"node_id": "task_1", "instruction": "Add docstring", "target_files": ["harness/web.py"]}],
+                    "dag": {"nodes": [{"node_id": "task_1"}]},
+                    "composition": {"stages": [{"stage": "execution"}]},
+                }
+                res = agent.run_prompt("execute the plan and see if it works", session_id="session_exec", auto_apply=False)
+                self.assertEqual(res["status"], "ok")
+                self.assertEqual(res["intent"], "edit")
+                self.assertTrue(mock_plan.called)
 
     def test_discover_target_files(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2049,6 +2122,68 @@ class TestDynamicTokenAllocation(unittest.TestCase):
             self.assertEqual(res["status"], "ok")
             self.assertEqual(res["response"], "ok")
             mock_chat.assert_called_once()
+
+    def test_force_conversation_driver_and_audit_intents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(), history_dir=Path(tmp))
+            with patch.object(agent, "_handle_driver_task", return_value={"status": "driver_done"}) as m_drv, \
+                 patch.object(agent, "_handle_audit", return_value={"status": "audit_done"}) as m_aud:
+                r1 = agent.run_prompt("run driver task", force_conversation=True)
+                self.assertEqual(r1["status"], "driver_done")
+                self.assertTrue(m_drv.called)
+
+                r2 = agent.run_prompt("audit ledger", force_conversation=True)
+                self.assertEqual(r2["status"], "audit_done")
+                self.assertTrue(m_aud.called)
+
+    def test_conversation_capability_marker_defer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(), history_dir=Path(tmp))
+            from harness.prompts import CAPABILITY_MARKER
+            resp = {
+                "choices": [{"message": {"content": f"I need help {CAPABILITY_MARKER}\nNeed write permissions"}, "finish_reason": "stop"}],
+                "usage": {"cost": 0.0},
+            }
+            from types import SimpleNamespace
+            jev_res = SimpleNamespace(
+                is_fallback=False,
+                fallback_reason=None,
+                verdict="sufficient",
+                supported=True,
+                confidence=0.9,
+                reasons=[],
+                model="jev-1.13.0",
+                answers={"answer_sufficient": {"confidence": 0.9, "type": "noul", "noul": 0.9}},
+                cost=0.0,
+                input_tokens=0,
+                output_tokens=0,
+            )
+            mock_policy = MagicMock()
+            mock_policy.evaluate_answer.return_value = (
+                jev_res,
+                {"pack_version": 1, "cost": 0.0, "input_tokens": 0, "output_tokens": 0}
+            )
+            with patch("harness.agent.chat", return_value=(200, resp)), \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
+                 patch("harness.agent.policy_for", return_value=mock_policy), \
+                 patch.object(agent, "_auto_escalation_armed", return_value=True), \
+                 patch.object(agent, "_handle_edit", return_value={"status": "escalated_ok"}) as m_edit:
+                res = agent.run_hourglass_request("explain this function", session_id="sess_def")
+                self.assertEqual(res["status"], "escalated_ok")
+                self.assertTrue(m_edit.called)
+
+    def test_conversation_assesses_completion_complete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(), history_dir=Path(tmp))
+            resp = {
+                "choices": [{"message": {"content": "Here is the answer"}, "finish_reason": "stop"}],
+                "usage": {"cost": 0.0},
+            }
+            with patch("harness.agent.chat", return_value=(200, resp)), \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
+                 patch("harness.agent.assess_completion", return_value={"complete": True, "verdict": "pass"}):
+                res = agent._handle_conversation("explain code", "test_sess")
+                self.assertEqual(res["status"], "ok")
 
 
 if __name__ == "__main__":

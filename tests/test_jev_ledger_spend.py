@@ -42,7 +42,7 @@ class JevLedgerSpendTests(unittest.TestCase):
             self._diff(), "change x", "x.py", site="agent-apply",
             task_id="task-1", node_id="node-1")
 
-        expected = 120 * 0.0042 / 1_000_000
+        expected = 120 * 0.042 / 1_000_000
         self.assertEqual(result.cost, expected)
         self.assertEqual(governor.spent, expected)
         events = [entry for entry in ledger.entries()
@@ -202,6 +202,21 @@ class JevLedgerSpendTests(unittest.TestCase):
                                renew_consent=False)
             self.assertTrue(any(call.kwargs.get("label") == "apply_escalation"
                                 for call in mock_preflight.call_args_list))
+
+    def test_compute_spend_summary_with_jev_tokens(self):
+        ledger = self._ledger()
+        ledger.append("jev_eval", model="jev-test", input_tokens=1000, output_tokens=50, is_fallback=False, cost=0.000042)
+        ledger.append("jev_eval", model="jev-test", input_tokens=500, output_tokens=10, is_fallback=True, cost=0.0)
+        report = ledger.cost_report()
+        self.assertIn("jev", report)
+        self.assertEqual(report["jev"]["calls"], 1)
+        self.assertEqual(report["jev"]["input_tokens"], 1000)
+        self.assertEqual(report["jev"]["output_tokens"], 50)
+
+    def test_completion_state_text_variants(self):
+        from harness.jev_policy import JevPolicy
+        self.assertEqual(JevPolicy._completion_state_text("plain string"), "plain string")
+        self.assertEqual(JevPolicy._completion_state_text(12345), "12345")
 
 
 if __name__ == "__main__":

@@ -50,9 +50,29 @@ def main(argv=None):
     if opts.host not in ("127.0.0.1", "localhost", "::1"):
         print("[FATAL] loopback bind only", file=sys.stderr)
         sys.exit(1)
-    token = opts.auth_token or os.environ.get("HARNESS_UI_AUTH_TOKEN") \
-        or secrets.token_urlsafe(24)
-    httpd = make_server(opts.host, opts.port, auth_token=token)
+    token = opts.auth_token or os.environ.get("HARNESS_UI_AUTH_TOKEN")
+    ephemeral = False
+    if not token:
+        ephemeral = True
+        from .config import CONFIG_DIR
+        token_file = os.path.join(CONFIG_DIR, "desktop_token")
+        if os.path.exists(token_file):
+            try:
+                with open(token_file, encoding="utf-8") as f:
+                    t = f.read().strip()
+                    if t:
+                        token = t
+            except Exception:
+                pass
+        if not token:
+            token = secrets.token_urlsafe(24)
+            try:
+                os.makedirs(CONFIG_DIR, exist_ok=True)
+                with open(token_file, "w", encoding="utf-8") as f:
+                    f.write(token)
+            except Exception:
+                pass
+    httpd = make_server(opts.host, opts.port, auth_token=token, ephemeral_auth=ephemeral)
     host, port = httpd.server_address[:2]
     url = f"http://{host}:{port}/"
     print(f"[OK] harness desktop at {url} (token-protected)", file=sys.stderr)

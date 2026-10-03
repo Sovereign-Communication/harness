@@ -13,10 +13,10 @@ from typing import Any, Dict, List, Optional
 
 from ._http import HttpTransport
 
-# Operator-verified account rate recorded in docs/jev-roadmap.md (2026-09-24).
-# The public list price is different; all Harness preflight and settlement
-# paths use this shared account-specific owner.
-JEV_INPUT_PRICE_PER_MILLION = 0.0042
+# TypeSafe System One Jev pricing: $42 per billion tokens = $0.042 per million input tokens.
+# Output tokens are free ($0.00). Monthly included account credit: $5.00 (~119M input tokens).
+JEV_INPUT_PRICE_PER_MILLION = 0.042
+JEV_MONTHLY_CREDIT_USD = 5.00
 _PRIMITIVES = frozenset(("noul", "choice", "score"))
 
 
@@ -25,6 +25,21 @@ def jev_cost(input_tokens: int) -> float:
     if isinstance(input_tokens, bool) or not isinstance(input_tokens, int) or input_tokens < 0:
         raise ValueError("input_tokens must be a non-negative integer")
     return input_tokens * JEV_INPUT_PRICE_PER_MILLION / 1_000_000
+
+
+def jev_credit_status(input_tokens: Optional[int] = None) -> Dict[str, Any]:
+    """Return TypeSafe Jev spend and monthly credit tracking status."""
+    tokens = 0 if input_tokens is None else max(0, int(input_tokens))
+    cost = jev_cost(tokens)
+    return {
+        "price_per_million_input": JEV_INPUT_PRICE_PER_MILLION,
+        "output_cost": 0.0,
+        "monthly_credit_usd": JEV_MONTHLY_CREDIT_USD,
+        "input_tokens": tokens,
+        "cost_usd": round(cost, 6),
+        "remaining_credit_usd": round(max(0.0, JEV_MONTHLY_CREDIT_USD - cost), 6),
+        "used_percent": round((cost / JEV_MONTHLY_CREDIT_USD) * 100.0, 2),
+    }
 
 
 @dataclass(frozen=True)

@@ -49,7 +49,16 @@ SEARCH_URL = os.environ.get("HARNESS_WEB_SEARCH_URL", DEFAULT_SEARCH_URL)
 # Fetch allowlist placeholder: hosts the UI may fetch pages from. Extend
 # deliberately, in the open -- this is a security boundary, not a cache.
 # ONE owner: the server boundary and the agent both consume this set.
-DEFAULT_FETCH_HOSTS = frozenset({"openrouter.ai", "www.anthropic.com"})
+DEFAULT_FETCH_HOSTS = frozenset({
+    "openrouter.ai",
+    "www.anthropic.com",
+    "anthropic.com",
+    "claude.ai",
+    "en.wikipedia.org",
+    "arxiv.org",
+    "scientificamerican.com",
+    "quantamagazine.org",
+})
 
 _USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) HarnessLocalUI/0.3 (personal local tool)"
@@ -157,14 +166,59 @@ def _parse_bing_results(page_html, max_results):
     return results
 
 
+def _parse_ddg_lite_results(page_html, max_results):
+    """Extract (title, url, snippet) triples from DuckDuckGo Lite HTML."""
+    results = []
+    link_matches = list(re.finditer(
+        r'<a[^>]+rel=[\'"]nofollow[\'"][^>]+href=[\'"]([^\'"]+)[\'"][^>]*>(.*?)</a>',
+        page_html, re.I | re.DOTALL))
+    snippet_matches = list(re.finditer(
+        r'<td[^>]+class=[\'"]result-snippet[\'"][^>]*>(.*?)</td>',
+        page_html, re.I | re.DOTALL))
+    for i, lm in enumerate(link_matches):
+        raw_href = lm.group(1)
+        url = _resolve_result_href(raw_href)
+        title = _clean_text(lm.group(2))
+        if not url or not title:
+            continue
+        snippet = _clean_text(snippet_matches[i].group(1)) if i < len(snippet_matches) else ""
+        results.append({"title": title[:200], "url": url, "snippet": snippet[:400]})
+        if len(results) >= max_results:
+            break
+    return results
+
+
+_IRRELEVANT_PATTERNS = (
+    re.compile(r"\bfind\s+(?:your\s+)?(?:phone|device|hub)\b", re.I),
+    re.compile(r"\bfind\s+a\s+grave\b", re.I),
+    re.compile(r"\b(?:log\s*in|sign\s*in|download\s+claude|claude\s+help\s+center)\b", re.I),
+)
+
+
+def filter_search_relevance(query, results):
+    """Filter out non-informational spam or navigational clutter."""
+    if not results:
+        return results
+    filtered = [
+        r for r in results
+        if not any(pat.search(r.get("title", "")) for pat in _IRRELEVANT_PATTERNS)
+    ]
+    return filtered
+
+
 def _parse_results(page_html, max_results):
     """Extract (title, url, snippet) triples from the search result page.
 
     Shape is chosen by the page itself, not by which endpoint sent it:
-    Bing b_algo blocks when present, else DuckDuckGo's result__a markup.
+    Bing b_algo blocks when present, DuckDuckGo Lite rows when present,
+    else DuckDuckGo's result__a markup.
     """
     if re.search(r"<li class=\"b_algo\"", page_html, re.IGNORECASE):
         return _parse_bing_results(page_html, max_results)
+    if "result-snippet" in page_html or "nofollow" in page_html:
+        lite_res = _parse_ddg_lite_results(page_html, max_results)
+        if lite_res:
+            return lite_res
     items = re.finditer(
         r"<a[^>]+class=\"[^\"]*result__a[^\"]*\"[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>",
         page_html, re.IGNORECASE | re.DOTALL)
@@ -195,22 +249,25 @@ def search_web(query, max_results=5, timeout=12.0):
     if not query or not query.strip():
         raise HarnessError("web search: empty query")
     q = query.strip()[:_MAX_QUERY]
-    url = SEARCH_URL.format(query=urllib.parse.quote_plus(q))
     emit("web_search", phase="start", query=q)
+    url = (os.environ.get("HARNESS_WEB_SEARCH_URL") or DEFAULT_SEARCH_URL).format(
+        query=urllib.parse.quote_plus(q)
+    )
     try:
         status, raw, _ = _http_get(url, timeout=timeout)
-        if status != 200:
-            raise HarnessError(f"web search HTTP {status}")
-        results = _parse_results(raw.decode("utf-8", "replace"), max_results)
-        if not results:
-            raise HarnessError("web search returned no usable results")
-    except HarnessError:
-        emit("web_search", phase="end", ok=False, query=q, results=0)
-        raise
     except (urllib.error.URLError, urllib.error.HTTPError, OSError,
             ValueError) as e:
-        emit("web_search", phase="end", ok=False, query=q, results=0)
+        emit("web_search", phase="end", ok=False, query=q)
         raise HarnessError(f"web search failed: {e}") from e
+    if status != 200:
+        emit("web_search", phase="end", ok=False, query=q)
+        raise HarnessError(f"web search HTTP {status}")
+    results = _parse_results(raw.decode("utf-8", "replace"), max_results)
+    results = filter_search_relevance(q, results)
+    if not results:
+        emit("web_search", phase="end", ok=False, query=q)
+        raise HarnessError("web search returned no usable results")
+
     emit("web_search", phase="end", ok=True, query=q, results=len(results))
     return results
 
@@ -290,13 +347,11 @@ def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, fetch_
     """Single-owner web evidence gathering for one chat turn.
 
     Fetches allowlisted URLs in the prompt (one per URL, up to max_sources);
-    if none succeed, falls back to one search. Every failure is recorded,
-    never hidden — the model sees exactly what did and did not come back.
-    Injectable fetch/search/find/extract seams keep tests hermetic:
-    callers pass their own (possibly patched) functions; otherwise the
-    module's own implementations are used.
+    if none succeed, falls back to one search. If search results include
+    pages on allowed_hosts, automatically fetches the primary page so deep
+    text evidence is available to the model.
     """
-    from typing import Dict, List, Any  # local to avoid header churn
+    from typing import Dict, List, Any
     fetch_fn = fetch_url_fn if fetch_url_fn is not None else fetch_url
     search_fn = search_web_fn if search_web_fn is not None else search_web
     find_fn = find_urls_fn if find_urls_fn is not None else find_urls
@@ -315,6 +370,17 @@ def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, fetch_
     try:
         results = search_fn(extract_fn(prompt))
         for r in results[:max_sources]:
+            r_url = r.get("url", "")
+            r_host = (urllib.parse.urlsplit(r_url).hostname or "").lower()
+            allowed = {h.lower() for h in (allowed_hosts or [])}
+            # If the discovered source is from an allowlisted host, enrich snippet with primary page text
+            if r_host in allowed and not any(s.get("kind") == "fetch" and s.get("ok") for s in sources):
+                try:
+                    page = fetch_fn(r_url, allowed_hosts=allowed_hosts)
+                    sources.append({"kind": "fetch", "ok": True, "url": page["url"], "title": page["title"], "text": page["text"]})
+                    continue
+                except Exception:
+                    pass
             sources.append({"kind": "search", "ok": True, "url": r["url"], "title": r["title"], "text": r["snippet"]})
     except HarnessError as e:
         sources.append({"kind": "search", "ok": False, "note": str(e)})
@@ -332,7 +398,16 @@ _QUERY_STOPWORDS = frozenset({
     "or", "for", "about", "with", "that", "this", "really", "actually",
     "please", "verify", "search", "hear", "heard", "tell", "me", "my", "we",
     "i", "has", "have", "had", "there", "their", "them", "they",
+    "find", "news", "work", "didn't", "didnt", "dont", "don't", "prove",
+    "proven", "but", "made", "make", "get", "got", "know", "looking",
+    "look", "check", "see", "give", "show", "any", "some", "real", "progress",
 })
+
+_QUERY_SPELLING_FIXES = {
+    "rimann": "riemann",
+    "rieman": "riemann",
+    "reimann": "riemann",
+}
 
 
 def find_urls(prompt):
@@ -341,7 +416,11 @@ def find_urls(prompt):
 
 
 def extract_query(prompt, max_words=10):
-    """Reduce a natural-language prompt to a search query (stopwords out)."""
+    """Reduce a natural-language prompt to a search query (stopwords out, spellings normalized)."""
     words = re.findall(r"[a-zA-Z0-9_']+", (prompt or "").lower())
-    kept = [w for w in words if w not in _QUERY_STOPWORDS and len(w) > 1]
+    kept = []
+    for w in words:
+        w_fixed = _QUERY_SPELLING_FIXES.get(w, w)
+        if w_fixed not in _QUERY_STOPWORDS and len(w_fixed) > 1:
+            kept.append(w_fixed)
     return " ".join(kept[:max_words]).strip()

@@ -22,7 +22,12 @@ specific ledger sets ``HARNESS_LEDGER`` for its own duration (see
 """
 
 import os
+import sys
 import tempfile
+
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
 #: Directory holding the suite's ledger. Created once per process.
 LEDGER_ISOLATION_DIR = tempfile.mkdtemp(prefix="harness-test-ledger-")

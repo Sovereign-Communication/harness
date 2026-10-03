@@ -130,7 +130,7 @@ class JevPolicyTests(unittest.TestCase):
         result, structural = policy.evaluate_diff(
             "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n",
             "change x", "x.py", site="apply", task_id="t1")
-        expected = 100 * 0.0042 / 1_000_000
+        expected = 100 * 0.042 / 1_000_000
         self.assertFalse(result.is_fallback)
         self.assertAlmostEqual(result.cost, expected)
         self.assertAlmostEqual(governor.spent, expected)
@@ -160,7 +160,7 @@ class JevPolicyTests(unittest.TestCase):
 
     def test_cost_ceiling_helper_is_fixed_input_math(self):
         self.assertEqual(jev_cost_ceiling(),
-                         JEV_MAX_INPUT_TOKENS * 0.0042 / 1_000_000)
+                         JEV_MAX_INPUT_TOKENS * 0.042 / 1_000_000)
 
     def test_aggregate_empty_and_mixed_models(self):
         self.assertIsNone(aggregate_structural([], site="batch"))

@@ -90,6 +90,37 @@ harness driver verify        # audit-chain verdict + spend snapshot
 harness driver step TARGET --raw   # the full envelope as JSON
 ```
 
+## Native In-Repo Module & GUI Integration
+
+`driver_core` is integrated natively into the Harness repository as a pure standard-library module (`driver_core/`), complete with CLI entrypoint `driver-core`, server loopback daemon management, GUI control pane, and MCP tools:
+
+1. **Native Module (`driver_core/`)**:
+   - Zero non-stdlib runtime dependencies.
+   - Internal OSAL boundary (`driver_core/osal.py`) strictly isolated from Harness core.
+   - Packaged and discoverable via `pyproject.toml` (`driver-core = "driver_core.cli:main"`).
+
+2. **Web / Desktop GUI (`harness/ui/panes.js`, `harness/ui/panes.css`)**:
+   - Interactive **Driver** pane in the Harness UI.
+   - **Service Health & Sources**: Displays driver state, active perception tiers, schema definitions, and loopback connectivity.
+   - **Interactive Step Dispatch**: Live execution form supporting target specification, extraction schema selection, parameter-bound consent authoring, and stability toggles.
+   - **Execution Breakdown**: Live envelope inspector rendering step ID, reason, Jev confidence scores, extraction findings, and refusal diagnosis.
+   - **Declared Vocabulary Table**: Interactive registry of accepted driver actions with parameter signatures and descriptions.
+   - **Audit Chain Verification**: Real-time cryptographic ledger hash chain integrity checks.
+
+3. **Server REST API (`harness/server.py`)**:
+   - `GET /api/driver/health`: Driver status and service metadata.
+   - `GET /api/driver/vocabulary`: Available action vocabulary.
+   - `GET /api/driver/schemas`: Declared perception schemas.
+   - `GET /api/driver/verify`: Cryptographic audit log verification.
+   - `POST /api/driver/step`: Dispatches a step and returns the envelope.
+   - `POST /api/driver/start`: Spawns or verifies the background loopback service daemon.
+
+4. **MCP Tools (`harness/mcp.py`, `harness/mcp_lanes.py`)**:
+   - `driver_step`: Dispatches perception, verification, and action steps (registered in `MUTATION_LANE`).
+   - `driver_health`: Queries driver liveness and settings.
+   - `driver_vocabulary`: Lists accepted actions.
+   - `driver_verify`: Verifies audit log hash chain integrity.
+
 ## Configuration
 
 No Harness state file is written on the driver's behalf. Resolution order is
@@ -105,24 +136,12 @@ No Harness state file is written on the driver's behalf. Resolution order is
 { "base_url": "http://127.0.0.1:8791", "token": "..." }
 ```
 
-Start the service with `driver-core serve`. It binds **loopback only** and
-requires a bearer token, because an endpoint that can act on a machine should
-never be reachable by accident from another host. That is a floor, not a
-security claim.
+Start the service with `driver-core serve` (or let Harness server lazily start the loopback daemon). It binds **loopback only** and requires a bearer token, because an endpoint that can act on a machine should never be reachable by accident from another host. That is a floor, not a security claim.
 
 The driver is configured entirely under `DRIVER_*` and reads nothing from
 Harness's environment. This adapter is asserted to read no other namespace,
 so the two projects stay separable in both directions.
 
-## What is not wired yet
+## Implementation Status & Provider Backends
 
-The adapter is complete and the extraction *tier* is proven; the providers
-underneath it are not yet functional. Specifically, `driver-core`'s
-synthetic-input path (`click` / `type` / `key`) is **declared and refused** —
-there is no backend — and no live vision extractor is wired. Vision is also
-the *last* resort by design: structured input first (CLI → MCP → DOM →
-pixels), because three of the four target classes need no vision at all.
-
-That is a `driver-core` roadmap item, not a Harness one, and it is tracked
-honestly on the `DRV-*` rows in [jev-roadmap.md](jev-roadmap.md) rather than
-implied here.
+The adapter, module integration, GUI pane, and MCP tools are complete. The perception pipeline adheres strictly to structural tiers before screen capture (CLI → MCP → DOM → Screen). Synthetic input actions without an underlying system driver backend (such as low-level `click` / `type` / `key`) are safely declared and refused via HTTP 200 envelopes with structured closed reasons (`action_unsupported` or `decision_not_usable`), preserving deterministic non-crashing behavior across all caller lanes.

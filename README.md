@@ -412,7 +412,10 @@ Wire into any MCP host (Claude Code, Cursor, your own agents):
 Tools (`tools/list` order): `panel_verify`, `apply_edit`, `offer_work`, `defer_work`,
 `ledger_status`, `participation_report`, `spend_status`, `trust_status`, `plan_and_execute`,
 `issue_sort`, `route_query`, `mission_status`, `continue_work`, `log_judgment`, `jev_phase`,
-`jev_freeze`, `dogfood`, `generate_brief`.
+`jev_freeze`, `dogfood`, `generate_brief`, `driver_step`, `driver_health`, `driver_vocabulary`,
+`driver_verify`.
+`driver_step`, `driver_health`, `driver_vocabulary`, and `driver_verify` expose the perception
+and closed-vocabulary driver execution loop over local machine actions with single-reservation budgets.
 `generate_brief` is a hermetic face over `harness.brief.build_brief` (HV-2):
 cites exact file windows, estimates prompt token size, and optionally evaluates
 source freshness reports and renders human-readable markdown without touching the network.
