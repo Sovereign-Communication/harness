@@ -19,6 +19,7 @@ Design rules, inherited from the MCP server:
   seam the MCP server uses); ``POST /api/runs/{id}/cancel`` flips it.
 """
 import argparse
+import atexit
 import json
 import os
 import re
@@ -493,6 +494,79 @@ def run_plan_task(task_id, args, cancel_check):
     return {"plan": plan_result, "execution": exec_result, "status": exec_result.get("status", "ok")}
 
 
+_DRIVER_DAEMON = {}
+_DRIVER_DAEMON_LOCK = threading.Lock()
+
+
+def shutdown_driver_daemon():
+    """Stop the in-process driver daemon, if this process started one.
+
+    Idempotent. Closes the listening socket and joins the serve thread so
+    nothing outlives the caller (a leaked socket is a ResourceWarning under
+    the audit's hermetic run).
+    """
+    with _DRIVER_DAEMON_LOCK:
+        daemon = dict(_DRIVER_DAEMON)
+        _DRIVER_DAEMON.clear()
+    if not daemon:
+        return
+    daemon["httpd"].shutdown()
+    daemon["httpd"].server_close()
+    daemon["thread"].join(timeout=5)
+
+
+def ensure_driver_daemon(port=None):
+    """Start (once) the in-process loopback driver and return its adapter.
+
+    The ONE place the harness starts a driver. The bearer token is whatever
+    the operator declared in ``DRIVER_TOKEN``; otherwise the driver service
+    generates a random per-start token (``secrets.token_urlsafe(24)``). There
+    is no fixed fallback token, and the token is held by the returned
+    adapter, never put into ``os.environ`` or into an API response.
+    ``port=None`` uses the configured driver port; ``0`` asks the OS.
+    """
+    from .perception_client import PerceptionAdapter
+    import driver_core.config as _dc_config
+    import driver_core.server as _dc_server
+    with _DRIVER_DAEMON_LOCK:
+        if not _DRIVER_DAEMON:
+            settings = _dc_config.load_settings()
+            service = _dc_server.Service(_dc_server.driver_from_settings(settings))
+            httpd, _ = _dc_server.serve(
+                host=settings.host,
+                port=settings.port if port is None else port,
+                service=service, block=False)
+            thread = threading.Thread(target=httpd.serve_forever,
+                                      name="harness-driver", daemon=True)
+            thread.start()
+            host, bound = httpd.server_address[:2]
+            _DRIVER_DAEMON.update(
+                httpd=httpd, thread=thread, token=service.token,
+                base_url=f"http://{host}:{bound}")
+            atexit.register(shutdown_driver_daemon)
+        return PerceptionAdapter(base_url=_DRIVER_DAEMON["base_url"],
+                                 token=_DRIVER_DAEMON["token"])
+
+
+def _driver_adapter(autostart=True):
+    """An adapter for the driver: an already-reachable one, else our own."""
+    from .perception_client import PerceptionAdapter
+    adapter = PerceptionAdapter()
+    if not autostart:
+        return adapter
+    if _DRIVER_DAEMON:
+        return ensure_driver_daemon()
+    try:
+        adapter.health()
+        return adapter
+    except Exception:
+        pass
+    try:
+        return ensure_driver_daemon()
+    except Exception:
+        return adapter
+
+
 def run_driver_task(task_id, args, cancel_check):
     """Executes a multi-step request driven iteratively by Jev and driver_core.
 
@@ -500,7 +574,7 @@ def run_driver_task(task_id, args, cancel_check):
     consensus, Jev decision, execution, and verification aspects, and returns
     a full breakdown of each iteration step.
     """
-    from .perception_client import PerceptionAdapter, PerceptionUnavailable
+    from .perception_client import PerceptionUnavailable
     from . import events as _events
 
     goal = args.get("goal") or "execute driver request"
@@ -511,24 +585,11 @@ def run_driver_task(task_id, args, cancel_check):
     require_stable = bool(args.get("require_stable", True))
     auto_approve = bool(args.get("auto_approve", True))
 
-    adapter = PerceptionAdapter()
-    try:
-        adapter.health()
-    except Exception:
-        try:
-            import driver_core.server as _dc_server
-            import driver_core.config as _dc_config
-            token = os.environ.get("DRIVER_TOKEN") or "harness-driver-session-token-1234"
-            os.environ.setdefault("DRIVER_TOKEN", token)
-            d_settings = _dc_config.load_settings()
-            _dc_server.serve(host=d_settings.host, port=d_settings.port, block=False)
-            time.sleep(0.05)
-            adapter = PerceptionAdapter(token=token)
-        except Exception:
-            pass
+    adapter = _driver_adapter()
 
     steps = []
     completed = False
+    cancelled = False
     current_target = target
     current_schema = default_schema
     total_cost = 0.0
@@ -537,6 +598,7 @@ def run_driver_task(task_id, args, cancel_check):
 
     for step_num in range(1, max_steps + 1):
         if cancel_check and cancel_check():
+            cancelled = True
             break
 
         step_id = f"drv-{uuid.uuid4().hex[:8]}"
@@ -632,20 +694,33 @@ def run_driver_task(task_id, args, cancel_check):
     except Exception:
         pass
 
-    status = "done" if completed else "max_steps_reached"
+    status = ("done" if completed
+              else "cancelled" if cancelled else "max_steps_reached")
+    ok_steps = sum(1 for st in steps if st["envelope"].get("ok"))
+    verified = any((st["verification"] or {}).get("ok") for st in steps)
+    if completed and verified:
+        summary = (f"Driver goal met: the verify command passed after "
+                   f"{len(steps)} step(s) ({ok_steps} driver step(s) ok).")
+    elif completed:
+        summary = (f"Driver completed {len(steps)} step(s) with {ok_steps} ok; "
+                   f"no verify command confirmed the result.")
+    elif cancelled:
+        summary = (f"Driver cancelled after {len(steps)} step(s); "
+                   f"{ok_steps} step(s) ok, nothing verified.")
+    else:
+        summary = (f"Driver stopped after {len(steps)} step(s) without "
+                   f"completing (max_steps={max_steps}); {ok_steps} step(s) ok, "
+                   f"nothing verified.")
     return {
         "status": status,
         "task_id": task_id,
         "goal": goal,
         "total_steps": len(steps),
+        "ok_steps": ok_steps,
         "steps": steps,
         "total_cost_usd": round(total_cost, 6),
         "audit": audit_status,
-        "summary": (
-            f"Jev driver completed request across {len(steps)} iteration step(s)."
-            if completed
-            else f"Jev driver completed {len(steps)} iteration step(s); all aspects verified."
-        ),
+        "summary": summary,
     }
 
 
@@ -886,23 +961,6 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         q = parse_qs(parsed.query)
         if q.get("token", [""])[0] == self.ui.auth_token:
             return True
-        if getattr(self.ui, "ephemeral_auth", False):
-            presented = (
-                got
-                or (auth_header[7:].strip() if auth_header.startswith("Bearer ") else "")
-                or q.get("token", [""])[0]
-            ).strip()
-            if presented:
-                self.ui.auth_token = presented
-                try:
-                    from .config import CONFIG_DIR
-                    os.makedirs(CONFIG_DIR, exist_ok=True)
-                    token_file = os.path.join(CONFIG_DIR, "desktop_token")
-                    with open(token_file, "w", encoding="utf-8") as f:
-                        f.write(presented)
-                except Exception:
-                    pass
-                return True
         return False
 
     def _host_ok(self):
@@ -1393,27 +1451,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         return self._send_json(mr.pack_summary(pack))
 
     def _get_driver_adapter(self, autostart=True):
-        from .perception_client import PerceptionAdapter
-        adapter = PerceptionAdapter()
-        if not autostart:
-            return adapter
-        try:
-            adapter.health()
-            return adapter
-        except Exception:
-            pass
-        # Auto-start in-process loopback daemon if driver_core is present
-        try:
-            import driver_core.server as _dc_server
-            import driver_core.config as _dc_config
-            token = os.environ.get("DRIVER_TOKEN") or "harness-driver-session-token-1234"
-            os.environ.setdefault("DRIVER_TOKEN", token)
-            settings = _dc_config.load_settings()
-            _dc_server.serve(host=settings.host, port=settings.port, block=False)
-            time.sleep(0.05)
-            return PerceptionAdapter(token=token)
-        except Exception:
-            return adapter
+        return _driver_adapter(autostart)
 
     def _api_driver_health(self):
         adapter = self._get_driver_adapter(autostart=True)
