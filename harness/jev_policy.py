@@ -115,18 +115,56 @@ LOW_CONFIDENCE_FLOOR = 0.05
 _LIVE_POLICIES: "weakref.WeakSet" = weakref.WeakSet()
 
 
-def flush_all_fallbacks() -> int:
-    """Best-effort flush of every live policy's unwritten fallback tail."""
-    written = 0
-    for policy in list(_LIVE_POLICIES):
+ATEXIT_FLUSH_TIMEOUT_SECONDS = 3.0
+
+
+def _live_policies() -> tuple:
+    """A snapshot of the live policies that concurrent creation cannot break.
+
+    Iterating a WeakSet while another thread adds to it can raise; retry, and
+    give up with an empty snapshot rather than ever raising.
+    """
+    for _ in range(8):
         try:
-            written += policy.flush_fallbacks()
+            return tuple(_LIVE_POLICIES)
         except Exception:
-            pass  # a flush must never break shutdown
+            continue
+    return ()
+
+
+def flush_all_fallbacks() -> int:
+    """Best-effort flush of every live policy's unwritten fallback tail.
+
+    Never raises: it runs in ``finally`` blocks and at exit, where an error
+    here must not mask the command's own result.
+    """
+    written = 0
+    try:
+        for policy in _live_policies():
+            try:
+                written += policy.flush_fallbacks()
+            except Exception:
+                pass  # a flush must never break shutdown
+    except Exception:
+        pass
     return written
 
 
-atexit.register(flush_all_fallbacks)
+def _flush_at_exit() -> None:
+    """Flush at interpreter exit, bounded: a stuck ledger cannot hang exit."""
+    try:
+        worker = threading.Thread(target=flush_all_fallbacks, daemon=True,
+                                  name="jev-exit-flush")
+        worker.start()
+        worker.join(ATEXIT_FLUSH_TIMEOUT_SECONDS)
+    except Exception:
+        try:
+            flush_all_fallbacks()  # no thread available this late
+        except Exception:
+            pass
+
+
+atexit.register(_flush_at_exit)
 
 
 class _Reservation:
@@ -140,21 +178,28 @@ class _Reservation:
         self.acquired = False
         self.reserved = False
         self.used = False
+        self._lock = threading.Lock()
 
     def consume(self) -> bool:
         """True exactly once, and only after a successful reservation."""
-        if self.reserved and not self.used:
-            self.used = True
-            return True
-        return False
+        with self._lock:
+            if self.reserved and not self.used:
+                self.used = True
+                return True
+            return False
 
     def acquire(self, estimate: int = 0) -> None:
-        """Reserve for the call's bound, or its payload if that is larger."""
-        if not self.acquired:
-            self.acquired = True
-            self.token = self.policy._reserve(
-                self.site, max(self.max_input_tokens, int(estimate or 0)))
-            self.reserved = True
+        """Reserve for the call's bound, or its payload if that is larger.
+
+        Atomic: concurrent callers reserve exactly once, and nobody sees
+        ``reserved`` before the token exists.
+        """
+        with self._lock:
+            if not self.acquired:
+                self.acquired = True
+                self.token = self.policy._reserve(
+                    self.site, max(self.max_input_tokens, int(estimate or 0)))
+                self.reserved = True
 
 
 class _Escaped:
@@ -351,8 +396,14 @@ class JevPolicy:
         """Write one row per still-unwritten deduped repeat run; return how many.
 
         Dedupe lags between powers of two. A caller that wants an exact total
-        (end of a CLI run, a report) flushes first.
+        (end of a CLI run, a report) flushes first. Nothing is written (and
+        nothing is forgotten) if the ledger's directory is gone, so a flush
+        never resurrects a deleted ledger; and if an append fails the
+        unwritten tallies are restored before the error propagates.
         """
+        path = getattr(self.ledger, "path", None)
+        if path and not os.path.isdir(os.path.dirname(path) or "."):
+            return 0
         with self._state_lock:
             pending = []
             for (site, reason, _state), entry in self._fallback_counts.items():
@@ -366,8 +417,10 @@ class JevPolicy:
             for (site, reason), count in self._evicted_pending.items():
                 pending.append((site, reason, count))
             self._evicted_pending.clear()
-        if self.ledger is not None:
-            for site, reason, repeat in pending:
+        if self.ledger is None:
+            return len(pending)
+        for index, (site, reason, repeat) in enumerate(pending):
+            try:
                 self.ledger.append(
                     "jev_eval", site=site, model=self.evaluator.model,
                     verdict="fail", supported=0.0, confidence=0.0,
@@ -375,6 +428,13 @@ class JevPolicy:
                     is_fallback=True, fallback_reason=reason,
                     repeat_count=repeat, discarded=False, flush=True,
                     note="flush of deduped fallback repeats")
+            except BaseException:
+                with self._state_lock:
+                    for lost_site, lost_reason, lost in pending[index:]:
+                        key = (lost_site, lost_reason)
+                        self._evicted_pending[key] = (
+                            self._evicted_pending.get(key, 0) + lost)
+                raise
         return len(pending)
 
     def fan_out(self, jobs: Sequence[Tuple], *,
