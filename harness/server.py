@@ -495,6 +495,7 @@ def run_plan_task(task_id, args, cancel_check):
 
 
 _DRIVER_DAEMON = {}
+_DRIVER_PROBE_TIMEOUT = 2.0
 _DRIVER_DAEMON_LOCK = threading.Lock()
 
 
@@ -557,7 +558,10 @@ def _driver_adapter(autostart=True):
     if _DRIVER_DAEMON:
         return ensure_driver_daemon()
     try:
-        adapter.health()
+        # A short probe: a loopback driver answers at once, and a socket that
+        # accepts but never answers must not stall the caller for the full
+        # request timeout before we decide to start our own.
+        PerceptionAdapter(timeout=_DRIVER_PROBE_TIMEOUT).health()
         return adapter
     except Exception:
         pass

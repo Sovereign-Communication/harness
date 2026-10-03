@@ -1826,6 +1826,175 @@ class TestHourglassLane(unittest.TestCase):
         self.assertIn("planning requires evidence", res["response"])
         engine.apply_edit.assert_not_called()
 
+    # -- a refusal still answers the question ------------------------------
+
+    @staticmethod
+    def _refused_plan(reason="scope too broad", **extra):
+        plan = {"status": "refused", "confirmation": {"reason": reason},
+                "dag": {"nodes": []}, "nodes": []}
+        plan.update(extra)
+        return plan
+
+    def test_refused_edit_carries_a_real_conversational_answer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent, _ = self._lane(Path(tmp))
+            with patch.object(agent, "_handle_conversation",
+                              return_value={"response": "  util.py sets x.  "}):
+                res = agent._refused_edit(self._refused_plan(), "what is x?",
+                                          ["util.py"], "ref1")
+        self.assertEqual(res["status"], "refused")
+        self.assertTrue(res["response"].startswith("util.py sets x."))
+        self.assertIn("scope too broad", res["response"])
+        self.assertIn("Autonomous Waist Gate Guard", res["response"])
+
+    def test_refused_edit_ignores_a_canned_gate_refusal_and_lists_stages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent, _ = self._lane(Path(tmp))
+            canned = {"response": "The waist confirmation gate refused this."}
+            plan = self._refused_plan(stages=["context", "execution"])
+            with patch.object(agent, "_handle_conversation", return_value=canned):
+                res = agent._refused_edit(plan, "Update util.py", ["util.py"],
+                                          "ref2")
+        self.assertNotIn("The waist confirmation gate refused this.",
+                         res["response"])
+        self.assertIn("Analysis & Proposed Plan", res["response"])
+        self.assertIn("`util.py`", res["response"])
+        self.assertIn("- `context`", res["response"])
+        self.assertIn("- `execution`", res["response"])
+
+    def test_refused_edit_lists_dag_nodes_when_the_conversation_lane_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent, _ = self._lane(Path(tmp))
+            plan = self._refused_plan(dag={"nodes": [
+                {"name": "n1", "summary": "do the chunk"}]})
+            with patch.object(agent, "_handle_conversation",
+                              side_effect=RuntimeError("lane down")):
+                res = agent._refused_edit(plan, "Update util.py", [], "ref3")
+        self.assertIn("1. **n1**: do the chunk", res["response"])
+        self.assertIn("identified repository components", res["response"])
+
+    # -- execution directives resume the prior plan ------------------------
+
+    def _plan_capture(self, agent):
+        seen = {}
+
+        def fake(goal, files, gov, **kwargs):
+            seen["goal"], seen["files"] = goal, list(files)
+            return self._refused_plan("hold for review")
+        return seen, patch.object(agent, "_plan_round", side_effect=fake)
+
+    def test_execution_directive_resumes_the_prior_dag_plan(self):
+        from harness.agent import save_chat_turn
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent, _ = self._lane(root)
+            save_chat_turn("resume1", {
+                "prompt": "Refactor util.py", "target_files": ["util.py"],
+                "dag": {"nodes": [{"name": "n1"}]}}, root)
+            seen, seam = self._plan_capture(agent)
+            with seam:
+                res = agent._handle_edit("run the plan", "resume1", False)
+        self.assertEqual(seen["files"], ["util.py"])
+        self.assertTrue(seen["goal"].startswith("Refactor util.py"))
+        self.assertIn("[EXECUTION DIRECTIVE]: run the plan", seen["goal"])
+        self.assertEqual(res["status"], "refused")
+
+    def test_execution_directive_resumes_a_prior_turn_with_only_targets(self):
+        from harness.agent import save_chat_turn
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent, _ = self._lane(root)
+            save_chat_turn("resume2", {"prompt": "Tidy util.py",
+                                       "target_files": ["util.py"]}, root)
+            seen, seam = self._plan_capture(agent)
+            with seam:
+                agent._handle_edit("execute the plan", "resume2", False)
+        self.assertEqual(seen["files"], ["util.py"])
+        self.assertIn("Tidy util.py", seen["goal"])
+
+    def test_scope_is_recovered_from_prior_turns_when_triage_finds_nothing(self):
+        from harness.agent import save_chat_turn
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent, _ = self._lane(root)
+            # newest first when scanned: a text-only turn, then target-bearing
+            # turns that each win in the order the loop prefers.
+            save_chat_turn("resume3", {"prompt": "older", "response": "see util.py"}, root)
+            seen, seam = self._plan_capture(agent)
+            with seam, patch.object(agent, "_triage_scope",
+                                    side_effect=[[], ["util.py"]]):
+                agent._handle_edit("tidy it up", "resume3", False)
+            self.assertEqual(seen["files"], ["util.py"])
+            self.assertIn("older", seen["goal"])
+            save_chat_turn("resume4", {"prompt": "p", "target_files": ["util.py"]}, root)
+            save_chat_turn("resume4", {"prompt": "q", "target_files": ["util.py"],
+                                       "dag": {"nodes": [{"name": "n"}]}}, root)
+            seen2, seam2 = self._plan_capture(agent)
+            with seam2, patch.object(agent, "_triage_scope", return_value=[]):
+                agent._handle_edit("tidy it up", "resume4", False)
+        self.assertEqual(seen2["files"], ["util.py"])
+
+    def test_execution_request_without_any_scope_falls_back_to_test_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent, _ = self._lane(root)
+            (root / "test_a.py").write_text("x = 1\n", encoding="utf-8")
+            seen, seam = self._plan_capture(agent)
+            with seam, patch.object(agent, "_triage_scope", return_value=[]):
+                agent._handle_edit("run the tests", "noscope", False)
+        self.assertTrue(seen["files"])
+        self.assertLessEqual(len(seen["files"]), 3)
+
+    def test_a_restart_to_planning_refusal_is_retried_once_with_guidance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent, _ = self._lane(Path(tmp))
+            first = self._refused_plan("validated restart to planning: thin")
+            second = self._refused_plan("still thin")
+            goals = []
+
+            def fake(goal, files, gov, **kwargs):
+                goals.append(goal)
+                return first if len(goals) == 1 else second
+            with patch.object(agent, "_plan_round", side_effect=fake):
+                res = agent._handle_edit("Update util.py", "retry1", False)
+        self.assertEqual(len(goals), 2)
+        self.assertIn("[JEV REVISION DIRECTIVE]", goals[1])
+        # Both refused: the retry never launders a refusal into a plan.
+        self.assertEqual(res["status"], "refused")
+        self.assertIn("validated restart to planning", res["response"])
+
+    def test_an_accepted_retry_replaces_the_refused_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent, _ = self._lane(Path(tmp))
+            first = self._refused_plan("validated restart to planning: thin")
+            # Accepted by the waist but carrying no execution stage: the lane
+            # must keep refusing dispatch -- on the SECOND plan's terms.
+            second = {"status": "ok", "composition": {"stages": []},
+                      "dag": {"nodes": []}, "nodes": []}
+            plans = iter([first, second])
+            with patch.object(agent, "_plan_round",
+                              side_effect=lambda *a, **k: next(plans)):
+                res = agent._handle_edit("Update util.py", "retry3", False)
+        self.assertEqual(res["status"], "refused")
+        self.assertIn("execution stage is not selected", res["response"])
+
+    def test_a_failing_retry_keeps_the_original_refusal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent, _ = self._lane(Path(tmp))
+            first = self._refused_plan("validated restart to planning: thin")
+            calls = []
+
+            def fake(goal, files, gov, **kwargs):
+                calls.append(goal)
+                if len(calls) == 1:
+                    return first
+                raise RuntimeError("second planner down")
+            with patch.object(agent, "_plan_round", side_effect=fake):
+                res = agent._handle_edit("Update util.py", "retry2", False)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(res["status"], "refused")
+        self.assertIn("validated restart to planning", res["response"])
+
     def test_jev_preplanning_injects_algorithmic_guideline(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent, engine = self._lane(Path(tmp))

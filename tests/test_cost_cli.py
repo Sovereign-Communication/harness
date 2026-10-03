@@ -114,6 +114,16 @@ class CostCliTests(unittest.TestCase):
         self.assertGreaterEqual(rep["events_count"], 1)
 
 
+    def test_unparseable_cost_counts_as_a_free_call_not_a_crash(self):
+        before = self.ledger.cost_report()["total_cost"]
+        self.ledger._tail.append({"event": "model_result",
+                                  "model": "edge/bad-cost", "cost": "n/a"})
+        rep = self.ledger.cost_report()
+        self.assertAlmostEqual(rep["total_cost"], before, places=9)
+        self.assertEqual(rep["free_calls"], 2)  # the seeded free call + this one
+        self.assertEqual(rep["events_count"], 5)
+
+
 
 
 if __name__ == "__main__":

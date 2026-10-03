@@ -404,6 +404,21 @@ class DriverDaemonTest(DriverEnvMixin, unittest.TestCase):
         again = ui_server._driver_adapter()
         self.assertEqual(again.base, adapter.base)
 
+    def test_a_listener_that_never_answers_does_not_stall_the_probe(self):
+        import socket
+        silent = socket.socket()
+        silent.bind(("127.0.0.1", 0))
+        silent.listen(1)
+        self.addCleanup(silent.close)
+        url = "http://127.0.0.1:%d" % silent.getsockname()[1]
+        with patch.dict(os.environ, {"DRIVER_BASE_URL": url}),              patch.object(ui_server, "_DRIVER_PROBE_TIMEOUT", 0.3):
+            started = time.time()
+            adapter = ui_server._driver_adapter()
+        self.assertLess(time.time() - started, 10)
+        # It gave up on the silent endpoint and started its own driver.
+        self.assertIn("httpd", ui_server._DRIVER_DAEMON)
+        self.assertEqual(adapter.token, ui_server._DRIVER_DAEMON["token"])
+
     def test_a_driver_that_cannot_start_degrades_to_the_plain_adapter(self):
         with patch.object(PerceptionAdapter, "health",
                           side_effect=PerceptionUnavailable("down")), \
@@ -587,6 +602,11 @@ class EphemeralAuthTest(unittest.TestCase):
         self.assertEqual(self._status({"X-Harness-Auth": "start-token"}), 200)
         # ...and the attacker is still locked out afterwards.
         self.assertEqual(self._status({"X-Harness-Auth": "attacker"}), 401)
+
+    def test_the_start_token_is_accepted_in_every_supported_form(self):
+        self.assertEqual(self._status({"X-Harness-Auth": "start-token"}), 200)
+        self.assertEqual(self._status({"Authorization": "Bearer start-token"}), 200)
+        self.assertEqual(self._status(path="/api/status?token=start-token"), 200)
 
     def test_no_token_file_is_written_by_a_presenter(self):
         tmp = tempfile.mkdtemp(prefix="harness-ephemeral-")
