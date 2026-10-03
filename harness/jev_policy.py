@@ -127,10 +127,12 @@ class _Reservation:
             return True
         return False
 
-    def acquire(self) -> None:
+    def acquire(self, estimate: int = 0) -> None:
+        """Reserve for the call's bound, or its payload if that is larger."""
         if not self.acquired:
             self.acquired = True
-            self.token = self.policy._reserve(self.site, self.max_input_tokens)
+            self.token = self.policy._reserve(
+                self.site, max(self.max_input_tokens, int(estimate or 0)))
             self.reserved = True
 
 

@@ -385,6 +385,12 @@ BREAKER_COOLDOWN_SECONDS = 30.0
 SINGLE_FLIGHT_WAIT_SECONDS = 5.0
 SINGLE_FLIGHT_ROUNDS = 3
 SHARED_BREAKER_CAP = 64
+# Reported usage beyond this many times the payload estimate (with a floor so
+# small payloads are not over-policed), or beyond the absolute cap, is not a
+# believable bill: it is settled at the estimate and flagged.
+USAGE_PLAUSIBLE_FACTOR = 10
+USAGE_PLAUSIBLE_FLOOR = 10_000
+USAGE_ABSOLUTE_CAP = 10_000_000
 # The policy names the site it is about to dispatch for; the evaluator reads
 # it here so the breaker is per-site without changing any call signature.
 ACTIVE_SITE: "contextvars.ContextVar[str]" = contextvars.ContextVar(
@@ -541,6 +547,16 @@ class JevEvaluator:
             self.breakers = CircuitBreakers()
         self._led = threading.local()
 
+    @staticmethod
+    def _estimate_tokens(state: Any, active: Dict[str, Any]) -> int:
+        """Conservative input-token estimate of the request payload."""
+        try:
+            chars = len(json.dumps({"state": state, "questions": active},
+                                   default=str))
+        except Exception:
+            chars = len(repr(state)) + len(repr(active))
+        return (chars + 2) // 3
+
     def _cache_key(self, state: Any, active: Dict[str, Any]) -> Optional[str]:
         key_id = hashlib.sha256((self.api_key or "").encode("utf-8")).hexdigest()[:16]
         return _strict_digest(JEV_CACHE_VERSION, self.endpoint, self.model,
@@ -598,6 +614,7 @@ class JevEvaluator:
             if cached is not None:
                 return self._cache_hit(cached)
         site = ACTIVE_SITE.get()
+        estimate = self._estimate_tokens(state, active)
         shared = None
         generation = None
         outcome = "neutral"
@@ -612,7 +629,10 @@ class JevEvaluator:
             reserver = ACTIVE_RESERVER.get()
             if reserver is not None:
                 ACTIVE_RESERVER.set(None)
-                reserver()  # may raise HarnessError: a refused reservation
+                # May raise HarnessError: a refused reservation. The payload
+                # estimate lets it reserve for an oversized state instead of
+                # under-reserving and overrunning the budget.
+                reserver(estimate)
             guard = ACTIVE_GUARD.get()
             if guard is not None and not guard():
                 # A policy asked for a reserved dispatch and none exists
@@ -649,6 +669,19 @@ class JevEvaluator:
                             input_tokens_observed=input_tokens > 0,
                             output_tokens_observed=output_tokens > 0,
                             discarded=input_tokens > 0), state_hash=state_hash)
+                    cap = min(USAGE_ABSOLUTE_CAP, max(
+                        USAGE_PLAUSIBLE_FLOOR, USAGE_PLAUSIBLE_FACTOR * estimate))
+                    if parsed.input_tokens > cap:
+                        # Not a believable bill: settle at the payload
+                        # estimate and flag it. The wire worked (neutral).
+                        return replace(self._failure(
+                            "invalid TypeSafe response: implausible usage ({} input "
+                            "tokens for a ~{}-token payload)".format(
+                                parsed.input_tokens, estimate),
+                            fallback=False, input_tokens=estimate,
+                            discarded=True,
+                            fallback_reason="usage_implausible"),
+                            state_hash=state_hash)
                     outcome = "success"
                     shared = parsed
                     # Only a fully parsed live answer is cacheable; every

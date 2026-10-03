@@ -1197,7 +1197,7 @@ class FanOutHardeningTests(_Base):
 
     def test_post_dispatch_overrun_is_not_labelled_a_preflight_refusal(self):
         big = {"model": "jev-test",
-               "usage": {"input_tokens": 2000000, "output_tokens": 3}}
+               "usage": {"input_tokens": 5000, "output_tokens": 3}}
 
         def respond(payload):
             return dict(big, answers=answers_for(payload["questions"]))
