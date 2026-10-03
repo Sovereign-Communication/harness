@@ -1471,14 +1471,19 @@ _DISPATCH = {
 }
 
 
+def _flushes_fallbacks(fn):
+    """Write deduped Jev fallback tails to the ledger when a command ends."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            flush_all_fallbacks()
+    return wrapper
+
+
+@_flushes_fallbacks
 def main(argv=None):
-    try:
-        return _main(argv)
-    finally:
-        flush_all_fallbacks()
-
-
-def _main(argv=None):
     args = argv if argv is not None else sys.argv[1:]
     # The UI faces exit before settings/ledger setup: they run their own
     # servers and manage their own state (serve needs no key until a
