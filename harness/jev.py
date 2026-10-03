@@ -391,6 +391,34 @@ SHARED_BREAKER_CAP = 64
 USAGE_PLAUSIBLE_FACTOR = 10
 USAGE_PLAUSIBLE_FLOOR = 10_000
 USAGE_ABSOLUTE_CAP = 10_000_000
+# The other direction: a bill under 5% of a sizeable payload's estimate is not
+# believable either; it settles at no less than a quarter of the estimate.
+USAGE_LOW_RATIO = 0.05
+USAGE_LOW_SETTLE_RATIO = 0.25
+USAGE_LOW_MIN_ESTIMATE = 1000
+
+
+def _usage_cap(estimate: int) -> int:
+    """Most input tokens one call may ever be billed for, given its payload."""
+    return min(USAGE_ABSOLUTE_CAP,
+               max(USAGE_PLAUSIBLE_FLOOR, USAGE_PLAUSIBLE_FACTOR * estimate))
+
+
+def _bounded_usage(reported: int, estimate: int) -> Tuple[int, Optional[str]]:
+    """``(tokens to settle, flag)`` for a reported input-token count.
+
+    Monotonic in ``reported``: above the cap it settles AT the cap (never a
+    jump back down to the estimate), and a suspiciously small bill for a
+    sizeable payload is raised to a quarter of the estimate.
+    """
+    cap = _usage_cap(estimate)
+    if reported > cap:
+        return cap, "usage_implausible"
+    if (estimate > USAGE_LOW_MIN_ESTIMATE
+            and reported < USAGE_LOW_RATIO * estimate):
+        return (max(reported, int(estimate * USAGE_LOW_SETTLE_RATIO)),
+                "usage_suspiciously_low")
+    return reported, None
 # The policy names the site it is about to dispatch for; the evaluator reads
 # it here so the breaker is per-site without changing any call signature.
 ACTIVE_SITE: "contextvars.ContextVar[str]" = contextvars.ContextVar(
@@ -659,6 +687,7 @@ class JevEvaluator:
                         if (isinstance(output_tokens, bool) or not isinstance(output_tokens, int)
                                 or output_tokens < 0):
                             output_tokens = 0
+                        input_tokens = min(input_tokens, _usage_cap(estimate))
                         # DF-JEV-3: the provider billed this response and we
                         # cannot use the answer. Mark it discarded so the
                         # caller can report the loss rather than degrading
@@ -669,19 +698,25 @@ class JevEvaluator:
                             input_tokens_observed=input_tokens > 0,
                             output_tokens_observed=output_tokens > 0,
                             discarded=input_tokens > 0), state_hash=state_hash)
-                    cap = min(USAGE_ABSOLUTE_CAP, max(
-                        USAGE_PLAUSIBLE_FLOOR, USAGE_PLAUSIBLE_FACTOR * estimate))
-                    if parsed.input_tokens > cap:
-                        # Not a believable bill: settle at the payload
-                        # estimate and flag it. The wire worked (neutral).
+                    settled, flag = _bounded_usage(parsed.input_tokens, estimate)
+                    if flag == "usage_implausible":
+                        # Not a believable bill: settle at the bound and flag
+                        # it. The wire worked (neutral for the breaker).
                         return replace(self._failure(
                             "invalid TypeSafe response: implausible usage ({} input "
                             "tokens for a ~{}-token payload)".format(
                                 parsed.input_tokens, estimate),
-                            fallback=False, input_tokens=estimate,
+                            fallback=False, input_tokens=settled,
                             discarded=True,
                             fallback_reason="usage_implausible"),
                             state_hash=state_hash)
+                    if flag == "usage_suspiciously_low":
+                        parsed = replace(
+                            parsed, input_tokens=settled, cost=jev_cost(settled),
+                            reasons=list(parsed.reasons) + [
+                                "usage_suspiciously_low: reported {} input tokens for "
+                                "a ~{}-token payload; settled at {}".format(
+                                    parsed.input_tokens, estimate, settled)])
                     outcome = "success"
                     shared = parsed
                     # Only a fully parsed live answer is cacheable; every
@@ -768,6 +803,8 @@ class JevEvaluator:
         (input_tokens, output_tokens, input_observed,
          output_observed) = self._observed_usage(usage)
         usage_observed = input_observed and output_observed
+        estimate = self._estimate_tokens(state, active)
+        input_tokens = min(input_tokens, _usage_cap(estimate))
         model = response.get("model") if isinstance(response, dict) else None
         model_observed = isinstance(model, str) and bool(model.strip())
         if status != 200:
@@ -815,9 +852,27 @@ class JevEvaluator:
                 # DF-JEV-3: billed but unusable. Same discipline on the strict
                 # one-attempt path -- real usage settles, and the loss is named.
                 discarded=input_observed)
+        settled, flag = _bounded_usage(result.input_tokens, estimate)
+        if flag == "usage_implausible":
+            return self._failure(
+                "invalid TypeSafe response: implausible usage ({} input "
+                "tokens for a ~{}-token payload)".format(
+                    result.input_tokens, estimate),
+                fallback=False, input_tokens=settled,
+                output_tokens=result.output_tokens, usage_observed=True,
+                model=result.model, model_observed=True,
+                input_tokens_observed=True, output_tokens_observed=True,
+                discarded=True, fallback_reason="usage_implausible")
+        if flag == "usage_suspiciously_low":
+            return replace(
+                result, input_tokens=settled, cost=jev_cost(settled),
+                reasons=list(result.reasons) + [
+                    "usage_suspiciously_low: reported {} input tokens for a "
+                    "~{}-token payload; settled at {}".format(
+                        result.input_tokens, estimate, settled)])
         # _parse_jev_response already returns a frozen result with these
         # observed flags set after validating both usage fields and the
-        # response model. Do not mutate the frozen dataclass here.
+        # response model.
         return result
 
     @staticmethod
