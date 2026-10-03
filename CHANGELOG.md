@@ -9,6 +9,15 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
+### Added
+
+- **Native driver module (`driver_core/`, `DRV-1`)** — a self-contained, standard-library-only package (verified extraction, Jev decision, deterministic action) reached through the existing `harness/perception_client.py` adapter, with a `driver-core` entry point, loopback REST under `/api/driver/*` (`health`, `vocabulary`, `schemas`, `verify`, `step`, `start`, `drive`), a Driver pane, and the MCP tools `driver_step`/`driver_health`/`driver_vocabulary`/`driver_verify`. Every synthetic input action (`click`, `type_text`, `press_key`, `focus`, `scroll`, `submit_irreversible`) is refused with `execution_refused` until an input backend is registered; nothing in this repository registers one, so `DRV-2` stays open. See `docs/driver.md`.
+- **Jev spend and credit truth** — Jev input is priced at the verified $0.042/Mtok with the $5.00 monthly credit surfaced as a `jev` block on `/api/spend`, `/api/cost` and the cost report; legacy ledger entries priced at the old $42/Mtok are recomputed from their recorded input tokens.
+
+### Fixed
+
+- **Driver token and auth** — the in-process driver no longer uses a fixed fallback token: it uses `DRIVER_TOKEN` when declared and otherwise a random per-start token that is never placed in the environment or returned by an endpoint. A UI server started with a generated token no longer hands that token to whichever caller presents one first. A driver run's summary no longer reports success it did not observe: it reports `ok_steps`, says the goal was met only when the `verify` command passed, and reports `cancelled` runs as such.
+
 ## [0.4.2] - 2026-10-01
 
 ### Added

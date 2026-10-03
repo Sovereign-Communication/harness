@@ -359,15 +359,17 @@ harness media jobs --project scmessenger
 harness media balance --project scmessenger
 
 # DRV-1: verified extraction -> Jev decision -> deterministic action, via the
-# driver-core sibling service. Extraction is cross-verified BEFORE the
+# in-repo driver_core module. Extraction is cross-verified BEFORE the
 # decision, so nothing here acts on an unverified read of the machine. A
 # refusal is HTTP 200 ok:false and comes back as an envelope with a named
 # reason -- only transport failures raise. Endpoint/token are config- or
 # env-resolved (DRIVER_BASE_URL, DRIVER_TOKEN); the adapter names no provider.
+# Input actions (click/type/key/focus/scroll) are always refused until an input
+# backend is registered.
 # See docs/driver.md for the refusal-vs-transport contract and consent rules.
 harness driver health
 harness driver step "file-manager" --schema screen          # read-only: no consent sent
-harness driver step "file-manager" --action open_window --params '{"path": "~/notes"}' --by operator
+harness driver step "notes" --schema cli --action read_value --params '{"field": "title"}' --by operator
 harness driver verify        # audit-chain verdict + spend snapshot
 ```
 
