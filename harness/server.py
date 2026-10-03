@@ -959,9 +959,16 @@ def _list_missions(root, *, limit=25, offset=0):
     return {"missions": out, "total": total, "limit": limit, "offset": offset}
 
 
+# Socket timeout for one handler thread. Without it a client that announces a
+# Content-Length and never sends the body (or opens a connection and goes
+# quiet) parks a handler thread forever, before any authentication.
+_HANDLER_TIMEOUT = 10.0
+
+
 class UiRequestHandler(BaseHTTPRequestHandler):
     server_version = "harness-ui/0.1"
     protocol_version = "HTTP/1.1"
+    timeout = _HANDLER_TIMEOUT
 
     @property
     def ui(self) -> UiState:
@@ -1005,7 +1012,14 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         except ValueError:
             return
         while remaining > 0:
-            chunk = self.rfile.read(min(remaining, 65536))
+            try:
+                chunk = self.rfile.read(min(remaining, 65536))
+            except OSError:
+                # Includes the handler timeout: the peer promised a body and
+                # never sent it. Give up on it; the refusal is still written
+                # and the connection closed.
+                self.close_connection = True
+                break
             if not chunk:
                 break
             remaining -= len(chunk)

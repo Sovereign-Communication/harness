@@ -695,6 +695,35 @@ class TokenTakeoverTest(unittest.TestCase):
         self.assertTrue(raw.startswith(b"HTTP/1.1 401"))
         self.assertIn(b"Connection: close", raw)
 
+    def test_a_post_that_never_sends_its_body_cannot_stall_the_handler(self):
+        # Pre-auth: Content-Length is announced, no body follows. The handler
+        # must time out and still answer 401 instead of blocking forever.
+        import socket
+        import time as _time
+        with patch.object(ui_server.UiRequestHandler, "timeout", 0.3):
+            start = _time.monotonic()
+            with socket.create_connection(("127.0.0.1", self.port),
+                                          timeout=10) as s:
+                s.sendall(b"POST /api/chat HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                          b"Content-Length: 100\r\n\r\n")
+                chunks = []
+                while True:
+                    data = s.recv(65536)
+                    if not data:
+                        break
+                    chunks.append(data)
+            elapsed = _time.monotonic() - start
+        raw = b"".join(chunks)
+        self.assertTrue(raw.startswith(b"HTTP/1.1 401"), raw[:60])
+        self.assertLess(elapsed, 5.0)
+
+    def test_an_idle_connection_is_dropped_after_the_handler_timeout(self):
+        import socket
+        with patch.object(ui_server.UiRequestHandler, "timeout", 0.3):
+            with socket.create_connection(("127.0.0.1", self.port),
+                                          timeout=10) as s:
+                self.assertEqual(s.recv(1024), b"")
+
     def test_a_forbidden_host_is_refused_and_closed(self):
         raw = self._raw(b"GET /api/status HTTP/1.1\r\nHost: evil.example\r\n"
                         b"X-Harness-Auth: start-token\r\n\r\n")
