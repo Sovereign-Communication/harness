@@ -570,7 +570,8 @@ class FanOutTests(_Base):
         def boom():
             raise ValueError("x")
 
-        out = policy.fan_out([("s", boom), ("t", lambda: ("ok", {}))])
+        with mock.patch("harness.jev_policy.eprint"):
+            out = policy.fan_out([("s", boom), ("t", lambda: ("ok", {}))])
         self.assertEqual(out[0][1]["fallback_reason"], "fanout_exception")
         self.assertEqual(out[1][0], "ok")
 
@@ -580,7 +581,8 @@ class FanOutTests(_Base):
         def boom():
             raise ValueError("x")
 
-        out = policy.fan_out([("s", boom, lambda r, st: (r, st, "combo"))])
+        out = policy.fan_out([("s", boom, lambda r, st: (r, st, "combo")),
+                              ("t", lambda: ("ok", {}))])
         self.assertEqual(out[0][2], "combo")
 
     def test_unkeyed_and_single_job_run_inline(self):
@@ -722,6 +724,598 @@ class BreakerTests(_Base):
         for i in range(BREAKER_FAILURE_THRESHOLD):
             policy.evaluate_diff(DIFF, "i{}".format(i), "x.py", site="apply")
         self.assertFalse(policy.available("apply"))
+
+
+def echo(tokens=100):
+    def respond(payload):
+        return {"model": "jev-test",
+                "usage": {"input_tokens": tokens, "output_tokens": 3},
+                "answers": answers_for(payload["questions"])}
+    return respond
+
+
+SITES = {
+    "diff": lambda p: p.evaluate_diff(DIFF, "set x to 2", "x.py"),
+    "triage": lambda p: p.evaluate_triage("fix loop", ["a.py"]),
+    "route": lambda p: p.evaluate_route("fix loop", ["a.py"]),
+    "plan": lambda p: p.evaluate_plan("fix loop", ["a.py"]),
+    "file_triage": lambda p: p.evaluate_file_triage("fix", ["a.py", "b.py"]),
+    "claims": lambda p: p.evaluate_claim_support(
+        ["the sky is blue"], "ctx", enabled=True),
+    "decision": lambda p: p.evaluate_decision("act", "end", "ctx"),
+    "answer": lambda p: p.evaluate_answer("q", "a", "c"),
+    "escalation": lambda p: p.evaluate_escalation_decision("fail ctx"),
+    "completion": lambda p: p.evaluate_completion_nouls("goal", "state"),
+    "scope": lambda p: p.evaluate_scope(
+        {"goal": "g", "in_scope": ["a"], "state": "s"}),
+    "model_route": lambda p: p.evaluate_model_route("do thing", PACK),
+}
+SITE_NAMES = {"diff": "apply", "triage": "triage", "route": "route",
+              "plan": "waist", "file_triage": "triage-files",
+              "claims": "claims", "scope": "hul_scope", "answer": "answer",
+              "model_route": "model_route"}
+
+
+def first(out):
+    return out[0]
+
+
+class EverySiteCacheTests(_Base):
+    def test_second_identical_call_is_free_at_every_site(self):
+        for name, call in SITES.items():
+            with self.subTest(site=name):
+                self.setUp()
+                transport = CountingTransport(echo(100))
+                gov = self.governor(max_cost=0.5)
+                policy = self.keyed(transport, governor=gov)
+                call(policy)
+                calls, spent = len(transport.calls), gov.spent
+                call(policy)
+                self.assertEqual(len(transport.calls), calls)
+                self.assertEqual(gov.spent, spent)
+                self.assertEqual(gov.outstanding, 0.0)
+                hits = [r for r in self.rows() if r.get("cache_hit")]
+                self.assertTrue(hits, name)
+                self.assertTrue(all(r["cost"] == 0.0 for r in hits))
+
+    def test_free_hit_is_not_refused_when_the_budget_is_gone(self):
+        transport = CountingTransport(echo(100))
+        gov = self.governor(max_cost=0.5)
+        policy = self.keyed(transport, governor=gov)
+        policy.evaluate_route("fix loop", ["a.py"])
+        gov.max_cost = gov.spent          # nothing left to reserve
+        result, structural = policy.evaluate_route("fix loop", ["a.py"])
+        self.assertFalse(result.is_fallback)
+        self.assertTrue(result.cache_hit)
+        self.assertEqual(len(transport.calls), 1)
+        self.assertIsNone(structural["fallback_reason"])
+
+
+class EverySiteBilledTests(_Base):
+    def run_mode(self, call, transport):
+        gov = self.governor(max_cost=0.5)
+        policy = self.keyed(transport, governor=gov, breaker_threshold=10 ** 6)
+        for _ in range(3):
+            call(policy)
+        return policy, gov
+
+    def test_billed_discarded_answers_settle_exactly_at_every_site(self):
+        bad = {"model": "jev-test",
+               "usage": {"input_tokens": 100, "output_tokens": 3},
+               "answers": {"zzz": {"type": "noul", "noul": 0.5}}}
+        for name, call in SITES.items():
+            with self.subTest(site=name):
+                self.setUp()
+                transport = CountingTransport(bad)
+                _, gov = self.run_mode(call, transport)
+                billed = sum(r["cost"] for r in self.rows())
+                self.assertAlmostEqual(
+                    gov.spent, len(transport.calls) * jev_cost(100))
+                self.assertAlmostEqual(billed, gov.spent)
+                self.assertEqual(gov.outstanding, 0.0)
+
+    def test_failed_transports_are_free_and_named_at_every_site(self):
+        for mode, reason in (("raise", "transport_failure"),
+                             (500, "http_fallback")):
+            for name, call in SITES.items():
+                with self.subTest(site=name, mode=mode):
+                    self.setUp()
+                    item = OSError("boom") if mode == "raise" else (500, {})
+                    transport = CountingTransport(item)
+                    _, gov = self.run_mode(call, transport)
+                    self.assertEqual(gov.spent, 0.0)
+                    self.assertEqual(gov.outstanding, 0.0)
+                    for row in self.rows():
+                        if row["is_fallback"]:
+                            self.assertEqual(row["fallback_reason"], reason)
+                            self.assertEqual(row["cost"], 0.0)
+
+
+class BreakerDegradationTests(_Base):
+    def build(self, transport, clock=None):
+        return self.keyed(transport, clock=clock or (lambda: 1000.0))
+
+    def test_open_breaker_never_hardens_any_site(self):
+        for name in SITE_NAMES:
+            with self.subTest(site=name):
+                self.setUp()
+                transport = CountingTransport(OSError("down"))
+                policy = self.build(transport)
+                shapes = []
+                for _ in range(6):
+                    res = first(SITES[name](policy))
+                    shapes.append((res.verdict, res.is_fallback,
+                                   res.is_passing()))
+                self.assertEqual(len(set(shapes)), 1, shapes)
+                self.assertEqual(len(transport.calls), BREAKER_FAILURE_THRESHOLD)
+                self.assertFalse(policy.available(SITE_NAMES[name]))
+                reasons = [r["fallback_reason"] for r in self.rows()
+                           if r["is_fallback"]]
+                self.assertIn("circuit_open", reasons)
+
+    def test_apply_gate_keeps_its_graceful_fallback_while_open(self):
+        transport = CountingTransport(OSError("down"))
+        policy = self.build(transport)
+        for _ in range(BREAKER_FAILURE_THRESHOLD):
+            policy.evaluate_diff(DIFF, "set x to 2", "x.py")
+        result, structural = policy.evaluate_diff(DIFF, "set x to 2", "x.py")
+        self.assertEqual(result.verdict, "pass")
+        self.assertTrue(result.is_fallback)
+        self.assertEqual(structural["fallback_reason"], "circuit_open")
+
+    def test_open_breaker_leaves_deduped_ledger_evidence(self):
+        transport = CountingTransport(OSError("down"))
+        policy = self.build(transport)
+        for _ in range(50):
+            policy.evaluate_triage("same", ["a.py"])
+        rows = [r for r in self.rows() if r.get("fallback_reason") == "circuit_open"]
+        self.assertTrue(rows)
+        self.assertLessEqual(len(rows), 8)
+        self.assertGreater(sum(r.get("repeat_count", 1) for r in rows), 1)
+
+    def test_only_a_parsed_round_trip_closes_it_and_neutrals_do_not_reset(self):
+        seq = [OSError("x"), OSError("x"), (401, {}), OSError("x"),
+               OSError("x"), OSError("x")]
+        transport = CountingTransport(plan=seq)
+        policy = self.build(transport)
+        reasons = []
+        for i in range(6):
+            _, structural = policy.evaluate_route("g{}".format(i), ["a.py"])
+            reasons.append(structural["fallback_reason"])
+        # 401 is neither success nor failure: the 3rd failure still opens it.
+        self.assertEqual(len(transport.calls), 4)
+        self.assertEqual(reasons[-2:], ["circuit_open", "circuit_open"])
+
+    def test_local_mechanics_rejection_counts_as_neither(self):
+        transport = CountingTransport(OSError("down"))
+        policy = self.build(transport)
+        for _ in range(BREAKER_FAILURE_THRESHOLD - 1):
+            policy.evaluate_diff(DIFF, "set x", "x.py")
+        policy.evaluate_diff("garbage not a diff", "set x", "x.py")
+        board = policy.evaluator.breakers
+        self.assertEqual(board.snapshot("apply")["failures"],
+                         BREAKER_FAILURE_THRESHOLD - 1)
+        policy.evaluate_diff(DIFF, "set y", "x.py")
+        self.assertFalse(policy.available("apply"))
+
+    def test_invalid_response_does_not_close_an_open_breaker(self):
+        now = [0.0]
+        transport = CountingTransport(OSError("down"))
+        policy = self.build(transport, clock=lambda: now[0])
+        for i in range(BREAKER_FAILURE_THRESHOLD):
+            policy.evaluate_route("g{}".format(i), ["a.py"])
+        now[0] += 31.0
+        transport.default = {"model": "j", "usage": {"input_tokens": 5,
+                                                      "output_tokens": 1},
+                             "answers": {"nope": {"type": "noul", "noul": 1}}}
+        policy.evaluate_route("probe", ["a.py"])      # unparseable: neutral
+        snap = policy.evaluator.breakers.snapshot("route")
+        self.assertIsNotNone(snap["opened_at"])
+        self.assertFalse(snap["probing"])
+
+    def test_half_open_lets_exactly_one_probe_through_concurrently(self):
+        now = [0.0]
+        transport = CountingTransport(OSError("down"))
+        policy = self.build(transport, clock=lambda: now[0])
+        for i in range(BREAKER_FAILURE_THRESHOLD):
+            policy.evaluate_route("g{}".format(i), ["a.py"])
+        now[0] += 31.0
+        transport.default = echo(5)
+        transport.delay = {("requires_iteration", "route"): 0.2}
+        base = len(transport.calls)
+        results = []
+
+        def go(i):
+            results.append(policy.evaluate_route(
+                "conc {}".format(i), ["a.py"])[1]["fallback_reason"])
+        threads = [threading.Thread(target=go, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(transport.calls) - base, 1)
+        self.assertEqual(results.count("circuit_open"), 7)
+        self.assertTrue(policy.available("route"))
+
+    def test_breaker_is_shared_across_per_request_policies(self):
+        from harness import jev as jev_mod
+        key = "shared-key-{}".format(time.time_ns())
+        calls = []
+
+        def down(self_, url, api_key, payload, timeout=45):
+            calls.append(1)
+            raise OSError("down")
+
+        def fresh_policy():
+            settings = load_settings({"jev_api_key": key})
+            settings.hourglass_confirm = False
+            return policy_for(settings, governor=self.governor(),
+                              ledger=self.ledger)
+        with mock.patch.object(HttpTransport, "post", down):
+            fresh_policy().evaluate_route("one", ["a.py"])
+            fresh_policy().evaluate_route("two", ["a.py"])
+            fresh_policy().evaluate_route("three", ["a.py"])
+            _, structural = fresh_policy().evaluate_route("four", ["a.py"])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(structural["fallback_reason"], "circuit_open")
+        jev_mod._SHARED_BREAKERS.clear()
+
+
+class CacheHardeningTests(_Base):
+    Q = {"a": {"type": "noul", "instructions": "is it ok?"}}
+
+    def stub(self, noul=0.9, delay=0.0):
+        class T:
+            calls = 0
+            lock = threading.Lock()
+
+            def post(s, url, key, payload, timeout=45):
+                with s.lock:
+                    s.calls += 1
+                time.sleep(delay)
+                return 200, {"model": "jev-test",
+                             "usage": {"input_tokens": 10, "output_tokens": 1},
+                             "answers": {"a": {"type": "noul", "noul": noul}}}
+        return T()
+
+    def test_partitioning_by_key_endpoint_model_state_and_question(self):
+        t, cache = self.stub(), JevCache()
+
+        def ev(**kw):
+            kw.setdefault("api_key", "k1")
+            kw.setdefault("endpoint", "https://e1")
+            return JevEvaluator(transport=t, cache=cache, **kw)
+        ev().evaluate({"x": 1}, self.Q)
+        for build, state, qs in (
+                (lambda: ev(api_key="k2"), {"x": 1}, self.Q),
+                (lambda: ev(endpoint="https://e2"), {"x": 1}, self.Q),
+                (lambda: ev(), {"x": 2}, self.Q),
+                (lambda: ev(), {"x": 1}, {"a": {"type": "noul",
+                                                "instructions": "other?"}}),
+                (lambda: ev(), {"x": True}, self.Q),
+                (lambda: ev(), {"x": 1.0}, self.Q),
+                (lambda: ev(), {"x": "1"}, self.Q)):
+            before = t.calls
+            build().evaluate(state, qs)
+            self.assertEqual(t.calls, before + 1, (state, qs))
+        other = ev()
+        other.model = "other-model"
+        before = t.calls
+        other.evaluate({"x": 1}, self.Q)
+        self.assertEqual(t.calls, before + 1)
+
+    def test_digest_is_total_and_unhashable_state_is_not_cached(self):
+        t, cache = self.stub(), JevCache()
+        keyed = JevEvaluator(api_key="k", transport=t, cache=cache)
+        unkeyed = JevEvaluator(api_key=None)
+        circular = {}
+        circular["self"] = circular
+        weird = {1: "a", "b": 2}
+        for state in (weird, circular):
+            self.assertIn(unkeyed.evaluate(state, self.Q).verdict, ("pass", "fail"))
+            keyed.evaluate(state, self.Q)
+        self.assertEqual(len(cache), 0)
+        self.assertEqual(t.calls, 2)         # sent, never cached
+
+    def test_hits_are_defensive_copies(self):
+        t, cache = self.stub(), JevCache()
+        ev = JevEvaluator(api_key="k", transport=t, cache=cache)
+        first_result = ev.evaluate({"m": 1}, self.Q)
+        first_result.answers["a"]["noul"] = 0.0
+        first_result.reasons.append("poison")
+        second = ev.evaluate({"m": 1}, self.Q)
+        self.assertEqual(second.answers["a"]["noul"], 0.9)
+        self.assertNotIn("poison", second.reasons)
+        second.answers["a"]["noul"] = 0.123
+        self.assertEqual(ev.evaluate({"m": 1}, self.Q).answers["a"]["noul"], 0.9)
+
+    def test_concurrent_identical_misses_share_one_request(self):
+        t, cache = self.stub(delay=0.15), JevCache()
+        ev = JevEvaluator(api_key="k", transport=t, cache=cache)
+        out = []
+        threads = [threading.Thread(
+            target=lambda: out.append(ev.evaluate({"q": 1}, self.Q)))
+            for _ in range(8)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        self.assertEqual(t.calls, 1)
+        self.assertEqual(sum(1 for r in out if r.cache_hit), 7)
+        self.assertEqual(sum(r.cost > 0 for r in out), 1)
+
+    def test_failed_leader_lets_followers_retry(self):
+        class Flaky:
+            calls = 0
+            lock = threading.Lock()
+
+            def post(s, *a, **k):
+                with s.lock:
+                    s.calls += 1
+                    n = s.calls
+                time.sleep(0.1)
+                if n == 1:
+                    raise OSError("first fails")
+                return 200, {"model": "j",
+                             "usage": {"input_tokens": 1, "output_tokens": 1},
+                             "answers": {"a": {"type": "noul", "noul": 0.9}}}
+        f, cache = Flaky(), JevCache()
+        ev = JevEvaluator(api_key="k", transport=f, cache=cache)
+        out = []
+        threads = [threading.Thread(
+            target=lambda: out.append(ev.evaluate({"q": 1}, self.Q)))
+            for _ in range(3)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        self.assertGreaterEqual(sum(1 for r in out if not r.is_fallback), 2)
+
+    def test_real_transport_shares_the_process_cache_across_evaluators(self):
+        PROCESS_CACHE.clear()
+        resp = (200, {"model": "jev-test",
+                      "usage": {"input_tokens": 10, "output_tokens": 1},
+                      "answers": {"a": {"type": "noul", "noul": 0.9}}})
+        with mock.patch.object(HttpTransport, "post", return_value=resp) as post:
+            JevEvaluator(api_key="pk").evaluate({"z": 1}, self.Q)
+            JevEvaluator(api_key="pk").evaluate({"z": 1}, self.Q)
+            JevEvaluator(api_key="other").evaluate({"z": 1}, self.Q)
+        self.assertEqual(post.call_count, 2)
+        PROCESS_CACHE.clear()
+
+
+class DedupeAccountingTests(_Base):
+    def test_billed_rows_never_dedupe_and_free_rows_carry_deltas(self):
+        from harness.jev import JevEvaluationResult
+        policy = policy_for(self.unkeyed_settings(), ledger=self.ledger)
+        for _ in range(9):
+            policy.evaluate_triage("same", ["a.py"])
+        rows = self.rows()
+        # calls 1, 2, 4, 8 write rows standing for 1, 1, 2, 4 (call 9 pending)
+        self.assertEqual([r.get("repeat_count", 1) for r in rows], [1, 1, 2, 4])
+        self.assertEqual(policy.flush_fallbacks(), 1)
+        self.assertEqual(sum(r.get("repeat_count", 1) for r in self.rows()), 9)
+        self.assertEqual(policy.flush_fallbacks(), 0)
+        billed = JevEvaluationResult(
+            "pass", 0.0, 1.0, {}, [], cost=0.001, input_tokens=10,
+            is_fallback=True, fallback_reason="x", discarded=True)
+        for _ in range(3):
+            policy._account(billed, site="s")
+        mine = [r for r in self.rows() if r["site"] == "s"]
+        self.assertEqual(len(mine), 3)
+        self.assertTrue(all(r["discarded"] for r in mine))
+
+    def test_refusals_are_deduped_and_coded(self):
+        policy = self.keyed(CountingTransport(noul_resp()),
+                            governor=self.governor(max_cost=0.0000001))
+        for _ in range(40):
+            policy.evaluate_diff(DIFF, "x", "x.py")
+        refusals = [e for e in self.ledger.entries()
+                    if e["event"] == "jev_refusal"]
+        self.assertTrue(refusals)
+        self.assertLessEqual(len(refusals), 8)
+        self.assertEqual({r["reason_code"] for r in refusals}, {"preflight_refused"})
+
+    def test_hard_refusal_paths_leave_a_ledger_row(self):
+        policy = self.keyed(CountingTransport(noul_resp()),
+                            governor=self.governor(max_cost=0.0000001))
+        policy.evaluate_triage("fix", ["a.py"])
+        policy.evaluate_route("fix", ["a.py"])
+        policy.evaluate_file_triage("g", ["a.py"], ["a.py"])
+        policy.evaluate_claim_support(["a claim"], "ctx", enabled=True)
+        policy.evaluate_scope({"goal": "g", "in_scope": ["a"], "state": "s"})
+        sites = {r["site"] for r in self.rows()
+                 if r["fallback_reason"] == "preflight_refused"}
+        self.assertTrue({"triage", "route", "triage-files"} <= sites, sites)
+
+
+class FanOutHardeningTests(_Base):
+    def test_unkeyed_inline_path_propagates_bugs(self):
+        policy = policy_for(self.unkeyed_settings(), ledger=self.ledger)
+
+        def boom():
+            raise RuntimeError("bug")
+        with self.assertRaises(RuntimeError):
+            policy.fan_out([("route", boom)])
+
+    def test_reservation_is_released_when_a_call_dies_after_preflight(self):
+        for keyed_pool in (True, False):
+            self.setUp()
+            gov = self.governor()
+            policy = self.keyed(CountingTransport(noul_resp()), governor=gov)
+
+            def raising(*a, **k):
+                raise RuntimeError("evaluator bug")
+            policy.evaluator.evaluate = raising
+            jobs = [("route", lambda: policy.evaluate_route("x", ["a.py"])),
+                    ("waist", lambda: policy.evaluate_plan("x", ["a.py"]))]
+            if keyed_pool:
+                out = policy.fan_out(jobs)
+                self.assertEqual(
+                    [o[1]["fallback_reason"] for o in out],
+                    ["fanout_exception", "fanout_exception"])
+            else:
+                with self.assertRaises(RuntimeError):
+                    policy.fan_out(jobs[:1])
+            self.assertEqual(gov.outstanding, 0.0)
+            self.assertEqual(gov.remaining(), gov.max_cost)
+
+    def test_ledger_failure_is_reported_not_swallowed(self):
+        policy = self.keyed(CountingTransport(noul_resp()))
+        policy._account = mock.Mock(side_effect=OSError("disk full"))
+
+        def boom():
+            raise ValueError("x")
+        with mock.patch("harness.jev_policy.eprint") as eprint:
+            out = policy.fan_out([("s", boom), ("t", lambda: ("ok", {}))])
+        self.assertEqual(out[0][1]["fallback_reason"], "fanout_exception")
+        self.assertIn("disk full", eprint.call_args[0][0])
+
+    def test_workers_are_bounded_and_not_leaked(self):
+        policy = self.keyed(CountingTransport(noul_resp()))
+        cur = [0, 0]
+        lock = threading.Lock()
+
+        def job(i):
+            def run():
+                with lock:
+                    cur[0] += 1
+                    cur[1] = max(cur[1], cur[0])
+                time.sleep(0.05)
+                with lock:
+                    cur[0] -= 1
+                return i
+            return run
+        out = policy.fan_out([("s{}".format(i), job(i)) for i in range(10)],
+                             max_workers=100)
+        self.assertEqual(out, list(range(10)))
+        self.assertLessEqual(cur[1], 8)
+        time.sleep(0.1)
+        self.assertFalse([t for t in threading.enumerate()
+                          if t.name.startswith("jev-fanout")])
+
+    def test_post_dispatch_overrun_is_not_labelled_a_preflight_refusal(self):
+        big = {"model": "jev-test",
+               "usage": {"input_tokens": 2000000, "output_tokens": 3}}
+
+        def respond(payload):
+            return dict(big, answers=answers_for(payload["questions"]))
+        gov = self.governor(max_cost=jev_cost(1024) * 1.5)
+        policy = self.keyed(CountingTransport(respond), governor=gov)
+        result, structural = policy.evaluate_route("x", ["a.py"])
+        self.assertTrue(result.is_fallback)
+        self.assertEqual(structural["fallback_reason"], "settlement_overrun")
+
+
+class LowConfidenceFloorTests(_Base):
+    def test_near_zero_confidence_choice_is_discarded_and_billed(self):
+        criteria = [r["rung_id"] for r in PACK["rungs"]]
+        transport = CountingTransport(choice_resp("r1", 0.02, criteria, tokens=200))
+        gov = self.governor()
+        policy = self.keyed(transport, governor=gov)
+        result, structural, combo = policy.evaluate_model_route(
+            {"goal": "rename a variable"}, PACK)
+        self.assertTrue(combo["is_fallback"])
+        self.assertEqual(structural["fallback_reason"], "low_confidence")
+        self.assertTrue(structural["discarded"])
+        self.assertAlmostEqual(gov.spent, jev_cost(200))
+
+
+class AnalyticsTests(_Base):
+    def test_calibration_honors_repeat_count_and_excludes_cache_hits(self):
+        ledger = self.ledger
+        ledger.append("jev_eval", site="route", is_fallback=True, cost=0.0,
+                      input_tokens=0, repeat_count=4, fallback_reason="x",
+                      task_id="t1", verdict="pass", confidence=0.0, supported=1.0)
+        ledger.append("jev_eval", site="route", is_fallback=False, cost=0.001,
+                      input_tokens=10, task_id="t1", verdict="pass",
+                      confidence=0.9, supported=0.9)
+        ledger.append("jev_eval", site="route", is_fallback=False, cost=0.0,
+                      input_tokens=0, cache_hit=True, task_id="t1",
+                      verdict="pass", confidence=0.9, supported=0.9)
+        ledger.append("verify_round", task_id="t1", passed=True)
+        report = ledger.jev_calibration_report()
+        self.assertEqual(report["jev_evals"], 6)
+        self.assertEqual(report["jev_fallback_evals"], 4)
+        self.assertEqual(report["jev_cache_hit_evals"], 1)
+        self.assertEqual(report["jev_keyed_evals"], 1)
+        self.assertEqual(report["by_site"], {"route": 6})
+        high = report["confidence_buckets"]["high_supported_ge_0.8"]
+        self.assertEqual(high["evals"], 1)
+
+    def test_cost_report_prices_billed_fallbacks_at_what_was_settled(self):
+        ledger = self.ledger
+        ledger.append("jev_eval", model="jev-test", input_tokens=1000,
+                      is_fallback=True, cost=jev_cost(1000), discarded=True)
+        ledger.append("jev_eval", model="jev-test", input_tokens=500,
+                      is_fallback=True, cost=0.0)
+        report = ledger.cost_report()
+        self.assertEqual(report["jev"]["calls"], 1)
+        self.assertAlmostEqual(report["jev"]["cost"], jev_cost(1000), places=6)
+
+
+class CoverageGapTests(_Base):
+    def test_digest_survives_objects_that_cannot_describe_themselves(self):
+        from harness.jev import _digest
+
+        class Mute:
+            def __str__(self):
+                raise RuntimeError("no str")
+
+            __repr__ = __str__
+        self.assertEqual(len(_digest({"x": Mute()})), 64)
+        self.assertEqual(
+            len(JevEvaluator(api_key=None).evaluate({"x": Mute()}).state_hash), 64)
+
+    def test_peek_is_false_without_a_key_or_with_invalid_questions(self):
+        self.assertFalse(JevEvaluator(api_key=None).peek({"a": 1}))
+        keyed = JevEvaluator(api_key="k", transport=CountingTransport())
+        self.assertFalse(keyed.peek({"a": 1}, {"bad": {"type": "text"}}))
+        self.assertFalse(keyed.peek({"a": 1}))
+
+    def test_unusable_usage_fields_are_zeroed_when_a_response_is_discarded(self):
+        bad = {"model": "j", "usage": {"input_tokens": -5, "output_tokens": "x"},
+               "answers": {"zzz": {"type": "noul", "noul": 0.5}}}
+        ev = JevEvaluator(api_key="k", transport=CountingTransport(bad))
+        result = ev.evaluate({"c": 1})
+        self.assertFalse(result.discarded)
+        self.assertEqual((result.input_tokens, result.output_tokens), (0, 0))
+
+    def test_flush_writes_the_capped_site_tail(self):
+        policy = policy_for(self.unkeyed_settings(), ledger=self.ledger)
+        for i in range(FALLBACK_DISTINCT_ROW_CAP + 6):
+            policy.evaluate_triage("goal {}".format(i), ["a.py"])
+        written = sum(r.get("repeat_count", 1) for r in self.rows())
+        self.assertGreater(policy.flush_fallbacks(), 0)
+        total = sum(r.get("repeat_count", 1) for r in self.rows())
+        self.assertEqual(total, FALLBACK_DISTINCT_ROW_CAP + 6)
+        self.assertGreaterEqual(total, written)
+
+    def test_release_tolerates_an_already_settled_token(self):
+        policy = self.keyed(CountingTransport(noul_resp()))
+        policy.governor = mock.Mock()
+        policy.governor.reconcile.side_effect = HarnessError("unknown token")
+        policy._tl.token = ("jev:x", 0.1)
+        policy._release_reservation()
+        self.assertIsNone(policy._tl.token)
+        policy._release_reservation()        # nothing left: no second call
+        self.assertEqual(policy.governor.reconcile.call_count, 1)
+
+    def test_a_broken_cache_probe_never_blocks_a_call(self):
+        transport = CountingTransport(noul_resp())
+        policy = self.keyed(transport)
+        policy.evaluator.peek = mock.Mock(side_effect=RuntimeError("x"))
+        result, _ = policy.evaluate_diff(DIFF, "set x", "x.py")
+        self.assertFalse(result.is_fallback)
+        self.assertEqual(len(transport.calls), 1)
+
+    def test_analytics_tolerates_garbage_ledger_fields(self):
+        self.ledger.append("jev_eval", site="s", is_fallback=True, cost=0.0,
+                           repeat_count="many", task_id="t")
+        self.ledger.append("jev_eval", model="jev-test", input_tokens=10,
+                           is_fallback=True, cost="oops")
+        self.assertEqual(self.ledger.jev_calibration_report()["jev_evals"], 2)
+        self.assertEqual(self.ledger.cost_report()["jev"]["calls"], 0)
 
 
 if __name__ == "__main__":

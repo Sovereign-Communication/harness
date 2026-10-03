@@ -18,8 +18,11 @@ from typing import (Any, Callable, Dict, Iterable, List, Optional, Sequence,
 
 from .errors import HarnessError
 from .config import HARD_MAX_COST
-from .jev import (JevEvaluationResult, JevEvaluator, _digest, jev_cost,
-                  triage_question_pack)
+from .jev import (ACTIVE_SITE, BREAKER_COOLDOWN_SECONDS,
+                  BREAKER_FAILURE_THRESHOLD, CircuitBreakers,
+                  JevEvaluationResult, JevEvaluator, _digest, jev_cost,
+                  plan_question_pack, triage_question_pack)
+from .output import eprint
 from .route_pack import (ROUTE_QUERY_SITE, choose_rung_for_tier, fallback_route,
                          route_combo,
                          route_question_pack as route_query_pack,
@@ -91,34 +94,32 @@ from .jev_packs import (
 
 JEV_MAX_INPUT_TOKENS = 1024
 
-# Fallback reasons the transport layer reports when a keyed call could not
-# reach (or be answered by) TypeSafe. Consecutive ones open the site breaker.
-TRANSPORT_FAILURE_REASONS = frozenset(("transport_failure", "http_fallback"))
 # Safety net: a fallback row never lands without a reason. Sites name their
 # own; this value only ever appears if a new path forgets to.
 UNATTRIBUTED_FALLBACK = "unattributed_fallback"
-# Consecutive transport failures that open a site's breaker, and how long it
-# stays open before one probe call is allowed through.
-BREAKER_FAILURE_THRESHOLD = 3
-BREAKER_COOLDOWN_SECONDS = 30.0
 # Fallback ledger-row bounds: one row each time an identical (site, reason,
 # state) fallback count reaches a power of two, and past this many distinct
 # states per (site, reason) only power-of-two totals are written.
 FALLBACK_DISTINCT_ROW_CAP = 64
 FALLBACK_TRACKED_KEYS = 4096
 FANOUT_MAX_WORKERS = 4
+# A live route choice below this confidence carries no usable signal: it is
+# discarded (billed) rather than honored by the confidence-aware acceptance.
+LOW_CONFIDENCE_FLOOR = 0.05
 
 
-class JevUnavailable(HarnessError):
-    """A keyed Jev call was refused locally before dispatch (breaker open)."""
+class JevSettlementError(HarnessError):
+    """The call was dispatched and billed, but settling it failed (ceiling).
 
-    def __init__(self, message: str, fallback_reason: str = "circuit_open"):
-        super().__init__(message)
-        self.fallback_reason = fallback_reason
+    Distinct from a pre-dispatch refusal so ledgers and fallbacks never label
+    post-dispatch spend as ``preflight_refused``.
+    """
+
+    fallback_reason = "settlement_overrun"
 
 
 def _refusal_reason(exc: Exception) -> str:
-    """The ``fallback_reason`` for a pre-dispatch HarnessError."""
+    """The ``fallback_reason`` for a HarnessError raised around a call."""
     return getattr(exc, "fallback_reason", None) or "preflight_refused"
 
 
@@ -177,57 +178,50 @@ class JevPolicy:
     """Coordinate typed Jev calls, spend, ledger evidence, and envelopes."""
 
     def __init__(self, settings, *, transport=None, governor=None, ledger=None,
-                 evaluator=None, breaker_threshold: int = BREAKER_FAILURE_THRESHOLD,
-                 breaker_cooldown: float = BREAKER_COOLDOWN_SECONDS,
-                 clock: Callable[[], float] = time.monotonic):
+                 evaluator=None, breaker_threshold: Optional[int] = None,
+                 breaker_cooldown: Optional[float] = None,
+                 clock: Optional[Callable[[], float]] = None):
         if settings is None:
             raise HarnessError("Jev policy requires settings")
         self.settings = settings
         self.transport = transport
         self.governor = governor
         self.ledger = ledger
-        self._clock = clock
-        self._breaker_threshold = max(1, int(breaker_threshold))
-        self._breaker_cooldown = float(breaker_cooldown)
-        # site -> {"failures": consecutive count, "opened_at": float|None}
-        self._breakers: Dict[str, Dict[str, Any]] = {}
-        self._fallback_counts: "OrderedDict[Tuple[str, str, str], int]" = OrderedDict()
+        # (site, reason, state) -> [calls, unwritten]; (site, reason) ->
+        # [calls, distinct states, unwritten once capped].
+        self._fallback_counts: "OrderedDict[Tuple[str, str, str], List[int]]" = OrderedDict()
         self._fallback_site_counts: Dict[Tuple[str, str], List[int]] = {}
         self._state_lock = threading.Lock()
+        self._tl = threading.local()
+        # The breaker board is shared process-wide on the real transport
+        # (policies are built per request); explicit knobs get a private one.
+        breakers = None
+        if (breaker_threshold is not None or breaker_cooldown is not None
+                or clock is not None):
+            breakers = CircuitBreakers(
+                BREAKER_FAILURE_THRESHOLD if breaker_threshold is None
+                else breaker_threshold,
+                BREAKER_COOLDOWN_SECONDS if breaker_cooldown is None
+                else breaker_cooldown,
+                clock or time.monotonic)
         explicitly_disabled = bool(getattr(settings, "jev_disabled", False))
         self.evaluator = (JevEvaluator(
             api_key=None,
             endpoint=getattr(settings, "jev_endpoint", None),
             transport=transport,
             settings=settings,
+            breakers=breakers,
         ) if explicitly_disabled else evaluator or JevEvaluator(
             api_key=getattr(settings, "jev_api_key", None),
             endpoint=getattr(settings, "jev_endpoint", None),
             transport=transport,
             settings=settings,
+            breakers=breakers,
         ))
 
     @property
     def keyed(self) -> bool:
         return bool(self.evaluator.api_key)
-
-    def _breaker_refusal(self, site: str) -> Optional[str]:
-        """Return a refusal message while ``site``'s breaker is open.
-
-        After the cooldown the breaker is half-open: exactly the next call is
-        let through as a probe (a success closes it, a failure re-opens it).
-        """
-        with self._state_lock:
-            state = self._breakers.get(site)
-            if not state or state["opened_at"] is None:
-                return None
-            if self._clock() - state["opened_at"] >= self._breaker_cooldown:
-                # Half-open: allow one probe and re-arm the timer so a second
-                # concurrent caller is still refused until the probe settles.
-                state["opened_at"] = self._clock()
-                return None
-            return ("Jev circuit open for site '{}' after {} consecutive "
-                    "transport failures".format(site, state["failures"]))
 
     def available(self, site: str,
                   max_input_tokens: int = JEV_MAX_INPUT_TOKENS) -> bool:
@@ -248,66 +242,84 @@ class JevPolicy:
                     return False
             except (TypeError, ValueError, HarnessError):
                 pass
-        with self._state_lock:
-            state = self._breakers.get(site)
-            if state and state["opened_at"] is not None:
-                return (self._clock() - state["opened_at"]
-                        >= self._breaker_cooldown)
-        return True
+        breakers = getattr(self.evaluator, "breakers", None)
+        return breakers is None or breakers.would_allow(site)
 
-    def _note_outcome(self, site: str, result: JevEvaluationResult) -> None:
-        """Feed one settled keyed call into the site's circuit breaker."""
-        if not self.keyed or result.cache_hit:
-            return
-        failed = (result.fallback_reason in TRANSPORT_FAILURE_REASONS
-                  and float(result.cost or 0.0) == 0.0)
-        succeeded = (not result.is_fallback) or float(result.cost or 0.0) > 0.0
-        if not failed and not succeeded:
-            return
-        with self._state_lock:
-            state = self._breakers.setdefault(
-                site, {"failures": 0, "opened_at": None})
-            if succeeded:
-                state["failures"] = 0
-                state["opened_at"] = None
-                return
-            state["failures"] += 1
-            if state["failures"] >= self._breaker_threshold:
-                state["opened_at"] = self._clock()
-
-    def _dedupe_fallback(self, result: JevEvaluationResult,
-                         site: str) -> Tuple[bool, int]:
-        """Return ``(write_row, repeat_count)`` for a free fallback.
+    def _dedupe(self, site: str, reason: str, state_hash: str) -> Tuple[bool, int]:
+        """Return ``(write_row, repeat_count)`` for one free fallback/refusal.
 
         A loop that keeps asking the same unanswerable question must not
         append a ledger row per call. The first occurrence of each
         (site, reason, state) is written, then only counts 2, 4, 8, ...; past
         ``FALLBACK_DISTINCT_ROW_CAP`` distinct states for one (site, reason)
-        the same power-of-two rule applies to the site total. Billed or
-        discarded fallbacks are never deduped: real spend always gets a row.
+        the same power-of-two rule applies to the site total. A written row's
+        ``repeat_count`` is the number of calls it stands for since the last
+        row, so summing rows is the true total up to the last write (see
+        :meth:`flush_fallbacks` for the unwritten tail).
         """
+        key = (site, reason, state_hash)
+        with self._state_lock:
+            entry = self._fallback_counts.pop(key, None) or [0, 0]
+            self._fallback_counts[key] = entry
+            while len(self._fallback_counts) > FALLBACK_TRACKED_KEYS:
+                self._fallback_counts.popitem(last=False)
+            totals = self._fallback_site_counts.setdefault(key[:2], [0, 0, 0])
+            entry[0] += 1
+            if entry[0] == 1:
+                totals[1] += 1  # a new distinct state for this site/reason
+            totals[0] += 1
+            if totals[1] <= FALLBACK_DISTINCT_ROW_CAP:
+                entry[1] += 1
+                write = _is_power_of_two(entry[0])
+                repeat = entry[1] if write else 0
+                if write:
+                    entry[1] = 0
+            else:
+                totals[2] += 1
+                write = _is_power_of_two(totals[0])
+                repeat = totals[2] if write else 0
+                if write:
+                    totals[2] = 0
+        return write, max(1, repeat)
+
+    def _dedupe_fallback(self, result: JevEvaluationResult,
+                         site: str) -> Tuple[bool, int]:
+        """Billed or discarded fallbacks are never deduped: real spend always
+        gets its own row."""
         if (not result.is_fallback or result.discarded
                 or float(result.cost or 0.0) > 0.0 or result.input_tokens):
             return True, 1
         state_hash = result.state_hash or _digest(
             result.verdict, result.answers, result.reasons)
-        key = (site, result.fallback_reason or UNATTRIBUTED_FALLBACK,
-               state_hash)
+        return self._dedupe(
+            site, result.fallback_reason or UNATTRIBUTED_FALLBACK, state_hash)
+
+    def flush_fallbacks(self) -> int:
+        """Write one row per still-unwritten deduped repeat run; return how many.
+
+        Dedupe lags between powers of two. A caller that wants an exact total
+        (end of a CLI run, a report) flushes first.
+        """
         with self._state_lock:
-            count = self._fallback_counts.pop(key, 0) + 1
-            self._fallback_counts[key] = count
-            while len(self._fallback_counts) > FALLBACK_TRACKED_KEYS:
-                self._fallback_counts.popitem(last=False)
-            site_key = key[:2]
-            totals = self._fallback_site_counts.setdefault(site_key, [0, 0])
-            if count == 1:
-                totals[1] += 1  # a new distinct state for this site/reason
-            totals[0] += 1
-            site_total, distinct = totals
-        write = _is_power_of_two(count)
-        if write and distinct > FALLBACK_DISTINCT_ROW_CAP:
-            write = _is_power_of_two(site_total)
-        return write, count
+            pending = []
+            for (site, reason, _state), entry in self._fallback_counts.items():
+                if entry[1] > 0:
+                    pending.append((site, reason, entry[1]))
+                    entry[1] = 0
+            for (site, reason), totals in self._fallback_site_counts.items():
+                if totals[2] > 0:
+                    pending.append((site, reason, totals[2]))
+                    totals[2] = 0
+        if self.ledger is not None:
+            for site, reason, repeat in pending:
+                self.ledger.append(
+                    "jev_eval", site=site, model=self.evaluator.model,
+                    verdict="fail", supported=0.0, confidence=0.0,
+                    input_tokens=0, output_tokens=0, cost=0.0,
+                    is_fallback=True, fallback_reason=reason,
+                    repeat_count=repeat, discarded=False,
+                    note="flush of deduped fallback repeats")
+        return len(pending)
 
     def fan_out(self, jobs: Sequence[Tuple], *,
                 max_workers: int = FANOUT_MAX_WORKERS) -> List[Any]:
@@ -316,16 +328,17 @@ class JevPolicy:
         ``jobs`` is a sequence of ``(site, call)`` or ``(site, call,
         on_failure)``; ``call`` takes no arguments and returns whatever the
         site's ``evaluate_*`` returns. Results come back in ``jobs`` order no
-        matter which finishes first. Each question fails closed on its own: a
-        call that raises yields a local fallback (``fallback_reason=
-        "fanout_exception"``, one ledger row, never an exception to the
-        caller) and does not disturb its siblings. ``on_failure(result,
-        structural)`` reshapes that pair when a site returns something other
-        than ``(result, structural)``. An unkeyed policy, one job, or
-        ``max_workers <= 1`` runs inline: threads only pay off when requests
-        actually leave the machine. Concurrency stays bounded by
-        ``max_workers`` and every call still reserves/settles through the
-        shared governor.
+        matter which finishes first. On the threaded (keyed) path each
+        question fails closed on its own: a call that raises yields a local
+        fallback (``fallback_reason="fanout_exception"``, one ledger row) and
+        does not disturb its siblings; ``on_failure(result, structural)``
+        reshapes that pair when a site returns something other than
+        ``(result, structural)``. An unkeyed policy, one job, or
+        ``max_workers <= 1`` runs inline exactly like sequential calls: a bug
+        propagates instead of being swallowed. Either way a reservation the
+        failing call still holds is released, never leaked. Concurrency stays
+        bounded by ``max_workers`` and every call still reserves/settles
+        through the shared governor.
         """
         jobs = list(jobs)
         workers = min(int(max_workers), len(jobs), 8)
@@ -339,32 +352,63 @@ class JevPolicy:
                 fallback_reason="fanout_exception")
             try:
                 structural = self._account(result, site=site)
-            except Exception:
+            except Exception as ledger_exc:
+                eprint("[jev] fan-out failure at {!r} was not ledgered: {}: {}"
+                       .format(site, type(ledger_exc).__name__, ledger_exc))
                 structural = self._structural(result, site)
             if len(job) > 2 and callable(job[2]):
                 return job[2](result, structural)
             return result, structural
 
-        def run(job):
+        def run(job, *, fail_closed: bool):
+            self._tl.token = None
             try:
                 return job[1]()
-            except Exception as exc:  # fail closed per question
+            except BaseException as exc:
+                self._release_reservation()
+                if not fail_closed or not isinstance(exc, Exception):
+                    raise
                 return settle_failure(job, exc)
 
         if workers <= 1 or not self.keyed:
-            return [run(job) for job in jobs]
+            return [run(job, fail_closed=False) for job in jobs]
         with ThreadPoolExecutor(max_workers=workers,
                                 thread_name_prefix="jev-fanout") as pool:
-            futures = [pool.submit(run, job) for job in jobs]
+            futures = [pool.submit(run, job, fail_closed=True) for job in jobs]
             return [future.result() for future in futures]
 
-    def _preflight(self, *, site: str, max_input_tokens: int):
-        """Reserve one bounded Jev call before its network dispatch."""
+    def _release_reservation(self) -> None:
+        """Reconcile (at zero) this thread's reservation if a call died holding it."""
+        token = getattr(self._tl, "token", None)
+        self._tl.token = None
+        if token is not None and self.governor is not None:
+            try:
+                self.governor.reconcile(token, 0.0)
+            except HarnessError:
+                pass  # already settled on the call's own refusal path
+
+    def _preflight(self, *, site: str, max_input_tokens: int, probe=None):
+        """Reserve one bounded Jev call before its network dispatch.
+
+        ``probe=(state, questions)`` lets a call the cache can answer skip the
+        reservation entirely: a free hit is never refused for budget. Also
+        names ``site`` for the dispatcher's per-site circuit breaker.
+        """
         if not self.keyed:
             return None
-        refusal = self._breaker_refusal(site)
-        if refusal is not None:
-            raise JevUnavailable(refusal)
+        ACTIVE_SITE.set(site)
+        peek = getattr(self.evaluator, "peek", None)
+        if probe is not None and callable(peek):
+            try:
+                if peek(*probe):
+                    return None
+            except Exception:
+                pass
+        token = self._reserve(site, max_input_tokens)
+        self._tl.token = token
+        return token
+
+    def _reserve(self, site: str, max_input_tokens: int):
         if self.governor is None:
             raise HarnessError(
                 "keyed Jev evaluation requires the shared spend governor")
@@ -453,19 +497,23 @@ class JevPolicy:
     def _record_refusal(self, reason: str, *, site: str,
                         task_id: Optional[str] = None,
                         node_id: Optional[str] = None,
-                        event_metadata: Optional[Dict[str, Any]] = None):
+                        event_metadata: Optional[Dict[str, Any]] = None,
+                        code: str = "preflight_refused"):
         result = JevEvaluationResult(
             "fail", 0.0, 0.0, {}, [reason], cost=0.0,
             input_tokens=0, output_tokens=0, is_fallback=False,
             model=self.evaluator.model,
         )
         structural = self._structural(result, site)
-        if self.ledger is not None:
-            metadata = event_metadata or {}
+        write_row, repeat = self._dedupe(site, "refusal:" + code, _digest(reason))
+        if self.ledger is not None and write_row:
+            metadata = dict(event_metadata or {})
+            if repeat > 1:
+                metadata["repeat_count"] = repeat
             self.ledger.append(
                 "jev_refusal", task_id=task_id, node_id=node_id, site=site,
                 model=metadata.get("observed_model", result.model),
-                reason=reason, cost=0.0,
+                reason=reason, reason_code=code, cost=0.0,
                 input_tokens=0, is_fallback=False,
                 **metadata,
             )
@@ -496,9 +544,12 @@ class JevPolicy:
                 self.governor.record_actual(cost, result.model or "jev")
         except Exception as exc:
             if not preserve_event_on_settlement_error:
+                if isinstance(exc, HarnessError):
+                    raise JevSettlementError(str(exc)) from exc
                 raise
             settlement_error = "{}: {}".format(type(exc).__name__, exc)
-        self._note_outcome(site, result)
+        if getattr(self._tl, "token", None) is reservation:
+            self._tl.token = None
         structural = self._structural(result, site)
         # Mutated in place on purpose: callers read ``result_state`` back out
         # of the dict they passed to learn that settlement failed.
@@ -524,6 +575,7 @@ class JevPolicy:
                 input_tokens=result.input_tokens, output_tokens=result.output_tokens,
                 cost=cost, is_fallback=result.is_fallback,
                 fallback_reason=result.fallback_reason,
+                discarded=bool(result.discarded),
                 **metadata,
             )
         return structural
@@ -536,10 +588,11 @@ class JevPolicy:
         """Run local mechanics first, then the answerable semantic pack."""
         reservation = None
         try:
-            def reserve_for_evaluator():
+            def reserve_for_evaluator(state=None):
                 nonlocal reservation
                 reservation = self._preflight(
-                    site=site, max_input_tokens=max_input_tokens)
+                    site=site, max_input_tokens=max_input_tokens,
+                    probe=None if state is None else (state, None))
 
             result = self.evaluator.verify_diff_mechanics(
                 diff, instruction, file_path, candidate=candidate,
@@ -558,7 +611,7 @@ class JevPolicy:
                 except HarnessError:
                     pass
             return self._record_refusal(
-                str(exc), site=site, task_id=task_id, node_id=node_id)
+                str(exc), code=_refusal_reason(exc), site=site, task_id=task_id, node_id=node_id)
 
     def evaluate_hourglass_stage(
             self, dimension: str, state: Any, *,
@@ -724,7 +777,8 @@ class JevPolicy:
 
         reservation = None
         try:
-            reservation = self._preflight(site=site, max_input_tokens=max_input_tokens)
+            reservation = self._preflight(site=site, max_input_tokens=max_input_tokens,
+                probe=(state, questions))
             raw = self.evaluator.evaluate(state, questions)
             answers = raw.answers if isinstance(raw.answers, dict) else {}
             values = read(answers)
@@ -740,7 +794,7 @@ class JevPolicy:
                 cost=raw.cost, input_tokens=raw.input_tokens,
                 output_tokens=raw.output_tokens,
                 is_fallback=bool(raw.is_fallback), model=raw.model,
-                discarded=bool(raw.discarded))
+                discarded=bool(raw.discarded), cache_hit=raw.cache_hit)
             settled = self._account(
                 result, site=site, task_id=task_id, node_id=node_id,
                 reservation=reservation,
@@ -831,6 +885,7 @@ class JevPolicy:
                     # this distinction so reported provider usage is settled.
                     is_fallback=bool(result.is_fallback),
                     model=result.model,
+                    discarded=bool(result.discarded),
                     fallback_reason=result.fallback_reason,
                 )
                 return fallback, values, False
@@ -847,7 +902,7 @@ class JevPolicy:
                 min(values.values()), normalized, list(result.reasons or []),
                 cost=result.cost, input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens, is_fallback=False,
-                model=result.model,
+                model=result.model, cache_hit=result.cache_hit,
             ), values, True
 
         if not self.keyed:
@@ -875,7 +930,8 @@ class JevPolicy:
         reservation = None
         dispatched = False
         try:
-            reservation = self._preflight(site=site, max_input_tokens=max_input_tokens)
+            reservation = self._preflight(site=site, max_input_tokens=max_input_tokens,
+                probe=(state, questions))
             dispatched = True
             raw_result = self.evaluator.evaluate(state, questions)
             result, values, live = normalize(raw_result)
@@ -902,7 +958,7 @@ class JevPolicy:
                 except HarnessError:
                     pass
             refusal, structural = self._record_refusal(
-                str(exc), site=site, task_id=task_id)
+                str(exc), code=_refusal_reason(exc), site=site, task_id=task_id)
             refusal = JevEvaluationResult(
                 "fail", 0.0, 0.0,
                 {key: None for key in questions} | {"pack_version": ANSWER_PACK_VERSION},
@@ -942,7 +998,8 @@ class JevPolicy:
         """Return a bounded route choice plus iteration signal for Pillar 1."""
         reservation = None
         try:
-            reservation = self._preflight(site=site, max_input_tokens=JEV_MAX_INPUT_TOKENS)
+            reservation = self._preflight(site=site, max_input_tokens=JEV_MAX_INPUT_TOKENS,
+                probe=({"prompt": prompt or "", "target_files": list(target_files or [])}, triage_question_pack()))
             result = self.evaluator.evaluate(
                 {"prompt": prompt or "", "target_files": list(target_files or [])},
                 triage_question_pack())
@@ -975,7 +1032,7 @@ class JevPolicy:
                 {"route": route, "requires_iteration": iterative}, [str(exc)],
                 is_fallback=True, model=self.evaluator.model,
                 fallback_reason=_refusal_reason(exc))
-            return fallback, self._structural(fallback, site)
+            return fallback, self._account(fallback, site=site, task_id=task_id)
 
     def evaluate_escalation_decision(
             self, failure_context: str, *, site: str = "escalation-decision",
@@ -1002,7 +1059,8 @@ class JevPolicy:
         reservation = None
         try:
             reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
+                site=site, max_input_tokens=max_input_tokens,
+                probe=({"context": failure_context or ""}, escalation_decision_pack()))
             result = self.evaluator.evaluate(
                 {"context": failure_context or ""},
                 escalation_decision_pack())
@@ -1017,7 +1075,7 @@ class JevPolicy:
                 except HarnessError:
                     pass
             return self._record_refusal(
-                str(exc), site=site, task_id=task_id)
+                str(exc), code=_refusal_reason(exc), site=site, task_id=task_id)
 
     def evaluate_decision(self, action: str, end_state: str, context: str = "",
                           *, site: str = DECISION_SITE,
@@ -1061,7 +1119,8 @@ class JevPolicy:
         reservation = None
         try:
             reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
+                site=site, max_input_tokens=max_input_tokens,
+                probe=({"action": action or "", "end_state": end_state or "", "context": context or ""}, decision_question_pack()))
             result = self.evaluator.evaluate(
                 {"action": action or "", "end_state": end_state or "",
                  "context": context or ""},
@@ -1091,7 +1150,7 @@ class JevPolicy:
                 except HarnessError:
                     pass
             result, structural = self._record_refusal(
-                str(exc), site=site, task_id=task_id, node_id=node_id)
+                str(exc), code=_refusal_reason(exc), site=site, task_id=task_id, node_id=node_id)
             verdict = compose_decision_verdict(
                 result, threshold=threshold, margin=margin)
             verdict["reasons"] = (["evaluation refused: " + str(exc)]
@@ -1105,7 +1164,10 @@ class JevPolicy:
         reservation = None
         try:
             reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
+                site=site, max_input_tokens=max_input_tokens,
+                probe=({"prompt": prompt or "",
+                        "target_files": list(target_files or [])},
+                       plan_question_pack()))
             result = self.evaluator.evaluate_plan_requirements(
                 prompt, target_files)
             structural = self._account(
@@ -1121,7 +1183,7 @@ class JevPolicy:
                 except HarnessError:
                     pass
             return self._record_refusal(
-                str(exc), site=site, task_id=task_id, node_id=node_id)
+                str(exc), code=_refusal_reason(exc), site=site, task_id=task_id, node_id=node_id)
 
     def evaluate_route(self, prompt: str, target_files=None, *,
                        site: str = "route", task_id: Optional[str] = None,
@@ -1135,7 +1197,8 @@ class JevPolicy:
         reservation = None
         try:
             reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
+                site=site, max_input_tokens=max_input_tokens,
+                probe=({"prompt": prompt or "", "target_files": list(target_files or [])}, route_question_pack()))
             result = self.evaluator.evaluate(
                 {"prompt": prompt or "", "target_files": list(target_files or [])},
                 route_question_pack())
@@ -1195,7 +1258,7 @@ class JevPolicy:
                 "pass", 0.0, 1.0, answers, [str(exc)],
                 is_fallback=True, model=self.evaluator.model,
                 fallback_reason=_refusal_reason(exc))
-            return fallback, self._structural(fallback, site)
+            return fallback, self._account(fallback, site=site, task_id=task_id)
 
     def evaluate_file_triage(self, goal: str, candidates: Sequence[str],
                              known_files: Optional[Sequence[str]] = None, *,
@@ -1222,7 +1285,8 @@ class JevPolicy:
         reservation = None
         try:
             reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
+                site=site, max_input_tokens=max_input_tokens,
+                probe=({"goal": goal or "", "files": list(scoped)}, file_relevance_question_pack(scoped)))
             result = self.evaluator.evaluate(
                 {"goal": goal or "", "files": list(scoped)},
                 file_relevance_question_pack(scoped))
@@ -1268,7 +1332,7 @@ class JevPolicy:
                 {"files": picked, "heuristic": True}, [str(exc)],
                 is_fallback=True, model=self.evaluator.model,
                 fallback_reason=_refusal_reason(exc))
-            structural = self._structural(fallback, site)
+            structural = self._account(fallback, site=site, task_id=task_id)
             structural["files"] = picked
             return fallback, structural
 
@@ -1297,7 +1361,11 @@ class JevPolicy:
         reservation = None
         try:
             reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
+                site=site, max_input_tokens=max_input_tokens,
+                probe=({"claims": [{"id": c["id"], "text": c["text"]}
+                                   for c in normalized],
+                        "evidence": (source_context or "")[:4000]},
+                       claim_support_question_pack(len(normalized))))
             result = self.evaluator.evaluate(
                 {
                     "claims": [{"id": c["id"], "text": c["text"]}
@@ -1339,7 +1407,8 @@ class JevPolicy:
                     {"claim_flags": flags, "skipped": False}, result.reasons,
                     cost=result.cost, input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
-                    is_fallback=False, model=result.model)
+                    is_fallback=False, model=result.model,
+                    cache_hit=result.cache_hit)
             structural = self._account(
                 result, site=site, task_id=task_id, reservation=reservation)
             structural["claim_flags"] = flags
@@ -1358,7 +1427,7 @@ class JevPolicy:
                 {"claim_flags": flags, "skipped": False}, [str(exc)],
                 is_fallback=True, model=self.evaluator.model,
                 fallback_reason=_refusal_reason(exc))
-            structural = self._structural(fallback, site)
+            structural = self._account(fallback, site=site, task_id=task_id)
             structural["claim_flags"] = flags
             structural["skipped"] = False
             return fallback, structural
@@ -1420,7 +1489,11 @@ class JevPolicy:
         dispatched = False
         try:
             reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
+                site=site, max_input_tokens=max_input_tokens,
+                probe=({"goal": goal or "",
+                        "execution_state": (state_summary or "")[:4000],
+                        "named_artifacts": artifacts_payload},
+                       completion_question_pack()))
             dispatched = True
             result = self.evaluator.evaluate(
                 {
@@ -1458,7 +1531,8 @@ class JevPolicy:
                     answers, result.reasons,
                     cost=result.cost, input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
-                    is_fallback=False, model=result.model)
+                    is_fallback=False, model=result.model,
+                    cache_hit=result.cache_hit)
                 cannot = present_p < 0.5 or achieved_p < 0.5
             structural = self._account(
                 result, site=site, task_id=task_id, reservation=reservation)
@@ -1479,8 +1553,19 @@ class JevPolicy:
             fallback = JevEvaluationResult(
                 "pass", 0.0, 0.5, answers, [str(exc)],
                 is_fallback=dispatched, model=self.evaluator.model,
-                fallback_reason=("transport_failure" if dispatched else None))
-            structural = self._structural(fallback, site)
+                fallback_reason=(
+                    ("settlement_overrun"
+                     if isinstance(exc, JevSettlementError)
+                     else "transport_failure") if dispatched else None))
+            if dispatched:
+                structural = self._account(
+                    fallback, site=site, task_id=task_id)
+            else:
+                # Refused before dispatch: leave (deduped) ledger evidence.
+                self._record_refusal(
+                    str(exc), code=_refusal_reason(exc), site=site,
+                    task_id=task_id)
+                structural = self._structural(fallback, site)
             structural["cannot_complete"] = True
             structural["missing_artifacts"] = missing
             structural["reason"] = str(exc)
@@ -1698,7 +1783,8 @@ class JevPolicy:
         reservation = None
         try:
             reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
+                site=site, max_input_tokens=max_input_tokens,
+                probe=(payload, questions))
             result = self.evaluator.evaluate(payload, questions)
             answers = dict(result.answers or {}) if isinstance(result.answers, dict) else {}
             is_fallback = bool(result.is_fallback)
@@ -1745,6 +1831,8 @@ class JevPolicy:
                 output_tokens=result.output_tokens,
                 is_fallback=is_fallback,
                 model=result.model,
+                discarded=result.discarded,
+                cache_hit=result.cache_hit,
                 fallback_reason=result.fallback_reason)
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id,
@@ -1772,7 +1860,7 @@ class JevPolicy:
                 "fail", 0.0, 0.0, {}, determination["reasons"],
                 is_fallback=True, model=self.evaluator.model,
                 fallback_reason=_refusal_reason(exc))
-            structural = self._structural(fallback, site)
+            structural = self._account(fallback, site=site, task_id=task_id)
             structural["determination"] = determination
             structural["reason"] = str(exc)
             return fallback, structural, determination
@@ -1910,7 +1998,8 @@ class JevPolicy:
         try:
             questions = issue_sort_question_pack(pack_doc)
             reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
+                site=site, max_input_tokens=max_input_tokens,
+                probe=({"issue": issue_text, "pack_id": pack_doc["id"]}, questions))
             result = self.evaluator.evaluate(
                 {"issue": issue_text, "pack_id": pack_doc["id"]},
                 questions)
@@ -2062,7 +2151,8 @@ class JevPolicy:
         try:
             questions = log_factor_question_pack(pack_doc)
             reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
+                site=site, max_input_tokens=max_input_tokens,
+                probe=({"item": text, "pack_id": pack_doc["id"]}, questions))
             result = self.evaluator.evaluate(
                 {"item": text, "pack_id": pack_doc["id"]}, questions)
         except HarnessError as exc:
@@ -2237,9 +2327,10 @@ class JevPolicy:
         reservation = None
         try:
             questions = repo_summary_question_pack(pack_doc)
-            reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
             payload = state if isinstance(state, dict) else {"item": str(state)}
+            reservation = self._preflight(
+                site=site, max_input_tokens=max_input_tokens,
+                probe=(payload, questions))
             result = self.evaluator.evaluate(payload, questions)
         except HarnessError as exc:
             return fallback_judgment([str(exc)], reservation=reservation,
@@ -2418,7 +2509,8 @@ class JevPolicy:
         try:
             questions = route_query_pack(pack_doc)
             reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
+                site=site, max_input_tokens=max_input_tokens,
+                probe=({"goal": goal_text, "pack_id": pack_doc["id"]}, questions))
             result = self.evaluator.evaluate(
                 {"goal": goal_text, "pack_id": pack_doc["id"]},
                 questions)
@@ -2450,7 +2542,7 @@ class JevPolicy:
         min_confidence = float(getattr(self.evaluator, "min_confidence", 0.70))
         live_confidence = float(result.confidence or 0.0)
         if (in_ladder and result.verdict == "fail"
-                and live_confidence < min_confidence):
+                and LOW_CONFIDENCE_FLOOR <= live_confidence < min_confidence):
             # Confidence-aware acceptance: a declared rung chosen with low
             # confidence is still a real, in-vocabulary answer. Honor it only
             # when escalation-safe -- never cheaper than the heuristic floor.
@@ -2488,6 +2580,11 @@ class JevPolicy:
             reasons = reasons + [
                 f"out-of-ladder choice refused: {choice!r}"]
             default_reason = "route_out_of_vocabulary"
+        elif in_ladder and live_confidence < LOW_CONFIDENCE_FLOOR:
+            default_reason = "low_confidence"
+            reasons = reasons + [
+                f"live confidence {live_confidence:.2f} below the "
+                f"{LOW_CONFIDENCE_FLOOR:.2f} floor; choice discarded"]
         elif in_ladder:
             default_reason = "below_floor_unsatisfiable"
         else:
@@ -2612,12 +2709,13 @@ class JevPolicy:
         reservation = None
         try:
             questions = completion_bar_question_pack(pack_doc)
-            reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
             payload = {
                 "phase": state.get("phase") if isinstance(state, dict) else None,
                 "evidence": text, "pack_id": pack_doc["id"],
             }
+            reservation = self._preflight(
+                site=site, max_input_tokens=max_input_tokens,
+                probe=(payload, questions))
             result = self.evaluator.evaluate(payload, questions)
         except HarnessError as exc:
             return fallback_judgment([str(exc)], reservation=reservation,
@@ -2820,8 +2918,10 @@ class JevPolicy:
         text = self._audit_dimension_text(dimension_evidence)
         reservation = None
         try:
-            reservation = self._preflight(site=site, max_input_tokens=JEV_MAX_INPUT_TOKENS)
             payload = {"evidence": text, "pack_id": pack_doc["id"]}
+            reservation = self._preflight(
+                site=site, max_input_tokens=JEV_MAX_INPUT_TOKENS,
+                probe=(payload, questions))
             result = self.evaluator.evaluate(payload, questions)
         except HarnessError as exc:
             return fallback_judgment(

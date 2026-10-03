@@ -22,6 +22,27 @@ def _as_tokens(value):
         return 0
 
 
+def _jev_row_billable(entry, in_tok):
+    """Does a `jev_eval` row count as billed Jev spend?
+
+    Billed is billed. A row bills when it carried tokens and was either a real
+    keyed answer or a fallback the governor actually settled money for -- a
+    fallback that paid for an answer nobody kept still cost real dollars, so
+    hiding it would understate spend and overstate savings.
+
+    Single source of truth on purpose: the month-scoped Jev credit and the
+    window-scoped per-event totals read the same rows and must agree.
+    """
+    if in_tok <= 0:
+        return False
+    if not entry.get("is_fallback"):
+        return True
+    try:
+        return float(entry.get("cost") or 0.0) > 0.0
+    except (TypeError, ValueError):
+        return False
+
+
 class LedgerAnalytics:
     """Mixin: read-only ledger analytics (see module docstring)."""
 
@@ -333,14 +354,25 @@ class LedgerAnalytics:
         verify_by_task = defaultdict(list)
         site_counts = defaultdict(int)
         fallback_evals = 0
+        cache_hit_evals = 0
         total_evals = 0
         for e in events:
             ev = e.get("event")
             if ev == "jev_eval":
-                total_evals += 1
-                site_counts[e.get("site") or "?"] += 1
+                # A deduped fallback row stands for ``repeat_count`` calls.
+                try:
+                    weight = max(1, int(e.get("repeat_count") or 1))
+                except (TypeError, ValueError):
+                    weight = 1
+                total_evals += weight
+                site_counts[e.get("site") or "?"] += weight
                 if e.get("is_fallback"):
-                    fallback_evals += 1
+                    fallback_evals += weight
+                if e.get("cache_hit"):
+                    # A replayed answer is not a fresh keyed judgment: it
+                    # must not inflate keyed counts or confidence buckets.
+                    cache_hit_evals += 1
+                    continue
                 tid = e.get("task_id")
                 if tid is None:
                     continue
@@ -419,7 +451,8 @@ class LedgerAnalytics:
         return {
             "jev_evals": total_evals,
             "jev_fallback_evals": fallback_evals,
-            "jev_keyed_evals": total_evals - fallback_evals,
+            "jev_cache_hit_evals": cache_hit_evals,
+            "jev_keyed_evals": total_evals - fallback_evals - cache_hit_evals,
             "by_site": dict(site_counts),
             "tasks_with_jev": len(jev_by_task),
             "tasks_joined_with_verify": joined_tasks,
@@ -554,7 +587,7 @@ class LedgerAnalytics:
             if (dt.year, dt.month) != month_key:
                 continue
             in_tok = _as_tokens(e.get("input_tokens"))
-            if e.get("is_fallback") or in_tok <= 0:
+            if not _jev_row_billable(e, in_tok):
                 continue
             jev_calls += 1
             jev_input_tokens += in_tok
@@ -568,7 +601,7 @@ class LedgerAnalytics:
 
             if is_jev:
                 in_tok = _as_tokens(e.get("input_tokens"))
-                if not e.get("is_fallback") and in_tok > 0:
+                if _jev_row_billable(e, in_tok):
                     cost_val = jev_cost(in_tok)
                 else:
                     cost_val = 0.0
