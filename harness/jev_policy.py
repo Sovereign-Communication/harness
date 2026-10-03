@@ -18,7 +18,7 @@ from typing import (Any, Callable, Dict, Iterable, List, Optional, Sequence,
 
 from .errors import HarnessError
 from .config import HARD_MAX_COST
-from .jev import (ACTIVE_RESERVER, ACTIVE_SITE, BREAKER_COOLDOWN_SECONDS,
+from .jev import (ACTIVE_GUARD, ACTIVE_RESERVER, ACTIVE_SITE, BREAKER_COOLDOWN_SECONDS,
                   BREAKER_FAILURE_THRESHOLD, CircuitBreakers,
                   JevEvaluationResult, JevEvaluator, _digest, jev_cost,
                   triage_question_pack)
@@ -118,6 +118,14 @@ class _Reservation:
         self.token = None
         self.acquired = False
         self.reserved = False
+        self.used = False
+
+    def consume(self) -> bool:
+        """True exactly once, and only after a successful reservation."""
+        if self.reserved and not self.used:
+            self.used = True
+            return True
+        return False
 
     def acquire(self) -> None:
         if not self.acquired:
@@ -460,6 +468,7 @@ class JevPolicy:
         if not eager and getattr(self.evaluator, "lazy_reserve", False):
             handle = _Reservation(self, site, max_input_tokens)
             ACTIVE_RESERVER.set(handle.acquire)
+            ACTIVE_GUARD.set(handle.consume)
             self._tl.token = handle
             return handle
         token = self._reserve(site, max_input_tokens)
@@ -488,6 +497,7 @@ class JevPolicy:
     def _clear_dispatch_state(self, reservation=None) -> None:
         ACTIVE_SITE.set("")
         ACTIVE_RESERVER.set(None)
+        ACTIVE_GUARD.set(None)
         if getattr(self._tl, "token", None) is reservation:
             self._tl.token = None
 
@@ -563,7 +573,7 @@ class JevPolicy:
     def _book_overrun(self, cost: float, result: JevEvaluationResult) -> None:
         """Record spend the governor refused to settle (it is real money)."""
         book = getattr(self.governor, "record_overrun", None)
-        if callable(book):
+        if cost > 0.0 and callable(book):  # zero spend is never an overrun
             try:
                 book(cost, result.model or "jev")
             except Exception as exc:
@@ -3302,8 +3312,12 @@ class JevPolicy:
         metadata = event_metadata(
             "assessed" if assessed else "unassessed",
             "not_used" if not result.is_fallback else "fallback", result)
+        # Nothing was sent (breaker open, no key): it costs nothing. Only a
+        # call that may have reached the wire with unobserved usage settles
+        # at the conservative estimate.
         settlement_cost = (
-            float(result.cost or 0.0) if result.input_tokens_observed
+            float(result.cost or 0.0)
+            if result.input_tokens_observed or result.is_fallback
             else jev_cost(int(metrics["estimated_input_tokens"]))
         )
         self._account(

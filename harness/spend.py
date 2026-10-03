@@ -484,7 +484,9 @@ class SpendGovernor:
             raise HarnessError(f"invalid reported cost {actual!r} (after '{label}').") from None
         with self._spend_lock:
             ceiling = self._phase_ceiling()
-            if self.spent + actual_f > ceiling:
+            # A zero settlement can never breach a ceiling (even one already
+            # exceeded by a booked overrun), so it is never refused.
+            if actual_f > 0.0 and self.spent + actual_f > ceiling:
                 if (self._phase == PHASE_ATTEMPT
                         and self.terminal_reserve > 0.0):
                     raise HarnessError(
@@ -542,7 +544,7 @@ class SpendGovernor:
             raise HarnessError(f"invalid reported cost {cost!r} (after '{label}').") from None
         with self._spend_lock:
             ceiling = self._phase_ceiling()
-            if self.spent + self._outstanding + actual > ceiling:
+            if actual > 0.0 and self.spent + self._outstanding + actual > ceiling:
                 if (self._phase == PHASE_ATTEMPT
                         and self.terminal_reserve > 0.0):
                     raise HarnessError(

@@ -395,6 +395,11 @@ ACTIVE_SITE: "contextvars.ContextVar[str]" = contextvars.ContextVar(
 # a billed request is never dispatched unreserved.
 ACTIVE_RESERVER: "contextvars.ContextVar[Any]" = contextvars.ContextVar(
     "jev_active_reserver", default=None)
+# The matching single-use check: when a policy installed a reserver, the
+# evaluator asks the guard immediately before posting and refuses to dispatch
+# (reason ``reservation_missing``) unless it confirms a reservation exists.
+ACTIVE_GUARD: "contextvars.ContextVar[Any]" = contextvars.ContextVar(
+    "jev_active_guard", default=None)
 
 
 class CircuitBreakers:
@@ -608,6 +613,11 @@ class JevEvaluator:
             if reserver is not None:
                 ACTIVE_RESERVER.set(None)
                 reserver()  # may raise HarnessError: a refused reservation
+            guard = ACTIVE_GUARD.get()
+            if guard is not None and not guard():
+                # A policy asked for a reserved dispatch and none exists
+                # (a double, a re-used hook): never send unreserved.
+                return local("reservation_missing")
             try:
                 status, resp = self.transport.post(
                     self.endpoint, self.api_key,
