@@ -1822,5 +1822,26 @@ class CoverageGapTests2(_Base):
         self.assertEqual(build_runs(self.ledger.entries())[0]["jev_evals"]["fallback"], 1)
 
 
+class DispatchStateLabelTests(_Base):
+    def test_failure_after_reservation_is_post_dispatch_before_is_not(self):
+        from harness.jev import ACTIVE_RESERVER
+        gov = self.governor()
+        policy = self.keyed(CountingTransport(noul_resp()), governor=gov)
+
+        def reserve_then_fail(*a, **k):
+            ACTIVE_RESERVER.get()()
+            raise HarnessError("late failure")
+        with mock.patch.object(policy.evaluator, "evaluate",
+                               side_effect=reserve_then_fail):
+            result, structural = policy.evaluate_answer("q", "a", "c")
+        self.assertTrue(result.is_fallback)
+        self.assertEqual(structural["fallback_reason"], "transport_failure")
+        self.assertEqual(gov.outstanding, 0.0)
+        with mock.patch.object(policy.evaluator, "evaluate",
+                               side_effect=HarnessError("early failure")):
+            result, structural = policy.evaluate_answer("q2", "a", "c")
+        self.assertFalse(result.is_fallback)             # nothing was sent
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -117,11 +117,13 @@ class _Reservation:
         self.max_input_tokens = max_input_tokens
         self.token = None
         self.acquired = False
+        self.reserved = False
 
     def acquire(self) -> None:
         if not self.acquired:
             self.acquired = True
             self.token = self.policy._reserve(self.site, self.max_input_tokens)
+            self.reserved = True
 
 
 class _Escaped:
@@ -463,6 +465,11 @@ class JevPolicy:
         token = self._reserve(site, max_input_tokens)
         self._tl.token = token
         return token
+
+    @staticmethod
+    def _sent(reservation) -> bool:
+        """Was the call past its reservation (so a failure is post-dispatch)?"""
+        return reservation.reserved if isinstance(reservation, _Reservation) else True
 
     @staticmethod
     def _token_of(reservation):
@@ -1040,8 +1047,10 @@ class JevPolicy:
             return fallback, structural
 
         reservation = None
+        dispatched = False
         try:
             reservation = self._preflight(site=site, max_input_tokens=max_input_tokens)
+            dispatched = True
             raw_result = self.evaluator.evaluate(state, questions)
             result, values, live = normalize(raw_result)
             structural = self._account(
@@ -1065,7 +1074,8 @@ class JevPolicy:
             # Only a settlement failure happens AFTER a request was billed; a
             # refused reservation (budget) is a pre-dispatch refusal even
             # though it is raised from inside the dispatcher.
-            post_dispatch = isinstance(exc, JevSettlementError)
+            post_dispatch = (isinstance(exc, JevSettlementError)
+                             or (dispatched and self._sent(reservation)))
             refusal, structural = self._record_refusal(
                 str(exc), code=_refusal_reason(exc), site=site, task_id=task_id)
             refusal = JevEvaluationResult(
@@ -1073,7 +1083,10 @@ class JevPolicy:
                 {key: None for key in questions} | {"pack_version": ANSWER_PACK_VERSION},
                 list(refusal.reasons), is_fallback=post_dispatch,
                 model=refusal.model,
-                fallback_reason=("settlement_overrun" if post_dispatch else None),
+                fallback_reason=(
+                    None if not post_dispatch else
+                    "settlement_overrun" if isinstance(exc, JevSettlementError)
+                    else "transport_failure"),
             )
             structural.update({
                 "capability": "answer",
@@ -1555,9 +1568,11 @@ class JevPolicy:
             structural["missing_artifacts"] = missing
             return result, structural
         reservation = None
+        dispatched = False
         try:
             reservation = self._preflight(
                 site=site, max_input_tokens=max_input_tokens)
+            dispatched = True
             result = self.evaluator.evaluate(
                 {
                     "goal": goal or "",
@@ -1604,7 +1619,8 @@ class JevPolicy:
             return result, structural
         except HarnessError as exc:
             self._release(reservation)
-            post_dispatch = isinstance(exc, JevSettlementError)
+            post_dispatch = (isinstance(exc, JevSettlementError)
+                             or (dispatched and self._sent(reservation)))
             answers = {
                 "named_artifacts_present": 1.0,
                 "goal_achieved": 0.5,
@@ -1613,7 +1629,10 @@ class JevPolicy:
             fallback = JevEvaluationResult(
                 "pass", 0.0, 0.5, answers, [str(exc)],
                 is_fallback=post_dispatch, model=self.evaluator.model,
-                fallback_reason="settlement_overrun" if post_dispatch else None)
+                fallback_reason=(
+                    None if not post_dispatch else
+                    "settlement_overrun" if isinstance(exc, JevSettlementError)
+                    else "transport_failure"))
             if post_dispatch:
                 structural = self._account(
                     fallback, site=site, task_id=task_id)

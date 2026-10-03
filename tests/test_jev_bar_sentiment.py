@@ -562,7 +562,14 @@ class TestKeyedPolicyPath(unittest.TestCase):
         settings = load_settings({"jev_api_key": "test-key"})
         policy = policy_for(settings, transport=None, governor=gov, ledger=self.ledger)
 
-        with patch.object(policy.evaluator, "evaluate", side_effect=HarnessError("network down")):
+        def reserve_then_fail(*args, **kwargs):
+            # The evaluator reserves right before it would dispatch; stand in
+            # for that, then fail after the reservation exists.
+            from harness.jev import ACTIVE_RESERVER
+            ACTIVE_RESERVER.get()()
+            raise HarnessError("network down")
+
+        with patch.object(policy.evaluator, "evaluate", side_effect=reserve_then_fail):
             state = {"phase": "JEV-P1", "status_row": "draft not merged"}
             _r, _s, judgment = policy.evaluate_phase_completion(state, self.pack)
             self.assertTrue(judgment["is_fallback"])
