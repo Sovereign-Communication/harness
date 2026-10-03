@@ -1204,8 +1204,9 @@ class FanOutHardeningTests(_Base):
         gov = self.governor(max_cost=jev_cost(1024) * 1.5)
         policy = self.keyed(CountingTransport(respond), governor=gov)
         result, structural = policy.evaluate_route("x", ["a.py"])
-        self.assertTrue(result.is_fallback)
-        self.assertEqual(structural["fallback_reason"], "settlement_overrun")
+        self.assertFalse(result.is_fallback)          # the paid answer stands
+        self.assertTrue(structural["settlement_overrun"])
+        self.assertNotEqual(structural["fallback_reason"], "preflight_refused")
 
 
 class LowConfidenceFloorTests(_Base):
@@ -1384,7 +1385,7 @@ class SettlementOverrunTests(_Base):
         policy = self.keyed(CountingTransport(respond), governor=gov)
         return policy, gov, call(policy)
 
-    def test_real_spend_is_booked_and_ledgered_never_erased(self):
+    def test_real_spend_is_booked_and_ledgered_once_never_erased(self):
         for name in ("diff", "route", "triage"):
             with self.subTest(site=name):
                 self.setUp()
@@ -1392,25 +1393,39 @@ class SettlementOverrunTests(_Base):
                 self.assertAlmostEqual(gov.spent, jev_cost(5000))
                 self.assertEqual(gov.overruns, 1)
                 self.assertEqual(gov.outstanding, 0.0)
-                paid = [r for r in self.rows() if r["cost"] > 0]
-                self.assertEqual(len(paid), 1)
-                self.assertAlmostEqual(paid[0]["cost"], jev_cost(5000))
-                self.assertEqual(paid[0]["input_tokens"], 5000)
-                self.assertTrue(paid[0]["discarded"])
-                self.assertEqual(paid[0]["fallback_reason"], "settlement_overrun")
+                rows = self.rows()
+                self.assertEqual(len(rows), 1)             # the billed row only
+                self.assertAlmostEqual(rows[0]["cost"], jev_cost(5000))
+                self.assertEqual(rows[0]["input_tokens"], 5000)
+                self.assertTrue(rows[0]["settlement_overrun"])
+                self.assertFalse(rows[0]["is_fallback"])
 
-    def test_apply_site_degrades_like_a_transport_failure(self):
-        _, _, out = self.run_site(SITES["diff"])
-        result, structural = out
-        self.assertEqual(result.verdict, "pass")
-        self.assertTrue(result.is_fallback)
-        self.assertEqual(structural["fallback_reason"], "settlement_overrun")
+    def test_a_paid_answer_is_honored_after_an_overrun(self):
+        for noul, verdict in ((0.01, "fail"), (0.99, "pass")):
+            with self.subTest(verdict=verdict):
+                self.setUp()
+
+                def respond(payload, noul=noul):
+                    return {"model": "jev-test",
+                            "usage": {"input_tokens": 5000, "output_tokens": 1},
+                            "answers": {"instruction_matches": {
+                                "type": "noul", "noul": noul}}}
+                gov = self.governor(max_cost=jev_cost(1024) * 1.5)
+                policy = self.keyed(CountingTransport(respond), governor=gov)
+                result, structural = policy.evaluate_diff(DIFF, "set x", "x.py")
+                self.assertEqual(result.verdict, verdict)
+                self.assertFalse(result.is_fallback)
+                self.assertTrue(structural["settlement_overrun"])
+                self.assertTrue(any("settlement overrun" in r
+                                    for r in result.reasons))
+                self.assertEqual(gov.overruns, 1)
 
     def test_next_call_sees_the_true_spend_and_is_refused(self):
         policy, gov, _ = self.run_site(SITES["route"])
         result, structural = policy.evaluate_route("another goal", ["b.py"])
         self.assertTrue(result.is_fallback)
         self.assertEqual(structural["fallback_reason"], "preflight_refused")
+        self.assertEqual(gov.overruns, 1)               # the refusal is no overrun
 
     def test_governor_booking_failure_is_reported_not_raised(self):
         from harness.jev import JevEvaluationResult

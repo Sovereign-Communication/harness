@@ -141,21 +141,6 @@ class _Escaped:
         self.exc = exc
 
 
-class JevSettlementError(HarnessError):
-    """The call was dispatched and billed, but settling it failed (ceiling).
-
-    Distinct from a pre-dispatch refusal so ledgers and fallbacks never label
-    post-dispatch spend as ``preflight_refused``.
-    """
-
-    fallback_reason = "settlement_overrun"
-
-    def __init__(self, message: str, result=None, cost: float = 0.0):
-        super().__init__(message)
-        self.result = result
-        self.cost = cost
-
-
 def _refusal_reason(exc: Exception) -> str:
     """The ``fallback_reason`` for a HarnessError raised around a call."""
     return getattr(exc, "fallback_reason", None) or "preflight_refused"
@@ -647,41 +632,35 @@ class JevPolicy:
                 # answered without one) still gets one actual settlement.
                 self.governor.record_actual(cost, result.model or "jev")
         except Exception as exc:
-            if isinstance(exc, HarnessError):
-                # The provider already billed this call: the money is spent
-                # whether or not it fits the ceiling, so it is booked (and
-                # flagged as an overrun) and never allowed to vanish.
-                self._book_overrun(cost, result)
-            if not preserve_event_on_settlement_error:
-                if isinstance(exc, HarnessError):
-                    overrun = replace(
-                        result, verdict="fail", supported=0.0, confidence=0.0,
-                        answers={}, is_fallback=True, discarded=True,
-                        fallback_reason="settlement_overrun")
-                    if self.ledger is not None:
-                        self.ledger.append(
-                            "jev_eval", task_id=task_id, node_id=node_id,
-                            site=site, model=overrun.model, verdict="fail",
-                            supported=0.0, confidence=0.0,
-                            input_tokens=overrun.input_tokens,
-                            output_tokens=overrun.output_tokens, cost=cost,
-                            is_fallback=True, discarded=True,
-                            fallback_reason="settlement_overrun",
-                            settlement_error="{}: {}".format(
-                                type(exc).__name__, exc))
-                    self._clear_dispatch_state(reservation)
-                    raise JevSettlementError(
-                        str(exc), result=overrun, cost=cost) from exc
+            if not isinstance(exc, HarnessError):
                 raise
+            # The provider already billed this call: the money is spent
+            # whether or not it fits the ceiling, so it is booked (and flagged
+            # as an overrun) and never allowed to vanish. Settlement failure
+            # is NOT a reason to throw away an answer that was paid for, so
+            # nothing is raised: the result stands and is flagged below.
+            self._book_overrun(cost, result)
             settlement_error = "{}: {}".format(type(exc).__name__, exc)
         self._clear_dispatch_state(reservation)
         structural = self._structural(result, site)
         # Mutated in place on purpose: callers read ``result_state`` back out
         # of the dict they passed to learn that settlement failed.
         metadata = event_metadata if event_metadata is not None else {}
-        if settlement_error is not None:
+        if settlement_error is not None and preserve_event_on_settlement_error:
             metadata["result_state"] = "unassessed"
             metadata["settlement_error"] = settlement_error
+        elif settlement_error is not None:
+            # Ruling: a parsed answer is honored after an overrun (a paid
+            # "fail" still fails, a paid "pass" passes) and the overrun is
+            # flagged on the single billed row, in the reasons and in the
+            # envelope. Only the budget REFUSAL (nothing sent) hard-stops.
+            metadata["settlement_overrun"] = True
+            metadata["settlement_error"] = settlement_error
+            structural["settlement_overrun"] = True
+            if isinstance(result.reasons, list):
+                result.reasons.append(
+                    "settlement overrun: billed cost exceeded the budget "
+                    "ceiling and was booked (" + settlement_error + ")")
         if result.cache_hit:
             metadata["cache_hit"] = True
             metadata["note"] = ("cache hit: identical state/questions served "
@@ -690,13 +669,15 @@ class JevPolicy:
         write_row, repeat = self._dedupe_fallback(result, site)
         if repeat > 1:
             metadata["repeat_count"] = repeat
+        unassessed = (settlement_error is not None
+                      and preserve_event_on_settlement_error)
         if self.ledger is not None and write_row:
             self.ledger.append(
                 "jev_eval", task_id=task_id, node_id=node_id, site=site,
                 model=metadata.get("observed_model", result.model),
-                verdict="fail" if settlement_error is not None else result.verdict,
-                supported=0.0 if settlement_error is not None else result.supported,
-                confidence=0.0 if settlement_error is not None else result.confidence,
+                verdict="fail" if unassessed else result.verdict,
+                supported=0.0 if unassessed else result.supported,
+                confidence=0.0 if unassessed else result.confidence,
                 input_tokens=result.input_tokens, output_tokens=result.output_tokens,
                 cost=cost, is_fallback=result.is_fallback,
                 fallback_reason=result.fallback_reason,
@@ -730,20 +711,6 @@ class JevPolicy:
             return result, structural
         except HarnessError as exc:
             self._release(reservation)
-            if isinstance(exc, JevSettlementError):
-                # Choice: a post-dispatch settlement overrun degrades exactly
-                # like a transport failure (local mechanics verdict, honest
-                # is_fallback), so the apply gate is not hard-blocked by a
-                # call that already happened. The billed spend was ledgered
-                # and booked as an overrun. Only the budget REFUSAL (nothing
-                # was sent) remains the intended hard stop below.
-                _state, local = self.evaluator.check_diff_mechanics(
-                    diff, instruction, file_path, candidate=candidate)
-                degraded = replace(
-                    local, is_fallback=True, discarded=False,
-                    fallback_reason="settlement_overrun",
-                    reasons=list(local.reasons) + [str(exc)])
-                return degraded, self._structural(degraded, site)
             return self._record_refusal(
                 str(exc), code=_refusal_reason(exc), site=site, task_id=task_id, node_id=node_id)
 
@@ -1084,8 +1051,7 @@ class JevPolicy:
             # Only a settlement failure happens AFTER a request was billed; a
             # refused reservation (budget) is a pre-dispatch refusal even
             # though it is raised from inside the dispatcher.
-            post_dispatch = (isinstance(exc, JevSettlementError)
-                             or (dispatched and self._sent(reservation)))
+            post_dispatch = dispatched and self._sent(reservation)
             refusal, structural = self._record_refusal(
                 str(exc), code=_refusal_reason(exc), site=site, task_id=task_id)
             refusal = JevEvaluationResult(
@@ -1093,10 +1059,7 @@ class JevPolicy:
                 {key: None for key in questions} | {"pack_version": ANSWER_PACK_VERSION},
                 list(refusal.reasons), is_fallback=post_dispatch,
                 model=refusal.model,
-                fallback_reason=(
-                    None if not post_dispatch else
-                    "settlement_overrun" if isinstance(exc, JevSettlementError)
-                    else "transport_failure"),
+                fallback_reason="transport_failure" if post_dispatch else None,
             )
             structural.update({
                 "capability": "answer",
@@ -1631,8 +1594,7 @@ class JevPolicy:
             return result, structural
         except HarnessError as exc:
             self._release(reservation)
-            post_dispatch = (isinstance(exc, JevSettlementError)
-                             or (dispatched and self._sent(reservation)))
+            post_dispatch = dispatched and self._sent(reservation)
             answers = {
                 "named_artifacts_present": 1.0,
                 "goal_achieved": 0.5,
@@ -1641,10 +1603,7 @@ class JevPolicy:
             fallback = JevEvaluationResult(
                 "pass", 0.0, 0.5, answers, [str(exc)],
                 is_fallback=post_dispatch, model=self.evaluator.model,
-                fallback_reason=(
-                    None if not post_dispatch else
-                    "settlement_overrun" if isinstance(exc, JevSettlementError)
-                    else "transport_failure"))
+                fallback_reason="transport_failure" if post_dispatch else None)
             if post_dispatch:
                 structural = self._account(
                     fallback, site=site, task_id=task_id)
