@@ -19,6 +19,8 @@ Design rules, inherited from the MCP server:
   seam the MCP server uses); ``POST /api/runs/{id}/cancel`` flips it.
 """
 import argparse
+import atexit
+import hmac
 import json
 import os
 import re
@@ -95,6 +97,7 @@ MAX_EVENT_BUFFER = 4000
 RANKINGS_REPORT_DIR = "rankings"
 RANKINGS_REPORT_RE = re.compile(r"^rankings-\d{4}-\d{2}-\d{2}.*\.json$")
 RUN_ID_RE = re.compile(r"^/api/runs/([A-Za-z0-9_-]{1,64})$")
+_TOKEN_IN_LOG_RE = re.compile(r"(token=)[^&\s\"]+", re.IGNORECASE)
 RUN_SUB_RE = re.compile(r"^/api/runs/([A-Za-z0-9_-]{1,64})/(result|events|cancel)$")
 # DF-UI-2: mission id grammar mirrors mission_record._MISSION_ID_RE (the one
 # owner for what a valid pack directory name is); an id this fails to match
@@ -167,10 +170,20 @@ def _opt_bool(args, key):
 def validate_dispatch(kind, args):
     """CLI-boundary validation for UI dispatch. Same discipline as the CLI
     parsers: untrusted input is range-checked before anything runs."""
-    if kind not in ("apply", "verify", "continue", "bench", "chat", "dogfood", "plan"):
+    if kind not in ("apply", "verify", "continue", "bench", "chat", "dogfood", "plan", "driver_task"):
         raise HarnessError(f"unknown dispatch kind '{kind}'")
     args = dict(args or {})
-    if kind == "plan":
+    if kind == "driver_task":
+        _opt_str(args, "goal", required=True)
+        _opt_str(args, "target")
+        _opt_str(args, "schema")
+        _opt_str(args, "verify")
+        _opt_int(args, "max_steps", 1, 20, 5)
+        args["auto_approve"] = _opt_bool(args, "auto_approve") if "auto_approve" in args else False
+        args["require_stable"] = _opt_bool(args, "require_stable") if "require_stable" in args else True
+        if args.get("max_cost") is not None:
+            args["max_cost"] = _finite_float(args["max_cost"], "max_cost", 0.0, HARD_MAX_COST)
+    elif kind == "plan":
         _opt_str(args, "goal", required=True)
         args["execute"] = _opt_bool(args, "execute")
         _opt_str(args, "frontier_model")
@@ -483,6 +496,262 @@ def run_plan_task(task_id, args, cancel_check):
     return {"plan": plan_result, "execution": exec_result, "status": exec_result.get("status", "ok")}
 
 
+#: What ``auto_approve`` sends. Read-only, declared, and not stamped by a person.
+_AUTO_APPROVE_CONSENT = {"granted": True, "action": "observe", "params": {},
+                         "by": "harness:auto_approve"}
+_DRIVER_DAEMON = {}
+_DRIVER_PROBE_TIMEOUT = 2.0
+_DRIVER_DAEMON_LOCK = threading.Lock()
+
+
+def shutdown_driver_daemon():
+    """Stop the in-process driver daemon, if this process started one.
+
+    Idempotent. Closes the listening socket and joins the serve thread so
+    nothing outlives the caller (a leaked socket is a ResourceWarning under
+    the audit's hermetic run).
+    """
+    with _DRIVER_DAEMON_LOCK:
+        daemon = dict(_DRIVER_DAEMON)
+        _DRIVER_DAEMON.clear()
+    if not daemon:
+        return
+    daemon["httpd"].shutdown()
+    daemon["httpd"].server_close()
+    daemon["thread"].join(timeout=5)
+
+
+def ensure_driver_daemon(port=None):
+    """Start (once) the in-process loopback driver and return its adapter.
+
+    The ONE place the harness starts a driver. The bearer token is whatever
+    the operator declared in ``DRIVER_TOKEN``; otherwise the driver service
+    generates a random per-start token (``secrets.token_urlsafe(24)``). There
+    is no fixed fallback token, and the token is held by the returned
+    adapter, never put into ``os.environ`` or into an API response.
+    ``port=None`` uses the configured driver port; ``0`` asks the OS.
+    """
+    from .perception_client import PerceptionAdapter
+    import driver_core.config as _dc_config
+    import driver_core.server as _dc_server
+    with _DRIVER_DAEMON_LOCK:
+        if not _DRIVER_DAEMON:
+            settings = _dc_config.load_settings()
+            service = _dc_server.Service(_dc_server.driver_from_settings(settings))
+            httpd, _ = _dc_server.serve(
+                host=settings.host,
+                port=settings.port if port is None else port,
+                service=service, block=False)
+            thread = threading.Thread(target=httpd.serve_forever,
+                                      name="harness-driver", daemon=True)
+            thread.start()
+            host, bound = httpd.server_address[:2]
+            _DRIVER_DAEMON.update(
+                httpd=httpd, thread=thread, token=service.token,
+                base_url=f"http://{host}:{bound}")
+            atexit.register(shutdown_driver_daemon)
+        return PerceptionAdapter(base_url=_DRIVER_DAEMON["base_url"],
+                                 token=_DRIVER_DAEMON["token"])
+
+
+def _driver_adapter(autostart=True):
+    """An adapter for the driver: an already-reachable one, else our own."""
+    from .perception_client import PerceptionAdapter
+    adapter = PerceptionAdapter()
+    if not autostart:
+        return adapter
+    if _DRIVER_DAEMON:
+        return ensure_driver_daemon()
+    try:
+        # A short probe: a loopback driver answers at once, and a socket that
+        # accepts but never answers must not stall the caller for the full
+        # request timeout before we decide to start our own.
+        PerceptionAdapter(timeout=_DRIVER_PROBE_TIMEOUT).health()
+        return adapter
+    except Exception:
+        pass
+    try:
+        return ensure_driver_daemon()
+    except Exception:
+        return adapter
+
+
+def run_driver_task(task_id, args, cancel_check):
+    """Executes a multi-step request driven iteratively by Jev and driver_core.
+
+    Breaks the request into steps, iterates using the driver's perception,
+    consensus, Jev decision, execution, and verification aspects, and returns
+    a full breakdown of each iteration step.
+    """
+    from .perception_client import PerceptionUnavailable
+    from . import events as _events
+
+    goal = args.get("goal") or "execute driver request"
+    target = args.get("target") or "cli"
+    default_schema = args.get("schema") or "cli"
+    max_steps = int(args.get("max_steps") or 5)
+    verify_cmd = args.get("verify")
+    require_stable = bool(args.get("require_stable", True))
+    auto_approve = bool(args.get("auto_approve", False))
+    max_cost = args.get("max_cost")
+
+    adapter = _driver_adapter()
+
+    steps = []
+    completed = False
+    cancelled = False
+    cost_capped = False
+    current_target = target
+    current_schema = default_schema
+    total_cost = 0.0
+
+    _events.emit("driver_task_start", task_id=task_id, goal=goal, max_steps=max_steps)
+
+    for step_num in range(1, max_steps + 1):
+        if cancel_check and cancel_check():
+            cancelled = True
+            break
+        if max_cost is not None and total_cost >= float(max_cost):
+            cost_capped = True
+            break
+
+        step_id = f"drv-{uuid.uuid4().hex[:8]}"
+        _events.emit(
+            "driver_step_start",
+            task_id=task_id,
+            step=step_num,
+            step_id=step_id,
+            target=current_target,
+            schema=current_schema,
+        )
+
+        # ``auto_approve`` is opt-in and deliberately narrow: it grants
+        # consent for the one declared READ-ONLY action (`observe`), labelled
+        # as a harness auto-grant rather than as a person. It can never
+        # authorise a mutating or irreversible action -- those need a
+        # parameter-bound consent from a human on /api/driver/step.
+        consent = None
+        if auto_approve:
+            consent = dict(_AUTO_APPROVE_CONSENT)
+
+        try:
+            env = adapter.step(
+                current_target,
+                schema=current_schema,
+                consent=consent,
+                require_stable=require_stable,
+                step_id=step_id,
+            )
+        except PerceptionUnavailable as e:
+            env = {
+                "step_id": step_id,
+                "ok": False,
+                "stopped_at": "capture",
+                "reason": "no_capture",
+                "detail": str(e),
+                "cost_usd": 0.0,
+            }
+
+        cost = float(env.get("cost_usd") or 0.0)
+        total_cost += cost
+
+        # Verification Aspect
+        verify_result = None
+        if verify_cmd:
+            from .gate_runner import run_gate
+            try:
+                retcode, output = run_gate(verify_cmd, timeout=30)
+                verify_result = {
+                    "ok": retcode == 0,
+                    "returncode": retcode,
+                    "output": output[:2000],
+                }
+            except Exception as ex:
+                verify_result = {"ok": False, "error": str(ex)}
+
+        step_record = {
+            "step_number": step_num,
+            "step_id": step_id,
+            "aspect": current_schema,
+            "target": current_target,
+            "envelope": env,
+            "verification": verify_result,
+            "cost_usd": cost,
+        }
+        steps.append(step_record)
+        _events.emit(
+            "driver_step_complete",
+            task_id=task_id,
+            step=step_num,
+            ok=env.get("ok", False),
+            reason=env.get("reason"),
+        )
+
+        if verify_result and verify_result.get("ok"):
+            completed = True
+            break
+        if env.get("ok"):
+            completed = True
+            break
+
+        # Progress pipeline across perception tiers if initial tier stopped
+        if current_schema == "cli":
+            current_schema = "mcp"
+        elif current_schema == "mcp":
+            current_schema = "dom"
+        elif current_schema == "dom":
+            current_schema = "screen"
+
+    audit_status = None
+    try:
+        audit_status = adapter.verify()
+    except Exception:
+        pass
+
+    ok_steps = sum(1 for st in steps if st["envelope"].get("ok"))
+    verified = any((st["verification"] or {}).get("ok") for st in steps)
+    if completed and verified and ok_steps == 0:
+        # The verify command passing is real evidence about the world, but it
+        # is not evidence the driver did anything: say so, and do not call it
+        # a driver success.
+        status = "verified_without_driver"
+        summary = (f"Verify command passed, but the driver executed 0 steps "
+                   f"({len(steps)} attempted); the result is not attributable "
+                   f"to the driver.")
+    elif completed and verified:
+        status = "done"
+        summary = (f"Driver goal met: the verify command passed after "
+                   f"{len(steps)} step(s) ({ok_steps} driver step(s) ok).")
+    elif completed:
+        status = "done"
+        summary = (f"Driver completed {len(steps)} step(s) with {ok_steps} ok; "
+                   f"no verify command confirmed the result.")
+    elif cancelled:
+        status = "cancelled"
+        summary = (f"Driver cancelled after {len(steps)} step(s); "
+                   f"{ok_steps} step(s) ok, nothing verified.")
+    elif cost_capped:
+        status = "cost_capped"
+        summary = (f"Driver stopped at the ${float(max_cost):.4f} cost cap after "
+                   f"{len(steps)} step(s); {ok_steps} step(s) ok, nothing verified.")
+    else:
+        status = "max_steps_reached"
+        summary = (f"Driver stopped after {len(steps)} step(s) without "
+                   f"completing (max_steps={max_steps}); {ok_steps} step(s) ok, "
+                   f"nothing verified.")
+    return {
+        "status": status,
+        "task_id": task_id,
+        "goal": goal,
+        "total_steps": len(steps),
+        "ok_steps": ok_steps,
+        "steps": steps,
+        "total_cost_usd": round(total_cost, 6),
+        "audit": audit_status,
+        "summary": summary,
+    }
+
+
 RUNNERS = {
     "apply": run_apply_task,
     "verify": run_verify_task,
@@ -491,6 +760,7 @@ RUNNERS = {
     "chat": run_chat_task,
     "dogfood": run_dogfood_task,
     "plan": run_plan_task,
+    "driver_task": run_driver_task,
 }
 
 
@@ -528,6 +798,11 @@ class UiState:
         if not self._event_sink_installed:
             _events.add_sink(self._on_event)
             self._event_sink_installed = True
+
+    def uninstall_event_sink(self):
+        if self._event_sink_installed:
+            _events.remove_sink(self._on_event)
+            self._event_sink_installed = False
 
     def _on_event(self, event):
         with self.lock:
@@ -686,25 +961,63 @@ class UiRequestHandler(BaseHTTPRequestHandler):
 
     # -- plumbing ----------------------------------------------------------
     def log_message(self, fmt, *args):  # route through the harness voice
-        sys.stderr.write("[ui] %s\n" % (fmt % args))
+        # Never let a credential reach the log: redact any token= value that
+        # a client put in a URL, whatever the server does with it.
+        line = _TOKEN_IN_LOG_RE.sub(r"\1REDACTED", fmt % args)
+        sys.stderr.write(f"[ui] {line}\n")
 
-    def _send_json(self, obj, code=200):
+    def _send_json(self, obj, code=200, close=False):
         body = json.dumps(obj, indent=2).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if close:
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
         self.wfile.write(body)
 
-    def _error(self, code, message):
-        self._send_json({"error": message}, code)
+    def _error(self, code, message, close=False):
+        self._send_json({"error": message}, code, close=close)
+
+    def _drain_body(self, limit=1 << 20):
+        """Read and discard (a bounded amount of) the request body.
+
+        A refusal is written before the handler reads the body. On a
+        keep-alive connection the unread body would be parsed as the next
+        request (a desync), and a socket closed with unread bytes can be
+        reset by the OS, destroying the 401 on its way to the client. So a
+        refused request drains up to ``limit`` bytes and closes the
+        connection; anything larger is left undrained.
+        """
+        try:
+            remaining = min(max(0, int(self.headers.get("Content-Length") or 0)),
+                            limit)
+        except ValueError:
+            return
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 65536))
+            if not chunk:
+                break
+            remaining -= len(chunk)
 
     def _authorized(self):
+        """The token in ``X-Harness-Auth`` or ``Authorization: Bearer``.
+
+        Compared as bytes with ``hmac.compare_digest`` (constant time, and a
+        non-ASCII header cannot raise). A token in the query string is not
+        accepted: URLs are logged, kept in history and sent in Referer.
+        """
         if not self.ui.auth_token:
             return True
-        got = self.headers.get("X-Harness-Auth", "")
-        return got == self.ui.auth_token
+        expected = self.ui.auth_token.encode("utf-8")
+        candidates = [self.headers.get("X-Harness-Auth", "")]
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            candidates.append(auth_header[7:].strip())
+        return any(hmac.compare_digest(c.encode("utf-8", "replace"), expected)
+                   for c in candidates)
 
     def _host_ok(self):
         """DNS-rebinding guard: with a loopback bind, the Host header must
@@ -715,10 +1028,13 @@ class UiRequestHandler(BaseHTTPRequestHandler):
 
     def _guard(self):
         if not self._host_ok():
-            self._error(403, "forbidden host (loopback only)")
+            self._drain_body()
+            self._error(403, "forbidden host (loopback only)", close=True)
             return False
         if not self._authorized():
-            self._error(401, "missing or wrong X-Harness-Auth token")
+            self._drain_body()
+            self._error(401, "missing or wrong X-Harness-Auth token",
+                        close=True)
             return False
         return True
 
@@ -781,6 +1097,14 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_cost(q)
             if path == "/api/missions":
                 return self._api_missions_list(q)
+            if path == "/api/driver/health":
+                return self._api_driver_health()
+            if path == "/api/driver/vocabulary":
+                return self._api_driver_vocabulary()
+            if path == "/api/driver/schemas":
+                return self._api_driver_schemas()
+            if path == "/api/driver/verify":
+                return self._api_driver_verify()
             m = MISSION_ID_PATH_RE.match(path)
             if m:
                 return self._api_mission_detail(m.group(1), q)
@@ -810,6 +1134,12 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_settings_update(body)
             if parsed.path == "/api/runs":
                 return self._api_dispatch(body)
+            if parsed.path == "/api/driver/step":
+                return self._api_driver_step(body)
+            if parsed.path == "/api/driver/start":
+                return self._api_driver_start(body)
+            if parsed.path == "/api/driver/drive":
+                return self._api_driver_drive(body)
             if parsed.path == "/api/route":
                 # SITE local mode: same policy owner as `harness route`.
                 return self._api_site_route(body)
@@ -982,10 +1312,15 @@ class UiRequestHandler(BaseHTTPRequestHandler):
 
     def _api_spend(self):
         def build():
-            _, gov = governor_for(load_settings())
+            settings = load_settings()
+            _, gov = governor_for(settings)
             d = gov.key_status()
             d["session"] = {"spent": gov.spent, "ceiling": gov.max_cost,
                             "remaining": max(0.0, gov.max_cost - gov.spent)}
+            ledger = ledger_for(settings)
+            c_report = ledger.cost_report()
+            if "jev" in c_report:
+                d["jev"] = c_report["jev"]
             return d
         return self._send_json(self.ui.cached("spend", build))
 
@@ -1174,6 +1509,96 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         pack = mr.load_mission_pack(root, mission_id)
         return self._send_json(mr.pack_summary(pack))
 
+    def _get_driver_adapter(self, autostart=True):
+        return _driver_adapter(autostart)
+
+    def _api_driver_health(self):
+        adapter = self._get_driver_adapter(autostart=True)
+        try:
+            return self._send_json(adapter.health())
+        except Exception as e:
+            return self._send_json({"ok": False, "status": "down", "error": str(e)})
+
+    def _api_driver_vocabulary(self):
+        adapter = self._get_driver_adapter(autostart=True)
+        try:
+            return self._send_json(adapter.vocabulary())
+        except Exception as e:
+            return self._error(503, str(e))
+
+    def _api_driver_schemas(self):
+        adapter = self._get_driver_adapter(autostart=True)
+        try:
+            return self._send_json(adapter.schemas())
+        except Exception as e:
+            return self._error(503, str(e))
+
+    def _api_driver_verify(self):
+        adapter = self._get_driver_adapter(autostart=True)
+        try:
+            return self._send_json(adapter.verify())
+        except Exception as e:
+            return self._error(503, str(e))
+
+    def _api_driver_start(self, body):
+        adapter = self._get_driver_adapter(autostart=True)
+        try:
+            health = adapter.health()
+            return self._send_json({"status": "running", "health": health})
+        except Exception as e:
+            return self._error(500, f"failed to start driver: {e}")
+
+    def _api_driver_step(self, body):
+        from .perception_client import PerceptionUnavailable
+        target = body.get("target")
+        if not target or not isinstance(target, str):
+            return self._error(400, "field 'target' is required and must be a string")
+        schema = body.get("schema")
+        consent = body.get("consent")
+        prefer = tuple(body.get("prefer") or ())
+        require_stable = bool(body.get("require_stable", True))
+        adapter = self._get_driver_adapter(autostart=True)
+        try:
+            envelope = adapter.step(
+                target, schema=schema, consent=consent, prefer=prefer,
+                require_stable=require_stable)
+            return self._send_json(envelope)
+        except PerceptionUnavailable as e:
+            code = 400 if "schema is required" in str(e) else 503
+            return self._error(code, str(e))
+        except Exception as e:
+            return self._error(500, str(e))
+
+    def _api_driver_drive(self, body):
+        return self._api_dispatch({"kind": "driver_task", "args": body})
+
+    def _api_site_route(self, body):
+        """SITE local mode: route a query through the ONE policy owner.
+        Mirrors `harness route` exactly; the demo site proxies this."""
+        from .route_pack import validate_route_pack
+        goal = str(body.get("goal") or "").strip()
+        if not goal:
+            raise HarnessError("route requires a non-empty 'goal'")
+        raw_pack = body.get("pack")
+        if raw_pack is None:
+            raise HarnessError("route requires 'pack' (declared rung ladder)")
+        try:
+            pack = validate_route_pack(raw_pack)
+        except ValueError as exc:
+            raise HarnessError(f"route pack invalid: {exc}") from exc
+        settings = load_settings()
+        _, governor = governor_for(settings)
+        from .jev_policy import policy_for
+        policy = policy_for(settings, ledger=ledger_for(settings),
+                            governor=governor)
+        _result, _structural, combo = policy.evaluate_model_route(
+            {"goal": goal}, pack, site="model_route")
+        return self._send_json({
+            "status": "ok" if combo.get("rung_id") else "unroutable",
+            "route": combo,
+            "is_fallback": bool(combo.get("is_fallback")),
+        })
+
 
 
 class UiServer(ThreadingHTTPServer):
@@ -1188,6 +1613,11 @@ class UiServer(ThreadingHTTPServer):
     """
 
     allow_reuse_address = not osal.HARDEN_REUSE
+
+    def server_close(self):
+        super().server_close()
+        if hasattr(self, "ui") and self.ui:
+            self.ui.uninstall_event_sink()
 
 
 def make_server(host="127.0.0.1", port=8765, auth_token=None):

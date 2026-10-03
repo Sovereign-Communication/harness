@@ -2183,9 +2183,9 @@ class JevPolicy:
         """Bounded text view of one phase's evidence for the JEV-BAR TypeSafe
         payload and the code-owned keyword fallback."""
         if isinstance(state, str):
-            return state[:1200]
+            return state[:2400]
         if not isinstance(state, dict):
-            return str(state)[:1200]
+            return str(state)[:2400]
         parts = [
             str(state.get("phase") or ""),
             str(state.get("status_row") or ""),
@@ -2196,7 +2196,7 @@ class JevPolicy:
             f"ci_green={state.get('ci_green')}",
             " ".join(str(n) for n in (state.get("notes") or [])[:6]),
         ]
-        return " ".join(p for p in parts if p)[:1200]
+        return " ".join(p for p in parts if p)[:2400]
 
     @staticmethod
     def _completion_judgment(pack_doc, live_levels, live_confidence, primary_gap,

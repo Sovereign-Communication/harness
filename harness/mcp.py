@@ -35,6 +35,7 @@ from .jev_policy import aggregate_structural, policy_for
 from .jev_packs import validate_log_pack, validate_operator_pack
 from .route_pack import validate_route_pack
 from .log_analysis import analyze_log
+from .perception_client import PerceptionAdapter
 from .service import run_verify as _service_run_verify
 from .service import run_dogfood as _service_run_dogfood
 from .brief import build_brief, freshness_report, render_brief
@@ -1100,6 +1101,29 @@ class McpServer:
             if args.get("render"):
                 result["rendered"] = render_brief(pack)
             return result
+        if name == "driver_step":
+            target = validate_text(args.get("target"), "target", 1000, required=True)
+            schema = args.get("schema")
+            action = args.get("action")
+            params = args.get("params")
+            by = args.get("by") or "operator"
+            consent = None
+            if action:
+                consent = {"granted": True, "action": action, "params": params or {}, "by": by}
+            prefer = tuple(args.get("prefer") or ())
+            require_stable = bool(args.get("require_stable", True))
+            adapter = PerceptionAdapter()
+            return adapter.step(target, schema=schema, consent=consent, prefer=prefer,
+                                require_stable=require_stable)
+        if name == "driver_health":
+            adapter = PerceptionAdapter()
+            return adapter.health()
+        if name == "driver_vocabulary":
+            adapter = PerceptionAdapter()
+            return adapter.vocabulary()
+        if name == "driver_verify":
+            adapter = PerceptionAdapter()
+            return adapter.verify()
         raise ValueError(f"unknown tool: {name}")
 
     # ---------------- notifications/progress streaming ----------------

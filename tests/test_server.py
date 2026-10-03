@@ -857,6 +857,113 @@ class DesktopFallbackTests(unittest.TestCase):
         self.assertEqual(opened, ["http://127.0.0.1:1/#tok"])
 
 
+class DesktopTokenTests(unittest.TestCase):
+    """``harness desktop`` token provenance: an explicit token is used as
+    given; otherwise one is generated once, persisted (owner-only), and
+    reused."""
+
+    def setUp(self):
+        self.cfg = tempfile.mkdtemp(prefix="harness-desktop-")
+        self.addCleanup(shutil.rmtree, self.cfg, True)
+        env = {k: v for k, v in os.environ.items()
+               if k != "HARNESS_UI_AUTH_TOKEN"}
+        for patcher in (mock.patch.dict(os.environ, env, clear=True),
+                        mock.patch("harness.config.CONFIG_DIR", self.cfg)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.token_file = os.path.join(self.cfg, "desktop_token")
+
+    def _main(self, argv, **env):
+        import harness.ui as ui_mod
+        httpd = mock.Mock()
+        httpd.server_address = ("127.0.0.1", 4242)
+        with mock.patch.object(ui_mod, "make_server", return_value=httpd) as mk, \
+                mock.patch.dict(os.environ, env), \
+                mock.patch.object(ui_mod.osal, "open_url") as opener:
+            ui_mod.main(["--browser"] + argv)
+        return mk, httpd, opener
+
+    def test_generates_and_persists_a_token(self):
+        mk, httpd, opener = self._main([])
+        token = mk.call_args.kwargs["auth_token"]
+        self.assertGreaterEqual(len(token), 32)
+        with open(self.token_file, encoding="utf-8") as f:
+            self.assertEqual(f.read(), token)
+        httpd.serve_forever.assert_called_once()
+        opener.assert_called_once_with("http://127.0.0.1:4242/#" + token)
+
+    def test_reuses_the_persisted_token(self):
+        with open(self.token_file, "w", encoding="utf-8") as f:
+            f.write("persisted-token\n")
+        mk, _, _ = self._main([])
+        self.assertEqual(mk.call_args.kwargs["auth_token"], "persisted-token")
+
+    def test_blank_token_file_is_replaced(self):
+        with open(self.token_file, "w", encoding="utf-8") as f:
+            f.write("   \n")
+        mk, _, _ = self._main([])
+        token = mk.call_args.kwargs["auth_token"]
+        self.assertTrue(token)
+        with open(self.token_file, encoding="utf-8") as f:
+            self.assertEqual(f.read(), token)
+
+    def test_unreadable_or_unwritable_state_still_yields_a_token(self):
+        # The config dir is a regular file: it can be neither read from nor
+        # created, and neither failure may stop the desktop from starting.
+        blocker = os.path.join(self.cfg, "blocker")
+        with open(blocker, "w", encoding="utf-8") as f:
+            f.write("x")
+        with mock.patch("harness.config.CONFIG_DIR", blocker):
+            mk, _, _ = self._main([])
+        self.assertTrue(mk.call_args.kwargs["auth_token"])
+
+    def test_unreadable_token_file_is_regenerated(self):
+        os.mkdir(self.token_file)  # exists, but is a directory: read fails
+        mk, _, _ = self._main([])
+        self.assertTrue(mk.call_args.kwargs["auth_token"])
+
+    @unittest.skipUnless(os.name == "posix",
+                         "platform: Windows has no POSIX mode bits")
+    def test_the_persisted_token_file_is_owner_only(self):
+        self._main([])
+        self.assertEqual(os.stat(self.token_file).st_mode & 0o777, 0o600)
+
+    @unittest.skipUnless(os.name == "posix",
+                         "platform: Windows has no POSIX mode bits")
+    def test_a_loose_token_file_from_an_older_build_is_tightened(self):
+        with open(self.token_file, "w", encoding="utf-8") as f:
+            f.write("persisted-token")
+        os.chmod(self.token_file, 0o644)
+        mk, _, _ = self._main([])
+        self.assertEqual(mk.call_args.kwargs["auth_token"], "persisted-token")
+        self.assertEqual(os.stat(self.token_file).st_mode & 0o777, 0o600)
+
+    def test_explicit_token_writes_nothing(self):
+        mk, _, _ = self._main(["--auth-token", "chosen"])
+        self.assertEqual(mk.call_args.kwargs["auth_token"], "chosen")
+        self.assertFalse(os.path.exists(self.token_file))
+
+    def test_environment_token_is_used_as_given(self):
+        mk, _, _ = self._main([], HARNESS_UI_AUTH_TOKEN="from-env")
+        self.assertEqual(mk.call_args.kwargs["auth_token"], "from-env")
+
+    def test_non_loopback_host_is_refused(self):
+        import harness.ui as ui_mod
+        with self.assertRaises(SystemExit) as ctx:
+            ui_mod.main(["--host", "0.0.0.0"])
+        self.assertEqual(ctx.exception.code, 1)
+
+    def test_ctrl_c_stops_the_browser_mode_foreground_cleanly(self):
+        import harness.ui as ui_mod
+        httpd = mock.Mock()
+        httpd.server_address = ("127.0.0.1", 4242)
+        with mock.patch.object(ui_mod, "make_server", return_value=httpd), \
+                mock.patch.object(ui_mod.osal, "open_url"), \
+                mock.patch("threading.Thread.join",
+                           side_effect=KeyboardInterrupt):
+            ui_mod.main(["--browser", "--auth-token", "t"])
+
+
 class ChatEndpointTests(ServerHarness):
     def test_chat_post_and_history(self):
         fake_chat_result = {
@@ -1300,6 +1407,77 @@ class CostEndpointTests(ServerHarness):
         self.assertEqual(data, report)
         ledger.cost_report.assert_called_once_with(
             window="24h", by_tier=True, by_model=False, savings=False)
+
+
+class JevCreditEndpointTests(ServerHarness):
+    """The Jev spend/credit block must read the same on /api/cost and
+    /api/spend (the GUI badge and the CLI agree because both come from the
+    ledger's one cost_report), and must price legacy entries correctly."""
+
+    def setUp(self):
+        super().setUp()
+        from harness.ledger import AutonomyLedger
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.ledger = AutonomyLedger(os.path.join(self._tmp.name, "l.jsonl"))
+        # One real call, one fallback (free), one legacy entry whose stored
+        # cost was written at the old $42/Mtok rate.
+        self.ledger.append("jev_eval", model="jev-1.13.0", input_tokens=2000,
+                           output_tokens=10, is_fallback=False, cost=0.000084)
+        self.ledger.append("jev_eval", model="jev-1.13.0", input_tokens=700,
+                           is_fallback=True, cost=0.0)
+        self.ledger.append("jev_eval", model="jev-1.13.0", input_tokens=1000,
+                           is_fallback=False, cost=0.042)
+
+    def _get(self, path):
+        gov = mock.Mock(spent=0.0, max_cost=0.05)
+        gov.key_status.return_value = {"keyed": False}
+        with mock.patch.object(ui_server, "load_settings"), \
+             mock.patch.object(ui_server, "ledger_for", return_value=self.ledger), \
+             mock.patch.object(ui_server, "governor_for", return_value=(None, gov)):
+            conn = self._conn()
+            try:
+                return _request(conn, "GET", path)
+            finally:
+                conn.close()
+
+    def _assert_jev_block(self, jev):
+        self.assertEqual(jev["calls"], 2)
+        self.assertEqual(jev["input_tokens"], 3000)
+        # 3000 tokens at $0.042/Mtok -- the legacy $0.042 entry does not count
+        # as $0.042, it counts as 1000 tokens.
+        self.assertAlmostEqual(jev["cost"], 0.000126, places=9)
+        self.assertAlmostEqual(jev["monthly_credit"], 5.0)
+        self.assertAlmostEqual(jev["remaining_credit"], 5.0 - 0.000126, places=6)
+        self.assertAlmostEqual(jev["price_per_million_input"], 0.042)
+
+    def test_cost_endpoint_carries_the_jev_block(self):
+        status, data = self._get("/api/cost")
+        self.assertEqual(status, 200)
+        self._assert_jev_block(data["jev"])
+
+    def test_spend_endpoint_carries_the_same_jev_block(self):
+        status, data = self._get("/api/spend")
+        self.assertEqual(status, 200)
+        self._assert_jev_block(data["jev"])
+        self.assertEqual(data["session"]["ceiling"], 0.05)
+        _, cost = self._get("/api/cost")
+        self.assertEqual(data["jev"], cost["jev"])
+
+    def test_spend_endpoint_omits_jev_when_report_has_none(self):
+        gov = mock.Mock(spent=0.0, max_cost=0.05)
+        gov.key_status.return_value = {"keyed": False}
+        ledger = mock.Mock(cost_report=mock.Mock(return_value={"total_cost": 0.0}))
+        with mock.patch.object(ui_server, "load_settings"), \
+             mock.patch.object(ui_server, "ledger_for", return_value=ledger), \
+             mock.patch.object(ui_server, "governor_for", return_value=(None, gov)):
+            conn = self._conn()
+            try:
+                status, data = _request(conn, "GET", "/api/spend")
+            finally:
+                conn.close()
+        self.assertEqual(status, 200)
+        self.assertNotIn("jev", data)
 
 
 class MissionsEndpointTests(ServerHarness):

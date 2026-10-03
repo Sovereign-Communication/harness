@@ -89,6 +89,13 @@ def _print_cost_table(report):
         s = report["savings"]
         eprint(f"[cost] Baseline frontier estimate: ${s.get('baseline_frontier_cost', 0.0):.6f}")
         eprint(f"[cost] Net savings: ${s.get('net_savings', 0.0):.6f} ({s.get('savings_percent', 0.0):.1f}%)")
+    jev = report.get("jev")
+    if jev and jev.get("calls", 0) > 0:
+        eprint(f"[cost] TypeSafe Jev: {jev.get('calls', 0):,} calls, "
+               f"{jev.get('input_tokens', 0):,} in / {jev.get('output_tokens', 0):,} out tokens")
+        eprint(f"[cost] TypeSafe Jev Spend: ${jev.get('cost', 0.0):.6f} / "
+               f"${jev.get('monthly_credit', 5.0):.2f} monthly credit "
+               f"(${jev.get('remaining_credit', 5.0):.4f} remaining, {jev.get('used_percent', 0.0):.2f}% used)")
 
     by_tier = report.get("by_tier")
     if by_tier:

@@ -682,6 +682,42 @@ class AgentAnswerLoopTests(unittest.TestCase):
         self.assertEqual(result["status"], "needs_iteration")
         self.assertIn("remaining_scope", result)
 
+    def _exhausted_rounds(self, completion):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        root = Path(td.name)
+        settings = load_settings()
+        settings.jev_api_key = None
+        agent = AutonomousAgent(settings=settings, root_dir=root, history_dir=root)
+        policy = _FakePolicy([(0.2, True, False)] * 2)
+        with patch("harness.agent.policy_for", return_value=policy), \
+             patch("harness.agent.governor_for", return_value=(None, object())), \
+             patch("harness.agent.assess_completion",
+                   return_value=completion) as judge, \
+             patch.object(agent, "_hourglass_answer_once",
+                          return_value={"model": "m", "answer": "a", "cost": 0.0}), \
+             patch("harness.agent.save_chat_turn"):
+            result = agent.run_hourglass_request(
+                "How does the router work?", session_id="last-round",
+                max_rounds=2)
+        return result, judge
+
+    def test_last_round_independent_judge_can_establish_completion(self):
+        # Jev still says "another attempt", but the independent completion
+        # judge is the authority on fulfillment on the final round: it is
+        # asked once, and a complete verdict is recorded with the round.
+        result, judge = self._exhausted_rounds(
+            {"complete": True, "verdict": "pass"})
+        self.assertEqual(result["status"], "ok")
+        judge.assert_called_once()
+        self.assertTrue(result["hourglass"]["rounds"][-1]["completion"]["complete"])
+
+    def test_last_round_incomplete_judge_leaves_needs_iteration(self):
+        result, judge = self._exhausted_rounds(
+            {"complete": False, "remaining": "no evidence"})
+        self.assertEqual(result["status"], "needs_iteration")
+        judge.assert_called_once()
+
     def test_budget_deferred_before_a_second_round(self):
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)

@@ -1,15 +1,139 @@
-/* Sovereign Harness: Clean Single-Chat Application Controller */
-"use strict";
+function getAuthToken() {
+  if (typeof location !== "undefined") {
+    if (location.hash && location.hash.length > 1) {
+      const h = decodeURIComponent(location.hash.slice(1));
+      if (h && !h.startsWith("/")) {
+        try { localStorage.setItem("harness_ui_auth_token", h); } catch (_e) {}
+        return h;
+      }
+    }
+  }
+  try {
+    return localStorage.getItem("harness_ui_auth_token") || null;
+  } catch (_e) {
+    return null;
+  }
+}
 
-const TOKEN = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+function setAuthToken(token) {
+  const t = token ? String(token).trim() : null;
+  if (t) {
+    try { localStorage.setItem("harness_ui_auth_token", t); } catch (_e) {}
+  } else {
+    try { localStorage.removeItem("harness_ui_auth_token"); } catch (_e) {}
+  }
+  updateAuthDisplay();
+}
+
+window.HARNESS_GET_TOKEN = getAuthToken;
+window.HARNESS_SET_TOKEN = setAuthToken;
+
+let isAuthPromptOpen = false;
+let authPromptPromise = null;
+
+function promptForAuthToken(errMsg) {
+  if (isAuthPromptOpen && authPromptPromise) return authPromptPromise;
+  isAuthPromptOpen = true;
+  authPromptPromise = new Promise((resolve) => {
+    const modal = document.getElementById("auth-modal");
+    if (!modal) {
+      const entered = window.prompt("The Harness server requires an authorization token (X-Harness-Auth). Enter token:", getAuthToken() || "");
+      if (entered) setAuthToken(entered);
+      isAuthPromptOpen = false;
+      resolve(entered);
+      return;
+    }
+    const errText = document.getElementById("auth-error-msg");
+    if (errText && errMsg) errText.textContent = errMsg;
+    const input = document.getElementById("auth-token-input");
+    if (input) input.value = getAuthToken() || "";
+    modal.hidden = false;
+    if (input) input.focus();
+
+    const saveBtn = document.getElementById("btn-save-token");
+    const cancelBtn = document.getElementById("btn-cancel-token");
+
+    const cleanup = () => {
+      modal.hidden = true;
+      isAuthPromptOpen = false;
+      authPromptPromise = null;
+    };
+
+    if (input) {
+      input.onkeydown = (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          if (saveBtn) saveBtn.click();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          if (cancelBtn) cancelBtn.click();
+        }
+      };
+    }
+
+    if (saveBtn) {
+      saveBtn.onclick = () => {
+        const val = input ? input.value.trim() : "";
+        if (val) setAuthToken(val);
+        cleanup();
+        pollRoute();
+        pollSpend();
+        refreshSessionList();
+        resolve(val);
+      };
+    }
+    if (cancelBtn) {
+      cancelBtn.onclick = () => {
+        cleanup();
+        resolve(null);
+      };
+    }
+  });
+  return authPromptPromise;
+}
+
+window.HARNESS_PROMPT_AUTH = promptForAuthToken;
+
+function updateAuthDisplay() {
+  const btn = document.getElementById("btn-auth-toggle");
+  const text = document.getElementById("auth-text");
+  const icon = document.getElementById("auth-icon");
+  const tok = getAuthToken();
+  if (btn && text) {
+    if (tok) {
+      text.textContent = "Auth set";
+      if (icon) icon.textContent = "🔒";
+      btn.title = "X-Harness-Auth token configured. Click to view or change.";
+    } else {
+      text.textContent = "Auth";
+      if (icon) icon.textContent = "🔓";
+      btn.title = "No X-Harness-Auth token set. Click to configure.";
+    }
+  }
+}
 
 // API Fetch Helper
 async function api(path, opts = {}) {
   const headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
-  if (TOKEN) headers["X-Harness-Auth"] = TOKEN;
-  const res = await fetch(path, Object.assign({}, opts, { headers }));
+  const token = getAuthToken();
+  if (token) headers["X-Harness-Auth"] = token;
+  let res;
+  try {
+    res = await fetch(path, Object.assign({}, opts, { headers }));
+  } catch (netErr) {
+    throw new Error(`Network error calling ${path}: ${netErr.message}`);
+  }
   let body = null;
   try { body = await res.json(); } catch (_e) {}
+  if (res.status === 401) {
+    const errReason = (body && body.error) ? body.error : "missing or wrong X-Harness-Auth token";
+    const entered = await promptForAuthToken(errReason);
+    if (entered) {
+      headers["X-Harness-Auth"] = entered;
+      res = await fetch(path, Object.assign({}, opts, { headers }));
+      try { body = await res.json(); } catch (_e) {}
+    }
+  }
   if (!res.ok) {
     const msg = (body && body.error) ? body.error : `${res.status} ${res.statusText}`;
     throw new Error(msg);
@@ -231,6 +355,14 @@ function setupHeaderControls() {
       webEnabled = !webEnabled;
       localStorage.setItem("harness_web_enabled", webEnabled ? "true" : "false");
       updateWebDisplay();
+    });
+  }
+
+  const authBtn = $("#btn-auth-toggle");
+  if (authBtn) {
+    updateAuthDisplay();
+    authBtn.addEventListener("click", () => {
+      promptForAuthToken("Enter or update your X-Harness-Auth token:");
     });
   }
 }
@@ -460,6 +592,50 @@ function setPhase(agentMsg, nodeId, glyph, done) {
   phase.row.className = `step-item${done ? " done" : ""}`;
 }
 
+function activateModularAspect(agentMsg, aspectId, label, icon) {
+  const bar = agentMsg.aspectBar || (agentMsg.card && agentMsg.card.querySelector(".aspect-pipeline-bar"));
+  if (!bar) return;
+  bar.hidden = false;
+
+  const existing = bar.querySelector(`[data-aspect="${aspectId}"]`);
+  if (existing) {
+    if (label) existing.textContent = `${icon ? icon + " " : ""}${label}`;
+    const allChips = bar.querySelectorAll(".aspect-chip");
+    allChips.forEach(c => {
+      if (c === existing) {
+        c.classList.remove("done");
+        c.classList.add("active");
+      } else {
+        c.classList.remove("active");
+        c.classList.add("done");
+      }
+    });
+    return;
+  }
+
+  // Mark all previous chips done
+  const prevChips = bar.querySelectorAll(".aspect-chip");
+  prevChips.forEach(c => {
+    c.classList.remove("active");
+    c.classList.add("done");
+  });
+
+  // If there are already chips, add an arrow separator
+  if (prevChips.length > 0) {
+    const arrow = document.createElement("span");
+    arrow.className = "aspect-arrow";
+    arrow.textContent = "➔";
+    bar.appendChild(arrow);
+  }
+
+  // Create new active modular chip
+  const chip = document.createElement("span");
+  chip.className = "aspect-chip active";
+  chip.dataset.aspect = aspectId;
+  chip.textContent = `${icon ? icon + " " : ""}${label}`;
+  bar.appendChild(chip);
+}
+
 function handleLiveEvent(ev, agentMsg) {
   const body = agentMsg.stepperBody;
   agentMsg.stepper.hidden = false;
@@ -467,35 +643,84 @@ function handleLiveEvent(ev, agentMsg) {
   let label = "";
   let icon = "✓";
 
-  if (ev.type === "intent_classified") {
+  if (ev.type === "web_search") {
+    label = ev.phase === "start" ? `Web search: ${ev.query || ""}` : `Web search completed (${ev.results || 0} results)`;
+    icon = "🌐";
+    activateModularAspect(agentMsg, "web_search", ev.phase === "start" ? "Web Search" : `Search (${ev.results || 0} hits)`, "🌐");
+  } else if (ev.type === "web_fetch") {
+    label = ev.phase === "start" ? `Fetching allowlisted page: ${ev.url || ""}` : `Retrieved ${ev.chars || 0} chars from primary source`;
+    icon = "📖";
+    activateModularAspect(agentMsg, "web_fetch", ev.phase === "start" ? "Fetch Source" : `Source (${ev.chars || 0} chars)`, "📖");
+  } else if (ev.type === "intent_classified") {
     label = `Classified intent: ${ev.intent || "general"}`;
+    activateModularAspect(agentMsg, "intent", `Intent: ${ev.intent || "plan"}`, "🧠");
   } else if (ev.type === "files_discovered") {
     const files = ev.target_files || [];
     label = files.length ? `Identified file scope: ${files.join(", ")}` : "No specific file scope required";
+    activateModularAspect(agentMsg, "perception", files.length ? `Scope (${files.length} files)` : "Scope", "👁");
   } else if (ev.type === "context_condensed") {
     label = `Context condensed via AST MicroBrief (~${ev.estimated_tokens || 0} tokens)`;
+    activateModularAspect(agentMsg, "context", "AST Context", "📑");
   } else if (ev.type === "dag_planned") {
     label = `Decomposed into ${ev.total_nodes || 1} subtask(s); ceiling $${(ev.total_ceiling || 0).toFixed(4)}`;
     agentMsg.stepperTitleText.textContent = `Executing ${ev.total_nodes || 1} subtask(s)...`;
+    activateModularAspect(agentMsg, "plan", `Plan (${ev.total_nodes || 1} subtasks)`, "📋");
     (ev.nodes || []).forEach(n => ensurePhase(agentMsg, n.node_id, n.target, n.instruction));
   } else if (ev.type === "subtask_start") {
     label = `Executing subtask ${ev.node_id || ""}: ${ev.instruction || ""}`;
     icon = "⚙";
+    activateModularAspect(agentMsg, `action_${ev.node_id || "step"}`, `Action: ${ev.node_id || "step"}`, "⚙️");
     ensurePhase(agentMsg, ev.node_id, ev.target, ev.instruction);
     setPhase(agentMsg, ev.node_id, "⚙", false);
     agentMsg.stepperTitleText.textContent = `Executing subtask ${ev.node_id || ""}...`;
   } else if (ev.type === "subtask_retry") {
     label = `Verification failed; auto-healing retry: ${ev.error || ""}`;
     icon = "↻";
+    activateModularAspect(agentMsg, `action_${ev.node_id || "step"}`, `Retry: ${ev.node_id || ""}`, "↻");
     setPhase(agentMsg, ev.node_id, "↻", false);
   } else if (ev.type === "subtask_finish") {
     label = `Completed subtask ${ev.node_id || ""} [${ev.status || "ok"}]`;
     const ok = PHASE_OK_STATUSES.has(ev.status || "ok");
+    activateModularAspect(agentMsg, `action_${ev.node_id || "step"}`, `Subtask ${ev.node_id || ""} [${ev.status || "ok"}]`, ok ? "✓" : "▲");
     setPhase(agentMsg, ev.node_id, ok ? "✓" : "✗", ok);
+  } else if (ev.type === "gate_start") {
+    label = `Executing verification gate: ${ev.command || ""}`;
+    icon = "🔬";
+    activateModularAspect(agentMsg, "verify", "Gate Verify", "🔬");
+  } else if (ev.type === "gate_end") {
+    const ok = Boolean(ev.passed);
+    label = `Verification gate ${ok ? "passed (RC 0)" : `failed (RC ${ev.rc})`}`;
+    icon = ok ? "✓" : "✗";
+    activateModularAspect(agentMsg, "verify", ok ? "Gate Passed" : `Gate Failed (RC ${ev.rc})`, ok ? "✓" : "✗");
+  } else if (ev.type === "driver_task_start") {
+    label = `Jev Driver initiated request (${ev.max_steps || 5} max steps)`;
+    icon = "🚗";
+    activateModularAspect(agentMsg, "driver_init", `Driver (${ev.max_steps || 5} steps)`, "🚗");
+  } else if (ev.type === "driver_step_start") {
+    label = `Jev Driver step #${ev.step}: probing ${ev.schema || "cli"} ➔ ${ev.target || "cli"}`;
+    icon = "👁";
+    activateModularAspect(agentMsg, `driver_${ev.step}`, `Step ${ev.step}: ${ev.schema || "probe"}`, "👁");
+  } else if (ev.type === "driver_step_complete") {
+    label = `Jev Driver step #${ev.step} complete (${ev.stopped_at || "verified"})`;
+    icon = ev.ok ? "✓" : "▲";
+    activateModularAspect(agentMsg, `driver_${ev.step}`, `Step ${ev.step} ${ev.ok ? "Done" : "Refused"}`, ev.ok ? "✓" : "▲");
+  } else if (ev.type === "panel_call") {
+    label = `Panel seat query sent to ${ev.model || "panel"}`;
+    icon = "👥";
+    activateModularAspect(agentMsg, "consensus", "Panel Consensus", "👥");
+  } else if (ev.type === "panel_vote") {
+    label = `Panel vote received from ${ev.model || "panel"}`;
+    icon = "🗳️";
+    activateModularAspect(agentMsg, "consensus", "Panel Vote", "🗳️");
+  } else if (ev.type === "judge_call" || ev.type === "judge_result") {
+    label = `Consensus synthesis with judge ${ev.model || "judge"}`;
+    icon = "⚖️";
+    activateModularAspect(agentMsg, "consensus", "Judge Synthesis", "⚖️");
   } else if (ev.type === "orchestration_round") {
     const goalExcerpt = String(ev.goal || "").slice(0, 80);
     label = `Orchestrator round ${ev.round || "?"}: re-planning remaining scope${goalExcerpt ? `: ${goalExcerpt}` : ""}`;
     icon = "↻";
+    activateModularAspect(agentMsg, `orch_${ev.round || 1}`, `Round ${ev.round || 1}`, "↻");
     agentMsg.orchRound = ev.round || (agentMsg.orchRound || 1) + 1;
     agentMsg.stepperTitleText.textContent = `Orchestrator round ${ev.round || "?"}: driving remaining scope...`;
   } else if (ev.type === "orchestration_note") {
@@ -620,6 +845,17 @@ function renderFinalResult(runRecord, agentMsg) {
   `;
   agentMsg.footer.hidden = false;
 
+  // Aspect pipeline completion
+  const aspectBar = agentMsg.aspectBar || (agentMsg.card && agentMsg.card.querySelector(".aspect-pipeline-bar"));
+  if (aspectBar && !aspectBar.hidden) {
+    activateModularAspect(agentMsg, "verdict", res.status === "deferred" ? "Deferred" : "Response", res.status === "deferred" ? "⏸" : "🏁");
+    const chips = aspectBar.querySelectorAll(".aspect-chip");
+    chips.forEach(c => {
+      c.classList.remove("active");
+      c.classList.add("done");
+    });
+  }
+
   scrollToBottom();
 }
 
@@ -639,13 +875,14 @@ function createAgentMessageCard() {
   card.innerHTML = `
     <div class="card">
       <div class="stepper">
-        <div class="stepper-header" onclick="this.nextElementSibling.hidden = !this.nextElementSibling.hidden">
+        <div class="stepper-header" onclick="this.nextElementSibling.nextElementSibling.hidden = !this.nextElementSibling.nextElementSibling.hidden">
           <div class="stepper-title">
             <span class="spinner"></span>
-            <span class="stepper-title-text">Processing task...</span>
+            <span class="stepper-title-text">Processing task with Jev driver...</span>
           </div>
           <span style="font-size:10px; color:var(--dim);">collapse</span>
         </div>
+        <div class="aspect-pipeline-bar" hidden></div>
         <div class="stepper-body"></div>
       </div>
       <div class="markdown-body"></div>
@@ -656,6 +893,7 @@ function createAgentMessageCard() {
   return {
     card: card,
     stepper: card.querySelector(".stepper"),
+    aspectBar: card.querySelector(".aspect-pipeline-bar"),
     spinner: card.querySelector(".spinner"),
     stepperTitleText: card.querySelector(".stepper-title-text"),
     stepperBody: card.querySelector(".stepper-body"),
@@ -774,12 +1012,23 @@ async function pollSpend() {
     const s = spend.session || {};
     $("#spend-val").textContent = fmtCost(s.spent || 0);
     $("#spend-limit").textContent = `/ ${fmtCost(s.ceiling || 0.05)}`;
+    if (spend.jev) {
+      const j = spend.jev;
+      const elVal = $("#jev-spend-val");
+      const elLim = $("#jev-spend-limit");
+      const elMeter = $("#jev-spend-meter");
+      if (elVal) elVal.textContent = `Jev: ${fmtCost(j.cost || 0)}`;
+      if (elLim) elLim.textContent = `/ $${Number(j.monthly_credit || 5.0).toFixed(2)}`;
+      if (elMeter) {
+        elMeter.title = `TypeSafe Jev: ${fmtCost(j.cost || 0)} spent of $${Number(j.monthly_credit || 5.0).toFixed(2)} monthly credit (${Number(j.input_tokens || 0).toLocaleString()} tokens, ${(j.used_percent || 0).toFixed(1)}% used, $${Number(j.remaining_credit || 5.0).toFixed(4)} remaining)`;
+      }
+    }
   } catch (_e) {}
 }
 
 // ---- price-cap popover -----------------------------------------------------
-// The run ceiling lives in config (max_cost, hard-capped at 0.10); the
-// slider covers the practical chat range 0.01..0.10 and the text input
+// The run ceiling lives in config (max_cost, hard-capped at 1.00); the
+// slider covers the practical chat range 0.01..1.00 and the text input
 // allows exact values, which the server validates fail-closed.
 const CAP_SLIDER_MIN = 0.01;
 const CAP_SLIDER_MAX = 1.00;

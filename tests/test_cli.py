@@ -865,6 +865,48 @@ class CliPresentationOwnerTests(unittest.TestCase):
             # stays the same object so patches keep working.
             self.assertIs(getattr(cli, name), fn, name)
 
+    def test_cmd_spend_and_cost_with_jev(self):
+        import harness.cli as cli
+        from harness.config import load_settings
+        from harness.cli_report import _print_cost_table
+
+        mock_gov = mock.MagicMock()
+        mock_gov.key_status.return_value = {"spent": 0.01, "limit": 1.0}
+        mock_gov.spent = 0.01
+        mock_gov.max_cost = 1.0
+
+        mock_ledger = mock.MagicMock()
+        mock_ledger.cost_report.return_value = {
+            "total_cost": 0.01,
+            "events_count": 5,
+            "billable_calls": 3,
+            "free_calls": 2,
+            "savings": {"baseline_frontier_cost": 0.50, "net_savings": 0.49, "savings_percent": 98.0},
+            "jev": {
+                "calls": 10,
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "cost": 0.000042,
+                "monthly_credit": 5.0,
+                "remaining_credit": 4.999958,
+                "used_percent": 0.0,
+            },
+        }
+
+        settings = load_settings()
+        opts = mock.MagicMock()
+        opts.out = None
+        opts.last = None
+        opts.by_tier = False
+        opts.savings = True
+
+        with mock.patch("harness.cli._governor", return_value=("key", mock_gov)), \
+             mock.patch("harness.cli._ledger", return_value=mock_ledger):
+            cli._cmd_spend(opts, settings)
+            cli._cmd_cost(opts, settings)
+
+        _print_cost_table(mock_ledger.cost_report.return_value)
+
 
 if __name__ == "__main__":
     unittest.main()

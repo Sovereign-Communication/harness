@@ -56,6 +56,11 @@
         <span id="spend-val">$0.0000</span>
         <span class="dim" id="spend-limit">/ $0.05</span>
       </div>
+      <div class="spend-badge" id="jev-spend-meter" title="TypeSafe Jev monthly credit tracking: $5.00 included monthly">
+        <span class="dot" style="background: #8b5cf6;"></span>
+        <span id="jev-spend-val">Jev: $0.0000</span>
+        <span class="dim" id="jev-spend-limit">/ $5.00</span>
+      </div>
       <div class="cap-popover" id="cap-popover" hidden>
         <div class="cap-title">Run cost ceiling</div>
         <div class="cap-row">
@@ -83,8 +88,24 @@
       <button type="button" id="btn-web-toggle" class="mode-badge web-badge" title="Toggle live web search/fetch for chat (off: the agent states it has no web access)">
         <span id="web-icon">🌐</span> <span id="web-text">Web off</span>
       </button>
+      <button type="button" id="btn-auth-toggle" class="mode-badge auth-badge" title="Configure or view X-Harness-Auth token">
+        <span id="auth-icon">🔒</span> <span id="auth-text">Auth</span>
+      </button>
     </div>
   </header>
+
+  <!-- Auth Token Modal -->
+  <div id="auth-modal" class="auth-modal" hidden>
+    <div class="auth-card">
+      <div class="auth-title">🔒 Server Authentication Required</div>
+      <p class="auth-desc">The Harness server is protected with an authorization token (<code id="auth-error-msg">missing or wrong X-Harness-Auth token</code>). Enter your token below to authenticate API requests:</p>
+      <input type="password" id="auth-token-input" class="pane-input" placeholder="Enter X-Harness-Auth token..." autocomplete="off" />
+      <div class="auth-actions">
+        <button type="button" id="btn-save-token" class="pane-fetch">Authenticate</button>
+        <button type="button" id="btn-cancel-token" class="btn-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
 
   <div id="consent-banner" class="consent-banner" hidden>
     <span class="consent-msg" id="consent-msg">Free tier limits reached. Proceed with cheapest capable paid model?</span>
@@ -154,6 +175,6 @@
 </div><!-- /main-panel -->
 
 <script src="/app.js"></script>
-  <script type="module" src="./panes.js"></script>
+<script type="module" src="/panes.js"></script>
 </body>
 </html>

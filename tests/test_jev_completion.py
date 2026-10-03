@@ -19,6 +19,7 @@ from harness.errors import HarnessError
 from harness.jev_completion import (
     DEFAULT_COMPLETION_PACK,
     PHASE_COMPLETE_MIN_SCORE,
+    PHASE_CONTRACTS,
     _norm_phase,
     _status_row_for,
     collect_phase_evidence,
@@ -27,6 +28,7 @@ from harness.jev_completion import (
     score_phase_completion,
 )
 from harness import cli as harness_cli
+from harness.jev_packs import phase_status_claims_complete
 import re
 
 
@@ -1356,6 +1358,39 @@ class StatusRowMustNotCarryItsOwnEvidenceTests(unittest.TestCase):
             "tokens match on word boundaries, so a row merely naming the "
             "`pr_merged` flag is not preferred as merge proof |\n")
         self.assertFalse(self._claims_merge(roadmap, "HV-4"))
+
+
+class DriverPhaseRowsTests(unittest.TestCase):
+    """`DRV-1`/`DRV-2` are registered phases, so `jev-phase` reads their own
+    STATUS rows. While the driver PR has not landed, the live rows must stay
+    open and must not read as merge evidence."""
+
+    def _repo_root(self):
+        return str(Path(__file__).resolve().parents[1])
+
+    def test_each_driver_phase_resolves_to_its_own_row(self):
+        roadmap = (Path(self._repo_root()) / "docs" / "jev-roadmap.md").read_text(
+            encoding="utf-8")
+        drv1 = _status_row_for(roadmap, "DRV-1") or ""
+        drv2 = _status_row_for(roadmap, "DRV-2") or ""
+        self.assertTrue(drv1.startswith("| `DRV-1` `harness driver` adapter"))
+        self.assertTrue(drv2.startswith("| `DRV-2` driver-core extraction"))
+
+    def test_an_unlanded_driver_row_is_open_and_not_merge_evidence(self):
+        for phase in ("DRV-1", "DRV-2"):
+            evidence = collect_phase_evidence(self._repo_root(), phase)
+            self.assertFalse(evidence["pr_merged"], phase)
+            self.assertFalse(evidence["ci_green"], phase)
+            self.assertFalse(
+                phase_status_claims_complete(evidence["status_row"] or ""), phase)
+            self.assertTrue(evidence["open_blockers"], phase)
+
+    def test_the_driver_contracts_name_real_tests_and_files(self):
+        root = Path(self._repo_root())
+        for phase in ("DRV-1", "DRV-2"):
+            contract = PHASE_CONTRACTS[phase]
+            for rel in contract["required_tests"] + contract["required_files"]:
+                self.assertTrue((root / rel).is_file(), (phase, rel))
 
 
 if __name__ == "__main__":

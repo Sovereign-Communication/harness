@@ -33,7 +33,7 @@ def live_response(answers=None, input_tokens=100, output_tokens=20):
 
 class JevP0Tests(unittest.TestCase):
     def test_cost_is_input_only_and_exposed(self):
-        self.assertEqual(jev_cost(1_000_000), 0.0042)
+        self.assertEqual(jev_cost(1_000_000), 0.042)
         self.assertEqual(jev_cost(0), 0.0)
         transport = FakeTransport(response=live_response(input_tokens=250))
         result = JevEvaluator(api_key="key", transport=transport).evaluate(
@@ -41,7 +41,7 @@ class JevP0Tests(unittest.TestCase):
                        "confidence": {"type": "score", "instructions": "Rate x", "criteria": ["low", "high"]}})
         self.assertEqual(result.input_tokens, 250)
         self.assertEqual(result.output_tokens, 20)
-        self.assertAlmostEqual(result.cost, 250 * 0.0042 / 1_000_000)
+        self.assertAlmostEqual(result.cost, 250 * 0.042 / 1_000_000)
 
     def test_official_shapes_parse_and_noul_is_not_confidence(self):
         result = JevEvaluator()._parse_jev_response(live_response(), {
@@ -173,7 +173,7 @@ class JevP0Tests(unittest.TestCase):
         self.assertFalse(result.is_fallback)
         self.assertEqual(result.input_tokens, 250)
         self.assertEqual(result.output_tokens, 7)
-        self.assertAlmostEqual(result.cost, 250 * 0.0042 / 1_000_000)
+        self.assertAlmostEqual(result.cost, 250 * 0.042 / 1_000_000)
 
     def test_candidate_ast_fact_is_computed_at_agent_boundary(self):
         evaluator = JevEvaluator()
@@ -222,6 +222,22 @@ class JevP0Tests(unittest.TestCase):
                 handle.write("HARNESS_JEV_KEY=test-key\n")
             with mock.patch("harness.config.CONFIG_DIR", td), mock.patch.dict(os.environ, {}, clear=True):
                 self.assertEqual(resolve_jev_key(), "test-key")
+
+    def test_jev_credit_status(self):
+        from harness.jev import jev_credit_status
+        status = jev_credit_status(1_000_000)
+        self.assertEqual(status["input_tokens"], 1_000_000)
+        self.assertEqual(status["price_per_million_input"], 0.042)
+        self.assertEqual(status["cost_usd"], 0.042)
+        self.assertEqual(status["monthly_credit_usd"], 5.0)
+        self.assertEqual(status["remaining_credit_usd"], 4.958)
+        self.assertEqual(status["used_percent"], 0.84)
+
+        zero_status = jev_credit_status()
+        self.assertEqual(zero_status["input_tokens"], 0)
+        self.assertEqual(zero_status["cost_usd"], 0.0)
+        self.assertEqual(zero_status["remaining_credit_usd"], 5.0)
+        self.assertEqual(zero_status["used_percent"], 0.0)
 
 
 class JevChoiceRecoverabilityTests(unittest.TestCase):
@@ -300,7 +316,7 @@ class JevChoiceRecoverabilityTests(unittest.TestCase):
         self.assertEqual(result.verdict, "fail")
         # The provider billed it, so the spend is settled honestly...
         self.assertEqual(result.input_tokens, 1000)
-        self.assertAlmostEqual(result.cost, 1000 * 0.0042 / 1_000_000)
+        self.assertAlmostEqual(result.cost, 1000 * 0.042 / 1_000_000)
         # ...and the loss is named instead of degrading silently.
         self.assertTrue(result.discarded)
 

@@ -36,6 +36,41 @@ def _open_window(url, token):
     return "webview"
 
 
+def _read_token_file(path):
+    """The persisted desktop token, or "" when absent, blank or unreadable."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            token = f.read().strip()
+    except OSError:
+        return ""
+    try:
+        os.chmod(path, 0o600)  # tighten a file an older build left open
+    except OSError:
+        pass
+    return token
+
+
+def _write_token_file(path, token):
+    """Persist the desktop token readable by its owner only (best effort).
+
+    The file is created 0600 (POSIX; Windows ignores the mode bits) and an
+    existing file is tightened too, so a token written by an older build is
+    not left world-readable. Failure to persist is not fatal: the token just
+    will not survive a restart.
+    """
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(token)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="harness-desktop",
@@ -50,8 +85,14 @@ def main(argv=None):
     if opts.host not in ("127.0.0.1", "localhost", "::1"):
         print("[FATAL] loopback bind only", file=sys.stderr)
         sys.exit(1)
-    token = opts.auth_token or os.environ.get("HARNESS_UI_AUTH_TOKEN") \
-        or secrets.token_urlsafe(24)
+    token = opts.auth_token or os.environ.get("HARNESS_UI_AUTH_TOKEN")
+    if not token:
+        from .config import CONFIG_DIR
+        token_file = os.path.join(CONFIG_DIR, "desktop_token")
+        token = _read_token_file(token_file)
+        if not token:
+            token = secrets.token_urlsafe(24)
+            _write_token_file(token_file, token)
     httpd = make_server(opts.host, opts.port, auth_token=token)
     host, port = httpd.server_address[:2]
     url = f"http://{host}:{port}/"

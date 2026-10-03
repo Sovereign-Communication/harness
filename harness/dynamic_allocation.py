@@ -30,6 +30,8 @@ context-aware negotiation:
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from .jev import JEV_INPUT_PRICE_PER_MILLION
+
 # Baseline reference boundaries
 DEFAULT_MIN_WINDOW_LINES = 50
 DEFAULT_MAX_WINDOW_LINES = 1000
@@ -64,8 +66,8 @@ KNOWN_MODEL_SPECS: Dict[str, ModelContextSpec] = {
     "openai/gpt-4.1": ModelContextSpec(128_000, 16_384, 2.50, 10.00),
     "openai/gpt-5.6-sol": ModelContextSpec(128_000, 16_384, 5.00, 20.00),
     # TypeSafe System One Jev
-    "jev-latest": ModelContextSpec(65_536, 4_096, 0.0042, 0.0),
-    "jev-1.13.0": ModelContextSpec(65_536, 4_096, 0.0042, 0.0),
+    "jev-latest": ModelContextSpec(65_536, 4_096, JEV_INPUT_PRICE_PER_MILLION, 0.0),
+    "jev-1.13.0": ModelContextSpec(65_536, 4_096, JEV_INPUT_PRICE_PER_MILLION, 0.0),
 }
 
 DEFAULT_MODEL_SPEC = ModelContextSpec(128_000, 8_192, 0.20, 0.80)
