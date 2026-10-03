@@ -956,6 +956,25 @@ class DesktopTokenTests(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(self.cfg)),
                          ["desktop_token", "victim"])
 
+    def test_symlink_refusal_without_real_symlinks(self):
+        # Same contract as the symlink test above, but hermetic on hosts
+        # (Windows without Developer Mode) where creating a symlink is denied.
+        import harness.ui as ui_mod
+        with open(self.token_file, "w", encoding="utf-8") as f:
+            f.write("keep")
+        with mock.patch.object(ui_mod.os.path, "islink", return_value=True):
+            ui_mod._write_token_file(self.token_file, "new-token")
+            self.assertEqual(ui_mod._read_token_file(self.token_file), "")
+        with open(self.token_file, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "keep")
+        self.assertEqual(os.listdir(self.cfg), ["desktop_token"])
+
+    def test_a_failed_write_survives_a_failed_cleanup(self):
+        import harness.ui as ui_mod
+        with mock.patch.object(ui_mod.os, "replace", side_effect=OSError("no")),                 mock.patch.object(ui_mod.os, "unlink", side_effect=OSError("no")):
+            ui_mod._write_token_file(self.token_file, "t")  # must not raise
+        self.assertFalse(os.path.exists(self.token_file))
+
     def test_a_failed_write_leaves_no_temp_file(self):
         import harness.ui as ui_mod
         with mock.patch.object(ui_mod.os, "replace", side_effect=OSError("no")):
