@@ -6,9 +6,11 @@ event, and the structural envelope shared by apply, plan, waist, and agent
 lanes. P3 utilization packs live in :mod:`harness.jev_packs` and are imported
 here — still ONE policy owner, never a second Jev client.
 """
+import atexit
 import difflib
 import os
 import threading
+import weakref
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -106,6 +108,25 @@ FANOUT_MAX_WORKERS = 4
 # A live route choice below this confidence carries no usable signal: it is
 # discarded (billed) rather than honored by the confidence-aware acceptance.
 LOW_CONFIDENCE_FLOOR = 0.05
+
+
+# Every policy, so unwritten deduped-fallback tails can be flushed at the end
+# of a run, a command, a server, or the process (policies are per request).
+_LIVE_POLICIES: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def flush_all_fallbacks() -> int:
+    """Best-effort flush of every live policy's unwritten fallback tail."""
+    written = 0
+    for policy in list(_LIVE_POLICIES):
+        try:
+            written += policy.flush_fallbacks()
+        except Exception:
+            pass  # a flush must never break shutdown
+    return written
+
+
+atexit.register(flush_all_fallbacks)
 
 
 class _Reservation:
@@ -219,6 +240,7 @@ class JevPolicy:
         self._evicted_pending: Dict[Tuple[str, str], int] = {}
         self._state_lock = threading.Lock()
         self._tl = threading.local()
+        _LIVE_POLICIES.add(self)
         # The breaker board is shared process-wide on the real transport
         # (policies are built per request); explicit knobs get a private one.
         breakers = None

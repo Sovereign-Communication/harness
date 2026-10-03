@@ -151,6 +151,7 @@ class SpendGovernor:
         # Nested per-task scopes; the innermost one narrows _phase_ceiling.
         self._task_scopes = []
         self.spent = 0.0
+        self.overruns = 0  # billed calls booked past the ceiling
         self._outstanding = 0.0
         self._reservations = []
         self._cost_by_model = {}
@@ -200,7 +201,10 @@ class SpendGovernor:
     def key_status(self):
         if not self.key_info:
             self.verify_key()
-        return dict(self.key_info, session_spent=self.spent)
+        out = dict(self.key_info, session_spent=self.spent)
+        if self.overruns:
+            out["overruns"] = self.overruns
+        return out
 
     def set_phase(self, phase):
         """Set the dual-budget phase: attempt (default) or terminal.
@@ -285,6 +289,8 @@ class SpendGovernor:
                 "outstanding": round(float(self._outstanding), 6),
                 "ceiling": round(float(self.max_cost), 6),
             }
+            if self.overruns:
+                out["overruns"] = self.overruns
             if self.terminal_reserve != 0.0 or self._phase != PHASE_ATTEMPT:
                 env = dual_budget_envelope(
                     self.max_cost, self.spent, self.terminal_reserve,
@@ -510,7 +516,7 @@ class SpendGovernor:
         actual = finite_number(cost or 0.0, "reported cost", 0.0)
         with self._spend_lock:
             self.spent += actual
-            self.overruns = getattr(self, "overruns", 0) + 1
+            self.overruns += 1
             self._cost_by_model[label] = (
                 self._cost_by_model.get(label, 0.0) + actual)
 

@@ -40,6 +40,7 @@ from .batch import BatchOptions
 from .config import (HARD_MAX_COST, HARD_TASK_MAX_COST, load_settings,
                      resolve_api_key, update_config)
 from .errors import HarnessError, ToolCancelled
+from .jev_policy import flush_all_fallbacks
 from . import osal
 from .history import delete_chat_session, list_chat_sessions, load_chat_history as _history_load_chat_history
 from .session import (apply_session, governor_for, ledger_for, run_meta)
@@ -1640,6 +1641,7 @@ class UiServer(ThreadingHTTPServer):
         super().server_close()
         if hasattr(self, "ui") and self.ui:
             self.ui.uninstall_event_sink()
+        flush_all_fallbacks()
 
 
 def make_server(host="127.0.0.1", port=8765, auth_token=None):
