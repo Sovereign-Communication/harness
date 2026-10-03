@@ -36,10 +36,14 @@ class FakeRunner:
         self.default = default or osal.CommandResult(0, "ok\n", "")
         self.calls = []
 
-    def __call__(self, argv, cwd=None, timeout=None, **kw):
-        self.calls.append({"argv": list(argv), "cwd": cwd, "timeout": timeout})
+    def __call__(self, argv, cwd=None, timeout=None, env=None, **kw):
+        # The executor pins a bare name to a resolved path; record and match
+        # on the program's bare name so a test reads the same either way.
+        shown = [pv._exe_name(argv[0])] + list(argv[1:])
+        self.calls.append({"argv": shown, "resolved": list(argv), "cwd": cwd,
+                           "timeout": timeout, "env": env})
         for prefix, outcome in self.script.items():
-            if tuple(argv[:len(prefix)]) == prefix:
+            if tuple(shown[:len(prefix)]) == prefix:
                 if isinstance(outcome, BaseException):
                     raise outcome
                 return outcome
@@ -47,6 +51,11 @@ class FakeRunner:
 
     def argvs(self):
         return [c["argv"] for c in self.calls]
+
+
+def fake_which(name):
+    """Every bare name resolves into a PATH directory nobody is working in."""
+    return "/usr/bin/" + name
 
 
 def which_of(*names, paths=None):
@@ -319,7 +328,7 @@ class AllowlistTests(TempRootCase):
                      ("pip", "show", "requests"),
                      ("pip", "--version"),
                      ("npm", "--version"),
-                     ("npm", "ls", "--prefix", self.root, "left-pad"),
+                     ("npm", "ls", "left-pad", "--prefix", self.root),
                      ("npm", "list", "--prefix", self.root),
                      ("winget", "--version"), ("brew", "--version"),
                      ("winget", "list", "--id", "Pkg.Id"),
@@ -339,8 +348,8 @@ class AllowlistTests(TempRootCase):
              "requests==2.0", "rich[extras]>=1"): True,
             ("python", "-m", "pip", "install", "--only-binary=:all:",
              "--target", self.work(), "ruff"): True,
-            ("npm", "install", "--prefix", self.root, "--ignore-scripts",
-             "left-pad@1.3.0", "@scope/pkg"): True,
+            ("npm", "install", "left-pad@1.3.0", "@scope/pkg", "--prefix",
+             self.root, "--ignore-scripts"): True,
             (os.path.join(self.work(), "venv", "bin", "pip"), "install",
              "--only-binary=:all:", "-q", "x"): True,
         }
@@ -381,7 +390,7 @@ class AllowlistTests(TempRootCase):
     def test_unlisted_executables_and_registry_paths(self):
         self.refuse("git", "clone", "x", needle="not on the provisioning allowlist")
         self.refuse("python", "--version", "HKLM\\Software\\X", needle="registry")
-        self.refuse("python", "--version", "bad\narg", needle="control")
+        self.refuse("python", "--version", "bad\narg", needle="shell syntax")
 
     def test_shell_string_and_malformed_argv(self):
         for bad in ("pip install x", b"pip", [], (), None, ["pip", 1], ["pip", ""]):
@@ -403,7 +412,7 @@ class AllowlistTests(TempRootCase):
         self.refuse("pip", needle="needs a subcommand")
         self.refuse("pip", "uninstall", "x", needle="not allowed")
         self.refuse("pip", "list", "--user", needle="not allowed")
-        self.refuse("pip", "show", "https://x/y.whl", needle="plain name")
+        self.refuse("pip", "show", "https://x/y.whl", needle="local file")
         self.refuse("pip", "install", "--only-binary=:all:", "requests",
                     needle="must target an approved root")
         self.refuse("python", "-m", "pip", "install", "--target", root, "x",
@@ -446,13 +455,14 @@ class AllowlistTests(TempRootCase):
         self.refuse("npm", "install", "-g", "x", needle="not allowed")
         self.refuse("npm", "install", "x", needle="--prefix")
         self.refuse("npm", "ls", needle="--prefix")
-        self.refuse("npm", "install", "--prefix", self.root, "x",
+        self.refuse("npm", "install", "x", "--prefix", self.root,
                     needle="--ignore-scripts")
-        self.refuse("npm", "install", "--prefix", self.tmp, "--ignore-scripts",
-                    "x", needle="outside every approved root")
-        self.refuse("npm", "install", "--prefix", self.root, "--ignore-scripts",
-                    "http://evil/x.tgz", needle="plain name")
-        self.refuse("npm", "ls", "--prefix", self.root, "../x", needle="plain name")
+        self.refuse("npm", "install", "x", "--prefix", self.tmp,
+                    "--ignore-scripts", needle="outside every approved root")
+        self.refuse("npm", "install", "http://evil/x", "--prefix", self.root,
+                    "--ignore-scripts", needle="plain name")
+        self.refuse("npm", "ls", "../x", "--prefix", self.root,
+                    needle="plain name")
 
     def test_system_manager_refusals(self):
         self.refuse("winget", needle="needs a subcommand")
@@ -460,9 +470,9 @@ class AllowlistTests(TempRootCase):
         self.refuse("winget", "install", "Pkg.Id", needle="--id")
         self.refuse("winget", "install", "--id", "Pkg.Id", "extra", needle="--id")
         self.refuse("choco", "install", "-y", needle="at least one package")
-        self.refuse("brew", "install", "https://x/y.rb", needle="plain name")
+        self.refuse("brew", "install", "https://x/y.rb", needle="local file")
         self.refuse("choco", "install", "--version", "1;2", "x", needle="not plain")
-        self.refuse("brew", "list", "a/b/c", needle="plain package id")
+        self.refuse("brew", "list", "a/b/c", needle="plain name")
         self.refuse("apt", "install", "--allow-unauthenticated", "x",
                     needle="not allowed")
 
@@ -476,7 +486,7 @@ class AllowlistTests(TempRootCase):
                     needle="outside every approved root")
         # an absolute-path "mkdir" is some other binary, not the builtin
         self.refuse(os.path.join(self.tmp, "mkdir"), self.work(),
-                    needle="allowlist")
+                    needle="not a trusted executable")
 
     def test_no_approved_root_means_no_path_rule_passes(self):
         bare = pv.ProvisionPolicy()
@@ -646,7 +656,7 @@ class ApprovalGateTests(TempRootCase):
             gate.record(plan, pv.APPROVE, approver=None)
         with self.assertRaises(pv.ProvisionError):
             gate.approve_step(plan, "no-such-step", "alice")
-        self.assertEqual(gate.records, [])
+        self.assertEqual(gate.records, ())
 
     def test_flagged_plans_cannot_be_approved_whole(self):
         plan = pv.Plan("g", mutating_plan(self.root).steps, self.root, "x", "x",
@@ -711,6 +721,7 @@ class ApprovalGateTests(TempRootCase):
 class ExecutorTests(TempRootCase):
     def run_plan(self, plan, gate, **kw):
         runner = kw.pop("runner", FakeRunner())
+        kw.setdefault("which", fake_which)
         report = pv.execute_plan(plan, gate, policy=self.policy,
                                  ledger=self.ledger, task_id="t", runner=runner,
                                  **kw)
@@ -787,9 +798,12 @@ class ExecutorTests(TempRootCase):
         self.assertEqual(report.results[1].approver, "alice")
         # ledger: plan, approval, 3 steps, end -- one chain
         names = [e["event"] for e in self.ledger.entries()]
-        self.assertEqual(names, ["provision_approval", "provision_plan",
-                                 "provision_step", "provision_step",
-                                 "provision_step", "provision_end"])
+        self.assertEqual(names, [
+            "provision_approval", "provision_plan",
+            "provision_step_start", "provision_step",   # python --version
+            "provision_step_start", "provision_step",   # mkdir (builtin)
+            "provision_step_start", "provision_step",   # pip install
+            "provision_end"])
         self.assertEqual(self.ledger.verify(), (True, None))
         end = self.events("provision_end")[0]
         self.assertEqual(end["outcome"], pv.COMPLETED)
@@ -938,7 +952,7 @@ class ExecutorTests(TempRootCase):
         with self.assertRaises(pv.ProvisionError):
             pv.execute_plan(bad, pv.ApprovalGate(), policy=self.policy,
                             ledger=self.ledger, runner=FakeRunner(),
-                            dry_run=False)
+                            dry_run=False, which=fake_which)
         self.assertEqual(self.ledger.entries(), [])
 
     def test_output_is_truncated_in_the_ledger_but_hashed_whole(self):
@@ -948,25 +962,33 @@ class ExecutorTests(TempRootCase):
         runner = FakeRunner(default=osal.CommandResult(0, "x" * 100, ""))
         report = pv.execute_plan(plan, pv.ApprovalGate(), policy=policy,
                                  ledger=self.ledger, runner=runner,
-                                 dry_run=False)
+                                 dry_run=False, which=fake_which)
         self.assertEqual(len(report.results[0].stdout), 100)
         logged = self.events("provision_step")[0]
         self.assertTrue(logged["stdout"].startswith("...[truncated]"))
         self.assertEqual(logged["output_sha256"], pv._sha256("x" * 100 + "\x00"))
 
-    def test_execution_without_a_ledger_still_works(self):
+    def test_a_dry_run_needs_no_ledger_but_a_real_run_refuses_without_one(self):
         plan = pv.Plan("g", [step()], self.root, "x", "x", True)
-        report = pv.execute_plan(plan, pv.ApprovalGate(), policy=self.policy,
-                                 runner=FakeRunner(), dry_run=False)
-        self.assertEqual(report.outcome, pv.COMPLETED)
+        preview = pv.execute_plan(plan, pv.ApprovalGate(), policy=self.policy,
+                                  runner=FakeRunner())
+        self.assertEqual(preview.outcome, pv.DRY_RUN)
+        runner = FakeRunner()
+        with self.assertRaises(pv.ProvisionError) as ctx:
+            pv.execute_plan(plan, pv.ApprovalGate(), policy=self.policy,
+                            runner=runner, dry_run=False, which=fake_which)
+        self.assertIn("ledger", str(ctx.exception))
+        self.assertEqual(runner.calls, [])
 
     def test_default_runner_is_the_osal_seam(self):
         # No runner passed: a bare '--version' of the running interpreter
         # proves the default routes through osal.run for real, read-only.
         plan = pv.Plan("g", [step(argv=(osal.python_exe(), "--version"))],
                        self.root, "x", "x", True)
-        report = pv.execute_plan(plan, pv.ApprovalGate(), policy=self.policy,
-                                 dry_run=False)
+        policy = pv.ProvisionPolicy(approved_roots=(self.root,),
+                                    trusted_executables=(osal.python_exe(),))
+        report = pv.execute_plan(plan, pv.ApprovalGate(), policy=policy,
+                                 ledger=self.ledger, dry_run=False)
         self.assertEqual(report.outcome, pv.COMPLETED)
         self.assertIn("Python", report.results[0].stdout + report.results[0].stderr)
 
@@ -1356,14 +1378,15 @@ class EndToEndTests(TempRootCase):
 
         refused, _ = (pv.execute_plan(plan, gate, policy=self.policy,
                                       ledger=self.ledger, task_id="e2e",
-                                      runner=runner, dry_run=False), None)
+                                      runner=runner, dry_run=False,
+                                      which=fake_which), None)
         self.assertEqual(refused.outcome, pv.AWAITING_APPROVAL)
         self.assertEqual(runner.calls, [])
 
         gate.approve_plan(plan, "operator", "reviewed the rendered plan")
         done = pv.execute_plan(plan, gate, policy=self.policy,
                                ledger=self.ledger, task_id="e2e", runner=runner,
-                               dry_run=False)
+                               dry_run=False, which=fake_which)
         self.assertEqual(done.outcome, pv.COMPLETED)
         self.assertTrue(os.path.isdir(plan.root))
         argvs = runner.argvs()

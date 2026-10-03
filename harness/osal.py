@@ -345,8 +345,28 @@ def norm_path(path):
     ``_fs_case_insensitive``), which is why every containment check goes
     through here instead of comparing raw strings.
     """
-    out = os.path.normcase(os.path.realpath(os.path.abspath(path)))
-    return out.lower() if _fs_case_insensitive() else out
+    out = os.path.realpath(os.path.abspath(path))
+    if _fs_case_insensitive():
+        # NOT os.path.normcase: on Windows it folds with the OS locale mapping
+        # (Kelvin sign -> k), which NTFS does not. realpath already yields
+        # one separator style, so only the safe ASCII fold remains to apply.
+        return _ascii_fold(out)
+    return os.path.normcase(out)
+
+
+_ASCII_UPPER_TO_LOWER = {c: c + 32 for c in range(ord("A"), ord("Z") + 1)}
+
+
+def _ascii_fold(text):
+    """Fold ASCII letters only.
+
+    ``str.lower`` also folds characters the filesystem does NOT treat as the
+    same (the Kelvin sign U+212A lowers to ``k``, but NTFS keeps ``<Kelvin sign>root``
+    and ``kroot`` as two directories). For a containment check the safe error
+    is "different", so only the folding every case-insensitive volume agrees
+    on is applied.
+    """
+    return text.translate(_ASCII_UPPER_TO_LOWER)
 
 
 def same_path(a, b):

@@ -9,9 +9,8 @@ The shape is four small, separately testable stages, and the safety rules
 live in code at the seams between them rather than in a prompt:
 
 1. **probe** (:func:`probe_host`) -- read-only facts: OS, architecture,
-   interpreter, GPU presence, free disk, package managers. Every probe
-   command is itself an allowlisted READ argv run through the ``osal``
-   subprocess seam.
+   interpreter, GPU presence, free disk, package managers, gathered with
+   fixed query argvs through the ``osal`` subprocess seam.
 2. **plan** (:func:`plan_provision`) -- an ordered, typed :class:`Plan` of
    :class:`Step`\\ s. A step is an argv *list* (never a shell string), a
    class (READ / MUTATING / IRREVERSIBLE, the same vocabulary as
@@ -80,12 +79,15 @@ AWAITING_APPROVAL = "awaiting_approval"
 SKIPPED = "skipped"
 ALREADY_DONE = "already_done"
 
-PROVISION_EVENTS = ("provision_plan", "provision_approval", "provision_step",
-                    "provision_end")
+PROVISION_EVENTS = ("provision_plan", "provision_approval",
+                    "provision_step_start", "provision_step", "provision_end")
 
 DEFAULT_STEP_TIMEOUT_S = 900
 DEFAULT_MAX_STEPS = 24
 DEFAULT_MAX_OUTPUT_CHARS = 8000
+DEFAULT_MAX_ARGV = 64
+DEFAULT_MAX_ARG_CHARS = 1024
+DEFAULT_MAX_SPECS = 32
 _PROBE_TIMEOUT_S = 10
 
 PROBE_PACKAGE_MANAGERS = ("winget", "choco", "scoop", "apt", "brew", "pip", "npm")
@@ -238,9 +240,14 @@ def probe_host(path: Optional[str] = None, *, runner: Optional[Callable] = None,
 
     ``runner`` / ``which`` default to :func:`osal.run` / :func:`osal.which`
     and exist so tests (and any later remote probe) can substitute a double;
-    ``facts`` overrides the platform facts the same way. Every command run
-    here is a fixed ``--version`` or GPU-query argv with a short timeout --
-    nothing in a probe can change the host.
+    ``facts`` overrides the platform facts the same way. The commands are
+    fixed argv lists with a short timeout: ``<name> --version`` for each
+    well-known package manager found on PATH, ``<python> -m pip --version``
+    when ``pip`` is not on PATH, and the GPU vendor queries. They are
+    read-only *by construction of the argv*, not by sandboxing: each runs
+    whatever executable PATH resolves that name to, so a probe is only as
+    trustworthy as the machine's PATH. No probe output is ever turned into
+    an argv; the planner builds argv from fixed templates alone.
     """
     run = runner or osal.run
     find = which or osal.which
@@ -398,9 +405,16 @@ class Plan:
 
     @property
     def digest(self) -> str:
-        """Content hash of what would run -- not of who proposed it."""
+        """Content hash of what would run and how it may be approved.
+
+        ``review_required`` is part of it: a plan flagged for per-step
+        approval must not hash like its unflagged twin, or the flag could be
+        dropped and the same approvals replayed. Who proposed the plan
+        (``source``, notes) is provenance, not content.
+        """
         return _sha256(_canon({
             "goal": self.goal, "root": self.root,
+            "review_required": bool(self.review_required),
             "steps": [step.to_dict() for step in self.steps]}))
 
     def step(self, step_id: str) -> Step:
@@ -432,7 +446,9 @@ def plan_from_dict(data: Any) -> Plan:
                 str(data.get("recipe") or "external"),
                 str(data.get("source") or "external"),
                 bool(data.get("is_fallback", True)),
-                tuple(str(n) for n in (data.get("notes") or ())))
+                tuple(str(n) for n in (data.get("notes") or ())),
+                dict(data.get("review") or {}),
+                data.get("review_required") is True)
 
 
 def render_plan(plan: Plan) -> str:
@@ -468,9 +484,46 @@ class ProvisionPolicy:
     max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS
     allow_system_install: bool = True
     allow_source_builds: bool = False
+    # Absolute interpreter paths (e.g. the probed ``sys.executable``) a step
+    # may name by path. Any other executable must be a bare name resolved on
+    # PATH at run time, or live inside an approved root.
+    trusted_executables: Tuple[str, ...] = ()
+    max_argv: int = DEFAULT_MAX_ARGV
+    max_arg_chars: int = DEFAULT_MAX_ARG_CHARS
+    max_specs: int = DEFAULT_MAX_SPECS
 
     def __post_init__(self):
-        object.__setattr__(self, "approved_roots", tuple(self.approved_roots))
+        roots = tuple(self.approved_roots)
+        trusted = tuple(self.trusted_executables)
+        for root in roots:
+            problem = _path_problem(root)
+            if problem:
+                raise ProvisionError(f"approved root {root!r}: {problem}")
+            absolute = os.path.abspath(root)
+            if os.path.dirname(absolute) == absolute:
+                raise ProvisionError(
+                    f"approved root {root!r} is a filesystem root; name a directory")
+        for exe in trusted:
+            problem = _path_problem(exe)
+            if problem:
+                raise ProvisionError(f"trusted executable {exe!r}: {problem}")
+        object.__setattr__(self, "approved_roots", roots)
+        object.__setattr__(self, "trusted_executables", trusted)
+
+
+def policy_for_probe(probe: "HostProbe", approved_roots: Sequence[str],
+                     **kw) -> ProvisionPolicy:
+    """A policy that trusts exactly the probed interpreter by path.
+
+    The probe's ``python_executable`` is normally an absolute path outside
+    every approved root; naming it is only admissible because the operator
+    built the policy from this probe on purpose.
+    """
+    trusted = tuple(kw.pop("trusted_executables", ()))
+    if os.path.dirname(probe.python_executable):
+        trusted += (probe.python_executable,)
+    return ProvisionPolicy(approved_roots=tuple(approved_roots),
+                           trusted_executables=trusted, **kw)
 
 
 # Never admissible, whatever the arguments. The allowlist already refuses
@@ -527,6 +580,66 @@ class Admission:
     rule: str
 
 
+def _path_problem(path: Any) -> Optional[str]:
+    """Why ``path`` cannot be used as an absolute, plain filesystem path."""
+    if not isinstance(path, str) or not path.strip():
+        return "must be a non-empty string"
+    if "\0" in path:
+        return "contains a NUL"
+    if path.startswith("\\\\") or path.startswith("//"):
+        return "UNC and device paths are not accepted"
+    if not os.path.isabs(path):
+        return ("must be absolute (a relative path would resolve against "
+                "whatever directory the step runs in)")
+    return None
+
+
+# Characters cmd.exe (and so any batch shim) treats as syntax. No step needs
+# them, so none may appear in any argv element. The comparison operators of a
+# pip requirement (``>=``, ``!=``) are the one legitimate use, allowed only
+# inside a token that fully matches the strict requirement grammar.
+_CMD_META = frozenset('&|^%"!<>\n\r\0')
+_SPEC_OPERATOR_CHARS = frozenset("!<>")
+# Words a lenient option parser reads as the VALUE of the flag before them
+# (``--ignore-scripts false`` turns the protection off).
+_BOOL_WORDS = frozenset((
+    "true", "false", "yes", "no", "on", "off", "0", "1", "null", "undefined"))
+_ARTIFACT_SUFFIXES = (
+    ".whl", ".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".gz",
+    ".deb", ".rpm", ".nupkg", ".json", ".rb", ".msi", ".exe", ".appx", ".dmg",
+    ".pkg", ".sh", ".ps1", ".txt", ".toml", ".cfg", ".ini")
+_WINDOWS_SHIM_SUFFIXES = (".cmd", ".bat")
+
+
+def _looks_like_artifact(text: str) -> bool:
+    """A local file, not a registry name: installing it runs unreviewed bytes."""
+    return str(text).lower().endswith(_ARTIFACT_SUFFIXES)
+
+
+def _is_bare_name(token: str) -> bool:
+    return not any(ch in token for ch in ("/", "\\", ":"))
+
+
+def _check_executable(argv0: str, policy: "ProvisionPolicy"):
+    """argv[0]: a bare PATH name, a trusted interpreter, or inside a root."""
+    if argv0.lower().endswith(_WINDOWS_SHIM_SUFFIXES):
+        raise ProvisionError(
+            f"{argv0!r} is a cmd.exe batch shim; shims re-parse their "
+            "arguments and are never run")
+    if _is_bare_name(argv0):
+        return
+    problem = _path_problem(argv0)
+    if problem:
+        raise ProvisionError(f"executable path {argv0!r}: {problem}")
+    if _within_roots(argv0, policy):
+        return
+    if any(osal.same_path(argv0, trusted) for trusted in policy.trusted_executables):
+        return
+    raise ProvisionError(
+        f"executable path {argv0!r} is outside every approved root and is not "
+        "a trusted executable (use a bare name, or policy_for_probe)")
+
+
 def _exe_name(token: str) -> str:
     base = os.path.basename(token.replace("\\", "/")).lower()
     for suffix in (".exe", ".cmd", ".bat"):
@@ -542,6 +655,9 @@ def _within_roots(path: str, policy: ProvisionPolicy) -> bool:
 def _require_in_roots(path: str, policy: ProvisionPolicy, what: str):
     if not policy.approved_roots:
         raise ProvisionError(f"{what} {path!r}: no approved root is configured")
+    problem = _path_problem(path)
+    if problem:
+        raise ProvisionError(f"{what} {path!r}: {problem}")
     if not _within_roots(path, policy):
         raise ProvisionError(
             f"{what} {path!r} is outside every approved root "
@@ -549,12 +665,15 @@ def _require_in_roots(path: str, policy: ProvisionPolicy, what: str):
 
 
 def _split_flags(args: Sequence[str], valued: Mapping[str, str],
-                 boolean: Iterable[str], where: str):
+                 boolean: Iterable[str], where: str, specs_first: bool = False):
     """Split ``args`` into ({flag: value}, [flag...], [positionals]).
 
     ``valued`` flags consume one value token, ``boolean`` flags none; any
     other ``-x`` token is refused -- an unknown flag is an unreviewed
-    capability (``--index-url``, ``--user``, ``-r`` ...).
+    capability (``--index-url``, ``--user``, ``-r`` ...). With
+    ``specs_first`` every positional must precede every flag, so no bare
+    word can follow a boolean flag (a lenient option parser would swallow
+    ``--ignore-scripts false`` as the flag's value and switch it off).
     """
     booleans = set(boolean)
     values: Dict[str, str] = {}
@@ -579,19 +698,41 @@ def _split_flags(args: Sequence[str], valued: Mapping[str, str],
             else:
                 raise ProvisionError(f"{where}: flag {token!r} is not allowed")
         else:
+            if specs_first and (values or flags):
+                raise ProvisionError(
+                    f"{where}: {token!r} must come before the flags")
             positionals.append(token)
         index += 1
     return values, flags, positionals
 
 
-def _check_specs(specs: Sequence[str], pattern, where: str):
+def _check_plain(value: str, pattern, where: str):
+    """One package id / spec: registry-shaped, never a flag word or a file."""
+    if value.lower() in _BOOL_WORDS:
+        raise ProvisionError(
+            f"{where}: {value!r} is a boolean word, not a package (a lenient "
+            "option parser would read it as a flag value)")
+    if _looks_like_artifact(value):
+        raise ProvisionError(
+            f"{where}: {value!r} looks like a local file; only registry "
+            "package names are installed")
+    if not pattern.match(value):
+        raise ProvisionError(
+            f"{where}: package spec {value!r} is not a plain "
+            "name[==version] (no URLs, paths or VCS references)")
+
+
+def _check_specs(specs: Sequence[str], pattern, where: str,
+                 policy: Optional["ProvisionPolicy"] = None):
     if not specs:
         raise ProvisionError(f"{where}: at least one package is required")
+    limit = policy.max_specs if policy is not None else DEFAULT_MAX_SPECS
+    if len(specs) > limit:
+        raise ProvisionError(
+            f"{where}: {len(specs)} packages exceeds the limit of {limit}")
     for spec in specs:
-        if not pattern.match(spec):
-            raise ProvisionError(
-                f"{where}: package spec {spec!r} is not a plain "
-                "name[==version] (no URLs, paths or VCS references)")
+        _check_plain(spec, pattern, where)
+    return None
 
 
 def _admit_python(argv, policy):
@@ -625,14 +766,14 @@ def _admit_pip(exe, rest, policy):
     if sub == "show":
         _, _, specs = _split_flags(args, {}, ("--disable-pip-version-check",),
                                    where)
-        _check_specs(specs, _PIP_SPEC_RE, where + " show")
+        _check_specs(specs, _PIP_SPEC_RE, where + " show", policy)
         return Admission(READ, False, "pip-show")
     if sub != "install":
         raise ProvisionError(f"pip {sub!r} is not allowed (install, list, show only)")
     boolean = ["--no-input", "--disable-pip-version-check", "--no-deps",
                "--upgrade", "-U", "--quiet", "-q", "--only-binary=:all:"]
     values, flags, specs = _split_flags(args, {"--target": "dir"}, boolean, where)
-    _check_specs(specs, _PIP_SPEC_RE, where + " install")
+    _check_specs(specs, _PIP_SPEC_RE, where + " install", policy)
     if not policy.allow_source_builds and "--only-binary=:all:" not in flags:
         raise ProvisionError(
             "pip install must pass --only-binary=:all: (source builds run "
@@ -656,18 +797,19 @@ def _admit_npm(rest, policy):
         return Admission(READ, False, "npm-version")
     if sub in ("ls", "list"):
         values, _, specs = _split_flags(args, {"--prefix": "dir"}, ("--depth=0",),
-                                        where)
+                                        where, specs_first=True)
         if "--prefix" not in values:
             raise ProvisionError("npm ls must pass --prefix <dir in root>")
         _require_in_roots(values["--prefix"], policy, "npm --prefix")
-        for spec in specs:
-            _check_specs([spec], _NPM_SPEC_RE, where + " ls")
+        if specs:
+            _check_specs(specs, _NPM_SPEC_RE, where + " ls", policy)
         return Admission(READ, False, "npm-ls")
     if sub not in ("install", "i"):
         raise ProvisionError(f"npm {sub!r} is not allowed (install, ls only)")
     values, flags, specs = _split_flags(
         args, {"--prefix": "dir"},
-        ("--ignore-scripts", "--no-audit", "--no-fund", "--save-exact"), where)
+        ("--ignore-scripts", "--no-audit", "--no-fund", "--save-exact"), where,
+        specs_first=True)
     if "--prefix" not in values:
         raise ProvisionError("npm install must pass --prefix <dir in root> (no global installs)")
     _require_in_roots(values["--prefix"], policy, "npm --prefix")
@@ -675,8 +817,19 @@ def _admit_npm(rest, policy):
         raise ProvisionError(
             "npm install must pass --ignore-scripts (install scripts run "
             "arbitrary code)")
-    _check_specs(specs, _NPM_SPEC_RE, where + " install")
+    _check_specs(specs, _NPM_SPEC_RE, where + " install", policy)
     return Admission(MUTATING, True, "npm-install")
+
+
+_PACKAGE_SOURCES = ("winget", "msstore")
+
+
+def _check_source(values, where):
+    """A package source is a closed vocabulary, never a URL or a flag word."""
+    source = values.get("--source")
+    if source is not None and source not in _PACKAGE_SOURCES:
+        raise ProvisionError(
+            f"{where}: --source {source!r} is not one of {list(_PACKAGE_SOURCES)}")
 
 
 def _admit_system(name, rest, policy):
@@ -691,9 +844,9 @@ def _admit_system(name, rest, policy):
         values, _, specs = _split_flags(
             args, {"--id": "id", "--source": "src"},
             ("--installed", "--local-only", "-e", "--exact"), where)
-        for value in list(values.values()) + specs:
-            if not _SYSTEM_SPEC_RE.match(value):
-                raise ProvisionError(f"{where} {sub}: {value!r} is not a plain package id")
+        _check_source(values, where)
+        for value in [v for k, v in values.items() if k == "--id"] + list(specs):
+            _check_plain(value, _SYSTEM_SPEC_RE, f"{where} {sub}")
         return Admission(READ, False, f"{name}-{sub}")
     if sub != "install":
         raise ProvisionError(f"{name} {sub!r} is not allowed (install and queries only)")
@@ -707,11 +860,12 @@ def _admit_system(name, rest, policy):
             ("-e", "--exact"), where)
         if "--id" not in values or specs:
             raise ProvisionError("winget install takes --id <package id> and no bare names")
+        _check_source(values, where)
         packages = [values["--id"]]
     else:
         values, _, packages = _split_flags(
             args, {"--version": "ver"}, ("-y", "--yes"), where)
-    _check_specs(packages, _SYSTEM_SPEC_RE, where + " install")
+    _check_specs(packages, _SYSTEM_SPEC_RE, where + " install", policy)
     version = values.get("--version")
     if version is not None and not _VERSION_RE.match(version):
         raise ProvisionError(f"{where} install: version {version!r} is not plain")
@@ -735,11 +889,22 @@ def classify_argv(argv: Sequence[str], policy: ProvisionPolicy) -> Admission:
         raise ProvisionError("argv must be a list of arguments, not a shell string")
     if not isinstance(argv, (list, tuple)) or not argv:
         raise ProvisionError("argv must be a non-empty list")
+    if len(argv) > policy.max_argv:
+        raise ProvisionError(
+            f"argv has {len(argv)} elements; the limit is {policy.max_argv}")
     for token in argv:
         if not isinstance(token, str) or not token:
             raise ProvisionError("every argv element must be a non-empty string")
-        if any(ch in token for ch in ("\n", "\r", "\0")):
-            raise ProvisionError("argv elements may not contain control characters")
+        if len(token) > policy.max_arg_chars:
+            raise ProvisionError(
+                f"an argv element is {len(token)} characters; the limit is "
+                f"{policy.max_arg_chars}")
+        syntax = _CMD_META.intersection(token)
+        if syntax and not (not syntax - _SPEC_OPERATOR_CHARS
+                           and _PIP_SPEC_RE.match(token)):
+            raise ProvisionError(
+                f"argv element {token!r} contains shell syntax "
+                f"{sorted(syntax)!r}; no step needs it")
         if _REGISTRY_RE.match(token):
             raise ProvisionError(f"registry path {token!r} is never allowed")
     name = _exe_name(argv[0])
@@ -747,6 +912,7 @@ def classify_argv(argv: Sequence[str], policy: ProvisionPolicy) -> Admission:
         raise ProvisionError(f"{argv[0]!r} is never allowed ({_DENIED[name]})")
     if name == "mkdir" and os.path.dirname(argv[0]) == "":
         return _admit_mkdir(argv, policy)
+    _check_executable(argv[0], policy)
     if _PYTHON_RE.match(name):
         return _admit_python(argv, policy)
     if name == "pip":
@@ -812,6 +978,13 @@ def validate_plan(plan: Plan, policy: ProvisionPolicy) -> Tuple[Admission, ...]:
         problems.append("a plan needs at least one step")
     if len(plan.steps) > policy.max_steps:
         problems.append(f"{len(plan.steps)} steps exceeds the limit of {policy.max_steps}")
+    if plan.root:
+        try:
+            _require_in_roots(plan.root, policy, "plan root")
+        except ProvisionError as exc:
+            problems.append(str(exc))
+    elif any(step.classification != READ for step in plan.steps):
+        problems.append("a plan with mutating steps must name its root")
     seen = set()
     admissions: List[Admission] = []
     for step in plan.steps:
@@ -880,7 +1053,12 @@ class ApprovalGate:
         self.task_id = task_id
         self.ask = ask
         self.ask_approver = ask_approver
-        self.records: List[ApprovalRecord] = []
+        self._records: List[ApprovalRecord] = []
+
+    @property
+    def records(self) -> Tuple[ApprovalRecord, ...]:
+        """Read-only view: callers add decisions only through :meth:`record`."""
+        return tuple(self._records)
 
     def record(self, plan: Plan, decision: str, *, approver: str,
                step_id: Optional[str] = None, reason: str = "") -> ApprovalRecord:
@@ -899,7 +1077,7 @@ class ApprovalGate:
             step.id if step is not None else None,
             step.digest() if step is not None else None,
             approver.strip(), str(reason or ""), _now())
-        self.records.append(entry)
+        self._records.append(entry)
         if self.ledger is not None:
             fields = entry.to_dict()
             # The ledger stamps its own ``ts``; keep the decision time apart.
@@ -934,7 +1112,7 @@ class ApprovalGate:
         digest = plan.digest
         plan_level = None
         step_level = None
-        for entry in self.records:
+        for entry in self._records:
             if entry.plan_digest != digest:
                 continue
             if entry.scope == "plan":
@@ -1028,13 +1206,66 @@ def _tail(text: str, limit: int) -> str:
     return text if len(text) <= limit else "...[truncated]\n" + text[-limit:]
 
 
-def _builtin_mkdir(step: Step) -> osal.CommandResult:
+def _builtin_mkdir(step: Step, policy: ProvisionPolicy) -> osal.CommandResult:
     target = step.argv[1]
     try:
+        # Re-check at the moment of creation: the tree may have changed
+        # (a link planted in the root) since the plan was reviewed.
+        _require_in_roots(target, policy, "mkdir directory")
         os.makedirs(target, exist_ok=True)
-    except OSError as exc:
+    except (OSError, ProvisionError) as exc:
         return osal.CommandResult(1, "", f"mkdir failed: {exc}")
     return osal.CommandResult(0, f"directory ready: {target}\n", "")
+
+
+# Config an executed step must not inherit: user/global pip and npm settings
+# (index URLs, scripts policy, proxies) and interpreter hooks. The step runs
+# with an explicit environment instead.
+_ENV_DROP_PREFIXES = ("PIP_", "NPM_CONFIG_", "PYTHON")
+
+
+def _scrubbed_env(environ: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
+    """A clean environment for an executed step (no pip/npm/python config)."""
+    source = dict(os.environ if environ is None else environ)
+    env = {key: value for key, value in source.items()
+           if not key.upper().startswith(_ENV_DROP_PREFIXES)}
+    env.update({
+        "PIP_CONFIG_FILE": os.devnull,       # ignore user and site pip.conf
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_INPUT": "1",
+        "NPM_CONFIG_USERCONFIG": os.devnull,  # ignore ~/.npmrc
+        "NPM_CONFIG_GLOBALCONFIG": os.devnull,
+        "NPM_CONFIG_IGNORE_SCRIPTS": "true",
+        "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+        "PYTHONNOUSERSITE": "1",
+    })
+    return env
+
+
+def _resolve_command(step: Step, which: Callable) -> Tuple[Optional[List[str]], str]:
+    """The argv to run, with a bare executable name pinned to a real path.
+
+    A bare name is resolved here, once, and the resolved path is what runs --
+    never the name, which the OS could resolve against the working directory
+    (a planted ``python.exe`` in a project folder). A name that resolves into
+    the step's or the process's working directory, or to a batch shim, is
+    refused: the argv's shape was reviewed, so the program must be too.
+    """
+    exe = step.argv[0]
+    if not _is_bare_name(exe):
+        return list(step.argv), ""  # a path: already confined by the allowlist
+    found = which(exe)
+    if not found:
+        return None, f"executable {exe!r} was not found on PATH"
+    found = str(found)
+    if found.lower().endswith(_WINDOWS_SHIM_SUFFIXES):
+        return None, f"{exe!r} resolves to a batch shim ({found}); refusing to run it"
+    here = os.path.dirname(os.path.abspath(found))
+    for cwd in (step.cwd, os.getcwd()):
+        if cwd and osal.same_path(here, cwd):
+            return None, (f"{exe!r} resolves to {found}, inside the working "
+                          "directory; refusing a planted executable")
+    return [found] + list(step.argv[1:]), ""
 
 
 def _is_builtin_mkdir(step: Step) -> bool:
@@ -1045,19 +1276,35 @@ def _is_builtin_mkdir(step: Step) -> bool:
 def execute_plan(plan: Plan, gate: ApprovalGate, *, policy: ProvisionPolicy,
                  ledger=None, task_id: Optional[str] = None,
                  dry_run: bool = True, runner: Optional[Callable] = None,
-                 done: Iterable[str] = ()) -> ExecutionReport:
+                 done: Iterable[str] = (), which: Optional[Callable] = None,
+                 environ: Optional[Mapping[str, str]] = None) -> ExecutionReport:
     """Run (or, by default, only preview) a validated plan.
 
     ``dry_run=True`` is the default and executes NOTHING -- not a command,
     not a mkdir; it reports each step's would-run argv and approval state.
-    A real run requires ``dry_run=False`` AND a recorded approval for every
-    step that mutates or uses the network. The first decline, defer, missing
-    approval or failure stops the run; later steps are reported ``skipped``
-    and the report carries rollback hints for what already changed. ``done``
-    lists step ids a previous (deferred) run already completed.
+    ``dry_run`` must be exactly ``True`` or ``False``: a falsy-looking
+    ``None`` / ``0`` / ``""`` is a caller bug, refused rather than guessed
+    into a real run. A real run requires ``dry_run=False``, a ``ledger``
+    (an unaudited run is refused), and a recorded approval for every step
+    that mutates or uses the network. A ``provision_step_start`` entry is
+    chained BEFORE each step runs, so an executed step always has evidence
+    that it was about to. The first decline, defer, missing approval or
+    failure stops the run; later steps are reported ``skipped`` and the
+    report carries rollback hints for what already changed. ``done`` lists
+    step ids a previous (deferred) run already completed. Executed steps get
+    an explicit environment (:func:`_scrubbed_env`), and a bare executable
+    name is pinned to a PATH-resolved path (:func:`_resolve_command`);
+    ``which`` / ``environ`` are substitution seams for tests.
     """
+    if dry_run is not True and dry_run is not False:
+        raise ProvisionError(
+            f"dry_run must be True or False, not {dry_run!r}")
+    if not dry_run and ledger is None:
+        raise ProvisionError(
+            "a real run needs a ledger: an unaudited provisioning run is refused")
     validate_plan(plan, policy)
     run = runner or osal.run
+    find = which or osal.which
     finished = set(done)
     digest = plan.digest
 
@@ -1123,14 +1370,24 @@ def execute_plan(plan: Plan, gate: ApprovalGate, *, policy: ProvisionPolicy,
                        note=record.reason)
                 stop = status
                 continue
+        builtin = _is_builtin_mkdir(step)
+        command, refusal = ((list(step.argv), "") if builtin
+                            else _resolve_command(step, find))
+        log("provision_step_start", step_id=step.id,
+            classification=step.classification, argv=list(step.argv),
+            resolved=command, approval=approval, approver=approver,
+            refused=refusal or None)
         started = time.monotonic()
         try:
-            if _is_builtin_mkdir(step):
-                outcome = _builtin_mkdir(step)
+            if command is None:
+                outcome = osal.CommandResult(127, "", refusal)
+            elif builtin:
+                outcome = _builtin_mkdir(step, policy)
             else:
-                outcome = run(list(step.argv), cwd=step.cwd,
-                              timeout=policy.step_timeout_s)
-        except (OSError, HarnessError) as exc:
+                outcome = run(command, cwd=step.cwd,
+                              timeout=policy.step_timeout_s,
+                              env=_scrubbed_env(environ))
+        except Exception as exc:  # a runner may fail in any way; never skip the record
             outcome = osal.CommandResult(126, "", f"runner error: {exc}")
         elapsed = round(time.monotonic() - started, 3)
         timed_out = outcome.returncode == 124
@@ -1195,6 +1452,8 @@ _PINNED_NODE_RE = re.compile(
 _VERB_RE = re.compile(
     r"\b(?:install|provision|set\s*up|setup)\s+(?:(?:the|a|an|my)\s+)?"
     r"([A-Za-z][A-Za-z0-9._\-]*)", re.I)
+_MAX_NAME_CHARS = 100
+MAX_GOAL_CHARS = 4000
 _STOPWORDS = frozenset((
     "the", "a", "an", "my", "it", "this", "that", "tool", "tools", "package",
     "packages", "dev", "development", "environment", "env", "venv", "pinned",
@@ -1226,14 +1485,23 @@ def extract_requests(goal: str) -> Tuple[PackageRequest, ...]:
         key = (name.lower(), version)
         if name.lower() in _STOPWORDS or key in seen:
             return
+        # A local file or an absurd token is not a package name to install.
+        if (len(name) > _MAX_NAME_CHARS or _looks_like_artifact(name)
+                or (version and (len(version) > _MAX_NAME_CHARS
+                                 or _looks_like_artifact(version)))):
+            return
         seen.add(key)
         found.append(PackageRequest(name, version, eco))
 
-    for match in _PINNED_PY_RE.finditer(text):
+    pinned = list(_PINNED_PY_RE.finditer(text))
+    for match in pinned:
         add(match.group(1), match.group(2), "python")
-    for match in _PINNED_NODE_RE.finditer(text):
+    node_pinned = list(_PINNED_NODE_RE.finditer(text))
+    for match in node_pinned:
         add(match.group(1), match.group(2), "node")
-    if not found:
+    # A pinned token that was rejected (a local file) must not fall through
+    # to "install the word before it": that would invent a different package.
+    if not found and not pinned and not node_pinned:
         for match in _VERB_RE.finditer(text):
             add(match.group(1), None, hint)
     return tuple(found)
@@ -1277,13 +1545,12 @@ def _recipe_venv_pip(requests, probe, root):
 
 
 def _recipe_npm_prefix(requests, probe, root):
-    npm = probe.manager("npm")
-    exe = npm.path if npm is not None else "npm"
+    exe = "npm"  # a bare name, pinned to a PATH-resolved path at run time
     steps = [
         _mkdir_step(root),
         Step("npm-install", "Install the packages into a private prefix",
-             (exe, "install", "--prefix", root, "--ignore-scripts",
-              "--no-audit", "--no-fund", *[r.npm_spec() for r in requests]),
+             (exe, "install", *[r.npm_spec() for r in requests],
+              "--prefix", root, "--ignore-scripts", "--no-audit", "--no-fund"),
              MUTATING, "downloads packages into the prefix; install scripts "
              "are disabled", f"delete the directory {root}",
              requires_network=True),
@@ -1292,7 +1559,7 @@ def _recipe_npm_prefix(requests, probe, root):
         steps.append(Step(
             f"verify-{index + 1}-{_slug(req.name)}",
             f"Confirm {req.name} is installed",
-            (exe, "ls", "--prefix", root, req.name), READ,
+            (exe, "ls", req.name, "--prefix", root), READ,
             "lists the installed package"))
     return steps
 
@@ -1376,7 +1643,11 @@ def applicable_recipes(requests: Sequence[PackageRequest], probe: HostProbe,
     if probe.python_version and probe.python_executable and fits("python") \
             and policy.approved_roots:
         out.append(RECIPE_VENV_PIP)
-    if probe.manager("npm") is not None and fits("node") and policy.approved_roots:
+    npm = probe.manager("npm")
+    # An npm that is only a cmd.exe batch shim cannot be run safely (the shim
+    # re-parses its arguments), so it is not a usable recipe.
+    if (npm is not None and not npm.path.lower().endswith(_WINDOWS_SHIM_SUFFIXES)
+            and fits("node") and policy.approved_roots):
         out.append(RECIPE_NPM_PREFIX)
     if (policy.allow_system_install and fits("system")
             and _system_manager(probe) is not None):
@@ -1399,7 +1670,7 @@ def _jev_select(jev, goal, probe, candidates, task_id):
             {"goal": goal, "host": probe.jev_facts(), "candidates": ids,
              "pack_version": PROVISION_PACK_VERSION},
             questions, site=PROVISION_SITE, task_id=task_id)
-    except (HarnessError, ValueError) as exc:
+    except Exception as exc:  # any judgment failure degrades to the fixed order
         return None, [f"jev selection unavailable: {exc}"]
     if getattr(result, "is_fallback", True):
         return None, ["jev selection fell back; using the deterministic order"]
@@ -1419,7 +1690,7 @@ def _jev_review(jev, plan, task_id):
         result, _ = jev.evaluate_provision(
             state, provision_verification_question_pack(),
             site=PROVISION_SITE, task_id=task_id)
-    except HarnessError as exc:
+    except Exception as exc:  # advisory only: any failure is a recorded fallback
         return {"is_fallback": True, "reason": str(exc)}, False
     if getattr(result, "is_fallback", True):
         return {"is_fallback": True, "reason": "jev review fell back"}, False
@@ -1447,7 +1718,12 @@ def plan_provision(goal: str, probe: HostProbe, *, policy: ProvisionPolicy,
     """
     if not isinstance(goal, str) or not goal.strip():
         raise ProvisionError("a goal is required")
+    if len(goal) > MAX_GOAL_CHARS:
+        raise ProvisionError(f"goal is {len(goal)} characters; the limit is {MAX_GOAL_CHARS}")
     requests = tuple(packages) if packages is not None else extract_requests(goal)
+    if len(requests) > policy.max_specs:
+        raise ProvisionError(
+            f"{len(requests)} packages exceeds the limit of {policy.max_specs}")
     work_root = root
     if work_root is None and policy.approved_roots:
         work_root = os.path.join(
