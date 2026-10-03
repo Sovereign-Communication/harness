@@ -53,9 +53,12 @@ class FakeRunner:
         return [c["argv"] for c in self.calls]
 
 
+FAKE_BIN = os.path.join(os.path.abspath(os.sep), "usr", "bin")
+
+
 def fake_which(name):
     """Every bare name resolves into a PATH directory nobody is working in."""
-    return "/usr/bin/" + name
+    return os.path.join(FAKE_BIN, name)
 
 
 def which_of(*names, paths=None):
@@ -65,7 +68,9 @@ def which_of(*names, paths=None):
 
 class TempRootCase(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="provision_test_")
+        # realpath: a Windows temp dir can be an 8.3 short path (RUNNER~1),
+        # which the path grammar refuses in step arguments.
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="provision_test_"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.root = os.path.join(self.tmp, "approved")
         os.makedirs(self.root)
@@ -144,12 +149,12 @@ class ProbeTests(TempRootCase):
 
     def test_pip_found_only_as_python_module(self):
         runner = FakeRunner({
-            ("python", "-m", "pip"): osal.CommandResult(0, "pip 23.1\n")})
+            ("python", "-I", "-m", "pip"): osal.CommandResult(0, "pip 23.1\n")})
         probe = pv.probe_host(self.root, runner=runner, facts=LINUX,
                               which=which_of())
         pip = probe.manager("pip")
         self.assertEqual(pip.path, "python -m pip")
-        self.assertEqual(runner.argvs(), [["python", "-m", "pip", "--version"]])
+        self.assertEqual(runner.argvs(), [["python", "-I", "-m", "pip", "--version"]])
 
     def test_no_pip_at_all(self):
         runner = FakeRunner(default=osal.CommandResult(1, "", "no"))
@@ -322,8 +327,8 @@ class AllowlistTests(TempRootCase):
 
     def test_read_only_queries(self):
         for argv in (("python", "--version"), ("python3.12", "-V"),
-                     ("python", "-m", "pip", "--version"),
-                     ("python", "-m", "pip", "list"),
+                     ("python", "-I", "-m", "pip", "--version"),
+                     ("python", "-I", "-m", "pip", "list"),
                      ("pip", "list", "--format=json"),
                      ("pip", "show", "requests"),
                      ("pip", "--version"),
@@ -343,15 +348,15 @@ class AllowlistTests(TempRootCase):
         venv_py = os.path.join(self.work(), "venv", "bin", "python")
         cases = {
             ("mkdir", self.work()): False,
-            ("python", "-m", "venv", self.work()): False,
-            (venv_py, "-m", "pip", "install", "--only-binary=:all:",
+            ("python", "-I", "-m", "venv", self.work()): False,
+            (venv_py, "-I", "-m", "pip", "install", "--isolated", "--only-binary=:all:",
              "requests==2.0", "rich[extras]>=1"): True,
-            ("python", "-m", "pip", "install", "--only-binary=:all:",
+            ("python", "-I", "-m", "pip", "install", "--isolated", "--only-binary=:all:",
              "--target", self.work(), "ruff"): True,
             ("npm", "install", "left-pad@1.3.0", "@scope/pkg", "--prefix",
              self.root, "--ignore-scripts"): True,
             (os.path.join(self.work(), "venv", "bin", "pip"), "install",
-             "--only-binary=:all:", "-q", "x"): True,
+             "--isolated", "--only-binary=:all:", "-q", "x"): True,
         }
         for argv, network in cases.items():
             adm = self.admit(*argv)
@@ -401,10 +406,10 @@ class AllowlistTests(TempRootCase):
         self.refuse("python", "-c", "import os", needle="no -c")
         self.refuse("python", "script.py", needle="no -c")
         self.refuse("python", "-m", "http.server", needle="no -c")
-        self.refuse("python", "-m", "venv", needle="exactly one directory")
-        self.refuse("python", "-m", "venv", "--clear", self.work(),
+        self.refuse("python", "-I", "-m", "venv", needle="exactly one directory")
+        self.refuse("python", "-I", "-m", "venv", "--clear", self.work(),
                     needle="exactly one directory")
-        self.refuse("python", "-m", "venv", os.path.join(self.tmp, "outside"),
+        self.refuse("python", "-I", "-m", "venv", os.path.join(self.tmp, "outside"),
                     needle="outside every approved root")
 
     def test_pip_refusals(self):
@@ -413,39 +418,39 @@ class AllowlistTests(TempRootCase):
         self.refuse("pip", "uninstall", "x", needle="not allowed")
         self.refuse("pip", "list", "--user", needle="not allowed")
         self.refuse("pip", "show", "https://x/y.whl", needle="local file")
-        self.refuse("pip", "install", "--only-binary=:all:", "requests",
+        self.refuse("pip", "install", "--isolated", "--only-binary=:all:", "requests",
                     needle="must target an approved root")
-        self.refuse("python", "-m", "pip", "install", "--target", root, "x",
+        self.refuse("python", "-I", "-m", "pip", "install", "--isolated", "--target", root, "x",
                     needle="--only-binary")
-        self.refuse("python", "-m", "pip", "install", "--only-binary=:all:",
+        self.refuse("python", "-I", "-m", "pip", "install", "--isolated", "--only-binary=:all:",
                     "--target", root, "git+https://example.invalid/x",
                     needle="plain name")
-        self.refuse("python", "-m", "pip", "install", "--only-binary=:all:",
+        self.refuse("python", "-I", "-m", "pip", "install", "--isolated", "--only-binary=:all:",
                     "--target", root, "./local", needle="plain name")
-        self.refuse("python", "-m", "pip", "install", "--only-binary=:all:",
+        self.refuse("python", "-I", "-m", "pip", "install", "--isolated", "--only-binary=:all:",
                     "--target", root, "--index-url", "http://evil", "x",
                     needle="not allowed")
-        self.refuse("python", "-m", "pip", "install", "--only-binary=:all:",
+        self.refuse("python", "-I", "-m", "pip", "install", "--isolated", "--only-binary=:all:",
                     "--target", root, "-r", "reqs.txt", needle="not allowed")
-        self.refuse("python", "-m", "pip", "install", "--only-binary=:all:",
+        self.refuse("python", "-I", "-m", "pip", "install", "--isolated", "--only-binary=:all:",
                     "--target", os.path.join(self.tmp, "out"), "x",
                     needle="outside every approved root")
-        self.refuse("python", "-m", "pip", "install", "--only-binary=:all:",
+        self.refuse("python", "-I", "-m", "pip", "install", "--isolated", "--only-binary=:all:",
                     "--target", needle="needs a value")
-        self.refuse("python", "-m", "pip", "install", "--only-binary=:all:",
+        self.refuse("python", "-I", "-m", "pip", "install", "--isolated", "--only-binary=:all:",
                     "--target", root, needle="at least one package")
-        self.refuse("python", "-m", "pip", needle="may only run")  # no subcommand
+        self.refuse("python", "-I", "-m", "pip", needle="may only run")  # no subcommand
 
     def test_source_builds_only_when_policy_allows(self):
         policy = pv.ProvisionPolicy(approved_roots=(self.root,),
                                     allow_source_builds=True)
         adm = pv.classify_argv(
-            ["python", "-m", "pip", "install", "--target", self.work(), "x"],
+            ["python", "-I", "-m", "pip", "install", "--isolated", "--target", self.work(), "x"],
             policy)
         self.assertEqual(adm.rule, "pip-install")
 
     def test_inline_flag_values(self):
-        adm = self.admit("python", "-m", "pip", "install", "--only-binary=:all:",
+        adm = self.admit("python", "-I", "-m", "pip", "install", "--isolated", "--only-binary=:all:",
                          "--target=" + self.work(), "x")
         self.assertEqual(adm.minimum_class, pv.MUTATING)
 
@@ -538,8 +543,10 @@ class StepAndPlanValidationTests(TempRootCase):
                        "never allowed"):
             self.assertIn(needle, text)
 
-    def test_cwd_inside_root_is_fine(self):
-        pv.validate_step(step(cwd=self.root), self.policy)
+    def test_cwd_is_never_selectable(self):
+        with self.assertRaises(pv.ProvisionError) as ctx:
+            pv.validate_step(step(cwd=self.root), self.policy)
+        self.assertIn("cwd is not selectable", str(ctx.exception))
 
     def test_plan_defects_are_aggregated(self):
         dup = [step(id="a"), step(id="a"), step(id="b", argv=("rm", "x"))]
@@ -779,7 +786,7 @@ class ExecutorTests(TempRootCase):
             step(id="probe", argv=("python", "--version")),
             pv.Step("mk", "make", ("mkdir", self.work()), pv.MUTATING,
                     "creates", "delete it"),
-            pv.Step("pipx", "install", ("python", "-m", "pip", "install",
+            pv.Step("pipx", "install", ("python", "-I", "-m", "pip", "install", "--isolated",
                     "--only-binary=:all:", "--target", self.work(), "ruff"),
                     pv.MUTATING, "installs", "delete it", requires_network=True),
         ], self.root, "x", "x", True)
@@ -823,7 +830,7 @@ class ExecutorTests(TempRootCase):
         plan = pv.Plan("g", [
             pv.Step("mk", "make", ("mkdir", self.work()), pv.MUTATING,
                     "creates", "delete the dir"),
-            pv.Step("inst", "install", ("python", "-m", "pip", "install",
+            pv.Step("inst", "install", ("python", "-I", "-m", "pip", "install", "--isolated",
                     "--only-binary=:all:", "--target", self.work(), "x"),
                     pv.MUTATING, "installs", "remove the target",
                     requires_network=True),
@@ -831,7 +838,7 @@ class ExecutorTests(TempRootCase):
         ], self.root, "x", "x", True)
         gate = pv.ApprovalGate()
         gate.approve_plan(plan, "a")
-        runner = FakeRunner({("python", "-m", "pip"):
+        runner = FakeRunner({("python", "-I", "-m", "pip"):
                              osal.CommandResult(1, "", "no wheel")})
         report, _ = self.run_plan(plan, gate, dry_run=False, runner=runner)
         self.assertEqual(report.outcome, pv.FAILED)
@@ -1104,15 +1111,16 @@ class PlannerTests(TempRootCase):
             (WINDOWS, ("winget",), ("winget", "install", "--id", "Git.Git",
                                     "--exact", "--version", "2.0")),
             (WINDOWS, ("choco",), ("choco", "install", "--version", "2.0", "-y",
-                                   "Git.Git")),
-            (WINDOWS, ("scoop",), ("scoop", "install", "Git.Git")),
-            (dict(LINUX, os="Darwin"), ("brew",), ("brew", "install", "Git.Git")),
+                                   "git")),
+            (WINDOWS, ("scoop",), ("scoop", "install", "git")),
+            (dict(LINUX, os="Darwin"), ("brew",), ("brew", "install", "git")),
         )
         for facts, managers, expected in cases:
             probe = self.probe(facts=facts, managers=managers)
+            name = "Git.Git" if managers == ("winget",) else "git"
             plan = pv.plan_provision(
-                "install Git.Git==2.0 with system", probe, policy=self.policy,
-                packages=[pv.PackageRequest("Git.Git", "2.0", "system")])
+                "install git with system", probe, policy=self.policy,
+                packages=[pv.PackageRequest(name, "2.0", "system")])
             self.assertEqual(plan.steps[0].argv, expected, msg=managers)
 
     def test_inventory_when_nothing_installable_is_named(self):
@@ -1391,7 +1399,7 @@ class EndToEndTests(TempRootCase):
         self.assertTrue(os.path.isdir(plan.root))
         argvs = runner.argvs()
         self.assertEqual(len(argvs), 3)  # venv, pip install, pip show
-        self.assertEqual(argvs[0][1:3], ["-m", "venv"])
+        self.assertEqual(argvs[0][1:4], ["-I", "-m", "venv"])
         self.assertEqual(self.ledger.verify(), (True, None))
         kinds = {e["event"] for e in self.ledger.entries()}
         self.assertTrue(kinds <= set(pv.PROVISION_EVENTS))

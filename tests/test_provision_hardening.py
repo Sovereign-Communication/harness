@@ -15,8 +15,22 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from harness import osal, provision as pv
+from harness.ledger import AutonomyLedger
 from tests.test_provision import (LINUX, FakeJev, FakeRunner, TempRootCase,
                                   fake_which, mutating_plan, step, which_of)
+
+
+class FailingLedger(AutonomyLedger):
+    """A real chained ledger whose append fails for one named event."""
+
+    def __init__(self, directory, failing_event):
+        super().__init__(os.path.join(directory, "failing-ledger.jsonl"))
+        self.failing_event = failing_event
+
+    def append(self, event, task_id=None, **fields):
+        if event == self.failing_event:
+            raise OSError("disk full")
+        return super().append(event, task_id=task_id, **fields)
 
 
 class HardeningCase(TempRootCase):
@@ -29,7 +43,7 @@ class HardeningCase(TempRootCase):
         return pv.classify_argv(list(argv), policy or self.policy)
 
     def pip_install(self, *specs):
-        return ["python", "-m", "pip", "install", "--only-binary=:all:",
+        return ["python", "-I", "-m", "pip", "install", "--isolated", "--only-binary=:all:",
                 "--target", self.work(), *specs]
 
 
@@ -41,8 +55,8 @@ class CmdSyntaxAndShimTests(HardeningCase):
             self.refuse("npm", "install", "left-pad", "--prefix", prefix,
                         "--ignore-scripts", needle="shell syntax")
             self.refuse("mkdir", prefix, needle="shell syntax")
-            self.refuse("python", "-m", "venv", prefix, needle="shell syntax")
-            self.refuse("python", "-m", "pip", "install", "--only-binary=:all:",
+            self.refuse("python", "-I", "-m", "venv", prefix, needle="shell syntax")
+            self.refuse("python", "-I", "-m", "pip", "install", "--isolated", "--only-binary=:all:",
                         "--target", prefix, "x", needle="shell syntax")
             if name not in ("a<b", "a>b"):  # these are valid requirement specs
                 self.refuse("python", "--version", name, needle="shell syntax")
@@ -136,16 +150,28 @@ class ExecutableTests(HardeningCase):
         self.assertEqual(len(extra.trusted_executables), 1)
 
     def test_executor_refuses_a_name_resolving_into_the_working_directory(self):
-        plan = pv.Plan("g", [step(id="p", argv=("python", "--version"),
-                                  cwd=self.root)], self.root, "x", "x", True)
-        for planted_dir in (self.root, os.getcwd()):
+        plan = pv.Plan("g", [step(id="p", argv=("python", "--version"))],
+                       self.root, "x", "x", True)
+        before = os.getcwd()
+        self.addCleanup(os.chdir, before)
+        os.chdir(self.root)
+        sub = os.path.join(self.root, "sub")
+        for planted in (os.path.join(self.root, "python.exe"),
+                        os.path.join(sub, "python.exe")):  # cwd and below it
             runner = FakeRunner()
             report = pv.execute_plan(
                 plan, pv.ApprovalGate(), policy=self.policy,
                 ledger=self.ledger, runner=runner, dry_run=False,
-                which=lambda name, d=planted_dir: os.path.join(d, name + ".exe"))
-            self.assertEqual(runner.calls, [], msg=planted_dir)
+                which=lambda name, f=planted: f)
+            self.assertEqual(runner.calls, [], msg=planted)
             self.assertIn("planted executable", report.results[0].stderr)
+        # a relative which() result is refused outright
+        runner = FakeRunner()
+        report = pv.execute_plan(
+            plan, pv.ApprovalGate(), policy=self.policy, ledger=self.ledger,
+            runner=runner, dry_run=False, which=lambda name: "bin/python")
+        self.assertEqual(runner.calls, [])
+        self.assertIn("relative path", report.results[0].stderr)
 
     def test_executor_fails_a_step_whose_program_is_not_on_path(self):
         plan = pv.Plan("g", [step()], self.root, "x", "x", True)
@@ -163,22 +189,24 @@ class ExecutableTests(HardeningCase):
         pv.execute_plan(plan, pv.ApprovalGate(), policy=self.policy,
                         ledger=self.ledger, runner=runner, dry_run=False,
                         which=fake_which)
-        self.assertEqual(runner.calls[0]["resolved"][0], "/usr/bin/python")
+        self.assertEqual(runner.calls[0]["resolved"][0], fake_which("python"))
         self.assertEqual(self.events("provision_step_start")[0]["resolved"][0],
-                         "/usr/bin/python")
+                         fake_which("python"))
 
 
 class LocalArtifactTests(HardeningCase):
     NAMES = ("evil-1.0-py3-none-any.whl", "evil.zip", "evil.tar", "evil.tar.gz",
-             "evil.tgz", "evil.deb", "evil.nupkg", "evil.json", "evil.rb",
-             "EVIL.WHL")
+             "evil.tgz", "evil.deb", "evil.nupkg", "EVIL.WHL")
+    # manifest-shaped names are only a local-file form for system managers
+    SYSTEM_ONLY = ("evil.json", "evil.rb", "evil.yml", "evil.config")
 
     def test_local_artifact_specs_are_refused_by_every_manager(self):
-        for name in self.NAMES:
-            self.refuse("pip", "show", name, needle="local file")
-            self.refuse(*self.pip_install(name), needle="local file")
-            self.refuse("npm", "install", name, "--prefix", self.root,
-                        "--ignore-scripts", needle="local file")
+        for name in self.NAMES + self.SYSTEM_ONLY:
+            if name in self.NAMES:
+                self.refuse("pip", "show", name, needle="local file")
+                self.refuse(*self.pip_install(name), needle="local file")
+                self.refuse("npm", "install", name, "--prefix", self.root,
+                            "--ignore-scripts", needle="local file")
             for manager in ("brew", "apt", "scoop", "choco"):
                 self.refuse(manager, "install", name, needle="local file")
             self.refuse("winget", "install", "--id", name, needle="local file")
@@ -205,14 +233,11 @@ class PathAndRootTests(HardeningCase):
         rel = os.path.join("..", "..", "x")
         for argv in (("npm", "install", "x", "--prefix", rel, "--ignore-scripts"),
                      ("npm", "ls", "--prefix", rel),
-                     ("python", "-m", "pip", "install", "--only-binary=:all:",
+                     ("python", "-I", "-m", "pip", "install", "--isolated", "--only-binary=:all:",
                       "--target", rel, "x"),
-                     ("python", "-m", "venv", rel), ("mkdir", rel),
+                     ("python", "-I", "-m", "venv", rel), ("mkdir", rel),
                      ("mkdir", "tool")):
             self.refuse(*argv, needle="absolute")
-        with self.assertRaises(pv.ProvisionError) as ctx:
-            pv.validate_step(step(cwd=os.path.join("..", "x")), self.policy)
-        self.assertIn("absolute", str(ctx.exception))
 
     def test_unc_and_device_paths_are_refused(self):
         for path in ("\\\\server\\share\\x", "\\\\?\\C:\\x", "//server/share/x"):
@@ -289,8 +314,14 @@ class PlanIdentityTests(HardeningCase):
         gate = pv.ApprovalGate()
         gate.approve_plan(plain, "a")
         self.assertIsNone(gate.resolve(flagged, flagged.steps[0]))
+        # a missing or malformed flag counts as flagged; only a real False clears
+        stripped = flagged.to_dict()
+        del stripped["review_required"]
+        self.assertTrue(pv.plan_from_dict(stripped).review_required)
+        self.assertTrue(pv.plan_from_dict(
+            dict(flagged.to_dict(), review_required="no")).review_required)
         self.assertFalse(pv.plan_from_dict(
-            dict(flagged.to_dict(), review_required="yes")).review_required)
+            dict(plain.to_dict(), review_required=False)).review_required)
         self.assertEqual(pv.plan_from_dict(
             dict(flagged.to_dict(), review={"a": 1})).review, {"a": 1})
 
@@ -335,18 +366,17 @@ class AuditAndExecutionTests(HardeningCase):
         self.assertEqual(self.ledger.verify(), (True, None))
 
     def test_a_ledger_failure_before_a_step_stops_it_from_running(self):
-        class Failing:
-            def append(self, event, **fields):
-                if event == "provision_step_start":
-                    raise OSError("disk full")
-
         runner = FakeRunner()
-        plan = pv.Plan("g", [step()], self.root, "x", "x", True)
-        with self.assertRaises(OSError):
-            pv.execute_plan(plan, pv.ApprovalGate(), policy=self.policy,
-                            ledger=Failing(), runner=runner, dry_run=False,
-                            which=fake_which)
+        plan = pv.Plan("g", [step(id="a"), step(id="b")], self.root, "x", "x", True)
+        report = pv.execute_plan(
+            plan, pv.ApprovalGate(), policy=self.policy,
+            ledger=FailingLedger(self.tmp, "provision_step_start"),
+            runner=runner, dry_run=False, which=fake_which)
         self.assertEqual(runner.calls, [])
+        self.assertTrue(report.audit_failed)
+        self.assertEqual(report.outcome, pv.AUDIT_FAILED)
+        self.assertEqual([r.status for r in report.results],
+                         [pv.AUDIT_FAILED, pv.SKIPPED])
 
     def test_mkdir_is_rechecked_when_it_runs(self):
         plan = pv.Plan("g", [pv.Step("m", "d", ("mkdir", self.work()),
