@@ -260,6 +260,7 @@ statement covers the CI matrix by direct execution.
 | `harness/claims.py` | structured-claims grounding: source_refs lint + claims curation from the ledger's own evidence |
 | `harness/continuation.py` | the resumable-task state contract and its verification identity |
 | `harness/spend.py` | Cost-bounded spend: the governor that makes ceilings guarantees. Live pricing catalog, key identity, BYOK learning/denylist, free-model discovery, and the HUL-B dual envelope (`working_remaining = max - spent - terminal_reserve`; attempts never eat reserve; terminal findings may). |
+| `harness/dynamic_allocation.py` | dynamic resource allocation and runtime negotiation: model-aware token budgets, adaptive window sizing, spend ceiling evaluation, evidence sizing, and model ranking |
 | `harness/token_budget.py` | the ONE owner of token allowances: per-call input/output maxima, composable stage/run reservations (a stage may only narrow its parent), honest `actual`/`estimated`/`unavailable` usage labels, and `snapshot()` for envelopes. Independent of spend.py's dollars -- neither can raise the other. |
 | `harness/mission_record.py` | HUL-A/B mission pack: mission.yaml schema, pack layout under missions/<id>/, STATUS generator, append-only receipts/jev_evals, dual-budget budget.json (delegates formula to spend.py) + resume.json, terminal findings helper |
 | `harness/convergence.py` | deterministic tally over panel votes + the rotating specialist lane |

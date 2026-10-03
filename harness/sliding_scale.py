@@ -326,16 +326,19 @@ def model_family(model_id) -> str:
     return mid.split("/", 1)[0] if "/" in mid else mid
 
 
-def tier_cost_ceiling(tier: int, use_free: bool = True) -> float:
-    """Return the preflight spend ceiling for a given tier in USD."""
+def tier_cost_ceiling(tier: int, use_free: bool = True, model_id: Optional[str] = None) -> float:
+    """Return the preflight spend ceiling for a given tier in USD (dynamically computed when model_id given)."""
     if use_free:
         return 0.0
+    if model_id:
+        from .dynamic_allocation import compute_dynamic_tier_ceiling
+        return compute_dynamic_tier_ceiling(tier, model_id=model_id, hard_cap=HARD_MAX_COST)
     if tier == TIER_0_SCOUT:
         return 0.01
     if tier == TIER_1_DISTILLER:
         return 0.04
     # Tier 2 frontier hard cap
-    return min(0.10, HARD_MAX_COST)
+    return min(1.00, HARD_MAX_COST)
 
 
 def resolve_sliding_scale_route(

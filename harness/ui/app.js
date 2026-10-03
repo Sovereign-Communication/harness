@@ -196,7 +196,7 @@ function setupHeaderControls() {
     });
     $("#cap-text").addEventListener("input", () => {
       const v = Number($("#cap-text").value);
-      if (Number.isFinite(v) && v >= 0.01 && v <= 0.10) {
+      if (Number.isFinite(v) && v >= CAP_SLIDER_MIN && v <= CAP_SLIDER_MAX) {
         $("#cap-slider").value = String(v);
         $("#cap-slider-val").textContent = fmtCost(v);
       }
@@ -782,7 +782,7 @@ async function pollSpend() {
 // slider covers the practical chat range 0.01..0.10 and the text input
 // allows exact values, which the server validates fail-closed.
 const CAP_SLIDER_MIN = 0.01;
-const CAP_SLIDER_MAX = 0.10;
+const CAP_SLIDER_MAX = 1.00;
 
 function openCapPopover() {
   const pop = $("#cap-popover");

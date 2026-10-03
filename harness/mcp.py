@@ -22,6 +22,7 @@ from .continuation import validate_continuation
 from .config import (freeze_jev_settings, load_settings, resolve_hourglass,
                      validate_jev_model_id)
 from .dag import TaskDAG
+from .config import HARD_MAX_COST, HARD_TASK_MAX_COST
 from .waist import compose_arguments
 from .waist import compose_plan
 from .errors import HarnessError, ToolCancelled
@@ -540,7 +541,7 @@ class McpServer:
             # the session ceiling.
             if args.get("task_max_cost") is not None:
                 tmc = finite_number(args.get("task_max_cost"), "task_max_cost",
-                                    0.0, 0.25)
+                                    0.0, HARD_TASK_MAX_COST)
                 remaining = max(0.0, float(self.governor.max_cost)
                                 - float(self.governor.spent))
                 if tmc > remaining:
@@ -632,7 +633,7 @@ class McpServer:
             max_rotations = (bounded_int(args["max_rotations"], "max_rotations", 0, MAX_ROTATIONS)
                              if args.get("max_rotations") is not None else None)
             max_lines = bounded_int(args.get("max_lines", 500), "max_lines", 1, MAX_LINES)
-            task_max_cost = (finite_number(args["task_max_cost"], "task_max_cost", 0.0, 0.25)
+            task_max_cost = (finite_number(args["task_max_cost"], "task_max_cost", 0.0, HARD_TASK_MAX_COST)
                              if args.get("task_max_cost") is not None else None)
             backend = validate_backend(backend)
             reasoning = validate_mcp_reasoning(args.get("reasoning_effort"))
@@ -1068,7 +1069,7 @@ class McpServer:
             claim_context = args.get("claim_context")
             max_cost = args.get("max_cost")
             if max_cost is not None:
-                max_cost = finite_number(max_cost, "max_cost", 0.0, 0.25)
+                max_cost = finite_number(max_cost, "max_cost", 0.0, HARD_MAX_COST)
             max_rounds = int(args.get("max_rounds", 3) or 3)
             task_id = args.get("task_id") or uuid.uuid4().hex[:8]
             return _service_run_dogfood(
