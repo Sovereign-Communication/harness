@@ -20,7 +20,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.98,
+        "confidence": 0.99,
         "evaluated": true
       },
       "R": {
@@ -38,7 +38,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.98,
+        "confidence": 0.99,
         "evaluated": true
       },
       "SD": {
@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.97,
+        "confidence": 0.95,
         "evaluated": true
       }
     },
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 3294 tests in 209.484s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 3297 tests in 218.139s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
