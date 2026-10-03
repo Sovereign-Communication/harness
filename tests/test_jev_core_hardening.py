@@ -2069,5 +2069,242 @@ class DedupeScaleTests(_Base):
             self.assertEqual(got, truth, seed)
 
 
+class StrictPathUsageTests(_Base):
+    Q = {"a": {"type": "noul", "instructions": "ok?"}}
+
+    def strict(self, reported, state=None):
+        resp = {"model": "jev-test",
+                "usage": {"input_tokens": reported, "output_tokens": 2},
+                "answers": {"a": {"type": "noul", "noul": 0.9}}}
+        transport = CountingTransport(resp)
+        transport.post_once = transport.post
+        ev = JevEvaluator(api_key="k", transport=transport, cache=JevCache())
+        return ev, ev.evaluate_once(state if state is not None else {"x": 1},
+                                    self.Q)
+
+    def test_absurd_strict_usage_is_bounded_and_flagged(self):
+        from harness.jev import _usage_cap
+        for reported in (10 ** 9, 10 ** 15):
+            ev, result = self.strict(reported)
+            estimate = ev._estimate_tokens({"x": 1}, self.Q)
+            self.assertEqual(result.fallback_reason, "usage_implausible")
+            self.assertTrue(result.discarded)
+            self.assertTrue(result.input_tokens_observed)
+            self.assertEqual(result.input_tokens, _usage_cap(estimate))
+            self.assertAlmostEqual(result.cost, jev_cost(_usage_cap(estimate)))
+            self.assertEqual(ev.breakers.snapshot("").get("failures", 0), 0)
+
+    def test_settlement_is_monotonic_across_the_cap(self):
+        from harness.jev import _usage_cap
+        ev, _ = self.strict(1)
+        cap = _usage_cap(ev._estimate_tokens({"x": 1}, self.Q))
+        costs = []
+        for reported in (cap - 1, cap, cap + 1, cap * 3):
+            _, result = self.strict(reported)
+            costs.append(result.cost)
+        self.assertEqual(costs, sorted(costs))             # never decreases
+        self.assertAlmostEqual(costs[-1], jev_cost(cap))   # bounded at the cap
+        self.assertAlmostEqual(costs[0], jev_cost(cap - 1))
+
+    def test_suspiciously_low_usage_settles_at_a_quarter_of_the_estimate(self):
+        state = {"blob": "word " * 2500}                    # ~4k-token payload
+        ev, result = self.strict(10, state)
+        estimate = ev._estimate_tokens(state, self.Q)
+        self.assertGreater(estimate, 1000)
+        self.assertEqual(result.input_tokens, int(estimate * 0.25))
+        self.assertAlmostEqual(result.cost, jev_cost(int(estimate * 0.25)))
+        self.assertTrue(any("usage_suspiciously_low" in r for r in result.reasons))
+        self.assertFalse(result.is_fallback)
+        _, honest = self.strict(int(estimate * 0.5), state)  # plausible: untouched
+        self.assertAlmostEqual(honest.cost, jev_cost(int(estimate * 0.5)))
+        _, small = self.strict(1)                            # tiny payload: exempt
+        self.assertAlmostEqual(small.cost, jev_cost(1))
+
+    def test_loose_path_applies_the_same_low_rule_and_clamps_failures(self):
+        state = {"blob": "word " * 2500}
+        transport = CountingTransport({
+            "model": "j", "usage": {"input_tokens": 5, "output_tokens": 1},
+            "answers": {"a": {"type": "noul", "noul": 0.9}}})
+        ev = JevEvaluator(api_key="k", transport=transport, cache=JevCache())
+        result = ev.evaluate(state, self.Q)
+        estimate = ev._estimate_tokens(state, self.Q)
+        self.assertEqual(result.input_tokens, int(estimate * 0.25))
+        bad = {"model": "j", "usage": {"input_tokens": 10 ** 12, "output_tokens": 1},
+               "answers": {"zz": 1}}
+        ev2 = JevEvaluator(api_key="k", transport=CountingTransport(bad),
+                           cache=JevCache())
+        failed = ev2.evaluate({"x": 1}, self.Q)
+        self.assertTrue(failed.discarded)
+        self.assertLessEqual(failed.input_tokens, 10 ** 7)
+
+    def test_vision_never_books_an_absurd_response(self):
+        from tests import test_jev_vision_assessment as V
+        for tokens in (900, 10 ** 9, 10 ** 15):
+            with self.subTest(tokens=tokens):
+                self.setUp()
+                gov = self.governor(max_cost=1.0)
+                resp = V._response()
+                resp["usage"] = {"input_tokens": tokens, "output_tokens": 5}
+                transport = V.RecordingTransport(response=resp)
+                policy = policy_for(
+                    load_settings({"jev_api_key": "k", "jev_model": "jev-test"}),
+                    transport=transport, governor=gov, ledger=self.ledger)
+                policy.evaluate_vision_assessment({"assessment": "hourglass"})
+                self.assertLess(gov.spent, jev_cost(10 ** 7) + 1e-9)
+                self.assertEqual(gov.overruns, 0)
+                self.assertEqual(gov.outstanding, 0.0)
+                policy.evaluate_vision_assessment({"assessment": "hourglass"})
+
+
+class FlushRobustnessTests(_Base):
+    def test_snapshot_survives_concurrent_policy_creation(self):
+        from harness import jev_policy as JP
+
+        class Dummy:
+            def flush_fallbacks(self):
+                return 0
+        stop = threading.Event()
+        keep = []
+
+        def adder():
+            while not stop.is_set():
+                d = Dummy()
+                keep.append(d)
+                JP._LIVE_POLICIES.add(d)
+                if len(keep) > 200:
+                    keep.clear()
+        import weakref
+        threads = [threading.Thread(target=adder, daemon=True) for _ in range(3)]
+        with mock.patch.object(JP, "_LIVE_POLICIES", weakref.WeakSet()):
+            for t in threads:
+                t.start()
+            try:
+                for _ in range(800):
+                    JP.flush_all_fallbacks()          # must never raise
+            finally:
+                stop.set()
+                for t in threads:
+                    t.join()
+
+    def test_snapshot_retries_a_transient_iteration_error(self):
+        from harness import jev_policy as JP
+
+        class Flaky:
+            calls = 0
+
+            def __iter__(self):
+                Flaky.calls += 1
+                if Flaky.calls < 3:
+                    raise RuntimeError("Set changed size during iteration")
+                return iter(())
+        with mock.patch.object(JP, "_LIVE_POLICIES", Flaky()):
+            self.assertEqual(JP._live_policies(), ())
+            self.assertEqual(Flaky.calls, 3)
+        with mock.patch.object(JP, "_LIVE_POLICIES", mock.MagicMock(
+                __iter__=mock.Mock(side_effect=RuntimeError("always")))):
+            self.assertEqual(JP._live_policies(), ())     # gives up, no raise
+            self.assertEqual(JP.flush_all_fallbacks(), 0)
+
+    def test_a_deleted_ledger_directory_is_not_recreated_and_tails_survive(self):
+        import shutil
+        policy = policy_for(self.unkeyed_settings(), ledger=self.ledger)
+        for _ in range(3):
+            policy.evaluate_triage("same", ["a.py"])
+        directory = os.path.dirname(self.ledger.path)
+        os.makedirs(directory, exist_ok=True)
+        before = sum(r.get("repeat_count", 1) for r in self.rows())
+        shutil.rmtree(directory)
+        self.assertEqual(policy.flush_fallbacks(), 0)
+        self.assertFalse(os.path.exists(directory))      # not resurrected
+        os.makedirs(directory)
+        self.assertGreaterEqual(policy.flush_fallbacks(), 1)
+        self.assertEqual(sum(r.get("repeat_count", 1) for r in self.rows()) - before, 1)
+
+    def test_a_failed_append_restores_the_tail_counters(self):
+        ledger = _ListLedger()
+        policy = policy_for(self.unkeyed_settings(), ledger=ledger)
+        for _ in range(9):
+            policy.evaluate_triage("same", ["a.py"])
+        for state in range(3):
+            for _ in range(3):
+                policy.evaluate_triage("other {}".format(state), ["a.py"])
+        total = 9 + 9
+        written = sum(r.get("repeat_count", 1) for r in ledger.rows)
+        real_append = ledger.append
+        calls = []
+
+        def flaky(event, **fields):
+            calls.append(1)
+            if len(calls) == 2:
+                raise OSError("disk full")
+            return real_append(event, **fields)
+        ledger.append = flaky
+        with self.assertRaises(OSError):
+            policy.flush_fallbacks()
+        ledger.append = real_append
+        policy.flush_fallbacks()
+        self.assertEqual(sum(r.get("repeat_count", 1) for r in ledger.rows), total)
+        self.assertGreater(total, written)
+        self.assertEqual(policy.flush_fallbacks(), 0)
+
+    def test_exit_flush_is_bounded_and_survives_a_missing_thread(self):
+        from harness import jev_policy as JP
+
+        def stuck():
+            time.sleep(5)
+        started = time.monotonic()
+        with mock.patch.object(JP, "flush_all_fallbacks", stuck), \
+                mock.patch.object(JP, "ATEXIT_FLUSH_TIMEOUT_SECONDS", 0.2):
+            JP._flush_at_exit()
+        self.assertLess(time.monotonic() - started, 2.0)
+        inline = mock.Mock()
+        with mock.patch.object(JP, "flush_all_fallbacks", inline), \
+                mock.patch.object(JP.threading, "Thread",
+                                  side_effect=RuntimeError("no threads")):
+            JP._flush_at_exit()
+        inline.assert_called_once()
+        with mock.patch.object(JP, "flush_all_fallbacks",
+                               side_effect=OSError("x")), \
+                mock.patch.object(JP.threading, "Thread",
+                                  side_effect=RuntimeError("no threads")):
+            JP._flush_at_exit()                          # swallowed
+
+
+class ReservationAtomicityTests(unittest.TestCase):
+    def test_concurrent_acquire_reserves_once_and_consume_needs_a_token(self):
+        from harness.jev_policy import _Reservation
+
+        class Pol:
+            def __init__(self):
+                self.n = 0
+                self.lock = threading.Lock()
+
+            def _reserve(self, site, tokens):
+                with self.lock:
+                    self.n += 1
+                time.sleep(0.002)
+                return ("t", 1)
+        for _ in range(60):
+            pol = Pol()
+            handle = _Reservation(pol, "s", 1024)
+            wins, early = [], []
+
+            def consumer():
+                got = handle.consume()
+                if got:
+                    wins.append(1)
+                    if handle.token is None:
+                        early.append(1)
+            threads = [threading.Thread(target=handle.acquire) for _ in range(4)]
+            threads += [threading.Thread(target=consumer) for _ in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            self.assertEqual(pol.n, 1)
+            self.assertEqual(early, [])
+            self.assertLessEqual(len(wins), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
