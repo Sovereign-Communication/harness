@@ -239,6 +239,24 @@ JEV_CACHE_MAX_ENTRIES = 256
 JEV_CACHE_TTL_SECONDS = 1800.0
 
 
+def _identity(value: Any, depth: int = 0) -> str:
+    """A stable-per-object description of a value that cannot repr itself.
+
+    Plain scalars by value, containers by their members, anything else by
+    type and object id: only the same live object (or an equal-shaped
+    container of them) collides.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return repr(value)
+    if depth < 4 and isinstance(value, dict):
+        return "{" + ",".join(
+            "{}:{}".format(_identity(k, depth + 1), _identity(v, depth + 1))
+            for k, v in list(value.items())) + "}"
+    if depth < 4 and isinstance(value, (list, tuple, set, frozenset)):
+        return "[" + ",".join(_identity(v, depth + 1) for v in list(value)) + "]"
+    return "{}#{}".format(type(value).__name__, id(value))
+
+
 def _digest(*parts: Any) -> str:
     """Total sha256 identity over any parts; it never raises.
 
@@ -255,8 +273,7 @@ def _digest(*parts: Any) -> str:
         except Exception:
             # Cannot even describe itself: identity by type and object id, so
             # only the same live object (or an equal-shaped one) collides.
-            blob = "|".join("{}#{}".format(type(part).__name__, id(part))
-                            for part in parts)
+            blob = _identity(parts)
     return hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
 
 

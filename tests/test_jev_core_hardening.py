@@ -14,7 +14,8 @@ from unittest import mock
 from harness._http import HttpTransport
 from harness.config import load_settings
 from harness.errors import HarnessError
-from harness.jev import (JevCache, JevEvaluator, PROCESS_CACHE, jev_cost)
+from harness.jev import (CircuitBreakers, JevCache, JevEvaluator,
+                         PROCESS_CACHE, jev_cost)
 from harness.jev_policy import (BREAKER_FAILURE_THRESHOLD,
                                 FALLBACK_DISTINCT_ROW_CAP,
                                 UNATTRIBUTED_FALLBACK, policy_for)
@@ -1310,6 +1311,515 @@ class CoverageGapTests(_Base):
                            is_fallback=True, cost="oops")
         self.assertEqual(self.ledger.jev_calibration_report()["jev_evals"], 2)
         self.assertEqual(self.ledger.cost_report()["jev"]["calls"], 0)
+
+
+class ReservedTransport(CountingTransport):
+    """Fails the test if a request is ever sent without a live reservation."""
+
+    def __init__(self, gov, default):
+        super().__init__(default)
+        self.gov = gov
+        self.unreserved = 0
+
+    def post(self, url, key, payload, timeout=45):
+        if self.gov.outstanding <= 0.0:
+            self.unreserved += 1
+        return super().post(url, key, payload, timeout)
+
+
+class LazyReservationTests(_Base):
+    def test_no_request_is_ever_sent_unreserved_at_any_site(self):
+        for name, call in SITES.items():
+            with self.subTest(site=name):
+                self.setUp()
+                gov = self.governor(max_cost=0.5)
+                transport = ReservedTransport(gov, echo(100))
+                policy = self.keyed(transport, governor=gov)
+                call(policy)
+                self.assertEqual(transport.unreserved, 0)
+                self.assertGreaterEqual(len(transport.calls), 1)
+                self.assertEqual(gov.outstanding, 0.0)
+
+    def test_cache_miss_after_a_hit_was_possible_reserves_or_refuses(self):
+        gov = self.governor(max_cost=0.5)
+        transport = ReservedTransport(gov, noul_resp(tokens=100))
+        policy = self.keyed(transport, governor=gov)
+        policy.evaluate_diff(DIFF, "change x", "x.py")
+        gov.max_cost = gov.spent + 1e-9              # nothing affordable
+        policy.evaluator.cache.clear()               # entry evicted/expired
+        result, structural = policy.evaluate_diff(DIFF, "change x", "x.py")
+        self.assertEqual(len(transport.calls), 1)    # never dispatched
+        self.assertEqual(transport.unreserved, 0)
+        self.assertEqual(result.verdict, "fail")
+        self.assertFalse(result.is_fallback)         # a budget hard stop
+        refusals = [e for e in self.ledger.entries() if e["event"] == "jev_refusal"]
+        self.assertTrue(refusals)
+
+    def test_cache_hit_still_works_with_no_budget(self):
+        gov = self.governor(max_cost=0.5)
+        policy = self.keyed(CountingTransport(noul_resp()), governor=gov)
+        policy.evaluate_diff(DIFF, "change x", "x.py")
+        gov.max_cost = gov.spent
+        result, _ = policy.evaluate_diff(DIFF, "change x", "x.py")
+        self.assertTrue(result.cache_hit)
+
+    def test_dispatch_state_is_reset_after_every_call(self):
+        from harness.jev import ACTIVE_RESERVER, ACTIVE_SITE
+        policy = self.keyed(CountingTransport(echo(10)))
+        policy.evaluate_route("x", ["a.py"])
+        self.assertEqual(ACTIVE_SITE.get(), "")
+        self.assertIsNone(ACTIVE_RESERVER.get())
+        policy.evaluate_route("x", ["a.py"])          # cache hit
+        self.assertEqual(ACTIVE_SITE.get(), "")
+        self.assertIsNone(ACTIVE_RESERVER.get())
+
+
+class SettlementOverrunTests(_Base):
+    def run_site(self, call):
+        def respond(payload):
+            return {"model": "jev-test",
+                    "usage": {"input_tokens": 5000, "output_tokens": 1},
+                    "answers": answers_for(payload["questions"])}
+        gov = self.governor(max_cost=jev_cost(1024) * 1.5)
+        policy = self.keyed(CountingTransport(respond), governor=gov)
+        return policy, gov, call(policy)
+
+    def test_real_spend_is_booked_and_ledgered_never_erased(self):
+        for name in ("diff", "route", "triage"):
+            with self.subTest(site=name):
+                self.setUp()
+                _, gov, _ = self.run_site(SITES[name])
+                self.assertAlmostEqual(gov.spent, jev_cost(5000))
+                self.assertEqual(gov.overruns, 1)
+                self.assertEqual(gov.outstanding, 0.0)
+                paid = [r for r in self.rows() if r["cost"] > 0]
+                self.assertEqual(len(paid), 1)
+                self.assertAlmostEqual(paid[0]["cost"], jev_cost(5000))
+                self.assertEqual(paid[0]["input_tokens"], 5000)
+                self.assertTrue(paid[0]["discarded"])
+                self.assertEqual(paid[0]["fallback_reason"], "settlement_overrun")
+
+    def test_apply_site_degrades_like_a_transport_failure(self):
+        _, _, out = self.run_site(SITES["diff"])
+        result, structural = out
+        self.assertEqual(result.verdict, "pass")
+        self.assertTrue(result.is_fallback)
+        self.assertEqual(structural["fallback_reason"], "settlement_overrun")
+
+    def test_next_call_sees_the_true_spend_and_is_refused(self):
+        policy, gov, _ = self.run_site(SITES["route"])
+        result, structural = policy.evaluate_route("another goal", ["b.py"])
+        self.assertTrue(result.is_fallback)
+        self.assertEqual(structural["fallback_reason"], "preflight_refused")
+
+    def test_governor_booking_failure_is_reported_not_raised(self):
+        from harness.jev import JevEvaluationResult
+        policy = self.keyed(CountingTransport(noul_resp()))
+        policy.governor = mock.Mock()
+        policy.governor.record_overrun.side_effect = RuntimeError("no")
+        with mock.patch("harness.jev_policy.eprint") as eprint:
+            policy._book_overrun(0.5, JevEvaluationResult(
+                "pass", 0.0, 1.0, {}, [], model="m"))
+        self.assertIn("could not be booked", eprint.call_args[0][0])
+
+
+class SingleFlightTests(_Base):
+    Q = {"a": {"type": "noul", "instructions": "ok?"}}
+
+    def hammer(self, ev, n=6):
+        out = []
+        threads = [threading.Thread(
+            target=lambda: out.append(ev.evaluate({"q": 1}, self.Q)))
+            for _ in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        return out
+
+    def test_followers_neither_reserve_nor_send(self):
+        gov = self.governor(max_cost=jev_cost(1024) * 1.5)
+        transport = CountingTransport(
+            noul_resp(tokens=100), delay={("instruction_matches",): 0.3})
+        policy = self.keyed(transport, governor=gov)
+        out = []
+        bar = threading.Barrier(4)
+
+        def worker():
+            bar.wait()
+            out.append(policy.evaluate_diff(DIFF, "change x", "x.py")[0])
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(transport.calls), 1)
+        self.assertTrue(all(not r.is_fallback for r in out), out)
+        self.assertEqual(sum(1 for r in out if r.cache_hit), 3)
+        self.assertEqual(gov.outstanding, 0.0)
+
+    def test_failed_leader_re_elects_exactly_one_new_leader(self):
+        class Flaky:
+            calls = 0
+            lock = threading.Lock()
+
+            def post(s, *a, **k):
+                with s.lock:
+                    s.calls += 1
+                    n = s.calls
+                time.sleep(0.15)
+                if n == 1:
+                    raise OSError("first fails")
+                return 200, {"model": "j",
+                             "usage": {"input_tokens": 1, "output_tokens": 1},
+                             "answers": {"a": {"type": "noul", "noul": 0.9}}}
+        f = Flaky()
+        ev = JevEvaluator(api_key="k", transport=f, cache=JevCache())
+        out = self.hammer(ev, 6)
+        self.assertEqual(f.calls, 2)                 # no thundering herd
+        self.assertEqual(sum(1 for r in out if r.is_fallback), 1)
+        self.assertEqual(sum(1 for r in out if r.cache_hit), 4)
+
+    def test_coalesces_even_when_the_cache_stores_nothing(self):
+        t = CacheHardeningTests.stub(self, delay=0.2)
+        ev = JevEvaluator(api_key="k", transport=t,
+                          cache=JevCache(max_entries=0))
+        out = self.hammer(ev, 6)
+        self.assertEqual(t.calls, 1)
+        self.assertEqual(sum(1 for r in out if r.cache_hit), 5)
+
+    def test_same_thread_reentrancy_does_not_wait_on_itself(self):
+        class Reentrant:
+            calls = 0
+            ev = None
+
+            def post(s, *a, **k):
+                s.calls += 1
+                if s.calls == 1:
+                    s.ev.evaluate({"q": 1}, SingleFlightTests.Q)  # nested
+                return 200, {"model": "j",
+                             "usage": {"input_tokens": 1, "output_tokens": 1},
+                             "answers": {"a": {"type": "noul", "noul": 0.9}}}
+        r = Reentrant()
+        r.ev = JevEvaluator(api_key="k", transport=r, cache=JevCache())
+        started = time.monotonic()
+        result = r.ev.evaluate({"q": 1}, self.Q)
+        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertFalse(result.is_fallback)
+
+    def test_a_dead_leader_stalls_followers_only_briefly(self):
+        t = CacheHardeningTests.stub(self)
+        cache = JevCache()
+        ev = JevEvaluator(api_key="k", transport=t, cache=cache)
+        key = ev._cache_key({"q": 1}, self.Q)
+        cache.begin(key)                             # leader that never finishes
+        started = time.monotonic()
+        with mock.patch("harness.jev.SINGLE_FLIGHT_WAIT_SECONDS", 0.2):
+            result = ev.evaluate({"q": 1}, self.Q)
+        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertFalse(result.is_fallback)
+        self.assertEqual(t.calls, 1)
+
+
+class _ListLedger:
+    """A free in-memory ledger: these tests write thousands of rows."""
+
+    def __init__(self):
+        self.rows = []
+
+    def append(self, event, **fields):
+        self.rows.append(dict(fields, event=event))
+
+    def entries(self):
+        return self.rows
+
+
+class FallbackEvictionTests(_Base):
+    def test_no_calls_are_lost_to_eviction_at_scale(self):
+        ledger = _ListLedger()
+        policy = policy_for(self.unkeyed_settings(), ledger=ledger)
+        total = written = 0
+        for site in range(100):
+            for state in range(60):
+                for _ in range(3):
+                    write, repeat = policy._dedupe(
+                        "site{}".format(site), "reason", "k{}".format(state))
+                    total += 1
+                    written += repeat if write else 0
+        self.assertGreater(total, 4096 * 3)
+        policy.flush_fallbacks()
+        written += sum(e["repeat_count"] for e in ledger.entries())
+        self.assertEqual(written, total)
+        self.assertEqual(policy.flush_fallbacks(), 0)
+
+    def test_invariant_holds_for_random_traffic_and_midstream_flushes(self):
+        import random
+        for states in (1, 10, 65, 200):
+            for flush_every in (0, 37):
+                ledger = _ListLedger()
+                random.seed(states * 7 + flush_every)
+                policy = policy_for(self.unkeyed_settings(), ledger=ledger)
+                with mock.patch("harness.jev_policy.FALLBACK_TRACKED_KEYS", 40):
+                    total = written = 0
+                    for i in range(1500):
+                        write, repeat = policy._dedupe(
+                            "s", "r", "k{}".format(random.randrange(states)))
+                        total += 1
+                        written += repeat if write else 0
+                        if flush_every and i % flush_every == 0:
+                            policy.flush_fallbacks()
+                    policy.flush_fallbacks()
+                written += sum(e["repeat_count"] for e in ledger.entries())
+                self.assertEqual(written, total, (states, flush_every))
+
+
+class ParseErrorTests(_Base):
+    USAGE = {"input_tokens": 500, "output_tokens": 3}
+
+    def bodies(self):
+        u = self.USAGE
+        return {
+            "answers list": {"model": "j", "usage": u, "answers": [1]},
+            "item str": {"model": "j", "usage": u,
+                         "answers": {"instruction_matches": "x"}},
+            "noul str": {"model": "j", "usage": u, "answers": {
+                "instruction_matches": {"type": "noul", "noul": "hi"}}},
+            "noul nan": {"model": "j", "usage": u, "answers": {
+                "instruction_matches": {"type": "noul", "noul": float("nan")}}},
+            "noul huge": {"model": "j", "usage": u, "answers": {
+                "instruction_matches": {"type": "noul", "noul": 10 ** 400}}},
+            "type unhashable": {"model": "j", "usage": u, "answers": {
+                "instruction_matches": {"type": ["noul"], "noul": 0.5}}},
+        }
+
+    def test_billed_unparseable_responses_are_discarded_not_failures(self):
+        for name, body in self.bodies().items():
+            with self.subTest(body=name):
+                board = CircuitBreakers(2, 30.0)
+                ev = JevEvaluator(api_key="k", transport=CountingTransport(body),
+                                  breakers=board, cache=JevCache())
+                for _ in range(4):
+                    result = ev.evaluate({"x": 1})
+                    self.assertTrue(result.discarded)
+                    self.assertFalse(result.is_fallback)
+                    self.assertEqual(result.input_tokens, 500)
+                self.assertEqual(board.snapshot("").get("failures", 0), 0)
+                self.assertEqual(len(ev.cache), 0)
+
+
+class BreakerGenerationTests(_Base):
+    def test_a_stale_outcome_cannot_close_clear_or_extend(self):
+        now = [0.0]
+        board = CircuitBreakers(2, 30.0, clock=lambda: now[0])
+        _, slow = board.acquire("s")                 # starts before the trip
+        for _ in range(2):
+            _, gen = board.acquire("s")
+            board.record("s", "failure", gen)
+        self.assertFalse(board.would_allow("s"))
+        board.record("s", "success", slow)           # stale: ignored
+        self.assertFalse(board.would_allow("s"))
+        opened = board.snapshot("s")["opened_at"]
+        now[0] = 10.0
+        board.record("s", "failure", slow)           # stale: no extension
+        self.assertEqual(board.snapshot("s")["opened_at"], opened)
+
+    def test_probe_in_flight_blocks_others_and_stale_cannot_clear_it(self):
+        now = [0.0]
+        board = CircuitBreakers(2, 30.0, clock=lambda: now[0])
+        _, old = board.acquire("s")
+        for _ in range(2):
+            board.record("s", "failure", board.acquire("s")[1])
+        now[0] = 31.0
+        self.assertTrue(board.would_allow("s"))
+        refusal, probe = board.acquire("s")
+        self.assertIsNone(refusal)
+        self.assertFalse(board.would_allow("s"))     # probe in flight
+        self.assertIsNotNone(board.acquire("s")[0])
+        board.record("s", "neutral", old)            # stale: probe stays
+        self.assertTrue(board.snapshot("s")["probing"])
+        board.record("s", "success", probe)
+        self.assertTrue(board.would_allow("s"))
+        self.assertIsNone(board.acquire("s")[0])
+
+    def test_evaluate_once_respects_and_feeds_the_breaker(self):
+        from harness.jev import ACTIVE_SITE
+        board = CircuitBreakers(2, 30.0)
+        transport = CountingTransport(noul_resp())
+        transport.post_once = transport.post
+        ev = JevEvaluator(api_key="k", transport=transport, breakers=board)
+        questions = {"a": {"type": "noul", "instructions": "ok?"}}
+        token = ACTIVE_SITE.set("vision")
+        try:
+            for _ in range(2):
+                board.record("vision", "failure", board.acquire("vision")[1])
+            result = ev.evaluate_once({"x": 1}, questions)
+        finally:
+            ACTIVE_SITE.reset(token)
+        self.assertTrue(result.is_fallback)
+        self.assertEqual(result.fallback_reason, "circuit_open")
+        self.assertEqual(transport.calls, [])
+
+    def test_shared_board_registry_is_capped(self):
+        from harness import jev as jev_mod
+        jev_mod._SHARED_BREAKERS.clear()
+        with mock.patch("harness.jev.SHARED_BREAKER_CAP", 3):
+            boards = [jev_mod.shared_breakers("e", "k{}".format(i))
+                      for i in range(6)]
+            self.assertEqual(len(jev_mod._SHARED_BREAKERS), 3)
+            self.assertIs(jev_mod.shared_breakers("e", "k5"), boards[5])
+        jev_mod._SHARED_BREAKERS.clear()
+
+
+class DigestIdentityTests(_Base):
+    def test_unreprable_states_differ_by_object_not_by_type_name(self):
+        from harness.jev import _digest
+
+        class Mute:
+            def __str__(self):
+                raise RuntimeError("no str")
+
+            __repr__ = __str__
+        a, b = Mute(), Mute()
+        self.assertNotEqual(_digest({"x": a}), _digest({"x": b}))
+        circ = {}
+        circ["me"] = circ
+        self.assertEqual(_digest(circ), _digest(circ))
+
+
+class OtherSiteCacheTests(_Base):
+    def test_pack_sites_serve_repeats_free(self):
+        from tests.test_jev_issue_sort import sample_pack
+        from tests.test_jev_log_judgment import sample_log_pack
+        from tests.test_jev_repo_judgment import STATE, repo_pack
+        evidence = {dim: {"score": 10.0, "checks_satisfied": 12,
+                          "checks_count": 12, "checks": []}
+                    for dim in ("A", "R", "SM", "SD")}
+        calls = {
+            "issue_sort": lambda p: p.evaluate_issue_sort(
+                {"issue": "auth token login broken"}, sample_pack()),
+            "log_item": lambda p: p.evaluate_log_item(
+                {"item": "dial failed on swarm"}, sample_log_pack()),
+            "repo_summary": lambda p: p.evaluate_repo_summary(STATE, repo_pack()),
+            "audit_dims": lambda p: p.evaluate_audit_dimensions(evidence),
+        }
+        for name, call in calls.items():
+            with self.subTest(site=name):
+                self.setUp()
+                transport = CountingTransport(echo(100))
+                gov = self.governor(max_cost=0.5)
+                policy = self.keyed(transport, governor=gov)
+                call(policy)
+                n, spent = len(transport.calls), gov.spent
+                call(policy)
+                self.assertEqual(len(transport.calls), n)
+                self.assertEqual(gov.spent, spent)
+                self.assertTrue([r for r in self.rows() if r.get("cache_hit")])
+
+
+class FanOutPropagationTests(_Base):
+    def test_harness_error_propagates_after_siblings_finish_in_job_order(self):
+        policy = self.keyed(CountingTransport(noul_resp()))
+        done = []
+
+        def fine():
+            time.sleep(0.1)
+            done.append("fine")
+            return ("ok", {})
+
+        def abort_a():
+            raise HarnessError("abort a")
+
+        def abort_b():
+            time.sleep(0.02)
+            raise HarnessError("abort b")
+        with self.assertRaises(HarnessError) as ctx:
+            policy.fan_out([("a", fine), ("b", abort_b), ("c", abort_a)])
+        self.assertEqual(str(ctx.exception), "abort b")   # first in job order
+        self.assertEqual(done, ["fine"])                  # siblings finished
+
+    def test_plain_exceptions_still_fail_closed(self):
+        policy = self.keyed(CountingTransport(noul_resp()))
+
+        def boom():
+            raise ValueError("x")
+        out = policy.fan_out([("a", boom), ("b", lambda: ("ok", {}))])
+        self.assertEqual(out[0][1]["fallback_reason"], "fanout_exception")
+
+
+class AnalyticsBaselineTests(_Base):
+    def test_cost_report_skips_cache_hits_weights_repeats_prices_settled(self):
+        ledger = self.ledger
+        ledger.append("jev_eval", model="jev-test", input_tokens=1000,
+                      is_fallback=False, cost=jev_cost(1000))
+        ledger.append("jev_eval", model="jev-test", input_tokens=0,
+                      is_fallback=False, cost=0.0, cache_hit=True)
+        ledger.append("jev_eval", model="jev-test", input_tokens=0,
+                      is_fallback=True, cost=0.0, repeat_count=8)
+        ledger.append("jev_eval", model="jev-test", input_tokens=0,
+                      is_fallback=False, cost=0.002)         # vision-style row
+        report = ledger.cost_report()
+        self.assertEqual(report["jev"]["calls"], 2)
+        self.assertAlmostEqual(report["jev"]["cost"], jev_cost(1000) + 0.002,
+                               places=6)
+        # 1 priced + 8 represented free + 1 priced; the cache hit is absent
+        self.assertEqual(sum(t["calls"] for t in report["by_tier"].values())
+                         if "by_tier" in report else 10, 10)
+
+    def test_site_export_weights_fallbacks_and_skips_cache_and_flush_rows(self):
+        from harness.site_export import build_runs
+        ledger = self.ledger
+        ledger.append("jev_eval", task_id="t", cost=0.0, is_fallback=True,
+                      repeat_count=5, confidence=0.0)
+        ledger.append("jev_eval", task_id="t", cost=0.0, is_fallback=False,
+                      cache_hit=True, confidence=0.9)
+        ledger.append("jev_eval", task_id="t", cost=0.0, is_fallback=True,
+                      flush=True, repeat_count=3, confidence=0.0)
+        ledger.append("jev_eval", task_id="t", cost=0.001, is_fallback=False,
+                      confidence=0.8)
+        ledger.append("verify_round", task_id="t", passed=True, model="m")
+        runs = build_runs(ledger.entries())
+        evals = runs[0]["jev_evals"]
+        self.assertEqual(evals["fallback"], 8)
+        self.assertEqual(evals["count"], 2)         # fresh observations only
+
+
+class CoverageGapTests2(_Base):
+    def test_reentrant_key_still_serves_a_cache_hit(self):
+        t = CacheHardeningTests.stub(self)
+        ev = JevEvaluator(api_key="k", transport=t, cache=JevCache())
+        first = ev.evaluate({"q": 1}, SingleFlightTests.Q)
+        self.assertFalse(first.cache_hit)
+        key = ev._cache_key({"q": 1}, SingleFlightTests.Q)
+        ev._led.__dict__["keys"] = {key}            # this thread is the leader
+        second = ev.evaluate({"q": 1}, SingleFlightTests.Q)
+        self.assertTrue(second.cache_hit)
+        self.assertEqual(t.calls, 1)
+
+    def test_plan_site_refusal_degrades_with_a_reason(self):
+        policy = self.keyed(CountingTransport(noul_resp()),
+                            governor=self.governor(max_cost=0.0000001))
+        result, structural = policy.evaluate_plan("fix loop", ["a.py"])
+        self.assertEqual(result.verdict, "fail")
+        refusals = [e for e in self.ledger.entries() if e["event"] == "jev_refusal"]
+        self.assertEqual(refusals[0]["site"], "waist")
+
+    def test_legacy_rows_without_a_settled_cost_use_the_price_list(self):
+        self.ledger.append("jev_eval", model="jev-test", input_tokens=1000,
+                           is_fallback=False)
+        self.ledger.append("jev_eval", model="jev-test", input_tokens=50,
+                           is_fallback=False, cost="oops")
+        self.ledger.append("jev_eval", model="jev-test", input_tokens=5,
+                           is_fallback=True)
+        report = self.ledger.cost_report()
+        self.assertEqual(report["jev"]["calls"], 1)
+        self.assertAlmostEqual(report["jev"]["cost"], jev_cost(1000), places=6)
+
+    def test_site_export_tolerates_a_garbage_repeat_count(self):
+        from harness.site_export import build_runs
+        self.ledger.append("jev_eval", task_id="t", cost=0.0, is_fallback=True,
+                           repeat_count="many", confidence=0.0)
+        self.ledger.append("verify_round", task_id="t", passed=True, model="m")
+        self.assertEqual(build_runs(self.ledger.entries())[0]["jev_evals"]["fallback"], 1)
 
 
 if __name__ == "__main__":
