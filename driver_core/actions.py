@@ -220,6 +220,10 @@ class Vocabulary:
     def names(self):
         return tuple(sorted(self._by_name))
 
+    def actions(self):
+        """The declared actions, in declaration order."""
+        return self._actions
+
     def of_class(self, action_class):
         return tuple(a for a in self._actions
                      if a.action_class == action_class)

@@ -51,7 +51,7 @@ from .consensus import tally
 from .config import Settings, default_audit_path, load_settings
 from .errors import PerceptionUnavailable, VocabularyError
 from .executor import Executor
-from .executor_registry import build_driver_registry
+from .executor_registry import build_driver_registry, executability
 from .extractors import ExtractorPool
 from .jev_client import JevClient
 from .perception import select_capture
@@ -69,11 +69,12 @@ class StepResult:
     """
 
     __slots__ = ("step_id", "ok", "stopped_at", "reason", "detail", "capture",
-                 "agreement", "decision", "execution", "receipt", "cost")
+                 "agreement", "decision", "execution", "receipt", "cost",
+                 "needs")
 
     def __init__(self, step_id, *, ok, stopped_at, reason=None, detail="",
                  capture=None, agreement=None, decision=None, execution=None,
-                 receipt=None, cost=0.0):
+                 receipt=None, cost=0.0, needs=()):
         self.step_id = step_id
         self.ok = ok
         self.stopped_at = stopped_at
@@ -85,6 +86,9 @@ class StepResult:
         self.execution = execution
         self.receipt = receipt
         self.cost = float(cost or 0.0)
+        #: What would have to exist for this step to get further (a source,
+        #: an input backend, a write switch). Empty on success.
+        self.needs = list(needs)
 
     def to_dict(self):
         """The wire form -- the contract a host adapter serialises."""
@@ -100,6 +104,7 @@ class StepResult:
             "execution": self.execution.to_dict() if self.execution else None,
             "receipt": self.receipt,
             "cost_usd": round(self.cost, 9),
+            "needs": list(self.needs),
         }
 
     def __repr__(self):
@@ -203,7 +208,8 @@ class Driver:
         try:
             capture = self._capture(target, prefer)
         except PerceptionUnavailable as exc:
-            return self._stop(step_id, "capture", "no_capture", str(exc))
+            return self._stop(step_id, "capture", "no_capture", str(exc),
+                              needs=self._capture_needs())
         self.audit.append(KIND_CAPTURE, step_id=step_id, **capture.summary())
 
         # 2 + 3. extract and tally
@@ -260,7 +266,9 @@ class Driver:
             return self._stop(step_id, "execution", "execution_refused", str(exc),
                               capture=capture, agreement=agreement,
                               decision=decision, receipt=receipt,
-                              cost=decision.cost)
+                              cost=decision.cost,
+                              needs=executability(
+                                  action, self.executor.registry)[1])
 
         # An executor that refused did not do the thing. The pipeline
         # reaching the end is not the same as the action having happened,
@@ -276,7 +284,9 @@ class Driver:
                               execution.detail, capture=capture,
                               agreement=agreement, decision=decision,
                               execution=execution, receipt=receipt,
-                              cost=decision.cost)
+                              cost=decision.cost,
+                              needs=executability(
+                                  action, self.executor.registry)[1])
 
         return StepResult(step_id, ok=True, stopped_at="executed",
                           capture=capture, agreement=agreement,
@@ -316,6 +326,33 @@ class Driver:
         if target_class is not None and target_class in self.pools:
             return self.pools[target_class]
         return self.pool
+
+    def _capture_needs(self):
+        """What a ``no_capture`` stop is waiting on, in operator terms.
+
+        Two independent gaps, both named: nothing serves the target (so
+        configure a source), and -- because a capture is only the first half
+        of acting -- any declared action that could not execute today.
+        """
+        configured = sorted({s.name for s in self.sources}) or ["none"]
+        needs = [
+            "configure a perception source for the target class (set "
+            "DRIVER_CLI_COMMAND, DRIVER_MCP_COMMAND with DRIVER_MCP_TOOL, "
+            "DRIVER_DOM_URL, or DRIVER_SCREEN=1); configured now: "
+            + ", ".join(configured)]
+        blocked = []
+        for action in self.vocabulary.actions():
+            if action.requires_consent:
+                ok, why = executability(action, self.executor.registry)
+                if not ok:
+                    blocked.append(action.name)
+        if blocked:
+            needs.append(
+                "to act (not just observe): register an input backend "
+                "(driver_core.osal.register_input_backend) and/or set "
+                "DRIVER_ALLOW_WRITE=1; declared but not executable now: "
+                + ", ".join(blocked))
+        return needs
 
     def _stop(self, step_id, stopped_at, reason, detail, **kwargs):
         self.audit.append(KIND_REFUSAL, step_id=step_id, stopped_at=stopped_at,
