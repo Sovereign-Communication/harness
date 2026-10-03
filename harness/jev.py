@@ -253,7 +253,10 @@ def _digest(*parts: Any) -> str:
         try:
             blob = repr(parts)
         except Exception:
-            blob = type(parts).__name__
+            # Cannot even describe itself: identity by type and object id, so
+            # only the same live object (or an equal-shaped one) collides.
+            blob = "|".join("{}#{}".format(type(part).__name__, id(part))
+                            for part in parts)
     return hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
 
 
@@ -268,6 +271,14 @@ def _strict_digest(*parts: Any) -> Optional[str]:
     except (TypeError, ValueError, RecursionError):
         return None
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+class _Flight:
+    """One in-flight request that identical callers wait on."""
+
+    def __init__(self):
+        self.event = threading.Event()
+        self.value: Any = None
 
 
 class JevCache:
@@ -285,7 +296,7 @@ class JevCache:
         self._clock = clock
         self._lock = threading.Lock()
         self._items: "OrderedDict[str, Any]" = OrderedDict()
-        self._inflight: Dict[str, threading.Event] = {}
+        self._inflight: Dict[str, "_Flight"] = {}
         self.hits = 0
         self.misses = 0
 
@@ -306,21 +317,27 @@ class JevCache:
             # without ever poisoning what the next hit replays.
             return copy.deepcopy(value)
 
-    def begin(self, key: str) -> Tuple[threading.Event, bool]:
-        """Single-flight: ``(event, True)`` for the one caller that should
-        dispatch this key; ``(event, False)`` for those that should wait."""
-        with self._lock:
-            event = self._inflight.get(key)
-            if event is not None:
-                return event, False
-            event = self._inflight[key] = threading.Event()
-            return event, True
+    def begin(self, key: str) -> Tuple["_Flight", bool]:
+        """Single-flight: ``(flight, True)`` for the one caller that should
+        dispatch this key; ``(flight, False)`` for those that should wait.
 
-    def finish(self, key: str) -> None:
+        The flight carries the leader's answer itself, so waiters coalesce
+        even when the cache stores nothing (``max_entries=0``).
+        """
         with self._lock:
-            event = self._inflight.pop(key, None)
-        if event is not None:
-            event.set()
+            flight = self._inflight.get(key)
+            if flight is not None:
+                return flight, False
+            flight = self._inflight[key] = _Flight()
+            return flight, True
+
+    def finish(self, key: str, value: Any = None) -> None:
+        """Release waiters; ``value`` (a parsed live answer) is handed to them."""
+        with self._lock:
+            flight = self._inflight.pop(key, None)
+        if flight is not None:
+            flight.value = copy.deepcopy(value)
+            flight.event.set()
 
     def put(self, key: str, value: Any) -> None:
         if self.max_entries <= 0:
@@ -331,13 +348,6 @@ class JevCache:
             self._items.move_to_end(key)
             while len(self._items) > self.max_entries:
                 self._items.popitem(last=False)
-
-    def has(self, key: str) -> bool:
-        """Membership without a copy, a stat or an LRU touch."""
-        with self._lock:
-            entry = self._items.get(key)
-            return entry is not None and not (
-                self.ttl > 0 and self._clock() - entry[0] > self.ttl)
 
     def clear(self) -> None:
         with self._lock:
@@ -355,11 +365,19 @@ class JevCache:
 BREAKER_FAILURE_THRESHOLD = 3
 BREAKER_COOLDOWN_SECONDS = 30.0
 # Wait for a concurrent identical request instead of paying for it twice.
-SINGLE_FLIGHT_WAIT_SECONDS = 60.0
+SINGLE_FLIGHT_WAIT_SECONDS = 5.0
+SINGLE_FLIGHT_ROUNDS = 3
+SHARED_BREAKER_CAP = 64
 # The policy names the site it is about to dispatch for; the evaluator reads
 # it here so the breaker is per-site without changing any call signature.
 ACTIVE_SITE: "contextvars.ContextVar[str]" = contextvars.ContextVar(
     "jev_active_site", default="")
+# One-shot hook the policy installs so the spend reservation happens inside
+# the evaluator, AFTER a cache hit or single-flight wait could have answered
+# the call for free and immediately BEFORE a request would leave the machine:
+# a billed request is never dispatched unreserved.
+ACTIVE_RESERVER: "contextvars.ContextVar[Any]" = contextvars.ContextVar(
+    "jev_active_reserver", default=None)
 
 
 class CircuitBreakers:
@@ -379,36 +397,50 @@ class CircuitBreakers:
         self._lock = threading.Lock()
         self._sites: Dict[str, Dict[str, Any]] = {}
 
-    def acquire(self, site: str) -> Optional[str]:
-        """``None`` to proceed, else why the call is refused locally."""
+    def acquire(self, site: str) -> Tuple[Optional[str], int]:
+        """``(None, generation)`` to proceed, else ``(why refused, 0)``.
+
+        Pass the generation back to :meth:`record`: an outcome from a call
+        that began before the breaker last changed state is stale and can
+        neither close it, clear a probe nor extend its cooldown.
+        """
         with self._lock:
-            state = self._sites.get(site)
-            if not state or state["opened_at"] is None:
-                return None
+            state = self._sites.setdefault(site, {
+                "failures": 0, "opened_at": None, "probing": False,
+                "probe_at": 0.0, "generation": 0})
+            if state["opened_at"] is None:
+                return None, state["generation"]
             now = self._clock()
             ready = now - state["opened_at"] >= self.cooldown
             stale = state["probing"] and now - state["probe_at"] >= self.cooldown
             if ready and (not state["probing"] or stale):
                 state["probing"] = True
                 state["probe_at"] = now
-                return None
+                state["generation"] += 1
+                return None, state["generation"]
             return ("Jev circuit open for site {!r} after {} consecutive "
-                    "transport failures".format(site, state["failures"]))
+                    "transport failures".format(site, state["failures"]), 0)
 
-    def record(self, site: str, outcome: str) -> None:
+    def record(self, site: str, outcome: str, generation: Optional[int] = None) -> None:
         """``outcome`` is ``success``, ``failure`` or ``neutral``."""
         with self._lock:
             state = self._sites.setdefault(site, {
                 "failures": 0, "opened_at": None, "probing": False,
-                "probe_at": 0.0})
+                "probe_at": 0.0, "generation": 0})
+            if generation is not None and generation != state["generation"]:
+                return  # stale: this call predates the current breaker state
             probing = state["probing"]
             state["probing"] = False
             if outcome == "success":
+                if state["opened_at"] is not None:
+                    state["generation"] += 1
                 state["failures"] = 0
                 state["opened_at"] = None
             elif outcome == "failure":
                 state["failures"] += 1
                 if probing or state["failures"] >= self.threshold:
+                    if state["opened_at"] is None or probing:
+                        state["generation"] += 1
                     state["opened_at"] = self._clock()
 
     def would_allow(self, site: str) -> bool:
@@ -417,14 +449,17 @@ class CircuitBreakers:
             state = self._sites.get(site)
             if not state or state["opened_at"] is None:
                 return True
-            return self._clock() - state["opened_at"] >= self.cooldown
+            now = self._clock()
+            if state["probing"] and now - state["probe_at"] < self.cooldown:
+                return False  # a probe is already in flight
+            return now - state["opened_at"] >= self.cooldown
 
     def snapshot(self, site: str) -> Dict[str, Any]:
         with self._lock:
             return dict(self._sites.get(site) or {})
 
 
-_SHARED_BREAKERS: Dict[str, CircuitBreakers] = {}
+_SHARED_BREAKERS: "OrderedDict[str, CircuitBreakers]" = OrderedDict()
 _SHARED_BREAKERS_LOCK = threading.Lock()
 
 
@@ -437,7 +472,11 @@ def shared_breakers(endpoint: str, api_key: Optional[str]) -> CircuitBreakers:
     ident = hashlib.sha256(
         "{}\0{}".format(endpoint, api_key or "").encode("utf-8")).hexdigest()
     with _SHARED_BREAKERS_LOCK:
-        return _SHARED_BREAKERS.setdefault(ident, CircuitBreakers())
+        board = _SHARED_BREAKERS.pop(ident, None) or CircuitBreakers()
+        _SHARED_BREAKERS[ident] = board
+        while len(_SHARED_BREAKERS) > SHARED_BREAKER_CAP:
+            _SHARED_BREAKERS.popitem(last=False)
+        return board
 
 
 # One cache for the whole process: every request builds its own policy and
@@ -449,6 +488,10 @@ PROCESS_CACHE = JevCache()
 
 
 class JevEvaluator:
+    #: The policy may install ``ACTIVE_RESERVER`` and expect it to be called
+    #: right before a request would be dispatched (never on a cache hit).
+    lazy_reserve = True
+
     def __init__(self, api_key: Optional[str] = None, endpoint: str = "https://api.typesafe.ai/v1/systemone",
                  transport: Optional[HttpTransport] = None, settings: Optional[Any] = None,
                  cache: Optional[JevCache] = None,
@@ -474,6 +517,7 @@ class JevEvaluator:
             self.breakers = shared_breakers(self.endpoint, self.api_key)
         else:
             self.breakers = CircuitBreakers()
+        self._led = threading.local()
 
     def _cache_key(self, state: Any, active: Dict[str, Any]) -> Optional[str]:
         key_id = hashlib.sha256((self.api_key or "").encode("utf-8")).hexdigest()[:16]
@@ -492,18 +536,6 @@ class JevEvaluator:
             reasons=list(cached.reasons) + [
                 "jev cache hit: identical state/questions/model; no request sent"])
 
-    def peek(self, state: Any, questions: Optional[Dict[str, Any]] = None) -> bool:
-        """True when ``evaluate`` would be served from the cache (no request)."""
-        if not self.api_key:
-            return False
-        try:
-            active = _validate_questions(
-                diff_question_pack() if questions is None else questions)
-        except ValueError:
-            return False
-        key = self._cache_key(state, active)
-        return key is not None and self.cache.has(key)
-
     def evaluate(self, state: Any, questions: Optional[Dict[str, Any]] = None) -> JevEvaluationResult:
         raw = diff_question_pack() if questions is None else questions
         try:
@@ -521,92 +553,122 @@ class JevEvaluator:
             return local("explicit_disable" if self.explicitly_disabled
                          else "missing_key")
         cache_key = self._cache_key(state, active)
+        led = self._led.__dict__.setdefault("keys", set())
         leader = False
-        if cache_key is not None:
-            cached = self.cache.get(cache_key)
-            if cached is not None:
-                return self._cache_hit(cached)
-            event, leader = self.cache.begin(cache_key)
-            if not leader:
-                # An identical request is already on the wire: wait for it
-                # rather than paying for the same answer twice.
-                event.wait(SINGLE_FLIGHT_WAIT_SECONDS)
+        if cache_key is not None and cache_key not in led:
+            # Cache, then single-flight: identical callers wait for the
+            # leader's answer (no reservation, no request of their own). If
+            # the leader failed, exactly one waiter is re-elected.
+            for _ in range(SINGLE_FLIGHT_ROUNDS):
                 cached = self.cache.get(cache_key)
                 if cached is not None:
                     return self._cache_hit(cached)
+                flight, leader = self.cache.begin(cache_key)
+                if leader:
+                    led.add(cache_key)
+                    break
+                if not flight.event.wait(SINGLE_FLIGHT_WAIT_SECONDS):
+                    break  # leader stalled or died: dispatch for ourselves
+                if flight.value is not None:
+                    return self._cache_hit(copy.deepcopy(flight.value))
+        elif cache_key is not None:
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                return self._cache_hit(cached)
         site = ACTIVE_SITE.get()
+        shared = None
+        generation = None
         outcome = "neutral"
-        if self.breakers.acquire(site) is not None:
-            # Refused locally: neither a success nor a failure, and the
-            # shape is exactly a transport failure's, so every site degrades
-            # as it already does when Jev is unreachable.
-            if leader:
-                self.cache.finish(cache_key)
-            return local("circuit_open")
         try:
-            status, resp = self.transport.post(
-                self.endpoint, self.api_key,
-                {"model": self.model, "state": state, "questions": active})
-            if status == 200 and isinstance(resp, dict):
-                try:
-                    parsed = replace(self._parse_jev_response(resp, active),
-                                     state_hash=state_hash)
+            refusal, generation = self.breakers.acquire(site)
+            if refusal is not None:
+                generation = None
+                # Refused locally: neither a success nor a failure, and the
+                # shape is exactly a transport failure's, so every site
+                # degrades as it already does when Jev is unreachable.
+                return local("circuit_open")
+            reserver = ACTIVE_RESERVER.get()
+            if reserver is not None:
+                ACTIVE_RESERVER.set(None)
+                reserver()  # may raise HarnessError: a refused reservation
+            try:
+                status, resp = self.transport.post(
+                    self.endpoint, self.api_key,
+                    {"model": self.model, "state": state, "questions": active})
+                if status == 200 and isinstance(resp, dict):
+                    try:
+                        parsed = replace(self._parse_jev_response(resp, active),
+                                         state_hash=state_hash)
+                    except Exception as exc:
+                        # A billed response we cannot use: settle the real
+                        # usage and flag it discarded. The wire worked, so
+                        # this is neutral for the breaker, never a failure.
+                        usage = resp.get("usage") if isinstance(resp.get("usage"), dict) else {}
+                        input_tokens = usage.get("input_tokens", 0)
+                        output_tokens = usage.get("output_tokens", 0)
+                        if (isinstance(input_tokens, bool) or not isinstance(input_tokens, int)
+                                or input_tokens < 0):
+                            input_tokens = 0
+                        if (isinstance(output_tokens, bool) or not isinstance(output_tokens, int)
+                                or output_tokens < 0):
+                            output_tokens = 0
+                        # DF-JEV-3: the provider billed this response and we
+                        # cannot use the answer. Mark it discarded so the
+                        # caller can report the loss rather than degrading
+                        # as if nothing was spent.
+                        return replace(self._failure(
+                            "invalid TypeSafe response: " + str(exc), fallback=False,
+                            input_tokens=input_tokens, output_tokens=output_tokens,
+                            input_tokens_observed=input_tokens > 0,
+                            output_tokens_observed=output_tokens > 0,
+                            discarded=input_tokens > 0), state_hash=state_hash)
                     outcome = "success"
+                    shared = parsed
                     # Only a fully parsed live answer is cacheable; every
-                    # failure below stays uncached so a retry can succeed.
+                    # failure stays uncached so a retry can succeed.
                     if cache_key is not None:
                         self.cache.put(cache_key, parsed)
                     return parsed
-                except (KeyError, TypeError, ValueError) as exc:
-                    usage = resp.get("usage") if isinstance(resp.get("usage"), dict) else {}
-                    input_tokens = usage.get("input_tokens", 0)
-                    output_tokens = usage.get("output_tokens", 0)
-                    if (isinstance(input_tokens, bool) or not isinstance(input_tokens, int)
-                            or input_tokens < 0):
-                        input_tokens = 0
-                    if (isinstance(output_tokens, bool) or not isinstance(output_tokens, int)
-                            or output_tokens < 0):
-                        output_tokens = 0
-                    # DF-JEV-3: the provider billed this response and we
-                    # cannot use the answer. Settle the real usage, and
-                    # mark it discarded so the caller can report the loss
-                    # rather than degrading as if nothing was spent.
+                if status in (401, 422):
                     return replace(self._failure(
-                        "invalid TypeSafe response: " + str(exc), fallback=False,
-                        input_tokens=input_tokens, output_tokens=output_tokens,
-                        input_tokens_observed=input_tokens > 0,
-                        output_tokens_observed=output_tokens > 0,
-                        discarded=input_tokens > 0), state_hash=state_hash)
-            if status in (401, 422):
-                return replace(self._failure(
-                    f"TypeSafe request rejected (HTTP {status})", fallback=False),
-                    state_hash=state_hash)
-            outcome = "failure"
-            return local("http_fallback")
-        except Exception:
-            outcome = "failure"
-            return local("transport_failure")
+                        f"TypeSafe request rejected (HTTP {status})", fallback=False),
+                        state_hash=state_hash)
+                outcome = "failure"
+                return local("http_fallback")
+            except Exception:
+                outcome = "failure"
+                return local("transport_failure")
         finally:
-            self.breakers.record(site, outcome)
+            if generation is not None:
+                self.breakers.record(site, outcome, generation)
             if leader:
-                self.cache.finish(cache_key)
+                led.discard(cache_key)
+                self.cache.finish(cache_key, shared)
 
     def evaluate_once(self, state: Any,
                       questions: Dict[str, Any]) -> JevEvaluationResult:
-        """One strict request; its outcome also feeds the site breaker."""
-        result = self._evaluate_once(state, questions)
-        if self.api_key and not result.is_fallback:
-            reason = result.reasons[0] if result.reasons else ""
-            if result.verdict != "fail" or result.answers:
-                outcome = "success"
-            elif (reason.startswith("TypeSafe transport failed")
-                  or (reason.startswith("TypeSafe request failed (HTTP ")
-                      and not reason.endswith(("401)", "422)")))):
-                outcome = "failure"
-            else:
-                outcome = "neutral"
-            self.breakers.record(ACTIVE_SITE.get(), outcome)
-        return result
+        """One strict request; it respects and feeds the site breaker."""
+        if not self.api_key:
+            return self._evaluate_once(state, questions)
+        site = ACTIVE_SITE.get()
+        refusal, generation = self.breakers.acquire(site)
+        if refusal is not None:
+            return self._failure(refusal, fallback=True,
+                                 fallback_reason="circuit_open")
+        outcome = "neutral"
+        try:
+            result = self._evaluate_once(state, questions)
+            if not result.is_fallback:
+                reason = result.reasons[0] if result.reasons else ""
+                if result.verdict != "fail" or result.answers:
+                    outcome = "success"
+                elif (reason.startswith("TypeSafe transport failed")
+                      or (reason.startswith("TypeSafe request failed (HTTP ")
+                          and not reason.endswith(("401)", "422)")))):
+                    outcome = "failure"
+            return result
+        finally:
+            self.breakers.record(site, outcome, generation)
 
     def _evaluate_once(self, state: Any,
                        questions: Dict[str, Any]) -> JevEvaluationResult:

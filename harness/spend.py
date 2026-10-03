@@ -497,6 +497,21 @@ class SpendGovernor:
             self.spent += actual_f
             self._cost_by_model[label] = (self._cost_by_model.get(label, 0.0) + actual_f)
 
+    def record_overrun(self, cost, label):
+        """Book a billed amount that no longer fits the ceiling.
+
+        The provider already charged it, so ``spent`` must reflect it even
+        though :meth:`reconcile`/:meth:`record_actual` refuse to cross the
+        ceiling. Counted in ``overruns`` so the breach is visible, and the
+        next preflight sees the true (over-ceiling) spend and refuses.
+        """
+        actual = finite_number(cost or 0.0, "reported cost", 0.0)
+        with self._spend_lock:
+            self.spent += actual
+            self.overruns = getattr(self, "overruns", 0) + 1
+            self._cost_by_model[label] = (
+                self._cost_by_model.get(label, 0.0) + actual)
+
     @property
     def outstanding(self):
         """Worst-case liability currently reserved by in-flight calls."""

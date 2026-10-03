@@ -1267,12 +1267,6 @@ class CoverageGapTests(_Base):
         self.assertEqual(
             len(JevEvaluator(api_key=None).evaluate({"x": Mute()}).state_hash), 64)
 
-    def test_peek_is_false_without_a_key_or_with_invalid_questions(self):
-        self.assertFalse(JevEvaluator(api_key=None).peek({"a": 1}))
-        keyed = JevEvaluator(api_key="k", transport=CountingTransport())
-        self.assertFalse(keyed.peek({"a": 1}, {"bad": {"type": "text"}}))
-        self.assertFalse(keyed.peek({"a": 1}))
-
     def test_unusable_usage_fields_are_zeroed_when_a_response_is_discarded(self):
         bad = {"model": "j", "usage": {"input_tokens": -5, "output_tokens": "x"},
                "answers": {"zzz": {"type": "noul", "noul": 0.5}}}
