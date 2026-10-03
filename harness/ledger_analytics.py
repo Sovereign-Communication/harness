@@ -22,25 +22,29 @@ def _as_tokens(value):
         return 0
 
 
-def _jev_row_billable(entry, in_tok):
-    """Does a `jev_eval` row count as billed Jev spend?
+def _jev_row_cost(entry, in_tok):
+    """Price one `jev_eval` row. Returns `(cost, billable)`.
 
-    Billed is billed. A row bills when it carried tokens and was either a real
-    keyed answer or a fallback the governor actually settled money for -- a
-    fallback that paid for an answer nobody kept still cost real dollars, so
-    hiding it would understate spend and overstate savings.
+    Billed is billed. What the governor actually settled wins over the price
+    list, because settlement is the only number that reflects what happened:
+    a fallback that paid for a discarded answer still cost real dollars, and a
+    vision row can settle money with no observed output tokens. Rows written
+    before cost was recorded fall back to `jev_cost(input_tokens)`.
 
-    Single source of truth on purpose: the month-scoped Jev credit and the
-    window-scoped per-event totals read the same rows and must agree.
+    Single source of truth on purpose. The month-scoped Jev credit and the
+    window-scoped per-event totals read the same rows; if they priced
+    differently the same dollar would be counted once in one and twice in the
+    other.
     """
-    if in_tok <= 0:
-        return False
-    if not entry.get("is_fallback"):
-        return True
-    try:
-        return float(entry.get("cost") or 0.0) > 0.0
-    except (TypeError, ValueError):
-        return False
+    if entry.get("cost") is not None:
+        try:
+            settled = max(0.0, float(entry.get("cost")))
+        except (TypeError, ValueError):
+            settled = 0.0
+        return settled, settled > 0.0
+    if not entry.get("is_fallback") and in_tok > 0:
+        return jev_cost(in_tok), True
+    return 0.0, False
 
 
 class LedgerAnalytics:
@@ -587,24 +591,29 @@ class LedgerAnalytics:
             if (dt.year, dt.month) != month_key:
                 continue
             in_tok = _as_tokens(e.get("input_tokens"))
-            if not _jev_row_billable(e, in_tok):
+            cost_val, billable = _jev_row_cost(e, in_tok)
+            if not billable:
                 continue
             jev_calls += 1
             jev_input_tokens += in_tok
             jev_output_tokens += _as_tokens(e.get("output_tokens"))
-            jev_total_cost += jev_cost(in_tok)
+            jev_total_cost += cost_val
 
         for e in events:
             ev_name = e.get("event")
             model = e.get("model")
             is_jev = ev_name == "jev_eval" or (model and str(model).startswith("jev-"))
 
+            weight = 1
             if is_jev:
+                if e.get("cache_hit"):
+                    continue  # a replayed answer is not a call
+                try:
+                    weight = max(1, int(e.get("repeat_count") or 1))
+                except (TypeError, ValueError):
+                    weight = 1
                 in_tok = _as_tokens(e.get("input_tokens"))
-                if _jev_row_billable(e, in_tok):
-                    cost_val = jev_cost(in_tok)
-                else:
-                    cost_val = 0.0
+                cost_val, _billable = _jev_row_cost(e, in_tok)
                 has_cost = True
             else:
                 raw_cost = e.get("billable_cost", e.get("cost"))
@@ -621,19 +630,19 @@ class LedgerAnalytics:
             if cost_val > 0.0:
                 billable_calls += 1
             elif model:
-                free_calls += 1
+                free_calls += weight
 
             total_cost += cost_val
             tier_stats[tier]["cost"] = round(tier_stats[tier]["cost"] + cost_val, 6)
-            tier_stats[tier]["calls"] += 1
+            tier_stats[tier]["calls"] += weight
 
-            baseline_cost += max(cost_val, 0.015)
+            baseline_cost += weight * max(cost_val, 0.015)
 
             if model:
                 canonical = strip_variant_suffix(model)
                 ms = model_stats.setdefault(canonical, {"cost": 0.0, "calls": 0, "tier": tier})
                 ms["cost"] = round(ms["cost"] + cost_val, 6)
-                ms["calls"] += 1
+                ms["calls"] += weight
 
         total_cost = round(total_cost, 6)
         baseline_cost = round(baseline_cost, 6)

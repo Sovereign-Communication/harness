@@ -219,6 +219,7 @@ class JevPolicy:
         # [calls, distinct states, unwritten once capped].
         self._fallback_counts: "OrderedDict[Tuple[str, str, str], List[int]]" = OrderedDict()
         self._fallback_site_counts: Dict[Tuple[str, str], List[int]] = {}
+        self._evicted_pending: Dict[Tuple[str, str], int] = {}
         self._state_lock = threading.Lock()
         self._tl = threading.local()
         # The breaker board is shared process-wide on the real transport
@@ -290,7 +291,12 @@ class JevPolicy:
             entry = self._fallback_counts.pop(key, None) or [0, 0]
             self._fallback_counts[key] = entry
             while len(self._fallback_counts) > FALLBACK_TRACKED_KEYS:
-                self._fallback_counts.popitem(last=False)
+                old_key, old = self._fallback_counts.popitem(last=False)
+                if old[1] > 0:
+                    # Never lose calls to eviction: the unwritten tally of the
+                    # forgotten state folds into its (site, reason) bucket.
+                    self._evicted_pending[old_key[:2]] = (
+                        self._evicted_pending.get(old_key[:2], 0) + old[1])
             totals = self._fallback_site_counts.setdefault(key[:2], [0, 0, 0])
             entry[0] += 1
             if entry[0] == 1:
@@ -338,6 +344,9 @@ class JevPolicy:
                 if totals[2] > 0:
                     pending.append((site, reason, totals[2]))
                     totals[2] = 0
+            for (site, reason), count in self._evicted_pending.items():
+                pending.append((site, reason, count))
+            self._evicted_pending.clear()
         if self.ledger is not None:
             for site, reason, repeat in pending:
                 self.ledger.append(
@@ -345,7 +354,7 @@ class JevPolicy:
                     verdict="fail", supported=0.0, confidence=0.0,
                     input_tokens=0, output_tokens=0, cost=0.0,
                     is_fallback=True, fallback_reason=reason,
-                    repeat_count=repeat, discarded=False,
+                    repeat_count=repeat, discarded=False, flush=True,
                     note="flush of deduped fallback repeats")
         return len(pending)
 

@@ -266,10 +266,18 @@ def build_runs(entries):
         elif ev == "jev_eval":
             cost = _finite_number(e.get("cost")) or 0.0
             bucket["jev_cost"] += max(0.0, cost)
+            try:
+                weight = max(1, int(e.get("repeat_count") or 1))
+            except (TypeError, ValueError):
+                weight = 1
             if e.get("is_fallback"):
-                bucket["jev_fallback"] += 1
+                # A deduped row stands for ``repeat_count`` fallback calls.
+                bucket["jev_fallback"] += weight
             conf = e.get("confidence")
-            if isinstance(conf, (int, float)):
+            # A cache hit replays an old answer and a flush row only tallies
+            # repeats: neither is a fresh confidence observation.
+            if (isinstance(conf, (int, float)) and not e.get("cache_hit")
+                    and not e.get("flush")):
                 bucket["jev"].append({"ts": e.get("ts"), "confidence": float(conf)})
         elif ev == "verify_round":
             bucket["verify"].append({
