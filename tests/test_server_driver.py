@@ -193,7 +193,8 @@ class ServerDriverEndpointsTest(unittest.TestCase):
         self.assertEqual(args["goal"], "Inspect state")
         self.assertEqual(args["max_steps"], 3)
         self.assertEqual(args["max_cost"], 0.05)
-        self.assertTrue(args["auto_approve"])
+        # Consent is opt-in: nothing is auto-granted unless asked for.
+        self.assertFalse(args["auto_approve"])
 
     @patch.dict("harness.server.RUNNERS", {"driver_task": MagicMock(return_value={"status": "done"})})
     @patch("harness.server.UiRequestHandler._get_driver_adapter")
@@ -283,14 +284,30 @@ class RunDriverTaskSummaryTest(unittest.TestCase):
         self.assertIn("no verify command confirmed", res["summary"])
         self.assertAlmostEqual(res["total_cost_usd"], 0.001)
 
-    def test_verify_command_pass_is_goal_met_even_with_zero_ok_steps(self):
+    def test_verify_pass_with_zero_ok_steps_is_not_a_driver_success(self):
         with patch("harness.gate_runner.run_gate", return_value=(0, "fine")):
             res = self._run(_FakeAdapter([_REFUSED]), {"verify": "true"})
-        self.assertEqual(res["status"], "done")
+        self.assertEqual(res["status"], "verified_without_driver")
         self.assertEqual(res["ok_steps"], 0)
-        self.assertIn("Driver goal met", res["summary"])
-        self.assertIn("0 driver step(s) ok", res["summary"])
+        self.assertIn("driver executed 0 steps", res["summary"])
+        self.assertNotIn("goal met", res["summary"].lower())
         self.assertTrue(res["steps"][0]["verification"]["ok"])
+
+    def test_verify_pass_after_an_ok_step_is_goal_met(self):
+        with patch("harness.gate_runner.run_gate", return_value=(0, "fine")):
+            res = self._run(_FakeAdapter([_OK]), {"verify": "true"})
+        self.assertEqual(res["status"], "done")
+        self.assertEqual(res["ok_steps"], 1)
+        self.assertIn("Driver goal met", res["summary"])
+
+    def test_cost_cap_stops_the_run_before_the_next_step(self):
+        costly = dict(_REFUSED, cost_usd=0.02)
+        adapter = _FakeAdapter([costly, costly, costly])
+        res = self._run(adapter, {"max_steps": 3, "max_cost": 0.02})
+        self.assertEqual(res["status"], "cost_capped")
+        self.assertEqual(res["total_steps"], 1)
+        self.assertEqual(len(adapter.calls), 1)
+        self.assertIn("cost cap", res["summary"])
 
     def test_verify_command_failure_and_error_do_not_complete(self):
         with patch("harness.gate_runner.run_gate",
@@ -328,6 +345,24 @@ class RunDriverTaskSummaryTest(unittest.TestCase):
         adapter = _FakeAdapter([_REFUSED])
         self._run(adapter, {"max_steps": 1, "auto_approve": False})
         self.assertIsNone(adapter.calls[0][1]["consent"])
+
+    def test_consent_is_off_by_default(self):
+        adapter = _FakeAdapter([_REFUSED])
+        self._run(adapter, {"max_steps": 1})
+        self.assertIsNone(adapter.calls[0][1]["consent"])
+
+    def test_auto_approve_grants_only_a_declared_read_only_action(self):
+        from driver_core.actions import DEFAULT_VOCABULARY, READ_ONLY
+        adapter = _FakeAdapter([_REFUSED, _REFUSED])
+        self._run(adapter, {"max_steps": 2, "auto_approve": True})
+        for _, kw in adapter.calls:
+            consent = kw["consent"]
+            self.assertTrue(consent["granted"])
+            # a declared action, read-only, and never stamped as a person
+            action = DEFAULT_VOCABULARY.resolve(consent["action"])
+            self.assertEqual(action.action_class, READ_ONLY)
+            self.assertNotEqual(consent["by"], "operator")
+            self.assertNotEqual(consent["action"], "open_window")
 
 
 class DriverDaemonTest(DriverEnvMixin, unittest.TestCase):
@@ -561,13 +596,13 @@ class DriverApiAuthTest(DriverEnvMixin, ServerHarness):
                 self.assertEqual(self._authed("GET", path)[0], 503, path)
 
 
-class EphemeralAuthTest(unittest.TestCase):
-    """``ephemeral_auth`` marks a start-generated token. It is never replaced
-    by whatever a caller presents first."""
+class TokenTakeoverTest(unittest.TestCase):
+    """A UI server only ever accepts the token it was started with: a caller
+    cannot replace it by presenting a different one first, and the token is
+    accepted from headers only (never from a URL)."""
 
     def setUp(self):
-        self.httpd = make_server("127.0.0.1", 0, auth_token="start-token",
-                                 ephemeral_auth=True)
+        self.httpd = make_server("127.0.0.1", 0, auth_token="start-token")
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever,
                                        daemon=True)
@@ -588,8 +623,17 @@ class EphemeralAuthTest(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_the_flag_is_recorded(self):
-        self.assertTrue(self.httpd.ui.ephemeral_auth)
+    def _raw(self, payload):
+        import socket
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as s:
+            s.sendall(payload)
+            chunks = []
+            while True:
+                data = s.recv(65536)
+                if not data:
+                    break
+                chunks.append(data)
+        return b"".join(chunks)
 
     def test_no_token_is_401(self):
         self.assertEqual(self._status(), 401)
@@ -598,24 +642,52 @@ class EphemeralAuthTest(unittest.TestCase):
         for headers in ({"X-Harness-Auth": "attacker"},
                         {"Authorization": "Bearer attacker"}):
             self.assertEqual(self._status(headers), 401)
-        self.assertEqual(self._status(path="/api/status?token=attacker"), 401)
-        # Still the start token, and the start token still works.
         self.assertEqual(self.httpd.ui.auth_token, "start-token")
         self.assertEqual(self._status({"X-Harness-Auth": "start-token"}), 200)
-        # ...and the attacker is still locked out afterwards.
         self.assertEqual(self._status({"X-Harness-Auth": "attacker"}), 401)
 
-    def test_the_start_token_is_accepted_in_every_supported_form(self):
+    def test_the_token_is_accepted_from_headers_only(self):
         self.assertEqual(self._status({"X-Harness-Auth": "start-token"}), 200)
         self.assertEqual(self._status({"Authorization": "Bearer start-token"}), 200)
-        self.assertEqual(self._status(path="/api/status?token=start-token"), 200)
+        # A URL is logged, kept in history and sent in Referer: not accepted,
+        # even when it is the right token.
+        self.assertEqual(self._status(path="/api/status?token=start-token"), 401)
 
-    def test_no_token_file_is_written_by_a_presenter(self):
-        tmp = tempfile.mkdtemp(prefix="harness-ephemeral-")
-        self.addCleanup(shutil.rmtree, tmp, True)
-        with patch("harness.config.CONFIG_DIR", tmp):
-            self._status({"X-Harness-Auth": "attacker"})
-        self.assertFalse(os.path.exists(os.path.join(tmp, "desktop_token")))
+    def test_a_non_ascii_token_is_a_401_not_a_dropped_connection(self):
+        raw = self._raw(
+            "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            "X-Harness-Auth: caf\u00e9\r\nConnection: close\r\n\r\n"
+            .encode("utf-8"))
+        self.assertTrue(raw.startswith(b"HTTP/1.1 401"))
+
+    def test_a_refused_post_does_not_desync_the_connection(self):
+        # The body of the unauthenticated POST is itself a valid, authorised
+        # request. A server that left it unread on a keep-alive connection
+        # would parse and answer it; this one must answer once and close.
+        inner = (b"GET /api/status HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                 b"X-Harness-Auth: start-token\r\n\r\n")
+        raw = self._raw(
+            b"POST /api/chat HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            b"Content-Length: " + str(len(inner)).encode() + b"\r\n\r\n" + inner)
+        self.assertEqual(raw.count(b"HTTP/1.1 "), 1)
+        self.assertTrue(raw.startswith(b"HTTP/1.1 401"))
+        self.assertIn(b"Connection: close", raw)
+
+    def test_a_forbidden_host_is_refused_and_closed(self):
+        raw = self._raw(b"GET /api/status HTTP/1.1\r\nHost: evil.example\r\n"
+                        b"X-Harness-Auth: start-token\r\n\r\n")
+        self.assertTrue(raw.startswith(b"HTTP/1.1 403"))
+        self.assertIn(b"Connection: close", raw)
+
+    def test_tokens_in_urls_are_redacted_from_the_log(self):
+        import io
+        import contextlib
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self._status(path="/api/status?token=SECRETVALUE123&x=1")
+        logged = err.getvalue()
+        self.assertIn("token=REDACTED", logged)
+        self.assertNotIn("SECRETVALUE123", logged)
 
 
 if __name__ == "__main__":

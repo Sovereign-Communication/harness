@@ -857,9 +857,9 @@ async function renderDriver(root) {
   const verifyCmdInput = $("input", { class: "pane-input", placeholder: "Optional verification command (e.g. python -m unittest tests/test_driver_conformance.py)" });
   const verifyCmdField = $("label", { class: "pane-field" }, $("span", {}, "Verification Gate Command"), verifyCmdInput);
 
-  const autoApproveCheck = $("input", { type: "checkbox", checked: true, style: "margin-right: 0.5rem;" });
+  const autoApproveCheck = $("input", { type: "checkbox", checked: false, style: "margin-right: 0.5rem;" });
   const autoApproveLabel = $("label", { style: "display: flex; align-items: center; font-size: 0.85rem; margin-bottom: 0.6rem; cursor: pointer;" },
-    autoApproveCheck, "Auto-approve safe consent actions with Jev calibrated confidence");
+    autoApproveCheck, "Auto-grant read-only (observe) consent; mutating actions always need your explicit consent");
 
   const stableCheck = $("input", { type: "checkbox", checked: true, style: "margin-right: 0.5rem;" });
   const stableLabel = $("label", { style: "display: flex; align-items: center; font-size: 0.85rem; margin-bottom: 0.8rem; cursor: pointer;" },
@@ -1008,9 +1008,9 @@ async function renderDriver(root) {
       if (autoApproveCheck.checked) {
         payload.consent = {
           granted: true,
-          action: "open_window",
-          params: { target: payload.target, goal: goalInput.value.trim() },
-          by: "operator",
+          action: "observe",
+          params: {},
+          by: "harness:auto_approve",
         };
       }
       setPipelineAspect("decision");

@@ -20,6 +20,29 @@ path silently arrived at the OS as `C:Usersxgate.bat`. Path-shaped spans
 This is a correctness fix, not a permission change -- the "no shell" property
 is unchanged and still no sandbox.
 
+## UI server and driver routes
+
+- **Authentication.** With a UI token configured, every `/api` route requires
+  it in `X-Harness-Auth` or `Authorization: Bearer`, compared in constant time
+  (`hmac.compare_digest`). A token in a URL query string is not accepted, and
+  any `token=` value that reaches the request log is redacted. A refused
+  request (401/403) drains a bounded request body and closes the connection, so
+  a keep-alive client cannot smuggle a second request in the body of the first.
+- **Desktop token.** `harness desktop` persists a generated token in
+  `desktop_token` under the config directory, created owner-only (0600 on
+  POSIX; on Windows rely on the profile ACL, as with key files above).
+- **Driver token.** The in-process driver uses `DRIVER_TOKEN` if declared and
+  otherwise a random per-start token held only by the adapter; there is no
+  fixed fallback.
+- **`verify` on `/api/driver/drive` (and the other run kinds).** The `verify`
+  field is a gate command the *server process* runs on the host, with that
+  process's privileges (see the limitation above). There is no server-side
+  allowlist of permitted executables today: the gate is tokenized without a
+  shell, preflighted where the run kind calls `validate_gate`, and bounded by a
+  timeout, but a caller who can reach an authenticated `/api` route can run any
+  program the server user can. Keep the UI token secret and the server on
+  loopback. A server-side allowlist is an open hardening item.
+
 ## Platform-specific protections (and their limits)
 
 | Control | Linux | macOS | Windows |

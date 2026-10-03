@@ -17,7 +17,8 @@ audited, and the driver treats that as a reason to refuse rather than to
 write a thinner record.
 
 This log is driver-core's own. It shares no path, no file and no format with
-any neighbouring project's ledger.
+the host application's ledger (Harness's autonomy ledger): the driver is a
+segmented module and keeps its own chain.
 """
 import hashlib
 import json

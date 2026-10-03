@@ -438,10 +438,25 @@ class NonInterferenceTests(unittest.TestCase):
         self.assertTrue(assert_no_foreign_reads(["DRIVER_PORT"]))
 
     def test_the_default_audit_path_is_namespaced(self):
+        # The path is under the user's state directory, which may itself
+        # contain the word "harness" (a checkout or a home named that way).
+        # Pin the base so only the part this package chooses is judged.
+        import os
+        from pathlib import Path
+        from unittest import mock
         from driver_core.config import default_audit_path
-        path = default_audit_path().replace("\\", "/")
-        self.assertIn("driver-core", path)
-        self.assertNotIn("harness", path.lower())
+        base = Path("/neutral-state-base")
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(base)}):
+            path = Path(default_audit_path())
+        relative = path.relative_to(base).as_posix()
+        self.assertEqual(relative, "driver-core/audit.jsonl")
+        self.assertNotIn("harness", relative.lower())
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("LOCALAPPDATA", "XDG_STATE_HOME")}
+        with mock.patch.dict(os.environ, env, clear=True),                 mock.patch.object(Path, "home", return_value=base):
+            fallback = Path(default_audit_path())
+        self.assertEqual(fallback.relative_to(base).as_posix(),
+                         ".driver-core/audit.jsonl")
 
 
 if __name__ == "__main__":

@@ -7,13 +7,6 @@ function getAuthToken() {
         return h;
       }
     }
-    try {
-      const q = new URLSearchParams(location.search).get("token");
-      if (q) {
-        localStorage.setItem("harness_ui_auth_token", q);
-        return q;
-      }
-    } catch (_e) {}
   }
   try {
     return localStorage.getItem("harness_ui_auth_token") || null;

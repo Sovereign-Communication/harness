@@ -859,8 +859,8 @@ class DesktopFallbackTests(unittest.TestCase):
 
 class DesktopTokenTests(unittest.TestCase):
     """``harness desktop`` token provenance: an explicit token is used as
-    given; otherwise one is generated once, persisted, and reused. Whether it
-    was generated at start is passed to the server as ``ephemeral_auth``."""
+    given; otherwise one is generated once, persisted (owner-only), and
+    reused."""
 
     def setUp(self):
         self.cfg = tempfile.mkdtemp(prefix="harness-desktop-")
@@ -887,7 +887,6 @@ class DesktopTokenTests(unittest.TestCase):
         mk, httpd, opener = self._main([])
         token = mk.call_args.kwargs["auth_token"]
         self.assertGreaterEqual(len(token), 32)
-        self.assertTrue(mk.call_args.kwargs["ephemeral_auth"])
         with open(self.token_file, encoding="utf-8") as f:
             self.assertEqual(f.read(), token)
         httpd.serve_forever.assert_called_once()
@@ -898,7 +897,6 @@ class DesktopTokenTests(unittest.TestCase):
             f.write("persisted-token\n")
         mk, _, _ = self._main([])
         self.assertEqual(mk.call_args.kwargs["auth_token"], "persisted-token")
-        self.assertTrue(mk.call_args.kwargs["ephemeral_auth"])
 
     def test_blank_token_file_is_replaced(self):
         with open(self.token_file, "w", encoding="utf-8") as f:
@@ -924,16 +922,30 @@ class DesktopTokenTests(unittest.TestCase):
         mk, _, _ = self._main([])
         self.assertTrue(mk.call_args.kwargs["auth_token"])
 
-    def test_explicit_token_is_not_ephemeral_and_writes_nothing(self):
+    @unittest.skipUnless(os.name == "posix",
+                         "platform: Windows has no POSIX mode bits")
+    def test_the_persisted_token_file_is_owner_only(self):
+        self._main([])
+        self.assertEqual(os.stat(self.token_file).st_mode & 0o777, 0o600)
+
+    @unittest.skipUnless(os.name == "posix",
+                         "platform: Windows has no POSIX mode bits")
+    def test_a_loose_token_file_from_an_older_build_is_tightened(self):
+        with open(self.token_file, "w", encoding="utf-8") as f:
+            f.write("persisted-token")
+        os.chmod(self.token_file, 0o644)
+        mk, _, _ = self._main([])
+        self.assertEqual(mk.call_args.kwargs["auth_token"], "persisted-token")
+        self.assertEqual(os.stat(self.token_file).st_mode & 0o777, 0o600)
+
+    def test_explicit_token_writes_nothing(self):
         mk, _, _ = self._main(["--auth-token", "chosen"])
         self.assertEqual(mk.call_args.kwargs["auth_token"], "chosen")
-        self.assertFalse(mk.call_args.kwargs["ephemeral_auth"])
         self.assertFalse(os.path.exists(self.token_file))
 
-    def test_environment_token_is_not_ephemeral(self):
+    def test_environment_token_is_used_as_given(self):
         mk, _, _ = self._main([], HARNESS_UI_AUTH_TOKEN="from-env")
         self.assertEqual(mk.call_args.kwargs["auth_token"], "from-env")
-        self.assertFalse(mk.call_args.kwargs["ephemeral_auth"])
 
     def test_non_loopback_host_is_refused(self):
         import harness.ui as ui_mod

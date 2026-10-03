@@ -693,9 +693,18 @@ def r_suite_green():
     summary_ok, leaked, summary = _classify_suite_output(stdout + stderr)
     ok = summary_ok and not leaked
     scrubbed = ("env scrubbed: " + ", ".join(dropped)) if dropped else "env clean"
+    text = stdout + stderr
+    # The scoreboard prints only the head of a failing check's evidence, and
+    # the tail of a suite run is mostly progress chatter. Lead with the lines
+    # that explain the failure (a leak signature, a failing test header, the
+    # summary verdict) so the reason is visible without the full output.
+    key = [ln.strip() for ln in text.splitlines()
+           if any(sig in ln for sig in _SUITE_LEAK_SIGNATURES)
+           or ln.startswith(("FAIL:", "ERROR:", "FAILED", "Traceback"))]
+    fail_ev = ("; ".join(key[:8]) + " || " if key else "") + text[-2500:]
     return _pass(ok, f"unittest: {summary if summary is not None else stderr[-200:]}"
                      f" ({scrubbed}; empty home)",
-                 (stdout + stderr)[-2500:])
+                 fail_ev)
 
 
 def r_suite_selftest():
@@ -1353,7 +1362,7 @@ def main():
             mark = "pass" if r["score"] >= 1 else ("part" if r["score"] > 0 else "FAIL")
             print(f"    {r['id']:>3} {mark:<4} {r['label']}")
             if r["score"] < 1:
-                print(f"         -> {r['evidence'][:220]}")
+                print(f"         -> {r['evidence'][:600]}")
         print()
 
     out = HERE / "round2_scores.json"

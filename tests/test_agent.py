@@ -882,7 +882,10 @@ class TestChatDeferral(unittest.TestCase):
                  patch("harness.agent.ledger_for", return_value=fake_ledger), \
                  patch("harness.web.search_web",
                        return_value=[{"url": "https://www.anthropic.com/rz",
-                                      "title": "Riemann", "snippet": "67.2%"}]):
+                                      "title": "Riemann", "snippet": "67.2%"}]),                  patch("harness.web.fetch_url",
+                       return_value={"url": "https://www.anthropic.com/rz",
+                                     "title": "Riemann",
+                                     "text": "the bound moved to 67.2%"}):
                 res = agent.run_prompt("verify the claim", session_id="d5",
                                        web=True, force_conversation=True)
         self.assertEqual(res["status"], "ok")

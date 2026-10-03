@@ -22,7 +22,7 @@ consent refuses, and a matching consent against an unregistered executor also
 refuses. The second case is the more useful of the two, because it is the
 one that means "this build cannot do that, whatever anyone asks".
 
-OS contact lives in exactly one module for the same reason the sibling
+OS contact lives in exactly one module for the same reason the host
 project enforces it: a place that reaches for ``subprocess`` in one file and
 ``os`` in another grows a different idea of what a subprocess is on each
 platform, and the divergence only shows up on the platform you did not test

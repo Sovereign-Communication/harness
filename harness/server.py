@@ -20,6 +20,7 @@ Design rules, inherited from the MCP server:
 """
 import argparse
 import atexit
+import hmac
 import json
 import os
 import re
@@ -96,6 +97,7 @@ MAX_EVENT_BUFFER = 4000
 RANKINGS_REPORT_DIR = "rankings"
 RANKINGS_REPORT_RE = re.compile(r"^rankings-\d{4}-\d{2}-\d{2}.*\.json$")
 RUN_ID_RE = re.compile(r"^/api/runs/([A-Za-z0-9_-]{1,64})$")
+_TOKEN_IN_LOG_RE = re.compile(r"(token=)[^&\s\"]+", re.IGNORECASE)
 RUN_SUB_RE = re.compile(r"^/api/runs/([A-Za-z0-9_-]{1,64})/(result|events|cancel)$")
 # DF-UI-2: mission id grammar mirrors mission_record._MISSION_ID_RE (the one
 # owner for what a valid pack directory name is); an id this fails to match
@@ -177,7 +179,7 @@ def validate_dispatch(kind, args):
         _opt_str(args, "schema")
         _opt_str(args, "verify")
         _opt_int(args, "max_steps", 1, 20, 5)
-        args["auto_approve"] = _opt_bool(args, "auto_approve") if "auto_approve" in args else True
+        args["auto_approve"] = _opt_bool(args, "auto_approve") if "auto_approve" in args else False
         args["require_stable"] = _opt_bool(args, "require_stable") if "require_stable" in args else True
         if args.get("max_cost") is not None:
             args["max_cost"] = _finite_float(args["max_cost"], "max_cost", 0.0, HARD_MAX_COST)
@@ -494,6 +496,9 @@ def run_plan_task(task_id, args, cancel_check):
     return {"plan": plan_result, "execution": exec_result, "status": exec_result.get("status", "ok")}
 
 
+#: What ``auto_approve`` sends. Read-only, declared, and not stamped by a person.
+_AUTO_APPROVE_CONSENT = {"granted": True, "action": "observe", "params": {},
+                         "by": "harness:auto_approve"}
 _DRIVER_DAEMON = {}
 _DRIVER_PROBE_TIMEOUT = 2.0
 _DRIVER_DAEMON_LOCK = threading.Lock()
@@ -587,13 +592,15 @@ def run_driver_task(task_id, args, cancel_check):
     max_steps = int(args.get("max_steps") or 5)
     verify_cmd = args.get("verify")
     require_stable = bool(args.get("require_stable", True))
-    auto_approve = bool(args.get("auto_approve", True))
+    auto_approve = bool(args.get("auto_approve", False))
+    max_cost = args.get("max_cost")
 
     adapter = _driver_adapter()
 
     steps = []
     completed = False
     cancelled = False
+    cost_capped = False
     current_target = target
     current_schema = default_schema
     total_cost = 0.0
@@ -603,6 +610,9 @@ def run_driver_task(task_id, args, cancel_check):
     for step_num in range(1, max_steps + 1):
         if cancel_check and cancel_check():
             cancelled = True
+            break
+        if max_cost is not None and total_cost >= float(max_cost):
+            cost_capped = True
             break
 
         step_id = f"drv-{uuid.uuid4().hex[:8]}"
@@ -615,14 +625,14 @@ def run_driver_task(task_id, args, cancel_check):
             schema=current_schema,
         )
 
+        # ``auto_approve`` is opt-in and deliberately narrow: it grants
+        # consent for the one declared READ-ONLY action (`observe`), labelled
+        # as a harness auto-grant rather than as a person. It can never
+        # authorise a mutating or irreversible action -- those need a
+        # parameter-bound consent from a human on /api/driver/step.
         consent = None
         if auto_approve:
-            consent = {
-                "granted": True,
-                "action": "open_window" if step_num == 1 else "type_text",
-                "params": {"target": current_target, "goal": goal},
-                "by": "operator",
-            }
+            consent = dict(_AUTO_APPROVE_CONSENT)
 
         try:
             env = adapter.step(
@@ -698,20 +708,34 @@ def run_driver_task(task_id, args, cancel_check):
     except Exception:
         pass
 
-    status = ("done" if completed
-              else "cancelled" if cancelled else "max_steps_reached")
     ok_steps = sum(1 for st in steps if st["envelope"].get("ok"))
     verified = any((st["verification"] or {}).get("ok") for st in steps)
-    if completed and verified:
+    if completed and verified and ok_steps == 0:
+        # The verify command passing is real evidence about the world, but it
+        # is not evidence the driver did anything: say so, and do not call it
+        # a driver success.
+        status = "verified_without_driver"
+        summary = (f"Verify command passed, but the driver executed 0 steps "
+                   f"({len(steps)} attempted); the result is not attributable "
+                   f"to the driver.")
+    elif completed and verified:
+        status = "done"
         summary = (f"Driver goal met: the verify command passed after "
                    f"{len(steps)} step(s) ({ok_steps} driver step(s) ok).")
     elif completed:
+        status = "done"
         summary = (f"Driver completed {len(steps)} step(s) with {ok_steps} ok; "
                    f"no verify command confirmed the result.")
     elif cancelled:
+        status = "cancelled"
         summary = (f"Driver cancelled after {len(steps)} step(s); "
                    f"{ok_steps} step(s) ok, nothing verified.")
+    elif cost_capped:
+        status = "cost_capped"
+        summary = (f"Driver stopped at the ${float(max_cost):.4f} cost cap after "
+                   f"{len(steps)} step(s); {ok_steps} step(s) ok, nothing verified.")
     else:
+        status = "max_steps_reached"
         summary = (f"Driver stopped after {len(steps)} step(s) without "
                    f"completing (max_steps={max_steps}); {ok_steps} step(s) ok, "
                    f"nothing verified.")
@@ -745,13 +769,12 @@ class UiState:
 
     CACHE_TTL = 15.0  # seconds: dashboard polls beat on /api/spend et al.
 
-    def __init__(self, auth_token=None, ephemeral_auth=False):
+    def __init__(self, auth_token=None):
         self.lock = threading.Lock()
         self.runs = {}
         self.events = deque(maxlen=MAX_EVENT_BUFFER)
         self.last_seq = 0
         self.auth_token = auth_token or None
-        self.ephemeral_auth = bool(ephemeral_auth)
         self.started_at = time.time()
         self._event_sink_installed = False
         self._api_cache = {}
@@ -938,34 +961,63 @@ class UiRequestHandler(BaseHTTPRequestHandler):
 
     # -- plumbing ----------------------------------------------------------
     def log_message(self, fmt, *args):  # route through the harness voice
-        sys.stderr.write("[ui] %s\n" % (fmt % args))
+        # Never let a credential reach the log: redact any token= value that
+        # a client put in a URL, whatever the server does with it.
+        line = _TOKEN_IN_LOG_RE.sub(r"\1REDACTED", fmt % args)
+        sys.stderr.write(f"[ui] {line}\n")
 
-    def _send_json(self, obj, code=200):
+    def _send_json(self, obj, code=200, close=False):
         body = json.dumps(obj, indent=2).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if close:
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
         self.wfile.write(body)
 
-    def _error(self, code, message):
-        self._send_json({"error": message}, code)
+    def _error(self, code, message, close=False):
+        self._send_json({"error": message}, code, close=close)
+
+    def _drain_body(self, limit=1 << 20):
+        """Read and discard (a bounded amount of) the request body.
+
+        A refusal is written before the handler reads the body. On a
+        keep-alive connection the unread body would be parsed as the next
+        request (a desync), and a socket closed with unread bytes can be
+        reset by the OS, destroying the 401 on its way to the client. So a
+        refused request drains up to ``limit`` bytes and closes the
+        connection; anything larger is left undrained.
+        """
+        try:
+            remaining = min(max(0, int(self.headers.get("Content-Length") or 0)),
+                            limit)
+        except ValueError:
+            return
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 65536))
+            if not chunk:
+                break
+            remaining -= len(chunk)
 
     def _authorized(self):
+        """The token in ``X-Harness-Auth`` or ``Authorization: Bearer``.
+
+        Compared as bytes with ``hmac.compare_digest`` (constant time, and a
+        non-ASCII header cannot raise). A token in the query string is not
+        accepted: URLs are logged, kept in history and sent in Referer.
+        """
         if not self.ui.auth_token:
             return True
-        got = self.headers.get("X-Harness-Auth", "")
-        if got == self.ui.auth_token:
-            return True
+        expected = self.ui.auth_token.encode("utf-8")
+        candidates = [self.headers.get("X-Harness-Auth", "")]
         auth_header = self.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer ") and auth_header[7:].strip() == self.ui.auth_token:
-            return True
-        parsed = urlparse(self.path)
-        q = parse_qs(parsed.query)
-        if q.get("token", [""])[0] == self.ui.auth_token:
-            return True
-        return False
+        if auth_header.startswith("Bearer "):
+            candidates.append(auth_header[7:].strip())
+        return any(hmac.compare_digest(c.encode("utf-8", "replace"), expected)
+                   for c in candidates)
 
     def _host_ok(self):
         """DNS-rebinding guard: with a loopback bind, the Host header must
@@ -976,10 +1028,13 @@ class UiRequestHandler(BaseHTTPRequestHandler):
 
     def _guard(self):
         if not self._host_ok():
-            self._error(403, "forbidden host (loopback only)")
+            self._drain_body()
+            self._error(403, "forbidden host (loopback only)", close=True)
             return False
         if not self._authorized():
-            self._error(401, "missing or wrong X-Harness-Auth token")
+            self._drain_body()
+            self._error(401, "missing or wrong X-Harness-Auth token",
+                        close=True)
             return False
         return True
 
@@ -1565,9 +1620,9 @@ class UiServer(ThreadingHTTPServer):
             self.ui.uninstall_event_sink()
 
 
-def make_server(host="127.0.0.1", port=8765, auth_token=None, ephemeral_auth=False):
+def make_server(host="127.0.0.1", port=8765, auth_token=None):
     """Build the UI server with its UiState attached."""
-    ui = UiState(auth_token=auth_token, ephemeral_auth=ephemeral_auth)
+    ui = UiState(auth_token=auth_token)
     httpd = UiServer((host, port), UiRequestHandler)
     httpd.daemon_threads = True
     httpd.ui = ui

@@ -30,9 +30,11 @@ from pathlib import Path
 #: The one prefix this package is allowed to read.
 ENV_PREFIX = "DRIVER_"
 
-#: Variables belonging to the neighbouring project. driver-core must never
-#: read these. They are named here so the guard can assert it, and so the
-#: assertion fails loudly if someone later adds a cross-read.
+#: Variables belonging to the host application this package ships inside
+#: (Harness) and to its provider tooling. driver-core is a self-contained,
+#: segmented module -- wire-compatible with the standalone driver-core project
+#: -- so it must never read these. They are named here so the guard can assert
+#: it, and so the assertion fails loudly if someone later adds a cross-read.
 FOREIGN_PREFIXES = ("HARNESS_", "OPENROUTER_", "FREEBUFF_")
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8791"

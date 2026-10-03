@@ -97,9 +97,13 @@ off or that no backend is registered for the platform. It never reports an
 input that did not happen. The input backend is tracked as open work (roadmap
 row `DRV-2`, which stays open); this document will describe it when it exists.
 
-What the executor does support:
+What the executor actually implements (the vocabulary declares 14 actions;
+only these have an executor behind them, and anything else is refused as
+unregistered):
 
-- Always: the read-only executors `no_action`, `observe` and `read_value`.
+- Always: three read-only executors, `no_action`, `observe` and `read_value`.
+  The other declared read-only actions (`read_dom`, `call_read_tool`,
+  `run_probe`) have no executor in this build and are refused.
 - Only when `DRIVER_ALLOW_WRITE` is set: `write_file` (back up, then atomic
   replace) and `delete_file` (irreversible), plus the six input actions above,
   which still refuse at the OS layer for want of a backend.
@@ -122,12 +126,14 @@ harness driver step "notes" --schema cli \
 Irreversible actions need a fresh, explicit confirmation and are never
 batched, and no model runs past the execution tier.
 
-Two convenience paths attach a grant on the caller's behalf, and both say so:
-the MCP `driver_step` tool builds a grant when you pass `action`, and
-`POST /api/driver/drive` defaults `auto_approve` to `true`, which attaches an
-operator-labelled grant to each step it runs. Pass `"auto_approve": false` to
-send none. Either way the driver still refuses anything its own consent law
-or its executor registry does not allow.
+Two paths attach a grant on the caller's behalf, and both say so. The MCP
+`driver_step` tool builds a grant when you pass `action`. `POST
+/api/driver/drive` sends **no consent by default** (`auto_approve` is
+`false`); with `"auto_approve": true` it sends a grant for the one declared
+read-only action `observe`, labelled `by: "harness:auto_approve"` (never as a
+person). It cannot authorise a mutating or irreversible action; those need a
+parameter-bound consent from you on `/api/driver/step`. The driver also
+refuses anything its own consent law or executor registry does not allow.
 
 ## Command line
 
@@ -149,26 +155,36 @@ same module directly; `driver-core serve` starts the loopback service.
 ## Server REST API
 
 The Harness UI server proxies the driver under `/api/driver/*`. Every route
-sits behind the UI's own token (`X-Harness-Auth`, `Authorization: Bearer`, or
-`?token=`): no token or a wrong token is `401` and **never starts a driver**.
+sits behind the UI's own token (`X-Harness-Auth` or `Authorization: Bearer`;
+a token in the URL query string is **not** accepted): no token or a wrong token is `401` and **never starts a driver**.
 
 | Route | Purpose |
 |---|---|
 | `GET /api/driver/health` | Driver status, version, live sources, redacted settings. Never contains the driver token. |
 | `GET /api/driver/vocabulary` | The declared action vocabulary. |
-| `GET /api/driver/schemas` | The declared extraction schemas (`cli`, `dom`, `gui`, `mcp`, `screen`). |
+| `GET /api/driver/schemas` | The three declared extraction schemas: `screen`, `cli`, `dom`. (The `schema` field of a step names a target class: `cli`, `dom`, `gui`, `mcp` or `screen`.) |
 | `GET /api/driver/verify` | Audit hash-chain verdict and spend snapshot. |
 | `POST /api/driver/step` | One step. Body: `target` (required), `schema` (required), optional `consent`, `prefer`, `require_stable`. A refusal is 200 `ok:false`; missing fields are 400; an unreachable driver is 503. |
 | `POST /api/driver/start` | Ensure the in-process loopback driver is running and report its health. |
-| `POST /api/driver/drive` | Start a multi-step run (a normal UI run: 201 with an `id`; poll `GET /api/runs/<id>/result`). Body: `goal` (required), optional `target`, `schema`, `max_steps` (1-20, default 5), `verify` (a gate command), `require_stable`, `auto_approve`, `max_cost`. |
+| `POST /api/driver/drive` | Start a multi-step run (a normal UI run: 201 with an `id`; poll `GET /api/runs/<id>/result`). Body: `goal` (required), optional `target`, `schema`, `max_steps` (1-20, default 5), `verify` (a gate command, see below), `require_stable`, `auto_approve` (default false), `max_cost` (stop before the next step once the run's reported driver cost reaches it). |
 
 `/api/driver/drive` walks the perception tiers in order (`cli`, `mcp`, `dom`,
 `screen`), one per step, until a step succeeds or the optional `verify`
-command passes. Its result reports `status` (`done`, `max_steps_reached` or
-`cancelled`), `ok_steps` (how many steps the driver actually completed),
-per-step envelopes, total cost, the audit verdict and a `summary`. The summary
-states what happened: it only says the goal was met when the `verify` command
-passed, and a run in which no step succeeded says that nothing was verified.
+command passes. Its result reports `status`, `ok_steps` (how many steps the
+driver actually completed), per-step envelopes, total cost, the audit verdict
+and a `summary`:
+
+| `status` | Meaning |
+|---|---|
+| `done` | A step succeeded and, if a `verify` command was given, it passed ("goal met"); or a step succeeded with no `verify` command (the summary says nothing confirmed it). |
+| `verified_without_driver` | The `verify` command passed but the driver executed 0 steps successfully: the result is real but not attributable to the driver. |
+| `max_steps_reached` | No success within `max_steps`; the summary says nothing was verified. |
+| `cost_capped` | Stopped at `max_cost`. |
+| `cancelled` | Cancelled by the caller. |
+
+The `verify` command runs as a gate through `harness.gate_runner` (no shell,
+30 s timeout) with the privileges of the server process; see
+[security.md](security.md).
 
 ### The in-process driver and its token
 
@@ -189,7 +205,7 @@ thread owned by the server process, stopped when the process exits).
 
 `harness desktop` takes its UI token from `--auth-token`, then
 `HARNESS_UI_AUTH_TOKEN`; with neither it generates one, stores it in
-`~/.config/harness/desktop_token`, and reuses it so the window keeps working
+`~/.config/harness/desktop_token` (created owner-only, mode 0600 on POSIX), and reuses it so the window keeps working
 across restarts. The server only ever accepts the token it was started with:
 a caller cannot replace it by presenting a different one first.
 
