@@ -38,6 +38,8 @@ def _open_window(url, token):
 
 def _read_token_file(path):
     """The persisted desktop token, or "" when absent, blank or unreadable."""
+    if os.path.islink(path):
+        return ""
     try:
         with open(path, encoding="utf-8") as f:
             token = f.read().strip()
@@ -53,22 +55,33 @@ def _read_token_file(path):
 def _write_token_file(path, token):
     """Persist the desktop token readable by its owner only (best effort).
 
-    The file is created 0600 (POSIX; Windows ignores the mode bits) and an
-    existing file is tightened too, so a token written by an older build is
-    not left world-readable. Failure to persist is not fatal: the token just
-    will not survive a restart.
+    The token is written to a fresh sibling file created ``O_EXCL`` with mode
+    0600 (POSIX; Windows ignores the mode bits) and then moved over ``path``
+    with ``os.replace``. A pre-existing, wider-open file (or one an attacker
+    pre-created) is therefore never written to: it is replaced, not opened.
+    A symlink at ``path`` is refused rather than followed or replaced. Failure
+    to persist is not fatal: the token just will not survive a restart.
     """
+    tmp = None
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        if os.path.islink(path):
+            return
+        directory = os.path.dirname(path)
+        os.makedirs(directory, exist_ok=True)
+        tmp = os.path.join(directory, f".desktop_token.{secrets.token_hex(8)}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(token)
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
+        os.replace(tmp, path)
+        tmp = None
     except OSError:
         pass
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def main(argv=None):

@@ -922,6 +922,46 @@ class DesktopTokenTests(unittest.TestCase):
         mk, _, _ = self._main([])
         self.assertTrue(mk.call_args.kwargs["auth_token"])
 
+    def test_an_existing_token_file_is_replaced_not_written_in_place(self):
+        import harness.ui as ui_mod
+        with open(self.token_file, "w", encoding="utf-8") as f:
+            f.write("old-token")
+        os.chmod(self.token_file, 0o666)
+        before = os.stat(self.token_file)
+        ui_mod._write_token_file(self.token_file, "new-token")
+        with open(self.token_file, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "new-token")
+        self.assertEqual(os.listdir(self.cfg), ["desktop_token"])
+        if os.name == "posix":
+            # A new inode with owner-only mode: the wide-open file was
+            # replaced, never opened for writing.
+            after = os.stat(self.token_file)
+            self.assertNotEqual(before.st_ino, after.st_ino)
+            self.assertEqual(after.st_mode & 0o777, 0o600)
+
+    def test_a_symlinked_token_file_is_refused_and_not_followed(self):
+        import harness.ui as ui_mod
+        target = os.path.join(self.cfg, "victim")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write("keep")
+        try:
+            os.symlink(target, self.token_file)
+        except (OSError, NotImplementedError):
+            self.skipTest("platform: symlinks unavailable")
+        ui_mod._write_token_file(self.token_file, "new-token")
+        self.assertTrue(os.path.islink(self.token_file))
+        with open(target, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "keep")
+        self.assertEqual(ui_mod._read_token_file(self.token_file), "")
+        self.assertEqual(sorted(os.listdir(self.cfg)),
+                         ["desktop_token", "victim"])
+
+    def test_a_failed_write_leaves_no_temp_file(self):
+        import harness.ui as ui_mod
+        with mock.patch.object(ui_mod.os, "replace", side_effect=OSError("no")):
+            ui_mod._write_token_file(self.token_file, "t")
+        self.assertEqual(os.listdir(self.cfg), [])
+
     @unittest.skipUnless(os.name == "posix",
                          "platform: Windows has no POSIX mode bits")
     def test_the_persisted_token_file_is_owner_only(self):
