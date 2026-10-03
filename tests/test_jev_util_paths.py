@@ -126,6 +126,8 @@ class PacksHelperCoverageTests(unittest.TestCase):
             [{"id": "x", "text": "t"}])
         self.assertEqual(claims_from_payload(["plain"]), [{"id": "claim_0", "text": "plain"}])
         self.assertEqual(claims_from_payload(None), [])
+        self.assertEqual(claims_from_payload("bare"), [{"id": "claim_0", "text": "bare"}])
+        self.assertEqual(claims_from_payload("   "), [])
         self.assertEqual(claims_from_payload(42), [])
 
     def test_named_artifact_status_from_goal_and_targets(self):

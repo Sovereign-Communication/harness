@@ -1110,6 +1110,10 @@ def claims_from_payload(claims: Any) -> List[Dict[str, str]]:
         return out
     if isinstance(claims, dict) and "claims" in claims:
         claims = claims.get("claims")
+    if isinstance(claims, str):
+        # A bare claim is one claim; dropping it would let a caller read the
+        # "nothing to check" skip as a passing verdict.
+        claims = [claims]
     if not isinstance(claims, (list, tuple)):
         return out
     for i, item in enumerate(claims):

@@ -8,9 +8,19 @@ mixed into :class:`harness.ledger.AutonomyLedger` verbatim, so every call
 site keeps its shape; ledger.py owns the storage/integrity lifecycle
 (append, hash chain, rotation, repair) and this module owns the analysis.
 """
+import json
 from collections import defaultdict
+from datetime import datetime, timezone
 
 from .trust import REFUSE_AT_OR_BELOW
+
+def _as_tokens(value):
+    """Non-negative int token count from a ledger field; junk reads as 0."""
+    try:
+        return max(0, int(value or 0))
+    except (ValueError, TypeError):
+        return 0
+
 
 class LedgerAnalytics:
     """Mixin: read-only ledger analytics (see module docstring)."""
@@ -418,9 +428,56 @@ class LedgerAnalytics:
             "notes": notes,
         }
 
-    def cost_report(self, window=None, by_tier=False, by_model=False, savings=False):
-        """Aggregate spend analytics by tier, model, and calculate savings vs frontier baseline."""
-        from datetime import datetime, timezone, timedelta
+    def _all_entries(self):
+        """Every retained event: a fresh read of all segments (rotated + active).
+
+        ``_tail`` is only this instance's load-time snapshot plus its own
+        appends, so a long-lived server misses what the CLI/MCP processes
+        wrote since. Torn lines are skipped (quarantine is the loader's job);
+        in-memory entries absent from disk (no ``seq`` / not yet flushed) are
+        kept so nothing this instance holds is dropped.
+        """
+        entries = []
+        seen = set()
+        try:
+            paths = self._ledger_paths()
+        except OSError:
+            paths = []
+        for source_path in paths:
+            try:
+                with open(source_path, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except ValueError:
+                            continue
+                        if not isinstance(entry, dict):
+                            continue
+                        seq = entry.get("seq")
+                        if isinstance(seq, int):
+                            seen.add(seq)
+                        entries.append(entry)
+            except OSError:
+                continue
+        for entry in self._tail:
+            seq = entry.get("seq")
+            if not isinstance(seq, int) or seq not in seen:
+                entries.append(entry)
+        return entries
+
+    def cost_report(self, window=None, by_tier=False, by_model=False, savings=False,
+                    now=None):
+        """Aggregate spend analytics by tier, model, and calculate savings vs frontier baseline.
+
+        The ``jev`` block is the TypeSafe account view, not a window view: it
+        reads the full ledger (rotated segments included) and counts only the
+        current UTC calendar month, because the $5 credit resets monthly.
+        ``now`` pins that month for tests.
+        """
+        from datetime import timedelta
         from .routing_table import classify_model_tier, strip_variant_suffix
 
         from .jev import JEV_INPUT_PRICE_PER_MILLION, JEV_MONTHLY_CREDIT_USD, jev_cost
@@ -476,20 +533,43 @@ class LedgerAnalytics:
         jev_output_tokens = 0
         jev_total_cost = 0.0
 
+        # Account-level Jev spend: full ledger, current UTC month only. Cost is
+        # always recomputed from input tokens via jev_cost, so legacy entries
+        # stored at the old $42/Mtok rate are normalized, not trusted.
+        month_now = now or datetime.now(timezone.utc)
+        if month_now.tzinfo is None:
+            month_now = month_now.replace(tzinfo=timezone.utc)
+        month_key = (month_now.year, month_now.month)
+        for e in self._all_entries():
+            if not (e.get("event") == "jev_eval"
+                    or str(e.get("model") or "").startswith("jev-")):
+                continue
+            try:
+                dt = datetime.fromisoformat(str(e.get("ts")))
+            except (ValueError, TypeError):
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.astimezone(timezone.utc)
+            if (dt.year, dt.month) != month_key:
+                continue
+            in_tok = _as_tokens(e.get("input_tokens"))
+            if e.get("is_fallback") or in_tok <= 0:
+                continue
+            jev_calls += 1
+            jev_input_tokens += in_tok
+            jev_output_tokens += _as_tokens(e.get("output_tokens"))
+            jev_total_cost += jev_cost(in_tok)
+
         for e in events:
             ev_name = e.get("event")
             model = e.get("model")
             is_jev = ev_name == "jev_eval" or (model and str(model).startswith("jev-"))
 
             if is_jev:
-                in_tok = int(e.get("input_tokens") or 0)
-                out_tok = int(e.get("output_tokens") or 0)
+                in_tok = _as_tokens(e.get("input_tokens"))
                 if not e.get("is_fallback") and in_tok > 0:
                     cost_val = jev_cost(in_tok)
-                    jev_calls += 1
-                    jev_input_tokens += in_tok
-                    jev_output_tokens += out_tok
-                    jev_total_cost += cost_val
                 else:
                     cost_val = 0.0
                 has_cost = True
@@ -534,6 +614,7 @@ class LedgerAnalytics:
             "free_calls": free_calls,
             "window": window,
             "jev": {
+                "month": f"{month_key[0]:04d}-{month_key[1]:02d}",
                 "calls": jev_calls,
                 "input_tokens": jev_input_tokens,
                 "output_tokens": jev_output_tokens,

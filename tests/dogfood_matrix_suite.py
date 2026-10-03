@@ -5,6 +5,12 @@ Enforces:
 2. Max $1.00 total spend
 3. Full capability and difficulty matrix
 4. Jev score >= 95/100 for every category
+
+Scoring is strict: a category reaches 100 only when every named check holds,
+and any miss lands below ``PASS_SCORE`` (see ``strict_score``). The pure
+``score_*`` helpers take plain result data so ``tests/test_dogfood_matrix_strict.py``
+can prove, offline and with model doubles, that planted failures are caught
+(the original lenient scoring passed them).
 """
 import json
 import os
@@ -26,14 +32,114 @@ from harness.session import governor_for, ledger_for
 from harness.trust import trust_status
 
 
+PASS_SCORE = 95.0
+# Claim verification: a supported claim must clear SUPPORT_FLOOR, a planted
+# false one must stay at or under REJECT_CEILING; anything the evaluator would
+# itself read as supported (>= SUPPORTED_AT) hard-fails the category.
+SUPPORT_FLOOR = 0.70
+REJECT_CEILING = 0.30
+SUPPORTED_AT = 0.50
+
+
+def strict_score(checks: Dict[str, bool]) -> float:
+    """100 only when every check holds; any miss stays strictly below PASS_SCORE."""
+    if not checks:
+        return 0.0
+    if all(checks.values()):
+        return 100.0
+    return round(90.0 * sum(1 for ok in checks.values() if ok) / len(checks), 2)
+
+
+def _noul_of(flag: Any) -> Any:
+    return flag.get("noul") if isinstance(flag, dict) else None
+
+
+def score_claim_verification(true_flag: Any, false_flag: Any) -> Tuple[float, Dict[str, Any]]:
+    """Score CAT-06 from the typed claim flags (``structural["claim_flags"][0]``).
+
+    An unkeyed/fallback or missing flag is not evidence either way, so it
+    cannot pass; a planted false claim the evaluator supports hard-fails.
+    """
+    t_noul, f_noul = _noul_of(true_flag), _noul_of(false_flag)
+    t_live = isinstance(t_noul, (int, float)) and not true_flag.get("fallback")
+    f_live = isinstance(f_noul, (int, float)) and not false_flag.get("fallback")
+    false_supported = f_live and float(f_noul) >= SUPPORTED_AT
+    checks = {
+        "true_claim_live": t_live,
+        "false_claim_live": f_live,
+        "true_claim_supported": bool(t_live and float(t_noul) >= SUPPORT_FLOOR),
+        "false_claim_rejected": bool(f_live and float(f_noul) <= REJECT_CEILING),
+    }
+    score = 0.0 if false_supported else strict_score(checks)
+    return score, {"checks": checks, "true_claim_support": t_noul,
+                   "false_claim_support": f_noul,
+                   "false_claim_passed_as_supported": bool(false_supported)}
+
+
+def score_driver_loop(res: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
+    """Score CAT-08 from a ``run_driver_task`` result: a real ok step is required."""
+    steps = [s for s in (res.get("steps") or []) if isinstance(s, dict)]
+    ok_steps = [s for s in steps
+                if isinstance(s.get("envelope"), dict) and s["envelope"].get("ok") is True]
+    audit = res.get("audit")
+    nested = audit.get("audit") if isinstance(audit, dict) else None
+    audit_ok = bool(isinstance(audit, dict) and audit.get("ok") is True
+                    and isinstance(nested, dict) and nested.get("ok") is True)
+    checks = {
+        "ran_steps": len(steps) >= 1,
+        "ok_steps>=1": len(ok_steps) >= 1,
+        "audit_chain_ok": audit_ok,
+    }
+    return strict_score(checks), {
+        "checks": checks, "total_steps": len(steps), "ok_steps": len(ok_steps),
+        "status": res.get("status"), "audit_ok": audit_ok,
+        "summary": res.get("summary")}
+
+
+def score_phase_bar(phase_result: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
+    """Score CAT-10 from a ``dogfood_phase`` result; no floor, live Jev required."""
+    bar = phase_result.get("bar") or {}
+    blocking = list(bar.get("blocking_axes") or [])
+    score_val = float(phase_result.get("score") or 0.0)
+    semantic = phase_result.get("semantic") or {}
+    checks = {
+        "bar_pass": bool(bar.get("pass")),
+        "no_blocking_axes": not blocking,
+        "can_mark_complete": bool(phase_result.get("can_mark_complete")),
+        "live_jev": not semantic.get("is_fallback", True),
+    }
+    score = min(score_val, strict_score(checks))
+    return round(score, 2), {
+        "checks": checks, "phase_score": score_val, "blocking_axes": blocking}
+
+
+def score_cases(cases: List[Dict[str, Any]]) -> Tuple[float, Dict[str, Any]]:
+    """Accuracy over typed cases; a fallback answer is never a match."""
+    correct = sum(1 for c in cases if c["match"])
+    score = 100.0 * correct / len(cases) if cases else 0.0
+    return score, {"cases": cases, "accuracy": f"{correct}/{len(cases)}"}
+
+
 class DogfoodMatrixRunner:
-    def __init__(self):
-        self.settings = load_settings()
-        self.api_key, self.gov = governor_for(self.settings)
-        self.ledger = ledger_for(self.settings, caller="matrix_runner")
-        self.policy = policy_for(self.settings, transport=None, governor=self.gov, ledger=self.ledger)
-        self.agent = AutonomousAgent(settings=self.settings)
+    def __init__(self, *, settings=None, gov=None, ledger=None, policy=None, agent=None):
+        """Defaults wire the live stack; every seam can be injected so the
+        hermetic variant runs the same categories against model doubles."""
+        self.settings = settings or load_settings()
+        if gov is None:
+            self.api_key, self.gov = governor_for(self.settings)
+        else:
+            self.api_key, self.gov = None, gov
+        self.ledger = ledger or ledger_for(self.settings, caller="matrix_runner")
+        self.policy = policy or policy_for(
+            self.settings, transport=None, governor=self.gov, ledger=self.ledger)
+        self._agent = agent
         self.results: List[Dict[str, Any]] = []
+
+    @property
+    def agent(self):
+        if self._agent is None:
+            self._agent = AutonomousAgent(settings=self.settings)
+        return self._agent
 
     def current_spend(self) -> float:
         return float(getattr(self.gov, "spent", 0.0) or 0.0)
@@ -47,7 +153,7 @@ class DogfoodMatrixRunner:
 
         try:
             score, details = test_fn()
-            status = "PASSED" if score >= 95 else "FAILED"
+            status = "PASSED" if score >= PASS_SCORE else "FAILED"
             error = None
         except Exception as e:
             import traceback
@@ -100,12 +206,14 @@ class DogfoodMatrixRunner:
             f"Candidate answer:\n{ans}\n\nRetained context:\nMathematical number theory context",
             self.agent._orchestrator_chat_fn(self.gov)
         )
-        complete = bool(comp.get("complete"))
+        # assess_completion returns None for unusable output: that is not a pass.
+        complete = bool((comp or {}).get("complete"))
 
-        score = 100.0 if (status == "ok" and has_formula and has_oscillation and complete) else (
-            95.0 if (has_formula and has_oscillation) else 70.0
-        )
+        checks = {"status_ok": status == "ok", "has_formula": has_formula,
+                  "has_oscillation": has_oscillation, "jev_complete": complete}
+        score = strict_score(checks)
         return score, {
+            "checks": checks,
             "status": status,
             "model": res.get("model"),
             "has_formula": has_formula,
@@ -129,10 +237,12 @@ class DogfoodMatrixRunner:
         has_anthropic = ("anthropic" in ans.lower() or "claude" in ans.lower())
         has_unproven = any(term in ans.lower() for term in ["not prove", "didn't prove", "unproven", "partial", "bound"])
 
-        score = 100.0 if (web_used and has_67 and has_anthropic and has_unproven and status == "ok") else (
-            95.0 if (web_used and has_anthropic and has_unproven) else 60.0
-        )
+        checks = {"status_ok": status == "ok", "web_used": bool(web_used),
+                  "has_sources": len(sources) >= 1, "has_anthropic": has_anthropic,
+                  "has_unproven": has_unproven}
+        score = strict_score(checks)
         return score, {
+            "checks": checks,
             "status": status,
             "web_used": web_used,
             "sources_count": len(sources),
@@ -161,18 +271,17 @@ class DogfoodMatrixRunner:
             ("Implement JSON parser unit test", "T1"),
             ("Resolve concurrency deadlock between reader-writer mutex and background thread", "T2"),
         ]
-        correct = 0
         details = []
         for goal, expected_tier in cases:
             res, struct, combo = self.policy.evaluate_model_route({"goal": goal}, pack, site="model_route")
             actual_tier = combo.get("tier")
-            is_match = (actual_tier == expected_tier)
-            if is_match:
-                correct += 1
-            details.append({"goal": goal, "expected": expected_tier, "actual": actual_tier, "match": is_match, "rung": combo.get("rung_id")})
+            # An unkeyed/fallback route is the code heuristic, not a Jev answer.
+            is_match = (actual_tier == expected_tier) and not res.is_fallback
+            details.append({"goal": goal, "expected": expected_tier, "actual": actual_tier,
+                            "match": is_match, "fallback": bool(res.is_fallback),
+                            "rung": combo.get("rung_id")})
 
-        score = 100.0 if correct == len(cases) else (correct / len(cases)) * 100.0
-        return score, {"cases": details, "accuracy": f"{correct}/{len(cases)}"}
+        return score_cases(details)
 
     # -------------------------------------------------------------
     # CAT-04: Issue Triage & Bucket Sorting (Medium)
@@ -212,18 +321,15 @@ class DogfoodMatrixRunner:
             ("Database query latency spikes over 3000ms causing request timeout under load", "perf"),
             ("Driver perception step deferred and agent handoff not resuming correctly", "driver"),
         ]
-        correct = 0
         details = []
         for issue_text, expected_bucket in cases:
             res, struct, combo = self.policy.evaluate_issue_sort({"issue": issue_text}, pack, site="issue_sort")
             actual_bucket = combo.get("bucket")
-            is_match = (actual_bucket == expected_bucket)
-            if is_match:
-                correct += 1
-            details.append({"issue": issue_text, "expected": expected_bucket, "actual": actual_bucket, "match": is_match})
+            is_match = (actual_bucket == expected_bucket) and not res.is_fallback
+            details.append({"issue": issue_text, "expected": expected_bucket, "actual": actual_bucket,
+                            "match": is_match, "fallback": bool(res.is_fallback)})
 
-        score = 100.0 if correct == len(cases) else (correct / len(cases)) * 100.0
-        return score, {"cases": details, "accuracy": f"{correct}/{len(cases)}"}
+        return score_cases(details)
 
     # -------------------------------------------------------------
     # CAT-05: Log Analysis & Anomaly Attribution (Medium)
@@ -239,8 +345,10 @@ class DogfoodMatrixRunner:
         severity = combo.get("score", {}).get("level") or combo.get("severity") or struct.get("severity")
         is_transport = (matched_bucket == "transport")
 
-        score = 100.0 if is_transport else 50.0
-        return score, {"matched_bucket": matched_bucket, "expected": "transport", "severity": severity, "combo": combo}
+        checks = {"jev_keyed": not res.is_fallback, "bucket_transport": is_transport}
+        score = strict_score(checks)
+        return score, {"checks": checks, "matched_bucket": matched_bucket, "expected": "transport",
+                       "severity": severity, "combo": combo}
 
     # -------------------------------------------------------------
     # CAT-06: Multi-Model Consensus & Claim Verification (Hard)
@@ -249,23 +357,27 @@ class DogfoodMatrixRunner:
         # True claim
         claim_true = "The Riemann Hypothesis conjectures that all non-trivial zeros of the zeta function have real part 1/2."
         ev_true = "The Riemann hypothesis asserts that all non-trivial zeros of the Riemann zeta function lie on the critical line with real part 1/2."
-        res_t, struct_t = self.policy.evaluate_claim_support(claim_true, ev_true, site="claim")
-
-        # False claim
+        # False claim (planted): the evidence contradicts it.
         claim_false = "The Riemann Hypothesis has been proven to be completely false by elementary arithmetic in 2026."
         ev_false = "The Riemann hypothesis remains one of the most famous open problems in mathematics; it has not been disproved."
-        res_f, struct_f = self.policy.evaluate_claim_support(claim_false, ev_false, site="claim")
 
-        pass_true = (res_t.verdict == "pass" or res_t.supported >= 0.70)
-        fail_false = (res_f.verdict == "fail" or res_f.supported <= 0.30)
+        flags = []
+        details: Dict[str, Any] = {}
+        for label, claim, evidence in (("true", claim_true, ev_true), ("false", claim_false, ev_false)):
+            # enabled=True: the default skips the check and returns a
+            # fallback "pass", which would read as support for any claim.
+            res, struct = self.policy.evaluate_claim_support(
+                [claim], evidence, enabled=True, site="claim")
+            flag = (struct.get("claim_flags") or [None])[0]
+            if flag is not None and res.is_fallback:
+                flag = dict(flag, fallback=True)
+            flags.append(flag)
+            details[f"{label}_claim_verdict"] = res.verdict
+            details[f"{label}_claim_is_fallback"] = bool(res.is_fallback)
 
-        score = 100.0 if (pass_true and fail_false) else (95.0 if pass_true else 50.0)
-        return score, {
-            "true_claim_verdict": res_t.verdict,
-            "true_claim_support": res_t.supported,
-            "false_claim_verdict": res_f.verdict,
-            "false_claim_support": res_f.supported,
-        }
+        score, scored = score_claim_verification(flags[0], flags[1])
+        details.update(scored)
+        return score, details
 
     # -------------------------------------------------------------
     # CAT-07: Autonomous Edit Planning & Waist Safety Guard (Hard)
@@ -292,13 +404,13 @@ class DogfoodMatrixRunner:
 
         # In non-auto mode, intent must be 'edit', status 'refused' (waist safety guard) or 'preview_ready' or 'ok'
         has_intent = (intent == "edit")
-        has_waist_guard = ("Waist Gate Guard" in resp_text or "refused" in resp_text or status in ("refused", "ok", "preview_ready"))
-        has_dag = bool(res.get("dag") or res.get("target_files") or "harness/web.py" in resp_text)
+        has_waist_guard = status in ("refused", "ok", "preview_ready")
+        has_dag = bool(res.get("dag") or res.get("target_files"))
 
-        score = 100.0 if (has_intent and has_waist_guard and has_dag) else (
-            95.0 if (has_intent and has_waist_guard) else 60.0
-        )
+        checks = {"intent_edit": has_intent, "waist_status": has_waist_guard, "plan_evidence": has_dag}
+        score = strict_score(checks)
         return score, {
+            "checks": checks,
             "intent": intent,
             "status": status,
             "has_waist_guard": has_waist_guard,
@@ -327,22 +439,7 @@ class DogfoodMatrixRunner:
             {"goal": "perceive git status and inspect branch", "max_steps": 2, "target": "cli", "auto_approve": True},
             cancel_check=None,
         )
-        total_steps = res.get("total_steps", 0)
-        status = res.get("status")
-        audit = res.get("audit") or {}
-        steps = res.get("steps", [])
-
-        ok_steps = [s for s in steps if s.get("envelope", {}).get("ok") or s.get("status") in ("ok", "complete")]
-        audit_ok = bool(audit.get("ok", True))
-
-        score = 100.0 if (total_steps >= 2 and audit_ok) else (95.0 if total_steps >= 1 else 50.0)
-        return score, {
-            "total_steps": total_steps,
-            "ok_steps": len(ok_steps),
-            "status": status,
-            "audit_ok": audit_ok,
-            "summary": res.get("summary")
-        }
+        return score_driver_loop(res)
 
     # -------------------------------------------------------------
     # CAT-09: Cryptographic Ledger & Autonomy Audit (Easy)
@@ -374,22 +471,13 @@ class DogfoodMatrixRunner:
     def test_cat10_jev_phase_dogfood(self) -> Tuple[float, Dict[str, Any]]:
         from harness.jev_completion import dogfood_phase
 
-        # Evaluate JEV-COMPLETION phase with local validation
-        phase_result = dogfood_phase(".", "JEV-COMPLETION", use_live_jev=False)
-        bar = phase_result.get("bar") or {}
-        bar_pass = bool(bar.get("pass"))
-        score_val = float(phase_result.get("score") or 0.0)
-        blocking_axes = bar.get("blocking_axes", [])
-        can_mark_complete = bool(phase_result.get("can_mark_complete"))
-
-        score = 100.0 if (bar_pass and len(blocking_axes) == 0 and can_mark_complete) else max(score_val, 95.0)
-        return score, {
-            "phase_id": "JEV-COMPLETION",
-            "bar_pass": bar_pass,
-            "can_mark_complete": can_mark_complete,
-            "phase_score": score_val,
-            "blocking_axes": blocking_axes,
-        }
+        # Evaluate JEV-COMPLETION with live Jev: a local-heuristic score cannot reach 100.
+        phase_result = dogfood_phase(
+            ".", "JEV-COMPLETION", settings=self.settings,
+            governor=self.gov, ledger=self.ledger, use_live_jev=True)
+        score, details = score_phase_bar(phase_result)
+        details["phase_id"] = "JEV-COMPLETION"
+        return score, details
 
     # -------------------------------------------------------------
     # Suite Orchestrator
