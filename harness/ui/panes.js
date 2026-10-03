@@ -316,16 +316,15 @@ async function renderVerify(root) {
     if (target) target.classList.add("active");
   }
 
-  const promptInput = $("textarea", { class: "pane-input", rows: "3", placeholder: "Self-contained question and verification context..." },
-    "Is the cryptographic ledger hash chain intact and completely verified with 0 quarantined records?");
-  const judgeInput = $("input", { class: "pane-input", placeholder: "default judge (e.g. z-ai/glm-5.3-flash)" });
-  const panelInput = $("input", { class: "pane-input", placeholder: "default panel (comma-separated, e.g. meta-llama/llama-3.1-8b-instruct, ibm-granite/granite-4.1-8b)" });
+  const promptInput = $("textarea", { class: "pane-input", rows: "3", placeholder: "Self-contained question and verification context..." });
+  const judgeInput = $("input", { class: "pane-input", placeholder: "judge model (blank = configured default)" });
+  const panelInput = $("input", { class: "pane-input", placeholder: "panel models, comma-separated (blank = configured default)" });
   const costInput = $("input", { class: "pane-input", type: "number", step: "0.01", value: "0.05" });
 
   const starters = $("div", { class: "starter-grid" },
     $("span", { class: "muted small", style: "align-self: center;" }, "Presets:"),
     $("button", { class: "starter-btn", type: "button", onclick: () => {
-      promptInput.value = "Is the cryptographic ledger hash chain intact and completely verified with 0 quarantined records?";
+      promptInput.value = "Does the hash-chained ledger verify intact, with the quarantined-record count stated?";
     }}, "🔒 Ledger Chain Integrity"),
     $("button", { class: "starter-btn", type: "button", onclick: () => {
       promptInput.value = "Is the sliding-scale model router tier ladder correctly configured for cheap-to-capable escalation?";
@@ -406,7 +405,7 @@ async function renderVerify(root) {
           $("p", { style: "margin-bottom: 0.6rem; font-size: 0.9rem;" }, res.reasoning || res.answer || res.synthesis || "Panel completed verification synthesis."),
           $("div", { class: "driver-meta-grid" },
             $("div", {}, $("span", { class: "muted small" }, "Cost: "), $("code", {}, money(res.cost || final.cost || 0.0))),
-            $("div", {}, $("span", { class: "muted small" }, "Judge Model: "), $("code", {}, res.judge_model || judgeInput.value || "glm-5.3-flash")),
+            $("div", {}, $("span", { class: "muted small" }, "Judge Model: "), $("code", {}, res.judge_model || judgeInput.value || "configured default")),
             $("div", {}, $("span", { class: "muted small" }, "Ledger Status: "), $("code", {}, "Verified & Recorded"))
           )
         )

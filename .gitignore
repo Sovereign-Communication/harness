@@ -20,3 +20,7 @@ audits/scmessenger/round6/
 
 .claude/settings.local.json
 .venv/
+
+# Local scratch: lockfile from uv, matrix run output
+uv.lock
+dogfood_matrix_results.json
