@@ -1095,6 +1095,8 @@ class JevPolicy:
                 "answer_sufficient": None,
                 "iteration_required": True,
                 "plan_required": None,
+                "is_fallback": refusal.is_fallback,
+                "fallback_reason": refusal.fallback_reason,
             })
             return refusal, structural
 
