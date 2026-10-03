@@ -410,8 +410,10 @@ class DriverDaemonTest(DriverEnvMixin, unittest.TestCase):
         silent.bind(("127.0.0.1", 0))
         silent.listen(1)
         self.addCleanup(silent.close)
-        url = "http://127.0.0.1:%d" % silent.getsockname()[1]
-        with patch.dict(os.environ, {"DRIVER_BASE_URL": url}),              patch.object(ui_server, "_DRIVER_PROBE_TIMEOUT", 0.3):
+        url = "http://127.0.0.1:{}".format(silent.getsockname()[1])
+        env = {"DRIVER_BASE_URL": url}
+        with patch.dict(os.environ, env), \
+                patch.object(ui_server, "_DRIVER_PROBE_TIMEOUT", 0.3):
             started = time.time()
             adapter = ui_server._driver_adapter()
         self.assertLess(time.time() - started, 10)
