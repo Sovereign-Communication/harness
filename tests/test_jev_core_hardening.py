@@ -1,0 +1,728 @@
+"""Hermetic Jev core hardening: cache, fallback ledger bounds, reasons,
+settlement, confidence-aware routing, parallel fan-out and the site breaker.
+
+Every transport here is a counting stub; no test touches the network, a real
+key, the operator ledger or HOME.
+"""
+import os
+import tempfile
+import threading
+import time
+import unittest
+from unittest import mock
+
+from harness._http import HttpTransport
+from harness.config import load_settings
+from harness.errors import HarnessError
+from harness.jev import (JevCache, JevEvaluator, PROCESS_CACHE, jev_cost)
+from harness.jev_policy import (BREAKER_FAILURE_THRESHOLD,
+                                FALLBACK_DISTINCT_ROW_CAP,
+                                UNATTRIBUTED_FALLBACK, policy_for)
+from harness.ledger import AutonomyLedger
+from harness.spend import SpendGovernor
+from tests._fake import FakeTransport, m
+
+DIFF = "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n"
+PACK = {"id": "ladder-v1", "rungs": [
+    {"rung_id": "r0", "tier": "T0", "model": "m-t0", "cost_class": "free"},
+    {"rung_id": "r1", "tier": "T1", "model": "m-t1", "cost_class": "cheap"},
+    {"rung_id": "r2", "tier": "T2", "model": "m-t2", "cost_class": "moderate"},
+]}
+LOW_PACK = {"id": "low-v1", "rungs": [
+    {"rung_id": "only", "tier": "T0", "model": "m-t0", "cost_class": "free"}]}
+
+
+def noul_resp(tokens=100, noul=0.95):
+    return {"model": "jev-test", "usage": {"input_tokens": tokens,
+                                           "output_tokens": 3},
+            "answers": {"instruction_matches": {"type": "noul", "noul": noul}}}
+
+
+def choice_resp(choice, confidence, criteria, tokens=100):
+    probs = {k: (1.0 if k == choice else 0.0) for k in criteria}
+    return {"model": "jev-test", "usage": {"input_tokens": tokens,
+                                           "output_tokens": 3},
+            "answers": {"rung": {"type": "choice", "choice": choice,
+                                 "probabilities": probs,
+                                 "confidence": confidence}}}
+
+
+def answers_for(questions, *, choice=None, confidence=0.9):
+    """A well-formed answer for any pack the policy might send."""
+    out = {}
+    for name, question in questions.items():
+        kind = question["type"]
+        if kind == "noul":
+            out[name] = {"type": "noul", "noul": 0.9}
+        elif kind == "choice":
+            criteria = list(question["criteria"])
+            pick = choice if choice in criteria else criteria[0]
+            out[name] = {"type": "choice", "choice": pick,
+                         "probabilities": {k: float(k == pick) for k in criteria},
+                         "confidence": confidence}
+        else:
+            levels = question["criteria"]
+            out[name] = {"type": "score", "score": 0.0,
+                         "legend": {str(i): lv for i, lv in enumerate(levels)},
+                         "probabilities": {str(i): float(i == 0)
+                                           for i in range(len(levels))},
+                         "confidence": confidence}
+    return out
+
+
+class CountingTransport:
+    """Counts requests; ``plan`` is a list of results, then ``default``."""
+
+    def __init__(self, default=None, plan=(), delay=None):
+        self.default = default
+        self.plan = list(plan)
+        self.calls = []
+        self.delay = delay or {}
+        self._lock = threading.Lock()
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    def post(self, url, key, payload, timeout=45):
+        with self._lock:
+            self.calls.append(payload)
+            self.in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self.in_flight)
+            item = self.plan.pop(0) if self.plan else self.default
+        try:
+            wait = self.delay.get(tuple(sorted(payload["questions"])), 0.0)
+            if wait:
+                time.sleep(wait)
+            if isinstance(item, Exception):
+                raise item
+            if callable(item):
+                item = item(payload)
+            if isinstance(item, tuple):
+                return item
+            return 200, item
+        finally:
+            with self._lock:
+                self.in_flight -= 1
+
+
+class _Base(unittest.TestCase):
+    def setUp(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        env = mock.patch.dict(os.environ, {"HOME": home.name,
+                                           "USERPROFILE": home.name})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("HARNESS_JEV_DISABLE", None)
+        os.environ.pop("HARNESS_JEV_API_KEY", None)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.ledger = AutonomyLedger(os.path.join(self.tmp.name, "ledger.jsonl"))
+
+    def keyed_settings(self):
+        settings = load_settings({"jev_api_key": "jev-key"})
+        settings.hourglass_confirm = False
+        return settings
+
+    def unkeyed_settings(self):
+        settings = load_settings()
+        settings.jev_api_key = None
+        return settings
+
+    def governor(self, max_cost=0.10):
+        return SpendGovernor(
+            FakeTransport(models=[m("jev-test", prompt="0", completion="0")]),
+            "sk-test", max_cost=max_cost)
+
+    def keyed(self, transport, **kw):
+        kw.setdefault("governor", self.governor())
+        kw.setdefault("ledger", self.ledger)
+        return policy_for(self.keyed_settings(), transport=transport, **kw)
+
+    def rows(self):
+        return [e for e in self.ledger.entries() if e["event"] == "jev_eval"]
+
+
+class CacheTests(_Base):
+    def test_identical_call_is_served_without_a_request(self):
+        transport = CountingTransport(noul_resp(tokens=100))
+        gov = self.governor()
+        policy = self.keyed(transport, governor=gov)
+        first, _ = policy.evaluate_diff(DIFF, "change x", "x.py", site="apply")
+        spent_after_first = gov.spent
+        second, structural = policy.evaluate_diff(
+            DIFF, "change x", "x.py", site="apply")
+        self.assertEqual(len(transport.calls), 1)
+        self.assertFalse(first.cache_hit)
+        self.assertTrue(second.cache_hit)
+        self.assertFalse(second.is_fallback)
+        self.assertEqual(second.cost, 0.0)
+        self.assertEqual(second.input_tokens, 0)
+        self.assertEqual(second.verdict, first.verdict)
+        self.assertEqual(gov.spent, spent_after_first)
+        self.assertTrue(structural["cache_hit"])
+        rows = self.rows()
+        self.assertEqual(len(rows), 2)
+        self.assertNotIn("cache_hit", rows[0])
+        self.assertTrue(rows[1]["cache_hit"])
+        self.assertEqual(rows[1]["cost"], 0.0)
+        self.assertIn("cache hit", rows[1]["note"])
+
+    def test_different_state_or_questions_miss(self):
+        transport = CountingTransport(noul_resp())
+        policy = self.keyed(transport)
+        policy.evaluate_diff(DIFF, "change x", "x.py")
+        policy.evaluate_diff(DIFF, "a different instruction", "x.py")
+        self.assertEqual(len(transport.calls), 2)
+
+    def test_transport_failure_is_never_cached(self):
+        transport = CountingTransport(
+            noul_resp(), plan=[OSError("offline")])
+        evaluator = JevEvaluator(api_key="k", transport=transport)
+        failed = evaluator.evaluate({"instruction": "x"})
+        self.assertTrue(failed.is_fallback)
+        self.assertEqual(failed.fallback_reason, "transport_failure")
+        ok = evaluator.evaluate({"instruction": "x"})
+        self.assertFalse(ok.is_fallback)
+        self.assertFalse(ok.cache_hit)
+        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(len(evaluator.cache), 1)
+
+    def test_http_error_and_invalid_response_are_never_cached(self):
+        bad = {"model": "j", "usage": {"input_tokens": 50, "output_tokens": 1},
+               "answers": {"instruction_matches": {"type": "noul", "noul": 7}}}
+        transport = CountingTransport(
+            noul_resp(), plan=[(500, {}), (401, {}), bad])
+        evaluator = JevEvaluator(api_key="k", transport=transport)
+        self.assertTrue(evaluator.evaluate({"c": 1}).is_fallback)
+        self.assertEqual(evaluator.evaluate({"c": 1}).verdict, "fail")
+        discarded = evaluator.evaluate({"c": 1})
+        self.assertTrue(discarded.discarded)
+        self.assertEqual(len(evaluator.cache), 0)
+        self.assertFalse(evaluator.evaluate({"c": 1}).cache_hit)
+        self.assertEqual(len(transport.calls), 4)
+
+    def test_cache_is_bounded_lru_with_ttl(self):
+        clock = [0.0]
+        cache = JevCache(max_entries=2, ttl=10.0, clock=lambda: clock[0])
+        cache.put("a", 1)
+        cache.put("b", 2)
+        self.assertEqual(cache.get("a"), 1)      # a is now most recent
+        cache.put("c", 3)                         # evicts b
+        self.assertIsNone(cache.get("b"))
+        self.assertEqual(len(cache), 2)
+        clock[0] = 11.0
+        self.assertIsNone(cache.get("a"))         # expired
+        disabled = JevCache(max_entries=0)
+        disabled.put("a", 1)
+        self.assertEqual(len(disabled), 0)
+        cache.clear()
+        self.assertEqual((len(cache), cache.hits, cache.misses), (0, 0, 0))
+
+    def test_process_cache_only_for_the_real_transport(self):
+        self.assertIs(JevEvaluator(api_key="k").cache, PROCESS_CACHE)
+        self.assertIs(JevEvaluator(api_key="k", transport=HttpTransport()).cache,
+                      PROCESS_CACHE)
+        stub = JevEvaluator(api_key="k", transport=CountingTransport())
+        self.assertIsNot(stub.cache, PROCESS_CACHE)
+        self.assertIsNot(
+            stub.cache, JevEvaluator(api_key="k", transport=CountingTransport()).cache)
+
+    def test_key_and_model_partition_the_cache(self):
+        transport = CountingTransport(noul_resp())
+        cache = JevCache()
+        one = JevEvaluator(api_key="k1", transport=transport, cache=cache)
+        two = JevEvaluator(api_key="k2", transport=transport, cache=cache)
+        one.evaluate({"c": 1})
+        two.evaluate({"c": 1})
+        self.assertEqual(len(transport.calls), 2)
+        self.assertTrue(one.evaluate({"c": 1}).cache_hit)
+
+    def test_unkeyed_never_reads_the_cache(self):
+        cache = JevCache()
+        transport = CountingTransport(noul_resp())
+        JevEvaluator(api_key="k", transport=transport, cache=cache).evaluate({"c": 1})
+        unkeyed = JevEvaluator(api_key=None, transport=transport, cache=cache)
+        result = unkeyed.evaluate({"c": 1})
+        self.assertTrue(result.is_fallback)
+        self.assertFalse(result.cache_hit)
+
+    def test_plan_requirements_carry_cache_hit_through(self):
+        def plan_resp(payload):
+            return {"model": "j", "usage": {"input_tokens": 10, "output_tokens": 1},
+                    "answers": answers_for(payload["questions"])}
+        transport = CountingTransport(plan_resp)
+        policy = self.keyed(transport)
+        policy.evaluate_plan("write a loop", ["a.py"])
+        result, structural = policy.evaluate_plan("write a loop", ["a.py"])
+        self.assertEqual(len(transport.calls), 1)
+        self.assertTrue(result.cache_hit)
+        self.assertTrue(structural["cache_hit"])
+
+
+class FallbackLedgerTests(_Base):
+    def test_identical_unkeyed_loop_cannot_flood_the_ledger(self):
+        policy = policy_for(self.unkeyed_settings(), ledger=self.ledger)
+        for _ in range(1000):
+            policy.evaluate_diff(DIFF, "change x", "x.py", site="apply")
+        rows = self.rows()
+        self.assertLessEqual(len(rows), 12)
+        self.assertGreaterEqual(len(rows), 2)
+        self.assertTrue(all(r["fallback_reason"] == "missing_key" for r in rows))
+        self.assertEqual(rows[0].get("repeat_count"), None)
+        self.assertGreater(rows[-1]["repeat_count"], 1)
+
+    def test_distinct_unkeyed_states_are_capped_too(self):
+        policy = policy_for(self.unkeyed_settings(), ledger=self.ledger)
+        for i in range(1000):
+            policy.evaluate_diff(DIFF, "change {}".format(i), "x.py", site="apply",
+                                 candidate=None)
+        # instruction is part of the state, so every call is distinct
+        self.assertLess(len(self.rows()), FALLBACK_DISTINCT_ROW_CAP + 40)
+
+    def test_distinct_sites_and_reasons_are_tracked_separately(self):
+        policy = policy_for(self.unkeyed_settings(), ledger=self.ledger)
+        for _ in range(3):
+            policy.evaluate_diff(DIFF, "change x", "x.py", site="apply")
+            policy.evaluate_diff(DIFF, "change x", "x.py", site="other")
+        self.assertEqual(sorted({r["site"] for r in self.rows()}),
+                         ["apply", "other"])
+
+    def test_billed_fallbacks_are_never_deduped(self):
+        from harness.jev import JevEvaluationResult
+        policy = self.keyed(CountingTransport(noul_resp()))
+        billed = JevEvaluationResult(
+            "pass", 0.0, 1.0, {}, ["x"], cost=0.001, input_tokens=10,
+            is_fallback=True, model="m", fallback_reason="route_out_of_vocabulary")
+        for _ in range(5):
+            policy._account(billed, site="route")
+        self.assertEqual(len(self.rows()), 5)
+
+    def test_missing_reason_is_stamped_never_null(self):
+        from harness.jev import JevEvaluationResult
+        policy = policy_for(self.unkeyed_settings(), ledger=self.ledger)
+        bare = JevEvaluationResult("pass", 0.0, 1.0, {}, ["x"], is_fallback=True)
+        structural = policy._account(bare, site="orphan")
+        self.assertEqual(structural["fallback_reason"], UNATTRIBUTED_FALLBACK)
+        self.assertEqual(self.rows()[0]["fallback_reason"], UNATTRIBUTED_FALLBACK)
+
+
+class FallbackTrackingBoundTests(_Base):
+    def test_tracked_state_keys_are_bounded(self):
+        policy = policy_for(self.unkeyed_settings(), ledger=self.ledger)
+        with mock.patch("harness.jev_policy.FALLBACK_TRACKED_KEYS", 3):
+            for i in range(10):
+                policy.evaluate_diff(DIFF, "change {}".format(i), "x.py",
+                                     site="apply")
+        self.assertLessEqual(len(policy._fallback_counts), 3)
+
+
+class ReasonPropagationTests(_Base):
+    def assert_named_reasons(self):
+        rows = [r for r in self.rows() if r["is_fallback"]]
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertTrue(row["fallback_reason"], row)
+            self.assertNotEqual(row["fallback_reason"], UNATTRIBUTED_FALLBACK, row)
+
+    def test_every_unkeyed_path_names_its_reason(self):
+        policy = policy_for(self.unkeyed_settings(), ledger=self.ledger)
+        policy.evaluate_diff(DIFF, "i", "x.py", site="apply")
+        _, st = policy.evaluate_triage("fix a loop", ["a.py", "b.py"], site="triage")
+        self.assertEqual(st["fallback_reason"], "missing_key")
+        _, st = policy.evaluate_route("fix a loop", ["a.py"], site="route")
+        self.assertEqual(st["fallback_reason"], "missing_key")
+        _, st = policy.evaluate_plan("fix a loop", ["a.py"], site="waist")
+        self.assertEqual(st["fallback_reason"], "missing_key")
+        _, st = policy.evaluate_file_triage(
+            "fix parser", ["a.py", "parser.py"], ["a.py", "parser.py"])
+        self.assertEqual(st["fallback_reason"], "missing_key")
+        _, st, combo = policy.evaluate_model_route(
+            {"goal": "rename a thing"}, PACK)
+        self.assertEqual(st["fallback_reason"], "missing_key")
+        self.assertTrue(combo["is_fallback"])
+        _, st, _ = policy.evaluate_model_route({"goal": "x"}, {"id": "bad"})
+        self.assertEqual(st["fallback_reason"], "invalid_pack")
+        self.assert_named_reasons()
+
+    def test_disabled_policy_reports_explicit_disable(self):
+        with mock.patch.dict(os.environ, {"HARNESS_JEV_DISABLE": "1"}):
+            settings = load_settings({"jev_api_key": "configured"})
+        policy = policy_for(settings, ledger=self.ledger)
+        _, _, combo = policy.evaluate_model_route({"goal": "x"}, PACK)
+        self.assertEqual(combo["structural"]["fallback_reason"], "explicit_disable")
+
+    def test_transport_failure_reason_reaches_every_keyed_site(self):
+        transport = CountingTransport(OSError("offline"))
+        policy = self.keyed(transport, breaker_threshold=99)
+        for call in (
+            lambda: policy.evaluate_triage("fix a loop", ["a.py"]),
+            lambda: policy.evaluate_route("fix a loop", ["a.py"]),
+            lambda: policy.evaluate_file_triage("g", ["a.py"], ["a.py"]),
+            lambda: policy.evaluate_model_route({"goal": "x"}, PACK)[:2],
+        ):
+            structural = call()[1]
+            self.assertEqual(structural["fallback_reason"], "transport_failure")
+        self.assert_named_reasons()
+
+    def test_preflight_refusal_fallbacks_carry_a_reason(self):
+        policy = self.keyed(CountingTransport(noul_resp()),
+                            governor=self.governor(max_cost=0.0000001))
+        route, st = policy.evaluate_route("fix a loop", ["a.py"])
+        self.assertEqual(st["fallback_reason"], "preflight_refused")
+        _, st = policy.evaluate_triage("fix a loop", ["a.py"])
+        self.assertEqual(st["fallback_reason"], "preflight_refused")
+        _, st = policy.evaluate_file_triage("g", ["a.py"], ["a.py"])
+        self.assertEqual(st["fallback_reason"], "preflight_refused")
+        _, st, combo = policy.evaluate_model_route({"goal": "x"}, PACK)
+        self.assertEqual(st["fallback_reason"], "preflight_refused")
+        self.assertTrue(route.is_fallback)
+        self.assertEqual(policy.evaluator.min_confidence, 0.70)
+
+    def test_log_item_preflight_refusal_names_its_reason(self):
+        from tests.test_jev_log_judgment import sample_log_pack
+        policy = self.keyed(CountingTransport(noul_resp()),
+                            governor=self.governor(max_cost=0.0000001))
+        result, structural, _ = policy.evaluate_log_item(
+            {"item": "dial failed on swarm"}, sample_log_pack())
+        self.assertTrue(result.is_fallback)
+        self.assertEqual(structural["fallback_reason"], "preflight_refused")
+
+    def test_billed_discarded_answer_settles_real_cost(self):
+        unusable = {"model": "j", "usage": {"input_tokens": 250,
+                                            "output_tokens": 2},
+                    "answers": {"route": {"type": "choice", "choice": "nope",
+                                          "probabilities": {"nope": 1.0},
+                                          "confidence": 0.9}}}
+        transport = CountingTransport(unusable)
+        gov = self.governor()
+        policy = self.keyed(transport, governor=gov)
+        result, structural = policy.evaluate_route("fix a loop", ["a.py"])
+        expected = jev_cost(250)
+        self.assertTrue(result.is_fallback)
+        self.assertTrue(result.discarded)
+        self.assertAlmostEqual(result.cost, expected)
+        self.assertEqual(structural["fallback_reason"], "response_discarded")
+        self.assertAlmostEqual(gov.spent, expected)
+        self.assertEqual(gov.outstanding, 0.0)
+        row = self.rows()[0]
+        self.assertAlmostEqual(row["cost"], expected)
+        self.assertEqual(row["fallback_reason"], "response_discarded")
+
+    def test_discarded_model_route_settles_and_keeps_live_confidence(self):
+        unusable = {"model": "j", "usage": {"input_tokens": 400,
+                                            "output_tokens": 2},
+                    "answers": {"rung": {"type": "choice", "choice": "ghost",
+                                         "probabilities": {"ghost": 1.0},
+                                         "confidence": 0.9}}}
+        gov = self.governor()
+        policy = self.keyed(CountingTransport(unusable), governor=gov)
+        result, structural, combo = policy.evaluate_model_route(
+            {"goal": "fix a parse bug"}, PACK)
+        self.assertTrue(combo["is_fallback"])
+        self.assertAlmostEqual(gov.spent, jev_cost(400))
+        self.assertAlmostEqual(result.cost, jev_cost(400))
+        self.assertTrue(structural["discarded"])
+        self.assertEqual(structural["fallback_reason"], "response_discarded")
+
+    def test_governor_without_reservations_still_settles_billed_fallback(self):
+        class Plain:
+            max_cost = 1.0
+            spent = 0.0
+            outstanding = 0.0
+            recorded = []
+
+            def record_actual(self, cost, label):
+                self.recorded.append(cost)
+
+        from harness.jev import JevEvaluationResult
+        gov = Plain()
+        policy = policy_for(self.keyed_settings(), governor=gov,
+                            transport=CountingTransport(noul_resp()))
+        billed = JevEvaluationResult(
+            "pass", 0.0, 1.0, {}, [], cost=0.002, input_tokens=5,
+            is_fallback=True, fallback_reason="x")
+        free = JevEvaluationResult("pass", 0.0, 1.0, {}, [], is_fallback=True,
+                                   fallback_reason="x")
+        policy._account(billed, site="s")
+        policy._account(free, site="s")
+        self.assertEqual(gov.recorded, [0.002])
+
+
+class ConfidenceRouteTests(_Base):
+    def route(self, goal, choice, confidence, pack=PACK, tokens=100):
+        criteria = [r["rung_id"] for r in pack["rungs"]]
+        transport = CountingTransport(
+            choice_resp(choice, confidence, criteria, tokens=tokens))
+        policy = self.keyed(transport)
+        return policy, policy.evaluate_model_route({"goal": goal}, pack)
+
+    def test_low_confidence_in_ladder_choice_is_honored(self):
+        policy, (result, structural, combo) = self.route(
+            "rename a variable", "r1", 0.31)
+        self.assertFalse(combo["is_fallback"])
+        self.assertFalse(result.is_fallback)
+        self.assertEqual(combo["rung_id"], "r1")
+        self.assertEqual(combo["model"], "m-t1")
+        self.assertAlmostEqual(combo["confidence"], 0.31)
+        self.assertTrue(any("0.31" in r for r in combo["reasons"]))
+        self.assertIsNone(structural["fallback_reason"])
+        self.assertEqual(self.rows()[0]["is_fallback"], False)
+        self.assertEqual(policy.evaluator.min_confidence, 0.70)
+
+    def test_low_confidence_cheaper_than_floor_is_raised_to_floor(self):
+        _, (_, _, combo) = self.route("fix a parse bug", "r0", 0.31)
+        self.assertFalse(combo["is_fallback"])
+        self.assertEqual(combo["rung_id"], "r1")        # floor T1
+        self.assertTrue(any("raised" in r for r in combo["reasons"]))
+
+    def test_low_confidence_never_cheaper_than_floor_when_unsatisfiable(self):
+        _, (result, structural, combo) = self.route(
+            "design the architecture", "only", 0.31, pack=LOW_PACK)
+        self.assertTrue(combo["is_fallback"])
+        self.assertIsNone(combo["rung_id"])
+        self.assertAlmostEqual(combo["confidence"], 0.31)
+        self.assertTrue(structural["fallback_reason"])
+        self.assertNotEqual(structural["fallback_reason"], UNATTRIBUTED_FALLBACK)
+        self.assertTrue(result.is_fallback)
+
+    def test_high_confidence_behaviour_is_unchanged(self):
+        _, (_, _, combo) = self.route("fix a parse bug", "r0", 0.95)
+        self.assertFalse(combo["is_fallback"])
+        self.assertEqual(combo["rung_id"], "r0")        # not raised
+        self.assertAlmostEqual(combo["confidence"], 0.95)
+
+    def test_other_sites_keep_the_global_threshold(self):
+        # A route-lane choice at 0.31 is still a below-threshold verdict.
+        transport = CountingTransport(
+            lambda payload: {"model": "j", "usage": {"input_tokens": 9,
+                             "output_tokens": 1},
+                             "answers": answers_for(payload["questions"],
+                                                    confidence=0.31)})
+        policy = self.keyed(transport)
+        result, _ = policy.evaluate_route("fix a loop", ["a.py"])
+        self.assertEqual(result.verdict, "fail")
+        self.assertEqual(policy.evaluator.min_confidence, 0.70)
+
+
+class FanOutTests(_Base):
+    def make_policy(self, transport):
+        return self.keyed(transport)
+
+    def test_results_are_order_stable_and_actually_concurrent(self):
+        def respond(payload):
+            return {"model": "j", "usage": {"input_tokens": 10,
+                                            "output_tokens": 1},
+                    "answers": answers_for(payload["questions"])}
+        transport = CountingTransport(respond, delay={
+            ("requires_iteration", "route"): 0.25,
+            ("requirement_complexity", "requires_iteration"): 0.05,
+        })
+        policy = self.make_policy(transport)
+        order = []
+
+        def call(name, fn):
+            def run():
+                value = fn()
+                order.append(name)
+                return value
+            return run
+
+        started = time.monotonic()
+        out = policy.fan_out([
+            ("route", call("route", lambda: policy.evaluate_route(
+                "fix a loop", ["a.py"], site="route"))),
+            ("waist", call("waist", lambda: policy.evaluate_plan(
+                "fix a loop", ["a.py"], site="waist"))),
+        ])
+        elapsed = time.monotonic() - started
+        self.assertEqual(order, ["waist", "route"])      # finished reversed
+        self.assertEqual(out[0][1]["site"], "route")      # ...returned in order
+        self.assertEqual(out[1][1]["site"], "waist")
+        self.assertGreaterEqual(transport.max_in_flight, 2)
+        self.assertLess(elapsed, 0.25 + 0.05 + 0.2)
+        self.assertEqual(len(self.rows()), 2)
+
+    def test_exception_fails_closed_per_question(self):
+        policy = self.make_policy(CountingTransport(noul_resp()))
+
+        def boom():
+            raise RuntimeError("kaboom")
+
+        out = policy.fan_out([
+            ("a", lambda: ("ok-a", {"site": "a"})),
+            ("b", boom),
+            ("c", lambda: ("ok-c", {"site": "c"})),
+        ])
+        self.assertEqual(out[0][0], "ok-a")
+        self.assertEqual(out[2][0], "ok-c")
+        result, structural = out[1]
+        self.assertTrue(result.is_fallback)
+        self.assertEqual(structural["fallback_reason"], "fanout_exception")
+        self.assertEqual(structural["site"], "b")
+        rows = self.rows()
+        self.assertEqual([r["fallback_reason"] for r in rows],
+                         ["fanout_exception"])
+
+    def test_failure_accounting_error_still_fails_closed(self):
+        policy = self.make_policy(CountingTransport(noul_resp()))
+        policy._account = mock.Mock(side_effect=RuntimeError("ledger busy"))
+
+        def boom():
+            raise ValueError("x")
+
+        out = policy.fan_out([("s", boom), ("t", lambda: ("ok", {}))])
+        self.assertEqual(out[0][1]["fallback_reason"], "fanout_exception")
+        self.assertEqual(out[1][0], "ok")
+
+    def test_on_failure_reshapes_the_pair(self):
+        policy = self.make_policy(CountingTransport(noul_resp()))
+
+        def boom():
+            raise ValueError("x")
+
+        out = policy.fan_out([("s", boom, lambda r, st: (r, st, "combo"))])
+        self.assertEqual(out[0][2], "combo")
+
+    def test_unkeyed_and_single_job_run_inline(self):
+        policy = policy_for(self.unkeyed_settings(), ledger=self.ledger)
+        threads = []
+        out = policy.fan_out([
+            ("a", lambda: threads.append(threading.current_thread()) or 1),
+            ("b", lambda: threads.append(threading.current_thread()) or 2),
+        ])
+        self.assertEqual(out, [1, 2])
+        self.assertTrue(all(t is threading.current_thread() for t in threads))
+        keyed = self.make_policy(CountingTransport(noul_resp()))
+        self.assertEqual(keyed.fan_out([("a", lambda: 7)]), [7])
+        self.assertEqual(keyed.fan_out([]), [])
+
+    def test_waist_fans_route_plan_and_issue_sort_out(self):
+        from harness.waist import compose_plan
+        pack = {"id": "ops", "buckets": {"auth": {
+            "label": "Auth", "kind": "trouble_area", "path_id": "p/auth",
+            "keywords": ["auth"], "suggested_next_action": "look",
+            "attention": "high"}}}
+
+        def respond(payload):
+            return {"model": "j", "usage": {"input_tokens": 10,
+                                            "output_tokens": 1},
+                    "answers": answers_for(payload["questions"])}
+        transport = CountingTransport(respond)
+        policy = self.make_policy(transport)
+        calls = []
+        original = policy.fan_out
+
+        def spy(jobs, **kw):
+            calls.append([job[0] for job in jobs])
+            return original(jobs, **kw)
+
+        policy.fan_out = spy
+        envelope = compose_plan(
+            transport=None, api_key=None, governor=None, ledger=None,
+            opts_goal="fix auth token handling", candidate_files=[],
+            jev_policy=policy, issue_sort_pack=pack)
+        self.assertEqual(calls, [["route", "waist", "issue_sort"]])
+        self.assertIn("issue_sort", {r["site"] for r in self.rows()})
+        self.assertIsNotNone(envelope)
+
+    def test_waist_issue_sort_exception_degrades_to_empty_combo(self):
+        from harness.waist import compose_plan
+        pack = {"id": "ops", "buckets": {"auth": {
+            "label": "Auth", "kind": "trouble_area", "path_id": "p/auth",
+            "keywords": ["auth"], "suggested_next_action": "look",
+            "attention": "high"}}}
+        policy = self.make_policy(CountingTransport(noul_resp()))
+        policy.evaluate_issue_sort = mock.Mock(side_effect=RuntimeError("x"))
+        envelope = compose_plan(
+            transport=None, api_key=None, governor=None, ledger=None,
+            opts_goal="fix auth token handling", candidate_files=[],
+            jev_policy=policy, issue_sort_pack=pack)
+        self.assertIsNotNone(envelope)
+
+
+class BreakerTests(_Base):
+    def make(self, transport, clock, **kw):
+        return self.keyed(transport, clock=clock, breaker_cooldown=30.0, **kw)
+
+    def test_opens_after_consecutive_transport_failures_and_recloses(self):
+        now = [100.0]
+        transport = CountingTransport(OSError("down"))
+        policy = self.make(transport, lambda: now[0])
+        self.assertTrue(policy.available("route"))
+        for _ in range(BREAKER_FAILURE_THRESHOLD):
+            policy.evaluate_route("fix a loop {}".format(len(transport.calls)), ["a.py"])
+        self.assertEqual(len(transport.calls), BREAKER_FAILURE_THRESHOLD)
+        self.assertFalse(policy.available("route"))
+        self.assertTrue(policy.available("other-site"))
+
+        # Open breaker: refused locally, no request, named reason, no spend.
+        before = len(transport.calls)
+        result, structural = policy.evaluate_route("fix a loop open", ["a.py"])
+        self.assertEqual(len(transport.calls), before)
+        self.assertTrue(result.is_fallback)
+        self.assertEqual(structural["fallback_reason"], "circuit_open")
+
+        # Cooldown elapsed: one probe goes through; success closes it.
+        now[0] += 31.0
+        self.assertTrue(policy.available("route"))
+        transport.default = noul_resp()
+        transport.plan = [lambda payload: {
+            "model": "j", "usage": {"input_tokens": 5, "output_tokens": 1},
+            "answers": answers_for(payload["questions"])}]
+        ok, _ = policy.evaluate_route("fix a loop probe", ["a.py"])
+        self.assertFalse(ok.is_fallback)
+        self.assertEqual(len(transport.calls), before + 1)
+        self.assertTrue(policy.available("route"))
+        for i in range(BREAKER_FAILURE_THRESHOLD - 1):
+            transport.plan = [OSError("again")]
+            policy.evaluate_route("fix a loop again {}".format(i), ["a.py"])
+        self.assertTrue(policy.available("route"))   # counter was reset
+
+    def test_failed_probe_reopens_the_breaker(self):
+        now = [0.0]
+        transport = CountingTransport(OSError("down"))
+        policy = self.make(transport, lambda: now[0])
+        for i in range(BREAKER_FAILURE_THRESHOLD):
+            policy.evaluate_route("a loop {}".format(i), ["a.py"])
+        now[0] += 31.0
+        policy.evaluate_route("probe", ["a.py"])          # probe fails
+        self.assertFalse(policy.available("route"))
+        now[0] += 5.0
+        calls = len(transport.calls)
+        policy.evaluate_route("blocked", ["a.py"])
+        self.assertEqual(len(transport.calls), calls)
+
+    def test_availability_survives_a_broken_governor_probe(self):
+        policy = self.keyed(CountingTransport(noul_resp()))
+        policy.governor.remaining = mock.Mock(side_effect=HarnessError("x"))
+        self.assertTrue(policy.available("route"))
+
+    def test_unkeyed_or_unaffordable_is_unavailable(self):
+        policy = policy_for(self.unkeyed_settings(), ledger=self.ledger)
+        self.assertFalse(policy.available("route"))
+        poor = self.keyed(CountingTransport(noul_resp()),
+                          governor=self.governor(max_cost=0.0000001))
+        self.assertFalse(poor.available("route"))
+        rich = self.keyed(CountingTransport(noul_resp()))
+        self.assertTrue(rich.available("route"))
+
+    def test_healthy_keyed_policy_is_unchanged(self):
+        transport = CountingTransport(noul_resp(tokens=100))
+        gov = self.governor()
+        policy = self.keyed(transport, governor=gov)
+        result, _ = policy.evaluate_diff(DIFF, "change x", "x.py", site="apply")
+        self.assertFalse(result.is_fallback)
+        self.assertAlmostEqual(gov.spent, jev_cost(100))
+        self.assertTrue(policy.available("apply"))
+
+    def test_http_fallback_also_counts(self):
+        now = [0.0]
+        transport = CountingTransport(noul_resp(), plan=[(503, {})] * 5)
+        policy = self.make(transport, lambda: now[0])
+        for i in range(BREAKER_FAILURE_THRESHOLD):
+            policy.evaluate_diff(DIFF, "i{}".format(i), "x.py", site="apply")
+        self.assertFalse(policy.available("apply"))
+
+
+if __name__ == "__main__":
+    unittest.main()

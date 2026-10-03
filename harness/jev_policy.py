@@ -8,14 +8,22 @@ here — still ONE policy owner, never a second Jev client.
 """
 import difflib
 import os
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+import threading
+import time
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from typing import (Any, Callable, Dict, Iterable, List, Optional, Sequence,
+                    Tuple)
 
 from .errors import HarnessError
 from .config import HARD_MAX_COST
-from .jev import (JevEvaluationResult, JevEvaluator, jev_cost,
+from .jev import (JevEvaluationResult, JevEvaluator, _digest, jev_cost,
                   triage_question_pack)
-from .route_pack import (ROUTE_QUERY_SITE, fallback_route, route_combo,
+from .route_pack import (ROUTE_QUERY_SITE, choose_rung_for_tier, fallback_route,
+                         route_combo,
                          route_question_pack as route_query_pack,
+                         tier_floor_for_goal, tier_rank,
                          validate_route_pack)
 from .jev_packs import (
     ANSWER_PACK_VERSION,
@@ -83,6 +91,40 @@ from .jev_packs import (
 
 JEV_MAX_INPUT_TOKENS = 1024
 
+# Fallback reasons the transport layer reports when a keyed call could not
+# reach (or be answered by) TypeSafe. Consecutive ones open the site breaker.
+TRANSPORT_FAILURE_REASONS = frozenset(("transport_failure", "http_fallback"))
+# Safety net: a fallback row never lands without a reason. Sites name their
+# own; this value only ever appears if a new path forgets to.
+UNATTRIBUTED_FALLBACK = "unattributed_fallback"
+# Consecutive transport failures that open a site's breaker, and how long it
+# stays open before one probe call is allowed through.
+BREAKER_FAILURE_THRESHOLD = 3
+BREAKER_COOLDOWN_SECONDS = 30.0
+# Fallback ledger-row bounds: one row each time an identical (site, reason,
+# state) fallback count reaches a power of two, and past this many distinct
+# states per (site, reason) only power-of-two totals are written.
+FALLBACK_DISTINCT_ROW_CAP = 64
+FALLBACK_TRACKED_KEYS = 4096
+FANOUT_MAX_WORKERS = 4
+
+
+class JevUnavailable(HarnessError):
+    """A keyed Jev call was refused locally before dispatch (breaker open)."""
+
+    def __init__(self, message: str, fallback_reason: str = "circuit_open"):
+        super().__init__(message)
+        self.fallback_reason = fallback_reason
+
+
+def _refusal_reason(exc: Exception) -> str:
+    """The ``fallback_reason`` for a pre-dispatch HarnessError."""
+    return getattr(exc, "fallback_reason", None) or "preflight_refused"
+
+
+def _is_power_of_two(value: int) -> bool:
+    return value > 0 and value & (value - 1) == 0
+
 
 def jev_cost_ceiling(max_input_tokens: int = JEV_MAX_INPUT_TOKENS) -> float:
     """Return the worst-case input-token charge for one Jev decision."""
@@ -135,13 +177,23 @@ class JevPolicy:
     """Coordinate typed Jev calls, spend, ledger evidence, and envelopes."""
 
     def __init__(self, settings, *, transport=None, governor=None, ledger=None,
-                 evaluator=None):
+                 evaluator=None, breaker_threshold: int = BREAKER_FAILURE_THRESHOLD,
+                 breaker_cooldown: float = BREAKER_COOLDOWN_SECONDS,
+                 clock: Callable[[], float] = time.monotonic):
         if settings is None:
             raise HarnessError("Jev policy requires settings")
         self.settings = settings
         self.transport = transport
         self.governor = governor
         self.ledger = ledger
+        self._clock = clock
+        self._breaker_threshold = max(1, int(breaker_threshold))
+        self._breaker_cooldown = float(breaker_cooldown)
+        # site -> {"failures": consecutive count, "opened_at": float|None}
+        self._breakers: Dict[str, Dict[str, Any]] = {}
+        self._fallback_counts: "OrderedDict[Tuple[str, str, str], int]" = OrderedDict()
+        self._fallback_site_counts: Dict[Tuple[str, str], List[int]] = {}
+        self._state_lock = threading.Lock()
         explicitly_disabled = bool(getattr(settings, "jev_disabled", False))
         self.evaluator = (JevEvaluator(
             api_key=None,
@@ -159,10 +211,160 @@ class JevPolicy:
     def keyed(self) -> bool:
         return bool(self.evaluator.api_key)
 
+    def _breaker_refusal(self, site: str) -> Optional[str]:
+        """Return a refusal message while ``site``'s breaker is open.
+
+        After the cooldown the breaker is half-open: exactly the next call is
+        let through as a probe (a success closes it, a failure re-opens it).
+        """
+        with self._state_lock:
+            state = self._breakers.get(site)
+            if not state or state["opened_at"] is None:
+                return None
+            if self._clock() - state["opened_at"] >= self._breaker_cooldown:
+                # Half-open: allow one probe and re-arm the timer so a second
+                # concurrent caller is still refused until the probe settles.
+                state["opened_at"] = self._clock()
+                return None
+            return ("Jev circuit open for site '{}' after {} consecutive "
+                    "transport failures".format(site, state["failures"]))
+
+    def available(self, site: str,
+                  max_input_tokens: int = JEV_MAX_INPUT_TOKENS) -> bool:
+        """True when a keyed call at ``site`` could be dispatched right now.
+
+        Checks key presence, that the shared governor could still afford the
+        worst-case call (advisory -- the reservation in ``_preflight`` stays
+        the enforcing gate), and that the site's breaker is not open. It never
+        reserves or dispatches. A half-open breaker reports available without
+        consuming its probe slot.
+        """
+        if not self.keyed:
+            return False
+        remaining = getattr(self.governor, "remaining", None)
+        if callable(remaining):
+            try:
+                if float(remaining()) < jev_cost(max_input_tokens):
+                    return False
+            except (TypeError, ValueError, HarnessError):
+                pass
+        with self._state_lock:
+            state = self._breakers.get(site)
+            if state and state["opened_at"] is not None:
+                return (self._clock() - state["opened_at"]
+                        >= self._breaker_cooldown)
+        return True
+
+    def _note_outcome(self, site: str, result: JevEvaluationResult) -> None:
+        """Feed one settled keyed call into the site's circuit breaker."""
+        if not self.keyed or result.cache_hit:
+            return
+        failed = (result.fallback_reason in TRANSPORT_FAILURE_REASONS
+                  and float(result.cost or 0.0) == 0.0)
+        succeeded = (not result.is_fallback) or float(result.cost or 0.0) > 0.0
+        if not failed and not succeeded:
+            return
+        with self._state_lock:
+            state = self._breakers.setdefault(
+                site, {"failures": 0, "opened_at": None})
+            if succeeded:
+                state["failures"] = 0
+                state["opened_at"] = None
+                return
+            state["failures"] += 1
+            if state["failures"] >= self._breaker_threshold:
+                state["opened_at"] = self._clock()
+
+    def _dedupe_fallback(self, result: JevEvaluationResult,
+                         site: str) -> Tuple[bool, int]:
+        """Return ``(write_row, repeat_count)`` for a free fallback.
+
+        A loop that keeps asking the same unanswerable question must not
+        append a ledger row per call. The first occurrence of each
+        (site, reason, state) is written, then only counts 2, 4, 8, ...; past
+        ``FALLBACK_DISTINCT_ROW_CAP`` distinct states for one (site, reason)
+        the same power-of-two rule applies to the site total. Billed or
+        discarded fallbacks are never deduped: real spend always gets a row.
+        """
+        if (not result.is_fallback or result.discarded
+                or float(result.cost or 0.0) > 0.0 or result.input_tokens):
+            return True, 1
+        state_hash = result.state_hash or _digest(
+            result.verdict, result.answers, result.reasons)
+        key = (site, result.fallback_reason or UNATTRIBUTED_FALLBACK,
+               state_hash)
+        with self._state_lock:
+            count = self._fallback_counts.pop(key, 0) + 1
+            self._fallback_counts[key] = count
+            while len(self._fallback_counts) > FALLBACK_TRACKED_KEYS:
+                self._fallback_counts.popitem(last=False)
+            site_key = key[:2]
+            totals = self._fallback_site_counts.setdefault(site_key, [0, 0])
+            if count == 1:
+                totals[1] += 1  # a new distinct state for this site/reason
+            totals[0] += 1
+            site_total, distinct = totals
+        write = _is_power_of_two(count)
+        if write and distinct > FALLBACK_DISTINCT_ROW_CAP:
+            write = _is_power_of_two(site_total)
+        return write, count
+
+    def fan_out(self, jobs: Sequence[Tuple], *,
+                max_workers: int = FANOUT_MAX_WORKERS) -> List[Any]:
+        """Run independent typed calls over one state concurrently.
+
+        ``jobs`` is a sequence of ``(site, call)`` or ``(site, call,
+        on_failure)``; ``call`` takes no arguments and returns whatever the
+        site's ``evaluate_*`` returns. Results come back in ``jobs`` order no
+        matter which finishes first. Each question fails closed on its own: a
+        call that raises yields a local fallback (``fallback_reason=
+        "fanout_exception"``, one ledger row, never an exception to the
+        caller) and does not disturb its siblings. ``on_failure(result,
+        structural)`` reshapes that pair when a site returns something other
+        than ``(result, structural)``. An unkeyed policy, one job, or
+        ``max_workers <= 1`` runs inline: threads only pay off when requests
+        actually leave the machine. Concurrency stays bounded by
+        ``max_workers`` and every call still reserves/settles through the
+        shared governor.
+        """
+        jobs = list(jobs)
+        workers = min(int(max_workers), len(jobs), 8)
+
+        def settle_failure(job, exc: BaseException):
+            site = job[0]
+            result = JevEvaluationResult(
+                "fail", 0.0, 0.0, {},
+                ["fan-out call raised {}: {}".format(type(exc).__name__, exc)],
+                is_fallback=True, model=self.evaluator.model,
+                fallback_reason="fanout_exception")
+            try:
+                structural = self._account(result, site=site)
+            except Exception:
+                structural = self._structural(result, site)
+            if len(job) > 2 and callable(job[2]):
+                return job[2](result, structural)
+            return result, structural
+
+        def run(job):
+            try:
+                return job[1]()
+            except Exception as exc:  # fail closed per question
+                return settle_failure(job, exc)
+
+        if workers <= 1 or not self.keyed:
+            return [run(job) for job in jobs]
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix="jev-fanout") as pool:
+            futures = [pool.submit(run, job) for job in jobs]
+            return [future.result() for future in futures]
+
     def _preflight(self, *, site: str, max_input_tokens: int):
         """Reserve one bounded Jev call before its network dispatch."""
         if not self.keyed:
             return None
+        refusal = self._breaker_refusal(site)
+        if refusal is not None:
+            raise JevUnavailable(refusal)
         if self.governor is None:
             raise HarnessError(
                 "keyed Jev evaluation requires the shared spend governor")
@@ -183,6 +385,53 @@ class JevPolicy:
             raise HarnessError(
                 f"Jev worst-case cost ${worst:.6f} exceeds the remaining budget")
         return None
+
+    def _no_key_reason(self) -> str:
+        return ("explicit_disable"
+                if getattr(self.evaluator, "explicitly_disabled", False)
+                else "missing_key")
+
+    @staticmethod
+    def _fallback_reason_of(result: JevEvaluationResult, default: str) -> str:
+        """Why a result is being replaced by a local answer; never ``None``."""
+        if result.fallback_reason:
+            return result.fallback_reason
+        return "response_discarded" if result.discarded else default
+
+    @staticmethod
+    def _local_from(result: JevEvaluationResult, answers: Dict[str, Any],
+                    reasons: Sequence[str], reason: str, *, billed: bool = True,
+                    verdict: str = "pass") -> JevEvaluationResult:
+        """A local fallback that keeps the live call's real cost and identity.
+
+        A billed call whose answer was discarded stays settled at its real
+        cost and is flagged ``discarded`` so the loss is reported, never
+        hidden behind a free-looking fallback.
+        """
+        spent = billed and float(result.cost or 0.0) > 0.0
+        return JevEvaluationResult(
+            verdict, 0.0, 1.0 if verdict == "pass" else 0.0, answers,
+            list(reasons), cost=result.cost if billed else 0.0,
+            input_tokens=result.input_tokens if billed else 0,
+            output_tokens=result.output_tokens if billed else 0,
+            is_fallback=True, model=result.model,
+            discarded=bool(result.discarded or spent),
+            fallback_reason=reason, state_hash=result.state_hash)
+
+    def _with_reason(self, result: JevEvaluationResult,
+                     reason: Optional[str], state: Any = None
+                     ) -> JevEvaluationResult:
+        """Stamp a closure-built fallback with its reason and billed state.
+
+        ``state`` is the text the site judged; it keys the fallback dedupe so
+        two different inputs never collapse into one ledger row.
+        """
+        cost = float(result.cost or 0.0)
+        return replace(
+            result, fallback_reason=reason or result.fallback_reason,
+            discarded=bool(result.discarded or cost > 0.0),
+            state_hash=result.state_hash or (
+                None if state is None else _digest(state)))
 
     def _structural(self, result: JevEvaluationResult, site: str) -> Dict[str, Any]:
         return {
@@ -230,14 +479,18 @@ class JevPolicy:
                  event_metadata: Optional[Dict[str, Any]] = None,
                  preserve_event_on_settlement_error: bool = False) -> Dict[str, Any]:
         """Settle live spend and append exactly one hash-chained jev_eval."""
+        if result.is_fallback and not result.fallback_reason:
+            result = replace(result, fallback_reason=UNATTRIBUTED_FALLBACK)
         cost = (float(result.cost or 0.0) if settlement_cost is None
                 else float(settlement_cost))
         settlement_error = None
         try:
+            # Settle the REAL cost even when the answer was discarded or
+            # replaced by a local fallback: a billed call is spend either way.
             if reservation is not None and self.governor is not None:
-                self.governor.reconcile(
-                    reservation, 0.0 if result.is_fallback else cost)
-            elif self.governor is not None and not result.is_fallback:
+                self.governor.reconcile(reservation, cost)
+            elif (self.governor is not None
+                  and (not result.is_fallback or cost > 0.0)):
                 # A governor without reservations still gets one actual
                 # settlement, including a zero-cost response.
                 self.governor.record_actual(cost, result.model or "jev")
@@ -245,12 +498,23 @@ class JevPolicy:
             if not preserve_event_on_settlement_error:
                 raise
             settlement_error = "{}: {}".format(type(exc).__name__, exc)
+        self._note_outcome(site, result)
         structural = self._structural(result, site)
-        metadata = event_metadata or {}
+        # Mutated in place on purpose: callers read ``result_state`` back out
+        # of the dict they passed to learn that settlement failed.
+        metadata = event_metadata if event_metadata is not None else {}
         if settlement_error is not None:
             metadata["result_state"] = "unassessed"
             metadata["settlement_error"] = settlement_error
-        if self.ledger is not None:
+        if result.cache_hit:
+            metadata["cache_hit"] = True
+            metadata["note"] = ("cache hit: identical state/questions served "
+                                "locally; no request sent, cost 0")
+            structural["cache_hit"] = True
+        write_row, repeat = self._dedupe_fallback(result, site)
+        if repeat > 1:
+            metadata["repeat_count"] = repeat
+        if self.ledger is not None and write_row:
             self.ledger.append(
                 "jev_eval", task_id=task_id, node_id=node_id, site=site,
                 model=metadata.get("observed_model", result.model),
@@ -454,7 +718,8 @@ class JevPolicy:
             fallback = JevEvaluationResult(
                 "fail", 0.0, 0.0, envelope_payload(None, values, False),
                 ["unkeyed Jev cannot judge " + dimension],
-                is_fallback=True, model=self.evaluator.model)
+                is_fallback=True, model=self.evaluator.model,
+                fallback_reason=self._no_key_reason())
             return finish(fallback, values, False)
 
         reservation = None
@@ -687,10 +952,10 @@ class JevPolicy:
                                 ("iterat", "loop", "branch", "recur", "algorithm", "architect"))
                 route = "frontier" if iterative else (
                     "diff" if len(target_files or []) > 1 else "free-distill")
-                result = JevEvaluationResult(
-                    "pass", 0.0, 1.0,
-                    {"route": route, "requires_iteration": iterative},
-                    result.reasons, is_fallback=True, model=result.model)
+                result = self._local_from(
+                    result, {"route": route, "requires_iteration": iterative},
+                    result.reasons,
+                    self._fallback_reason_of(result, "triage_unanswered"))
             structural = self._account(result, site=site, task_id=task_id,
                                        reservation=reservation)
             return result, structural
@@ -708,7 +973,8 @@ class JevPolicy:
             fallback = JevEvaluationResult(
                 "pass", 0.0, 1.0,
                 {"route": route, "requires_iteration": iterative}, [str(exc)],
-                is_fallback=True, model=self.evaluator.model)
+                is_fallback=True, model=self.evaluator.model,
+                fallback_reason=_refusal_reason(exc))
             return fallback, self._structural(fallback, site)
 
     def evaluate_escalation_decision(
@@ -882,11 +1148,9 @@ class JevPolicy:
                     "requires_iteration": iterative,
                     **{k: v for k, v in answers.items() if k not in ("route", "requires_iteration")},
                 }
-                result = JevEvaluationResult(
-                    "pass", 0.0, 1.0, answers, result.reasons,
-                    cost=result.cost, input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    is_fallback=True, model=result.model)
+                result = self._local_from(
+                    result, answers, result.reasons,
+                    self._fallback_reason_of(result, "route_unanswered"))
             else:
                 # Normalize live choice into the vocabulary (or fall back).
                 normalized = normalize_route(
@@ -897,13 +1161,12 @@ class JevPolicy:
                     route = heuristic_route(prompt, target_files)
                     answers = dict(answers)
                     answers["route"] = route
-                    result = JevEvaluationResult(
-                        result.verdict, result.confidence, result.supported,
-                        answers, list(result.reasons) + [
+                    result = replace(
+                        result, answers=answers,
+                        reasons=list(result.reasons) + [
                             "live route outside vocabulary; heuristic applied"],
-                        cost=result.cost, input_tokens=result.input_tokens,
-                        output_tokens=result.output_tokens,
-                        is_fallback=True, model=result.model)
+                        is_fallback=True, discarded=result.input_tokens > 0,
+                        fallback_reason="route_out_of_vocabulary")
                 else:
                     answers = dict(answers)
                     answers["route"] = normalized
@@ -912,12 +1175,7 @@ class JevPolicy:
                         answers["requires_iteration"] = float(raw_iter["noul"]) >= 0.5
                     elif not isinstance(raw_iter, bool):
                         answers["requires_iteration"] = heuristic_requires_iteration(prompt)
-                    result = JevEvaluationResult(
-                        result.verdict, result.confidence, result.supported,
-                        answers, result.reasons,
-                        cost=result.cost, input_tokens=result.input_tokens,
-                        output_tokens=result.output_tokens,
-                        is_fallback=False, model=result.model)
+                    result = replace(result, answers=answers, is_fallback=False)
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id,
                 reservation=reservation)
@@ -935,7 +1193,8 @@ class JevPolicy:
             }
             fallback = JevEvaluationResult(
                 "pass", 0.0, 1.0, answers, [str(exc)],
-                is_fallback=True, model=self.evaluator.model)
+                is_fallback=True, model=self.evaluator.model,
+                fallback_reason=_refusal_reason(exc))
             return fallback, self._structural(fallback, site)
 
     def evaluate_file_triage(self, goal: str, candidates: Sequence[str],
@@ -956,7 +1215,7 @@ class JevPolicy:
                 "pass", 0.0, 1.0,
                 {"files": [], "is_fallback": True},
                 ["no candidates to triage"], is_fallback=True,
-                model=self.evaluator.model)
+                model=self.evaluator.model, fallback_reason="no_candidates")
             structural = self._structural(empty, site)
             structural["files"] = []
             return empty, structural
@@ -971,11 +1230,9 @@ class JevPolicy:
             if result.is_fallback:
                 picked = heuristic_file_relevance(goal, scoped, max_files=max_files)
                 answers = {"files": picked, "heuristic": True}
-                result = JevEvaluationResult(
-                    "pass", 0.0, 1.0, answers, result.reasons,
-                    cost=result.cost, input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    is_fallback=True, model=result.model)
+                result = self._local_from(
+                    result, answers, result.reasons,
+                    self._fallback_reason_of(result, "triage_unanswered"))
             else:
                 for index, path in enumerate(scoped):
                     key = f"file_{index}_relevant"
@@ -991,12 +1248,7 @@ class JevPolicy:
                     # Live pack said nothing relevant — keep honest empty list.
                     picked = []
                 answers = {"files": picked}
-                result = JevEvaluationResult(
-                    result.verdict, result.confidence, result.supported,
-                    answers, result.reasons,
-                    cost=result.cost, input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    is_fallback=False, model=result.model)
+                result = replace(result, answers=answers, is_fallback=False)
             # Defense in depth: never emit a path outside the real listing.
             result.answers["files"] = validate_candidates(picked, listing)
             structural = self._account(
@@ -1014,7 +1266,8 @@ class JevPolicy:
             fallback = JevEvaluationResult(
                 "pass", 0.0, 1.0,
                 {"files": picked, "heuristic": True}, [str(exc)],
-                is_fallback=True, model=self.evaluator.model)
+                is_fallback=True, model=self.evaluator.model,
+                fallback_reason=_refusal_reason(exc))
             structural = self._structural(fallback, site)
             structural["files"] = picked
             return fallback, structural
@@ -1035,7 +1288,8 @@ class JevPolicy:
                 "pass", 0.0, 1.0,
                 {"enabled": bool(enabled), "claims": [], "skipped": True},
                 ["claim-support checks disabled or empty"],
-                is_fallback=True, model=self.evaluator.model)
+                is_fallback=True, model=self.evaluator.model,
+                fallback_reason="claims_skipped")
             structural = self._structural(skipped, site)
             structural["claim_flags"] = []
             structural["skipped"] = True
@@ -1062,7 +1316,10 @@ class JevPolicy:
                     result.reasons, cost=result.cost,
                     input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
-                    is_fallback=True, model=result.model)
+                    is_fallback=True, model=result.model,
+                    discarded=result.discarded,
+                    fallback_reason=self._fallback_reason_of(
+                        result, "claims_unanswered"))
             else:
                 for index, claim in enumerate(normalized):
                     key = f"claim_{index}_supported"
@@ -1099,7 +1356,8 @@ class JevPolicy:
             fallback = JevEvaluationResult(
                 "pass", 0.0, 1.0,
                 {"claim_flags": flags, "skipped": False}, [str(exc)],
-                is_fallback=True, model=self.evaluator.model)
+                is_fallback=True, model=self.evaluator.model,
+                fallback_reason=_refusal_reason(exc))
             structural = self._structural(fallback, site)
             structural["claim_flags"] = flags
             structural["skipped"] = False
@@ -1512,7 +1770,8 @@ class JevPolicy:
             )
             fallback = JevEvaluationResult(
                 "fail", 0.0, 0.0, {}, determination["reasons"],
-                is_fallback=True, model=self.evaluator.model)
+                is_fallback=True, model=self.evaluator.model,
+                fallback_reason=_refusal_reason(exc))
             structural = self._structural(fallback, site)
             structural["determination"] = determination
             structural["reason"] = str(exc)
@@ -1598,7 +1857,7 @@ class JevPolicy:
             result = JevEvaluationResult(
                 "fail", 0.0, 0.0, {}, [str(exc)], cost=0.0,
                 input_tokens=0, output_tokens=0, is_fallback=True,
-                model=self.evaluator.model)
+                model=self.evaluator.model, fallback_reason="invalid_pack")
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id)
             combo = self._issue_sort_empty_combo(
@@ -1622,7 +1881,7 @@ class JevPolicy:
                 model=model or self.evaluator.model), evidence_refs
 
         def keyword_sort(reasons, *, model=None, cost=0.0, input_tokens=0,
-                         output_tokens=0, reservation=None):
+                         output_tokens=0, reservation=None, reason=None):
             bucket_id, score, evidence = match_keywords(issue_text, pack_doc)
             result, evidence_refs = local_result(
                 bucket_id, score, evidence, reasons, model=model)
@@ -1632,6 +1891,7 @@ class JevPolicy:
                     result.answers, result.reasons, cost=cost,
                     input_tokens=input_tokens, output_tokens=output_tokens,
                     is_fallback=True, model=result.model)
+            result = self._with_reason(result, reason, issue_text)
             # ONE ledger jev_eval per evaluate_issue_sort call.
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id,
@@ -1643,7 +1903,8 @@ class JevPolicy:
 
         if not self.keyed:
             # Unkeyed: skip live; code-owned keyword match only.
-            return keyword_sort(["unkeyed: keyword match only"])
+            return keyword_sort(["unkeyed: keyword match only"],
+                                reason=self._no_key_reason())
 
         reservation = None
         try:
@@ -1654,7 +1915,8 @@ class JevPolicy:
                 {"issue": issue_text, "pack_id": pack_doc["id"]},
                 questions)
         except HarnessError as exc:
-            return keyword_sort([str(exc)], reservation=reservation)
+            return keyword_sort([str(exc)], reservation=reservation,
+                                reason=_refusal_reason(exc))
 
         answers = result.answers if isinstance(result.answers, dict) else {}
         bucket_ans = answers.get("bucket")
@@ -1686,7 +1948,8 @@ class JevPolicy:
             cost=float(result.cost or 0.0),
             input_tokens=int(result.input_tokens or 0),
             output_tokens=int(result.output_tokens or 0),
-            reservation=reservation)
+            reservation=reservation,
+            reason=self._fallback_reason_of(result, "out_of_pack"))
 
     @staticmethod
     def _log_item_text(state: Any) -> str:
@@ -1752,7 +2015,7 @@ class JevPolicy:
             result = JevEvaluationResult(
                 "fail", 0.0, 0.0, {}, [str(exc)], cost=0.0,
                 input_tokens=0, output_tokens=0, is_fallback=True,
-                model=self.evaluator.model)
+                model=self.evaluator.model, fallback_reason="invalid_pack")
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id)
             judgment = self._log_judgment(
@@ -1762,7 +2025,7 @@ class JevPolicy:
 
         def keyword_judgment(reasons, *, model=None, cost=0.0,
                              input_tokens=0, output_tokens=0,
-                             reservation=None):
+                             reservation=None, reason=None):
             bucket_id, hits, evidence = match_keywords(text, pack_doc)
             evidence_refs = list(reasons or []) + list(evidence or [])
             if bucket_id:
@@ -1780,6 +2043,7 @@ class JevPolicy:
                     cost=cost, input_tokens=input_tokens,
                     output_tokens=output_tokens, is_fallback=True,
                     model=model or self.evaluator.model)
+            result = self._with_reason(result, reason, text)
             # ONE ledger jev_eval per evaluate_log_item call.
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id,
@@ -1791,7 +2055,8 @@ class JevPolicy:
 
         if not self.keyed:
             # Unkeyed: skip live; code-owned keyword match only.
-            return keyword_judgment(["unkeyed: keyword match only"])
+            return keyword_judgment(["unkeyed: keyword match only"],
+                                    reason=self._no_key_reason())
 
         reservation = None
         try:
@@ -1801,7 +2066,8 @@ class JevPolicy:
             result = self.evaluator.evaluate(
                 {"item": text, "pack_id": pack_doc["id"]}, questions)
         except HarnessError as exc:
-            return keyword_judgment([str(exc)], reservation=reservation)
+            return keyword_judgment([str(exc)], reservation=reservation,
+                                    reason=_refusal_reason(exc))
 
         answers = result.answers if isinstance(result.answers, dict) else {}
         score_id = pack_doc["score"]["id"]
@@ -1854,7 +2120,8 @@ class JevPolicy:
             cost=float(result.cost or 0.0),
             input_tokens=int(result.input_tokens or 0),
             output_tokens=int(result.output_tokens or 0),
-            reservation=reservation)
+            reservation=reservation,
+            reason=self._fallback_reason_of(result, "out_of_pack"))
 
     @staticmethod
     def _repo_element_text(state: Any) -> str:
@@ -1926,7 +2193,7 @@ class JevPolicy:
             result = JevEvaluationResult(
                 "fail", 0.0, 0.0, {}, [str(exc)], cost=0.0,
                 input_tokens=0, output_tokens=0, is_fallback=True,
-                model=self.evaluator.model)
+                model=self.evaluator.model, fallback_reason="invalid_pack")
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id)
             judgment = self._repo_judgment(
@@ -1940,7 +2207,8 @@ class JevPolicy:
 
         def fallback_judgment(reasons, *, model=None, cost=0.0,
                               input_tokens=0, output_tokens=0,
-                              reservation=None, discarded=False):
+                              reservation=None, discarded=False,
+                              reason=None):
             axes = heuristic_repo_axes(text, pack_doc)
             matched = any(v for v in axes.values())
             evidence = list(reasons or []) + [
@@ -1952,6 +2220,7 @@ class JevPolicy:
                 cost=cost, input_tokens=input_tokens,
                 output_tokens=output_tokens, is_fallback=True,
                 model=model or self.evaluator.model, discarded=discarded)
+            result = self._with_reason(result, reason, text)
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id,
                 reservation=reservation)
@@ -1962,7 +2231,8 @@ class JevPolicy:
 
         if not self.keyed:
             return fallback_judgment(
-                ["unkeyed: code-owned keyword fallback only"])
+                ["unkeyed: code-owned keyword fallback only"],
+                reason=self._no_key_reason())
 
         reservation = None
         try:
@@ -1972,7 +2242,8 @@ class JevPolicy:
             payload = state if isinstance(state, dict) else {"item": str(state)}
             result = self.evaluator.evaluate(payload, questions)
         except HarnessError as exc:
-            return fallback_judgment([str(exc)], reservation=reservation)
+            return fallback_judgment([str(exc)], reservation=reservation,
+                                     reason=_refusal_reason(exc))
 
         answers = result.answers if isinstance(result.answers, dict) else {}
         if result.is_fallback or not answers:
@@ -1987,7 +2258,8 @@ class JevPolicy:
                 input_tokens=int(result.input_tokens or 0),
                 output_tokens=int(result.output_tokens or 0),
                 reservation=reservation,
-                discarded=bool(result.discarded))
+                discarded=bool(result.discarded),
+                reason=self._fallback_reason_of(result, "invalid_answer"))
 
         axes: Dict[str, Optional[str]] = {}
         axis_confidence: Dict[str, Optional[float]] = {}
@@ -2046,7 +2318,8 @@ class JevPolicy:
                 cost=float(result.cost or 0.0),
                 input_tokens=int(result.input_tokens or 0),
                 output_tokens=int(result.output_tokens or 0),
-                reservation=reservation)
+                reservation=reservation, discarded=bool(result.discarded),
+                reason=self._fallback_reason_of(result, "no_declared_axes"))
 
         structural = self._account(
             result, site=site, task_id=task_id, node_id=node_id,
@@ -2084,6 +2357,11 @@ class JevPolicy:
         - ladder cannot satisfy the heuristic floor → ``rung_id=None`` (the
           honest "no declared rung can do this" answer).
         - ONE ledger ``jev_eval`` per call; ``structural.site=model_route``.
+        - a live in-ladder choice below ``min_confidence`` is still honored
+          when it is escalation-safe: the final rung is never cheaper than the
+          heuristic floor (``max(jev rung, floor)``), the combo stays
+          ``is_fallback=False`` and its reasons record the confidence. The
+          global ``min_confidence`` is not touched, so no other site changes.
         Extends (never modifies) ``evaluate_route``: lane choice stays there;
         this method chooses the cheapest capable DECLARED rung.
         Returns ``(result, structural, combo)``.
@@ -2096,7 +2374,7 @@ class JevPolicy:
             result = JevEvaluationResult(
                 "fail", 0.0, 0.0, {}, [str(exc)], cost=0.0,
                 input_tokens=0, output_tokens=0, is_fallback=True,
-                model=self.evaluator.model)
+                model=self.evaluator.model, fallback_reason="invalid_pack")
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id)
             combo = route_combo(
@@ -2104,34 +2382,37 @@ class JevPolicy:
                 is_fallback=True, structural=structural)
             return result, structural, combo
 
-        def heuristic_route(reasons, *, model=None, cost=0.0,
+        def heuristic_route(reasons, reason, *, model=None, cost=0.0,
                             input_tokens=0, output_tokens=0,
-                            reservation=None):
+                            reservation=None, live_confidence=0.0,
+                            discarded=False, state_hash=None):
             rung_id, tier, fb_reasons = fallback_route(goal_text, pack_doc)
+            # ``cost`` is what the provider really billed for a live call
+            # whose answer was discarded; it is settled and ledgered as-is.
             result = JevEvaluationResult(
                 "pass" if rung_id else "fail", 0.0, 1.0 if rung_id else 0.0,
                 {"rung": rung_id, "tier": tier},
                 list(reasons or []) + list(fb_reasons),
-                is_fallback=True,
-                model=model or self.evaluator.model)
-            if cost or input_tokens or output_tokens:
-                result = JevEvaluationResult(
-                    result.verdict, result.confidence, result.supported,
-                    result.answers, result.reasons, cost=cost,
-                    input_tokens=input_tokens, output_tokens=output_tokens,
-                    is_fallback=True, model=result.model)
+                cost=cost, input_tokens=input_tokens,
+                output_tokens=output_tokens, is_fallback=True,
+                model=model or self.evaluator.model,
+                discarded=bool(discarded or cost > 0.0),
+                fallback_reason=reason,
+                state_hash=state_hash or _digest(goal_text, pack_doc["id"]))
             # ONE ledger jev_eval per evaluate_model_route call.
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id,
                 reservation=reservation)
             combo = route_combo(
                 rung_id, pack_doc, tier=tier,
-                reasons=list(result.reasons), is_fallback=True,
-                structural=structural)
+                reasons=list(result.reasons), confidence=live_confidence,
+                is_fallback=True, structural=structural)
             return result, structural, combo
 
         if not self.keyed:
-            return heuristic_route(["unkeyed: deterministic tier heuristic only"])
+            return heuristic_route(
+                ["unkeyed: deterministic tier heuristic only"],
+                self._no_key_reason())
 
         reservation = None
         try:
@@ -2142,7 +2423,8 @@ class JevPolicy:
                 {"goal": goal_text, "pack_id": pack_doc["id"]},
                 questions)
         except HarnessError as exc:
-            return heuristic_route([str(exc)], reservation=reservation)
+            return heuristic_route(
+                [str(exc)], _refusal_reason(exc), reservation=reservation)
 
         answers = result.answers if isinstance(result.answers, dict) else {}
         rung_ans = answers.get("rung")
@@ -2165,18 +2447,61 @@ class JevPolicy:
                 structural=structural)
             return result, structural, combo
 
+        min_confidence = float(getattr(self.evaluator, "min_confidence", 0.70))
+        live_confidence = float(result.confidence or 0.0)
+        if (in_ladder and result.verdict == "fail"
+                and live_confidence < min_confidence):
+            # Confidence-aware acceptance: a declared rung chosen with low
+            # confidence is still a real, in-vocabulary answer. Honor it only
+            # when escalation-safe -- never cheaper than the heuristic floor.
+            floor = tier_floor_for_goal(goal_text)
+            entry = next(r for r in pack_doc["rungs"]
+                         if r["rung_id"] == choice)
+            final = (choice if tier_rank(entry["tier"]) >= tier_rank(floor)
+                     else choose_rung_for_tier(pack_doc, floor))
+            if final is not None:
+                final_entry = next(r for r in pack_doc["rungs"]
+                                   if r["rung_id"] == final)
+                reasons = list(result.reasons or []) + [
+                    f"choice:{final}",
+                    (f"low-confidence live choice {choice!r} accepted at "
+                     f"confidence {live_confidence:.2f} < {min_confidence:.2f}"
+                     f" (escalation-safe; heuristic floor {floor})")]
+                if final != choice:
+                    reasons.append(
+                        f"raised {choice!r} -> {final!r} to meet heuristic "
+                        f"floor {floor}")
+                result = replace(result, verdict="pass", reasons=reasons)
+                structural = self._account(
+                    result, site=site, task_id=task_id, node_id=node_id,
+                    reservation=reservation)
+                combo = route_combo(
+                    final, pack_doc, tier=final_entry["tier"],
+                    reasons=list(reasons), confidence=live_confidence,
+                    is_fallback=False, structural=structural)
+                return result, structural, combo
+
         # Out-of-ladder / transport fail / fallback / unparseable choice:
         # never invent a rung. Deterministic heuristic answers instead.
         reasons = list(result.reasons) if result.reasons else []
         if isinstance(choice, str) and choice not in declared:
             reasons = reasons + [
                 f"out-of-ladder choice refused: {choice!r}"]
+            default_reason = "route_out_of_vocabulary"
+        elif in_ladder:
+            default_reason = "below_floor_unsatisfiable"
+        else:
+            default_reason = "route_unanswered"
         return heuristic_route(
-            reasons, model=result.model,
+            reasons, self._fallback_reason_of(result, default_reason),
+            model=result.model,
             cost=float(result.cost or 0.0),
             input_tokens=int(result.input_tokens or 0),
             output_tokens=int(result.output_tokens or 0),
-            reservation=reservation)
+            reservation=reservation,
+            live_confidence=live_confidence,
+            discarded=bool(result.discarded),
+            state_hash=result.state_hash)
 
     @staticmethod
     def _completion_state_text(state: Any) -> str:
@@ -2245,7 +2570,7 @@ class JevPolicy:
             result = JevEvaluationResult(
                 "fail", 0.0, 0.0, {}, [str(exc)], cost=0.0,
                 input_tokens=0, output_tokens=0, is_fallback=True,
-                model=self.evaluator.model)
+                model=self.evaluator.model, fallback_reason="invalid_pack")
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id)
             judgment = self._completion_judgment(
@@ -2260,7 +2585,8 @@ class JevPolicy:
 
         def fallback_judgment(reasons, *, model=None, cost=0.0,
                               input_tokens=0, output_tokens=0,
-                              reservation=None):
+                              reservation=None, reason=None,
+                              discarded=False):
             bucket_id, _hits, kw_evidence = match_completion_keywords(text, pack_doc)
             evidence_refs = list(reasons or []) + list(kw_evidence or [])
             result = JevEvaluationResult(
@@ -2268,7 +2594,8 @@ class JevPolicy:
                 {"primary_gap": bucket_id}, evidence_refs,
                 cost=cost, input_tokens=input_tokens,
                 output_tokens=output_tokens, is_fallback=True,
-                model=model or self.evaluator.model)
+                model=model or self.evaluator.model, discarded=discarded)
+            result = self._with_reason(result, reason, text)
             # ONE ledger jev_eval per evaluate_phase_completion call.
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id,
@@ -2279,7 +2606,8 @@ class JevPolicy:
             return result, structural, judgment
 
         if not self.keyed:
-            return fallback_judgment(["unkeyed: keyword match only"])
+            return fallback_judgment(["unkeyed: keyword match only"],
+                                     reason=self._no_key_reason())
 
         reservation = None
         try:
@@ -2292,7 +2620,8 @@ class JevPolicy:
             }
             result = self.evaluator.evaluate(payload, questions)
         except HarnessError as exc:
-            return fallback_judgment([str(exc)], reservation=reservation)
+            return fallback_judgment([str(exc)], reservation=reservation,
+                                     reason=_refusal_reason(exc))
 
         answers = result.answers if isinstance(result.answers, dict) else {}
         if result.is_fallback or not answers:
@@ -2304,7 +2633,8 @@ class JevPolicy:
                 cost=float(result.cost or 0.0),
                 input_tokens=int(result.input_tokens or 0),
                 output_tokens=int(result.output_tokens or 0),
-                reservation=reservation)
+                reservation=reservation, discarded=bool(result.discarded),
+                reason=self._fallback_reason_of(result, "invalid_answer"))
 
         live_levels: Dict[str, Optional[int]] = {}
         live_confidence: Dict[str, Optional[float]] = {}
@@ -2359,7 +2689,8 @@ class JevPolicy:
                 cost=float(result.cost or 0.0),
                 input_tokens=int(result.input_tokens or 0),
                 output_tokens=int(result.output_tokens or 0),
-                reservation=reservation)
+                reservation=reservation, discarded=bool(result.discarded),
+                reason=self._fallback_reason_of(result, "no_declared_axes"))
 
         structural = self._account(
             result, site=site, task_id=task_id, node_id=node_id,
@@ -2450,7 +2781,7 @@ class JevPolicy:
             return all(float(s) >= 9.5 for s in scores)
 
         def fallback_judgment(reasons, *, model=None, cost=0.0, input_tokens=0,
-                              output_tokens=0, reservation=None):
+                              output_tokens=0, reservation=None, reason=None):
             dim_results = heuristic_audit_dimensions(dimension_evidence, pack_doc)
             scores = {dim: d.get("score") for dim, d in dim_results.items()}
             evaluated_scores = [s for s in scores.values() if s is not None]
@@ -2462,6 +2793,9 @@ class JevPolicy:
                 list(reasons), cost=cost, input_tokens=input_tokens,
                 output_tokens=output_tokens, is_fallback=True,
                 model=model or model_name)
+            fallback_result = self._with_reason(
+                fallback_result, reason,
+                self._audit_dimension_text(dimension_evidence))
             self._account(fallback_result, site=site, task_id=task_id,
                           reservation=reservation)
             return {
@@ -2478,7 +2812,10 @@ class JevPolicy:
             }
 
         if not self.keyed or self.governor is None:
-            return fallback_judgment(["unkeyed" if not self.keyed else "governor_not_provided"])
+            return fallback_judgment(
+                ["unkeyed" if not self.keyed else "governor_not_provided"],
+                reason=(self._no_key_reason() if not self.keyed
+                        else "governor_not_provided"))
 
         text = self._audit_dimension_text(dimension_evidence)
         reservation = None
@@ -2488,10 +2825,12 @@ class JevPolicy:
             result = self.evaluator.evaluate(payload, questions)
         except HarnessError as exc:
             return fallback_judgment(
-                [f"transport_error: {exc}"], reservation=reservation)
+                [f"transport_error: {exc}"], reservation=reservation,
+                reason=_refusal_reason(exc))
         except Exception as exc:  # unexpected transport failure -- fail closed
             return fallback_judgment(
-                [f"transport_error: {exc}"], reservation=reservation)
+                [f"transport_error: {exc}"], reservation=reservation,
+                reason="transport_failure")
 
         answers = result.answers if isinstance(result.answers, dict) else {}
         if result.is_fallback or not answers:
@@ -2502,6 +2841,7 @@ class JevPolicy:
                 input_tokens=int(result.input_tokens or 0),
                 output_tokens=int(result.output_tokens or 0),
                 reservation=reservation,
+                reason=self._fallback_reason_of(result, "invalid_answer"),
             )
 
         dim_results = {}
@@ -2571,7 +2911,8 @@ class JevPolicy:
                 model=result.model, cost=float(result.cost or 0.0),
                 input_tokens=int(result.input_tokens or 0),
                 output_tokens=int(result.output_tokens or 0),
-                reservation=reservation)
+                reservation=reservation,
+                reason=self._fallback_reason_of(result, "no_declared_axes"))
 
         self._account(result, site=site, task_id=task_id, reservation=reservation)
         scores = {dim: d.get("score") for dim, d in dim_results.items()}
@@ -2821,9 +3162,13 @@ class JevPolicy:
 
 
 def policy_for(settings, *, transport=None, governor=None, ledger=None,
-               evaluator=None) -> JevPolicy:
-    """Construct the shared policy at a session composition boundary."""
+               evaluator=None, **options) -> JevPolicy:
+    """Construct the shared policy at a session composition boundary.
+
+    ``options`` are the policy's resilience knobs (``breaker_threshold``,
+    ``breaker_cooldown``, ``clock``); omit them for the defaults.
+    """
     return JevPolicy(
         settings, transport=transport, governor=governor,
-        ledger=ledger, evaluator=evaluator,
+        ledger=ledger, evaluator=evaluator, **options,
     )

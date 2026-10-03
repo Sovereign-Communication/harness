@@ -1341,10 +1341,25 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     repo_context = None
     if isinstance(jev_policy, JevPolicy):
         # JEV-P3-route: one typed route choice through the policy owner.
-        route_eval, route_envelope = jev_policy.evaluate_route(
-            opts_goal, candidate_files, site="route")
-        plan_eval, plan_structural = jev_policy.evaluate_plan(
-            opts_goal, candidate_files, site="waist")
+        # Route, plan and issue-sort judge the same state independently, so
+        # they fan out in parallel (order-stable; each fails closed alone).
+        jobs = [
+            ("route", lambda: jev_policy.evaluate_route(
+                opts_goal, candidate_files, site="route")),
+            ("waist", lambda: jev_policy.evaluate_plan(
+                opts_goal, candidate_files, site="waist")),
+        ]
+        if issue_sort_pack is not None:
+            jobs.append((
+                "issue_sort",
+                lambda: jev_policy.evaluate_issue_sort(
+                    {"issue": opts_goal}, issue_sort_pack, site="issue_sort"),
+                lambda result, structural: (
+                    result, structural, JevPolicy._issue_sort_empty_combo(
+                        structural=structural, evidence=result.reasons))))
+        fanned = jev_policy.fan_out(jobs)
+        route_eval, route_envelope = fanned[0]
+        plan_eval, plan_structural = fanned[1]
         plan_triage = dict(route_envelope)
         plan_triage["route"] = route_eval.answers.get("route", "free-distill")
         plan_triage["route_is_fallback"] = bool(route_eval.is_fallback)
@@ -1359,9 +1374,7 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                 "control flow, conditional branching, or multi-step execution. "
                 "Represent those dependencies explicitly in the executable DAG.")
         if issue_sort_pack is not None:
-            _sort_result, _sort_structural, plan_issue_sort = (
-                jev_policy.evaluate_issue_sort(
-                    {"issue": opts_goal}, issue_sort_pack, site="issue_sort"))
+            _sort_result, _sort_structural, plan_issue_sort = fanned[2]
     # JEV-P3-context-pack: distilled decision-relevant state before generative
     # seats that lack a pack. Smallest seam — pass into LLM decompose.
     if decompose_llm and not repo_context:

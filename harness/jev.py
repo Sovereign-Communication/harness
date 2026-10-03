@@ -6,9 +6,13 @@ questions are only ``noul``, ``choice`` or ``score`` and answers must use the
 official typed shapes from docs.typesafe.ai/api.md.
 """
 import ast
+import hashlib
 import json
 import math
-from dataclasses import dataclass, field
+import threading
+import time
+from collections import OrderedDict
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from ._http import HttpTransport
@@ -69,6 +73,13 @@ class JevEvaluationResult:
     # Set only when the result is a local fallback. Values describe why live
     # Jev did not provide this judgment.
     fallback_reason: Optional[str] = None
+    # True when this result was served from the evaluator's in-process cache:
+    # no request left the machine, so cost and tokens are zero. Policy records
+    # it distinctly in the ledger so a cache hit is never mistaken for a call.
+    cache_hit: bool = False
+    # Stable hash of the (state, questions) the result answers. Lets the
+    # policy dedupe repeated identical fallbacks without re-hashing the state.
+    state_hash: Optional[str] = None
 
     def is_passing(self, min_confidence: float = 0.70) -> bool:
         """Apply the configured action threshold without conflating signals."""
@@ -219,9 +230,83 @@ def _parse_answer(answer: Any, expected: str, key: str,
             "confidence": _number(answer["confidence"], key + ".confidence")}
 
 
+# Bump when the typed answer contract changes so stale cached answers can
+# never be replayed against a newer pack/parser.
+JEV_CACHE_VERSION = 1
+JEV_CACHE_MAX_ENTRIES = 256
+JEV_CACHE_TTL_SECONDS = 1800.0
+
+
+def _digest(*parts: Any) -> str:
+    """Canonical sha256 over JSON-able parts (non-JSON values are stringified)."""
+    blob = json.dumps(parts, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+class JevCache:
+    """Bounded, thread-safe LRU of successful typed answers with a TTL.
+
+    Only parsed live answers are stored (see ``JevEvaluator.evaluate``), never
+    transport failures, rejections or local fallbacks, so a cache hit can only
+    ever replay something Jev really said about exactly this state.
+    """
+
+    def __init__(self, max_entries: int = JEV_CACHE_MAX_ENTRIES,
+                 ttl: float = JEV_CACHE_TTL_SECONDS, clock=time.monotonic):
+        self.max_entries = max(0, int(max_entries))
+        self.ttl = float(ttl)
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._items: "OrderedDict[str, Any]" = OrderedDict()
+        self.hits = 0
+        self.misses = 0
+
+    def get(self, key: str):
+        with self._lock:
+            entry = self._items.get(key)
+            if entry is None:
+                self.misses += 1
+                return None
+            stored_at, value = entry
+            if self.ttl > 0 and self._clock() - stored_at > self.ttl:
+                del self._items[key]
+                self.misses += 1
+                return None
+            self._items.move_to_end(key)
+            self.hits += 1
+            return value
+
+    def put(self, key: str, value: Any) -> None:
+        if self.max_entries <= 0:
+            return
+        with self._lock:
+            self._items[key] = (self._clock(), value)
+            self._items.move_to_end(key)
+            while len(self._items) > self.max_entries:
+                self._items.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._items.clear()
+            self.hits = self.misses = 0
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._items)
+
+
+# One cache for the whole process: every request builds its own policy and
+# evaluator, so an instance-local cache could never see a repeat. It is shared
+# only by evaluators on the real network transport; an injected transport (a
+# test double or custom wire) gets a private cache so replay can never cross
+# between unrelated senders.
+PROCESS_CACHE = JevCache()
+
+
 class JevEvaluator:
     def __init__(self, api_key: Optional[str] = None, endpoint: str = "https://api.typesafe.ai/v1/systemone",
-                 transport: Optional[HttpTransport] = None, settings: Optional[Any] = None):
+                 transport: Optional[HttpTransport] = None, settings: Optional[Any] = None,
+                 cache: Optional[JevCache] = None):
         self.explicitly_disabled = bool(getattr(settings, "jev_disabled", False)) if settings else False
         self.api_key = (None if self.explicitly_disabled else
                         api_key or (getattr(settings, "jev_api_key", None)
@@ -230,6 +315,17 @@ class JevEvaluator:
         self.model = getattr(settings, "jev_model", "jev-latest") if settings else "jev-latest"
         self.min_confidence = getattr(settings, "min_confidence", 0.70) if settings else 0.70
         self.transport = transport or HttpTransport()
+        if cache is not None:
+            self.cache = cache
+        elif type(self.transport) is HttpTransport:
+            self.cache = PROCESS_CACHE
+        else:
+            self.cache = JevCache()
+
+    def _cache_key(self, state: Any, active: Dict[str, Any]) -> str:
+        key_id = hashlib.sha256((self.api_key or "").encode("utf-8")).hexdigest()[:16]
+        return _digest(JEV_CACHE_VERSION, self.endpoint, self.model, key_id,
+                       state, active)
 
     def evaluate(self, state: Any, questions: Optional[Dict[str, Any]] = None) -> JevEvaluationResult:
         raw = diff_question_pack() if questions is None else questions
@@ -237,13 +333,37 @@ class JevEvaluator:
             active = _validate_questions(raw)
         except ValueError as exc:
             return self._failure(str(exc), fallback=False)
+        local_state = state if isinstance(state, dict) else {"content": str(state)}
+        state_hash = _digest(state, active)
+
+        def local(reason: str) -> JevEvaluationResult:
+            return replace(self._local_structural_eval(
+                local_state, fallback_reason=reason), state_hash=state_hash)
+
         if self.api_key:
+            cache_key = self._cache_key(state, active)
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                # Identical state + questions + model: replay the parsed
+                # answer. Zero tokens and zero cost, flagged so the ledger
+                # records a hit rather than a phantom paid call.
+                return replace(
+                    cached, cost=0.0, input_tokens=0, output_tokens=0,
+                    usage_observed=False, input_tokens_observed=False,
+                    output_tokens_observed=False, cache_hit=True,
+                    reasons=list(cached.reasons) + [
+                        "jev cache hit: identical state/questions/model; no request sent"])
             try:
                 status, resp = self.transport.post(self.endpoint, self.api_key,
                                                    {"model": self.model, "state": state, "questions": active})
                 if status == 200 and isinstance(resp, dict):
                     try:
-                        return self._parse_jev_response(resp, active)
+                        parsed = replace(self._parse_jev_response(resp, active),
+                                         state_hash=state_hash)
+                        # Only a fully parsed live answer is cacheable; every
+                        # failure below stays uncached so a retry can succeed.
+                        self.cache.put(cache_key, parsed)
+                        return parsed
                     except (KeyError, TypeError, ValueError) as exc:
                         usage = resp.get("usage") if isinstance(resp.get("usage"), dict) else {}
                         input_tokens = usage.get("input_tokens", 0)
@@ -258,25 +378,20 @@ class JevEvaluator:
                         # cannot use the answer. Settle the real usage, and
                         # mark it discarded so the caller can report the loss
                         # rather than degrading as if nothing was spent.
-                        return self._failure(
+                        return replace(self._failure(
                             "invalid TypeSafe response: " + str(exc), fallback=False,
                             input_tokens=input_tokens, output_tokens=output_tokens,
                             input_tokens_observed=input_tokens > 0,
                             output_tokens_observed=output_tokens > 0,
-                            discarded=input_tokens > 0)
+                            discarded=input_tokens > 0), state_hash=state_hash)
                 if status in (401, 422):
-                    return self._failure(f"TypeSafe request rejected (HTTP {status})", fallback=False)
-                return self._local_structural_eval(
-                    state if isinstance(state, dict) else {"content": str(state)},
-                    fallback_reason="http_fallback")
+                    return replace(self._failure(
+                        f"TypeSafe request rejected (HTTP {status})", fallback=False),
+                        state_hash=state_hash)
+                return local("http_fallback")
             except Exception:
-                return self._local_structural_eval(
-                    state if isinstance(state, dict) else {"content": str(state)},
-                    fallback_reason="transport_failure")
-        reason = "explicit_disable" if self.explicitly_disabled else "missing_key"
-        return self._local_structural_eval(
-            state if isinstance(state, dict) else {"content": str(state)},
-            fallback_reason=reason)
+                return local("transport_failure")
+        return local("explicit_disable" if self.explicitly_disabled else "missing_key")
 
     def evaluate_once(self, state: Any,
                       questions: Dict[str, Any]) -> JevEvaluationResult:
@@ -505,13 +620,17 @@ class JevEvaluator:
                                        {"requires_iteration": answer["noul"] >= 0.5, "raw": result.answers},
                                        result.reasons, result.cost, result.input_tokens,
                                        result.output_tokens, False, result.model,
-                                       fallback_reason=result.fallback_reason)
+                                       discarded=result.discarded,
+                                       fallback_reason=result.fallback_reason,
+                                       cache_hit=result.cache_hit,
+                                       state_hash=result.state_hash)
         lower = prompt.lower()
         has_iter = any(word in lower for word in ("loop", "iterat", "branch", "recur", "dag", "retry", "traverse", "graph", "algorithm", "cycle"))
         return JevEvaluationResult("pass", 0.0, 1.0, {"requires_iteration": has_iter},
                                    ["Detected iterative/algorithmic requirements" if has_iter else "Standard declarative edit flow"],
                                    is_fallback=True, model=result.model,
-                                   fallback_reason=result.fallback_reason)
+                                   fallback_reason=result.fallback_reason or "plan_heuristic",
+                                   state_hash=result.state_hash)
 
 
 def _looks_like_diff(diff: str) -> bool:
