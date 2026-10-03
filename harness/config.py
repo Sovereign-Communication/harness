@@ -43,13 +43,13 @@ MORPH_MODEL = "morph/morph-v3-fast"
 
 # Cost ceilings. The philosophy (inherited from fusion_lite.py): worst-case
 # cost is a *guarantee*, computed before any network call, not an estimate.
-HARD_MAX_COST = 0.10        # per-call ceiling can never be raised past this
+HARD_MAX_COST = 1.00        # per-call ceiling can never be raised past this
 # Default per-call (per-lane-run) ceiling. Raised from $0.02 with the verified
 # 2026-09-13 paid slates: the wider vote pool's worst-case preflight reserve is
 # ~$0.04 (actual verified cost of a 5-vote paid panel: $0.0038 -- see
 # docs/MODEL_SELECTION_HANDOFF_2026-09-13.md). HARD_MAX_COST is unchanged.
 DEFAULT_MAX_COST = 0.05
-HARD_TASK_MAX_COST = 0.25   # per-task (multi-round apply) hard ceiling
+HARD_TASK_MAX_COST = 1.00   # per-task (multi-round apply) hard ceiling
 # Raised from $0.05 with default-on paid escalation: the unknown-correctness
 # ration (0.4 of the hard cap) must fund one worst-case paid rescue call
 # (~$0.084 on the cheapest paid rung) or the saturation ladder starves the

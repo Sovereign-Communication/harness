@@ -84,8 +84,11 @@ def validate_text(value, name, maximum, *, required=False):
 def validate_apply_request(*, max_rounds, max_tokens, task_max_cost,
                            max_rotations, max_lines, instruction,
                            edit_snippet=None, reasoning_effort="auto",
-                           backend="harness", hard_task_max_cost=0.25):
+                           backend="harness", hard_task_max_cost=None):
     """Validate and normalize the complete apply request."""
+    if hard_task_max_cost is None:
+        from .config import HARD_TASK_MAX_COST
+        hard_task_max_cost = HARD_TASK_MAX_COST
     return {
         "max_rounds": bounded_int(max_rounds, "max_rounds", 1, MAX_ROUNDS),
         "max_tokens": bounded_int(max_tokens, "max_tokens", 64, MAX_TOKENS),

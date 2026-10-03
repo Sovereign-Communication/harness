@@ -305,6 +305,23 @@ class TokenBudget:
         with self._lock:
             self._cancelled += 1
 
+    def proportional_stage(self, label="stage", ratio=0.5):
+        """Return a child TokenBudget with allowances scaled proportionally to remaining headroom."""
+        with self._lock:
+            rem_in = self.remaining_input()
+            rem_out = self.remaining_output()
+            ratio_f = max(0.05, min(float(ratio), 1.0))
+            stage_in = max(100, int(rem_in * ratio_f))
+            stage_out = max(50, int(rem_out * ratio_f))
+            return self.stage(label, max_input_tokens=stage_in, max_output_tokens=stage_out)
+
+    @classmethod
+    def for_model(cls, model_id=None, label="run", safe_ratio=0.75):
+        """Construct a TokenBudget sized dynamically for a specific model's context window."""
+        from .dynamic_allocation import dynamic_run_token_budget
+        max_in, max_out = dynamic_run_token_budget(model_id, safe_ratio=safe_ratio)
+        return cls(label, max_input_tokens=max_in, max_output_tokens=max_out)
+
     def snapshot(self):
         """The full honest position of this budget, for envelopes and logs."""
         with self._lock:

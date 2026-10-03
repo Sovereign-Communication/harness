@@ -302,7 +302,7 @@ class ApplyEngine(ApplyEngineMixin):
             edit_snippet=edit_snippet,
             reasoning_effort=reasoning,
             backend=backend,
-            hard_task_max_cost=0.25)
+            hard_task_max_cost=HARD_TASK_MAX_COST)
         max_lines = validated["max_lines"]
         instruction = validated["instruction"]
         edit_snippet = validated["edit_snippet"]
