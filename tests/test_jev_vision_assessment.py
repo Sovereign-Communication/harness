@@ -778,7 +778,7 @@ class VisionAssessmentPolicyTests(unittest.TestCase):
             self.assertIsNotNone(category.improvement_bucket)
 
     def test_shared_account_price_is_below_hard_ceiling(self):
-        self.assertAlmostEqual(jev_cost(1_000_000), 0.0042)
+        self.assertAlmostEqual(jev_cost(1_000_000), 0.042)
         self.assertLessEqual(jev_cost(VISION_ASSESSMENT_MAX_REQUEST_TOKENS),
                              HARD_MAX_COST)
 

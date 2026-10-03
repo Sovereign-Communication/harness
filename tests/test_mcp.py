@@ -1004,6 +1004,10 @@ class LaneSchedulingTests(unittest.TestCase):
              "issue_sort": "observe",
              "mission_status": "observe",
              "generate_brief": "observe",
+             "driver_step": "mutation",
+             "driver_health": "observe",
+             "driver_vocabulary": "observe",
+             "driver_verify": "observe",
              "jev_phase": "observe"})
 
     def test_unknown_and_missing_names_ride_observe(self):

@@ -78,6 +78,28 @@ class SettingsUpdateTests(SettingsApiHarness):
         from harness.config import load_settings
         self.assertEqual(load_settings().max_cost, 0.08)
 
+    def test_post_accepts_a_half_dollar_cap(self):
+        # The GUI cap control offers more than the old 0.10 default; the
+        # server must accept anything up to the hard ceiling and persist it.
+        conn = self._conn()
+        try:
+            status, data = _request(conn, "POST", "/api/settings",
+                                    body={"max_cost": 0.5})
+            self.assertEqual(status, 200)
+            self.assertEqual(data["settings"]["max_cost"], 0.5)
+            # The ceiling itself is allowed; one cent past it is not.
+            status, _ = _request(conn, "POST", "/api/settings",
+                                 body={"max_cost": 1.0})
+            self.assertEqual(status, 200)
+            status, data = _request(conn, "POST", "/api/settings",
+                                    body={"max_cost": 1.01})
+            self.assertEqual(status, 400)
+            self.assertIn("max_cost", data["error"])
+        finally:
+            conn.close()
+        # The refused write left the last accepted value in place.
+        self.assertEqual(_read_cfg(_last_tmp)["max_cost"], 1.0)
+
     def test_post_toggles_use_free(self):
         conn = self._conn()
         try:

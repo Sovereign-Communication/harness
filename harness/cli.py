@@ -760,6 +760,10 @@ def _cmd_spend(opts, settings):
     # dashboard needs, from the one owner.
     status["session"] = {"spent": gov.spent, "ceiling": gov.max_cost,
                          "remaining": max(0.0, gov.max_cost - gov.spent)}
+    ledger = _ledger(settings)
+    c_report = ledger.cost_report()
+    if "jev" in c_report:
+        status["jev"] = c_report["jev"]
     _emit(status, opts.out)
 
 

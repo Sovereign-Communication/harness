@@ -42,7 +42,7 @@ class JevLedgerSpendTests(unittest.TestCase):
             self._diff(), "change x", "x.py", site="agent-apply",
             task_id="task-1", node_id="node-1")
 
-        expected = 120 * 0.0042 / 1_000_000
+        expected = 120 * 0.042 / 1_000_000
         self.assertEqual(result.cost, expected)
         self.assertEqual(governor.spent, expected)
         events = [entry for entry in ledger.entries()
@@ -202,6 +202,51 @@ class JevLedgerSpendTests(unittest.TestCase):
                                renew_consent=False)
             self.assertTrue(any(call.kwargs.get("label") == "apply_escalation"
                                 for call in mock_preflight.call_args_list))
+
+    def test_compute_spend_summary_with_jev_tokens(self):
+        ledger = self._ledger()
+        ledger.append("jev_eval", model="jev-test", input_tokens=1000, output_tokens=50, is_fallback=False, cost=0.000042)
+        ledger.append("jev_eval", model="jev-test", input_tokens=500, output_tokens=10, is_fallback=True, cost=0.0)
+        report = ledger.cost_report()
+        self.assertIn("jev", report)
+        self.assertEqual(report["jev"]["calls"], 1)
+        self.assertEqual(report["jev"]["input_tokens"], 1000)
+        self.assertEqual(report["jev"]["output_tokens"], 50)
+
+    def test_legacy_per_mtok_cost_in_old_entries_is_normalized(self):
+        # Entries written when the client priced input at $42/Mtok carry a
+        # cost 1000x too high. The report recomputes Jev cost from the
+        # recorded input tokens at the verified $0.042/Mtok rate rather than
+        # trusting the stored figure, so old ledgers read correctly.
+        ledger = self._ledger()
+        ledger.append("jev_eval", model="jev-1.13.0", input_tokens=1000,
+                      output_tokens=0, is_fallback=False, cost=0.042)
+        report = ledger.cost_report()
+        self.assertAlmostEqual(report["total_cost"], 0.000042, places=9)
+        self.assertAlmostEqual(report["jev"]["cost"], 0.000042, places=9)
+        self.assertEqual(report["jev"]["calls"], 1)
+        self.assertEqual(report["jev"]["input_tokens"], 1000)
+        self.assertAlmostEqual(report["jev"]["price_per_million_input"], 0.042)
+        self.assertAlmostEqual(report["jev"]["monthly_credit"], 5.0)
+        self.assertAlmostEqual(report["jev"]["remaining_credit"],
+                               5.0 - 0.000042, places=6)
+
+    def test_jev_fallback_and_tokenless_entries_cost_nothing(self):
+        ledger = self._ledger()
+        ledger.append("jev_eval", model="jev-1.13.0", input_tokens=900,
+                      is_fallback=True, cost=0.5)
+        ledger.append("jev_eval", model="jev-1.13.0", input_tokens=0,
+                      is_fallback=False, cost=0.5)
+        report = ledger.cost_report()
+        self.assertEqual(report["total_cost"], 0.0)
+        self.assertEqual(report["jev"]["calls"], 0)
+        self.assertEqual(report["jev"]["cost"], 0.0)
+        self.assertEqual(report["jev"]["used_percent"], 0.0)
+
+    def test_completion_state_text_variants(self):
+        from harness.jev_policy import JevPolicy
+        self.assertEqual(JevPolicy._completion_state_text("plain string"), "plain string")
+        self.assertEqual(JevPolicy._completion_state_text(12345), "12345")
 
 
 if __name__ == "__main__":

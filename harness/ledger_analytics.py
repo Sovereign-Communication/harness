@@ -423,6 +423,8 @@ class LedgerAnalytics:
         from datetime import datetime, timezone, timedelta
         from .routing_table import classify_model_tier, strip_variant_suffix
 
+        from .jev import JEV_INPUT_PRICE_PER_MILLION, JEV_MONTHLY_CREDIT_USD, jev_cost
+
         events = list(self._tail)
         if window:
             s = str(window).strip().lower()
@@ -469,16 +471,36 @@ class LedgerAnalytics:
         }
         model_stats = {}
         baseline_cost = 0.0
+        jev_calls = 0
+        jev_input_tokens = 0
+        jev_output_tokens = 0
+        jev_total_cost = 0.0
 
         for e in events:
-            raw_cost = e.get("billable_cost", e.get("cost"))
-            has_cost = raw_cost is not None
-            try:
-                cost_val = float(raw_cost or 0.0)
-            except (ValueError, TypeError):
-                cost_val = 0.0
-
+            ev_name = e.get("event")
             model = e.get("model")
+            is_jev = ev_name == "jev_eval" or (model and str(model).startswith("jev-"))
+
+            if is_jev:
+                in_tok = int(e.get("input_tokens") or 0)
+                out_tok = int(e.get("output_tokens") or 0)
+                if not e.get("is_fallback") and in_tok > 0:
+                    cost_val = jev_cost(in_tok)
+                    jev_calls += 1
+                    jev_input_tokens += in_tok
+                    jev_output_tokens += out_tok
+                    jev_total_cost += cost_val
+                else:
+                    cost_val = 0.0
+                has_cost = True
+            else:
+                raw_cost = e.get("billable_cost", e.get("cost"))
+                has_cost = raw_cost is not None
+                try:
+                    cost_val = float(raw_cost or 0.0)
+                except (ValueError, TypeError):
+                    cost_val = 0.0
+
             if not model and not has_cost:
                 continue
 
@@ -511,6 +533,16 @@ class LedgerAnalytics:
             "billable_calls": billable_calls,
             "free_calls": free_calls,
             "window": window,
+            "jev": {
+                "calls": jev_calls,
+                "input_tokens": jev_input_tokens,
+                "output_tokens": jev_output_tokens,
+                "cost": round(jev_total_cost, 6),
+                "monthly_credit": JEV_MONTHLY_CREDIT_USD,
+                "remaining_credit": round(max(0.0, JEV_MONTHLY_CREDIT_USD - jev_total_cost), 6),
+                "used_percent": round((jev_total_cost / JEV_MONTHLY_CREDIT_USD) * 100.0, 2),
+                "price_per_million_input": JEV_INPUT_PRICE_PER_MILLION,
+            },
         }
 
         include_all = not (by_tier or by_model or savings)

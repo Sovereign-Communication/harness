@@ -378,4 +378,47 @@ TOOL_SCHEMAS = [
                        "description": "Render markdown prose representation instead of raw JSON"},
         }, "required": ["goal"]},
     },
+    {
+        "name": "driver_step",
+        "title": "Run verified extraction, Jev decision, and action step",
+        "description": "Execute a verified extraction -> Jev decision -> deterministic action "
+                       "step via driver-core. Consensus happens upstream of the decision. "
+                       "Returns an envelope with ok: true on execution or ok: false on a refusal "
+                       "(HTTP 200). Only transport failures raise.",
+        "inputSchema": {"type": "object", "properties": {
+            "target": {"type": "string", "description": "Target window, process, URL or selector"},
+            "schema": {"type": "string", "enum": ["cli", "dom", "gui", "screen", "mcp"],
+                       "description": "Extraction schema (default: 'cli')"},
+            "action": {"type": "string", "description": "Declared action to consent to (optional)"},
+            "params": {"type": "object", "description": "Action parameter object (optional)"},
+            "by": {"type": "string", "default": "operator", "description": "Consent grantor"},
+            "require_stable": {"type": "boolean", "default": True,
+                               "description": "Require stable state before execution"},
+            "task_id": {"type": "string"},
+        }, "required": ["target"]},
+    },
+    {
+        "name": "driver_health",
+        "title": "Check driver-core service status and declared sources",
+        "description": "Query driver-core liveness, version, and declared perception sources.",
+        "inputSchema": {"type": "object", "properties": {
+            "task_id": {"type": "string"},
+        }},
+    },
+    {
+        "name": "driver_vocabulary",
+        "title": "List driver-core declared action vocabulary",
+        "description": "Query driver-core closed 14-action vocabulary, tier mutability, and normalizers.",
+        "inputSchema": {"type": "object", "properties": {
+            "task_id": {"type": "string"},
+        }},
+    },
+    {
+        "name": "driver_verify",
+        "title": "Verify cryptographic audit chain and spend budget",
+        "description": "Verify the hash-chain integrity of the driver audit log and return spend totals.",
+        "inputSchema": {"type": "object", "properties": {
+            "task_id": {"type": "string"},
+        }},
+    },
 ]

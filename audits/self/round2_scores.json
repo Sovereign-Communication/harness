@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.96,
+        "confidence": 0.97,
         "evaluated": true
       }
     },
@@ -62,7 +62,7 @@
     "is_fallback": false,
     "reasons": [],
     "model": "jev-1.13.0",
-    "cost": 5.5565999999999995e-06,
+    "cost": 5.5566e-05,
     "input_tokens": 1323,
     "output_tokens": 60
   },
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 2822 tests in 142.910s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 3284 tests in 200.630s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -288,7 +288,7 @@
         "id": "D1",
         "label": "MCP tool parity with README",
         "score": 1.0,
-        "evidence": "README documents all 18 MCP tools, no stale names"
+        "evidence": "README documents all 22 MCP tools, no stale names"
       },
       {
         "id": "D2",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "no executable harness changes since the coverage baseline ccf42bb5f9"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 477/481 = 99% (bar 95%) vs baseline f00b7ecab3; untested: agent.py:1570,1571,1572,1583)"
       }
     ]
   }

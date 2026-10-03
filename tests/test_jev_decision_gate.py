@@ -266,7 +266,7 @@ class EvaluateDecisionPolicyTests(unittest.TestCase):
         verdict, structural = policy.evaluate_decision(
             "open a tracking issue", "record follow-up work", "verified defect",
             task_id="t1")
-        expected = 100 * 0.0042 / 1_000_000
+        expected = 100 * 0.042 / 1_000_000
         self.assertEqual(verdict["verdict"], "proceed")
         self.assertEqual(verdict["disposition"], "proceed")
         self.assertFalse(structural["is_fallback"])
