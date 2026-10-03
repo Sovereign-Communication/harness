@@ -1072,7 +1072,7 @@ class PlannerTests(TempRootCase):
                          ["mkdir-root", "create-venv", "pip-install",
                           "verify-1-ruff"])
         self.assertEqual([s.classification for s in plan.steps],
-                         [pv.MUTATING, pv.MUTATING, pv.MUTATING, pv.READ])
+                         [pv.MUTATING, pv.MUTATING, pv.MUTATING, pv.MUTATING])
         self.assertTrue(plan.steps[2].requires_network)
         self.assertIn("ruff==0.6.1", plan.steps[2].argv)
         self.assertIn("--only-binary=:all:", plan.steps[2].argv)

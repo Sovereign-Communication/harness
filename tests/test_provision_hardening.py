@@ -127,7 +127,8 @@ class ExecutableTests(HardeningCase):
             self.refuse(exe, "--version", needle="not a trusted executable")
         self.refuse("." + os.sep + "python.exe", "--version", needle="absolute")
         inside = os.path.join(self.work(), "venv", "bin", "python")
-        self.assertEqual(self.admit(inside, "--version").minimum_class, pv.READ)
+        # code the plan put in the root is never a free read-only probe
+        self.assertEqual(self.admit(inside, "--version").minimum_class, pv.MUTATING)
         trusted = pv.ProvisionPolicy(approved_roots=(self.root,),
                                      trusted_executables=(outside,))
         self.assertEqual(self.admit(outside, "--version", policy=trusted)

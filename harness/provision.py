@@ -33,6 +33,16 @@ venv, pip, npm, mkdir inside an approved root, or a read-only query. There is
 no escape hatch: no shell interpreters, no privilege escalation, no deletion,
 no formatting, no registry edits, no URL or path installs. The model (or any
 caller) can only *propose* steps; code decides whether one may exist.
+
+Wiring conditions (a surface that exposes this module MUST keep them; the full
+text is in ``docs/security.md``): per-step human approval, with the UI saying
+that approving an install approves running that package's code later;
+dry-run first; a human-only approval path -- never an agent- or MCP-settable
+``approver``, ``ask``, ``ApprovalGate``, ``runner``, ``which``, ``environ``,
+``done``, ``policy``, ``ledger`` or ``review_required``; the policy built
+server-side with :func:`policy_for_probe`; plan JSON treated as untrusted
+(``plan_from_dict`` + ``validate_plan`` on every call); step output escaped
+when rendered; ``audit_failed``, rollback hints and leftovers shown.
 """
 import hashlib
 import json
@@ -43,7 +53,7 @@ import shutil
 import tempfile
 import time
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional,
                     Sequence, Tuple)
@@ -239,7 +249,8 @@ def _parse_rocm(output: str) -> List[str]:
 
 def probe_host(path: Optional[str] = None, *, runner: Optional[Callable] = None,
                which: Optional[Callable] = None,
-               facts: Optional[Mapping[str, Any]] = None) -> HostProbe:
+               facts: Optional[Mapping[str, Any]] = None,
+               environ: Optional[Mapping[str, str]] = None) -> HostProbe:
     """Read-only host facts, gathered through the ``osal`` seams.
 
     ``runner`` / ``which`` default to :func:`osal.run` / :func:`osal.which`
@@ -251,9 +262,12 @@ def probe_host(path: Optional[str] = None, *, runner: Optional[Callable] = None,
     read-only *by construction of the argv*, not by sandboxing: each runs
     whatever executable PATH resolves that name to, so a probe is only as
     trustworthy as the machine's PATH. No probe output is ever turned into
-    an argv; the planner builds argv from fixed templates alone.
+    an argv; the planner builds argv from fixed templates alone. Every probe
+    runs in a private empty directory, with the allowlisted environment
+    (:func:`_scrubbed_env`) and the null device as stdin, through
+    :func:`osal.run_tree` (a hard timeout that kills the whole tree).
     """
-    run = runner or osal.run
+    run = runner or osal.run_tree
     find = which or osal.which
     target = path or os.getcwd()
     base = _default_facts(target)
@@ -261,8 +275,12 @@ def probe_host(path: Optional[str] = None, *, runner: Optional[Callable] = None,
         base.update(dict(facts))
     py_exe = str(base["python_executable"])
 
+    probe_cwd = tempfile.mkdtemp(prefix="provision-probe-")
+    probe_env = _scrubbed_env(environ)
+
     def query(argv):
-        result = run(list(argv), timeout=_PROBE_TIMEOUT_S)
+        result = run(list(argv), timeout=_PROBE_TIMEOUT_S, cwd=probe_cwd,
+                     env=probe_env)
         return result.returncode, result.stdout
 
     def locate(name):
@@ -278,6 +296,16 @@ def probe_host(path: Optional[str] = None, *, runner: Optional[Callable] = None,
         found = os.path.abspath(str(found))
         return None if _in_working_directory(found) else found
 
+    try:
+        return _probe_body(base, target, py_exe, locate, query, find)
+    finally:
+        try:
+            os.rmdir(probe_cwd)
+        except OSError:
+            pass
+
+
+def _probe_body(base, target, py_exe, locate, query, find) -> HostProbe:
     managers: List[PackageManager] = []
     for name in PROBE_PACKAGE_MANAGERS:
         found = locate(name)
@@ -320,7 +348,7 @@ def probe_host(path: Optional[str] = None, *, runner: Optional[Callable] = None,
 # typed plan
 # --------------------------------------------------------------------------
 
-_STEP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,63}$")
+_STEP_ID_RE = re.compile(r"[a-z0-9][a-z0-9_\-]{0,63}\Z")
 
 
 def _canon(value: Any) -> str:
@@ -603,26 +631,26 @@ _DENIED = {
     "kill": "process termination",
 }
 
-_PYTHON_RE = re.compile(r"^(?:python[0-9.]*|py|pypy[0-9.]*)$")
+_PYTHON_RE = re.compile(r"^(?:python[0-9.]*|py|pypy[0-9.]*)\Z")
 _PIP_SPEC_RE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._\-]*(?:\[[A-Za-z0-9._,\-]+\])?"
-    r"(?:(?:==|~=|>=|<=|!=|<|>)[A-Za-z0-9.*+!_\-]+)?$")
+    r"(?:(?:==|~=|>=|<=|!=|<|>)[A-Za-z0-9.*+!_\-]+)?\Z")
 _NPM_SPEC_RE = re.compile(
     r"^(?:@[A-Za-z0-9][A-Za-z0-9._\-]*/)?[A-Za-z0-9][A-Za-z0-9._\-]*"
-    r"(?:@[A-Za-z0-9][A-Za-z0-9.+\-]*)?$")
+    r"(?:@[A-Za-z0-9][A-Za-z0-9.+\-]*)?\Z")
 # One positive grammar per manager: id characters only, no extensions that
 # make an id look like a file, no tap/path/URL forms, no removal syntax.
 _SYSTEM_ID_RES = {
-    "winget": re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+\-]*$"),
-    "choco": re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]*$"),
+    "winget": re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+\-]*\Z"),
+    "choco": re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]*\Z"),
     "scoop": re.compile(
-        r"^(?:[A-Za-z0-9][A-Za-z0-9._\-]*/)?[A-Za-z0-9][A-Za-z0-9._\-]*$"),
-    "brew": re.compile(r"^[a-z0-9][a-z0-9@._+\-]*$"),
+        r"^(?:[A-Za-z0-9][A-Za-z0-9._\-]*/)?[A-Za-z0-9][A-Za-z0-9._\-]*\Z"),
+    "brew": re.compile(r"^[a-z0-9][a-z0-9@._+\-]*\Z"),
     # apt: a trailing '-' removes and a trailing '+' forces; '=' and '/' pick
     # a version or release. None of those is a plain install.
-    "apt": re.compile(r"^[a-z0-9](?:[a-z0-9.+\-]*[a-z0-9.])?$"),
+    "apt": re.compile(r"^[a-z0-9](?:[a-z0-9.+\-]*[a-z0-9])?\Z"),
 }
-_VERSION_RE = re.compile(r"^[0-9][A-Za-z0-9.+_\-]{0,63}$")
+_VERSION_RE = re.compile(r"^[0-9][A-Za-z0-9.+_\-]{0,63}\Z")
 _REGISTRY_RE = re.compile(r"^(?:HK[A-Z_]{1,20}|Registry::)[\\:]", re.I)
 
 
@@ -658,8 +686,15 @@ _DEVICE_NAMES = frozenset(
     ("con", "prn", "aux", "nul", "conin$", "conout$")
     + tuple(f"com{n}" for n in range(1, 10))
     + tuple(f"lpt{n}" for n in range(1, 10)))
-_SHORT_NAME_RE = re.compile(r"^[^.~]{1,6}~[0-9]+(?:\.[^.]{0,3})?$")
+_SHORT_NAME_RE = re.compile(r"^[^.~]{1,6}~[0-9]+(?:\.[^.]{0,3})?\Z")
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
+
+
+def _is_lookalike(text: str) -> bool:
+    """Non-ASCII text that NFKC rewrites: fullwidth ``＂ ＆ ％``, compatibility
+    forms and the like, which read as ASCII syntax to a human or a
+    best-fit converter while being ordinary letters to Python."""
+    return (not text.isascii()) and unicodedata.normalize("NFKC", text) != text
 
 
 def _path_problem(path: Any, strict: bool = True) -> Optional[str]:
@@ -677,6 +712,8 @@ def _path_problem(path: Any, strict: bool = True) -> Optional[str]:
         return "contains control or invisible characters"
     if _PATH_CONFUSABLES.intersection(path):
         return "contains a look-alike path separator"
+    if _is_lookalike(path):
+        return "contains look-alike (NFKC-changing) characters"
     if path.startswith("\\\\") or path.startswith("//"):
         return "UNC and device paths are not accepted"
     if not os.path.isabs(path):
@@ -725,7 +762,7 @@ _FILE_SUFFIXES = (
     ".xml", ".txt", ".rb", ".sh", ".ps1", ".psm1", ".psd1", ".vbs")
 _WINDOWS_SHIM_SUFFIXES = (".cmd", ".bat")
 _SPEC_PART_SPLIT = re.compile(r"[=<>!~@\[\];,\s]")
-_BARE_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._+\-]*[A-Za-z0-9+\-])?$")
+_BARE_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._+\-]*[A-Za-z0-9+\-])?\Z")
 
 
 def _looks_like_artifact(text: str, git: bool = True, files: bool = True) -> bool:
@@ -1053,7 +1090,22 @@ def classify_argv(argv: Sequence[str], policy: ProvisionPolicy) -> Admission:
 
     Returns the LEAST class the argv may carry. A planner may label a step
     more severe than this (never less), and may not hide network use.
+
+    A program named by PATH inside an approved root is code this plan (or
+    an earlier one) put there -- a venv interpreter loads ``.pth`` files and
+    console scripts from its own site-packages, an installed tool is
+    whatever its package says -- so even ``--version`` or ``pip show`` of it
+    is at least MUTATING and needs approval. Only a bare PATH name or a
+    policy-trusted interpreter can be a truly read-only probe.
     """
+    admission = _classify_core(argv, policy)
+    if (not _is_bare_name(argv[0]) and _within_roots_leaf(argv[0], policy)
+            and _SEVERITY[admission.minimum_class] < _SEVERITY[MUTATING]):
+        admission = replace(admission, minimum_class=MUTATING)
+    return admission
+
+
+def _classify_core(argv: Sequence[str], policy: ProvisionPolicy) -> Admission:
     if isinstance(argv, (str, bytes)):
         raise ProvisionError("argv must be a list of arguments, not a shell string")
     if not isinstance(argv, (list, tuple)) or not argv:
@@ -1077,6 +1129,10 @@ def classify_argv(argv: Sequence[str], policy: ProvisionPolicy) -> Admission:
         if _unsafe_chars(token):
             raise ProvisionError(
                 f"argv element {token!r} contains control or invisible characters")
+        if _is_lookalike(token):
+            raise ProvisionError(
+                f"argv element {token!r} contains look-alike (NFKC-changing) "
+                "characters")
         if _REGISTRY_RE.match(token):
             raise ProvisionError(f"registry path {token!r} is never allowed")
     if _is_bare_name(argv[0]) and not _BARE_NAME_RE.match(argv[0]):
@@ -1362,13 +1418,17 @@ class StepResult:
     approval: Optional[str] = None
     approver: Optional[str] = None
     note: str = ""
+    # Names the step left in its private working directory. A step that
+    # writes there is doing something its argv did not say; it is surfaced,
+    # never silently deleted.
+    leftovers: Tuple[str, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         return {"step_id": self.step_id, "status": self.status,
                 "returncode": self.returncode, "stdout": self.stdout,
                 "stderr": self.stderr, "duration_s": self.duration_s,
                 "approval": self.approval, "approver": self.approver,
-                "note": self.note}
+                "note": self.note, "leftovers": list(self.leftovers)}
 
 
 @dataclass(frozen=True)
@@ -1416,32 +1476,35 @@ def _builtin_mkdir(step: Step, policy: ProvisionPolicy) -> osal.CommandResult:
     return osal.CommandResult(0, f"directory ready: {target}\n", "")
 
 
-# Config an executed step must not inherit: pip/npm/uv settings (index URLs,
-# scripts policy), interpreter and loader hooks, TLS trust and proxy
-# redirection. Matching is case-insensitive (Windows environments are).
-_ENV_DROP_PREFIXES = ("PIP_", "NPM_", "PYTHON", "NODE_", "LD_", "DYLD_", "UV_",
-                      "SSL_CERT_")
-_ENV_DROP_NAMES = frozenset((
-    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "FTP_PROXY",
-    "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"))
+# The environment an executed step may see is an ALLOWLIST: a name not listed
+# here (APT_CONFIG, HOMEBREW_*, GIT_*, JAVA_TOOL_OPTIONS, BASH_ENV, proxies,
+# loader and interpreter hooks, every tool's own config variables, ...) simply
+# does not exist for the step. Matching is case-insensitive (Windows
+# environments are).
+_ENV_ALLOW_NAMES = frozenset((
+    "PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC",
+    "TEMP", "TMP", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+    "PROGRAMDATA", "USER", "USERNAME", "LOGNAME", "LANG", "TERM"))
+_ENV_ALLOW_PREFIXES = ("LC_", "PROGRAMFILES", "COMMONPROGRAMFILES")
 
 
 def _scrubbed_env(environ: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
-    """A clean environment for an executed step.
+    """An allowlisted environment for an executed step or a probe.
 
-    Dropped: every pip / npm / uv / python / node / loader variable, proxies
-    and CA-bundle overrides. Set: explicit defaults. pip's user and site
-    config files are NOT ignored by the environment -- the allowlist makes
-    ``pip install`` carry ``--isolated`` for that. npm's user and global
-    config are pointed at an empty file; a project ``.npmrc`` inside the
-    ``--prefix`` directory is the one config npm still reads, which is why
-    steps run from an empty private directory and the prefix lives in a
-    root the operator controls.
+    Kept: a small set of names the OS and tools need to function (PATH,
+    the Windows system variables, temp and home locations, locale, TERM).
+    Everything else is dropped, then explicit settings are added. pip's user
+    and site config files are NOT ignored by the environment -- the
+    allowlist makes ``pip install`` carry ``--isolated`` for that. npm's
+    user and global config are pointed at an empty file; a project
+    ``.npmrc`` inside the ``--prefix`` directory is the one config npm still
+    reads, which is why steps run from an empty private directory and the
+    prefix lives in a root the operator controls.
     """
     source = dict(os.environ if environ is None else environ)
     env = {key: value for key, value in source.items()
-           if not key.upper().startswith(_ENV_DROP_PREFIXES)
-           and key.upper() not in _ENV_DROP_NAMES}
+           if key.upper() in _ENV_ALLOW_NAMES
+           or key.upper().startswith(_ENV_ALLOW_PREFIXES)}
     env.update({
         "PIP_CONFIG_FILE": os.devnull,       # belt; --isolated is the control
         "PIP_DISABLE_PIP_VERSION_CHECK": "1",
@@ -1499,6 +1562,47 @@ def _resolve_command(step: Step, which: Callable) -> Tuple[Optional[List[str]], 
 def _is_builtin_mkdir(step: Step) -> bool:
     return (_exe_name(step.argv[0]) == "mkdir"
             and _is_bare_name(step.argv[0]))
+
+
+def _verified_done(ledger, digest: str, done: Iterable[str]) -> set:
+    """Step ids a resume may skip: only ones the ledger proves were completed.
+
+    A caller-supplied ``done`` list is a claim, not evidence. Each id must
+    have a ``provision_step`` entry for THIS plan digest with status
+    ``completed`` from a real (not dry) run; otherwise the call is refused.
+    """
+    wanted = set(done)
+    if not wanted:
+        return set()
+    entries = getattr(ledger, "entries", None)
+    if not callable(entries):
+        raise ProvisionError(
+            "done= needs the ledger that recorded the earlier run")
+    proven = {e.get("step_id") for e in entries()
+              if e.get("event") == "provision_step"
+              and e.get("plan_digest") == digest
+              and e.get("status") in (COMPLETED, ALREADY_DONE)
+              and e.get("dry_run") is False}
+    missing = sorted(wanted - proven)
+    if missing:
+        raise ProvisionError(
+            f"done step(s) {missing} have no completed ledger entry for this "
+            "plan; refusing to skip work that was never proven")
+    return wanted
+
+
+def _clean_stale_private_dirs(base: str) -> None:
+    """Remove EMPTY ``.provision-cwd-*`` directories a crashed run left."""
+    try:
+        names = os.listdir(base)
+    except OSError:
+        return
+    for name in names:
+        if name.startswith(".provision-cwd-"):
+            try:
+                os.rmdir(os.path.join(base, name))
+            except OSError:
+                pass  # not empty: evidence, left in place
 
 
 def _require_real_ledger(ledger) -> None:
@@ -1574,10 +1678,12 @@ def execute_plan(plan: Plan, gate: ApprovalGate, *, policy: ProvisionPolicy,
         _require_real_ledger(ledger)
     validate_plan(plan, policy)
     base_root = None if dry_run else _private_cwd_parent(plan, policy)
-    run = runner or osal.run
+    run = runner or osal.run_tree
     find = which or osal.which
-    finished = set(done)
     digest = plan.digest
+    finished = _verified_done(ledger, digest, done)
+    if base_root is not None:
+        _clean_stale_private_dirs(base_root)
     state = {"stop": None, "audit": False}
 
     def record_event(event, **fields) -> bool:
@@ -1615,6 +1721,7 @@ def execute_plan(plan: Plan, gate: ApprovalGate, *, policy: ProvisionPolicy,
             status=status, dry_run=dry_run, returncode=result.returncode,
             approval=result.approval, approver=result.approver,
             duration_s=result.duration_s, note=result.note,
+            leftovers=list(result.leftovers),
             stdout=_tail(result.stdout, policy.max_output_chars),
             stderr=_tail(result.stderr, policy.max_output_chars),
             output_sha256=_sha256(result.stdout + "\x00" + result.stderr))
@@ -1631,8 +1738,17 @@ def execute_plan(plan: Plan, gate: ApprovalGate, *, policy: ProvisionPolicy,
             continue
         record = None
         if needs_approval(step):
-            record = (gate.resolve(plan, step) if dry_run
-                      else gate.resolve_or_ask(plan, step))
+            try:
+                record = (gate.resolve(plan, step) if dry_run
+                          else gate.resolve_or_ask(plan, step))
+            except Exception as exc:  # the approval store (its ledger) failed
+                state["audit"] = True
+                state["stop"] = AUDIT_FAILED
+                results.append(StepResult(
+                    step.id, AUDIT_FAILED,
+                    note=f"the approval could not be recorded "
+                         f"({type(exc).__name__}); not run"))
+                continue
         approval = record.decision if record is not None else None
         approver = record.approver if record is not None else None
         if dry_run:
@@ -1680,6 +1796,7 @@ def execute_plan(plan: Plan, gate: ApprovalGate, *, policy: ProvisionPolicy,
 
         workdir = None
         leftover = ""
+        leftovers: Tuple[str, ...] = ()
         started = time.monotonic()
         try:
             if command is None:
@@ -1701,6 +1818,7 @@ def execute_plan(plan: Plan, gate: ApprovalGate, *, policy: ProvisionPolicy,
         finally:
             if workdir is not None:
                 try:
+                    leftovers = tuple(sorted(os.listdir(workdir)))[:20]
                     os.rmdir(workdir)
                 except OSError:
                     leftover = f"; the step left files in {workdir}"
@@ -1709,7 +1827,7 @@ def execute_plan(plan: Plan, gate: ApprovalGate, *, policy: ProvisionPolicy,
             logged = finish(step, COMPLETED, returncode=0, stdout=outcome.stdout,
                             stderr=outcome.stderr, duration_s=elapsed,
                             approval=approval, approver=approver,
-                            note=leftover.lstrip("; "))
+                            note=leftover.lstrip("; "), leftovers=leftovers)
             if step.classification != READ:
                 changed.append(step)
         else:
@@ -1717,7 +1835,8 @@ def execute_plan(plan: Plan, gate: ApprovalGate, *, policy: ProvisionPolicy,
             logged = finish(step, FAILED, returncode=outcome.returncode,
                             stdout=outcome.stdout, stderr=outcome.stderr,
                             duration_s=elapsed, approval=approval,
-                            approver=approver, note=note + leftover)
+                            approver=approver, note=note + leftover,
+                            leftovers=leftovers)
             if state["stop"] is None:
                 state["stop"] = FAILED
             if step.rollback_hint:
@@ -1864,8 +1983,10 @@ def _recipe_venv_pip(requests, probe, root):
         steps.append(Step(
             f"verify-{index + 1}-{_slug(req.name)}",
             f"Confirm {req.name} is installed",
-            (py, "-I", "-m", "pip", "show", "--isolated", req.name), READ,
-            "prints the installed package metadata"))
+            (py, "-I", "-m", "pip", "show", "--isolated", req.name), MUTATING,
+            "prints the installed package metadata (runs the venv's own "
+            "interpreter, which loads its site-packages)",
+            "nothing to undo: it only queries"))
     return steps
 
 

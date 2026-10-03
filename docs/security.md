@@ -109,6 +109,56 @@ is unchanged and still no sandbox.
   check (`tests/test_osal_boundary.py`) fails the build if any other module
   launches a process, probes the platform, or opens a browser directly.
 
+## Host provisioning (`harness/provision.py`)
+
+`provision.py` can plan and run package installs on the operator's machine, so
+its safety rests on the way a surface is wired to it as much as on the module.
+A surface (GUI card, MCP tool, agent intent) MUST keep these conditions:
+
+1. **A human approves every mutating step, one by one.** The approval card
+   shows each step's argv (`render_plan` escapes every field and prints argv
+   as a JSON list), its class and its network use. Plan-level approval is
+   convenience for READ and MUTATING steps only; an IRREVERSIBLE step always
+   needs its own approval. Approving an install approves running that
+   package's code in later steps (a venv interpreter loads its own
+   site-packages; an installed tool is whatever its package says), and the UI
+   must say so.
+2. **Dry-run is the default.** Show the dry-run report first; only an explicit
+   operator action sets `dry_run=False`.
+3. **The approval path is human-only.** No parameter that decides consent may
+   be settable by an agent, a model, or an MCP caller: not `approver`, `ask`,
+   `ApprovalGate`, `runner`, `which`, `environ`, `done`, `policy`, `ledger`,
+   nor a plan's `review_required`. These are in-process seams for tests and the
+   host application; the wire format carries only a plan and a human's
+   decision.
+4. **The policy is built server-side** with `policy_for_probe(probe, roots)`
+   from a probe the server ran itself. Approved roots are an operator setting.
+5. **Plan JSON is untrusted.** Rebuild it with `plan_from_dict` and run
+   `validate_plan` on every call, never reuse a previously validated object a
+   client could have swapped. Approvals are bound to the plan digest, so an
+   edited plan has no approval.
+6. **Escape what you display.** A step's stdout/stderr and leftover names come
+   from programs the plan ran; render them as inert text.
+7. **Evidence is not optional.** A real run needs the harness's verified
+   `AutonomyLedger`; if the ledger fails mid-run the report is still returned
+   with `audit_failed=True` and the run stops. Surface `audit_failed`,
+   `rollback_hints` and `leftovers` to the operator.
+
+What the module enforces regardless: an argv allowlist (no shell, sudo,
+deletion, formatting, registry edits, local-file or URL installs); every step
+re-validated immediately before it runs; each step run in a fresh empty private
+directory inside an approved root, with python isolated (`-I`), pip
+`--isolated`, an allowlisted environment, stdin set to the null device and a
+hard timeout that kills the process tree (`osal.run_tree`); programs
+resolved to absolute PATH paths and refused inside the working tree; anything
+that runs code from inside an approved root classed at least MUTATING;
+`done=` honoured only for steps the ledger proves completed.
+
+Known limits: a project `.npmrc` inside the `--prefix` directory is still read
+by npm; a grandchild whose parent already exited cannot be found by
+`taskkill /T` on Windows (the call still returns on time and abandons its
+pipes); on Windows an npm that is only a `.cmd` shim is not used.
+
 ## Reporting
 
 Report exploitable security issues privately through the repository's security
