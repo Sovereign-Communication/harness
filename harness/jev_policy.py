@@ -139,14 +139,11 @@ def flush_all_fallbacks() -> int:
     here must not mask the command's own result.
     """
     written = 0
-    try:
-        for policy in _live_policies():
-            try:
-                written += policy.flush_fallbacks()
-            except Exception:
-                pass  # a flush must never break shutdown
-    except Exception:
-        pass
+    for policy in _live_policies():
+        try:
+            written += policy.flush_fallbacks()
+        except Exception:
+            pass  # a flush must never break shutdown
     return written
 
 
