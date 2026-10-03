@@ -1858,5 +1858,216 @@ class DispatchStateLabelTests(_Base):
         self.assertFalse(result.is_fallback)             # nothing was sent
 
 
+class SpendInvariantTests(_Base):
+    def test_zero_settlements_never_trip_a_breached_ceiling(self):
+        gov = self.governor(max_cost=0.1)
+        token = gov.reserve(0.01, "jev:x")
+        gov.record_overrun(0.2, "x")                  # spent is now past the cap
+        gov.reconcile(token, 0.0)                     # releasing is fine
+        gov.record_actual(0.0, "x")                   # a free settlement too
+        with self.assertRaises(HarnessError):
+            gov.record_actual(0.001, "x")             # real spend still refused
+        self.assertEqual(gov.outstanding, 0.0)
+
+    def test_cache_hit_after_an_overrun_stays_a_cache_hit(self):
+        gov = self.governor(max_cost=jev_cost(1024) * 3)
+        transport = CountingTransport(echo(100))
+        policy = self.keyed(transport, governor=gov)
+        policy.evaluate_route("A", ["a.py"])
+        gov.record_overrun(gov.max_cost, "elsewhere")
+        before = gov.overruns
+        result, structural = policy.evaluate_route("A", ["a.py"])
+        self.assertTrue(result.cache_hit)
+        self.assertFalse(result.is_fallback)
+        self.assertEqual(gov.overruns, before)        # no phantom overrun
+        self.assertEqual(len(transport.calls), 1)
+
+    def test_refused_site_after_an_overrun_books_no_phantom_overrun(self):
+        gov = self.governor(max_cost=jev_cost(1024) * 1.5)
+        policy = self.keyed(CountingTransport(echo(5000)), governor=gov)
+        policy.evaluate_route("fix loop", ["a.py"])
+        self.assertEqual(gov.overruns, 1)
+        policy.evaluate_hourglass_stage("context_intake", {"request": "x"})
+        policy.evaluate_route("other", ["b.py"])
+        self.assertEqual(gov.overruns, 1)
+
+    def test_overrun_is_booked_only_for_positive_cost(self):
+        from harness.jev import JevEvaluationResult
+        policy = self.keyed(CountingTransport(noul_resp()))
+        policy.governor = mock.Mock()
+        result = JevEvaluationResult("pass", 0.0, 1.0, {}, [], model="m")
+        policy._book_overrun(0.0, result)
+        policy.governor.record_overrun.assert_not_called()
+        policy._book_overrun(0.5, result)
+        policy.governor.record_overrun.assert_called_once()
+
+    def test_snapshot_and_status_expose_overruns_only_when_present(self):
+        gov = self.governor()
+        self.assertNotIn("overruns", gov.snapshot())
+        gov.key_info = {"label": "x"}
+        self.assertNotIn("overruns", gov.key_status())
+        gov.record_overrun(0.01, "x")
+        self.assertEqual(gov.snapshot()["overruns"], 1)
+        self.assertEqual(gov.key_status()["overruns"], 1)
+
+
+class VisionNothingSentTests(_Base):
+    def test_open_breaker_settles_zero_not_the_estimate(self):
+        from tests import test_jev_vision_assessment as V
+
+        class Failing(V.RecordingTransport):
+            def post_once(self, url, key, payload, timeout=120):
+                self.calls.append(payload)
+                raise OSError("down")
+        gov = self.governor(max_cost=1.0)
+        settings = load_settings({"jev_api_key": "k", "jev_model": "jev-test"})
+        transport = Failing()
+        policy = policy_for(settings, transport=transport, governor=gov,
+                            ledger=self.ledger, breaker_threshold=1)
+        policy.evaluate_vision_assessment({"assessment": "hourglass"})
+        self.assertEqual(len(transport.calls), 1)
+        spent = gov.spent
+        envelope = policy.evaluate_vision_assessment({"assessment": "hourglass"})
+        self.assertEqual(len(transport.calls), 1)       # nothing was sent
+        self.assertEqual(gov.spent, spent)              # and nothing charged
+        self.assertEqual(gov.outstanding, 0.0)
+        self.assertNotEqual(envelope.status, "assessed")
+
+
+class PayloadBoundTests(_Base):
+    def test_oversized_payload_reserves_for_itself_and_is_refused_not_overrun(self):
+        gov = self.governor(max_cost=jev_cost(2048))
+        transport = CountingTransport(noul_resp())
+        policy = self.keyed(transport, governor=gov)
+        result, _ = policy.evaluate_diff(DIFF, "x" * 60000, "x.py")
+        self.assertEqual(transport.calls, [])            # never dispatched
+        self.assertEqual(result.verdict, "fail")
+        self.assertFalse(result.is_fallback)             # a budget hard stop
+        self.assertEqual(gov.overruns, 0)
+        small, _ = policy.evaluate_diff(DIFF, "set x", "x.py")
+        self.assertFalse(small.is_fallback)
+
+    def test_implausible_reported_usage_is_settled_at_the_estimate(self):
+        gov = self.governor(max_cost=1.0)
+        transport = CountingTransport(echo(2000000))
+        policy = self.keyed(transport, governor=gov)
+        result, structural = policy.evaluate_route("fix loop", ["a.py"])
+        self.assertTrue(result.discarded)
+        self.assertEqual(structural["fallback_reason"], "usage_implausible")
+        self.assertLess(result.cost, jev_cost(200000))
+        self.assertAlmostEqual(gov.spent, result.cost)
+        self.assertEqual(gov.overruns, 0)
+        self.assertEqual(len(policy.evaluator.cache), 0)  # never cached
+        self.assertEqual(gov.outstanding, 0.0)
+
+
+class ReservationGuardTests(_Base):
+    Q = {"a": {"type": "noul", "instructions": "ok?"}}
+
+    def test_a_missing_reservation_never_dispatches(self):
+        from harness.jev import ACTIVE_GUARD
+        transport = CountingTransport(noul_resp())
+        ev = JevEvaluator(api_key="k", transport=transport, cache=JevCache())
+        token = ACTIVE_GUARD.set(lambda: False)
+        try:
+            result = ev.evaluate({"x": 1}, self.Q)
+        finally:
+            ACTIVE_GUARD.reset(token)
+        self.assertTrue(result.is_fallback)
+        self.assertEqual(result.fallback_reason, "reservation_missing")
+        self.assertEqual(transport.calls, [])
+
+    def test_one_reservation_pays_for_exactly_one_dispatch(self):
+        gov = self.governor()
+        transport = CountingTransport(echo(10))
+        policy = self.keyed(transport, governor=gov)
+        handle = policy._preflight(site="route", max_input_tokens=1024)
+        first = policy.evaluator.evaluate({"x": 1}, self.Q)
+        second = policy.evaluator.evaluate({"x": 2}, self.Q)   # same reservation
+        self.assertFalse(first.is_fallback)
+        self.assertEqual(second.fallback_reason, "reservation_missing")
+        self.assertEqual(len(transport.calls), 1)
+        policy._account(first, site="route", reservation=handle)
+        self.assertEqual(gov.outstanding, 0.0)
+
+
+class OverrunEverywhereTests(_Base):
+    def test_every_site_survives_an_overrun_consistently(self):
+        from tests.test_jev_chaos import sites as all_sites
+        for name in all_sites(0):
+            with self.subTest(site=name):
+                self.setUp()
+                gov = self.governor(max_cost=jev_cost(1024) * 1.5)
+                policy = self.keyed(CountingTransport(echo(5000)), governor=gov)
+                all_sites(0)[name](policy)               # must not raise
+                self.assertEqual(gov.outstanding, 0.0)
+                billed = sum(r["cost"] for r in self.rows()
+                             if not r.get("cache_hit") and not r.get("flush"))
+                self.assertAlmostEqual(gov.spent, billed, places=9)
+                self.assertGreater(gov.spent, 0.0)
+                self.assertEqual(sum(1 for r in self.rows() if r["cost"] > 0), 1)
+
+
+class FlushWiringTests(_Base):
+    def test_flush_all_fallbacks_writes_every_live_tail(self):
+        from harness.jev_policy import flush_all_fallbacks
+        policy = policy_for(self.unkeyed_settings(), ledger=self.ledger)
+        for _ in range(9):
+            policy.evaluate_triage("same", ["a.py"])
+        self.assertEqual(sum(r.get("repeat_count", 1) for r in self.rows()), 8)
+        self.assertGreaterEqual(flush_all_fallbacks(), 1)
+        self.assertEqual(sum(r.get("repeat_count", 1) for r in self.rows()), 9)
+
+    def test_flush_never_breaks_shutdown(self):
+        from harness.jev_policy import flush_all_fallbacks
+        policy = policy_for(self.unkeyed_settings(), ledger=self.ledger)
+        policy.flush_fallbacks = mock.Mock(side_effect=OSError("disk"))
+        flush_all_fallbacks()                            # swallowed
+
+    def test_command_wrapper_flushes_even_when_the_command_fails(self):
+        from harness import cli
+        with mock.patch("harness.cli.flush_all_fallbacks") as flush:
+            @cli._flushes_fallbacks
+            def boom():
+                raise RuntimeError("x")
+            with self.assertRaises(RuntimeError):
+                boom()
+        flush.assert_called_once()
+
+    def test_run_mission_flushes_when_it_ends(self):
+        from harness import mission_driver
+        with mock.patch.object(mission_driver, "_run_mission",
+                               return_value={"ok": 1}), \
+                mock.patch.object(mission_driver, "flush_all_fallbacks") as flush:
+            self.assertEqual(mission_driver.run_mission(object()), {"ok": 1})
+        flush.assert_called_once()
+
+
+class DedupeScaleTests(_Base):
+    def test_exact_totals_at_scale_across_random_traffic(self):
+        import collections
+        import random
+        for seed in range(3):
+            ledger = _ListLedger()
+            policy = policy_for(self.unkeyed_settings(), ledger=ledger)
+            rnd = random.Random(seed)
+            truth = collections.Counter()
+            for _ in range(30000):
+                site, reason = rnd.choice("abc"), rnd.choice(["r1", "r2"])
+                state = str(rnd.randrange(rnd.choice([5, 200, 6000, 20000])))
+                write, repeat = policy._dedupe(site, reason, state)
+                truth[(site, reason)] += 1
+                if write:
+                    ledger.append("jev_eval", site=site, fallback_reason=reason,
+                                  repeat_count=repeat)
+                if rnd.random() < 0.0005:
+                    policy.flush_fallbacks()
+            policy.flush_fallbacks()
+            got = collections.Counter()
+            for row in ledger.rows:
+                got[(row["site"], row["fallback_reason"])] += row["repeat_count"]
+            self.assertEqual(got, truth, seed)
+
+
 if __name__ == "__main__":
     unittest.main()
