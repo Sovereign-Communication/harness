@@ -687,10 +687,13 @@ def run_driver_task(task_id, args, cancel_check):
             reason=env.get("reason"),
         )
 
-        if verify_result and verify_result.get("ok"):
-            completed = True
-            break
-        if env.get("ok"):
+        if verify_cmd:
+            # A verify command is the arbiter: an ok step whose verify failed
+            # is not a finished task, so keep going until it passes.
+            if verify_result and verify_result.get("ok"):
+                completed = True
+                break
+        elif env.get("ok"):
             completed = True
             break
 
@@ -710,6 +713,7 @@ def run_driver_task(task_id, args, cancel_check):
 
     ok_steps = sum(1 for st in steps if st["envelope"].get("ok"))
     verified = any((st["verification"] or {}).get("ok") for st in steps)
+    verify_failed = bool(verify_cmd) and not verified
     if completed and verified and ok_steps == 0:
         # The verify command passing is real evidence about the world, but it
         # is not evidence the driver did anything: say so, and do not call it
@@ -734,6 +738,10 @@ def run_driver_task(task_id, args, cancel_check):
         status = "cost_capped"
         summary = (f"Driver stopped at the ${float(max_cost):.4f} cost cap after "
                    f"{len(steps)} step(s); {ok_steps} step(s) ok, nothing verified.")
+    elif verify_failed:
+        status = "verify_failed"
+        summary = (f"The verify command failed on all {len(steps)} step(s) "
+                   f"({ok_steps} driver step(s) ok); the goal is not met.")
     else:
         status = "max_steps_reached"
         summary = (f"Driver stopped after {len(steps)} step(s) without "

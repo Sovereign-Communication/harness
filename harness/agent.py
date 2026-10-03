@@ -1086,7 +1086,7 @@ class AutonomousAgent:
         task_id = f"drv/{session_id or 'default'}"
         res = run_driver_task(
             task_id,
-            {"goal": prompt, "max_steps": 5, "auto_approve": True, "target": "cli"},
+            {"goal": prompt, "max_steps": 5, "target": "cli"},
             cancel_check=cancel_check,
         )
         total_steps = res.get("total_steps", 0)

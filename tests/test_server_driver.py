@@ -314,10 +314,32 @@ class RunDriverTaskSummaryTest(unittest.TestCase):
                    side_effect=[(1, "no"), RuntimeError("boom")]):
             res = self._run(_FakeAdapter([_REFUSED, _REFUSED]),
                             {"verify": "false"})
-        self.assertEqual(res["status"], "max_steps_reached")
+        self.assertEqual(res["status"], "verify_failed")
+        self.assertIn("verify command failed", res["summary"])
         self.assertFalse(res["steps"][0]["verification"]["ok"])
         self.assertEqual(res["steps"][0]["verification"]["returncode"], 1)
         self.assertIn("boom", res["steps"][1]["verification"]["error"])
+
+    def test_ok_step_with_failed_verify_is_never_done(self):
+        # An ok driver step must not end the run when the verify command
+        # fails; the loop keeps stepping and the status is verify_failed.
+        adapter = _FakeAdapter([_OK, _OK])
+        with patch("harness.gate_runner.run_gate", return_value=(1, "red")):
+            res = self._run(adapter, {"verify": "false"})
+        self.assertEqual(res["status"], "verify_failed")
+        self.assertEqual(res["total_steps"], 2)
+        self.assertEqual(res["ok_steps"], 2)
+        self.assertEqual(len(adapter.calls), 2)
+        self.assertIn("verify command failed", res["summary"])
+        self.assertNotIn("goal met", res["summary"].lower())
+
+    def test_verify_failing_then_passing_completes(self):
+        with patch("harness.gate_runner.run_gate",
+                   side_effect=[(1, "red"), (0, "green")]):
+            res = self._run(_FakeAdapter([_OK, _OK]), {"verify": "x"})
+        self.assertEqual(res["status"], "done")
+        self.assertEqual(res["total_steps"], 2)
+        self.assertIn("Driver goal met", res["summary"])
 
     def test_transport_failure_becomes_a_no_capture_step(self):
         adapter = _FakeAdapter([PerceptionUnavailable("down")],

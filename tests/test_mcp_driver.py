@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from harness import server as ui_server
+from harness.errors import HarnessError
 from harness.mcp_lanes import MUTATION_LANE
 from harness.mcp_schemas import TOOL_SCHEMAS
 from tests.test_mcp import make_server
@@ -56,12 +57,51 @@ class McpDriverToolsTest(unittest.TestCase):
             "cli",
             schema="cli",
             consent={"granted": True, "action": "open_window",
-                     "params": {"path": "/tmp"}, "by": "operator"},
+                     "params": {"path": "/tmp"}, "by": "mcp"},
             prefer=(),
             require_stable=True,
         )
         self.assertTrue(res["ok"])
         self.assertEqual(res["step_id"], "mcp-step-1")
+
+    @patch("harness.perception_client.PerceptionAdapter.step")
+    def test_default_grantor_is_the_mcp_peer_not_a_person(self, mock_step):
+        mock_step.return_value = {"ok": True}
+        self.server.caller = "mcp:acme/1.2"
+        self.server._invoke("driver_step", {"target": "cli", "action": "observe"})
+        self.assertEqual(mock_step.call_args.kwargs["consent"]["by"], "mcp:acme/1.2")
+        self.server.caller = "embedder"
+        self.server._invoke("driver_step", {"target": "cli", "action": "observe"})
+        self.assertEqual(mock_step.call_args.kwargs["consent"]["by"], "mcp:embedder")
+
+    @patch("harness.perception_client.PerceptionAdapter.step")
+    def test_operator_label_is_refused_without_confirmation(self, mock_step):
+        self.server.allow_write = False
+        for who in ("operator", " Operator "):
+            with self.assertRaises(HarnessError):
+                self.server._invoke("driver_step", {
+                    "target": "cli", "action": "observe", "by": who})
+        mock_step.assert_not_called()
+
+    @patch("harness.perception_client.PerceptionAdapter.step")
+    def test_operator_label_allowed_with_explicit_confirmation(self, mock_step):
+        mock_step.return_value = {"ok": True}
+        self.server.allow_write = False
+        self.server._invoke("driver_step", {
+            "target": "cli", "action": "observe", "by": "operator",
+            "allow_write": True})
+        self.assertEqual(mock_step.call_args.kwargs["consent"]["by"], "operator")
+        self.server.allow_write = True
+        self.server._invoke("driver_step", {
+            "target": "cli", "action": "observe", "by": "operator"})
+        self.assertEqual(mock_step.call_args.kwargs["consent"]["by"], "operator")
+
+    @patch("harness.perception_client.PerceptionAdapter.step")
+    def test_other_caller_labels_pass_through_trimmed(self, mock_step):
+        mock_step.return_value = {"ok": True}
+        self.server._invoke("driver_step", {
+            "target": "cli", "action": "observe", "by": "  ci-bot  "})
+        self.assertEqual(mock_step.call_args.kwargs["consent"]["by"], "ci-bot")
 
     @patch("harness.perception_client.PerceptionAdapter.health")
     def test_mcp_driver_health(self, mock_health):
