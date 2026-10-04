@@ -314,10 +314,32 @@ class RunDriverTaskSummaryTest(unittest.TestCase):
                    side_effect=[(1, "no"), RuntimeError("boom")]):
             res = self._run(_FakeAdapter([_REFUSED, _REFUSED]),
                             {"verify": "false"})
-        self.assertEqual(res["status"], "max_steps_reached")
+        self.assertEqual(res["status"], "verify_failed")
+        self.assertIn("verify command failed", res["summary"])
         self.assertFalse(res["steps"][0]["verification"]["ok"])
         self.assertEqual(res["steps"][0]["verification"]["returncode"], 1)
         self.assertIn("boom", res["steps"][1]["verification"]["error"])
+
+    def test_ok_step_with_failed_verify_is_never_done(self):
+        # An ok driver step must not end the run when the verify command
+        # fails; the loop keeps stepping and the status is verify_failed.
+        adapter = _FakeAdapter([_OK, _OK])
+        with patch("harness.gate_runner.run_gate", return_value=(1, "red")):
+            res = self._run(adapter, {"verify": "false"})
+        self.assertEqual(res["status"], "verify_failed")
+        self.assertEqual(res["total_steps"], 2)
+        self.assertEqual(res["ok_steps"], 2)
+        self.assertEqual(len(adapter.calls), 2)
+        self.assertIn("verify command failed", res["summary"])
+        self.assertNotIn("goal met", res["summary"].lower())
+
+    def test_verify_failing_then_passing_completes(self):
+        with patch("harness.gate_runner.run_gate",
+                   side_effect=[(1, "red"), (0, "green")]):
+            res = self._run(_FakeAdapter([_OK, _OK]), {"verify": "x"})
+        self.assertEqual(res["status"], "done")
+        self.assertEqual(res["total_steps"], 2)
+        self.assertIn("Driver goal met", res["summary"])
 
     def test_transport_failure_becomes_a_no_capture_step(self):
         adapter = _FakeAdapter([PerceptionUnavailable("down")],
@@ -672,6 +694,35 @@ class TokenTakeoverTest(unittest.TestCase):
         self.assertEqual(raw.count(b"HTTP/1.1 "), 1)
         self.assertTrue(raw.startswith(b"HTTP/1.1 401"))
         self.assertIn(b"Connection: close", raw)
+
+    def test_a_post_that_never_sends_its_body_cannot_stall_the_handler(self):
+        # Pre-auth: Content-Length is announced, no body follows. The handler
+        # must time out and still answer 401 instead of blocking forever.
+        import socket
+        import time as _time
+        with patch.object(ui_server.UiRequestHandler, "timeout", 0.3):
+            start = _time.monotonic()
+            with socket.create_connection(("127.0.0.1", self.port),
+                                          timeout=10) as s:
+                s.sendall(b"POST /api/chat HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                          b"Content-Length: 100\r\n\r\n")
+                chunks = []
+                while True:
+                    data = s.recv(65536)
+                    if not data:
+                        break
+                    chunks.append(data)
+            elapsed = _time.monotonic() - start
+        raw = b"".join(chunks)
+        self.assertTrue(raw.startswith(b"HTTP/1.1 401"), raw[:60])
+        self.assertLess(elapsed, 5.0)
+
+    def test_an_idle_connection_is_dropped_after_the_handler_timeout(self):
+        import socket
+        with patch.object(ui_server.UiRequestHandler, "timeout", 0.3):
+            with socket.create_connection(("127.0.0.1", self.port),
+                                          timeout=10) as s:
+                self.assertEqual(s.recv(1024), b"")
 
     def test_a_forbidden_host_is_refused_and_closed(self):
         raw = self._raw(b"GET /api/status HTTP/1.1\r\nHost: evil.example\r\n"

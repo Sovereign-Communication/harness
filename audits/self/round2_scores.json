@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.95,
+        "confidence": 0.96,
         "evaluated": true
       }
     },
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 3297 tests in 218.139s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 3314 tests in 203.923s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 507/515 = 98% (bar 95%) vs baseline f00b7ecab3; untested: agent.py:1570,1571,1572,1583; server.py:998,1002; ui.py:49,69)"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 40/40 = 100% (bar 95%) vs baseline 4e2a548084)"
       }
     ]
   }

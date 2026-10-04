@@ -1106,7 +1106,27 @@ class McpServer:
             schema = args.get("schema")
             action = args.get("action")
             params = args.get("params")
-            by = args.get("by") or "operator"
+            # The grantor label is evidence in the driver audit, so it must
+            # not impersonate a person by default: an MCP caller is labelled
+            # as the MCP peer. Claiming "operator" is a human claim and needs
+            # the same explicit confirmation a file write does.
+            by = args.get("by")
+            caller = str(self.caller or "mcp")
+            peer = caller if caller.startswith("mcp") else f"mcp:{caller}"
+            if by is None or not str(by).strip():
+                by = peer
+            else:
+                by = " ".join(str(by).split())[:64]
+                if by.lower() == "operator":
+                    allow_write = validate_mcp_bool(args.get("allow_write", False),
+                                                    "allow_write")
+                    if not (self.allow_write or allow_write):
+                        self._refuse(
+                            "mcp operator consent without allow_write",
+                            "driver_step by='operator' claims a human grantor; "
+                            "re-send with allow_write=true or configure "
+                            "allow_write=True explicitly, or omit `by` to be "
+                            f"labelled {peer!r}")
             consent = None
             if action:
                 consent = {"granted": True, "action": action, "params": params or {}, "by": by}

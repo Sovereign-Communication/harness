@@ -687,10 +687,13 @@ def run_driver_task(task_id, args, cancel_check):
             reason=env.get("reason"),
         )
 
-        if verify_result and verify_result.get("ok"):
-            completed = True
-            break
-        if env.get("ok"):
+        if verify_cmd:
+            # A verify command is the arbiter: an ok step whose verify failed
+            # is not a finished task, so keep going until it passes.
+            if verify_result and verify_result.get("ok"):
+                completed = True
+                break
+        elif env.get("ok"):
             completed = True
             break
 
@@ -710,6 +713,7 @@ def run_driver_task(task_id, args, cancel_check):
 
     ok_steps = sum(1 for st in steps if st["envelope"].get("ok"))
     verified = any((st["verification"] or {}).get("ok") for st in steps)
+    verify_failed = bool(verify_cmd) and not verified
     if completed and verified and ok_steps == 0:
         # The verify command passing is real evidence about the world, but it
         # is not evidence the driver did anything: say so, and do not call it
@@ -734,6 +738,10 @@ def run_driver_task(task_id, args, cancel_check):
         status = "cost_capped"
         summary = (f"Driver stopped at the ${float(max_cost):.4f} cost cap after "
                    f"{len(steps)} step(s); {ok_steps} step(s) ok, nothing verified.")
+    elif verify_failed:
+        status = "verify_failed"
+        summary = (f"The verify command failed on all {len(steps)} step(s) "
+                   f"({ok_steps} driver step(s) ok); the goal is not met.")
     else:
         status = "max_steps_reached"
         summary = (f"Driver stopped after {len(steps)} step(s) without "
@@ -951,9 +959,16 @@ def _list_missions(root, *, limit=25, offset=0):
     return {"missions": out, "total": total, "limit": limit, "offset": offset}
 
 
+# Socket timeout for one handler thread. Without it a client that announces a
+# Content-Length and never sends the body (or opens a connection and goes
+# quiet) parks a handler thread forever, before any authentication.
+_HANDLER_TIMEOUT = 10.0
+
+
 class UiRequestHandler(BaseHTTPRequestHandler):
     server_version = "harness-ui/0.1"
     protocol_version = "HTTP/1.1"
+    timeout = _HANDLER_TIMEOUT
 
     @property
     def ui(self) -> UiState:
@@ -997,7 +1012,14 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         except ValueError:
             return
         while remaining > 0:
-            chunk = self.rfile.read(min(remaining, 65536))
+            try:
+                chunk = self.rfile.read(min(remaining, 65536))
+            except OSError:
+                # Includes the handler timeout: the peer promised a body and
+                # never sent it. Give up on it; the refusal is still written
+                # and the connection closed.
+                self.close_connection = True
+                break
             if not chunk:
                 break
             remaining -= len(chunk)

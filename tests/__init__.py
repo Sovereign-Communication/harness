@@ -52,7 +52,7 @@ os.environ["HARNESS_LEDGER"] = LEDGER_ISOLATION_PATH
 # error. Set ``HARNESS_TEST_ALLOW_NETWORK=1`` to disable it (live probes).
 # ---------------------------------------------------------------------------
 NETWORK_VIOLATIONS = []
-_LOOPBACK_NAMES = {"localhost", "127.0.0.1", "::1", "0.0.0.0", ""}
+_LOOPBACK_NAMES = {"localhost", "0.0.0.0", ""}
 
 
 def _is_loopback_host(host):
@@ -63,7 +63,15 @@ def _is_loopback_host(host):
     host = str(host).strip().lower().strip("[]")
     if host in _LOOPBACK_NAMES or host.endswith(".localhost"):
         return True
-    return host.startswith("127.") or host in {"::ffff:127.0.0.1"}
+    # Only a real IP literal is loopback by address: a *name* that merely
+    # starts with "127." (127.evil.example) resolves wherever its owner says.
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return (mapped or ip).is_loopback
 
 
 def _refuse(kind, target):
@@ -71,10 +79,23 @@ def _refuse(kind, target):
     raise OSError(f"tests are hermetic: refused real network {kind} {target!r}")
 
 
+def _report_violations_at_exit():
+    # A single-module run (``python -m unittest tests.test_x``) never reaches
+    # tests/test_zz_network_guard.py; surface what was recorded anyway.
+    if NETWORK_VIOLATIONS:
+        sys.stderr.write("NETWORK_VIOLATIONS (tests reached the real network): "
+                         + "; ".join(NETWORK_VIOLATIONS) + "\n")
+
+
 if os.environ.get("HARNESS_TEST_ALLOW_NETWORK") != "1":
+    import atexit
+    atexit.register(_report_violations_at_exit)
     _real_connect = _socket.socket.connect
     _real_connect_ex = _socket.socket.connect_ex
     _real_getaddrinfo = _socket.getaddrinfo
+    _real_gethostbyname = _socket.gethostbyname
+    _real_gethostbyname_ex = _socket.gethostbyname_ex
+    _real_gethostbyaddr = _socket.gethostbyaddr
 
     def _guarded_connect(self, address):
         if (isinstance(address, tuple) and address
@@ -97,6 +118,25 @@ if os.environ.get("HARNESS_TEST_ALLOW_NETWORK") != "1":
                 _refuse("resolve", host)
         return _real_getaddrinfo(host, *args, **kwargs)
 
+    def _guarded_gethostbyname(host):
+        if not _is_loopback_host(host):
+            _refuse("resolve", host)
+        return _real_gethostbyname(host)
+
+    def _guarded_gethostbyname_ex(host):
+        if not _is_loopback_host(host):
+            _refuse("resolve", host)
+        return _real_gethostbyname_ex(host)
+
+    def _guarded_gethostbyaddr(host):
+        # A reverse lookup of a non-loopback address is a real DNS query.
+        if not _is_loopback_host(host):
+            _refuse("reverse-resolve", host)
+        return _real_gethostbyaddr(host)
+
     _socket.socket.connect = _guarded_connect
     _socket.socket.connect_ex = _guarded_connect_ex
     _socket.getaddrinfo = _guarded_getaddrinfo
+    _socket.gethostbyname = _guarded_gethostbyname
+    _socket.gethostbyname_ex = _guarded_gethostbyname_ex
+    _socket.gethostbyaddr = _guarded_gethostbyaddr

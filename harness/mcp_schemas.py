@@ -391,7 +391,7 @@ TOOL_SCHEMAS = [
                        "description": "Extraction schema (default: 'cli')"},
             "action": {"type": "string", "description": "Declared action to consent to (optional)"},
             "params": {"type": "object", "description": "Action parameter object (optional)"},
-            "by": {"type": "string", "default": "operator", "description": "Consent grantor"},
+            "by": {"type": "string", "description": "Consent grantor label (default: the MCP peer, e.g. mcp:<client>). 'operator' needs allow_write=true"},
             "require_stable": {"type": "boolean", "default": True,
                                "description": "Require stable state before execution"},
             "task_id": {"type": "string"},

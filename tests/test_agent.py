@@ -120,6 +120,9 @@ class TestAgentClassificationAndDiscovery(unittest.TestCase):
             self.assertEqual(res["intent"], "driver")
             self.assertEqual(res["status"], "done")
             self.assertTrue(mock_run_driver.called)
+            # No non-opt-in auto grant: the chat path must not ask for one.
+            args = mock_run_driver.call_args.args[1]
+            self.assertFalse(args.get("auto_approve", False))
 
     def test_execute_plan_continuation_from_prior_turn(self):
         with tempfile.TemporaryDirectory() as tmp:

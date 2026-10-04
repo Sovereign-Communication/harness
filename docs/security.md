@@ -58,6 +58,15 @@ is unchanged and still no sandbox.
   outside this process -- so the honest answer there is "not modelled", and
   Harness warns nothing rather than pretending a `0o600` exists. Windows users
   should rely on the file's ACL.
+- **Desktop token file.** `harness-desktop` persists its token in
+  `desktop_token` under the config directory. On POSIX it is created
+  `O_EXCL` with mode `0600` as a temp sibling and moved over the target with
+  `os.replace`, so a pre-existing wide-open (or attacker-pre-created) file is
+  never written to, and a symlink at that path is refused. On Windows the mode
+  bits are ignored: the file inherits the ACL of the config directory (normally
+  per-user under `%APPDATA%`/the profile), which Harness does not inspect or
+  tighten, and `os.replace` over a file another process holds open can fail
+  (the token then simply is not persisted). Rely on the directory ACL there.
 - **Allowed roots (`osal.is_within`).** macOS and Windows filesystems are
   case-insensitive by default, so a case-sensitive string comparison refuses
   a legitimate in-tree path (and, worse, could treat two spellings as two

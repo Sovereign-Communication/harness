@@ -24,3 +24,6 @@ audits/scmessenger/round6/
 # Local scratch: lockfile from uv, matrix run output
 uv.lock
 dogfood_matrix_results.json
+
+# Hermetic test env created by scripts/hermetic-env.sh (isolated HOME/TMP/ledger)
+.hermetic/

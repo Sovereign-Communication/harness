@@ -135,6 +135,14 @@ person). It cannot authorise a mutating or irreversible action; those need a
 parameter-bound consent from you on `/api/driver/step`. The driver also
 refuses anything its own consent law or executor registry does not allow.
 
+There is no non-opt-in automatic grant on any path: the chat/agent driver
+intent, `/api/driver/drive` without `auto_approve`, and a direct
+`/api/driver/step` without `consent` all send none. The MCP `driver_step`
+labels its grants `mcp:<client>` (never as a person); a caller-supplied
+`by: "operator"` is refused unless the server was configured with write
+access (`HARNESS_MCP_ALLOW_WRITE`) or the call carries `allow_write=true`,
+the same confirmation `apply_edit` uses.
+
 ## Command line
 
 ```bash
@@ -169,8 +177,8 @@ a token in the URL query string is **not** accepted): no token or a wrong token 
 | `POST /api/driver/drive` | Start a multi-step run (a normal UI run: 201 with an `id`; poll `GET /api/runs/<id>/result`). Body: `goal` (required), optional `target`, `schema`, `max_steps` (1-20, default 5), `verify` (a gate command, see below), `require_stable`, `auto_approve` (default false), `max_cost` (stop before the next step once the run's reported driver cost reaches it). |
 
 `/api/driver/drive` walks the perception tiers in order (`cli`, `mcp`, `dom`,
-`screen`), one per step, until a step succeeds or the optional `verify`
-command passes. Its result reports `status`, `ok_steps` (how many steps the
+`screen`), one per step, until a step succeeds (or, when a `verify` command is
+given, until that command passes; a failing verify keeps the run stepping). Its result reports `status`, `ok_steps` (how many steps the
 driver actually completed), per-step envelopes, total cost, the audit verdict
 and a `summary`:
 
@@ -178,7 +186,8 @@ and a `summary`:
 |---|---|
 | `done` | A step succeeded and, if a `verify` command was given, it passed ("goal met"); or a step succeeded with no `verify` command (the summary says nothing confirmed it). |
 | `verified_without_driver` | The `verify` command passed but the driver executed 0 steps successfully: the result is real but not attributable to the driver. |
-| `max_steps_reached` | No success within `max_steps`; the summary says nothing was verified. |
+| `verify_failed` | A `verify` command was given and it never passed within `max_steps`. A successful driver step does not end the run while verify fails, and the status is never `done`; the summary says the verify failed. |
+| `max_steps_reached` | No success within `max_steps` (no `verify` command given); the summary says nothing was verified. |
 | `cost_capped` | Stopped at `max_cost`. |
 | `cancelled` | Cancelled by the caller. |
 
