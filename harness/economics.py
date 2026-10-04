@@ -40,10 +40,11 @@ Two invariants this module enforces
 
    Every ranking, reserve, and future auto-rotation decision inverts on that
    answer, so it is settled by MEASUREMENT (:func:`run_discount_probe`), not
-   by reading docs, and :func:`effective_price` refuses to return a number
-   until the verdict is in the COMMITTED receipt and still applicable.  An
-   unknown verdict is a hard failure -- never a default, because a default
-   here is a silent 2x error in the cost model of the whole system.
+   by reading docs, and :func:`resolve_discount_semantics` -- the gate --
+   refuses to yield an answer until the verdict is in the COMMITTED receipt
+   and still applicable.  An unknown verdict is a hard failure -- never a
+   default, because a default here is a silent 2x error in the cost model of
+   the whole system.
 
    The verdict's *location* is part of that.  It is a repo-committed receipt
    under ``audits/self/dogfood/`` (see :func:`discount_verdict_path`), not
@@ -55,18 +56,23 @@ Two invariants this module enforces
 
 Scope
 -----
-EV-0 only: evidence in, evidence out.  There is deliberately no
-cost-per-capability index, no tier snapshot, no routing change, and no
-automatic pool movement here; those are EV-1..EV-4 and they consume this
-module through :func:`effective_price`, which is why the gate has to be real
-before they land.
+EV-0 only: evidence in, evidence out, plus the gate that refuses to let a
+promotion's meaning be guessed.  There is deliberately no report surface, no
+cost-per-capability index, no cheapest-endpoint selection, no tier snapshot,
+no routing change, and no automatic pool movement here; those are EV-1..EV-4
+and they consume this module through :func:`resolve_discount_semantics` and
+the per-endpoint arithmetic, which is why the gate has to be real before they
+land.  An earlier draft of this module also shipped a shortlist-pricing report
+(``build_economics_report``/``write_receipt``) and an endpoint-selection
+policy (``is_eligible``/``min_uptime``/``cache_eligible``).  Both were
+unrequested scope and were removed; see ``DF-EV-12`` in
+``docs/jev-roadmap.md``.
 """
 import json
 import os
 import time
 from dataclasses import dataclass, field
 
-from ._http import HttpTransport
 from .chat import extract_content_and_cost
 from .config import (
     BENCHMARK_SOURCES,
@@ -79,14 +85,12 @@ from .config import (
     DISCOUNT_PROBE_TOLERANCE,
     DISCOUNT_SEMANTICS_VALUES,
     DISCOUNT_UNRESOLVED,
-    ECONOMICS_RECEIPT_DIR,
     ECONOMICS_SCHEMA_VERSION,
     ECONOMICS_VERDICT_PATH,
     MAX_ENDPOINT_FETCHES_PER_RUN,
     OPENROUTER_BENCHMARKS_URL,
     OPENROUTER_CHAT_URL,
     OPENROUTER_ENDPOINTS_URL,
-    shipped_model_ids,
 )
 from .errors import HarnessError
 from .events import emit
@@ -134,6 +138,9 @@ class EndpointPrice:
     tag: object = None
     discount: float = 0.0
     overrides: tuple = ()
+    # Published and parsed, deliberately not priced here: whether a given
+    # call may use the cached-input rate is a routing decision that belongs
+    # to EV-1's selection policy, not to ingest.
     input_cache_read: object = None
     context_length: int = 0
     max_completion_tokens: int = 0
@@ -188,28 +195,15 @@ class EndpointPrice:
             rate_out *= keep
         return rate_in, rate_out
 
-    def blended_usd(self, input_tokens, output_tokens, *, semantics,
-                    cache_eligible=False):
+    def blended_usd(self, input_tokens, output_tokens, *, semantics):
         """Dollar cost of one call at this endpoint. Never mixes endpoints."""
         rate_in, rate_out = self.rates_for(input_tokens, True, semantics)
-        if cache_eligible and self.input_cache_read is not None:
-            rate_in = self.input_cache_read
         return (input_tokens * rate_in) + (output_tokens * rate_out)
 
     @property
     def name(self):
-        """Human-facing identity used in reports and probe match lists."""
+        """Human-facing identity, used in the probe's match lists."""
         return f"{self.provider_name}|{self.tag}" if self.tag else self.provider_name
-
-    def is_eligible(self, *, min_uptime=0.0):
-        """Whether this offer can be routed to at all.
-
-        A provider reporting degraded uptime is not a cheaper model, it is an
-        unavailable one, and picking it converts a price win into a 429.
-        """
-        if min_uptime and self.uptime_1d is not None:
-            return self.uptime_1d >= min_uptime
-        return True
 
     def to_dict(self):
         return {
@@ -236,11 +230,9 @@ class ModelEndpoints:
 
     model_id: str
     endpoints: tuple = field(default_factory=tuple)
-    fetched_at: float = 0.0
 
     def __post_init__(self):
         object.__setattr__(self, "endpoints", tuple(self.endpoints or ()))
-        object.__setattr__(self, "fetched_at", float(self.fetched_at or 0.0))
 
     @property
     def max_discount(self):
@@ -251,11 +243,6 @@ class ModelEndpoints:
     def has_discount(self):
         return self.max_discount > 0.0
 
-    def to_dict(self):
-        return {"model": self.model_id,
-                "endpoints": [e.to_dict() for e in self.endpoints],
-                "max_discount": self.max_discount}
-
     def __repr__(self):  # pragma: no cover - debug aid
         return f"<ModelEndpoints {self.model_id} n={len(self.endpoints)}>"
 
@@ -263,7 +250,7 @@ class ModelEndpoints:
 # --------------------------------------------------------------------------
 # Endpoint ingest
 # --------------------------------------------------------------------------
-def _parse_endpoints(model_id, payload, fetched_at=None):
+def _parse_endpoints(model_id, payload):
     """Build ModelEndpoints from a raw /endpoints body.
 
     Raises rather than degrading: a silently half-parsed price table is worse
@@ -312,15 +299,15 @@ def _parse_endpoints(model_id, payload, fetched_at=None):
     if not parsed:
         raise HarnessError(f"endpoints feed for {model_id} contained no "
                            f"usable provider offers")
-    return ModelEndpoints(model_id, tuple(parsed), fetched_at=fetched_at)
+    return ModelEndpoints(model_id, tuple(parsed))
 
 
 def fetch_endpoints(transport, api_key, model_id, *, timeout=20):
     """One GET for one model's per-provider offers.
 
-    Deliberately one request per model: the benchmark account budget is 500
-    requests/day and this feed is the reason ``fetch_endpoints_for`` refuses
-    a catalog-wide sweep by default.
+    Deliberately one request per model: the feed is metered at 30 requests
+    per minute and 500 per day per account, and this feed is the reason
+    ``fetch_endpoints_for`` refuses a catalog-wide sweep by default.
     """
     canonical = strip_variant_suffix(model_id)
     url = OPENROUTER_ENDPOINTS_URL.format(slug=canonical)
@@ -328,7 +315,7 @@ def fetch_endpoints(transport, api_key, model_id, *, timeout=20):
     if isinstance(payload, dict) and payload.get("error"):
         raise HarnessError(f"endpoints feed for {model_id} returned an error: "
                            f"{payload['error'].get('message', payload['error'])}")
-    endpoints = _parse_endpoints(model_id, payload, fetched_at=time.time())
+    endpoints = _parse_endpoints(model_id, payload)
     emit("economics_endpoints", model=canonical, endpoints=len(endpoints.endpoints),
          max_discount=endpoints.max_discount)
     return endpoints
@@ -338,26 +325,25 @@ def fetch_endpoints_for(transport, api_key, model_ids, *,
                         max_fetches=MAX_ENDPOINT_FETCHES_PER_RUN):
     """Fetch endpoints for an explicit shortlist. THE ONE OWNER OF THE BOUND.
 
-    Every caller goes through here. That is the whole point: when the budget
-    check lived here but :func:`build_economics_report` looped
-    :func:`fetch_endpoints` directly, the production path issued one GET per
-    requested model while reporting the budget it had been given (and with no
-    flag, ``[:None]`` made the default unbounded). A guard that only the tests
-    called is not a guard.
+    Every caller goes through here. That is the whole point: when the bound
+    check lived here while the shipped report looped :func:`fetch_endpoints`
+    around it, the production path issued one GET per requested model and
+    reported the budget it had been given (and with no flag, ``[:None]`` made
+    the default unbounded). A guard that only the tests call is not a guard.
+    That report has since been removed as unrequested scope (DF-EV-12); this
+    function and its bound are what survive, and the probe now routes through
+    here rather than around it.
 
     The bound is checked BEFORE any request is issued, and it refuses rather
-    than truncating: a silently partial report reads as full coverage, which
-    is the failure this module exists to prevent. It is also fail-closed for
-    the implicit default, so if the shipped pool ever outgrows
-    ``max_fetches`` the operator is told instead of being handed a truncated
-    artifact.
+    than truncating: a silently partial result reads as full coverage, which
+    is the failure this module exists to prevent.
 
     Returns ``{"priced": {model_id: ModelEndpoints}, "errors": {model_id:
     message}}``. Per-model failures are isolated rather than raised, because
-    one model leaving the catalog must not cost the operator every other
-    price in the report -- but the caller is expected to make each error
-    VISIBLE, since a shipped model quietly absent from a report is exactly the
-    silent-degradation defect this module's own docstring rejects.
+    one model leaving the catalog must not cost a caller every other price --
+    but the caller is expected to make each error VISIBLE, since a model
+    quietly absent from a result is exactly the silent-degradation defect this
+    module's own docstring rejects.
     """
     # Strip BEFORE deduping: `a/m` and `a/m:free` are one model, and issuing
     # a GET for each would spend the daily request budget twice on one row.
@@ -367,7 +353,7 @@ def fetch_endpoints_for(transport, api_key, model_ids, *,
         raise HarnessError(
             f"endpoint fetch budget is {max_fetches} models per run; {len(ids)} "
             f"requested. Endpoint coverage is shortlist-scoped by design "
-            f"(DF-EV-2): pass the ids you actually route to, or raise "
+            f"(DF-EV-2): pass only the ids you route to, or raise "
             f"max_fetches explicitly. No requests were issued.")
     priced, errors = {}, {}
     for model_id in ids:
@@ -496,14 +482,25 @@ def run_discount_probe(transport, api_key, governor, model_id, *,
     matching endpoints named, and the gate keeps refusing until a model is
     found whose offers do not collide.
     """
-    endpoints = fetch_endpoints(transport, api_key, model_id)
+    canonical = strip_variant_suffix(model_id)
+    # Through the bound owner, never around it. One probe is one GET, and the
+    # owner is what keeps the metered feed intact when a caller fans out.
+    fetched = fetch_endpoints_for(transport, api_key, [model_id],
+                                 max_fetches=1)
+    if canonical not in fetched["priced"]:
+        # fetch_endpoints_for isolates a per-model failure so one dead model
+        # cannot cost a whole report its prices. A probe has no other model to
+        # fall back on, so re-raise instead of reporting an unresolved verdict
+        # for a measurement that never happened.
+        raise HarnessError(fetched["errors"].get(
+            canonical, f"endpoint feed returned no usable offers for "
+                       f"{model_id}"))
+    endpoints = fetched["priced"][canonical]
     if not endpoints.has_discount:
         raise HarnessError(
             f"{model_id} publishes no discount on any endpoint "
             f"(max={endpoints.max_discount}); it cannot settle discount "
             f"semantics. Pick a model with a running promotion.")
-
-    canonical = strip_variant_suffix(model_id)
     if governor is not None:
         governor.check_byok(canonical)
         governor.preflight(prompt, [(f"discount-probe {canonical}",
@@ -744,135 +741,10 @@ def resolve_discount_semantics(endpoints, path=None, repo_root=None):
             f"`harness economics --probe-model <id> --record`.")
     return record["semantics"]
 
-
-def effective_price(endpoints, input_tokens, output_tokens, *, path=None,
-                    repo_root=None, cache_eligible=False, min_uptime=0.0):
-    """THE GATE. Cheapest real cost for a call, or a refusal.
-
-    Chooses among *per-endpoint* blended costs (never mixing rates across
-    providers) and refuses outright when the model's promotion has no
-    committed, still-applicable verdict. Every EV-1+ consumer goes through
-    here rather than reading an endpoint price directly.
-    """
-    semantics = resolve_discount_semantics(endpoints, path=path,
-                                           repo_root=repo_root)
-    eligible = [e for e in endpoints.endpoints if e.is_eligible(min_uptime=min_uptime)]
-    if not eligible:
-        eligible = list(endpoints.endpoints)
-    if not eligible:
-        raise HarnessError(f"no provider offer available for {endpoints.model_id}")
-    best = min(eligible, key=lambda e: e.blended_usd(
-        input_tokens, output_tokens, semantics=semantics,
-        cache_eligible=cache_eligible))
-    return best, best.blended_usd(input_tokens, output_tokens,
-                                  semantics=semantics,
-                                  cache_eligible=cache_eligible)
-
-
 # --------------------------------------------------------------------------
-# Receipt
-# --------------------------------------------------------------------------
-def build_economics_report(governor, ledger, *, api_key=None, transport=None,
-                           benchmark_ids=None, probe_model=None,
-                           max_fetches=None, verdict_path=None):
-    """Assemble the EV-0 evidence artifact.
-
-    Read-only with respect to configuration: it ingests and reports, and it
-    never mutates a pool, a lane default, or a ceiling. Whether to *apply*
-    anything is EV-3/EV-4's job, and this report is their only input.
-
-    Endpoint pricing is delegated to :func:`fetch_endpoints_for` and must stay
-    that way. This function used to loop :func:`fetch_endpoints` itself, which
-    meant the report issued one GET per requested model while writing the
-    budget it had been given into the artifact -- the budget was real in the
-    helper and inert in production. Any future fan-out added here inherits
-    that: call the owner, not the single-model fetch.
-    """
-    if transport is None:
-        transport = HttpTransport()
-    benchmarks = fetch_benchmarks(transport, api_key)
-    catalog_ids = None
-    if governor is not None:
-        try:
-            catalog_ids = [m.get("id") for m in governor.fetch_models()
-                           if m.get("id")]
-        except HarnessError as exc:
-            eprint(f"[warn] economics: catalog unavailable ({exc})")
-
-    # An unset bound is still a bound. The run cap exists to protect a
-    # metered feed, so it is not opt-in: the CLI passes `None` when
-    # --max-fetches is absent, and resolving it here is what stops `[:None]`
-    # from turning the default into an unbounded sweep. The number reported
-    # below is therefore always the number that was enforced.
-    budget = (MAX_ENDPOINT_FETCHES_PER_RUN if max_fetches is None
-              else int(max_fetches))
-    shortlist = [strip_variant_suffix(m) for m in (benchmark_ids or [])]
-    if not shortlist:
-        # Default shortlist: the ids this install actually routes to. Those
-        # are the ones whose real price decides a cost decision, so they are
-        # the slice worth spending the daily request budget on. Catalog-wide
-        # coverage is /models (unmetered); endpoint coverage is this list.
-        # NOT truncated to the budget here: a quietly shortened list produces
-        # a partial report that reads as full coverage. The guard below
-        # refuses instead, and says so.
-        shortlist = sorted(strip_variant_suffix(m) for m in shipped_model_ids())
-        eprint(f"[info] economics: no ids given; pricing the "
-               f"{len(shortlist)} shipped lane models against a budget of "
-               f"{budget} endpoint fetches (endpoint coverage is "
-               f"shortlist-scoped by design)")
-
-    endpoint_rows, endpoint_errors = {}, {}
-    if shortlist:
-        fetched = fetch_endpoints_for(transport, api_key, shortlist,
-                                      max_fetches=budget)
-        endpoint_rows = {model_id: ep.to_dict()
-                         for model_id, ep in fetched["priced"].items()}
-        endpoint_errors = dict(fetched["errors"])
-        if endpoint_errors:
-            eprint(f"[warn] economics: {len(endpoint_errors)} of "
-                   f"{len(shortlist)} requested models have no endpoint price; "
-                   f"they are listed under endpoint_errors in the receipt, so "
-                   f"this run does not cover them")
-
-    probe_record = None
-    if probe_model:
-        probe_record = run_discount_probe(transport, api_key, governor,
-                                           probe_model)
-
-    report = {
-        "schema": ECONOMICS_SCHEMA_VERSION,
-        "captured_at": time.time(),
-        "benchmark_meta": benchmarks.get("meta"),
-        "benchmarks": benchmarks.get("rows"),
-        "benchmark_count": len(benchmarks.get("rows") or []),
-        "catalog_size": len(catalog_ids or []),
-        "endpoint_models": endpoint_rows,
-        "endpoint_errors": endpoint_errors,
-        "shortlist_size": len(shortlist),
-        "max_fetches": budget,
-        "discount_semantics_recorded": load_discount_semantics(verdict_path),
-        "discount_probe": probe_record,
-    }
-    if ledger is not None:
-        try:
-            report["cost_by_model"] = governor.cost_by_model()
-        except Exception:  # a governor without spend history is not an error
-            report["cost_by_model"] = {}
-    return report
-
-
-def write_receipt(report, directory=ECONOMICS_RECEIPT_DIR, *, name=None):
-    """Write the artifact through the ONE owner of evidence bytes (LF).
-
-    LF is not cosmetic here: a CRLF receipt on Windows shows up as a dirty
-    tree immediately after the gate that is meant to prove it clean, which is
-    the same defect class ``GAP-freeze-face`` closed for the audit receipt.
-    """
-    stamp = name or time.strftime("%Y-%m-%d", time.gmtime(report.get("captured_at") or 0))
-    directory = os.path.join(directory, "") if directory else ""
-    target = os.path.join(directory, f"economics-{stamp}.json")
-    os.makedirs(directory, exist_ok=True)
-    write_text(target, json.dumps(report, indent=2, sort_keys=True) + "\n")
-    latest = os.path.join(directory, "latest.json")
-    write_text(latest, json.dumps(report, indent=2, sort_keys=True) + "\n")
-    return target
+# EV-0 ends here. The report surface (build_economics_report /
+# write_receipt), the cheapest-endpoint selection (effective_price) and its
+# routing policy (is_eligible / min_uptime / cache_eligible) were removed as
+# unrequested scope: canon assigns selection and the cost index to EV-1..EV-4
+# (DF-EV-12). What EV-0 owes them is the evidence above plus a gate that
+# refuses rather than guesses.

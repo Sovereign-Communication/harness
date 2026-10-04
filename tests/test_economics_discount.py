@@ -12,6 +12,7 @@ provider-reported charge.
 """
 import io
 import json
+import inspect
 import os
 import tempfile
 import unittest
@@ -23,7 +24,7 @@ from harness.config import (CONFIG_DIR, DISCOUNT_AMBIGUOUS,
                             DISCOUNT_IS_MULTIPLIER, DISCOUNT_LISTED_IS_EFFECTIVE,
                             DISCOUNT_NOT_APPLICABLE, DISCOUNT_UNRESOLVED,
                             ECONOMICS_VERDICT_PATH)
-from harness.economics import (REPO_ROOT, discount_verdict_path, effective_price,
+from harness.economics import (REPO_ROOT, discount_verdict_path,
                                load_discount_semantics,
                                record_discount_semantics,
                                resolve_discount_semantics, run_discount_probe)
@@ -45,9 +46,13 @@ class ProbeTransport:
         self.usage = usage
         self.status = status
         self.posts = []
+        self.gets = []
 
     def get(self, url, api_key, timeout=15):
         model = url.split("/models/", 1)[1].rsplit("/endpoints", 1)[0]
+        self.gets.append(model)
+        if self.offers is None:
+            return {"error": {"message": f"no such model {model}"}}
         return {"data": {"id": model, "endpoints": self.offers}}
 
     def post(self, url, api_key, payload, timeout=60):
@@ -182,6 +187,64 @@ class ProbeDecisionTests(unittest.TestCase):
         self.assertTrue(payload["model"].endswith(":floor"))
 
 
+class ProbeFetchBoundTests(unittest.TestCase):
+    """The probe is the only shipped caller of endpoint fetch, so the bound
+    has to hold ON THE PROBE -- not merely in a helper the tests call.
+
+    That is the exact shape of DF-EV-9: the guard was real and reachable only
+    from tests while the shipped surface looped `fetch_endpoints` around it.
+    `run_discount_probe` now goes through `fetch_endpoints_for`, and these
+    tests drive the probe itself.
+    """
+
+    def _transport(self, *, missing=False):
+        offers = None if missing else [_offer("Only", 2e-6, 10e-6,
+                                               discount=0.5)]
+        return ProbeTransport(offers, usage={"cost": 1e-5, "prompt_tokens": 100,
+                                             "completion_tokens": 40})
+
+    def test_one_probe_is_exactly_one_endpoint_get(self):
+        transport = self._transport()
+        run_discount_probe(transport, "k", None, "acme/sol:free")
+        # Stripped to the canonical id, fetched once, for the model asked for.
+        self.assertEqual(transport.gets, ["acme/sol"])
+
+    def test_a_failing_feed_raises_and_is_announced(self):
+        """A probe has no other model to fall back on, so a dead feed is a
+        raised error -- never an `unresolved` verdict for a measurement that
+        never happened -- and it is announced, not swallowed."""
+        transport = self._transport(missing=True)
+        buffer = io.StringIO()
+        with redirect_stderr(buffer):
+            with self.assertRaises(HarnessError) as ctx:
+                run_discount_probe(transport, "k", None, "acme/sol")
+        self.assertIn("no such model acme/sol", str(ctx.exception))
+        self.assertIn("[warn] economics: endpoint feed failed for acme/sol",
+                      buffer.getvalue())
+        self.assertEqual(transport.posts, [])
+
+    def test_the_owner_would_refuse_a_fan_out_before_spending_anything(self):
+        """The bound is one GET per model inside a fixed run budget, and an
+        over-budget list is refused rather than truncated."""
+        from harness.economics import fetch_endpoints_for
+        transport = self._transport()
+        with self.assertRaises(HarnessError) as ctx:
+            fetch_endpoints_for(transport, "k",
+                                [f"acme/m{i}" for i in range(3)],
+                                max_fetches=2)
+        self.assertIn("No requests were issued", str(ctx.exception))
+        self.assertEqual(transport.gets, [])
+
+    def test_the_probe_cannot_loop_the_single_model_fetch(self):
+        """Source-level, because with one model the bypass is otherwise
+        invisible: DF-EV-9 was exactly a call site looping `fetch_endpoints`
+        while the bound sat in a helper only the tests called."""
+        source = inspect.getsource(harness.economics.run_discount_probe)
+        self.assertIn("fetch_endpoints_for(", source)
+        self.assertNotIn("fetch_endpoints(",
+                         source.replace("fetch_endpoints_for(", "OWNER("))
+
+
 class RecordingTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -258,7 +321,7 @@ class GateTests(unittest.TestCase):
     def test_gate_refuses_with_no_verdict(self):
         endpoints = self._endpoints()
         with self.assertRaises(HarnessError) as ctx:
-            effective_price(endpoints, 8000, 1000, path=self.path)
+            resolve_discount_semantics(endpoints, path=self.path)
         message = str(ctx.exception)
         self.assertIn("no committed semantics verdict", message)
         self.assertIn("2.00x", message)
@@ -272,76 +335,59 @@ class GateTests(unittest.TestCase):
 
     def test_no_promotion_means_the_question_does_not_arise(self):
         endpoints = self._endpoints(discount=0.0)
-        self.assertEqual(resolve_discount_semantics(endpoints, path=self.path),
-                         DISCOUNT_NOT_APPLICABLE)
-        endpoint, cost = effective_price(endpoints, 8000, 1000, path=self.path)
-        self.assertAlmostEqual(cost, 8000 * 2e-6 + 1000 * 10e-6)
-        self.assertEqual(endpoint.provider_name, "Only")
+        semantics = resolve_discount_semantics(endpoints, path=self.path)
+        self.assertEqual(semantics, DISCOUNT_NOT_APPLICABLE)
+        # Listed rates, used as-is: no verdict is needed to price an
+        # unpromoted endpoint.
+        self.assertAlmostEqual(
+            endpoints.endpoints[0].blended_usd(8000, 1000, semantics=semantics),
+            8000 * 2e-6 + 1000 * 10e-6)
 
-    def test_verdict_decides_whether_the_discount_is_applied(self):
+    def test_the_verdict_is_what_the_two_readings_worth_2x(self):
+        """EV-0's whole reason for existing, stated on the surviving
+        arithmetic: the same offer priced under the two committed verdicts.
+
+        Which endpoint wins, and whether an offer may be routed to at all, is
+        EV-1's selection policy (DF-EV-12) -- but the 2x it inverts on is
+        measured here and nowhere else.
+        """
         self._record(DISCOUNT_LISTED_IS_EFFECTIVE)
-        _endpoint, listed = effective_price(self._endpoints(), 8000, 1000,
-                                            path=self.path)
-        self.assertAlmostEqual(listed, 8000 * 2e-6 + 1000 * 10e-6)
+        listed = resolve_discount_semantics(self._endpoints(), path=self.path)
+        endpoints = self._endpoints()
+        as_listed = endpoints.endpoints[0].blended_usd(
+            8000, 1000, semantics=listed)
+        self.assertAlmostEqual(as_listed, 8000 * 2e-6 + 1000 * 10e-6)
 
         self._record(DISCOUNT_IS_MULTIPLIER)
-        _endpoint, discounted = effective_price(self._endpoints(), 8000, 1000,
-                                                path=self.path)
-        self.assertAlmostEqual(discounted, (8000 * 1e-6) + (1000 * 5e-6))
+        multiplier = resolve_discount_semantics(self._endpoints(), path=self.path)
+        as_multiplier = endpoints.endpoints[0].blended_usd(
+            8000, 1000, semantics=multiplier)
+        self.assertAlmostEqual(as_multiplier, (8000 * 1e-6) + (1000 * 5e-6))
         # Exactly the 2x the ambiguity was worth measuring for.
-        self.assertAlmostEqual(listed / discounted, 2.0, places=6)
+        self.assertAlmostEqual(as_listed / as_multiplier, 2.0, places=6)
 
-    def test_gate_picks_the_cheapest_offer_without_mixing_rates(self):
-        """The inverted in/out pair from DF-EV-2: no blending of the cheapest
-        input from one provider with the cheapest output from another.
-
-        At 8000in/1000out the CheapIn offer really is cheaper overall
-        ($0.00028 vs $0.00405), yet ExpensiveIn has the cheaper *output*
-        rate. Mixing the two per-field would report $0.00013 -- a phantom
-        price no provider would charge, and the number a cost index built
-        per-field would publish.
-        """
+    def test_every_offer_is_priced_from_its_own_rates(self):
+        """Canon invariant 3 (DF-EV-2): never mix per-endpoint prices. The
+        arithmetic is per endpoint by construction, which is what lets EV-1
+        pick a whole offer rather than a phantom blended one."""
         from harness.economics import fetch_endpoints
         transport = ProbeTransport(
             [_offer("CheapInExpensiveOut", 1e-8, 2e-7, discount=0.0),
              _offer("ExpensiveInCheapOut", 5e-7, 5e-8, discount=0.0)],
             usage=None)
         endpoints = fetch_endpoints(transport, "k", "acme/mix")
-        endpoint, cost = effective_price(endpoints, 8000, 1000, path=self.path)
-
-        self.assertEqual(endpoint.provider_name, "CheapInExpensiveOut")
-        # The winner is whole: its own output rate, not the cheaper one.
-        self.assertAlmostEqual(cost, 8000 * 1e-8 + 1000 * 2e-7)
-        cheapest_out = endpoints.endpoints[1]
-        self.assertLess(cheapest_out.completion, endpoint.completion)
-        phantom = 8000 * endpoint.prompt + 1000 * cheapest_out.completion
-        self.assertLess(phantom, cost)
-
-    def test_ineligible_offer_is_not_chosen_as_the_cheap_one(self):
-        from harness.economics import fetch_endpoints
-        transport = ProbeTransport([
-            dict(_offer("Degraded", 1e-9, 1e-9, discount=0.0),
-                 uptime_last_1d=40.0),
-            dict(_offer("Healthy", 2e-6, 4e-6, discount=0.0),
-                 uptime_last_1d=99.9),
-        ], usage=None)
-        endpoints = fetch_endpoints(transport, "k", "acme/health")
-        endpoint, _cost = effective_price(endpoints, 8000, 1000, path=self.path,
-                                          min_uptime=90.0)
-        self.assertEqual(endpoint.provider_name, "Healthy")
-
-    def test_cached_input_is_the_cheaper_rate_when_eligible(self):
-        from harness.economics import fetch_endpoints
-        offer = _offer("Cached", 2e-6, 10e-6, discount=0.0)
-        offer["pricing"]["input_cache_read"] = 2e-7
-        transport = ProbeTransport([offer], usage=None)
-        endpoints = fetch_endpoints(transport, "k", "acme/cache")
-
-        _e, uncached = effective_price(endpoints, 8000, 1000, path=self.path)
-        _e, cached = effective_price(endpoints, 8000, 1000, path=self.path,
-                                     cache_eligible=True)
-        self.assertAlmostEqual(cached, 8000 * 2e-7 + 1000 * 10e-6)
-        self.assertLess(cached, uncached)
+        cheap_in, cheap_out = endpoints.endpoints
+        self.assertAlmostEqual(
+            cheap_in.blended_usd(8000, 1000, semantics=DISCOUNT_NOT_APPLICABLE),
+            8000 * 1e-8 + 1000 * 2e-7)
+        self.assertAlmostEqual(
+            cheap_out.blended_usd(8000, 1000, semantics=DISCOUNT_NOT_APPLICABLE),
+            8000 * 5e-7 + 1000 * 5e-8)
+        # The phantom a per-field blend would report is cheaper than any
+        # real offer, which is exactly why nobody is allowed to build one.
+        phantom = 8000 * cheap_in.prompt + 1000 * cheap_out.completion
+        self.assertLess(phantom, cheap_in.blended_usd(
+            8000, 1000, semantics=DISCOUNT_NOT_APPLICABLE))
 
 
 class CommittedVerdictTests(unittest.TestCase):
@@ -421,7 +467,7 @@ class CommittedVerdictTests(unittest.TestCase):
                            "fingerprint": {"model": "acme/sol",
                                            "max_discount": 0.5}}, stream)
             with self.assertRaises(HarnessError) as ctx:
-                effective_price(endpoints, 8000, 1000, repo_root=self.repo)
+                resolve_discount_semantics(endpoints, repo_root=self.repo)
 
         message = str(ctx.exception)
         self.assertIn("no committed semantics verdict", message)
@@ -448,10 +494,11 @@ class CommittedVerdictTests(unittest.TestCase):
         self.assertIn("commit it", buffer.getvalue())
 
         # Round trip with NO path override: the committed receipt is enough.
-        endpoint, cost = effective_price(endpoints, 8000, 1000,
-                                        repo_root=self.repo)
-        self.assertAlmostEqual(cost, 8000 * 1e-6 + 1000 * 5e-6)
-        self.assertEqual(endpoint.provider_name, "Only")
+        semantics = resolve_discount_semantics(endpoints, repo_root=self.repo)
+        self.assertEqual(semantics, DISCOUNT_IS_MULTIPLIER)
+        self.assertAlmostEqual(
+            endpoints.endpoints[0].blended_usd(8000, 1000, semantics=semantics),
+            8000 * 1e-6 + 1000 * 5e-6)
 
     def test_an_explicit_path_still_overrides_for_hermetic_runs(self):
         """`--verdict-path` exists so tests and CI never write the checkout."""
@@ -460,6 +507,6 @@ class CommittedVerdictTests(unittest.TestCase):
         self._record(path=scratch)
         self.assertFalse(os.path.exists(
             os.path.join(self.repo, ECONOMICS_VERDICT_PATH)))
-        _endpoint, cost = effective_price(endpoints, 8000, 1000, path=scratch,
-                                          repo_root=self.repo)
-        self.assertAlmostEqual(cost, 8000 * 1e-6 + 1000 * 5e-6)
+        semantics = resolve_discount_semantics(endpoints, path=scratch,
+                                               repo_root=self.repo)
+        self.assertEqual(semantics, DISCOUNT_IS_MULTIPLIER)

@@ -51,14 +51,12 @@ OPENROUTER_ENDPOINTS_URL = "https://openrouter.ai/api/v1/models/{slug}/endpoints
 # Benchmark sources documented by the /benchmarks endpoint.
 BENCHMARK_SOURCES = ("artificial-analysis", "design-arena", "openrouter")
 
-# Published limits on the benchmark feed: 30 requests/minute and 500
-# requests/day per account. This is why endpoint fetching is SHORTLIST-SCOPED
-# rather than catalog-scoped: one GET per model means a full-catalog sweep
-# (~400 models) would nearly exhaust the daily budget by itself. Catalog-wide
-# coverage comes from /models (unmetered); endpoint coverage is an explicit
-# shortlist, and a deep sweep is an operator-invoked decision.
-BENCHMARK_RATE_LIMIT_PER_MINUTE = 30
-BENCHMARK_RATE_LIMIT_PER_DAY = 500
+# Published limits on the benchmark feed are 30 requests/minute and 500
+# requests/day per account (the numbers are quoted in `fetch_endpoints`'s
+# docstring rather than held as unused constants). This is why endpoint
+# fetching is bounded rather than catalog-scoped: one GET per model means a
+# full-catalog sweep (~400 models) would nearly exhaust the daily budget by
+# itself. Catalog-wide coverage comes from /models (unmetered).
 MAX_ENDPOINT_FETCHES_PER_RUN = 40
 
 # Discount semantics. OpenRouter publishes a per-endpoint `discount` (0..1)
@@ -69,7 +67,6 @@ MAX_ENDPOINT_FETCHES_PER_RUN = 40
 # recorded answer.
 DISCOUNT_LISTED_IS_EFFECTIVE = "listed_is_effective"
 DISCOUNT_IS_MULTIPLIER = "discount_is_multiplier"
-DISCOUNT_SEMANTICS_UNKNOWN = "unknown"
 # Neither hypothesis matched the measured charge (or both did -- provider
 # price aliasing makes that possible, see economics.run_discount_probe).
 DISCOUNT_UNRESOLVED = "unresolved"
@@ -104,7 +101,6 @@ DISCOUNT_PROBE_PROMPT = "Reply with the single word: ok"
 # ~/.config: a verdict that exists only on one machine is not evidence, and a
 # fallback would make the gate's answer depend on whose checkout is asking.
 ECONOMICS_SCHEMA_VERSION = 1
-ECONOMICS_RECEIPT_DIR = "audits/self/economics"
 ECONOMICS_VERDICT_PATH = "audits/self/dogfood/EV0A_DISCOUNT_SEMANTICS.json"
 
 # MorphLite-compatible transformation backend. Selecting the `morph` backend
