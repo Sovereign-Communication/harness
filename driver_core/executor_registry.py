@@ -128,6 +128,35 @@ WRITE_EXECUTORS = {
     "submit_irreversible": _submit_irreversible,
 }
 
+#: Executors that reach the machine through ``osal.send_input`` and are
+#: therefore inert until a host registers an input backend for its platform.
+INPUT_BACKED = ("click", "type_text", "press_key", "focus", "scroll",
+                "submit_irreversible")
+
+
+def executability(action, registry):
+    """Whether ``action`` can run on this driver *right now*.
+
+    Declared is not executable: the vocabulary names every action, but an
+    executor that is not registered, or an input-backed one with no backend
+    on this platform, refuses at the end of the pipeline. Surfacing that up
+    front is what keeps a host from presenting a "click" it can never
+    perform. Returns ``(executable, needs)`` where ``needs`` names what is
+    missing, in operator terms, and is empty when the action can run.
+    """
+    needs = []
+    if registry.get(action.executor) is None:
+        needs.append(f"executor {action.executor!r} is not registered."
+                     f"{registry.policy_note}")
+    if (action.executor in INPUT_BACKED
+            and osal.platform_name() not in osal.input_backends()):
+        needs.append(f"register an input backend for {osal.platform_name()} "
+                     f"(driver_core.osal.register_input_backend); none is "
+                     f"registered, so {action.name} is declared, not "
+                     f"executable")
+    return (not needs), needs
+
+
 #: Appended to the "not registered" refusal when writes are switched off, so
 #: the refusal tells the operator which of the two reasons applies instead
 #: of leaving them to guess between a wiring fault and a policy decision.

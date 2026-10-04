@@ -11,7 +11,16 @@ const $ = (tag, attrs = {}, ...children) => {
       node.addEventListener(k.slice(2), v);
     } else if (v !== null && v !== undefined) node.setAttribute(k, v);
   }
-  for (const child of children) if (child) node.append(child);
+  // Flatten nested arrays before appending. Callers routinely pass a mapped
+  // list as one child -- `$("tbody", {}, rows.map(...))` in table() -- and
+  // node.append(array) stringifies it, which is why every multi-row table in
+  // this UI rendered as "[object HTMLTableRowElement],...".
+  const flatten = (out, value) => {
+    if (Array.isArray(value)) for (const item of value) flatten(out, item);
+    else if (value !== null && value !== undefined) out.push(value);
+    return out;
+  };
+  for (const child of flatten([], children)) node.append(child);
   return node;
 };
 
@@ -870,6 +879,20 @@ async function renderDriver(root) {
   const stepOnceBtn = $("button", { class: "pane-fetch", type: "button", style: "background: var(--panel);" }, "⏭ Step Once");
   btnRow.append(driveBtn, stepOnceBtn);
 
+  // Every field above was built but never attached, so the pane appended an
+  // empty <form> and the request form rendered blank. Assemble it here, in
+  // reading order, before anything reads it.
+  driveForm.append(
+    goalField,
+    targetField,
+    schemaField,
+    stepsField,
+    verifyCmdField,
+    autoApproveLabel,
+    stableLabel,
+    btnRow
+  );
+
   const driverStarters = $("div", { class: "starter-grid" },
     $("span", { class: "muted small", style: "align-self: center;" }, "Presets:"),
     $("button", { class: "starter-btn", type: "button", onclick: () => {
@@ -1089,7 +1112,9 @@ async function renderDriver(root) {
       const s = await api("/api/driver/schemas");
       const schemas = s.schemas || [];
       const rows = schemas.map(sch => [
-        sch.name || sch,
+        // The wire shape carries `id`, not `name`; reading `sch.name` fell
+        // through to the object itself and rendered "[object Object]".
+        sch.name || sch.id || String(sch),
         sch.version || "1.0",
         (sch.fields || []).join(", ") || "—",
         sch.description || "Extraction schema contract"
@@ -1106,13 +1131,39 @@ async function renderDriver(root) {
     try {
       const v = await api("/api/driver/vocabulary");
       const actions = v.vocabulary?.actions || [];
+      // `normalisers` is a name -> canonical-value mapping, not a list, so
+      // reading it as an array and calling .join() on it threw and took the
+      // whole tab down. Accept either shape.
+      const normaliserNames = (n) => {
+        if (!n) return [];
+        if (Array.isArray(n)) return n.map(String);
+        if (typeof n === "object") return Object.keys(n).sort();
+        return [String(n)];
+      };
+      const TIERS = { read_only: "READ_ONLY", mutating: "MUTATING", irreversible: "IRREVERSIBLE" };
+      // The tier lives in `class`; the old code probed `act.mutating` /
+      // `act.irreversible`, which the wire shape never carries, so every row
+      // rendered READ_ONLY.
+      const tierOf = (act) => TIERS[act.class] || String(act.class || "—");
+      // Surface the per-action executability verdict instead of leaving the
+      // reader to assume every declared action can run.
+      const statusOf = (act) => {
+        if (act.executable) return "EXECUTABLE";
+        const needs = normaliserNames(act.needs);
+        return needs.length ? `REFUSED — needs ${needs.join(", ")}` : "REFUSED";
+      };
       const rows = actions.map(act => [
-        act.name || act,
-        act.mutating ? "MUTATING" : act.irreversible ? "IRREVERSIBLE" : "READ_ONLY",
-        (act.normalisers || []).join(", ") || "—",
+        act.name || String(act),
+        tierOf(act),
+        statusOf(act),
+        normaliserNames(act.normalisers).join(", ") || "—",
         act.description || "Declared action primitive"
       ]);
-      aspectHost.replaceChildren(table(["Action", "Tier", "Normalisers", "Description"], rows));
+      aspectHost.replaceChildren(
+        table(["Action", "Tier", "Status", "Normalisers", "Description"], rows),
+        $("p", { class: "muted small", style: "margin-top:0.75rem;" },
+          "REFUSED actions are declared but not executable: no input backend is "
+          + "registered for them, so they are refused rather than silently dropped."));
     } catch (err) {
       aspectHost.replaceChildren($("p", { class: "muted small" }, `Vocabulary unavailable: ${err.message}`));
     }

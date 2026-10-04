@@ -37,6 +37,7 @@ from .route_pack import validate_route_pack
 from .log_analysis import analyze_log
 from .perception_client import PerceptionAdapter
 from .service import run_verify as _service_run_verify
+from .jev import jev_credit_status
 from .service import run_dogfood as _service_run_dogfood
 from .brief import build_brief, freshness_report, render_brief
 from .validation import (
@@ -540,6 +541,7 @@ class McpServer:
             # Per-call spend ceiling (optional): refuse before any network
             # call if the session governor cannot absorb it. Does not raise
             # the session ceiling.
+            tmc = None
             if args.get("task_max_cost") is not None:
                 tmc = finite_number(args.get("task_max_cost"), "task_max_cost",
                                     0.0, HARD_TASK_MAX_COST)
@@ -566,7 +568,8 @@ class McpServer:
                 transport=self.transport,
                 reasoning_token_budget=self.engine.reasoning_token_budget,
                 max_panelists=self.max_panelists, free_tier=self.use_free,
-                router=self.router, generate_task_id=False, attach_meta=False)
+                router=self.router, generate_task_id=False, attach_meta=False,
+                task_max_cost=tmc)
             if result.get("status") == "cancelled":
                 # The service builds the honest cancelled envelope (in-flight
                 # spend included); this protocol face still answers its
@@ -905,7 +908,33 @@ class McpServer:
             report["trust"] = trust_policy.trust_status(report)
             return report
         if name == "spend_status":
-            return self.governor.key_status()
+            status = self.governor.key_status()
+            # The CLI (`harness cost`) and the GUI badge both report Jev credit,
+            # but this tool did not, so an MCP caller could not see Jev spend at
+            # all and the three surfaces could disagree. Compose the block from
+            # the existing owners rather than recomputing it: cost_report's
+            # `jev` block for measured spend, jev_credit_status for the
+            # pricing/credit constants, and an explicit `month` so a caller can
+            # tell which calendar month the numbers describe.
+            try:
+                jev_spend = self.ledger.cost_report().get("jev", {})
+            except Exception:
+                jev_spend = {}
+            credit = dict(jev_credit_status())
+            credit.update({
+                "month": time.strftime("%Y-%m"),
+                "spent_usd": jev_spend.get("cost", 0.0),
+                "calls": jev_spend.get("calls", 0),
+                "input_tokens": jev_spend.get("input_tokens", 0),
+                "output_tokens": jev_spend.get("output_tokens", 0),
+                "monthly_credit": credit.get("monthly_credit_usd", 0.0),
+                "remaining_credit": jev_spend.get(
+                    "remaining_credit", credit.get("remaining_credit_usd", 0.0)),
+                "used_percent": jev_spend.get(
+                    "used_percent", credit.get("used_percent", 0.0)),
+            })
+            status["jev_credit"] = credit
+            return status
         if name == "trust_status":
             model_arg = validate_mcp_model(args.get("model"))
             return trust_policy.trust_status(

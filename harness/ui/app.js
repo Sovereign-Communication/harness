@@ -1009,9 +1009,18 @@ async function pollRoute() {
 async function pollSpend() {
   try {
     const spend = await api("/api/spend");
+    // /api/spend answers with {error} rather than throwing when it cannot
+    // build the envelope (no key, unverified key). Treating that as a payload
+    // left every counter at $0, so the header read "nothing spent" when the
+    // truth was "cannot tell". Say which one it is.
+    if (spend && spend.error) {
+      markSpendUnavailable(spend.error);
+      return;
+    }
     const s = spend.session || {};
     $("#spend-val").textContent = fmtCost(s.spent || 0);
     $("#spend-limit").textContent = `/ ${fmtCost(s.ceiling || 0.05)}`;
+    markSpendAvailable();
     if (spend.jev) {
       const j = spend.jev;
       const elVal = $("#jev-spend-val");
@@ -1023,7 +1032,30 @@ async function pollSpend() {
         elMeter.title = `TypeSafe Jev: ${fmtCost(j.cost || 0)} spent of $${Number(j.monthly_credit || 5.0).toFixed(2)} monthly credit (${Number(j.input_tokens || 0).toLocaleString()} tokens, ${(j.used_percent || 0).toFixed(1)}% used, $${Number(j.remaining_credit || 5.0).toFixed(4)} remaining)`;
       }
     }
-  } catch (_e) {}
+  } catch (err) {
+    markSpendUnavailable((err && err.message) || "spend status unavailable");
+  }
+}
+
+// A spent of $0 and an unreadable spent both used to render as "$0.0000".
+// Show "—" and the reason instead, so the header never claims zero spend it
+// cannot actually measure.
+function markSpendUnavailable(reason) {
+  const val = $("#spend-val");
+  const limit = $("#spend-limit");
+  const jevVal = $("#jev-spend-val");
+  const jevLimit = $("#jev-spend-limit");
+  if (val) { val.textContent = "—"; val.title = `Spend unavailable: ${reason}`; }
+  if (limit) { limit.textContent = "unavailable"; }
+  if (jevVal) { jevVal.textContent = "Jev: —"; jevVal.title = `Jev credit unavailable: ${reason}`; }
+  if (jevLimit) { jevLimit.textContent = ""; }
+}
+
+function markSpendAvailable() {
+  const val = $("#spend-val");
+  if (val) val.title = "";
+  const jevVal = $("#jev-spend-val");
+  if (jevVal) jevVal.title = "";
 }
 
 // ---- price-cap popover -----------------------------------------------------

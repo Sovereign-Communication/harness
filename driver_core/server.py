@@ -106,7 +106,7 @@ class Service:
             "version": __version__,
             "keyed": self.driver.settings.keyed,
             "settings": self.driver.settings.redacted(),
-            "vocabulary": self.driver.vocabulary.to_dict(),
+            "vocabulary": self._vocabulary_view(),
             "sources": [s.name for s in self.driver.sources],
         })
 
@@ -115,8 +115,23 @@ class Service:
         return _ok({"schemas": [SCREEN_SCHEMA.to_dict(), CLI_SCHEMA.to_dict(),
                                 DOM_SCHEMA.to_dict()]})
 
+    def _vocabulary_view(self):
+        """The declared vocabulary, each action tagged with whether it can
+        actually execute on this driver now (registered executor, and an
+        input backend where one is needed)."""
+        from .executor_registry import executability
+        view = self.driver.vocabulary.to_dict()
+        registry = self.driver.executor.registry
+        for entry, action in zip(view["actions"],
+                                  self.driver.vocabulary.actions()):
+            ok, needs = executability(action, registry)
+            entry["executable"] = ok
+            entry["refused_until_backend"] = not ok
+            entry["needs"] = needs
+        return view
+
     def vocabulary(self, body=None):
-        return _ok({"vocabulary": self.driver.vocabulary.to_dict()})
+        return _ok({"vocabulary": self._vocabulary_view()})
 
     def step(self, body):
         """Run one step. This is the integration's single call."""

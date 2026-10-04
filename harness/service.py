@@ -14,6 +14,7 @@ call site -- apply request validation is the engine's own boundary contract
 (``ApplyEngine._prepare``), not a service-layer concern.
 """
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 from .errors import HarnessError, ToolCancelled
@@ -194,7 +195,7 @@ def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
                governor=None, ledger=None, transport=None,
                reasoning_token_budget=None, max_panelists=None,
                free_tier=None, router=None, generate_task_id=True,
-               attach_meta=True):
+               attach_meta=True, task_max_cost=None):
     """The ONE verify-lane execution: governor, ledger, pre-run look-ahead,
     panel_judge, cost attribution, meta. The web server's verify runner,
     the CLI's verify command, and MCP's panel tool all call this; a behavior
@@ -217,10 +218,31 @@ def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
         if settings is None:
             raise ValueError("verify requires settings or an injected governor")
         api_key, gov = governor_for(settings, max_cost)
+        # max_cost already became this governor's own ceiling above, so there
+        # is nothing narrower to apply.
+        _task_scope = nullcontext()
     else:
         gov = governor
         if api_key is None:
             api_key = getattr(gov, "api_key", None)
+        # An injected governor already carries the SESSION ceiling, so
+        # `max_cost` -- the per-task cap -- was silently dropped on this path.
+        # MCP validated `task_max_cost` against the session budget and then
+        # never enforced it, so one panel_verify call could spend the whole
+        # session. Raise it explicitly rather than pretending it applied.
+        if max_cost is not None and task_max_cost is None:
+            raise ValueError(
+                "verify: max_cost is ignored when a governor is injected; "
+                "pass task_max_cost to set a per-task ceiling, or omit both to "
+                "use the session governor's own ceiling")
+        if task_max_cost is not None:
+            # Restore the per-task ceiling the caller asked for. This is a
+            # scope on the ONE governor, not a second one: session accounting,
+            # cost_by_model and the envelope keep reading a single truth, and
+            # the scope simply narrows the effective ceiling while it is open.
+            _task_scope = gov.task_scope(task_max_cost, label="verify")
+        else:
+            _task_scope = nullcontext()
     if ledger is None:
         if settings is None:
             raise ValueError("verify requires settings or an injected ledger")
@@ -236,20 +258,21 @@ def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
     if task_id is None and generate_task_id:
         task_id = uuid.uuid4().hex[:8]
     try:
-        result = panel_judge(
+        with _task_scope:
+            result = panel_judge(
             transport=transport or HttpTransport(), api_key=api_key, governor=gov,
-            prompt=prompt, panel=resolved.panel, judge=resolved.judge,
-            max_tokens=max_tokens, reasoning_effort=resolved.reasoning_effort,
-            reasoning_token_budget=resolved.reasoning_token_budget,
-            task_id=task_id, ledger=ledger,
-            max_panelists=resolved.max_panelists,
-            run_convergence=converge,
-            convergence_model=resolved.convergence_model,
-            specialist_pool=resolved.specialist_pool,
-            claim_polarity={cid.strip(): "reassurance" for cid in
-                            (reassurance_claims or "").split(",")
-                            if cid.strip()},
-            free_tier=resolved.use_free, cancel_check=cancel_check)
+                prompt=prompt, panel=resolved.panel, judge=resolved.judge,
+                max_tokens=max_tokens, reasoning_effort=resolved.reasoning_effort,
+                reasoning_token_budget=resolved.reasoning_token_budget,
+                task_id=task_id, ledger=ledger,
+                max_panelists=resolved.max_panelists,
+                run_convergence=converge,
+                convergence_model=resolved.convergence_model,
+                specialist_pool=resolved.specialist_pool,
+                claim_polarity={cid.strip(): "reassurance" for cid in
+                                (reassurance_claims or "").split(",")
+                                if cid.strip()},
+                free_tier=resolved.use_free, cancel_check=cancel_check)
     except ToolCancelled:
         return cancelled_envelope(gov, settings, include_meta=attach_meta)
     if attach_meta:
