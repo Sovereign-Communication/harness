@@ -25,6 +25,7 @@ import os
 import socket as _socket
 import sys
 import tempfile
+import unittest
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
@@ -140,3 +141,30 @@ if os.environ.get("HARNESS_TEST_ALLOW_NETWORK") != "1":
     _socket.gethostbyname = _guarded_gethostbyname
     _socket.gethostbyname_ex = _guarded_gethostbyname_ex
     _socket.gethostbyaddr = _guarded_gethostbyaddr
+
+
+# ---------------------------------------------------------------------------
+# Process-wide learned state. harness.chat remembers that a model rejected
+# the reasoning parameter so later calls skip the doomed first attempt. That
+# memory is correct in production and is contamination in a test run: one test
+# that provokes a rejection would silently change the behaviour an unrelated
+# test later asserts, and the failure appears in whichever module happens to be
+# discovered second. Cleared before every test, for the same reason the ledger
+# path and the network guard are pinned per process.
+# ---------------------------------------------------------------------------
+try:
+    from harness.chat import reset_reasoning_param_memory
+except Exception:  # pragma: no cover - must never break discovery
+    reset_reasoning_param_memory = None
+
+
+if reset_reasoning_param_memory is not None:
+    _testcase_setUp = unittest.TestCase.setUp
+
+
+    def _setUp_clearing_reasoning_memory(self, *args, **kwargs):
+        reset_reasoning_param_memory()
+        return _testcase_setUp(self, *args, **kwargs)
+
+
+    unittest.TestCase.setUp = _setUp_clearing_reasoning_memory

@@ -185,6 +185,38 @@ _REASONING_PARAM_ERR_HINTS = ("reasoning", "mandatory",
                               "unknown parameter", "unexpected parameter")
 
 
+# Models that have rejected the reasoning parameter in this process. Learned
+# from the provider's own rejection text -- never from a provider brand list --
+# so a newly routed model is treated the same as a known one.
+#
+# The dogfood logged 18 reasoning-param rejections in a single session: the
+# rejection was detected and retried correctly, but every later call paid for
+# the same doomed first attempt again. Remembering it makes the SECOND call
+# onwards single-flight, which is the whole saving.
+#
+# Process-lifetime, like the site breaker board: one relearning call per
+# process, not one per request. `reset_reasoning_param_memory` exists so tests
+# (and an operator who has changed a route) can drop it.
+_REASONING_PARAM_REJECTED = set()
+
+
+def note_reasoning_param_rejection(model_id):
+    """Remember that this model rejected the reasoning parameter."""
+    canonical = strip_variant_suffix(model_id or "")
+    if canonical:
+        _REASONING_PARAM_REJECTED.add(canonical)
+
+
+def reasoning_param_rejected(model_id):
+    """True when this model is known to reject the reasoning parameter."""
+    return strip_variant_suffix(model_id or "") in _REASONING_PARAM_REJECTED
+
+
+def reset_reasoning_param_memory():
+    """Forget every learned rejection (tests; operator route changes)."""
+    _REASONING_PARAM_REJECTED.clear()
+
+
 def looks_reasoning(model_id):
     """Heuristic: does this model id smell like a reasoning model?"""
     m = model_id.lower()
@@ -321,13 +353,18 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
                 _ensure_accounted(governor, canonical_model, resp, usage)
         return status, resp
 
-    want_reasoning = _effort_to_send(reasoning_effort, model) is not None
+    # A model already known to reject the reasoning parameter is called
+    # without it from the first attempt, rather than paying for a doomed
+    # request and a retry every single time.
+    want_reasoning = (_effort_to_send(reasoning_effort, model) is not None
+                      and not reasoning_param_rejected(canonical_model))
     status, resp = transport.post(OPENROUTER_CHAT_URL, api_key, build(want_reasoning))
     if want_reasoning and status != 200:
         err = str(resp.get("error", {}).get("message", resp)
                   if isinstance(resp, dict) else resp).lower()
         if any(h in err for h in _REASONING_PARAM_ERR_HINTS):
             eprint(f"[retry] {model} rejected reasoning param; retrying without it.")
+            note_reasoning_param_rejection(canonical_model)
             from . import events as _events
             _events.emit("rotation", model=model, reason="reasoning_param_rejected",
                          note="provider retry without the reasoning parameter")

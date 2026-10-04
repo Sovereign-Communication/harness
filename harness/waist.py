@@ -21,7 +21,7 @@ import math
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from .brief import (
     MAX_TOTAL_WINDOW_CHARS,
@@ -385,34 +385,104 @@ def build_decomposition_prompt(
 
 
 
+def _balanced_object_spans(text: str) -> List[str]:
+    """Every balanced ``{...}`` span in ``text``, left to right.
+
+    Brace counting is string-aware, so a ``}`` inside a JSON string does not
+    close the span early, and an unbalanced ``{`` (a reasoning trace that
+    mentions one) is skipped rather than swallowing the rest of the response.
+    """
+    spans: List[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        depth = 0
+        in_string = False
+        escaped = False
+        closed = -1
+        for j in range(i, n):
+            ch = text[j]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    closed = j
+                    break
+        if closed == -1:
+            # Unbalanced to end of text: resume at the next opening brace so a
+            # stray '{' in prose cannot hide a real object that follows it.
+            nxt = text.find("{", i + 1)
+            if nxt == -1:
+                break
+            i = nxt
+            continue
+        spans.append(text[i:closed + 1])
+        i = closed + 1
+    return spans
+
+
+def _json_object_candidates(text: str) -> Iterable[str]:
+    """Candidate JSON object texts, most-trusted first.
+
+    A fenced block is the model naming its own payload, so it outranks
+    anything found by scanning. After that: the first balanced object, so a
+    reasoning trace printed before the answer cannot displace it.
+    """
+    for m in re.finditer(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE):
+        body = m.group(1).strip()
+        if body:
+            yield body
+    for span in _balanced_object_spans(text):
+        yield span
+
+
 def _parse_json_object(response_text: str, what: str) -> Dict[str, Any]:
-    """Extract a JSON object from an LLM response: markdown fenced block
-    first, then the outermost brace span, else the raw text. ONE owner of
-    that extraction (decomposition and waist verdicts share it)."""
+    """Extract a JSON object from an LLM response. ONE owner of that
+    extraction (decomposition and waist verdicts share it).
+
+    Robust to the shapes models actually emit -- a fenced block, a bare
+    object, an object wrapped in prose or a reasoning trace, an object
+    followed by trailing commentary -- and still fail-closed: if no candidate
+    parses to an object this raises, rather than inventing an empty answer.
+    A reasoning-only response therefore fails here, which is what lets the
+    caller treat it as a retryable transport-shaped failure instead of a
+    verdict.
+    """
     if not response_text or not response_text.strip():
         raise HarnessError(f"empty response for {what}")
 
     text = response_text.strip()
-    # 1. Try markdown fenced code block: ```json ... ``` or ``` ... ```
-    m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
-    if m:
-        candidate = m.group(1).strip()
-    else:
-        # 2. Look for outermost '{' ... '}'
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            candidate = text[start:end + 1]
-        else:
-            candidate = text
-
-    try:
-        data = json.loads(candidate)
-    except json.JSONDecodeError as exc:
-        raise HarnessError(f"failed to parse JSON from {what}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise HarnessError(f"{what} must be a JSON object")
-    return data
+    candidates = list(_json_object_candidates(text))
+    candidates.append(text)          # last resort: the whole body is the object
+    # `candidates` is never empty (the whole body is always appended) and
+    # every iteration either returns or records why it was rejected, so
+    # `last_error` is always populated by the time we reach the raise.
+    last_error: Exception = HarnessError(
+        f"no JSON object candidate in {what}")
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if isinstance(data, dict):
+            return data
+        last_error = HarnessError(f"{what} must be a JSON object")
+    raise HarnessError(
+        f"failed to parse JSON from {what}: {last_error}") from last_error
 
 
 
@@ -1051,6 +1121,47 @@ def _waist_window_request(raw) -> Dict[str, Any]:
 
 
 
+# Verdict spellings models actually emit, mapped to the four canonical kinds.
+# Deliberately a closed set: an unknown verdict must still fail closed rather
+# than be coerced into an approval.
+_VERDICT_ALIASES = {
+    "approve": "approve", "approved": "approve", "approval": "approve",
+    "accept": "approve", "accepted": "approve", "ok": "approve",
+    "refuse": "refuse", "refused": "refuse", "reject": "refuse",
+    "rejected": "refuse", "deny": "refuse", "denied": "refuse",
+    "amend": "amend", "amended": "amend", "amendment": "amend",
+    "revise": "amend", "revised": "amend",
+    "split": "split", "subdivide": "split", "subdivided": "split",
+    "request_windows": "request_windows", "request-windows": "request_windows",
+    "requestwindows": "request_windows", "need_windows": "request_windows",
+    "need-windows": "request_windows", "windows": "request_windows",
+}
+
+
+def _canonical_verdict(data: Dict[str, Any]) -> str:
+    """The canonical verdict kind for a parsed verdict body.
+
+    Tolerates the spelling and envelope differences models produce --
+    ``APPROVED``, ``Approved.``, ``{"result": {"verdict": ...}}`` -- while
+    keeping the decision set closed. An unrecognised or absent verdict
+    returns ``""`` and the caller fails closed.
+    """
+    body = data
+    if "verdict" not in body:
+        # One level of envelope: {"result": {...}} / {"plan": {...}} / ...
+        for key in ("result", "plan", "response", "output", "decision"):
+            nested = body.get(key)
+            if isinstance(nested, dict) and "verdict" in nested:
+                body = nested
+                break
+    raw = body.get("verdict")
+    if isinstance(raw, dict):
+        raw = raw.get("verdict") or raw.get("kind") or raw.get("decision")
+    # Models append their own sentence punctuation: "Approved.", "Approve!".
+    key = str(raw or "").strip().strip(".!?").strip().lower().replace(" ", "_")
+    return _VERDICT_ALIASES.get(key, "")
+
+
 def parse_waist_verdict(response_text: str) -> Dict[str, Any]:
     """Parse and validate a waist verdict (strict; fail-closed).
 
@@ -1064,7 +1175,7 @@ def parse_waist_verdict(response_text: str) -> Dict[str, Any]:
     ``{"verdict": "request_windows", "file_window_requests": [...]}``.
     """
     data = _parse_json_object(response_text, "waist plan verdict")
-    verdict = str(data.get("verdict") or "").strip()
+    verdict = _canonical_verdict(data)
     if verdict == "approve":
         return {"verdict": "approve"}
     if verdict in ("amend", "split"):
@@ -1095,7 +1206,9 @@ def parse_waist_verdict(response_text: str) -> Dict[str, Any]:
                 "'file_window_requests' list")
         return {"verdict": "request_windows",
                 "file_window_requests": [_waist_window_request(r) for r in requests]}
-    raise HarnessError(f"unknown waist verdict {verdict!r}")
+    raw = str((data.get("verdict") if not isinstance(data.get("verdict"), dict)
+               else data["verdict"].get("verdict")) or "").strip()
+    raise HarnessError(f"unknown waist verdict {raw or '<missing>'!r}")
 
 
 
