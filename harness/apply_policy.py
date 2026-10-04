@@ -272,6 +272,17 @@ class ApplyEngineMixin:
             + closing)
         return round_ctx, False
 
+    def _note_model_health(self, model, ok):
+        """Record one attempt outcome so rotation order reflects reality.
+
+        Best-effort by design: a router that does not carry health (a test
+        double, an embedding supplying its own) must not fail a run over
+        an ordering refinement.
+        """
+        note = getattr(self.router, "note_model_result", None)
+        if callable(note):
+            note(model, ok=ok)
+
     def _candidate_models(self, req):
         """Rotation order for this round: the primary followed by the pool,
         minus ids the live catalog does not know. Pools are live-validated at
@@ -370,6 +381,7 @@ class ApplyEngineMixin:
                                       error=err, http_status=status,
                                       retryable=status == 429)
                 state.failed_models.add(attempt_model)
+                self._note_model_health(attempt_model, ok=False)
                 state.rotations += 1
                 eprint(f"[apply] {attempt_model} FAILED: {err} -- rotating.")
                 _events.emit("rotation", task_id=req.task_id, model=attempt_model,
@@ -388,6 +400,7 @@ class ApplyEngineMixin:
                         reported_cost=cost, backend=req.backend,                        reason="paid BYOK route")
                     outcome.last_error = "model is BYOK-routed (paid); no tracked output"
                     state.failed_models.add(attempt_model)
+                    self._note_model_health(attempt_model, ok=False)
                     state.rotations += 1
                     eprint(f"[apply] {attempt_model} is BYOK-routed (paid); recorded and rotating.")
                     _events.emit("rotation", task_id=req.task_id, model=attempt_model,
@@ -400,6 +413,7 @@ class ApplyEngineMixin:
                     outcome.last_error = ("model returned a reasoning-only response "
                                           "(no usable content)")
                     state.failed_models.add(attempt_model)
+                    self._note_model_health(attempt_model, ok=False)
                     state.rotations += 1
                     eprint(f"[apply] {attempt_model} returned no content (reasoning-only); rotating.")
                     _events.emit("rotation", task_id=req.task_id, model=attempt_model,
@@ -416,6 +430,7 @@ class ApplyEngineMixin:
                         # The model declines on capability grounds; rotate to the
                         # next pool model before accepting the deferral.
                         state.deferred_models[attempt_model] = ready_reason
+                        self._note_model_health(attempt_model, ok=False)
                         outcome.last_defer_reason = ready_reason or "model declared not ready"
                         state.rotations += 1
                         eprint(f"[apply] {attempt_model} declares HARNESS_READY: defer "
@@ -438,6 +453,7 @@ class ApplyEngineMixin:
                             self.ledger.append("readiness", task_id=req.task_id,
                                                model=attempt_model, round=state.round_no,
                                                decision="confident")
+                        self._note_model_health(attempt_model, ok=True)
                         outcome.model_used = attempt_model
                         outcome.content = content
                         outcome.ready = ready

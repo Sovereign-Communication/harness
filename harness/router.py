@@ -13,6 +13,7 @@ back to the last tier that needed escalation (judge-gated, data-driven).
 """
 
 
+from .dynamic_allocation import rank_models_dynamically
 from .sliding_scale import (
     classify_task_tier,
     resolve_frontier_model,
@@ -43,6 +44,11 @@ class Router:
         # Single escalation_model retained for backward-compat (single-rung mode).
         self.escalation_model = escalation_model
         self.allow_escalation = allow_escalation
+        self.use_free = use_free
+        # Observed per-model outcomes, keyed by model id. This is the
+        # health_status the dynamic ranker needs, and until something is
+        # recorded here every pool is served in its declared order.
+        self._model_health: dict = {}
         self.panel_pool = panel_pool or list(panel)
         self.apply_pool = apply_pool or dedup([apply_model] + list(self.panel))
         # Convergence-specialist lane: primary defaults to the judge, fallback
@@ -53,8 +59,86 @@ class Router:
         # mode replaces single escalation_model when present.
         self.escalation_pool = list(escalation_pool or [])
         self._escalation_rung = 0  # current rung index during auto-escalation
-        self.use_free = use_free
         self.frontier_model = resolve_frontier_model(frontier_model, use_free=use_free)
+
+    def note_model_result(self, model, ok, latency_ms=None):
+        """Record one observed attempt outcome for `model`.
+
+        A success walks the error count back down rather than clearing it,
+        so a model that fails once and then works is not penalised forever
+        and a model that keeps failing sinks in the rotation order.
+        """
+        if not model:
+            return None
+        # latency_ms is stored only when actually measured: the ranker treats
+        # an absent key as its default, but an explicit None is a TypeError.
+        entry = self._model_health.setdefault(model, {"errors": 0})
+        if ok:
+            entry["errors"] = max(0, entry["errors"] - 1)
+        else:
+            entry["errors"] += 1
+        if latency_ms is not None:
+            entry["latency_ms"] = latency_ms
+        return entry
+
+    def model_health(self, model=None):
+        """Observed health for one model, or the whole registry."""
+        if model is None:
+            return dict(self._model_health)
+        entry = self._model_health.get(model)
+        return dict(entry) if entry else None
+
+    def _rotation_ordered(self, pool):
+        """The pool as rotation should walk it, given what we observed.
+
+        The declared head is returned untouched: it is the operator's
+        declared primary, and DF-LING-2 plus the cheap-first discipline
+        both depend on the default pick never moving. Only the tail is
+        ranked, and only once something has actually been observed -- an
+        unobserved pool is served exactly as declared.
+        """
+        pool = list(pool or [])
+        if len(pool) < 2:
+            return pool
+        tail = pool[1:]
+        if not any(m in self._model_health for m in tail):
+            return pool
+        ranked = rank_models_dynamically(
+            tail, health_status=self._model_health,
+            prefer_paid=not self.use_free)
+        return [pool[0]] + list(ranked)
+
+    @property
+    def panel_pool(self):
+        return self._rotation_ordered(self._panel_pool)
+
+    @panel_pool.setter
+    def panel_pool(self, value):
+        self._panel_pool = list(value or [])
+
+    @property
+    def apply_pool(self):
+        return self._rotation_ordered(self._apply_pool)
+
+    @apply_pool.setter
+    def apply_pool(self, value):
+        self._apply_pool = list(value or [])
+
+    @property
+    def specialist_pool(self):
+        return self._rotation_ordered(self._specialist_pool)
+
+    @specialist_pool.setter
+    def specialist_pool(self, value):
+        self._specialist_pool = list(value or [])
+
+    @property
+    def escalation_pool(self):
+        return self._rotation_ordered(self._escalation_pool)
+
+    @escalation_pool.setter
+    def escalation_pool(self, value):
+        self._escalation_pool = list(value or [])
 
     def route_tier(self, tier: int):
         # Return the spec for an upfront sliding-scale complexity tier.
