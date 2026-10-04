@@ -1362,8 +1362,13 @@ class StatusRowMustNotCarryItsOwnEvidenceTests(unittest.TestCase):
 
 class DriverPhaseRowsTests(unittest.TestCase):
     """`DRV-1`/`DRV-2` are registered phases, so `jev-phase` reads their own
-    STATUS rows. While the driver PR has not landed, the live rows must stay
-    open and must not read as merge evidence."""
+    STATUS rows.
+
+    PR #159 merged `DRV-1` onto `main`, so that row is now real merge
+    evidence. The invariant that still matters for both rows is the honest one:
+    a landed PR is not the same as a finished phase, so neither row may claim
+    completion while its remaining conditions are open. `DRV-2` has not landed
+    at all and must not read as merge evidence."""
 
     def _repo_root(self):
         return str(Path(__file__).resolve().parents[1])
@@ -1376,14 +1381,25 @@ class DriverPhaseRowsTests(unittest.TestCase):
         self.assertTrue(drv1.startswith("| `DRV-1` `harness driver` adapter"))
         self.assertTrue(drv2.startswith("| `DRV-2` driver-core extraction"))
 
+    def test_a_landed_driver_row_is_merge_evidence_but_not_a_finished_phase(self):
+        evidence = collect_phase_evidence(self._repo_root(), "DRV-1")
+        self.assertTrue(evidence["pr_merged"], evidence["status_row"])
+        # The merge is necessary but not sufficient: the completion rule also
+        # wants CI green on the merge and a paid-cheap dogfood receipt, so the
+        # row must stay open and must not be readable as a finished phase.
+        self.assertFalse(
+            phase_status_claims_complete(evidence["status_row"] or ""),
+            evidence["status_row"])
+        self.assertTrue(evidence["open_blockers"], evidence["open_blockers"])
+
     def test_an_unlanded_driver_row_is_open_and_not_merge_evidence(self):
-        for phase in ("DRV-1", "DRV-2"):
-            evidence = collect_phase_evidence(self._repo_root(), phase)
-            self.assertFalse(evidence["pr_merged"], phase)
-            self.assertFalse(evidence["ci_green"], phase)
-            self.assertFalse(
-                phase_status_claims_complete(evidence["status_row"] or ""), phase)
-            self.assertTrue(evidence["open_blockers"], phase)
+        evidence = collect_phase_evidence(self._repo_root(), "DRV-2")
+        self.assertFalse(evidence["pr_merged"], evidence["status_row"])
+        self.assertFalse(evidence["ci_green"], evidence["status_row"])
+        self.assertFalse(
+            phase_status_claims_complete(evidence["status_row"] or ""),
+            evidence["status_row"])
+        self.assertTrue(evidence["open_blockers"], evidence["open_blockers"])
 
     def test_the_driver_contracts_name_real_tests_and_files(self):
         root = Path(self._repo_root())
