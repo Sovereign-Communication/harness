@@ -93,6 +93,27 @@ class CostCliTests(unittest.TestCase):
             os.environ.clear()
             os.environ.update(env_backup)
 
+    def test_cli_cost_jev_block_is_monthly_and_legacy_normalized(self):
+        # Legacy $42/Mtok entry (this month) and an old-month entry.
+        self.ledger.append("jev_eval", model="jev-test", input_tokens=1_000_000,
+                           is_fallback=False, cost=42.0)
+        self.ledger.append("jev_eval", model="jev-test", input_tokens=1_000_000,
+                           is_fallback=False, cost=42.0,
+                           ts="2020-01-15T00:00:00+00:00")
+        out_file = os.path.join(self.tmp.name, "cost_jev.json")
+        env_backup = dict(os.environ)
+        os.environ["HARNESS_LEDGER"] = self.ledger_path
+        try:
+            main(["cost", "--out", out_file, "--json"])
+            with open(out_file, encoding="utf-8") as f:
+                jev = json.load(f)["jev"]
+        finally:
+            os.environ.clear()
+            os.environ.update(env_backup)
+        self.assertEqual(jev["calls"], 1)
+        self.assertAlmostEqual(jev["cost"], 0.042, places=6)
+        self.assertRegex(jev["month"], r"^\d{4}-\d{2}$")
+
     def test_cli_cost_command_pretty(self):
         out_file = os.path.join(self.tmp.name, "cost_pretty.json")
         env_backup = dict(os.environ)

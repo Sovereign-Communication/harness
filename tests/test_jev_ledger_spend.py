@@ -243,6 +243,94 @@ class JevLedgerSpendTests(unittest.TestCase):
         self.assertEqual(report["jev"]["cost"], 0.0)
         self.assertEqual(report["jev"]["used_percent"], 0.0)
 
+    def test_jev_cost_normalizes_legacy_rate_entries(self):
+        # Legacy entries were stored at $42/Mtok (1000x the real $0.042/Mtok);
+        # the report recomputes from input tokens, never trusts stored cost.
+        ledger = self._ledger()
+        ledger.append("jev_eval", model="jev-test", input_tokens=1_000_000,
+                      output_tokens=10, is_fallback=False, cost=42.0)
+        jev = ledger.cost_report()["jev"]
+        self.assertEqual(jev["calls"], 1)
+        self.assertAlmostEqual(jev["cost"], 0.042, places=6)
+        self.assertAlmostEqual(jev["remaining_credit"], 5.0 - 0.042, places=6)
+        self.assertAlmostEqual(ledger.cost_report()["total_cost"], 0.042, places=6)
+
+    def test_jev_credit_counts_only_current_utc_month(self):
+        from datetime import datetime, timezone
+        ledger = self._ledger()
+        ledger.append("jev_eval", model="jev-test", input_tokens=1000,
+                      is_fallback=False, ts="2026-09-30T23:59:59+00:00")
+        ledger.append("jev_eval", model="jev-test", input_tokens=2000,
+                      is_fallback=False, ts="2026-10-01T00:00:00+00:00")
+        ledger.append("jev_eval", model="jev-test", input_tokens=4000,
+                      is_fallback=False, ts="2026-10-15T12:00:00+00:00")
+        ledger.append("jev_eval", model="jev-test", input_tokens=8000,
+                      is_fallback=False, ts="not-a-timestamp")
+        jev = ledger.cost_report(
+            now=datetime(2026, 10, 20, tzinfo=timezone.utc))["jev"]
+        self.assertEqual(jev["month"], "2026-10")
+        self.assertEqual(jev["calls"], 2)
+        self.assertEqual(jev["input_tokens"], 6000)
+        self.assertAlmostEqual(jev["cost"], 6000 * 0.042 / 1_000_000, places=9)
+        sept = ledger.cost_report(
+            now=datetime(2026, 9, 30, tzinfo=timezone.utc))["jev"]
+        self.assertEqual(sept["input_tokens"], 1000)
+
+    def test_jev_block_reads_rotated_segments_and_other_writers(self):
+        from datetime import datetime, timezone
+        from unittest import mock
+        path = os.path.join(self.tmp.name, "ledger.jsonl")
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        writer = AutonomyLedger(path)
+        # Force a rotation after every append so the early jev events end up
+        # in rotated segments, not in the active file.
+        with mock.patch("harness.ledger.LEDGER_MAX_BYTES", 1):
+            for _ in range(2):
+                writer.append("jev_eval", model="jev-test", input_tokens=1000,
+                              is_fallback=False, ts=stamp)
+        self.assertTrue(writer._rotated_paths())
+        reader = AutonomyLedger(path)
+        # A second process appends after the reader loaded; the reader's
+        # in-memory _tail is now stale.
+        writer.append("jev_eval", model="jev-test", input_tokens=500,
+                      is_fallback=False, ts=stamp)
+        self.assertEqual(len(reader._tail) + 1, len(writer._tail))
+        jev = reader.cost_report()["jev"]
+        self.assertEqual(jev["calls"], 3)
+        self.assertEqual(jev["input_tokens"], 2500)
+
+    def test_jev_block_ignores_torn_lines_and_keeps_unflushed_entries(self):
+        ledger = self._ledger()
+        ledger.append("jev_eval", model="jev-test", input_tokens=100,
+                      is_fallback=False)
+        with open(ledger.path, "a", encoding="utf-8") as f:
+            f.write("{torn line\n[1, 2]\n")
+        # An in-memory-only entry (no seq) must still be counted.
+        ledger._tail.append({"event": "jev_eval", "model": "jev-test",
+                             "input_tokens": 50, "is_fallback": False,
+                             "ts": ledger._tail[-1]["ts"]})
+        self.assertEqual(ledger.cost_report()["jev"]["input_tokens"], 150)
+
+    def test_jev_block_tolerates_naive_clocks_junk_tokens_and_unlistable_dir(self):
+        from datetime import datetime
+        from unittest import mock
+        ledger = self._ledger()
+        naive_now = datetime.now()  # tz-naive "now" is read as UTC
+        stamp = naive_now.isoformat(timespec="seconds")  # naive ts likewise
+        ledger.append("jev_eval", model="jev-test", input_tokens=100,
+                      output_tokens="junk", is_fallback=False, ts=stamp)
+        ledger.append("jev_eval", model="jev-test", input_tokens="junk",
+                      is_fallback=False, ts=stamp)
+        ledger.append("jev_eval", model="jev-test", input_tokens=900,
+                      is_fallback=True, ts=stamp)
+        jev = ledger.cost_report(now=naive_now)["jev"]
+        self.assertEqual((jev["calls"], jev["input_tokens"],
+                          jev["output_tokens"]), (1, 100, 0))
+        # An unlistable ledger directory degrades to the in-memory entries.
+        with mock.patch.object(type(ledger), "_ledger_paths",
+                               side_effect=OSError("no dir")):
+            self.assertEqual(ledger._all_entries(), ledger.entries())
+
     def test_completion_state_text_variants(self):
         from harness.jev_policy import JevPolicy
         self.assertEqual(JevPolicy._completion_state_text("plain string"), "plain string")

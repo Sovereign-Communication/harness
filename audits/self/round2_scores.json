@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.95,
+        "confidence": 0.96,
         "evaluated": true
       }
     },
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 3359 tests in 237.827s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 3384 tests in 283.703s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 46/46 = 100% (bar 95%) vs baseline 7ee88894ca)"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 56/58 = 97% (bar 95%) vs baseline 98f077cbf8; untested: ledger_analytics.py:452,464)"
       }
     ]
   }
