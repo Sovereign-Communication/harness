@@ -37,6 +37,66 @@ OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 # evidence source for pool-candidate refresh (see harness/rankings.py).
 OPENROUTER_RANKINGS_URL = "https://openrouter.ai/api/v1/datasets/rankings-daily"
 
+# ---- EV-0 model economics evidence (see docs/jev-roadmap.md, EV-0) -------
+# Unified benchmark feed: Artificial Analysis (coding_index / agentic_index /
+# intelligence_index), Design Arena, and OpenRouter's own tau-bench / GPQA /
+# web-search evals (accuracy, avg_cost_per_task). Requires a key.
+OPENROUTER_BENCHMARKS_URL = "https://openrouter.ai/api/v1/benchmarks"
+# Per-provider endpoint feed. This is the only source of `discount`,
+# `overrides`, `input_cache_read`, published uptime, and the real
+# per-provider price spread -- `/models` publishes only an aggregate, which
+# is what DF-EV-2 is about. One GET per model id (see the fetch budget).
+OPENROUTER_ENDPOINTS_URL = "https://openrouter.ai/api/v1/models/{slug}/endpoints"
+
+# Benchmark sources documented by the /benchmarks endpoint.
+BENCHMARK_SOURCES = ("artificial-analysis", "design-arena", "openrouter")
+
+# Published limits on the benchmark feed: 30 requests/minute and 500
+# requests/day per account. This is why endpoint fetching is SHORTLIST-SCOPED
+# rather than catalog-scoped: one GET per model means a full-catalog sweep
+# (~400 models) would nearly exhaust the daily budget by itself. Catalog-wide
+# coverage comes from /models (unmetered); endpoint coverage is an explicit
+# shortlist, and a deep sweep is an operator-invoked decision.
+BENCHMARK_RATE_LIMIT_PER_MINUTE = 30
+BENCHMARK_RATE_LIMIT_PER_DAY = 500
+MAX_ENDPOINT_FETCHES_PER_RUN = 40
+
+# Discount semantics. OpenRouter publishes a per-endpoint `discount` (0..1)
+# alongside `prompt`/`completion`, but does NOT document whether the listed
+# rates already have it applied. The two readings differ by exactly 2x at
+# discount=0.5, so DF-EV-2 cannot be closed on a guess: EV-0 settles it with
+# a measured probe and gates every downstream price computation on the
+# recorded answer.
+DISCOUNT_LISTED_IS_EFFECTIVE = "listed_is_effective"
+DISCOUNT_IS_MULTIPLIER = "discount_is_multiplier"
+DISCOUNT_SEMANTICS_UNKNOWN = "unknown"
+# Neither hypothesis matched the measured charge (or both did -- provider
+# price aliasing makes that possible, see economics.run_discount_probe).
+DISCOUNT_UNRESOLVED = "unresolved"
+DISCOUNT_AMBIGUOUS = "ambiguous"
+# No endpoint carries a discount, so the question does not arise and listed
+# rates are used as-is.
+DISCOUNT_NOT_APPLICABLE = "not_applicable"
+DISCOUNT_SEMANTICS_VALUES = (
+    DISCOUNT_LISTED_IS_EFFECTIVE, DISCOUNT_IS_MULTIPLIER,
+    DISCOUNT_NOT_APPLICABLE,
+)
+# Relative tolerance when matching a measured charge against a predicted one.
+# OpenRouter computes cost deterministically, but a provider may bill a
+# different endpoint than the one priced, so this is a band, not equality.
+DISCOUNT_PROBE_TOLERANCE = 0.05
+# Probe shape: the smallest call that still returns an itemized `usage`
+# block. Reasoning is off deliberately -- hidden thinking is an unbudgeted
+# variable in a pricing measurement.
+DISCOUNT_PROBE_MAX_TOKENS = 64
+DISCOUNT_PROBE_PROMPT = "Reply with the single word: ok"
+
+# Evidence + state locations. The receipt is the committed, human-readable
+# evidence; the state file is the machine-readable verdict the gate reads.
+ECONOMICS_SCHEMA_VERSION = 1
+ECONOMICS_RECEIPT_DIR = "audits/self/economics"
+ECONOMICS_STATE_PATH = os.path.join(CONFIG_DIR, "economics.json")
+
 # MorphLite-compatible transformation backend. Selecting the `morph` backend
 # explicitly opts into this model; ordinary Harness routing remains unchanged.
 MORPH_MODEL = "morph/morph-v3-fast"

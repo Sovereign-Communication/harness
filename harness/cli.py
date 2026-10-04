@@ -50,6 +50,10 @@ from .service import run_verify as _service_verify
 from .service import read_text_file as _service_read_text
 from .service import run_dogfood as _service_run_dogfood
 from .rankings import build_rankings_report as _rankings_report
+from .economics import (build_economics_report as _economics_report,
+                        record_discount_semantics as _record_discount_semantics,
+                        run_discount_probe as _run_discount_probe,
+                        write_receipt as _write_economics_receipt)
 from .route_pack import validate_route_pack
 from .site_export import export_bundle as _site_export_bundle
 from .site_export import write_bundle as _site_export_write
@@ -925,6 +929,56 @@ def _cmd_rankings(opts, settings):
     _emit(report, opts.out)
 
 
+def _split_ids(raw):
+    """A comma-separated id list from the CLI, or None when unset.
+
+    Present here rather than in the economics module because a CLI string is
+    a CLI concern; the owner below takes a real list.
+    """
+    if not raw:
+        return None
+    ids = [part.strip() for part in str(raw).split(",") if part.strip()]
+    return ids or None
+
+
+def _cmd_economics(opts, settings):
+    """EV-0 evidence face: ingest benchmarks + per-provider endpoint pricing.
+
+    Read-only with respect to configuration -- it reports what the live
+    feeds say and never mutates a pool, a lane default, or a ceiling. The
+    one write it performs is `--record`, which stores the discount-semantics
+    verdict that the price gate in `harness.economics` refuses to proceed
+    without.
+    """
+    api_key, gov = _governor(settings, getattr(opts, "max_cost", None))
+    report = None
+    if opts.probe_model:
+        record = _run_discount_probe(HttpTransport(), api_key, gov,
+                                     opts.probe_model)
+        if opts.record and record["semantics"] in (
+                "listed_is_effective", "discount_is_multiplier"):
+            report = {"recorded": _record_discount_semantics(
+                record, opts.state_path),
+                "semantics": record["semantics"]}
+        else:
+            report = {"recorded": None, "probe": record}
+            if opts.record:
+                eprint("[economics] probe was not conclusive "
+                       f"({record['semantics']}: {record.get('reason')}); "
+                       "nothing recorded, the price gate keeps refusing.")
+        _emit(report, opts.out)
+        return
+    report = _economics_report(
+        gov, _ledger(settings), api_key=api_key,
+        transport=HttpTransport(), benchmark_ids=_split_ids(opts.models),
+        probe_model=None, max_fetches=opts.max_fetches,
+        semantics_path=opts.state_path)
+    report["meta"] = _run_meta(settings, gov)
+    if opts.receipt_dir:
+        report["receipt"] = _write_economics_receipt(report, opts.receipt_dir)
+    _emit(report, opts.out)
+
+
 def _cmd_capabilities(opts, settings):
     if getattr(opts, "check_shipped", False):
         # Freshness validation of the SHIPPED default lanes: pure /models read
@@ -1464,6 +1518,7 @@ _DISPATCH = {
     "cost": _cmd_cost,
     "trust": _cmd_trust,
     "rankings": _cmd_rankings,
+    "economics": _cmd_economics,
     "jev-phase": _cmd_jev_phase,
     "jev-vision-assessment": _cmd_jev_vision_assessment,
     "jev-freeze": _cmd_jev_freeze,
