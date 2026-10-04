@@ -4,19 +4,29 @@ The rule under test throughout: a card row exists only when it can name the
 committed file it was parsed from, and rendering is a pure function of disk
 content so a card diff always means a source file moved.
 """
+import contextlib
+import io
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from harness.repo_cards import (
     RATIONALE_SUBDIR,
     _toml_has_section,
     _toml_value,
+    default_root,
     discover_repos,
     generate,
+    main,
     render_card,
     scan_repo,
+    write_card,
 )
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def _write(root, name, body=""):
@@ -234,13 +244,126 @@ class GenerateTests(unittest.TestCase):
         body = (self.cards / "Demo.md").read_text(encoding="utf-8")
         self.assertIn("Intent that config cannot express.", body)
 
-    def test_changing_a_source_file_changes_the_card(self):
+    def test_prose_edits_do_not_churn_the_card(self):
+        """Cards record that a convention file exists, not what it says.
+
+        Rewriting AGENTS.md must not produce a card diff, or every doc edit
+        would look like a convention change.
+        """
         self._repo("Demo")
         generate(self.root, self.cards)
         before = (self.cards / "Demo.md").read_bytes()
-        (self.root / "Demo" / "AGENTS.md").write_text("y", encoding="utf-8")
+        (self.root / "Demo" / "AGENTS.md").write_text("rewritten", encoding="utf-8")
         generate(self.root, self.cards)
         self.assertEqual((self.cards / "Demo.md").read_bytes(), before)
+
+    def test_a_new_convention_file_does_change_the_card(self):
+        self._repo("Demo")
+        generate(self.root, self.cards)
+        before = (self.cards / "Demo.md").read_bytes()
+        _write(self.root / "Demo", "CONTRIBUTING.md", "## rules")
+        generate(self.root, self.cards)
+        self.assertNotEqual((self.cards / "Demo.md").read_bytes(), before)
+
+
+class RareBranchTests(unittest.TestCase):
+    """Branches a real checkout rarely reaches, pinned so they cannot rot."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_unreadable_workflow_dir_yields_no_ci_rows(self):
+        _write(self.repo, ".github/workflows/ci.yml", "n")
+        with mock.patch.object(Path, "iterdir", side_effect=OSError("boom")):
+            self.assertEqual([r for r in scan_repo(self.repo) if r[0] == "CI"], [])
+
+    def test_requires_python_without_a_name_still_names_the_package(self):
+        _write(self.repo, "pyproject.toml", "[project]\nrequires-python = \">=3.9\"\n")
+        rows = [r for r in scan_repo(self.repo) if r[0] == "Build"]
+        self.assertIn("requires-python >=3.9", rows[0][1])
+
+    def test_requirements_txt_is_a_build_row(self):
+        _write(self.repo, "requirements.txt", "flask\n")
+        rows = [r for r in scan_repo(self.repo) if r[0] == "Build"]
+        self.assertEqual(rows[0][2], "requirements.txt")
+
+    def test_unreadable_existing_card_is_rewritten_not_trusted(self):
+        """A card we cannot read must not be mistaken for an up-to-date one."""
+        cards = self.repo / "cards"
+        cards.mkdir()
+        target = cards / "Demo.md"
+        target.write_text("stale", encoding="utf-8")
+        with mock.patch.object(Path, "read_text", side_effect=OSError("boom")):
+            changed = write_card(cards, "Demo", "fresh\n")
+        self.assertTrue(changed)
+        self.assertEqual(target.read_text(encoding="utf-8"), "fresh\n")
+
+
+class CliTests(unittest.TestCase):
+    """The operator entry point, including the ``--check`` staleness gate."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.root = self.base / "repos"
+        self.cards = self.base / "cards"
+        self.root.mkdir()
+        (self.root / "Demo" / ".git").mkdir(parents=True)
+        (self.root / "Demo" / "AGENTS.md").write_text("x", encoding="utf-8")
+        self.addCleanup(self._tmp.cleanup)
+
+    def _run(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main(["--root", str(self.root), "--cards", str(self.cards), *argv])
+        return code, out.getvalue()
+
+    def test_write_mode_reports_wrote_then_unchanged(self):
+        code, out = self._run()
+        self.assertEqual(code, 0)
+        self.assertIn("wrote Demo", out)
+        code, out = self._run()
+        self.assertIn("unchanged Demo", out)
+
+    def test_check_mode_fails_when_a_card_is_missing(self):
+        code, out = self._run("--check")
+        self.assertEqual(code, 1)
+        self.assertIn("stale: Demo", out)
+        self.assertNotIn("up to date", out)
+
+    def test_check_mode_fails_when_a_new_convention_file_appears(self):
+        """Staleness comes from a new citable source, not from prose edits.
+
+        Cards record that a convention file exists, so editing AGENTS.md
+        cannot change one -- only a new origin-bearing file can.
+        """
+        self._run()
+        (self.root / "Demo" / "AGENTS.md").write_text("completely rewritten", encoding="utf-8")
+        self.assertEqual(self._run("--check")[0], 0)
+        (self.root / "Demo" / "CONTRIBUTING.md").write_text("## rules", encoding="utf-8")
+        code, out = self._run("--check")
+        self.assertEqual(code, 1)
+        self.assertIn("stale: Demo", out)
+
+    def test_check_mode_passes_when_cards_are_current(self):
+        self._run()
+        code, out = self._run("--check")
+        self.assertEqual(code, 0)
+        self.assertIn("cards up to date", out)
+
+    def test_module_entry_point_is_runnable(self):
+        """``python -m harness.repo_cards`` is how an operator actually runs it."""
+        proc = subprocess.run(
+            [sys.executable, "-m", "harness.repo_cards",
+             "--root", str(self.root), "--cards", str(self.cards), "--check"],
+            cwd=str(ROOT), capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("stale: Demo", proc.stdout)
+
+    def test_default_root_is_the_parent_of_this_checkout(self):
+        self.assertEqual(default_root(), ROOT.parent)
 
 
 if __name__ == "__main__":
