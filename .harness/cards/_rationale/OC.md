@@ -1,0 +1,3 @@
+OC is an operations workspace, not a product repository. Its `AGENTS.md` states explicitly that changes must be published to SCMessenger and Harness on their own clean branches, and that **a standalone OC repository must not be published**. Product STATUS lives in `../Harness/docs/jev-roadmap.md`, not here.
+
+This card is therefore thin by design. An agent should treat "no local convention found" as a signal to consult the Harness canon rather than invent an OC-local rule.

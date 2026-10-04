@@ -1,7 +1,10 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-.harness/
+# `.harness/` is scratch (worktrees); the generated card corpus is source.
+# Ignore the children rather than the directory so cards/ can be un-ignored.
+.harness/*
+!.harness/cards/
 build/
 dist/
 .harness-backups/

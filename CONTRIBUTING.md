@@ -255,6 +255,7 @@ statement covers the CI matrix by direct execution.
 | `harness/pyramid_state.py` | persisted pyramid run envelope (goal, DAG, node_results, spent) and resume helpers: pending-node selection so `plan --resume` never re-dispatches completed ok nodes |
 | `harness/attest.py` | diff-bound independent authorization (M4): sovereign-diff-v1 schema + fail-closed binding checks; the LLM second-verifier lane (`authorize_diff`) is enforced in `write_candidate` before every write when opted in |
 | `harness/brief.py` | grounded context packs (`harness brief`): cited hash-pinned windows, honest truncation, no uncited claims; `validate_brief` is the grounding lint |
+| `harness/repo_cards.py` | deterministic repo philosophy cards (`.harness/cards/*.md`) scanned from committed config; every row carries the origin file it was parsed from and a row with no resolvable origin is omitted, so cards are safe to cite as brief windows. Regeneration is byte-identical. Card *resolution* is not here — that is repo-scope concern |
 | `harness/worktree.py` | git-worktree isolation for parallel DAG stages: per-node worktree/branch, declared-write audit, topological merge, conflict fail-closed |
 | `harness/web.py` | deliberate web access for the chat lane: allowlist-only fetch (https, redirects refused) + one operator-configured search endpoint; opt-in per run, honest failures, never an SSRF surface |
 | `harness/claims.py` | structured-claims grounding: source_refs lint + claims curation from the ledger's own evidence |

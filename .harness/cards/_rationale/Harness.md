@@ -1,0 +1,3 @@
+Harness is the only carded repo that declares its own process as machine-readable data: `docs/jev-roadmap.md` is the canon, and `harness/gate_runner.py` holds the gates as argv so no doc carries a platform-flavoured command string.
+
+Two conventions no config file records. First, work happens in one phase PR at a time off `origin/main`; the operator tree stays on `main` and is never pushed to directly. Second, a change is not complete until the local gates pass **and** CI is green on the merge — the roadmap's own completion rule.
