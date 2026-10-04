@@ -321,13 +321,28 @@ def fetch_endpoints(transport, api_key, model_id, *, timeout=20):
 
 def fetch_endpoints_for(transport, api_key, model_ids, *,
                         max_fetches=MAX_ENDPOINT_FETCHES_PER_RUN):
-    """Fetch endpoints for an explicit shortlist.
+    """Fetch endpoints for an explicit shortlist. THE ONE OWNER OF THE BOUND.
 
-    The shortlist is a caller decision (shipped pools, top-N by value,
-    operator-specified ids). Refusing an unbounded list here is what keeps the
-    daily benchmark/endpoint budget intact: a full catalog is ~400 models, so
-    a naive fan-out would spend most of the day's allowance on rows nobody
-    will route to.
+    Every caller goes through here. That is the whole point: when the budget
+    check lived here but :func:`build_economics_report` looped
+    :func:`fetch_endpoints` directly, the production path issued one GET per
+    requested model while reporting the budget it had been given (and with no
+    flag, ``[:None]`` made the default unbounded). A guard that only the tests
+    called is not a guard.
+
+    The bound is checked BEFORE any request is issued, and it refuses rather
+    than truncating: a silently partial report reads as full coverage, which
+    is the failure this module exists to prevent. It is also fail-closed for
+    the implicit default, so if the shipped pool ever outgrows
+    ``max_fetches`` the operator is told instead of being handed a truncated
+    artifact.
+
+    Returns ``{"priced": {model_id: ModelEndpoints}, "errors": {model_id:
+    message}}``. Per-model failures are isolated rather than raised, because
+    one model leaving the catalog must not cost the operator every other
+    price in the report -- but the caller is expected to make each error
+    VISIBLE, since a shipped model quietly absent from a report is exactly the
+    silent-degradation defect this module's own docstring rejects.
     """
     # Strip BEFORE deduping: `a/m` and `a/m:free` are one model, and issuing
     # a GET for each would spend the daily request budget twice on one row.
@@ -338,11 +353,21 @@ def fetch_endpoints_for(transport, api_key, model_ids, *,
             f"endpoint fetch budget is {max_fetches} models per run; {len(ids)} "
             f"requested. Endpoint coverage is shortlist-scoped by design "
             f"(DF-EV-2): pass the ids you actually route to, or raise "
-            f"max_fetches explicitly.")
-    out = {}
+            f"max_fetches explicitly. No requests were issued.")
+    priced, errors = {}, {}
     for model_id in ids:
-        out[model_id] = fetch_endpoints(transport, api_key, model_id)
-    return out
+        try:
+            priced[model_id] = fetch_endpoints(transport, api_key, model_id)
+        except HarnessError as exc:
+            errors[model_id] = str(exc)
+            # Announced HERE, at the point of isolation, because this is the
+            # only place the failure is guaranteed to be seen by someone. A
+            # shipped model that quietly drops out of a report is precisely
+            # the silent degradation this module's docstring rejects, and a
+            # live run did exactly that: `cohere/north-mini-code` errored into
+            # `endpoint_errors` with a clean stderr and a plausible artifact.
+            eprint(f"[warn] economics: endpoint feed failed for {model_id}: {exc}")
+    return {"priced": priced, "errors": errors}
 
 
 # --------------------------------------------------------------------------
@@ -703,13 +728,19 @@ def effective_price(endpoints, input_tokens, output_tokens, *, path=None,
 # --------------------------------------------------------------------------
 def build_economics_report(governor, ledger, *, api_key=None, transport=None,
                            benchmark_ids=None, probe_model=None,
-                           max_fetches=MAX_ENDPOINT_FETCHES_PER_RUN,
-                           semantics_path=None):
+                           max_fetches=None, semantics_path=None):
     """Assemble the EV-0 evidence artifact.
 
     Read-only with respect to configuration: it ingests and reports, and it
     never mutates a pool, a lane default, or a ceiling. Whether to *apply*
     anything is EV-3/EV-4's job, and this report is their only input.
+
+    Endpoint pricing is delegated to :func:`fetch_endpoints_for` and must stay
+    that way. This function used to loop :func:`fetch_endpoints` itself, which
+    meant the report issued one GET per requested model while writing the
+    budget it had been given into the artifact -- the budget was real in the
+    helper and inert in production. Any future fan-out added here inherits
+    that: call the owner, not the single-model fetch.
     """
     if transport is None:
         transport = HttpTransport()
@@ -722,26 +753,40 @@ def build_economics_report(governor, ledger, *, api_key=None, transport=None,
         except HarnessError as exc:
             eprint(f"[warn] economics: catalog unavailable ({exc})")
 
+    # An unset bound is still a bound. The run cap exists to protect a
+    # metered feed, so it is not opt-in: the CLI passes `None` when
+    # --max-fetches is absent, and resolving it here is what stops `[:None]`
+    # from turning the default into an unbounded sweep. The number reported
+    # below is therefore always the number that was enforced.
+    budget = (MAX_ENDPOINT_FETCHES_PER_RUN if max_fetches is None
+              else int(max_fetches))
     shortlist = [strip_variant_suffix(m) for m in (benchmark_ids or [])]
     if not shortlist:
         # Default shortlist: the ids this install actually routes to. Those
         # are the ones whose real price decides a cost decision, so they are
         # the slice worth spending the daily request budget on. Catalog-wide
         # coverage is /models (unmetered); endpoint coverage is this list.
-        shortlist = sorted(strip_variant_suffix(m)
-                           for m in shipped_model_ids())[:max_fetches]
+        # NOT truncated to the budget here: a quietly shortened list produces
+        # a partial report that reads as full coverage. The guard below
+        # refuses instead, and says so.
+        shortlist = sorted(strip_variant_suffix(m) for m in shipped_model_ids())
         eprint(f"[info] economics: no ids given; pricing the "
-               f"{len(shortlist)} shipped lane models (endpoint coverage is "
+               f"{len(shortlist)} shipped lane models against a budget of "
+               f"{budget} endpoint fetches (endpoint coverage is "
                f"shortlist-scoped by design)")
 
     endpoint_rows, endpoint_errors = {}, {}
     if shortlist:
-        for model_id in shortlist:
-            try:
-                endpoint_rows[model_id] = fetch_endpoints(
-                    transport, api_key, model_id).to_dict()
-            except HarnessError as exc:
-                endpoint_errors[model_id] = str(exc)
+        fetched = fetch_endpoints_for(transport, api_key, shortlist,
+                                      max_fetches=budget)
+        endpoint_rows = {model_id: ep.to_dict()
+                         for model_id, ep in fetched["priced"].items()}
+        endpoint_errors = dict(fetched["errors"])
+        if endpoint_errors:
+            eprint(f"[warn] economics: {len(endpoint_errors)} of "
+                   f"{len(shortlist)} requested models have no endpoint price; "
+                   f"they are listed under endpoint_errors in the receipt, so "
+                   f"this run does not cover them")
 
     probe_record = None
     if probe_model:
@@ -758,7 +803,7 @@ def build_economics_report(governor, ledger, *, api_key=None, transport=None,
         "endpoint_models": endpoint_rows,
         "endpoint_errors": endpoint_errors,
         "shortlist_size": len(shortlist),
-        "max_fetches": max_fetches,
+        "max_fetches": budget,
         "discount_semantics_recorded": load_discount_semantics(semantics_path),
         "discount_probe": probe_record,
     }

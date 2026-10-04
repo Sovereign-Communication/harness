@@ -6,11 +6,16 @@ so the parsing here is what every later cost number rests on -- and a
 silently half-parsed price table would still look plausible downstream.
 """
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
+from unittest import mock
 
+from harness import output
 from harness.config import (DISCOUNT_IS_MULTIPLIER, DISCOUNT_LISTED_IS_EFFECTIVE,
                             MAX_ENDPOINT_FETCHES_PER_RUN,
                             OPENROUTER_BENCHMARKS_URL, OPENROUTER_ENDPOINTS_URL)
-from harness.economics import (EndpointPrice, benchmarks_by_model, fetch_benchmarks,
+from harness.economics import (EndpointPrice, benchmarks_by_model,
+                               build_economics_report, fetch_benchmarks,
                                fetch_endpoints, fetch_endpoints_for)
 from harness.errors import HarnessError
 
@@ -140,8 +145,24 @@ class FetchEndpointsTests(unittest.TestCase):
         fake = FakeEndpoints({m: _endpoint_body(m, [_offer("P", 1e-6, 2e-6)])
                               for m in ("acme/a", "acme/b")})
         got = fetch_endpoints_for(fake, "k", ids)
-        self.assertEqual(sorted(got), ["acme/a", "acme/b"])
+        self.assertEqual(sorted(got["priced"]), ["acme/a", "acme/b"])
+        self.assertEqual(got["errors"], {})
         self.assertEqual(len(fake.gets), 2)
+
+    def test_a_failing_model_is_isolated_and_announced(self):
+        """One model leaving the catalog must not cost the operator every
+        other price -- and must not disappear silently while it does."""
+        fake = FakeEndpoints(
+            {"acme/ok": _endpoint_body("acme/ok", [_offer("P", 1e-6, 2e-6)])},
+            error_models={"acme/gone"})
+        buffer = StringIO()
+        with redirect_stderr(buffer):
+            got = fetch_endpoints_for(fake, "k", ["acme/ok", "acme/gone"])
+
+        self.assertEqual(sorted(got["priced"]), ["acme/ok"])
+        self.assertIn("acme/gone", got["errors"])
+        self.assertIn("[warn] economics: endpoint feed failed for acme/gone",
+                      buffer.getvalue())
 
     def test_endpoint_url_is_the_documented_feed(self):
         self.assertEqual(
@@ -227,3 +248,134 @@ class EligibilityTests(unittest.TestCase):
     def test_unpublished_uptime_does_not_disqualify(self):
         endpoint = EndpointPrice("P", 1e-6, 2e-6, uptime_1d=None)
         self.assertTrue(endpoint.is_eligible(min_uptime=90.0))
+
+
+class FakeFeeds:
+    """Both feeds `build_economics_report` reads, plus a count of the
+    endpoint GETs it ACTUALLY issued.
+
+    The count is the whole point: a budget test that only reads the returned
+    artifact proves nothing, because the artifact is written from the
+    budget that was passed in rather than from the requests that were sent.
+    """
+
+    def __init__(self, bodies, error_models=()):
+        self.bodies = bodies
+        self.error_models = set(error_models)
+        self.endpoint_gets = []
+
+    def get(self, url, api_key, timeout=15):
+        if url.startswith(OPENROUTER_BENCHMARKS_URL):
+            return {"data": [{"source": "openrouter",
+                              "model_permaslug": "acme/a",
+                              "benchmark_type": "gpqa_diamond",
+                              "accuracy": 0.71, "total_tasks": 300}],
+                    "meta": {"as_of": "2026-10-03T00:00:00Z"}}
+        model = url.split("/models/", 1)[1].rsplit("/endpoints", 1)[0]
+        self.endpoint_gets.append(model)
+        if model in self.error_models:
+            return {"error": {"message": f"no such model {model}"}}
+        return self.bodies[model]
+
+
+class ReportBudgetTests(unittest.TestCase):
+    """The PRODUCTION path, not the helper.
+
+    `build_economics_report` used to loop `fetch_endpoints` directly, so the
+    budget was enforced in a function nobody but the tests called: a live
+    `harness economics --models a,b,c --max-fetches 1` reported
+    `"max_fetches": 1` and priced all three, and with no flag the shortlist
+    was sliced `[:None]` so the configured default never applied either. These
+    tests call the report builder itself with a fake transport, so the guard
+    cannot be bypassed again without one of them going red.
+    """
+
+    def _transport(self, models=("acme/a", "acme/b"), error_models=()):
+        return FakeFeeds(
+            {m: _endpoint_body(m, [_offer("P", 1e-6, 2e-6)]) for m in models},
+            error_models=error_models)
+
+    def _report(self, transport, **kw):
+        """Run the real report path; return (report, stderr)."""
+        buffer = StringIO()
+        with redirect_stderr(buffer):
+            report = build_economics_report(
+                None, None, api_key="k", transport=transport, **kw)
+        return report, buffer.getvalue()
+
+    def test_explicit_shortlist_over_budget_is_refused_before_any_request(self):
+        """The exact case the audit ran live: three models, a budget of one."""
+        fake = self._transport(("acme/a", "acme/b", "acme/c"))
+        buffer = StringIO()
+        with redirect_stderr(buffer), self.assertRaises(HarnessError) as ctx:
+            build_economics_report(None, None, api_key="k", transport=fake,
+                                   benchmark_ids=["acme/a", "acme/b", "acme/c"],
+                                   max_fetches=1)
+        self.assertIn("budget is 1 models per run", str(ctx.exception))
+        # Refusal means refusal: not a truncated report that reads as full
+        # coverage, and not a request already spent to find that out.
+        self.assertEqual(fake.endpoint_gets, [])
+
+    def test_the_budget_in_the_artifact_is_the_budget_that_ran(self):
+        fake = self._transport(("acme/a", "acme/b"))
+        report, _err = self._report(fake, benchmark_ids=["acme/a", "acme/b"],
+                                    max_fetches=2)
+
+        self.assertEqual(sorted(report["endpoint_models"]), ["acme/a", "acme/b"])
+        self.assertEqual(len(fake.endpoint_gets), 2)
+        self.assertEqual(report["max_fetches"], 2)
+        self.assertEqual(report["shortlist_size"], 2)
+        self.assertEqual(report["endpoint_errors"], {})
+
+    def test_an_unset_budget_is_the_configured_cap_not_an_unbounded_slice(self):
+        """No --max-fetches means the CLI passes None. `[:None]` used to make
+        that mean every shipped model, however many."""
+        fake = self._transport(("acme/a", "acme/b", "acme/c"))
+        with mock.patch("harness.economics.shipped_model_ids",
+                        return_value=["acme/a", "acme/b:free", "acme/c"]), \
+             mock.patch("harness.economics.MAX_ENDPOINT_FETCHES_PER_RUN", 2), \
+             redirect_stderr(StringIO()), \
+             self.assertRaises(HarnessError) as ctx:
+            build_economics_report(None, None, api_key="k", transport=fake)
+        self.assertIn("budget is 2 models per run", str(ctx.exception))
+        self.assertEqual(fake.endpoint_gets, [])
+
+    def test_shipped_pool_within_the_cap_is_priced_and_reports_the_cap(self):
+        # The shipped list carries a variant suffix; the feed is keyed by the
+        # canonical id, so the default path strips before it requests.
+        fake = self._transport(("acme/a", "acme/b"))
+        with mock.patch("harness.economics.shipped_model_ids",
+                        return_value=["acme/a:free", "acme/b"]), \
+             mock.patch("harness.economics.MAX_ENDPOINT_FETCHES_PER_RUN", 40):
+            report, err = self._report(fake)
+        self.assertEqual(sorted(report["endpoint_models"]), ["acme/a", "acme/b"])
+        self.assertEqual(fake.endpoint_gets, ["acme/a", "acme/b"])
+        self.assertEqual(report["max_fetches"], 40)
+        self.assertIn("shipped lane models", err)
+
+    def test_a_model_that_errors_is_visible_not_just_recorded(self):
+        """`cohere/north-mini-code` left the catalog during a live run and the
+        failure landed in `endpoint_errors` with a clean stderr and a
+        plausible-looking artifact. The receipt entry is not enough: the
+        operator has to be TOLD."""
+        fake = self._transport(("acme/a", "acme/gone"),
+                               error_models={"acme/gone"})
+        report, err = self._report(fake, benchmark_ids=["acme/a", "acme/gone"],
+                                   max_fetches=2)
+
+        # Still isolated: one dead model does not cost the others their price.
+        self.assertEqual(sorted(report["endpoint_models"]), ["acme/a"])
+        self.assertIn("acme/gone", report["endpoint_errors"])
+        # ...and never silent.
+        self.assertIn("[warn] economics: endpoint feed failed for acme/gone", err)
+        self.assertIn("acme/gone", err)
+        self.assertIn("1 of 2 requested models have no endpoint price", err)
+
+    def test_the_failure_warning_survives_quiet(self):
+        """`--quiet` suppresses progress chatter. A swallowed model is not
+        chatter: `[warn]` is in output._AUDIBLE_PREFIXES for this reason."""
+        fake = self._transport(("acme/gone",), error_models={"acme/gone"})
+        with mock.patch.object(output, "QUIET", True):
+            _report, err = self._report(fake, benchmark_ids=["acme/gone"],
+                                        max_fetches=1)
+        self.assertIn("[warn] economics: endpoint feed failed for acme/gone", err)
