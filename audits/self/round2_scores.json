@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 3900 tests in 298.360s\n\nOK (env scrubbed: HARNESS_JEV_KEY, HARNESS_USE_FREE; empty home)"
+        "evidence": "unittest: Ran 3923 tests in 282.119s\n\nOK (env scrubbed: HARNESS_JEV_KEY, HARNESS_USE_FREE; empty home)"
       },
       {
         "id": "R14",
@@ -268,7 +268,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "83/83 modules imported by tests"
+        "evidence": "84/84 modules imported by tests"
       },
       {
         "id": "S7",
@@ -324,7 +324,7 @@
         "id": "D7",
         "label": "docs reference only real modules",
         "score": 1.0,
-        "evidence": "all module references across 28 docs resolve to real files"
+        "evidence": "all module references across 29 docs resolve to real files"
       },
       {
         "id": "D8",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 280/290 = 97% (bar 95%) vs baseline deb485920c; untested: benchmark_ingest.py:53,67; discount_probe.py:54,102,103; endpoint_pricing.py:108,110,142,166,188)"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 82/82 = 100% (bar 95%) vs baseline 998e50f0be)"
       }
     ]
   }
