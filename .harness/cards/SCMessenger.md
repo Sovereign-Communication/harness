@@ -28,4 +28,4 @@
 
 `AGENTS.md` is titled a *Universal Agent Contract* and states it is the canonical, model-agnostic rules contract for any agent working in this repository. That makes it the authority an agent must satisfy before writing code here — the card's CI list is long because the contract is enforced by many independent workflows, not by one.
 
-Note the `v040-harness-plan` sibling is a planning checkout of this same repository and produces identical rows.
+This is the carded representative of the SCMessenger project. The `SCMessenger-v040-harness-plan` sibling is a versioned planning checkout that carries the same contract and produces identical rows, so it is deliberately not carded.

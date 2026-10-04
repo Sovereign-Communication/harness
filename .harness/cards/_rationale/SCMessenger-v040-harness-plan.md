@@ -1,3 +1,0 @@
-This checkout carries the same `AGENTS.md`, `Cargo.toml`, and sixteen identical CI workflows as `SCMessenger`, so its generated rows are byte-identical to `SCMessenger`'s apart from the title. It is a planning/plan-tracking checkout, not a repository with a distinct engineering philosophy.
-
-Carding it duplicates SCMessenger's contract into a second file that can drift out of step. Dropping it from the carded set is the cleaner default and is an open operator decision.

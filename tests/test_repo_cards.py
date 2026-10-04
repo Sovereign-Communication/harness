@@ -164,6 +164,27 @@ class DiscoverTests(unittest.TestCase):
         self._repo("Real")
         self.assertEqual([n for n, _ in discover_repos(self.root)], ["Real"])
 
+    def test_skips_versioned_planning_checkouts(self):
+        """A ``-v<NNN>-`` planning checkout duplicates its base repo's card."""
+        self._repo("Real")
+        self._repo("Real-v040-harness-plan")
+        self.assertEqual([n for n, _ in discover_repos(self.root)], ["Real"])
+
+    def test_keeps_a_repo_whose_name_merely_contains_v(self):
+        """The rule matches the checkout shape, not a stray ``v`` substring."""
+        for name in ("Rev", "Survey", "DevOps"):
+            self._repo(name)
+        self.assertEqual([n for n, _ in discover_repos(self.root)],
+                         ["DevOps", "Rev", "Survey"])
+
+    def test_base_repo_is_kept_when_a_planning_sibling_exists(self):
+        """Dropping the checkout must never drop the repo it plans against."""
+        self._repo("SCMessenger")
+        self._repo("SCMessenger-v040-harness-plan")
+        names = [n for n, _ in discover_repos(self.root)]
+        self.assertEqual(names, ["SCMessenger"])
+        self.assertIn("SCMessenger", names)
+
     def test_results_are_sorted_by_name(self):
         for name in ("Zebra", "Alpha", "Mid"):
             self._repo(name)

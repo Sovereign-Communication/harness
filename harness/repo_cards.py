@@ -62,6 +62,14 @@ _SKIP_PREFIXES = ("Harness-", "wt-")
 _SKIP_NAMES = frozenset(("scratch",))
 _SKIP_RE = re.compile(r"^test\d*$")
 
+# Versioned planning checkouts, ``<repo>-v<NNN>-<label>`` (e.g.
+# ``SCMessenger-v040-harness-plan``). These track a plan against a base repo
+# they already carry the config of, so their cards come out row-identical to
+# the base repo's. Two identical cards are a contract that will drift apart,
+# so the base repo is carded and the planning checkout is not. The rule is a
+# shape, not a hardcoded name, so the next planning checkout is skipped too.
+_PLAN_CHECKOUT_RE = re.compile(r"-v\d+-")
+
 
 # --------------------------------------------------------------------------
 # tiny TOML reader
@@ -254,6 +262,8 @@ def discover_repos(root: Path) -> List[Tuple[str, Path]]:
     for path in entries:
         name = path.name
         if name.startswith(_SKIP_PREFIXES) or name in _SKIP_NAMES or _SKIP_RE.match(name):
+            continue
+        if _PLAN_CHECKOUT_RE.search(name):
             continue
         if not (path / ".git").exists():
             continue
