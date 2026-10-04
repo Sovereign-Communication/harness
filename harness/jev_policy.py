@@ -36,6 +36,7 @@ from .jev_packs import (
     HUL_SCOPE_SITE,
     LOG_FACTOR_SITE,
     PHASE_COMPLETION_SITE,
+    PROVISION_SITE,
     REPO_SUMMARY_SITE,
     HOURGLASS_STAGE_DIMENSIONS,
     HOURGLASS_STAGE_PACK_ID,
@@ -3374,6 +3375,47 @@ class JevPolicy:
         return make_envelope(
             "assessed" if assessed else "unassessed", result=result,
             reasons=reasons, perfect=bool(assessed and perfect))
+
+    def evaluate_provision(self, state, questions, *, site: str = PROVISION_SITE,
+                           task_id: Optional[str] = None,
+                           node_id: Optional[str] = None,
+                           max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+        """Run one provisioning question pack (recipe choice or plan review).
+
+        ``harness/provision.py`` owns the packs' meaning and refuses any
+        answer outside its declared candidates; this method only owns the
+        dispatch, bounded spend, and the ONE ledger ``jev_eval``. Unkeyed
+        returns an honest ``is_fallback=True`` result with NO answers -- the
+        planner then falls back to its deterministic order, and nothing is
+        ever approved by a missing judgment. Returns ``(result, structural)``.
+        """
+        if not self.keyed:
+            result = JevEvaluationResult(
+                "fail", 0.0, 0.0, {},
+                ["unkeyed: provisioning falls back to the deterministic plan"],
+                is_fallback=True, model=self.evaluator.model,
+                fallback_reason="missing_key")
+            structural = self._account(
+                result, site=site, task_id=task_id, node_id=node_id)
+            return result, structural
+        reservation = None
+        try:
+            reservation = self._preflight(
+                site=site, max_input_tokens=max_input_tokens)
+            result = self.evaluator.evaluate(state, questions)
+            structural = self._account(
+                result, site=site, task_id=task_id, node_id=node_id,
+                reservation=reservation)
+            reservation = None
+            return result, structural
+        except HarnessError as exc:
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
+            return self._record_refusal(
+                str(exc), site=site, task_id=task_id, node_id=node_id)
 
     @staticmethod
     def attach(envelope: Dict[str, Any], structural: Optional[Dict[str, Any]]):

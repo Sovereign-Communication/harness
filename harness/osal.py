@@ -33,6 +33,7 @@ platform table) are *declared here* rather than sprinkled at call sites:
 """
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -131,6 +132,103 @@ def run(argv, cwd=None, timeout=None, input_text=None, env=None):
     except OSError as exc:
         return CommandResult(126, f"cannot run {argv[0]}: {exc}")
     return CommandResult(proc.returncode, proc.stdout or "", proc.stderr or "")
+
+
+# How long to keep draining a killed command's pipes before abandoning them.
+_DRAIN_SECONDS = 2
+
+
+def _kill_tree(process):
+    """Kill ``process`` and every descendant that is still reachable.
+
+    POSIX: the command was started as its own session leader, so one
+    ``killpg`` takes the whole group (orphaned grandchildren included).
+    Windows: ``taskkill /T`` walks the parent links from the still-live
+    root. A grandchild whose parent already exited cannot be found that way;
+    :func:`run_tree` still returns on time because it abandons the pipes.
+    """
+    if IS_WINDOWS:
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                capture_output=True, timeout=10, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    else:
+        try:
+            os.killpg(os.getpgid(process.pid), getattr(signal, "SIGKILL", signal.SIGTERM))
+        except OSError:
+            pass
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
+def run_tree(argv, cwd=None, timeout=None, env=None):
+    """Run an argv list like :func:`run`, but with a HARD wall-clock bound.
+
+    Two properties :func:`run` does not have, both needed to run a command
+    on the operator's behalf:
+
+    * stdin is the null device. The child never inherits the harness's own
+      stdin (which is the MCP stdio channel when Harness runs as a server).
+    * the timeout is real. ``subprocess.run`` kills only the direct child on
+      a timeout and then waits, unbounded, for pipes that a grandchild may
+      still hold. Here the command is its own process group / session, the
+      whole tree is killed on a timeout, the drain is bounded, and any pipe
+      still held afterwards is abandoned -- so the call returns near
+      ``timeout`` whatever the descendants do.
+
+    Exit codes match :func:`run`: 124 timed out, 126 not executable, 127 not
+    found. Output is decoded as UTF-8 with replacement.
+    """
+    if isinstance(argv, str):
+        raise OsalError(
+            "osal.run_tree takes an argv list, not a command string "
+            "(a string is a shell waiting to happen)")
+    argv = [str(a) for a in argv]
+    if not argv:
+        raise OsalError("osal.run_tree: empty argv")
+    kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.PIPE,
+              "stderr": subprocess.PIPE, "shell": False}
+    if cwd is not None:
+        kwargs["cwd"] = cwd
+    if env is not None:
+        kwargs["env"] = env
+    if IS_WINDOWS:
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        process = subprocess.Popen(argv, **kwargs)
+    except FileNotFoundError:
+        return CommandResult(127, f"executable not found: {argv[0]}")
+    except PermissionError:
+        return CommandResult(126, f"not executable: {argv[0]}")
+    except OSError as exc:
+        return CommandResult(126, f"cannot run {argv[0]}: {exc}")
+    try:
+        out, err = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(process)
+        try:
+            process.communicate(timeout=_DRAIN_SECONDS)
+        except subprocess.TimeoutExpired:
+            for pipe in (process.stdout, process.stderr):
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+        try:
+            process.wait(timeout=_DRAIN_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+        return CommandResult(
+            124, f"command timed out after {timeout}s: {' '.join(argv)}")
+    return CommandResult(process.returncode,
+                         (out or b"").decode(ENCODING, errors="replace"),
+                         (err or b"").decode(ENCODING, errors="replace"))
 
 
 def run_bounded(argv, max_bytes, timeout=10, cwd=None):
@@ -345,8 +443,28 @@ def norm_path(path):
     ``_fs_case_insensitive``), which is why every containment check goes
     through here instead of comparing raw strings.
     """
-    out = os.path.normcase(os.path.realpath(os.path.abspath(path)))
-    return out.lower() if _fs_case_insensitive() else out
+    out = os.path.realpath(os.path.abspath(path))
+    if _fs_case_insensitive():
+        # NOT os.path.normcase: on Windows it folds with the OS locale mapping
+        # (Kelvin sign -> k), which NTFS does not. realpath already yields
+        # one separator style, so only the safe ASCII fold remains to apply.
+        return _ascii_fold(out)
+    return os.path.normcase(out)
+
+
+_ASCII_UPPER_TO_LOWER = {c: c + 32 for c in range(ord("A"), ord("Z") + 1)}
+
+
+def _ascii_fold(text):
+    """Fold ASCII letters only.
+
+    ``str.lower`` also folds characters the filesystem does NOT treat as the
+    same (the Kelvin sign U+212A lowers to ``k``, but NTFS keeps ``<Kelvin sign>root``
+    and ``kroot`` as two directories). For a containment check the safe error
+    is "different", so only the folding every case-insensitive volume agrees
+    on is applied.
+    """
+    return text.translate(_ASCII_UPPER_TO_LOWER)
 
 
 def same_path(a, b):

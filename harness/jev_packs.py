@@ -2601,3 +2601,67 @@ def decision_calibration_report(
         "mismatches": [row for row in rows if not row["match"]],
         "rows": rows,
     }
+
+
+# ---------------------------------------------------------------------------
+# Host provisioning (harness/provision.py): selection + advisory verification
+# ---------------------------------------------------------------------------
+
+PROVISION_SITE = "provision_plan"
+PROVISION_PACK_VERSION = "provision-v1"
+
+
+def provision_selection_question_pack(
+        candidates: Sequence[Any]) -> Dict[str, Dict[str, Any]]:
+    """Typed choice pack over the planner's DECLARED setup recipes.
+
+    ``candidates`` is a sequence of ``(recipe_id, description)`` pairs the code
+    already proved applicable to this host. The criteria keys are exactly those
+    ids -- the evaluator can only pick a recipe that exists, and ``provision``
+    refuses any other answer (0-hallucination). Fewer than two candidates is
+    not a choice, so it is refused rather than asked.
+    """
+    criteria: Dict[str, str] = {}
+    for item in candidates:
+        try:
+            recipe_id, description = item
+        except (TypeError, ValueError):
+            raise ValueError(
+                "provision candidates must be (id, description) pairs") from None
+        if not isinstance(recipe_id, str) or not recipe_id.strip():
+            raise ValueError("provision candidate id must be a non-empty string")
+        if recipe_id in criteria:
+            raise ValueError(f"duplicate provision candidate: {recipe_id!r}")
+        criteria[recipe_id] = str(description)
+    if len(criteria) < 2:
+        raise ValueError("provision selection needs at least two candidates")
+    return {
+        "recipe": {
+            "type": "choice",
+            "instructions": (
+                "Choose the setup recipe that satisfies the goal with the "
+                "smallest, most reversible footprint on this host. Prefer a "
+                "recipe confined to a private directory over one that changes "
+                "the system. Select only from the declared criteria keys."),
+            "criteria": criteria,
+        },
+    }
+
+
+def provision_verification_question_pack() -> Dict[str, Dict[str, Any]]:
+    """Advisory review of a fully validated provisioning plan.
+
+    Advisory only: neither answer can widen the allowlist, lower a step's
+    class, or approve anything. A poor answer only forces per-step approval.
+    """
+    return {
+        "satisfies_goal": _noul(
+            "Would running every step of this plan, in order, set up what "
+            "the goal asks for?",
+            "The steps, once run, accomplish the stated goal.",
+            "The steps would not accomplish the stated goal."),
+        "exceeds_goal": _noul(
+            "Do any steps change the host beyond what the goal needs?",
+            "At least one step goes beyond what the goal requires.",
+            "Every step is needed for the goal and nothing more."),
+    }
