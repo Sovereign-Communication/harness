@@ -20,7 +20,6 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.99,
         "evaluated": true
       },
       "R": {
@@ -29,7 +28,6 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.99,
         "evaluated": true
       },
       "SM": {
@@ -38,7 +36,6 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.99,
         "evaluated": true
       },
       "SD": {
@@ -47,7 +44,6 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.96,
         "evaluated": true
       }
     },
@@ -59,12 +55,14 @@
     },
     "bar_95_pass": true,
     "min_score": 10.0,
-    "is_fallback": false,
-    "reasons": [],
-    "model": "jev-1.13.0",
-    "cost": 5.5566e-05,
-    "input_tokens": 1323,
-    "output_tokens": 60
+    "is_fallback": true,
+    "reasons": [
+      "unkeyed"
+    ],
+    "model": "jev-latest",
+    "cost": 0.0,
+    "input_tokens": 0,
+    "output_tokens": 0
   },
   "checks": {
     "A": [
@@ -224,7 +222,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 3847 tests in 198.920s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 3856 tests in 200.472s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -354,7 +352,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 18/18 = 100% (bar 95%) vs baseline 24057b11f4)"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 280/290 = 97% (bar 95%) vs baseline 24057b11f4; untested: benchmark_ingest.py:53,67; discount_probe.py:54,102,103; endpoint_pricing.py:108,110,142,166,188)"
       }
     ]
   }

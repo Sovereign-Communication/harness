@@ -24,7 +24,7 @@ import harness.discount_probe
 from harness.config import (CONFIG_DIR, DISCOUNT_AMBIGUOUS,
                             DISCOUNT_IS_MULTIPLIER, DISCOUNT_LISTED_IS_EFFECTIVE,
                             DISCOUNT_NOT_APPLICABLE, DISCOUNT_UNRESOLVED,
-                            ECONOMICS_VERDICT_PATH)
+                            ECONOMICS_SCHEMA_VERSION, ECONOMICS_VERDICT_PATH)
 from harness.discount_gate import (REPO_ROOT, discount_verdict_path,
                                    load_discount_semantics,
                                    record_discount_semantics,
@@ -325,7 +325,7 @@ class GateTests(unittest.TestCase):
         with self.assertRaises(HarnessError) as ctx:
             resolve_discount_semantics(endpoints, path=self.path)
         message = str(ctx.exception)
-        self.assertIn("no committed semantics verdict", message)
+        self.assertIn("committed semantics verdict", message)
         self.assertIn("2.00x", message)
 
     def test_resolve_refuses_when_the_promotion_changed(self):
@@ -412,16 +412,17 @@ class CommittedVerdictTests(unittest.TestCase):
         self.repo = self._tmp.name
         self.addCleanup(self._tmp.cleanup)
 
-    def _endpoints(self, discount=0.5):
+    def _endpoints(self, discount=0.5, model="acme/sol"):
         from harness.endpoint_pricing import fetch_endpoints
         transport = ProbeTransport(
             [_offer("Only", 2e-6, 10e-6, discount=discount)], usage=None)
-        return fetch_endpoints(transport, "k", "acme/sol")
+        return fetch_endpoints(transport, "k", model)
 
-    def _record(self, semantics=DISCOUNT_IS_MULTIPLIER, discount=0.5, **kw):
+    def _record(self, semantics=DISCOUNT_IS_MULTIPLIER, discount=0.5,
+                model="acme/sol", **kw):
         return record_discount_semantics(
-            {"semantics": semantics, "model": "acme/sol",
-             "fingerprint": {"model": "acme/sol", "max_discount": discount}},
+            {"semantics": semantics, "model": model,
+             "fingerprint": {"model": model, "max_discount": discount}},
             **kw)
 
     def test_the_default_receipt_is_in_the_checkout_not_the_config_dir(self):
@@ -472,9 +473,9 @@ class CommittedVerdictTests(unittest.TestCase):
                 resolve_discount_semantics(endpoints, repo_root=self.repo)
 
         message = str(ctx.exception)
-        self.assertIn("no committed semantics verdict", message)
+        self.assertIn("committed semantics verdict", message)
         # The refusal points at the repo receipt, i.e. at what to produce.
-        self.assertIn(os.path.join(self.repo, ECONOMICS_VERDICT_PATH), message)
+        self.assertIn(discount_verdict_path(repo_root=self.repo), message)
 
     def test_recording_writes_repo_evidence_that_the_gate_reads_back(self):
         endpoints = self._endpoints()
@@ -482,8 +483,7 @@ class CommittedVerdictTests(unittest.TestCase):
         with redirect_stderr(buffer):
             target = self._record(repo_root=self.repo)
 
-        self.assertEqual(target,
-                         os.path.join(self.repo, ECONOMICS_VERDICT_PATH))
+        self.assertEqual(target, discount_verdict_path(repo_root=self.repo))
         self.assertTrue(os.path.isfile(target))
         with open(target, "rb") as stream:
             raw = stream.read()
@@ -508,7 +508,168 @@ class CommittedVerdictTests(unittest.TestCase):
         scratch = os.path.join(self.repo, "scratch-verdict.json")
         self._record(path=scratch)
         self.assertFalse(os.path.exists(
-            os.path.join(self.repo, ECONOMICS_VERDICT_PATH)))
+            os.path.normpath(os.path.join(self.repo, ECONOMICS_VERDICT_PATH))))
         semantics = resolve_discount_semantics(endpoints, path=scratch,
                                                repo_root=self.repo)
         self.assertEqual(semantics, DISCOUNT_IS_MULTIPLIER)
+
+
+class ReceiptIdentityTests(unittest.TestCase):
+    """A receipt is only evidence about the model and the format it names.
+
+    The gate already refused a missing receipt and a stale promotion. Two
+    ways to get a wrong number anyway sat right beside them: ``fingerprint``
+    recorded which model a verdict was measured on and never compared it, so a
+    receipt measured on ``acme/model-A`` unblocked ``acme/model-B`` at the same
+    discount depth; and ``ECONOMICS_SCHEMA_VERSION`` was stamped into every
+    receipt and never read, so a receipt in a format this code has never seen
+    was honoured as authoritative. Both are the 2x error arriving by the door
+    the probe does not watch.
+
+    Every test here drives the real gate. The loader is the thing under
+    suspicion: it returned the record happily in both cases above.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = self._tmp.name
+        self.addCleanup(self._tmp.cleanup)
+
+    def _endpoints(self, discount=0.5, model="acme/sol"):
+        from harness.endpoint_pricing import fetch_endpoints
+        transport = ProbeTransport(
+            [_offer("Only", 2e-6, 10e-6, discount=discount)], usage=None)
+        return fetch_endpoints(transport, "k", model)
+
+    def _record(self, semantics=DISCOUNT_IS_MULTIPLIER, discount=0.5,
+                model="acme/sol", **kw):
+        return record_discount_semantics(
+            {"semantics": semantics, "model": model,
+             "fingerprint": {"model": model, "max_discount": discount}},
+            **kw)
+
+    def _handwritten(self, record):
+        """A receipt the recorder would never write -- because it is exactly
+        what a hand-edit or a future probe leaves in the tree."""
+        target = os.path.join(self.repo, "handwritten.json")
+        with open(target, "w", encoding="utf-8") as stream:
+            json.dump(record, stream)
+        return target
+
+    def test_an_inconclusive_receipt_is_refused_by_name(self):
+        """`unresolved`/`ambiguous` are never recorded on purpose, but a receipt
+        can be hand-edited, and one that declines to decide is not a decision."""
+        target = self._handwritten(
+            {"schema": ECONOMICS_SCHEMA_VERSION,
+             "semantics": DISCOUNT_AMBIGUOUS, "model": "acme/sol",
+             "fingerprint": {"model": "acme/sol", "max_discount": 0.5}})
+        with self.assertRaises(HarnessError) as ctx:
+            resolve_discount_semantics(self._endpoints(), path=target)
+        message = str(ctx.exception)
+        self.assertIn("not conclusive", message)
+        self.assertIn(DISCOUNT_AMBIGUOUS, message)
+        self.assertIn(target, message)
+
+    def test_a_receipt_with_an_empty_fingerprint_is_refused_by_name(self):
+        """An empty fingerprint cannot be re-checked against the live
+        promotion, so it can never be shown to still apply."""
+        target = self._handwritten(
+            {"schema": ECONOMICS_SCHEMA_VERSION,
+             "semantics": DISCOUNT_IS_MULTIPLIER, "model": "acme/sol",
+             "fingerprint": {}})
+        with self.assertRaises(HarnessError) as ctx:
+            resolve_discount_semantics(self._endpoints(), path=target)
+        message = str(ctx.exception)
+        self.assertIn("promotion fingerprint", message)
+        self.assertIn(target, message)
+
+    def test_a_receipt_recording_no_promotion_is_refused_by_name(self):
+        """The model matches, but there is no promotion recorded to re-check
+        against -- so 'the answer may no longer hold' can never be asked."""
+        target = self._handwritten(
+            {"schema": ECONOMICS_SCHEMA_VERSION,
+             "semantics": DISCOUNT_IS_MULTIPLIER, "model": "acme/sol",
+             "fingerprint": {"model": "acme/sol"}})
+        with self.assertRaises(HarnessError) as ctx:
+            resolve_discount_semantics(self._endpoints(), path=target)
+        self.assertIn("promotion fingerprint", str(ctx.exception))
+
+    def test_a_verdict_measured_on_another_model_does_not_unblock_this_one(self):
+        """Same depth, same promotion, different model, still not an answer."""
+        self._record(model="acme/model-A", repo_root=self.repo)
+        endpoints = self._endpoints(model="acme/model-B")
+        with self.assertRaises(HarnessError) as ctx:
+            resolve_discount_semantics(endpoints, repo_root=self.repo)
+        message = str(ctx.exception)
+        # Names BOTH models: "borrowed a verdict" and "the promotion changed"
+        # are different operator problems with different fixes.
+        self.assertIn("acme/model-A", message)
+        self.assertIn("acme/model-B", message)
+        self.assertIn("2.00x", message)
+        self.assertIn(discount_verdict_path(repo_root=self.repo), message)
+
+    def test_a_variant_suffix_is_the_same_model_to_the_feed(self):
+        """The guard above must not become a new refusal: the probe stamps the
+        canonical id, so `a/m:free` has to match a receipt measured on `a/m`."""
+        self._record(model="acme/sol", repo_root=self.repo)
+        endpoints = self._endpoints(model="acme/sol:free")
+        self.assertEqual(
+            resolve_discount_semantics(endpoints, repo_root=self.repo),
+            DISCOUNT_IS_MULTIPLIER)
+
+    def test_a_receipt_in_a_schema_this_code_cannot_read_is_refused(self):
+        """`schema: 99` is a file from the future. Its fields cannot be
+        guessed at, so it is not evidence about anything."""
+        target = os.path.join(self.repo, "future.json")
+        with open(target, "w", encoding="utf-8") as stream:
+            json.dump({"schema": 99, "semantics": DISCOUNT_IS_MULTIPLIER,
+                       "model": "acme/sol",
+                       "fingerprint": {"model": "acme/sol",
+                                       "max_discount": 0.5}}, stream)
+        with self.assertRaises(HarnessError) as ctx:
+            resolve_discount_semantics(self._endpoints(), path=target)
+        message = str(ctx.exception)
+        self.assertIn("schema", message)
+        self.assertIn("99", message)
+        self.assertIn(target, message)
+        self.assertIn(str(ECONOMICS_SCHEMA_VERSION), message)
+
+    def test_recording_refuses_a_receipt_the_gate_could_not_honour(self):
+        """Writing evidence that the gate will reject is the same defect as
+        shipping a verdict nothing can read, so the recorder is the second
+        half of the same pin."""
+        with self.assertRaises(HarnessError) as ctx:
+            record_discount_semantics(
+                {"schema": 99, "semantics": DISCOUNT_IS_MULTIPLIER,
+                 "model": "acme/sol",
+                 "fingerprint": {"model": "acme/sol", "max_discount": 0.5}},
+                repo_root=self.repo)
+        self.assertIn("could not honour", str(ctx.exception))
+        self.assertFalse(os.path.exists(
+            discount_verdict_path(repo_root=self.repo)))
+
+    def test_a_stamped_schema_is_written_so_the_receipt_can_come_back(self):
+        """The gate refuses an unstamped receipt, so the recorder writes one;
+        otherwise its own output would be unreadable."""
+        target = self._record(repo_root=self.repo)
+        with open(target, encoding="utf-8") as stream:
+            written = json.load(stream)
+        self.assertEqual(written["schema"], ECONOMICS_SCHEMA_VERSION)
+        self.assertEqual(
+            resolve_discount_semantics(self._endpoints(), repo_root=self.repo),
+            DISCOUNT_IS_MULTIPLIER)
+
+    def test_the_verdict_path_the_operator_reads_has_no_mixed_separators(self):
+        """`C:\\repo/audits/self/...` is what every refusal quotes and what the
+        "wrote repo evidence" line prints: the one string here most likely to
+        be copied into a shell."""
+        target = discount_verdict_path(repo_root=self.repo)
+        self.assertEqual(target, os.path.normpath(target))
+        self.assertNotIn("/\\", target)
+        self.assertNotIn("\\/", target)
+        # And the default the operator actually sees, not just a temp root.
+        self.assertEqual(discount_verdict_path(),
+                         os.path.normpath(discount_verdict_path()))
+        with self.assertRaises(HarnessError) as ctx:
+            resolve_discount_semantics(self._endpoints(), repo_root=self.repo)
+        self.assertIn(target, str(ctx.exception))
