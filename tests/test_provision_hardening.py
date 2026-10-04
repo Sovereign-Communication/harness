@@ -92,9 +92,23 @@ class CmdSyntaxAndShimTests(HardeningCase):
         probe = pv.probe_host(
             self.root, runner=FakeRunner(), facts=LINUX,
             which=which_of("npm", paths={"npm": "C:\\node\\npm.CMD"}))
-        self.assertTrue(probe.manager("npm").usable)
+        # The behaviour under test is the SKIP, and it lives in
+        # applicable_recipes, which refuses a cmd.exe batch shim on every host
+        # (the shim re-parses its own arguments). Prove the skip is caused by
+        # the shim rather than by npm being missing: the same probe with a
+        # real npm admits the recipe.
+        #
+        # This used to assert `probe.manager("npm").usable`, which only holds
+        # when the test itself runs on Windows -- on Linux/macOS it raised
+        # AttributeError on None and failed four of the five CI legs.
+        request = [pv.PackageRequest("x", None, "node")]
         self.assertEqual(pv.applicable_recipes(
-            [pv.PackageRequest("x", None, "node")], probe, self.policy), [])
+            request, probe, self.policy), [])
+        real = pv.probe_host(
+            self.root, runner=FakeRunner(), facts=LINUX,
+            which=which_of("npm", paths={"npm": "/usr/bin/npm"}))
+        self.assertIn(pv.RECIPE_NPM_PREFIX,
+                      pv.applicable_recipes(request, real, self.policy))
 
 
 class FlagSmugglingTests(HardeningCase):
