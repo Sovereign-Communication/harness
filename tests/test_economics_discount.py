@@ -10,17 +10,26 @@ measured, recorded, and enforced rather than guessed.
 All hermetic: a fake transport supplies the published offers and the
 provider-reported charge.
 """
+import io
 import json
+import inspect
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from unittest import mock
 
-from harness.config import (DISCOUNT_AMBIGUOUS, DISCOUNT_IS_MULTIPLIER,
-                            DISCOUNT_LISTED_IS_EFFECTIVE,
-                            DISCOUNT_NOT_APPLICABLE, DISCOUNT_UNRESOLVED)
-from harness.economics import (effective_price, load_discount_semantics,
-                               record_discount_semantics,
-                               resolve_discount_semantics, run_discount_probe)
+import harness.discount_gate
+import harness.discount_probe
+from harness.config import (CONFIG_DIR, DISCOUNT_AMBIGUOUS,
+                            DISCOUNT_IS_MULTIPLIER, DISCOUNT_LISTED_IS_EFFECTIVE,
+                            DISCOUNT_NOT_APPLICABLE, DISCOUNT_UNRESOLVED,
+                            ECONOMICS_SCHEMA_VERSION, ECONOMICS_VERDICT_PATH)
+from harness.discount_gate import (REPO_ROOT, discount_verdict_path,
+                                   load_discount_semantics,
+                                   record_discount_semantics,
+                                   resolve_discount_semantics)
+from harness.discount_probe import run_discount_probe
 from harness.errors import HarnessError
 
 
@@ -39,9 +48,13 @@ class ProbeTransport:
         self.usage = usage
         self.status = status
         self.posts = []
+        self.gets = []
 
     def get(self, url, api_key, timeout=15):
         model = url.split("/models/", 1)[1].rsplit("/endpoints", 1)[0]
+        self.gets.append(model)
+        if self.offers is None:
+            return {"error": {"message": f"no such model {model}"}}
         return {"data": {"id": model, "endpoints": self.offers}}
 
     def post(self, url, api_key, payload, timeout=60):
@@ -176,6 +189,64 @@ class ProbeDecisionTests(unittest.TestCase):
         self.assertTrue(payload["model"].endswith(":floor"))
 
 
+class ProbeFetchBoundTests(unittest.TestCase):
+    """The probe is the only shipped caller of endpoint fetch, so the bound
+    has to hold ON THE PROBE -- not merely in a helper the tests call.
+
+    That is the exact shape of DF-EV-9: the guard was real and reachable only
+    from tests while the shipped surface looped `fetch_endpoints` around it.
+    `run_discount_probe` now goes through `fetch_endpoints_for`, and these
+    tests drive the probe itself.
+    """
+
+    def _transport(self, *, missing=False):
+        offers = None if missing else [_offer("Only", 2e-6, 10e-6,
+                                               discount=0.5)]
+        return ProbeTransport(offers, usage={"cost": 1e-5, "prompt_tokens": 100,
+                                             "completion_tokens": 40})
+
+    def test_one_probe_is_exactly_one_endpoint_get(self):
+        transport = self._transport()
+        run_discount_probe(transport, "k", None, "acme/sol:free")
+        # Stripped to the canonical id, fetched once, for the model asked for.
+        self.assertEqual(transport.gets, ["acme/sol"])
+
+    def test_a_failing_feed_raises_and_is_announced(self):
+        """A probe has no other model to fall back on, so a dead feed is a
+        raised error -- never an `unresolved` verdict for a measurement that
+        never happened -- and it is announced, not swallowed."""
+        transport = self._transport(missing=True)
+        buffer = io.StringIO()
+        with redirect_stderr(buffer):
+            with self.assertRaises(HarnessError) as ctx:
+                run_discount_probe(transport, "k", None, "acme/sol")
+        self.assertIn("no such model acme/sol", str(ctx.exception))
+        self.assertIn("[warn] economics: endpoint feed failed for acme/sol",
+                      buffer.getvalue())
+        self.assertEqual(transport.posts, [])
+
+    def test_the_owner_would_refuse_a_fan_out_before_spending_anything(self):
+        """The bound is one GET per model inside a fixed run budget, and an
+        over-budget list is refused rather than truncated."""
+        from harness.endpoint_pricing import fetch_endpoints_for
+        transport = self._transport()
+        with self.assertRaises(HarnessError) as ctx:
+            fetch_endpoints_for(transport, "k",
+                                [f"acme/m{i}" for i in range(3)],
+                                max_fetches=2)
+        self.assertIn("No requests were issued", str(ctx.exception))
+        self.assertEqual(transport.gets, [])
+
+    def test_the_probe_cannot_loop_the_single_model_fetch(self):
+        """Source-level, because with one model the bypass is otherwise
+        invisible: DF-EV-9 was exactly a call site looping `fetch_endpoints`
+        while the bound sat in a helper only the tests called."""
+        source = inspect.getsource(harness.discount_probe.run_discount_probe)
+        self.assertIn("fetch_endpoints_for(", source)
+        self.assertNotIn("fetch_endpoints(",
+                         source.replace("fetch_endpoints_for(", "OWNER("))
+
+
 class RecordingTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -183,7 +254,7 @@ class RecordingTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def _endpoints(self, discount=0.5, prompt=2e-6, completion=10e-6):
-        from harness.economics import fetch_endpoints
+        from harness.endpoint_pricing import fetch_endpoints
         transport = ProbeTransport([_offer("Only", prompt, completion, discount)],
                                    usage=None)
         return fetch_endpoints(transport, "k", "acme/sol")
@@ -238,7 +309,7 @@ class GateTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def _endpoints(self, discount=0.5, prompt=2e-6, completion=10e-6):
-        from harness.economics import fetch_endpoints
+        from harness.endpoint_pricing import fetch_endpoints
         transport = ProbeTransport([_offer("Only", prompt, completion, discount)],
                                    usage=None)
         return fetch_endpoints(transport, "k", "acme/sol")
@@ -252,9 +323,9 @@ class GateTests(unittest.TestCase):
     def test_gate_refuses_with_no_verdict(self):
         endpoints = self._endpoints()
         with self.assertRaises(HarnessError) as ctx:
-            effective_price(endpoints, 8000, 1000, path=self.path)
+            resolve_discount_semantics(endpoints, path=self.path)
         message = str(ctx.exception)
-        self.assertIn("no recorded semantics verdict", message)
+        self.assertIn("committed semantics verdict", message)
         self.assertIn("2.00x", message)
 
     def test_resolve_refuses_when_the_promotion_changed(self):
@@ -266,73 +337,339 @@ class GateTests(unittest.TestCase):
 
     def test_no_promotion_means_the_question_does_not_arise(self):
         endpoints = self._endpoints(discount=0.0)
-        self.assertEqual(resolve_discount_semantics(endpoints, path=self.path),
-                         DISCOUNT_NOT_APPLICABLE)
-        endpoint, cost = effective_price(endpoints, 8000, 1000, path=self.path)
-        self.assertAlmostEqual(cost, 8000 * 2e-6 + 1000 * 10e-6)
-        self.assertEqual(endpoint.provider_name, "Only")
+        semantics = resolve_discount_semantics(endpoints, path=self.path)
+        self.assertEqual(semantics, DISCOUNT_NOT_APPLICABLE)
+        # Listed rates, used as-is: no verdict is needed to price an
+        # unpromoted endpoint.
+        self.assertAlmostEqual(
+            endpoints.endpoints[0].blended_usd(8000, 1000, semantics=semantics),
+            8000 * 2e-6 + 1000 * 10e-6)
 
-    def test_verdict_decides_whether_the_discount_is_applied(self):
+    def test_the_verdict_is_what_the_two_readings_worth_2x(self):
+        """EV-0's whole reason for existing, stated on the surviving
+        arithmetic: the same offer priced under the two committed verdicts.
+
+        Which endpoint wins, and whether an offer may be routed to at all, is
+        EV-1's selection policy (DF-EV-12) -- but the 2x it inverts on is
+        measured here and nowhere else.
+        """
         self._record(DISCOUNT_LISTED_IS_EFFECTIVE)
-        _endpoint, listed = effective_price(self._endpoints(), 8000, 1000,
-                                            path=self.path)
-        self.assertAlmostEqual(listed, 8000 * 2e-6 + 1000 * 10e-6)
+        listed = resolve_discount_semantics(self._endpoints(), path=self.path)
+        endpoints = self._endpoints()
+        as_listed = endpoints.endpoints[0].blended_usd(
+            8000, 1000, semantics=listed)
+        self.assertAlmostEqual(as_listed, 8000 * 2e-6 + 1000 * 10e-6)
 
         self._record(DISCOUNT_IS_MULTIPLIER)
-        _endpoint, discounted = effective_price(self._endpoints(), 8000, 1000,
-                                                path=self.path)
-        self.assertAlmostEqual(discounted, (8000 * 1e-6) + (1000 * 5e-6))
+        multiplier = resolve_discount_semantics(self._endpoints(), path=self.path)
+        as_multiplier = endpoints.endpoints[0].blended_usd(
+            8000, 1000, semantics=multiplier)
+        self.assertAlmostEqual(as_multiplier, (8000 * 1e-6) + (1000 * 5e-6))
         # Exactly the 2x the ambiguity was worth measuring for.
-        self.assertAlmostEqual(listed / discounted, 2.0, places=6)
+        self.assertAlmostEqual(as_listed / as_multiplier, 2.0, places=6)
 
-    def test_gate_picks_the_cheapest_offer_without_mixing_rates(self):
-        """The inverted in/out pair from DF-EV-2: no blending of the cheapest
-        input from one provider with the cheapest output from another.
-
-        At 8000in/1000out the CheapIn offer really is cheaper overall
-        ($0.00028 vs $0.00405), yet ExpensiveIn has the cheaper *output*
-        rate. Mixing the two per-field would report $0.00013 -- a phantom
-        price no provider would charge, and the number a cost index built
-        per-field would publish.
-        """
-        from harness.economics import fetch_endpoints
+    def test_every_offer_is_priced_from_its_own_rates(self):
+        """Canon invariant 3 (DF-EV-2): never mix per-endpoint prices. The
+        arithmetic is per endpoint by construction, which is what lets EV-1
+        pick a whole offer rather than a phantom blended one."""
+        from harness.endpoint_pricing import fetch_endpoints
         transport = ProbeTransport(
             [_offer("CheapInExpensiveOut", 1e-8, 2e-7, discount=0.0),
              _offer("ExpensiveInCheapOut", 5e-7, 5e-8, discount=0.0)],
             usage=None)
         endpoints = fetch_endpoints(transport, "k", "acme/mix")
-        endpoint, cost = effective_price(endpoints, 8000, 1000, path=self.path)
+        cheap_in, cheap_out = endpoints.endpoints
+        self.assertAlmostEqual(
+            cheap_in.blended_usd(8000, 1000, semantics=DISCOUNT_NOT_APPLICABLE),
+            8000 * 1e-8 + 1000 * 2e-7)
+        self.assertAlmostEqual(
+            cheap_out.blended_usd(8000, 1000, semantics=DISCOUNT_NOT_APPLICABLE),
+            8000 * 5e-7 + 1000 * 5e-8)
+        # The phantom a per-field blend would report is cheaper than any
+        # real offer, which is exactly why nobody is allowed to build one.
+        phantom = 8000 * cheap_in.prompt + 1000 * cheap_out.completion
+        self.assertLess(phantom, cheap_in.blended_usd(
+            8000, 1000, semantics=DISCOUNT_NOT_APPLICABLE))
 
-        self.assertEqual(endpoint.provider_name, "CheapInExpensiveOut")
-        # The winner is whole: its own output rate, not the cheaper one.
-        self.assertAlmostEqual(cost, 8000 * 1e-8 + 1000 * 2e-7)
-        cheapest_out = endpoints.endpoints[1]
-        self.assertLess(cheapest_out.completion, endpoint.completion)
-        phantom = 8000 * endpoint.prompt + 1000 * cheapest_out.completion
-        self.assertLess(phantom, cost)
 
-    def test_ineligible_offer_is_not_chosen_as_the_cheap_one(self):
-        from harness.economics import fetch_endpoints
-        transport = ProbeTransport([
-            dict(_offer("Degraded", 1e-9, 1e-9, discount=0.0),
-                 uptime_last_1d=40.0),
-            dict(_offer("Healthy", 2e-6, 4e-6, discount=0.0),
-                 uptime_last_1d=99.9),
-        ], usage=None)
-        endpoints = fetch_endpoints(transport, "k", "acme/health")
-        endpoint, _cost = effective_price(endpoints, 8000, 1000, path=self.path,
-                                          min_uptime=90.0)
-        self.assertEqual(endpoint.provider_name, "Healthy")
+class CommittedVerdictTests(unittest.TestCase):
+    """The verdict is REPO EVIDENCE, not machine state.
 
-    def test_cached_input_is_the_cheaper_rate_when_eligible(self):
-        from harness.economics import fetch_endpoints
-        offer = _offer("Cached", 2e-6, 10e-6, discount=0.0)
-        offer["pricing"]["input_cache_read"] = 2e-7
-        transport = ProbeTransport([offer], usage=None)
-        endpoints = fetch_endpoints(transport, "k", "acme/cache")
+    The gate used to read ``~/.config/harness/economics.json``, so the answer
+    to "is the price gate satisfied?" lived on one operator's disk: two
+    checkouts could disagree, and a verdict nobody could review in a PR
+    governed the cost model of the whole system. The receipt is committed
+    instead, under ``audits/self/dogfood/`` -- where the DoD puts live
+    receipts and where D11 already SHA-256-pins every tracked file, so a
+    hand-edited verdict fails the audit.
 
-        _e, uncached = effective_price(endpoints, 8000, 1000, path=self.path)
-        _e, cached = effective_price(endpoints, 8000, 1000, path=self.path,
-                                     cache_eligible=True)
-        self.assertAlmostEqual(cached, 8000 * 2e-7 + 1000 * 10e-6)
-        self.assertLess(cached, uncached)
+    Fail-closed is unchanged, and that is the part that must not drift: no
+    receipt, no number. Only *where the receipt lives* moved.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = self._tmp.name
+        self.addCleanup(self._tmp.cleanup)
+
+    def _endpoints(self, discount=0.5, model="acme/sol"):
+        from harness.endpoint_pricing import fetch_endpoints
+        transport = ProbeTransport(
+            [_offer("Only", 2e-6, 10e-6, discount=discount)], usage=None)
+        return fetch_endpoints(transport, "k", model)
+
+    def _record(self, semantics=DISCOUNT_IS_MULTIPLIER, discount=0.5,
+                model="acme/sol", **kw):
+        return record_discount_semantics(
+            {"semantics": semantics, "model": model,
+             "fingerprint": {"model": model, "max_discount": discount}},
+            **kw)
+
+    def test_the_default_receipt_is_in_the_checkout_not_the_config_dir(self):
+        target = os.path.abspath(discount_verdict_path())
+        self.assertEqual(target,
+                         os.path.abspath(os.path.join(REPO_ROOT,
+                                                      ECONOMICS_VERDICT_PATH)))
+        # Inside the checkout, and nowhere near the operator's config dir --
+        # the whole point: the answer travels with the code.
+        self.assertEqual(os.path.commonpath([REPO_ROOT, target]),
+                         os.path.abspath(REPO_ROOT))
+        self.assertFalse(target.startswith(os.path.abspath(CONFIG_DIR)))
+        # ...and inside the directory D11 hash-pins, so a silent edit to the
+        # verdict is a deterministic audit failure rather than a quiet change
+        # to the cost model.
+        self.assertEqual(ECONOMICS_VERDICT_PATH.replace("\\", "/").split("/")[:3],
+                         ["audits", "self", "dogfood"])
+
+    def test_the_gate_reads_no_machine_local_state(self):
+        """A machine-global fallback would quietly restore the disagreement
+        this change exists to remove, so it is pinned at the source."""
+        with open(harness.discount_gate.__file__, encoding="utf-8") as stream:
+            source = stream.read()
+        self.assertNotIn("CONFIG_DIR", source)
+        self.assertNotIn("expanduser", source)
+
+    def test_a_machine_local_verdict_no_longer_satisfies_the_gate(self):
+        """A conclusive verdict exactly where the old gate looked must not
+        unblock the gate.
+
+        HOME points at this temp tree for the duration, so any `~/.config`
+        resolution the module might ever grow lands on a file this test
+        controls -- the refusal below is then a real statement about the
+        resolution, not about an absent file somewhere else on the disk.
+        """
+        endpoints = self._endpoints()
+        with mock.patch.dict(os.environ, {"HOME": self.repo,
+                                          "USERPROFILE": self.repo}):
+            machine_local = os.path.join(
+                os.path.expanduser("~/.config/harness"), "economics.json")
+            os.makedirs(os.path.dirname(machine_local), exist_ok=True)
+            with open(machine_local, "w", encoding="utf-8") as stream:
+                json.dump({"semantics": DISCOUNT_IS_MULTIPLIER,
+                           "model": "acme/sol",
+                           "fingerprint": {"model": "acme/sol",
+                                           "max_discount": 0.5}}, stream)
+            with self.assertRaises(HarnessError) as ctx:
+                resolve_discount_semantics(endpoints, repo_root=self.repo)
+
+        message = str(ctx.exception)
+        self.assertIn("committed semantics verdict", message)
+        # The refusal points at the repo receipt, i.e. at what to produce.
+        self.assertIn(discount_verdict_path(repo_root=self.repo), message)
+
+    def test_recording_writes_repo_evidence_that_the_gate_reads_back(self):
+        endpoints = self._endpoints()
+        buffer = io.StringIO()
+        with redirect_stderr(buffer):
+            target = self._record(repo_root=self.repo)
+
+        self.assertEqual(target, discount_verdict_path(repo_root=self.repo))
+        self.assertTrue(os.path.isfile(target))
+        with open(target, "rb") as stream:
+            raw = stream.read()
+        # LF, because this file gets committed and CRLF would dirty the tree
+        # immediately after the gate that is meant to prove it clean.
+        self.assertNotIn(b"\r\n", raw)
+        self.assertEqual(json.loads(raw.decode("utf-8"))["semantics"],
+                         DISCOUNT_IS_MULTIPLIER)
+        # The operator is told it is evidence they own, not local state.
+        self.assertIn("commit it", buffer.getvalue())
+
+        # Round trip with NO path override: the committed receipt is enough.
+        semantics = resolve_discount_semantics(endpoints, repo_root=self.repo)
+        self.assertEqual(semantics, DISCOUNT_IS_MULTIPLIER)
+        self.assertAlmostEqual(
+            endpoints.endpoints[0].blended_usd(8000, 1000, semantics=semantics),
+            8000 * 1e-6 + 1000 * 5e-6)
+
+    def test_an_explicit_path_still_overrides_for_hermetic_runs(self):
+        """`--verdict-path` exists so tests and CI never write the checkout."""
+        endpoints = self._endpoints()
+        scratch = os.path.join(self.repo, "scratch-verdict.json")
+        self._record(path=scratch)
+        self.assertFalse(os.path.exists(
+            os.path.normpath(os.path.join(self.repo, ECONOMICS_VERDICT_PATH))))
+        semantics = resolve_discount_semantics(endpoints, path=scratch,
+                                               repo_root=self.repo)
+        self.assertEqual(semantics, DISCOUNT_IS_MULTIPLIER)
+
+
+class ReceiptIdentityTests(unittest.TestCase):
+    """A receipt is only evidence about the model and the format it names.
+
+    The gate already refused a missing receipt and a stale promotion. Two
+    ways to get a wrong number anyway sat right beside them: ``fingerprint``
+    recorded which model a verdict was measured on and never compared it, so a
+    receipt measured on ``acme/model-A`` unblocked ``acme/model-B`` at the same
+    discount depth; and ``ECONOMICS_SCHEMA_VERSION`` was stamped into every
+    receipt and never read, so a receipt in a format this code has never seen
+    was honoured as authoritative. Both are the 2x error arriving by the door
+    the probe does not watch.
+
+    Every test here drives the real gate. The loader is the thing under
+    suspicion: it returned the record happily in both cases above.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = self._tmp.name
+        self.addCleanup(self._tmp.cleanup)
+
+    def _endpoints(self, discount=0.5, model="acme/sol"):
+        from harness.endpoint_pricing import fetch_endpoints
+        transport = ProbeTransport(
+            [_offer("Only", 2e-6, 10e-6, discount=discount)], usage=None)
+        return fetch_endpoints(transport, "k", model)
+
+    def _record(self, semantics=DISCOUNT_IS_MULTIPLIER, discount=0.5,
+                model="acme/sol", **kw):
+        return record_discount_semantics(
+            {"semantics": semantics, "model": model,
+             "fingerprint": {"model": model, "max_discount": discount}},
+            **kw)
+
+    def _handwritten(self, record):
+        """A receipt the recorder would never write -- because it is exactly
+        what a hand-edit or a future probe leaves in the tree."""
+        target = os.path.join(self.repo, "handwritten.json")
+        with open(target, "w", encoding="utf-8") as stream:
+            json.dump(record, stream)
+        return target
+
+    def test_an_inconclusive_receipt_is_refused_by_name(self):
+        """`unresolved`/`ambiguous` are never recorded on purpose, but a receipt
+        can be hand-edited, and one that declines to decide is not a decision."""
+        target = self._handwritten(
+            {"schema": ECONOMICS_SCHEMA_VERSION,
+             "semantics": DISCOUNT_AMBIGUOUS, "model": "acme/sol",
+             "fingerprint": {"model": "acme/sol", "max_discount": 0.5}})
+        with self.assertRaises(HarnessError) as ctx:
+            resolve_discount_semantics(self._endpoints(), path=target)
+        message = str(ctx.exception)
+        self.assertIn("not conclusive", message)
+        self.assertIn(DISCOUNT_AMBIGUOUS, message)
+        self.assertIn(target, message)
+
+    def test_a_receipt_with_an_empty_fingerprint_is_refused_by_name(self):
+        """An empty fingerprint cannot be re-checked against the live
+        promotion, so it can never be shown to still apply."""
+        target = self._handwritten(
+            {"schema": ECONOMICS_SCHEMA_VERSION,
+             "semantics": DISCOUNT_IS_MULTIPLIER, "model": "acme/sol",
+             "fingerprint": {}})
+        with self.assertRaises(HarnessError) as ctx:
+            resolve_discount_semantics(self._endpoints(), path=target)
+        message = str(ctx.exception)
+        self.assertIn("promotion fingerprint", message)
+        self.assertIn(target, message)
+
+    def test_a_receipt_recording_no_promotion_is_refused_by_name(self):
+        """The model matches, but there is no promotion recorded to re-check
+        against -- so 'the answer may no longer hold' can never be asked."""
+        target = self._handwritten(
+            {"schema": ECONOMICS_SCHEMA_VERSION,
+             "semantics": DISCOUNT_IS_MULTIPLIER, "model": "acme/sol",
+             "fingerprint": {"model": "acme/sol"}})
+        with self.assertRaises(HarnessError) as ctx:
+            resolve_discount_semantics(self._endpoints(), path=target)
+        self.assertIn("promotion fingerprint", str(ctx.exception))
+
+    def test_a_verdict_measured_on_another_model_does_not_unblock_this_one(self):
+        """Same depth, same promotion, different model, still not an answer."""
+        self._record(model="acme/model-A", repo_root=self.repo)
+        endpoints = self._endpoints(model="acme/model-B")
+        with self.assertRaises(HarnessError) as ctx:
+            resolve_discount_semantics(endpoints, repo_root=self.repo)
+        message = str(ctx.exception)
+        # Names BOTH models: "borrowed a verdict" and "the promotion changed"
+        # are different operator problems with different fixes.
+        self.assertIn("acme/model-A", message)
+        self.assertIn("acme/model-B", message)
+        self.assertIn("2.00x", message)
+        self.assertIn(discount_verdict_path(repo_root=self.repo), message)
+
+    def test_a_variant_suffix_is_the_same_model_to_the_feed(self):
+        """The guard above must not become a new refusal: the probe stamps the
+        canonical id, so `a/m:free` has to match a receipt measured on `a/m`."""
+        self._record(model="acme/sol", repo_root=self.repo)
+        endpoints = self._endpoints(model="acme/sol:free")
+        self.assertEqual(
+            resolve_discount_semantics(endpoints, repo_root=self.repo),
+            DISCOUNT_IS_MULTIPLIER)
+
+    def test_a_receipt_in_a_schema_this_code_cannot_read_is_refused(self):
+        """`schema: 99` is a file from the future. Its fields cannot be
+        guessed at, so it is not evidence about anything."""
+        target = os.path.join(self.repo, "future.json")
+        with open(target, "w", encoding="utf-8") as stream:
+            json.dump({"schema": 99, "semantics": DISCOUNT_IS_MULTIPLIER,
+                       "model": "acme/sol",
+                       "fingerprint": {"model": "acme/sol",
+                                       "max_discount": 0.5}}, stream)
+        with self.assertRaises(HarnessError) as ctx:
+            resolve_discount_semantics(self._endpoints(), path=target)
+        message = str(ctx.exception)
+        self.assertIn("schema", message)
+        self.assertIn("99", message)
+        self.assertIn(target, message)
+        self.assertIn(str(ECONOMICS_SCHEMA_VERSION), message)
+
+    def test_recording_refuses_a_receipt_the_gate_could_not_honour(self):
+        """Writing evidence that the gate will reject is the same defect as
+        shipping a verdict nothing can read, so the recorder is the second
+        half of the same pin."""
+        with self.assertRaises(HarnessError) as ctx:
+            record_discount_semantics(
+                {"schema": 99, "semantics": DISCOUNT_IS_MULTIPLIER,
+                 "model": "acme/sol",
+                 "fingerprint": {"model": "acme/sol", "max_discount": 0.5}},
+                repo_root=self.repo)
+        self.assertIn("could not honour", str(ctx.exception))
+        self.assertFalse(os.path.exists(
+            discount_verdict_path(repo_root=self.repo)))
+
+    def test_a_stamped_schema_is_written_so_the_receipt_can_come_back(self):
+        """The gate refuses an unstamped receipt, so the recorder writes one;
+        otherwise its own output would be unreadable."""
+        target = self._record(repo_root=self.repo)
+        with open(target, encoding="utf-8") as stream:
+            written = json.load(stream)
+        self.assertEqual(written["schema"], ECONOMICS_SCHEMA_VERSION)
+        self.assertEqual(
+            resolve_discount_semantics(self._endpoints(), repo_root=self.repo),
+            DISCOUNT_IS_MULTIPLIER)
+
+    def test_the_verdict_path_the_operator_reads_has_no_mixed_separators(self):
+        """`C:\\repo/audits/self/...` is what every refusal quotes and what the
+        "wrote repo evidence" line prints: the one string here most likely to
+        be copied into a shell."""
+        target = discount_verdict_path(repo_root=self.repo)
+        self.assertEqual(target, os.path.normpath(target))
+        self.assertNotIn("/\\", target)
+        self.assertNotIn("\\/", target)
+        # And the default the operator actually sees, not just a temp root.
+        self.assertEqual(discount_verdict_path(),
+                         os.path.normpath(discount_verdict_path()))
+        with self.assertRaises(HarnessError) as ctx:
+            resolve_discount_semantics(self._endpoints(), repo_root=self.repo)
+        self.assertIn(target, str(ctx.exception))

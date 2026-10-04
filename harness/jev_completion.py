@@ -136,7 +136,14 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "tests/test_economics_discount.py",
             "tests/test_economics_cli.py",
         ],
-        "required_files": ["harness/economics.py"],
+        # EV-0's evidence layer is four modules, one concern each; the
+        # contract follows the code rather than naming a file that is gone.
+        "required_files": [
+            "harness/endpoint_pricing.py",
+            "harness/benchmark_ingest.py",
+            "harness/discount_probe.py",
+            "harness/discount_gate.py",
+        ],
     },
     "JEV-P0": {
         "pr_pattern": r"PR #34|d042d70",

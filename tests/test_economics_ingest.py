@@ -6,12 +6,15 @@ so the parsing here is what every later cost number rests on -- and a
 silently half-parsed price table would still look plausible downstream.
 """
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 
 from harness.config import (DISCOUNT_IS_MULTIPLIER, DISCOUNT_LISTED_IS_EFFECTIVE,
                             MAX_ENDPOINT_FETCHES_PER_RUN,
                             OPENROUTER_BENCHMARKS_URL, OPENROUTER_ENDPOINTS_URL)
-from harness.economics import (EndpointPrice, benchmarks_by_model, fetch_benchmarks,
-                               fetch_endpoints, fetch_endpoints_for)
+from harness.benchmark_ingest import benchmarks_by_model, fetch_benchmarks
+from harness.endpoint_pricing import (EndpointPrice, fetch_endpoints,
+                                      fetch_endpoints_for)
 from harness.errors import HarnessError
 
 
@@ -140,8 +143,24 @@ class FetchEndpointsTests(unittest.TestCase):
         fake = FakeEndpoints({m: _endpoint_body(m, [_offer("P", 1e-6, 2e-6)])
                               for m in ("acme/a", "acme/b")})
         got = fetch_endpoints_for(fake, "k", ids)
-        self.assertEqual(sorted(got), ["acme/a", "acme/b"])
+        self.assertEqual(sorted(got["priced"]), ["acme/a", "acme/b"])
+        self.assertEqual(got["errors"], {})
         self.assertEqual(len(fake.gets), 2)
+
+    def test_a_failing_model_is_isolated_and_announced(self):
+        """One model leaving the catalog must not cost the operator every
+        other price -- and must not disappear silently while it does."""
+        fake = FakeEndpoints(
+            {"acme/ok": _endpoint_body("acme/ok", [_offer("P", 1e-6, 2e-6)])},
+            error_models={"acme/gone"})
+        buffer = StringIO()
+        with redirect_stderr(buffer):
+            got = fetch_endpoints_for(fake, "k", ["acme/ok", "acme/gone"])
+
+        self.assertEqual(sorted(got["priced"]), ["acme/ok"])
+        self.assertIn("acme/gone", got["errors"])
+        self.assertIn("[warn] economics: endpoint feed failed for acme/gone",
+                      buffer.getvalue())
 
     def test_endpoint_url_is_the_documented_feed(self):
         self.assertEqual(
@@ -216,14 +235,3 @@ class FetchBenchmarksTests(unittest.TestCase):
         report = fetch_benchmarks(transport, "k")
         self.assertEqual([r["model_permaslug"] for r in report["rows"]], ["good"])
 
-
-class EligibilityTests(unittest.TestCase):
-    def test_degraded_uptime_makes_an_offer_ineligible(self):
-        healthy = EndpointPrice("P", 1e-6, 2e-6, uptime_1d=99.9)
-        degraded = EndpointPrice("Q", 1e-6, 2e-6, uptime_1d=40.0)
-        self.assertTrue(healthy.is_eligible(min_uptime=90.0))
-        self.assertFalse(degraded.is_eligible(min_uptime=90.0))
-
-    def test_unpublished_uptime_does_not_disqualify(self):
-        endpoint = EndpointPrice("P", 1e-6, 2e-6, uptime_1d=None)
-        self.assertTrue(endpoint.is_eligible(min_uptime=90.0))

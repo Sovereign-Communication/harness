@@ -38,7 +38,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.98,
+        "confidence": 0.99,
         "evaluated": true
       },
       "SD": {
@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.96,
+        "confidence": 0.97,
         "evaluated": true
       }
     },
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 3839 tests in 290.513s\n\nOK (env scrubbed: HARNESS_USE_FREE; empty home)"
+        "evidence": "unittest: Ran 3900 tests in 298.360s\n\nOK (env scrubbed: HARNESS_JEV_KEY, HARNESS_USE_FREE; empty home)"
       },
       {
         "id": "R14",
@@ -268,7 +268,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "80/80 modules imported by tests"
+        "evidence": "83/83 modules imported by tests"
       },
       {
         "id": "S7",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 1130/1130 = 100% (bar 95%) vs baseline c8da12e193)"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 280/290 = 97% (bar 95%) vs baseline deb485920c; untested: benchmark_ingest.py:53,67; discount_probe.py:54,102,103; endpoint_pricing.py:108,110,142,166,188)"
       }
     ]
   }

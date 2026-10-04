@@ -29,6 +29,8 @@ import time
 from .consent import probe_consent
 from .config import (
     DEFAULT_MAX_COST,
+    DISCOUNT_IS_MULTIPLIER,
+    DISCOUNT_LISTED_IS_EFFECTIVE,
     HARD_MAX_COST,
     freeze_jev_settings,
     load_vision_preflight_settings,
@@ -50,10 +52,8 @@ from .service import run_verify as _service_verify
 from .service import read_text_file as _service_read_text
 from .service import run_dogfood as _service_run_dogfood
 from .rankings import build_rankings_report as _rankings_report
-from .economics import (build_economics_report as _economics_report,
-                        record_discount_semantics as _record_discount_semantics,
-                        run_discount_probe as _run_discount_probe,
-                        write_receipt as _write_economics_receipt)
+from .discount_gate import record_discount_semantics as _record_discount_semantics
+from .discount_probe import run_discount_probe as _run_discount_probe
 from .route_pack import validate_route_pack
 from .site_export import export_bundle as _site_export_bundle
 from .site_export import write_bundle as _site_export_write
@@ -929,53 +929,42 @@ def _cmd_rankings(opts, settings):
     _emit(report, opts.out)
 
 
-def _split_ids(raw):
-    """A comma-separated id list from the CLI, or None when unset.
-
-    Present here rather than in the economics module because a CLI string is
-    a CLI concern; the owner below takes a real list.
-    """
-    if not raw:
-        return None
-    ids = [part.strip() for part in str(raw).split(",") if part.strip()]
-    return ids or None
-
-
 def _cmd_economics(opts, settings):
-    """EV-0 evidence face: ingest benchmarks + per-provider endpoint pricing.
+    """EV-0's only shipped surface: the EV-0a discount-truth probe.
 
-    Read-only with respect to configuration -- it reports what the live
-    feeds say and never mutates a pool, a lane default, or a ceiling. The
-    one write it performs is `--record`, which stores the discount-semantics
-    verdict that the price gate in `harness.economics` refuses to proceed
-    without.
+    A CLI exists because a probe nobody can run is not shipped -- not because
+    this face reports anything. The shortlist-pricing report that used to
+    live here (`--models`/`--max-fetches`/`--receipt-dir`, plus its receipt
+    writer) was unrequested scope and is gone with its canon rows (DF-EV-12);
+    endpoint pricing, the cost index and cheapest-endpoint selection are
+    EV-1..EV-4's work, and this module owes them evidence plus a gate.
+
+    Read-only with respect to configuration: the only write is `--record`,
+    which stores the discount-semantics verdict the price gate refuses to
+    proceed without. That verdict is repo evidence, not machine state: it
+    lands in the committed receipt and has to be committed like any other
+    artifact the gate depends on.
     """
+    if not opts.probe_model:
+        raise HarnessError(
+            "`harness economics` runs the EV-0a discount probe; pass "
+            "--probe-model <id>. Pricing the endpoint feeds, the cost index "
+            "and cheapest-endpoint selection are EV-1+ work and no face here "
+            "reports them.")
     api_key, gov = _governor(settings, getattr(opts, "max_cost", None))
-    report = None
-    if opts.probe_model:
-        record = _run_discount_probe(HttpTransport(), api_key, gov,
-                                     opts.probe_model)
-        if opts.record and record["semantics"] in (
-                "listed_is_effective", "discount_is_multiplier"):
-            report = {"recorded": _record_discount_semantics(
-                record, opts.state_path),
-                "semantics": record["semantics"]}
-        else:
-            report = {"recorded": None, "probe": record}
-            if opts.record:
-                eprint("[economics] probe was not conclusive "
-                       f"({record['semantics']}: {record.get('reason')}); "
-                       "nothing recorded, the price gate keeps refusing.")
-        _emit(report, opts.out)
-        return
-    report = _economics_report(
-        gov, _ledger(settings), api_key=api_key,
-        transport=HttpTransport(), benchmark_ids=_split_ids(opts.models),
-        probe_model=None, max_fetches=opts.max_fetches,
-        semantics_path=opts.state_path)
-    report["meta"] = _run_meta(settings, gov)
-    if opts.receipt_dir:
-        report["receipt"] = _write_economics_receipt(report, opts.receipt_dir)
+    record = _run_discount_probe(HttpTransport(), api_key, gov,
+                                 opts.probe_model)
+    if opts.record and record["semantics"] in (
+            DISCOUNT_LISTED_IS_EFFECTIVE, DISCOUNT_IS_MULTIPLIER):
+        report = {"recorded": _record_discount_semantics(
+            record, opts.verdict_path),
+            "semantics": record["semantics"]}
+    else:
+        report = {"recorded": None, "probe": record}
+        if opts.record:
+            eprint("[economics] probe was not conclusive "
+                   f"({record['semantics']}: {record.get('reason')}); "
+                   "nothing recorded, the price gate keeps refusing.")
     _emit(report, opts.out)
 
 

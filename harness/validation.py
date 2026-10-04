@@ -52,6 +52,25 @@ def finite_number(value, name, minimum=0.0, maximum=None, *, allow_zero=True):
     return result
 
 
+def optional_float(value):
+    """A number that is allowed to be absent, or None -- never an exception.
+
+    The mirror of :func:`finite_number`, and the reason it lives beside it:
+    upstream *feeds* omit keys freely (``discount``, ``input_cache_read`` and
+    ``uptime_last_1d`` are missing on most rows) and quote prices as strings,
+    so absent is normal data and a malformed *required* price is not -- that
+    one raises through :func:`finite_number` at the parse site instead. NaN and
+    inf are not numbers.
+    """
+    if value is None:
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
+
+
 def validate_reasoning_effort(value):
     result = str(value or "auto").lower()
     allowed = ("auto", "off", "none", "low", "medium", "high", "on")

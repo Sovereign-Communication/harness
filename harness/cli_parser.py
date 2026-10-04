@@ -489,15 +489,9 @@ def build_parser():
 
     pec = sub.add_parser(
         "economics",
-        help="EV-0 model economics evidence: benchmark ingest + per-provider "
-             "endpoint pricing (read-only; never mutates a pool or ceiling)")
-    pec.add_argument("--models", default=None,
-                     help="comma-separated model ids to price (default: the "
-                          "shipped lane pools; endpoint coverage is "
-                          "shortlist-scoped by design)")
-    pec.add_argument("--max-fetches", type=int, default=None,
-                     help="cap on per-model endpoint GETs this run "
-                          "(default: config MAX_ENDPOINT_FETCHES_PER_RUN)")
+        help="EV-0a discount-truth probe: measure whether a published "
+             "endpoint discount is already in the listed rate (billable, one "
+             "governed call; writes nothing without --record)")
     pec.add_argument("--probe-model", default=None,
                      help="measure one tiny call on this model to settle "
                           "whether published endpoint prices already include "
@@ -505,12 +499,11 @@ def build_parser():
     pec.add_argument("--record", action="store_true",
                      help="with --probe-model, persist a conclusive verdict so "
                           "the price gate stops refusing")
-    pec.add_argument("--state-path", default=None,
-                     help="override the discount-verdict state file "
-                          "(default: ~/.config/harness/economics.json)")
-    pec.add_argument("--receipt-dir", default=None,
-                     help="also write the evidence artifact under this "
-                          "directory (LF, via osal)")
+    pec.add_argument("--verdict-path", default=None,
+                     help="override the committed discount-semantics receipt "
+                          "(default: audits/self/dogfood/"
+                          "EV0A_DISCOUNT_SEMANTICS.json in this checkout; "
+                          "repo evidence, and the price gate reads only it)")
     pec.add_argument("--max-cost", type=float, default=None,
                      help="session cost ceiling in dollars (default: configured max_cost)")
     _add_output_flags(pec)
