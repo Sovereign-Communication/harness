@@ -25,26 +25,27 @@ def _as_tokens(value):
 def _jev_row_cost(entry, in_tok):
     """Price one `jev_eval` row. Returns `(cost, billable)`.
 
-    Billed is billed. What the governor actually settled wins over the price
-    list, because settlement is the only number that reflects what happened:
-    a fallback that paid for a discarded answer still cost real dollars, and a
-    vision row can settle money with no observed output tokens. Rows written
-    before cost was recorded fall back to `jev_cost(input_tokens)`.
+    Never trusts the row's stored `cost`. Entries written when the client
+    priced input at $42/Mtok carry a figure 1000x the verified $0.042/Mtok,
+    so a report that reads the field reports 1000x the money that was spent.
+    Cost is recomputed from the recorded input tokens every time.
+
+    A fallback row bills nothing, even one whose stored cost is non-zero: the
+    Jev credit measures keyed Jev usage, and a fallback is exactly the money
+    Jev did *not* save. A row with no observed input tokens likewise claims
+    nothing -- with nothing observed there is nothing to price, and guessing
+    upward would overclaim the credit it is measured against.
 
     Single source of truth on purpose. The month-scoped Jev credit and the
     window-scoped per-event totals read the same rows; if they priced
     differently the same dollar would be counted once in one and twice in the
     other.
     """
-    if entry.get("cost") is not None:
-        try:
-            settled = max(0.0, float(entry.get("cost")))
-        except (TypeError, ValueError):
-            settled = 0.0
-        return settled, settled > 0.0
-    if not entry.get("is_fallback") and in_tok > 0:
-        return jev_cost(in_tok), True
-    return 0.0, False
+    if in_tok <= 0 or entry.get("is_fallback"):
+        return 0.0, False
+    from .jev import jev_cost  # lazy: matches this module's import discipline
+
+    return jev_cost(in_tok), True
 
 
 class LedgerAnalytics:
@@ -517,7 +518,7 @@ class LedgerAnalytics:
         from datetime import timedelta
         from .routing_table import classify_model_tier, strip_variant_suffix
 
-        from .jev import JEV_INPUT_PRICE_PER_MILLION, JEV_MONTHLY_CREDIT_USD, jev_cost
+        from .jev import JEV_INPUT_PRICE_PER_MILLION, JEV_MONTHLY_CREDIT_USD
 
         events = list(self._tail)
         if window:

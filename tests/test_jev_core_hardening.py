@@ -1245,15 +1245,20 @@ class AnalyticsTests(_Base):
         high = report["confidence_buckets"]["high_supported_ge_0.8"]
         self.assertEqual(high["evals"], 1)
 
-    def test_cost_report_prices_billed_fallbacks_at_what_was_settled(self):
+    def test_a_fallback_row_claims_no_credit_even_when_it_settled(self):
+        # The Jev credit measures keyed Jev usage. A fallback is the money Jev
+        # did NOT save, so it claims nothing -- including when the governor
+        # settled real money for it. Crediting a fallback would let the system
+        # bank savings it never made.
         ledger = self.ledger
         ledger.append("jev_eval", model="jev-test", input_tokens=1000,
                       is_fallback=True, cost=jev_cost(1000), discarded=True)
         ledger.append("jev_eval", model="jev-test", input_tokens=500,
                       is_fallback=True, cost=0.0)
         report = ledger.cost_report()
-        self.assertEqual(report["jev"]["calls"], 1)
-        self.assertAlmostEqual(report["jev"]["cost"], jev_cost(1000), places=6)
+        self.assertEqual(report["jev"]["calls"], 0)
+        self.assertEqual(report["jev"]["cost"], 0.0)
+        self.assertEqual(report["jev"]["used_percent"], 0.0)
 
 
 class CoverageGapTests(_Base):
@@ -1762,7 +1767,7 @@ class FanOutPropagationTests(_Base):
 
 
 class AnalyticsBaselineTests(_Base):
-    def test_cost_report_skips_cache_hits_weights_repeats_prices_settled(self):
+    def test_cost_report_skips_cache_hits_and_weights_deduped_rows(self):
         ledger = self.ledger
         ledger.append("jev_eval", model="jev-test", input_tokens=1000,
                       is_fallback=False, cost=jev_cost(1000))
@@ -1773,12 +1778,14 @@ class AnalyticsBaselineTests(_Base):
         ledger.append("jev_eval", model="jev-test", input_tokens=0,
                       is_fallback=False, cost=0.002)         # vision-style row
         report = ledger.cost_report()
-        self.assertEqual(report["jev"]["calls"], 2)
-        self.assertAlmostEqual(report["jev"]["cost"], jev_cost(1000) + 0.002,
-                               places=6)
-        # 1 priced + 8 represented free + 1 priced; the cache hit is absent
-        self.assertEqual(sum(t["calls"] for t in report["by_tier"].values())
-                         if "by_tier" in report else 10, 10)
+        # Only the keyed row bills, priced from its tokens. The cache hit is
+        # not a call; the deduped fallback is free; the tokenless row has
+        # nothing observed to price, so it claims nothing.
+        self.assertEqual(report["jev"]["calls"], 1)
+        self.assertAlmostEqual(report["jev"]["cost"], jev_cost(1000), places=6)
+        # 1 priced + 8 represented free + 1 free-but-counted; cache hit absent
+        by_tier = ledger.cost_report(by_tier=True)["by_tier"]
+        self.assertEqual(sum(t["calls"] for t in by_tier.values()), 10)
 
     def test_site_export_weights_fallbacks_and_skips_cache_and_flush_rows(self):
         from harness.site_export import build_runs
@@ -1818,7 +1825,10 @@ class CoverageGapTests2(_Base):
         refusals = [e for e in self.ledger.entries() if e["event"] == "jev_refusal"]
         self.assertEqual(refusals[0]["site"], "waist")
 
-    def test_legacy_rows_without_a_settled_cost_use_the_price_list(self):
+    def test_a_junk_stored_cost_cannot_erase_a_real_keyed_call(self):
+        # The stored cost is never read, so a garbage value is inert rather
+        # than fatal: the row is priced from its tokens like any other, and a
+        # fallback still claims nothing.
         self.ledger.append("jev_eval", model="jev-test", input_tokens=1000,
                            is_fallback=False)
         self.ledger.append("jev_eval", model="jev-test", input_tokens=50,
@@ -1826,8 +1836,9 @@ class CoverageGapTests2(_Base):
         self.ledger.append("jev_eval", model="jev-test", input_tokens=5,
                            is_fallback=True)
         report = self.ledger.cost_report()
-        self.assertEqual(report["jev"]["calls"], 1)
-        self.assertAlmostEqual(report["jev"]["cost"], jev_cost(1000), places=6)
+        self.assertEqual(report["jev"]["calls"], 2)
+        self.assertAlmostEqual(report["jev"]["cost"],
+                               jev_cost(1000) + jev_cost(50), places=6)
 
     def test_site_export_tolerates_a_garbage_repeat_count(self):
         from harness.site_export import build_runs

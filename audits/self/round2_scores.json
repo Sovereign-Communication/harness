@@ -3,67 +3,67 @@
     "A": 10.0,
     "R": 10.0,
     "SM": 10.0,
-    "SD": 10.0
+    "SD": 9.17
   },
   "jev_scores": {
-    "A": 10.0,
-    "R": 10.0,
-    "SM": 10.0,
-    "SD": 10.0
+    "A": 9.0,
+    "R": 9.0,
+    "SM": 9.0,
+    "SD": 9.0
   },
-  "jev_gate_pass": true,
+  "jev_gate_pass": false,
   "jev_eval": {
     "dimensions": {
       "A": {
         "name": "Security",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 2,
+        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
+        "score": 9.0,
+        "bar_met": false,
+        "confidence": 0.84,
         "evaluated": true
       },
       "R": {
         "name": "Reliability",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 2,
+        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
+        "score": 9.0,
+        "bar_met": false,
+        "confidence": 0.82,
         "evaluated": true
       },
       "SM": {
         "name": "Structural hygiene & maintainability",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 2,
+        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
+        "score": 9.0,
+        "bar_met": false,
+        "confidence": 0.68,
         "evaluated": true
       },
       "SD": {
         "name": "Documentation & release integrity",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.96,
+        "level_index": 2,
+        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
+        "score": 9.0,
+        "bar_met": false,
+        "confidence": 0.99,
         "evaluated": true
       }
     },
     "scores": {
-      "A": 10.0,
-      "R": 10.0,
-      "SM": 10.0,
-      "SD": 10.0
+      "A": 9.0,
+      "R": 9.0,
+      "SM": 9.0,
+      "SD": 9.0
     },
-    "bar_95_pass": true,
-    "min_score": 10.0,
+    "bar_95_pass": false,
+    "min_score": 9.0,
     "is_fallback": false,
     "reasons": [],
     "model": "jev-1.13.0",
-    "cost": 5.5566e-05,
-    "input_tokens": 1323,
+    "cost": 5.5524e-05,
+    "input_tokens": 1322,
     "output_tokens": 60
   },
   "checks": {
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 3384 tests in 283.703s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 3521 tests in 294.499s\n\nOK (env scrubbed: HARNESS_USE_FREE; empty home)"
       },
       {
         "id": "R14",
@@ -353,8 +353,8 @@
       {
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
-        "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 56/58 = 97% (bar 95%) vs baseline 98f077cbf8; untested: ledger_analytics.py:452,464)"
+        "score": 0.0,
+        "evidence": "changed-line coverage 448/691 = 65% (bar 95%) vs baseline 98f077cbf8; untested: cli.py:1479,1482; jev.py:15,16,17,256,257,286,287,289...; jev_policy.py:12,16,18,23,27,28,101,131...; ledger_analytics.py:44,45,48,362,372,376,379,478...; server.py:1644; spend.py:204,206,207,519,520,553; waist.py:1360"
       }
     ]
   }
