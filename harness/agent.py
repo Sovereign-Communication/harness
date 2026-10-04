@@ -4,6 +4,7 @@ import difflib
 import hashlib
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -189,6 +190,48 @@ CONVERSATION_STARTERS = frozenset({
     "what", "how", "why", "explain", "describe", "tell", "can", "is", "are",
     "does", "who", "when", "where", "list", "show", "help",
 })
+
+
+# A run that asks a model to think, judge and re-answer must be bounded in
+# wall time as well as rounds. The dogfood ran a single "find news" prompt for
+# about six minutes with no answer: every round was individually legal, and
+# nothing stopped the sequence. This is the ceiling that ends it.
+DEFAULT_RUN_WALL_SECONDS = 120.0
+
+# Asking what the world currently says is a research question, not an edit.
+# The dogfood prompt ("can you find news about ...") was routed to the
+# conversation lane but never gathered sources, so the run iterated on a
+# question it had no evidence for.
+_RESEARCH_SUBJECTS = ("news", "research", "recent", "latest", "today",
+                      "papers", "paper", "article", "articles", "study",
+                      "studies", "release", "releases", "update", "updates")
+_RESEARCH_VERBS = ("find", "search", "look up", "lookup", "google",
+                   "what's new", "whats new", "tell me about", "catch me up",
+                   "summary of", "summarize", "summarise")
+_QUESTION_OPENERS = ("what", "who", "when", "where", "which", "why", "how",
+                     "is ", "are ", "does ", "do ", "did ", "can you",
+                     "could you", "any news", "has there")
+
+
+def is_research_question(prompt: str) -> bool:
+    """True when a prompt is asking what is currently true in the world.
+
+    A research *subject* is required, and that is what keeps edits out:
+    "find the bug in auth.py" has a verb but no subject, so it stays an edit.
+    On top of that the prompt must read as a lookup -- an explicit research
+    verb, or an interrogative opening -- so "update the README" mentions a
+    subject but asks for nothing.
+    """
+    cleaned = (prompt or "").strip().lower()
+    if not cleaned:
+        return False
+    if not any(subj in cleaned for subj in _RESEARCH_SUBJECTS):
+        return False
+    if any(v in cleaned for v in _RESEARCH_VERBS):
+        return True
+    if cleaned.endswith("?"):
+        return True
+    return cleaned.startswith(_QUESTION_OPENERS)
 
 
 def classify_prompt_intent(prompt: str) -> str:
@@ -574,7 +617,8 @@ class AutonomousAgent:
             auto_apply: bool = True,
             max_tokens: Optional[int] = None,
             reasoning_effort: Optional[str] = None,
-            token_budget: Optional[Any] = None) -> Dict[str, Any]:
+            token_budget: Optional[Any] = None,
+            max_wall_seconds: Optional[float] = None) -> Dict[str, Any]:
         """Run the all-request composition used by external local drivers.
 
         Edit requests enter the existing hourglass plan/executor lane. Direct
@@ -607,6 +651,13 @@ class AutonomousAgent:
             })
             return result
 
+        # A research question earns the web lane whether or not the caller
+        # asked: answering "what is the latest news on X" from model memory is
+        # how a run iterates six times on a question it had no evidence for.
+        web = bool(web) or is_research_question(prompt)
+        wall_budget = (DEFAULT_RUN_WALL_SECONDS if max_wall_seconds is None
+                       else float(max_wall_seconds))
+        deadline = time.monotonic() + max(0.0, wall_budget)
         context, files, brief, web_sources = self._hourglass_request_context(
             prompt, web=web)
         past_turns = load_chat_history(sid, self.history_dir)[-10:]
@@ -629,6 +680,15 @@ class AutonomousAgent:
         for round_no in range(1, rounds + 1):
             if cancel_check and cancel_check():
                 raise ToolCancelled("Prompt execution was cancelled by user")
+            if time.monotonic() >= deadline:
+                # Stop iterating, but keep whatever was answered so far: the
+                # standing rule is that a run returns a real answer with an
+                # honest disclosure, never a bare dead end.
+                status = "needs_iteration"
+                stop_reason = (
+                    f"wall-clock budget of {wall_budget:.0f}s exhausted "
+                    f"after round {round_no - 1}")
+                break
             if round_no > 1:
                 remaining = (gov.working_remaining()
                              if callable(getattr(gov, "working_remaining", None))
@@ -762,6 +822,11 @@ class AutonomousAgent:
             "model": model,
             "cost": round(total_cost, 6),
             **({"truncated": True} if is_truncated else {}),
+            # Every stop_reason above -- the Jev budget, the deferred branch
+            # and the new wall-clock ceiling -- was computed and then dropped
+            # on the floor here, so a caller could only see "needs_iteration"
+            # with no reason. A run that stops must say why.
+            **({"stop_reason": stop_reason} if stop_reason else {}),
             "web_used": bool(web_sources and any(s.get("ok") for s in web_sources)),
             "web_sources": [
                 {k: s[k] for k in ("kind", "ok", "url") if k in s}
