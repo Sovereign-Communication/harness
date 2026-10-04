@@ -56,7 +56,8 @@ from .site_export import write_bundle as _site_export_write
 from .waist import compose_arguments
 from .waist import compose_plan as _compose_plan
 from .jev import jev_cost
-from .jev_policy import JEV_MAX_INPUT_TOKENS, aggregate_structural, policy_for
+from .jev_policy import (JEV_MAX_INPUT_TOKENS, aggregate_structural,
+                         flush_all_fallbacks, policy_for)
 from .jev_completion import dogfood_phase, score_all_phases
 from .jev_packs import (
     VISION_ASSESSMENT_PACK_ID,
@@ -1470,6 +1471,18 @@ _DISPATCH = {
 }
 
 
+def _flushes_fallbacks(fn):
+    """Write deduped Jev fallback tails to the ledger when a command ends."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            flush_all_fallbacks()
+    return wrapper
+
+
+@_flushes_fallbacks
 def main(argv=None):
     args = argv if argv is not None else sys.argv[1:]
     # The UI faces exit before settings/ledger setup: they run their own

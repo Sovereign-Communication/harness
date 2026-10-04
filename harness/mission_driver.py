@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, Set
 
 from .errors import HarnessError
+from .jev_policy import flush_all_fallbacks
 from . import mission_record as mr
 
 DEFAULT_STALL_LIMIT = 5
@@ -186,7 +187,15 @@ def _budget_view(pack: mr.MissionPack) -> Dict[str, float]:
     }
 
 
-def run_mission(
+def run_mission(pack: mr.MissionPack, **kwargs) -> Dict[str, Any]:
+    """Run a mission, then flush deduped Jev fallback tails to the ledger."""
+    try:
+        return _run_mission(pack, **kwargs)
+    finally:
+        flush_all_fallbacks()
+
+
+def _run_mission(
     pack: mr.MissionPack,
     *,
     attempt_fn: Optional[Callable[[Dict[str, Any]], Any]] = None,

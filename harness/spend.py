@@ -151,6 +151,7 @@ class SpendGovernor:
         # Nested per-task scopes; the innermost one narrows _phase_ceiling.
         self._task_scopes = []
         self.spent = 0.0
+        self.overruns = 0  # billed calls booked past the ceiling
         self._outstanding = 0.0
         self._reservations = []
         self._cost_by_model = {}
@@ -200,7 +201,10 @@ class SpendGovernor:
     def key_status(self):
         if not self.key_info:
             self.verify_key()
-        return dict(self.key_info, session_spent=self.spent)
+        out = dict(self.key_info, session_spent=self.spent)
+        if self.overruns:
+            out["overruns"] = self.overruns
+        return out
 
     def set_phase(self, phase):
         """Set the dual-budget phase: attempt (default) or terminal.
@@ -285,6 +289,8 @@ class SpendGovernor:
                 "outstanding": round(float(self._outstanding), 6),
                 "ceiling": round(float(self.max_cost), 6),
             }
+            if self.overruns:
+                out["overruns"] = self.overruns
             if self.terminal_reserve != 0.0 or self._phase != PHASE_ATTEMPT:
                 env = dual_budget_envelope(
                     self.max_cost, self.spent, self.terminal_reserve,
@@ -484,7 +490,9 @@ class SpendGovernor:
             raise HarnessError(f"invalid reported cost {actual!r} (after '{label}').") from None
         with self._spend_lock:
             ceiling = self._phase_ceiling()
-            if self.spent + actual_f > ceiling:
+            # A zero settlement can never breach a ceiling (even one already
+            # exceeded by a booked overrun), so it is never refused.
+            if actual_f > 0.0 and self.spent + actual_f > ceiling:
                 if (self._phase == PHASE_ATTEMPT
                         and self.terminal_reserve > 0.0):
                     raise HarnessError(
@@ -496,6 +504,21 @@ class SpendGovernor:
                     f"${ceiling:.6f} (after '{label}'; phase={self._phase}). Aborting.")
             self.spent += actual_f
             self._cost_by_model[label] = (self._cost_by_model.get(label, 0.0) + actual_f)
+
+    def record_overrun(self, cost, label):
+        """Book a billed amount that no longer fits the ceiling.
+
+        The provider already charged it, so ``spent`` must reflect it even
+        though :meth:`reconcile`/:meth:`record_actual` refuse to cross the
+        ceiling. Counted in ``overruns`` so the breach is visible, and the
+        next preflight sees the true (over-ceiling) spend and refuses.
+        """
+        actual = finite_number(cost or 0.0, "reported cost", 0.0)
+        with self._spend_lock:
+            self.spent += actual
+            self.overruns += 1
+            self._cost_by_model[label] = (
+                self._cost_by_model.get(label, 0.0) + actual)
 
     @property
     def outstanding(self):
@@ -527,7 +550,7 @@ class SpendGovernor:
             raise HarnessError(f"invalid reported cost {cost!r} (after '{label}').") from None
         with self._spend_lock:
             ceiling = self._phase_ceiling()
-            if self.spent + self._outstanding + actual > ceiling:
+            if actual > 0.0 and self.spent + self._outstanding + actual > ceiling:
                 if (self._phase == PHASE_ATTEMPT
                         and self.terminal_reserve > 0.0):
                     raise HarnessError(

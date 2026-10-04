@@ -43,6 +43,15 @@ Harness is a dependency-light Python package with three surfaces:
   context, claims, completion, issue-sort). `session.jev_for` and
   `engine_for` route through `policy_for` — no orphan `JevEvaluator`
   construction outside this owner.
+  Resilience: identical live calls are answered from a bounded process-wide
+  cache (hits are zero-cost `cache_hit` ledger rows); free fallbacks and
+  refusals are deduped per (site, reason, state) with `repeat_count` deltas
+  (`flush_fallbacks()` writes the tail); and a per-site circuit breaker opens
+  after consecutive transport failures, degrading calls exactly like a
+  transport failure (`fallback_reason=circuit_open`, never harder). On the
+  real transport the cache and breaker board are shared per process and
+  endpoint+key (policies are built per request); an injected transport gets
+  private ones, so the breaker is per-`JevPolicy` there.
 - `jev_packs.py`: typed question packs + local heuristics imported by
   `jev_policy` (still one policy owner, never a second client).
 - `jev_completion.py`: owns the phase-completion bar; packs in `jev_packs.py`; policy call via `JevPolicy.evaluate_phase_completion` (site `phase_completion`).

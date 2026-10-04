@@ -22,6 +22,32 @@ def _as_tokens(value):
         return 0
 
 
+def _jev_row_cost(entry, in_tok):
+    """Price one `jev_eval` row. Returns `(cost, billable)`.
+
+    Never trusts the row's stored `cost`. Entries written when the client
+    priced input at $42/Mtok carry a figure 1000x the verified $0.042/Mtok,
+    so a report that reads the field reports 1000x the money that was spent.
+    Cost is recomputed from the recorded input tokens every time.
+
+    A fallback row bills nothing, even one whose stored cost is non-zero: the
+    Jev credit measures keyed Jev usage, and a fallback is exactly the money
+    Jev did *not* save. A row with no observed input tokens likewise claims
+    nothing -- with nothing observed there is nothing to price, and guessing
+    upward would overclaim the credit it is measured against.
+
+    Single source of truth on purpose. The month-scoped Jev credit and the
+    window-scoped per-event totals read the same rows; if they priced
+    differently the same dollar would be counted once in one and twice in the
+    other.
+    """
+    if in_tok <= 0 or entry.get("is_fallback"):
+        return 0.0, False
+    from .jev import jev_cost  # lazy: matches this module's import discipline
+
+    return jev_cost(in_tok), True
+
+
 class LedgerAnalytics:
     """Mixin: read-only ledger analytics (see module docstring)."""
 
@@ -333,14 +359,25 @@ class LedgerAnalytics:
         verify_by_task = defaultdict(list)
         site_counts = defaultdict(int)
         fallback_evals = 0
+        cache_hit_evals = 0
         total_evals = 0
         for e in events:
             ev = e.get("event")
             if ev == "jev_eval":
-                total_evals += 1
-                site_counts[e.get("site") or "?"] += 1
+                # A deduped fallback row stands for ``repeat_count`` calls.
+                try:
+                    weight = max(1, int(e.get("repeat_count") or 1))
+                except (TypeError, ValueError):
+                    weight = 1
+                total_evals += weight
+                site_counts[e.get("site") or "?"] += weight
                 if e.get("is_fallback"):
-                    fallback_evals += 1
+                    fallback_evals += weight
+                if e.get("cache_hit"):
+                    # A replayed answer is not a fresh keyed judgment: it
+                    # must not inflate keyed counts or confidence buckets.
+                    cache_hit_evals += 1
+                    continue
                 tid = e.get("task_id")
                 if tid is None:
                     continue
@@ -419,7 +456,8 @@ class LedgerAnalytics:
         return {
             "jev_evals": total_evals,
             "jev_fallback_evals": fallback_evals,
-            "jev_keyed_evals": total_evals - fallback_evals,
+            "jev_cache_hit_evals": cache_hit_evals,
+            "jev_keyed_evals": total_evals - fallback_evals - cache_hit_evals,
             "by_site": dict(site_counts),
             "tasks_with_jev": len(jev_by_task),
             "tasks_joined_with_verify": joined_tasks,
@@ -480,7 +518,7 @@ class LedgerAnalytics:
         from datetime import timedelta
         from .routing_table import classify_model_tier, strip_variant_suffix
 
-        from .jev import JEV_INPUT_PRICE_PER_MILLION, JEV_MONTHLY_CREDIT_USD, jev_cost
+        from .jev import JEV_INPUT_PRICE_PER_MILLION, JEV_MONTHLY_CREDIT_USD
 
         events = list(self._tail)
         if window:
@@ -554,24 +592,29 @@ class LedgerAnalytics:
             if (dt.year, dt.month) != month_key:
                 continue
             in_tok = _as_tokens(e.get("input_tokens"))
-            if e.get("is_fallback") or in_tok <= 0:
+            cost_val, billable = _jev_row_cost(e, in_tok)
+            if not billable:
                 continue
             jev_calls += 1
             jev_input_tokens += in_tok
             jev_output_tokens += _as_tokens(e.get("output_tokens"))
-            jev_total_cost += jev_cost(in_tok)
+            jev_total_cost += cost_val
 
         for e in events:
             ev_name = e.get("event")
             model = e.get("model")
             is_jev = ev_name == "jev_eval" or (model and str(model).startswith("jev-"))
 
+            weight = 1
             if is_jev:
+                if e.get("cache_hit"):
+                    continue  # a replayed answer is not a call
+                try:
+                    weight = max(1, int(e.get("repeat_count") or 1))
+                except (TypeError, ValueError):
+                    weight = 1
                 in_tok = _as_tokens(e.get("input_tokens"))
-                if not e.get("is_fallback") and in_tok > 0:
-                    cost_val = jev_cost(in_tok)
-                else:
-                    cost_val = 0.0
+                cost_val, _billable = _jev_row_cost(e, in_tok)
                 has_cost = True
             else:
                 raw_cost = e.get("billable_cost", e.get("cost"))
@@ -588,19 +631,19 @@ class LedgerAnalytics:
             if cost_val > 0.0:
                 billable_calls += 1
             elif model:
-                free_calls += 1
+                free_calls += weight
 
             total_cost += cost_val
             tier_stats[tier]["cost"] = round(tier_stats[tier]["cost"] + cost_val, 6)
-            tier_stats[tier]["calls"] += 1
+            tier_stats[tier]["calls"] += weight
 
-            baseline_cost += max(cost_val, 0.015)
+            baseline_cost += weight * max(cost_val, 0.015)
 
             if model:
                 canonical = strip_variant_suffix(model)
                 ms = model_stats.setdefault(canonical, {"cost": 0.0, "calls": 0, "tier": tier})
                 ms["cost"] = round(ms["cost"] + cost_val, 6)
-                ms["calls"] += 1
+                ms["calls"] += weight
 
         total_cost = round(total_cost, 6)
         baseline_cost = round(baseline_cost, 6)
