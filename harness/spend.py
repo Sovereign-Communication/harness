@@ -15,6 +15,9 @@ terminal. Mission packs store the same numbers via :mod:`harness.mission_record`
 which delegates the formula here — no second governor.
 """
 import threading
+from contextlib import contextmanager
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 import time
 
 from .config import (
@@ -145,6 +148,8 @@ class SpendGovernor:
             raise HarnessError(
                 "terminal_reserve must not exceed max_cost")
         self._phase = PHASE_ATTEMPT
+        # Nested per-task scopes; the innermost one narrows _phase_ceiling.
+        self._task_scopes = []
         self.spent = 0.0
         self._outstanding = 0.0
         self._reservations = []
@@ -226,11 +231,46 @@ class SpendGovernor:
                 self.terminal_reserve)
 
     def _phase_ceiling(self):
-        """Dollar ceiling the current phase may spend up to."""
+        """Dollar ceiling the current phase may spend up to.
+
+        A task scope (see :meth:`task_scope`) narrows this without forking the
+        governor: the effective ceiling is the lower of the phase ceiling and
+        the task's own allowance measured from where the task started, so a
+        per-task cap holds no matter how much the session spent before it.
+        Every accessor that bounds spend already funnels through here, so one
+        change makes preflight, reserve, remaining and reconcile agree.
+        """
         with self._spend_lock:
             if self._phase == PHASE_TERMINAL:
-                return float(self.max_cost)
-            return max(0.0, float(self.max_cost) - float(self.terminal_reserve))
+                ceiling = float(self.max_cost)
+            else:
+                ceiling = max(0.0, float(self.max_cost) - float(self.terminal_reserve))
+            scope = self._task_scopes[-1] if self._task_scopes else None
+            if scope is not None:
+                ceiling = min(ceiling, scope.baseline + scope.max_cost)
+            return ceiling
+
+    @contextmanager
+    def task_scope(self, task_max_cost, label="task"):
+        """Bound this block of work to its own per-task ceiling.
+
+        The dual-budget contract is "extend the one governor, not fork it", so
+        a per-task cap is a scope on the SAME governor rather than a second
+        class: session accounting, ``cost_by_model``, the envelope and the
+        chain all keep reading one truth, and the cap simply refuses earlier.
+        """
+        cap = finite_number(task_max_cost, "task_max_cost", 0.0)
+        if cap <= 0.0:
+            raise HarnessError("task_max_cost must be greater than zero")
+        scope = _TaskScope(self, cap, label)
+        with self._spend_lock:
+            self._task_scopes.append(scope)
+        try:
+            yield scope
+        finally:
+            with self._spend_lock:
+                if scope in self._task_scopes:
+                    self._task_scopes.remove(scope)
 
     def snapshot(self):
         """Return the synchronized spend state for result envelopes.
@@ -504,6 +544,28 @@ class SpendGovernor:
 
 
 # ------------------------- live discovery -------------------------
+
+@dataclass(frozen=True)
+class _TaskScope:
+    """The record a :meth:`SpendGovernor.task_scope` block carries.
+
+    Deliberately NOT a governor: it holds no ledger, no transport and no
+    spend of its own. It only remembers where the task started and what it is
+    allowed to spend, so ``_phase_ceiling`` can narrow the ONE governor for
+    the duration of the block.
+    """
+
+    governor: "SpendGovernor"
+    max_cost: float
+    label: str
+    # Where the session stood when this task began: the task's allowance is
+    # independent of what the session already spent before it.
+    baseline: float = dataclass_field(default=0.0)
+
+    def __post_init__(self):
+        if self.baseline == 0.0 and self.governor is not None:
+            object.__setattr__(self, "baseline", self.governor.spent)
+
 
 class NodeReserver:
     """Cost-liability seam for parallel DAG dispatch (MR-6 verdict): each
