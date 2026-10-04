@@ -134,9 +134,9 @@ def analyze_judgments(records: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     ]
     if report["confidence"]["max"] < 0.95:
         notes.append(
-            "observed max confidence %.2f is below the 0.95 fail-closed "
-            "threshold: at 0.95 the gate escalates 100%% of these records "
-            "and adds cost without signal." % report["confidence"]["max"]
+            f"observed max confidence {report['confidence']['max']:.2f} "
+            "is below the 0.95 fail-closed threshold: at 0.95 the gate "
+            "escalates 100% of these records and adds cost without signal."
         )
     report["notes"] = notes
     return report
