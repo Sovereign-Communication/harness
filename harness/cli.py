@@ -52,8 +52,8 @@ from .service import run_verify as _service_verify
 from .service import read_text_file as _service_read_text
 from .service import run_dogfood as _service_run_dogfood
 from .rankings import build_rankings_report as _rankings_report
-from .economics import (record_discount_semantics as _record_discount_semantics,
-                        run_discount_probe as _run_discount_probe)
+from .discount_gate import record_discount_semantics as _record_discount_semantics
+from .discount_probe import run_discount_probe as _run_discount_probe
 from .route_pack import validate_route_pack
 from .site_export import export_bundle as _site_export_bundle
 from .site_export import write_bundle as _site_export_write

@@ -19,15 +19,17 @@ import unittest
 from contextlib import redirect_stderr
 from unittest import mock
 
-import harness.economics
+import harness.discount_gate
+import harness.discount_probe
 from harness.config import (CONFIG_DIR, DISCOUNT_AMBIGUOUS,
                             DISCOUNT_IS_MULTIPLIER, DISCOUNT_LISTED_IS_EFFECTIVE,
                             DISCOUNT_NOT_APPLICABLE, DISCOUNT_UNRESOLVED,
                             ECONOMICS_VERDICT_PATH)
-from harness.economics import (REPO_ROOT, discount_verdict_path,
-                               load_discount_semantics,
-                               record_discount_semantics,
-                               resolve_discount_semantics, run_discount_probe)
+from harness.discount_gate import (REPO_ROOT, discount_verdict_path,
+                                   load_discount_semantics,
+                                   record_discount_semantics,
+                                   resolve_discount_semantics)
+from harness.discount_probe import run_discount_probe
 from harness.errors import HarnessError
 
 
@@ -226,7 +228,7 @@ class ProbeFetchBoundTests(unittest.TestCase):
     def test_the_owner_would_refuse_a_fan_out_before_spending_anything(self):
         """The bound is one GET per model inside a fixed run budget, and an
         over-budget list is refused rather than truncated."""
-        from harness.economics import fetch_endpoints_for
+        from harness.endpoint_pricing import fetch_endpoints_for
         transport = self._transport()
         with self.assertRaises(HarnessError) as ctx:
             fetch_endpoints_for(transport, "k",
@@ -239,7 +241,7 @@ class ProbeFetchBoundTests(unittest.TestCase):
         """Source-level, because with one model the bypass is otherwise
         invisible: DF-EV-9 was exactly a call site looping `fetch_endpoints`
         while the bound sat in a helper only the tests called."""
-        source = inspect.getsource(harness.economics.run_discount_probe)
+        source = inspect.getsource(harness.discount_probe.run_discount_probe)
         self.assertIn("fetch_endpoints_for(", source)
         self.assertNotIn("fetch_endpoints(",
                          source.replace("fetch_endpoints_for(", "OWNER("))
@@ -252,7 +254,7 @@ class RecordingTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def _endpoints(self, discount=0.5, prompt=2e-6, completion=10e-6):
-        from harness.economics import fetch_endpoints
+        from harness.endpoint_pricing import fetch_endpoints
         transport = ProbeTransport([_offer("Only", prompt, completion, discount)],
                                    usage=None)
         return fetch_endpoints(transport, "k", "acme/sol")
@@ -307,7 +309,7 @@ class GateTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def _endpoints(self, discount=0.5, prompt=2e-6, completion=10e-6):
-        from harness.economics import fetch_endpoints
+        from harness.endpoint_pricing import fetch_endpoints
         transport = ProbeTransport([_offer("Only", prompt, completion, discount)],
                                    usage=None)
         return fetch_endpoints(transport, "k", "acme/sol")
@@ -370,7 +372,7 @@ class GateTests(unittest.TestCase):
         """Canon invariant 3 (DF-EV-2): never mix per-endpoint prices. The
         arithmetic is per endpoint by construction, which is what lets EV-1
         pick a whole offer rather than a phantom blended one."""
-        from harness.economics import fetch_endpoints
+        from harness.endpoint_pricing import fetch_endpoints
         transport = ProbeTransport(
             [_offer("CheapInExpensiveOut", 1e-8, 2e-7, discount=0.0),
              _offer("ExpensiveInCheapOut", 5e-7, 5e-8, discount=0.0)],
@@ -411,7 +413,7 @@ class CommittedVerdictTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def _endpoints(self, discount=0.5):
-        from harness.economics import fetch_endpoints
+        from harness.endpoint_pricing import fetch_endpoints
         transport = ProbeTransport(
             [_offer("Only", 2e-6, 10e-6, discount=discount)], usage=None)
         return fetch_endpoints(transport, "k", "acme/sol")
@@ -441,7 +443,7 @@ class CommittedVerdictTests(unittest.TestCase):
     def test_the_gate_reads_no_machine_local_state(self):
         """A machine-global fallback would quietly restore the disagreement
         this change exists to remove, so it is pinned at the source."""
-        with open(harness.economics.__file__, encoding="utf-8") as stream:
+        with open(harness.discount_gate.__file__, encoding="utf-8") as stream:
             source = stream.read()
         self.assertNotIn("CONFIG_DIR", source)
         self.assertNotIn("expanduser", source)

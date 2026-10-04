@@ -12,9 +12,9 @@ from io import StringIO
 from harness.config import (DISCOUNT_IS_MULTIPLIER, DISCOUNT_LISTED_IS_EFFECTIVE,
                             MAX_ENDPOINT_FETCHES_PER_RUN,
                             OPENROUTER_BENCHMARKS_URL, OPENROUTER_ENDPOINTS_URL)
-from harness.economics import (EndpointPrice, benchmarks_by_model,
-                               fetch_benchmarks,
-                               fetch_endpoints, fetch_endpoints_for)
+from harness.benchmark_ingest import benchmarks_by_model, fetch_benchmarks
+from harness.endpoint_pricing import (EndpointPrice, fetch_endpoints,
+                                      fetch_endpoints_for)
 from harness.errors import HarnessError
 
 
