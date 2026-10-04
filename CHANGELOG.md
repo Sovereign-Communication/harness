@@ -11,6 +11,17 @@ break APIs between minor versions).
 
 ### Added
 
+- **Dynamic model rotation is now wired.** `rank_models_dynamically` shipped with the
+  Dynamic Resource Allocation Engine but had no production caller and no producer for its
+  `health_status` input, so the dynamic-model half of the engine was inert. `harness/router.py`
+  now keeps a per-model health registry (`note_model_result` / `model_health`) and serves the
+  four rotation pools through properties that delegate ordering to the ranker once a model in that
+  pool has an observed outcome; `harness/apply_policy.py` records every terminal attempt outcome
+  (HTTP error, paid BYOK, reasoning-only, readiness defer, success) into it. The declared head of a
+  pool is never displaced, so DF-LING-2 (in rotation, never default) and the cheap-first
+  discipline still hold, and a pool nobody has observed yet is served exactly as declared.
+  16 hermetic tests in `tests/test_router_dynamic_rotation.py`.
+
 - **Native driver module (`driver_core/`, `DRV-1`)** — a self-contained, standard-library-only package (verified extraction, Jev decision, deterministic action) reached through the existing `harness/perception_client.py` adapter, with a `driver-core` entry point, loopback REST under `/api/driver/*` (`health`, `vocabulary`, `schemas`, `verify`, `step`, `start`, `drive`), a Driver pane, and the MCP tools `driver_step`/`driver_health`/`driver_vocabulary`/`driver_verify`. Every synthetic input action (`click`, `type_text`, `press_key`, `focus`, `scroll`, `submit_irreversible`) is refused with `execution_refused` until an input backend is registered; nothing in this repository registers one, so `DRV-2` stays open. See `docs/driver.md`.
 - **Jev spend and credit truth** — Jev input is priced at the verified $0.042/Mtok with the $5.00 monthly credit surfaced as a `jev` block on `/api/spend`, `/api/cost` and the cost report; legacy ledger entries priced at the old $42/Mtok are recomputed from their recorded input tokens.
 
