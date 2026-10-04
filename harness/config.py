@@ -51,14 +51,12 @@ OPENROUTER_ENDPOINTS_URL = "https://openrouter.ai/api/v1/models/{slug}/endpoints
 # Benchmark sources documented by the /benchmarks endpoint.
 BENCHMARK_SOURCES = ("artificial-analysis", "design-arena", "openrouter")
 
-# Published limits on the benchmark feed: 30 requests/minute and 500
-# requests/day per account. This is why endpoint fetching is SHORTLIST-SCOPED
-# rather than catalog-scoped: one GET per model means a full-catalog sweep
-# (~400 models) would nearly exhaust the daily budget by itself. Catalog-wide
-# coverage comes from /models (unmetered); endpoint coverage is an explicit
-# shortlist, and a deep sweep is an operator-invoked decision.
-BENCHMARK_RATE_LIMIT_PER_MINUTE = 30
-BENCHMARK_RATE_LIMIT_PER_DAY = 500
+# Published limits on the benchmark feed are 30 requests/minute and 500
+# requests/day per account (the numbers are quoted in `fetch_endpoints`'s
+# docstring rather than held as unused constants). This is why endpoint
+# fetching is bounded rather than catalog-scoped: one GET per model means a
+# full-catalog sweep (~400 models) would nearly exhaust the daily budget by
+# itself. Catalog-wide coverage comes from /models (unmetered).
 MAX_ENDPOINT_FETCHES_PER_RUN = 40
 
 # Discount semantics. OpenRouter publishes a per-endpoint `discount` (0..1)
@@ -69,7 +67,6 @@ MAX_ENDPOINT_FETCHES_PER_RUN = 40
 # recorded answer.
 DISCOUNT_LISTED_IS_EFFECTIVE = "listed_is_effective"
 DISCOUNT_IS_MULTIPLIER = "discount_is_multiplier"
-DISCOUNT_SEMANTICS_UNKNOWN = "unknown"
 # Neither hypothesis matched the measured charge (or both did -- provider
 # price aliasing makes that possible, see economics.run_discount_probe).
 DISCOUNT_UNRESOLVED = "unresolved"
@@ -91,11 +88,20 @@ DISCOUNT_PROBE_TOLERANCE = 0.05
 DISCOUNT_PROBE_MAX_TOKENS = 64
 DISCOUNT_PROBE_PROMPT = "Reply with the single word: ok"
 
-# Evidence + state locations. The receipt is the committed, human-readable
-# evidence; the state file is the machine-readable verdict the gate reads.
+# Evidence + verdict locations. BOTH are repo-committed, deliberately.
+#
+# `ECONOMICS_VERDICT_PATH` is what the price gate reads, so it is a REPO path,
+# not a machine-global one: a verdict that authorizes every downstream cost
+# decision has to be reviewable evidence that travels with the code, and two
+# checkouts must not disagree about whether the gate is satisfied. It sits
+# under audits/self/dogfood/ because that is where the DoD puts live receipts
+# and because D11 (sd_corpus_integrity) already SHA-256-pins every tracked
+# file there -- so a hand-edited verdict fails the audit deterministically and
+# the refresh is the scripted one. There is deliberately no fallback to
+# ~/.config: a verdict that exists only on one machine is not evidence, and a
+# fallback would make the gate's answer depend on whose checkout is asking.
 ECONOMICS_SCHEMA_VERSION = 1
-ECONOMICS_RECEIPT_DIR = "audits/self/economics"
-ECONOMICS_STATE_PATH = os.path.join(CONFIG_DIR, "economics.json")
+ECONOMICS_VERDICT_PATH = "audits/self/dogfood/EV0A_DISCOUNT_SEMANTICS.json"
 
 # MorphLite-compatible transformation backend. Selecting the `morph` backend
 # explicitly opts into this model; ordinary Harness routing remains unchanged.

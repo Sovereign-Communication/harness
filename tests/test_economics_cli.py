@@ -1,89 +1,88 @@
-"""The `harness economics` face: parser surface + the two invariants it must
-not lose.
+"""The `harness economics` face: the EV-0a discount-truth probe and nothing else.
 
-EV-0 ships a read-only evidence face. Two things about it are load-bearing
-and worth pinning:
+EV-0 ships one CLI face, and it exists for one reason: a probe nobody can run
+is not shipped. The shortlist-pricing report that used to sit beside it
+(`--models`, `--max-fetches`, `--receipt-dir`, `_split_ids`, and a receipt
+writer) was unrequested scope and is gone with its canon rows (DF-EV-12), so
+these tests cover what remains and pin that the removed flags are really gone.
+
+Two things about what remains are load-bearing:
 
 * the flags exist against the REAL parser (a renamed flag on a face nobody
   runs in CI is exactly how `rankings.yml` silently produced no artifact for
   a week -- see `tests/test_rankings_cli.py` for that incident);
-* it never mutates a pool, a lane default, or a ceiling. This phase is
-  evidence only; the ability to *apply* anything is EV-3/EV-4, and a face
-  that quietly did it here would land a behaviour change nobody gated.
+* `--record` is the only write, and it writes repo evidence -- never a pool, a
+  lane default, or a ceiling. EV-0 is evidence only; the ability to *apply*
+  anything is EV-3/EV-4, and a face that quietly did it here would land a
+  behaviour change nobody gated.
 """
 import io
 import json
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 from harness.cli_parser import build_parser
+from harness.errors import HarnessError
 
 
 class ParserSurfaceTests(unittest.TestCase):
     def setUp(self):
         self.parser = build_parser()
 
-    def _opts(self, argv):
-        return self.parser.parse_args(argv)
-
-    def test_economics_subcommand_exists(self):
-        opts = self._opts(["economics"])
-        self.assertIsNone(opts.models)
-        self.assertIsNone(opts.probe_model)
-        self.assertFalse(opts.record)
-        self.assertIsNone(opts.state_path)
-        self.assertIsNone(opts.receipt_dir)
-
     def test_probe_and_record_flags_parse(self):
-        opts = self._opts(["economics", "--probe-model", "acme/sol",
-                           "--record", "--state-path", "/tmp/e.json"])
+        opts = self.parser.parse_args(["economics", "--probe-model", "acme/sol",
+                                       "--record", "--verdict-path",
+                                       "/tmp/e.json"])
         self.assertEqual(opts.probe_model, "acme/sol")
         self.assertTrue(opts.record)
-        self.assertEqual(opts.state_path, "/tmp/e.json")
+        self.assertEqual(opts.verdict_path, "/tmp/e.json")
 
-    def test_report_flags_parse(self):
-        opts = self._opts(["economics", "--models", "a/b,c/d",
-                           "--max-fetches", "5", "--receipt-dir", "receipts"])
-        self.assertEqual(opts.models, "a/b,c/d")
-        self.assertEqual(opts.max_fetches, 5)
-        self.assertEqual(opts.receipt_dir, "receipts")
+    def test_the_removed_report_flags_are_really_gone(self):
+        """The report was unrequested surface (DF-EV-12). Its flags must not
+        linger as no-ops someone keeps scripting against."""
+        opts = self.parser.parse_args(["economics"])
+        for flag in ("models", "max_fetches", "receipt_dir"):
+            self.assertFalse(hasattr(opts, flag), f"--{flag} still parses")
+        for flag in ("--models", "--max-fetches", "--receipt-dir"):
+            with self.assertRaises(SystemExit):
+                with redirect_stdout(io.StringIO()), \
+                        redirect_stderr(io.StringIO()):
+                    self.parser.parse_args(["economics", flag, "x"])
+
+    def test_the_verdict_flag_names_repo_evidence_not_local_state(self):
+        """The flag this replaced was `--state-path`, pointed at
+        ~/.config/harness/economics.json, and that naming is part of what let
+        the gate drift into machine-local state unnoticed."""
+        buffer = io.StringIO()
+        with redirect_stdout(buffer), self.assertRaises(SystemExit):
+            build_parser().parse_args(["economics", "--help"])
+        text = buffer.getvalue()
+        self.assertIn("EV0A_DISCOUNT_SEMANTICS.json", text)
+        self.assertIn("repo evidence", text)
+        self.assertNotIn("~/.config", text)
 
     def test_command_is_dispatchable(self):
         from harness.cli import _DISPATCH
         self.assertIn("economics", _DISPATCH)
 
 
-class SplitIdsTests(unittest.TestCase):
-    def test_blank_and_empty_inputs_are_none(self):
-        from harness.cli import _split_ids
-        self.assertIsNone(_split_ids(None))
-        self.assertIsNone(_split_ids(""))
-        self.assertIsNone(_split_ids(" , ,"))
-
-    def test_ids_are_trimmed_and_order_preserved(self):
-        """Trimming is the CLI's job; dedup belongs to the owner below it
-        (`fetch_endpoints_for`), which dedupes after stripping variant
-        suffixes so `a/m` and `a/m:free` cost one request between them."""
-        from harness.cli import _split_ids
-        self.assertEqual(_split_ids(" a/b , c/d "), ["a/b", "c/d"])
-
-
 class ProbeFaceTests(unittest.TestCase):
-    """`--record` persists only a conclusive verdict."""
+    """`--record` persists only a conclusive verdict, as committed evidence."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.state = os.path.join(self._tmp.name, "economics.json")
         self.addCleanup(self._tmp.cleanup)
 
-    def _run(self, probe_record, argv=None):
+    def _run(self, probe_record, argv=None, record_flag=True):
         parser = build_parser()
-        opts = parser.parse_args(argv or ["economics", "--probe-model",
-                                          "acme/sol", "--record",
-                                          "--state-path", self.state])
+        argv = argv or ["economics", "--probe-model", "acme/sol"]
+        if record_flag:
+            argv = argv + ["--record", "--verdict-path", self.state]
+        opts = parser.parse_args(argv)
         from harness.cli import _cmd_economics
         buffer = io.StringIO()
         gov = mock.Mock()
@@ -92,8 +91,7 @@ class ProbeFaceTests(unittest.TestCase):
                         return_value=probe_record) as probe:
             with redirect_stdout(buffer):
                 _cmd_economics(opts, mock.Mock())
-        payload = json.loads(buffer.getvalue())
-        return payload, probe
+        return json.loads(buffer.getvalue()), probe
 
     def test_conclusive_verdict_is_recorded(self):
         record = {"semantics": "listed_is_effective", "model": "acme/sol",
@@ -122,26 +120,36 @@ class ProbeFaceTests(unittest.TestCase):
         self.assertIsNone(payload["recorded"])
         self.assertFalse(os.path.exists(self.state))
 
-
-class ReadOnlyTests(unittest.TestCase):
-    def test_report_face_writes_no_configuration(self):
-        """EV-0 is evidence only: the report path may not touch a pool, a
-        lane default, or a ceiling."""
+    def test_the_probe_without_record_writes_nothing(self):
+        """EV-0 is evidence only: the probe itself must not touch the tree,
+        let alone configuration."""
         from harness.cli import _cmd_economics
-        parser = build_parser()
-        opts = parser.parse_args(["economics", "--models", "a/b"])
-
+        record = {"semantics": "listed_is_effective", "model": "acme/sol",
+                  "fingerprint": {"model": "acme/sol", "max_discount": 0.5}}
         settings = mock.Mock()
         gov = mock.Mock()
-        gov.cost_by_model.return_value = {}
         with mock.patch("harness.cli._governor", return_value=("key", gov)), \
-             mock.patch("harness.cli._ledger", return_value=mock.Mock()), \
-             mock.patch("harness.cli._run_meta", return_value={}), \
-             mock.patch("harness.cli._economics_report",
-                        return_value={"schema": 1}) as report, \
+             mock.patch("harness.cli._run_discount_probe",
+                        return_value=record), \
              mock.patch("harness.cli.freeze_jev_settings") as write_config:
             with redirect_stdout(io.StringIO()):
-                _cmd_economics(opts, settings)
-
-        self.assertTrue(report.called)
+                _cmd_economics(build_parser().parse_args(
+                    ["economics", "--probe-model", "acme/sol"]), settings)
+        self.assertFalse(os.path.exists(self.state))
         self.assertFalse(write_config.called)
+        self.assertFalse(settings.write.called if hasattr(settings, "write")
+                         else False)
+
+    def test_a_bare_invocation_refuses_and_says_why(self):
+        """There is no report to produce any more, so the face says what it
+        does instead of silently emitting an empty artifact."""
+        from harness.cli import _cmd_economics
+        opts = build_parser().parse_args(["economics"])
+        with mock.patch("harness.cli._governor") as governor:
+            with self.assertRaises(HarnessError) as ctx:
+                _cmd_economics(opts, mock.Mock())
+        message = str(ctx.exception)
+        self.assertIn("--probe-model", message)
+        self.assertIn("EV-1", message)
+        # ...and it refuses BEFORE any key lookup or spend preflight.
+        self.assertFalse(governor.called)
