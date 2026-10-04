@@ -10,15 +10,21 @@ measured, recorded, and enforced rather than guessed.
 All hermetic: a fake transport supplies the published offers and the
 provider-reported charge.
 """
+import io
 import json
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from unittest import mock
 
-from harness.config import (DISCOUNT_AMBIGUOUS, DISCOUNT_IS_MULTIPLIER,
-                            DISCOUNT_LISTED_IS_EFFECTIVE,
-                            DISCOUNT_NOT_APPLICABLE, DISCOUNT_UNRESOLVED)
-from harness.economics import (effective_price, load_discount_semantics,
+import harness.economics
+from harness.config import (CONFIG_DIR, DISCOUNT_AMBIGUOUS,
+                            DISCOUNT_IS_MULTIPLIER, DISCOUNT_LISTED_IS_EFFECTIVE,
+                            DISCOUNT_NOT_APPLICABLE, DISCOUNT_UNRESOLVED,
+                            ECONOMICS_VERDICT_PATH)
+from harness.economics import (REPO_ROOT, discount_verdict_path, effective_price,
+                               load_discount_semantics,
                                record_discount_semantics,
                                resolve_discount_semantics, run_discount_probe)
 from harness.errors import HarnessError
@@ -254,7 +260,7 @@ class GateTests(unittest.TestCase):
         with self.assertRaises(HarnessError) as ctx:
             effective_price(endpoints, 8000, 1000, path=self.path)
         message = str(ctx.exception)
-        self.assertIn("no recorded semantics verdict", message)
+        self.assertIn("no committed semantics verdict", message)
         self.assertIn("2.00x", message)
 
     def test_resolve_refuses_when_the_promotion_changed(self):
@@ -336,3 +342,124 @@ class GateTests(unittest.TestCase):
                                      cache_eligible=True)
         self.assertAlmostEqual(cached, 8000 * 2e-7 + 1000 * 10e-6)
         self.assertLess(cached, uncached)
+
+
+class CommittedVerdictTests(unittest.TestCase):
+    """The verdict is REPO EVIDENCE, not machine state.
+
+    The gate used to read ``~/.config/harness/economics.json``, so the answer
+    to "is the price gate satisfied?" lived on one operator's disk: two
+    checkouts could disagree, and a verdict nobody could review in a PR
+    governed the cost model of the whole system. The receipt is committed
+    instead, under ``audits/self/dogfood/`` -- where the DoD puts live
+    receipts and where D11 already SHA-256-pins every tracked file, so a
+    hand-edited verdict fails the audit.
+
+    Fail-closed is unchanged, and that is the part that must not drift: no
+    receipt, no number. Only *where the receipt lives* moved.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = self._tmp.name
+        self.addCleanup(self._tmp.cleanup)
+
+    def _endpoints(self, discount=0.5):
+        from harness.economics import fetch_endpoints
+        transport = ProbeTransport(
+            [_offer("Only", 2e-6, 10e-6, discount=discount)], usage=None)
+        return fetch_endpoints(transport, "k", "acme/sol")
+
+    def _record(self, semantics=DISCOUNT_IS_MULTIPLIER, discount=0.5, **kw):
+        return record_discount_semantics(
+            {"semantics": semantics, "model": "acme/sol",
+             "fingerprint": {"model": "acme/sol", "max_discount": discount}},
+            **kw)
+
+    def test_the_default_receipt_is_in_the_checkout_not_the_config_dir(self):
+        target = os.path.abspath(discount_verdict_path())
+        self.assertEqual(target,
+                         os.path.abspath(os.path.join(REPO_ROOT,
+                                                      ECONOMICS_VERDICT_PATH)))
+        # Inside the checkout, and nowhere near the operator's config dir --
+        # the whole point: the answer travels with the code.
+        self.assertEqual(os.path.commonpath([REPO_ROOT, target]),
+                         os.path.abspath(REPO_ROOT))
+        self.assertFalse(target.startswith(os.path.abspath(CONFIG_DIR)))
+        # ...and inside the directory D11 hash-pins, so a silent edit to the
+        # verdict is a deterministic audit failure rather than a quiet change
+        # to the cost model.
+        self.assertEqual(ECONOMICS_VERDICT_PATH.replace("\\", "/").split("/")[:3],
+                         ["audits", "self", "dogfood"])
+
+    def test_the_gate_reads_no_machine_local_state(self):
+        """A machine-global fallback would quietly restore the disagreement
+        this change exists to remove, so it is pinned at the source."""
+        with open(harness.economics.__file__, encoding="utf-8") as stream:
+            source = stream.read()
+        self.assertNotIn("CONFIG_DIR", source)
+        self.assertNotIn("expanduser", source)
+
+    def test_a_machine_local_verdict_no_longer_satisfies_the_gate(self):
+        """A conclusive verdict exactly where the old gate looked must not
+        unblock the gate.
+
+        HOME points at this temp tree for the duration, so any `~/.config`
+        resolution the module might ever grow lands on a file this test
+        controls -- the refusal below is then a real statement about the
+        resolution, not about an absent file somewhere else on the disk.
+        """
+        endpoints = self._endpoints()
+        with mock.patch.dict(os.environ, {"HOME": self.repo,
+                                          "USERPROFILE": self.repo}):
+            machine_local = os.path.join(
+                os.path.expanduser("~/.config/harness"), "economics.json")
+            os.makedirs(os.path.dirname(machine_local), exist_ok=True)
+            with open(machine_local, "w", encoding="utf-8") as stream:
+                json.dump({"semantics": DISCOUNT_IS_MULTIPLIER,
+                           "model": "acme/sol",
+                           "fingerprint": {"model": "acme/sol",
+                                           "max_discount": 0.5}}, stream)
+            with self.assertRaises(HarnessError) as ctx:
+                effective_price(endpoints, 8000, 1000, repo_root=self.repo)
+
+        message = str(ctx.exception)
+        self.assertIn("no committed semantics verdict", message)
+        # The refusal points at the repo receipt, i.e. at what to produce.
+        self.assertIn(os.path.join(self.repo, ECONOMICS_VERDICT_PATH), message)
+
+    def test_recording_writes_repo_evidence_that_the_gate_reads_back(self):
+        endpoints = self._endpoints()
+        buffer = io.StringIO()
+        with redirect_stderr(buffer):
+            target = self._record(repo_root=self.repo)
+
+        self.assertEqual(target,
+                         os.path.join(self.repo, ECONOMICS_VERDICT_PATH))
+        self.assertTrue(os.path.isfile(target))
+        with open(target, "rb") as stream:
+            raw = stream.read()
+        # LF, because this file gets committed and CRLF would dirty the tree
+        # immediately after the gate that is meant to prove it clean.
+        self.assertNotIn(b"\r\n", raw)
+        self.assertEqual(json.loads(raw.decode("utf-8"))["semantics"],
+                         DISCOUNT_IS_MULTIPLIER)
+        # The operator is told it is evidence they own, not local state.
+        self.assertIn("commit it", buffer.getvalue())
+
+        # Round trip with NO path override: the committed receipt is enough.
+        endpoint, cost = effective_price(endpoints, 8000, 1000,
+                                        repo_root=self.repo)
+        self.assertAlmostEqual(cost, 8000 * 1e-6 + 1000 * 5e-6)
+        self.assertEqual(endpoint.provider_name, "Only")
+
+    def test_an_explicit_path_still_overrides_for_hermetic_runs(self):
+        """`--verdict-path` exists so tests and CI never write the checkout."""
+        endpoints = self._endpoints()
+        scratch = os.path.join(self.repo, "scratch-verdict.json")
+        self._record(path=scratch)
+        self.assertFalse(os.path.exists(
+            os.path.join(self.repo, ECONOMICS_VERDICT_PATH)))
+        _endpoint, cost = effective_price(endpoints, 8000, 1000, path=scratch,
+                                          repo_root=self.repo)
+        self.assertAlmostEqual(cost, 8000 * 1e-6 + 1000 * 5e-6)

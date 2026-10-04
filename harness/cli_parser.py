@@ -505,9 +505,11 @@ def build_parser():
     pec.add_argument("--record", action="store_true",
                      help="with --probe-model, persist a conclusive verdict so "
                           "the price gate stops refusing")
-    pec.add_argument("--state-path", default=None,
-                     help="override the discount-verdict state file "
-                          "(default: ~/.config/harness/economics.json)")
+    pec.add_argument("--verdict-path", default=None,
+                     help="override the committed discount-semantics receipt "
+                          "(default: audits/self/dogfood/"
+                          "EV0A_DISCOUNT_SEMANTICS.json in this checkout; "
+                          "repo evidence, and the price gate reads only it)")
     pec.add_argument("--receipt-dir", default=None,
                      help="also write the evidence artifact under this "
                           "directory (LF, via osal)")

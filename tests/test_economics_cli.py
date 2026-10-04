@@ -34,15 +34,27 @@ class ParserSurfaceTests(unittest.TestCase):
         self.assertIsNone(opts.models)
         self.assertIsNone(opts.probe_model)
         self.assertFalse(opts.record)
-        self.assertIsNone(opts.state_path)
+        self.assertIsNone(opts.verdict_path)
         self.assertIsNone(opts.receipt_dir)
 
     def test_probe_and_record_flags_parse(self):
         opts = self._opts(["economics", "--probe-model", "acme/sol",
-                           "--record", "--state-path", "/tmp/e.json"])
+                           "--record", "--verdict-path", "/tmp/e.json"])
         self.assertEqual(opts.probe_model, "acme/sol")
         self.assertTrue(opts.record)
-        self.assertEqual(opts.state_path, "/tmp/e.json")
+        self.assertEqual(opts.verdict_path, "/tmp/e.json")
+
+    def test_the_verdict_flag_names_repo_evidence_not_local_state(self):
+        """The flag this replaced was `--state-path`, pointed at
+        ~/.config/harness/economics.json, and that naming is part of what let
+        the gate drift into machine-local state unnoticed."""
+        buffer = io.StringIO()
+        with redirect_stdout(buffer), self.assertRaises(SystemExit):
+            build_parser().parse_args(["economics", "--help"])
+        text = buffer.getvalue()
+        self.assertIn("EV0A_DISCOUNT_SEMANTICS.json", text)
+        self.assertIn("repo evidence", text)
+        self.assertNotIn("~/.config", text)
 
     def test_report_flags_parse(self):
         opts = self._opts(["economics", "--models", "a/b,c/d",
@@ -83,7 +95,7 @@ class ProbeFaceTests(unittest.TestCase):
         parser = build_parser()
         opts = parser.parse_args(argv or ["economics", "--probe-model",
                                           "acme/sol", "--record",
-                                          "--state-path", self.state])
+                                          "--verdict-path", self.state])
         from harness.cli import _cmd_economics
         buffer = io.StringIO()
         gov = mock.Mock()

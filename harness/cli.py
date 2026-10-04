@@ -947,8 +947,10 @@ def _cmd_economics(opts, settings):
     Read-only with respect to configuration -- it reports what the live
     feeds say and never mutates a pool, a lane default, or a ceiling. The
     one write it performs is `--record`, which stores the discount-semantics
-    verdict that the price gate in `harness.economics` refuses to proceed
-    without.
+    verdict the price gate in `harness.economics` refuses to proceed without.
+    That verdict is repo evidence, not machine state: it lands in the
+    committed receipt and has to be committed like any other artifact the
+    gate depends on.
     """
     api_key, gov = _governor(settings, getattr(opts, "max_cost", None))
     report = None
@@ -958,7 +960,7 @@ def _cmd_economics(opts, settings):
         if opts.record and record["semantics"] in (
                 "listed_is_effective", "discount_is_multiplier"):
             report = {"recorded": _record_discount_semantics(
-                record, opts.state_path),
+                record, opts.verdict_path),
                 "semantics": record["semantics"]}
         else:
             report = {"recorded": None, "probe": record}
@@ -972,7 +974,7 @@ def _cmd_economics(opts, settings):
         gov, _ledger(settings), api_key=api_key,
         transport=HttpTransport(), benchmark_ids=_split_ids(opts.models),
         probe_model=None, max_fetches=opts.max_fetches,
-        semantics_path=opts.state_path)
+        verdict_path=opts.verdict_path)
     report["meta"] = _run_meta(settings, gov)
     if opts.receipt_dir:
         report["receipt"] = _write_economics_receipt(report, opts.receipt_dir)

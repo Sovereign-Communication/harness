@@ -91,11 +91,21 @@ DISCOUNT_PROBE_TOLERANCE = 0.05
 DISCOUNT_PROBE_MAX_TOKENS = 64
 DISCOUNT_PROBE_PROMPT = "Reply with the single word: ok"
 
-# Evidence + state locations. The receipt is the committed, human-readable
-# evidence; the state file is the machine-readable verdict the gate reads.
+# Evidence + verdict locations. BOTH are repo-committed, deliberately.
+#
+# `ECONOMICS_VERDICT_PATH` is what the price gate reads, so it is a REPO path,
+# not a machine-global one: a verdict that authorizes every downstream cost
+# decision has to be reviewable evidence that travels with the code, and two
+# checkouts must not disagree about whether the gate is satisfied. It sits
+# under audits/self/dogfood/ because that is where the DoD puts live receipts
+# and because D11 (sd_corpus_integrity) already SHA-256-pins every tracked
+# file there -- so a hand-edited verdict fails the audit deterministically and
+# the refresh is the scripted one. There is deliberately no fallback to
+# ~/.config: a verdict that exists only on one machine is not evidence, and a
+# fallback would make the gate's answer depend on whose checkout is asking.
 ECONOMICS_SCHEMA_VERSION = 1
 ECONOMICS_RECEIPT_DIR = "audits/self/economics"
-ECONOMICS_STATE_PATH = os.path.join(CONFIG_DIR, "economics.json")
+ECONOMICS_VERDICT_PATH = "audits/self/dogfood/EV0A_DISCOUNT_SEMANTICS.json"
 
 # MorphLite-compatible transformation backend. Selecting the `morph` backend
 # explicitly opts into this model; ordinary Harness routing remains unchanged.

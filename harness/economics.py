@@ -41,9 +41,17 @@ Two invariants this module enforces
    Every ranking, reserve, and future auto-rotation decision inverts on that
    answer, so it is settled by MEASUREMENT (:func:`run_discount_probe`), not
    by reading docs, and :func:`effective_price` refuses to return a number
-   until the verdict is on disk and still applicable.  An unknown verdict is
-   a hard failure -- never a default, because a default here is a silent 2x
-   error in the cost model of the whole system.
+   until the verdict is in the COMMITTED receipt and still applicable.  An
+   unknown verdict is a hard failure -- never a default, because a default
+   here is a silent 2x error in the cost model of the whole system.
+
+   The verdict's *location* is part of that.  It is a repo-committed receipt
+   under ``audits/self/dogfood/`` (see :func:`discount_verdict_path`), not
+   state under the operator's config dir: a verdict that authorizes every
+   downstream cost decision has to be reviewable evidence travelling with the
+   code, and two checkouts must never disagree about whether the gate is
+   satisfied.  It is fail-closed in exactly the same three cases as before --
+   missing, unreadable, or measured against a different promotion.
 
 Scope
 -----
@@ -73,7 +81,7 @@ from .config import (
     DISCOUNT_UNRESOLVED,
     ECONOMICS_RECEIPT_DIR,
     ECONOMICS_SCHEMA_VERSION,
-    ECONOMICS_STATE_PATH,
+    ECONOMICS_VERDICT_PATH,
     MAX_ENDPOINT_FETCHES_PER_RUN,
     OPENROUTER_BENCHMARKS_URL,
     OPENROUTER_CHAT_URL,
@@ -86,6 +94,13 @@ from .osal import write_text
 from .output import eprint
 from .routing_table import floor_model, strip_variant_suffix
 from .validation import finite_number
+
+#: The Harness checkout that owns the committed discount-verdict receipt.
+#: Resolved from this file rather than the CWD so the gate asks the same
+#: question in every checkout (an installed wheel resolves to site-packages,
+#: which has no receipt -- and the gate then refuses, which is correct: a
+#: wheel carries code, not evidence).
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _opt_float(value):
@@ -608,17 +623,36 @@ def run_discount_probe(transport, api_key, governor, model_id, *,
 # --------------------------------------------------------------------------
 # Recording + the gate
 # --------------------------------------------------------------------------
-def discount_state_path(path=None):
-    """Where the verdict lives. Explicit arg wins (hermetic tests, CI)."""
-    return path or ECONOMICS_STATE_PATH
+def discount_verdict_path(path=None, repo_root=None):
+    """Where the verdict lives: a REPO-COMMITTED receipt.
+
+    Explicit ``path`` wins (hermetic tests, CI, an operator inspecting a
+    checkout). Otherwise the path is resolved against the checkout root, not
+    ``~/.config``: the verdict authorizes every downstream cost decision, so
+    it is evidence that has to travel with the code and be reviewable in a PR.
+
+    There is no machine-local fallback, and that absence is the fix. While the
+    gate read ``~/.config/harness/economics.json`` it asked the operator's
+    filesystem rather than the repository, so two checkouts could disagree
+    about whether the price gate was satisfied -- and a verdict nobody could
+    review governed the cost model of the whole system.
+    """
+    if path:
+        return path
+    return os.path.join(repo_root or REPO_ROOT, ECONOMICS_VERDICT_PATH)
 
 
-def record_discount_semantics(record, path=None):
-    """Persist a probe verdict. Only a conclusive verdict is stored.
+def record_discount_semantics(record, path=None, repo_root=None):
+    """Write a probe verdict into the committed receipt. Conclusive only.
 
     ``unresolved``/``ambiguous`` are written nowhere on purpose: a refusal to
     decide is not a decision, and caching one would let a later run believe
     the question had been answered.
+
+    The write lands in the working tree, which is the point: the verdict is
+    repo evidence and is meant to be committed with the code it governs (and,
+    under ``audits/self/dogfood/``, SHA-256-pinned by the corpus manifest, so
+    a later hand-edit of it fails the audit).
     """
     semantics = record.get("semantics")
     if semantics not in DISCOUNT_SEMANTICS_VALUES:
@@ -626,23 +660,27 @@ def record_discount_semantics(record, path=None):
             f"refusing to record discount semantics {semantics!r}: only a "
             f"conclusive verdict ({', '.join(DISCOUNT_SEMANTICS_VALUES)}) can "
             f"be stored. Re-run the probe on an unambiguous model.")
-    target = discount_state_path(path)
+    target = discount_verdict_path(path, repo_root)
     directory = os.path.dirname(target)
     if directory:
         os.makedirs(directory, exist_ok=True)
     write_text(target, json.dumps(record, indent=2, sort_keys=True) + "\n")
     emit("economics_discount_recorded", model=record.get("model"),
          semantics=semantics)
+    eprint(f"[economics] wrote repo evidence {target}; commit it -- a verdict "
+           f"that lives on one machine is not repo evidence and the gate "
+           f"reads only the committed receipt.")
     return target
 
 
-def load_discount_semantics(path=None):
-    """The recorded verdict, or None when there is none.
+def load_discount_semantics(path=None, repo_root=None):
+    """The committed verdict, or None when there is none.
 
-    Absence is a normal state, not an error: a fresh install has no verdict
-    and downstream price computation is refused until the probe runs.
+    Absence is a normal state, not an error: a checkout with no committed
+    verdict has nothing to trust, and downstream price computation stays
+    refused until the probe runs and its receipt is committed.
     """
-    target = discount_state_path(path)
+    target = discount_verdict_path(path, repo_root)
     try:
         with open(target, encoding="utf-8") as stream:
             record = json.load(stream)
@@ -659,57 +697,65 @@ def load_discount_semantics(path=None):
     return record
 
 
-def resolve_discount_semantics(endpoints, path=None):
+def resolve_discount_semantics(endpoints, path=None, repo_root=None):
     """The semantics to use for THIS model's prices, or a refusal.
 
     Three states, in order:
 
     * no promotion running -> ``not_applicable``; listed rates are used
       as-is and the question never arises;
-    * a conclusive verdict on disk whose fingerprint still matches the live
-      promotion -> that verdict;
+    * a conclusive verdict in the COMMITTED receipt whose fingerprint still
+      matches the live promotion -> that verdict;
     * otherwise -> :class:`HarnessError`. There is no default, because the
       two candidates differ by 2x and guessing is the one failure mode this
       gate exists to remove.
+
+    Fail-closed is unchanged by where the verdict lives: a checkout with no
+    committed receipt, an unreadable one, or one measured against a different
+    promotion all refuse, and each refusal names the receipt path so the
+    operator knows exactly what is missing.
     """
     if not endpoints.has_discount:
         return DISCOUNT_NOT_APPLICABLE
-    record = load_discount_semantics(path)
+    record = load_discount_semantics(path, repo_root)
     if record is None:
         raise HarnessError(
             f"{endpoints.model_id} has a running discount "
-            f"({endpoints.max_discount:g}) but no recorded semantics verdict. "
-            f"OpenRouter does not document whether the published rate "
-            f"already includes the promotion, and the two readings differ by "
+            f"({endpoints.max_discount:g}) but no committed semantics verdict "
+            f"at {discount_verdict_path(path, repo_root)}. OpenRouter does "
+            f"not document whether the published rate already includes the "
+            f"promotion, and the two readings differ by "
             f"{1 / max(1e-9, 1 - endpoints.max_discount):.2f}x. Run "
-            f"`harness economics --probe-model <id>` to measure it; refusing "
-            f"rather than guessing.")
+            f"`harness economics --probe-model <id> --record` to measure it "
+            f"and commit the receipt; refusing rather than guessing.")
     fingerprint = record.get("fingerprint") or {}
     recorded_discount = fingerprint.get("max_discount")
     if recorded_discount is None:
         raise HarnessError(
-            f"recorded discount verdict for {endpoints.model_id} carries no "
-            f"promotion fingerprint; re-run the probe.")
+            f"committed discount verdict for {endpoints.model_id} carries no "
+            f"promotion fingerprint; re-run the probe and commit the new "
+            f"receipt.")
     if abs(float(recorded_discount) - endpoints.max_discount) > 1e-9:
         raise HarnessError(
-            f"recorded discount verdict was measured against a "
+            f"committed discount verdict was measured against a "
             f"{float(recorded_discount):g} promotion but "
             f"{endpoints.model_id} now publishes {endpoints.max_discount:g}. "
             f"The answer may no longer hold; re-run "
-            f"`harness economics --probe-model <id>`.")
+            f"`harness economics --probe-model <id> --record`.")
     return record["semantics"]
 
 
 def effective_price(endpoints, input_tokens, output_tokens, *, path=None,
-                    cache_eligible=False, min_uptime=0.0):
+                    repo_root=None, cache_eligible=False, min_uptime=0.0):
     """THE GATE. Cheapest real cost for a call, or a refusal.
 
     Chooses among *per-endpoint* blended costs (never mixing rates across
     providers) and refuses outright when the model's promotion has no
-    recorded, still-applicable verdict. Every EV-1+ consumer goes through
+    committed, still-applicable verdict. Every EV-1+ consumer goes through
     here rather than reading an endpoint price directly.
     """
-    semantics = resolve_discount_semantics(endpoints, path=path)
+    semantics = resolve_discount_semantics(endpoints, path=path,
+                                           repo_root=repo_root)
     eligible = [e for e in endpoints.endpoints if e.is_eligible(min_uptime=min_uptime)]
     if not eligible:
         eligible = list(endpoints.endpoints)
@@ -728,7 +774,7 @@ def effective_price(endpoints, input_tokens, output_tokens, *, path=None,
 # --------------------------------------------------------------------------
 def build_economics_report(governor, ledger, *, api_key=None, transport=None,
                            benchmark_ids=None, probe_model=None,
-                           max_fetches=None, semantics_path=None):
+                           max_fetches=None, verdict_path=None):
     """Assemble the EV-0 evidence artifact.
 
     Read-only with respect to configuration: it ingests and reports, and it
@@ -804,7 +850,7 @@ def build_economics_report(governor, ledger, *, api_key=None, transport=None,
         "endpoint_errors": endpoint_errors,
         "shortlist_size": len(shortlist),
         "max_fetches": budget,
-        "discount_semantics_recorded": load_discount_semantics(semantics_path),
+        "discount_semantics_recorded": load_discount_semantics(verdict_path),
         "discount_probe": probe_record,
     }
     if ledger is not None:
