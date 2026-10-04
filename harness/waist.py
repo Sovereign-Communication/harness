@@ -467,7 +467,11 @@ def _parse_json_object(response_text: str, what: str) -> Dict[str, Any]:
     text = response_text.strip()
     candidates = list(_json_object_candidates(text))
     candidates.append(text)          # last resort: the whole body is the object
-    last_error = None
+    # `candidates` is never empty (the whole body is always appended) and
+    # every iteration either returns or records why it was rejected, so
+    # `last_error` is always populated by the time we reach the raise.
+    last_error: Exception = HarnessError(
+        f"no JSON object candidate in {what}")
     for candidate in candidates:
         try:
             data = json.loads(candidate)
@@ -477,10 +481,8 @@ def _parse_json_object(response_text: str, what: str) -> Dict[str, Any]:
         if isinstance(data, dict):
             return data
         last_error = HarnessError(f"{what} must be a JSON object")
-    if last_error is not None:
-        raise HarnessError(
-            f"failed to parse JSON from {what}: {last_error}") from last_error
-    raise HarnessError(f"failed to parse JSON from {what}")
+    raise HarnessError(
+        f"failed to parse JSON from {what}: {last_error}") from last_error
 
 
 
