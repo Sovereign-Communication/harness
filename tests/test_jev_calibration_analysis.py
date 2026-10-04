@@ -7,6 +7,7 @@ import unittest
 
 from harness.jev_calibration import (
     DESTRUCTIVE_SUPPORT_FLOOR,
+    _percentile,
     analyze_judgments,
     format_report,
     recommend_threshold,
@@ -111,7 +112,44 @@ class AnalyzeJudgmentsTests(unittest.TestCase):
         self.assertIn("unknown", report["by_disposition"])
 
 
+    def test_percentile_of_an_empty_list_raises(self):
+        # An empty batch is advisory-only upstream, but the percentile
+        # helper must refuse rather than index nothing.
+        with self.assertRaises(ValueError):
+            _percentile([], 50)
+
+    def test_percentile_at_the_top_of_the_range_returns_the_last_value(self):
+        # p100 sits one interpolation step past the final index; the tail
+        # branch must return the last value instead of reading past it.
+        self.assertEqual(_percentile([0.1, 0.2, 0.3], 100), 0.3)
+
+    def test_non_numeric_destructive_raises(self):
+        for bad in ("high", None, [0.5]):
+            with self.assertRaises(ValueError):
+                analyze_judgments(
+                    [{"verdict": "proceed", "confidence": 0.5,
+                      "destructive": bad, "disposition": "proceed"}]
+                )
+
+    def test_out_of_range_destructive_raises(self):
+        for bad in (-0.1, 1.5):
+            with self.assertRaises(ValueError):
+                analyze_judgments(
+                    [{"verdict": "proceed", "confidence": 0.5,
+                      "destructive": bad, "disposition": "proceed"}]
+                )
+
+    def test_blank_or_non_string_disposition_raises(self):
+        for bad in ("", 3, None):
+            with self.assertRaises(ValueError):
+                analyze_judgments(
+                    [{"verdict": "proceed", "confidence": 0.5,
+                      "destructive": 0.0, "disposition": bad}]
+                )
+
+
 class RecommendThresholdTests(unittest.TestCase):
+
     def test_empty_returns_none(self):
         self.assertIsNone(recommend_threshold([]))
 
