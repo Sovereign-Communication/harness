@@ -197,6 +197,7 @@ statement covers the CI matrix by direct execution.
 | `harness/capability.py` | model capability profiles + observed evidence |
 | `harness/saturation.py` | one free-tier saturation policy: per-attempt evidence -> the plain-language verdict terminal surfaces print when the tier fail-closes |
 | `harness/rankings.py` | rankings-driven pool-candidate refresh: OpenRouter daily-traffic evidence -> candidate report (evidence-driven, not folklore-driven) |
+| `harness/economics.py` | `EV-*` model economics evidence: benchmark ingest, per-provider endpoint pricing (`discount`, long-context `overrides`, cached-input rates, uptime), and the discount-semantics probe + gate. Every price computed here is per-endpoint (never mixed across providers), and a promoted model's price is refused until a conclusive measured verdict is recorded |
 | `harness/apply.py` | apply engine lifecycle: construction, the public `apply_edit` entry, and batch dispatch; per-round machinery mixed in from apply_policy |
 | `harness/apply_policy.py` | the apply engine's per-round machinery (billing, edit loop, consent, rotation, deferrals, escalation) -- mixed into `ApplyEngine` verbatim |
 | `harness/batch.py` | multi-file batch orchestration: one governed session per file, shared task budget, fail-fast -- owns the LOOP, the engine owns the per-file apply |

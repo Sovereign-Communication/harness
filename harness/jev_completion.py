@@ -124,6 +124,20 @@ _HARD_GATE_BUCKETS = {
 
 # Canonical phase contracts for mission STATUS dogfooding.
 PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
+    # EV-0 (model economics addendum, see the EV-* section in the canon):
+    # evidence ingest + the discount-semantics gate. No pr_pattern yet --
+    # the PR pin is added with the merge commit, exactly as GAP-freeze-face
+    # flipped its row on its own merge rather than claiming completion in a
+    # STATUS edit that no code gated.
+    "EV-0": {
+        "pr_pattern": None,
+        "required_tests": [
+            "tests/test_economics_ingest.py",
+            "tests/test_economics_discount.py",
+            "tests/test_economics_cli.py",
+        ],
+        "required_files": ["harness/economics.py"],
+    },
     "JEV-P0": {
         "pr_pattern": r"PR #34|d042d70",
         "required_tests": ["tests/test_jev.py", "tests/test_jev_smoke.py"],
