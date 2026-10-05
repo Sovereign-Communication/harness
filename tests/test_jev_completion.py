@@ -1,7 +1,6 @@
 """Hermetic tests for the Jev phase-completion dogfood gate."""
 from __future__ import annotations
 
-import inspect
 import io
 import hashlib
 import hmac
@@ -1547,9 +1546,11 @@ class PhaseRegistryHonestyTests(unittest.TestCase):
        the STATUS wording ... (no complete while open)" -- an
        instruction to edit truthful prose into a completion claim.
 
-    `PHASE_CONTRACTS` and the `needles` dict encode the same fact in two
-    places and had already drifted once, so the first test pins that they
-    agree; the rest pin the two failure modes the drift produced.
+    The needle that finds a phase's row now lives in that phase's own
+    `PHASE_CONTRACTS` entry, so "is this phase registered" has one owner
+    and these two tables can no longer drift. What is left to pin is the
+    one way a single registry can still lose a row -- an entry with no
+    needle -- plus the two failure modes the drift used to produce.
     """
 
     #: EV-0's contract deliberately pins no PR until the EV-0a probe receipt
@@ -1590,28 +1591,18 @@ class PhaseRegistryHonestyTests(unittest.TestCase):
     def _buckets(result):
         return [imp["bucket"] for imp in result["improvements"]]
 
-    def _needles(self):
-        """The `needles` keys `_status_row_for` actually consults.
+    def test_every_registered_phase_carries_a_status_needle(self):
+        """The one way a single registry can still lose a row.
 
-        It is a function-local dict, so it is read out of the source rather
-        than re-derived: re-deriving it here would just be a second registry
-        to drift.
-        """
-        block = inspect.getsource(_status_row_for).split("pat = needles.get", 1)[0]
-        return set(re.findall(
-            r'^\s*"([A-Za-z0-9][A-Za-z0-9_.\-]*)":\s*re\.compile', block, re.M))
-
-    def test_the_contracts_and_the_status_row_needles_agree(self):
-        """The drift check. A contract with no needle is a registered phase
-        the gate cannot see, and one needle with no contract is a row that
-        only exists to be an identity filter for its neighbours."""
-        contracts, needles = set(PHASE_CONTRACTS), self._needles()
-        self.assertEqual(sorted(contracts - needles), [],
-                         "PHASE_CONTRACTS entries with no _status_row_for "
-                         "needle: invisible to the gate (the EV-0 defect)")
-        self.assertEqual(sorted(needles - contracts), [],
-                         "_status_row_for needles with no PHASE_CONTRACTS "
-                         "entry: resolved but scored against an empty contract")
+        #175's version of this test compared two lists, because
+        registration was written twice. It is now one entry per phase, so
+        there is no second list left to disagree -- what remains is that an
+        entry must not go in without the needle that finds its row, which
+        is exactly the shape EV-0 had."""
+        for phase, contract in sorted(PHASE_CONTRACTS.items()):
+            self.assertTrue(contract.get("status_needle"),
+                            f"{phase} is registered but has no status_needle: "
+                            "it would score against no STATUS row")
 
     def test_ev0_resolves_its_own_canon_row(self):
         row = _status_row_for(self._roadmap(), self.EV0)

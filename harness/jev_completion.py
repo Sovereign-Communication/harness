@@ -28,7 +28,12 @@ from .jev_packs import (
     load_completion_pack,
     phase_status_claims_complete,
     phase_status_has_blocker,
+    phase_status_has_language,
+    phase_status_has_verdict,
+    phase_status_names_core_verdict,
+    phase_status_mentions_merge,
     phase_status_mentions_pr,
+    phase_status_says_pr_open,
     validate_completion_pack,
 )
 
@@ -125,11 +130,16 @@ _HARD_GATE_BUCKETS = {
 # Canonical phase contracts for mission STATUS dogfooding.
 PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
     # EV-0 (model economics addendum, see the EV-* section in the canon):
-    # evidence ingest + the discount-semantics gate. No pr_pattern yet --
+    # evidence ingest + the discount-semantics gate. Its `status_needle`
+    # arrived only in #175: the contract had been here all along with no
+    # needle anywhere, so the phase resolved no row and read 35.0/85.0 with
+    # every evidence gate false -- identical to a phase that never landed.
+    # No pr_pattern yet --
     # the PR pin is added with the merge commit, exactly as GAP-freeze-face
     # flipped its row on its own merge rather than claiming completion in a
     # STATUS edit that no code gated.
     "EV-0": {
+        "status_needle": r"\bEV-0\b",
         "pr_pattern": None,
         "required_tests": [
             "tests/test_economics_ingest.py",
@@ -146,11 +156,13 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "JEV-P0": {
+        "status_needle": r"JEV-P0|0 Contract|contract truth",
         "pr_pattern": r"PR #34|d042d70",
         "required_tests": ["tests/test_jev.py", "tests/test_jev_smoke.py"],
         "required_files": ["harness/jev.py"],
     },
     "JEV-P1": {
+        "status_needle": r"JEV-P1|One owner|one owner \+ lanes",
         "pr_pattern": r"PR #35|9d5ff14",
         "required_tests": [
             "tests/test_jev_policy.py",
@@ -160,6 +172,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "required_files": ["harness/jev_policy.py"],
     },
     "JEV-P2": {
+        "status_needle": r"JEV-P2|2 Pillars|System One pillars",
         "pr_pattern": r"PR #36",
         "required_tests": [
             "tests/test_consent_confidence.py",
@@ -172,6 +185,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "required_files": [],
     },
     "JEV-P3": {
+        "status_needle": r"JEV-P3|3 Utilization|utilization",
         "pr_pattern": r"PR #43|7eb18ea",
         "required_tests": [
             "tests/test_jev_util_coverage.py",
@@ -181,17 +195,20 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "required_files": [],
     },
     "JEV-P4": {
+        "status_needle": r"JEV-P4|4 Ops|ops / exit",
         "pr_pattern": r"PR #46|a021cfc",
         "required_tests": ["tests/test_jev_p4_ops_exit.py"],
         "required_files": [],
         "user_facing": True,
     },
     "JEV-COMPLETION": {
+        "status_needle": r"JEV-COMPLETION|completion score|dogfood 0-100|Accountability",
         "pr_pattern": r"PR #39|5e15f8d",
         "required_tests": ["tests/test_jev_completion.py", "tests/test_jev_bar_sentiment.py"],
         "required_files": ["harness/jev_completion.py", "packs/phase_completion.pack.json"],
     },
     "SITE": {
+        "status_needle": r"SITE-\*|SITE-1|SITE-3\.\.9|proof bench site",
         "pr_pattern": r"PR #60|a9ae53f",
         "required_tests": [
             "tests/test_site_export.py",
@@ -210,38 +227,45 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "JEV-P5": {
+        "status_needle": r"JEV-P5|issue-sort buckets",
         "pr_pattern": r"PR #42|c9e1c67",
         "required_tests": ["tests/test_jev_issue_sort.py"],
         "required_files": ["harness/jev_packs.py"],
         "user_facing": True,
     },
     "HUL-A": {
+        "status_needle": r"\bHUL-A\b",
         "pr_pattern": r"PR #41|64e63a3",
         "required_tests": ["tests/test_hul_mission_record.py"],
         "required_files": ["harness/mission_record.py"],
     },
     "HUL-B": {
+        "status_needle": r"\bHUL-B\b",
         "pr_pattern": r"PR #47|536e75c",
         "required_tests": ["tests/test_hul_budget_reserve.py"],
         "required_files": ["harness/spend.py"],
     },
     "HUL-C": {
+        "status_needle": r"\bHUL-C\b",
         "pr_pattern": r"PR #48|469f34f",
         "required_tests": ["tests/test_hul_jev_scope_gate.py"],
         "required_files": ["harness/jev_policy.py"],
     },
     "HUL-D": {
+        "status_needle": r"\bHUL-D\b",
         "pr_pattern": r"PR #48|469f34f",
         "required_tests": ["tests/test_hul_driver_findings_resume.py"],
         "required_files": ["harness/mission_driver.py"],
         "user_facing": True,
     },
     "JEV-LOG-SCHEMA": {
+        "status_needle": r"JEV-LOG-schema",
         "pr_pattern": r"PR #56|431836d",
         "required_tests": ["tests/test_jev_log_pack.py"],
         "required_files": ["harness/jev_packs.py"],
     },
     "JEV-LOG-PARSE": {
+        "status_needle": r"JEV-LOG-parse",
         "pr_pattern": r"PR #56|431836d",
         "required_tests": [
             "tests/test_jev_log_pack.py",
@@ -250,33 +274,39 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "required_files": ["harness/log_items.py"],
     },
     "JEV-LOG-FACTOR-PASS": {
+        "status_needle": r"JEV-LOG-factor-pass",
         "pr_pattern": r"PR #57|e15a723",
         "required_tests": ["tests/test_jev_log_envelope.py"],
         "required_files": ["harness/log_analysis.py"],
     },
     "JEV-LOG-JUDGMENT": {
+        "status_needle": r"JEV-LOG-judgment",
         "pr_pattern": r"PR #56|PR #57|431836d|e15a723",
         "required_tests": ["tests/test_jev_log_judgment.py"],
         "required_files": ["harness/jev_policy.py"],
     },
     "JEV-LOG-ENVELOPE": {
+        "status_needle": r"JEV-LOG-envelope",
         "pr_pattern": r"PR #57|e15a723",
         "required_tests": ["tests/test_jev_log_envelope.py"],
         "required_files": ["harness/log_analysis.py"],
     },
     "JEV-LOG-CLI": {
+        "status_needle": r"JEV-LOG-cli",
         "pr_pattern": r"PR #57|e15a723",
         "required_tests": ["tests/test_jev_log_envelope.py"],
         "required_files": ["harness/cli.py"],
         "user_facing": True,
     },
     "JEV-LOG-DOGFOOD": {
+        "status_needle": r"JEV-LOG-dogfood",
         "pr_pattern": r"PR #57|e15a723",
         "required_tests": ["tests/test_jev_log_envelope.py"],
         "required_files": [],
         "user_facing": True,
     },
     "MS": {
+        "status_needle": r"`MS-\*`|cheapest-capable",
         # Not yet cited by a real PR: the generic pr_pattern=None rule
         # (STATUS row must match PR #\d+ AND the word MERGED) applies --
         # never the bare "PR #" pattern (that let any PR mention pass).
@@ -288,6 +318,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "required_files": ["harness/config.py"],
     },
     "JEV-P6": {
+        "status_needle": r"JEV-P6",
         "pr_pattern": r"PR #65|1936ed4",
         "required_tests": [
             "tests/test_repo_items.py",
@@ -303,6 +334,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "user_facing": True,
     },
     "HG": {
+        "status_needle": r"HG-\*|hourglass composition",
         "pr_pattern": r"PR #44|f22accb",
         "required_tests": [
             "tests/test_hg_cli_resume_coverage.py",
@@ -320,6 +352,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "required_files": [],
     },
     "JEV-BAR": {
+        "status_needle": r"JEV-BAR",
         # PR number not known yet: generic pr_pattern=None rule.
         "pr_pattern": None,
         "required_tests": ["tests/test_jev_bar_sentiment.py"],
@@ -329,6 +362,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
     # enforced by a named test", so each row names the tests that enforce it.
     # pr_pattern stays None: the STATUS row must cite the merged PR itself.
     "PLAT-CMD-DATA": {
+        "status_needle": r"\bPLAT-cmd-data\b",
         "pr_pattern": None,
         "required_tests": [
             "tests/test_plat_cmd_runnable.py",
@@ -340,6 +374,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "PLAT-OSAL-MODULE": {
+        "status_needle": r"\bPLAT-osal-module\b",
         "pr_pattern": None,
         "required_tests": [
             "tests/test_osal.py",
@@ -348,11 +383,13 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "required_files": ["harness/osal.py"],
     },
     "PLAT-CI-MATRIX": {
+        "status_needle": r"\bPLAT-ci-matrix\b",
         "pr_pattern": None,
         "required_tests": ["tests/test_plat_ci_matrix.py"],
         "required_files": [".github/workflows/ci.yml", ".gitattributes"],
     },
     "PLAT-PARITY-TESTS": {
+        "status_needle": r"\bPLAT-parity-tests\b",
         "pr_pattern": None,
         "required_tests": [
             "tests/test_plat_parity_ledger.py",
@@ -362,6 +399,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "required_files": [".gitattributes"],
     },
     "PLAT-DOCS": {
+        "status_needle": r"\bPLAT-docs\b",
         "pr_pattern": None,
         "required_tests": ["tests/test_plat_docs.py"],
         "required_files": [
@@ -373,6 +411,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "HV-1": {
+        "status_needle": r"\bHV-1\b|stage-specific JEV integration",
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,
         "required_tests": [
@@ -386,6 +425,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "user_facing": False,
     },
     "HV-3": {
+        "status_needle": r"\bHV-3\b|token allowance and accounting owner",
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,
         "required_tests": ["tests/test_hourglass_token_budget.py"],
@@ -396,6 +436,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "user_facing": False,
     },
     "HV-4": {
+        "status_needle": r"\bHV-4\b",
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,
         "required_tests": [
@@ -411,6 +452,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "user_facing": False,
     },
     "HV-5": {
+        "status_needle": r"\bHV-5\b",
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,
         "required_tests": [
@@ -423,6 +465,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "user_facing": False,
     },
     "HV-6": {
+        "status_needle": r"\bHV-6\b",
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,
         "required_tests": [
@@ -439,6 +482,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "user_facing": True,
     },
     "DRV-1": {
+        "status_needle": r"\bDRV-1\b",
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,
         "required_tests": [
@@ -455,6 +499,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "user_facing": True,
     },
     "DRV-2": {
+        "status_needle": r"\bDRV-2\b",
         # Closes only with a registered input backend and a live step.
         "pr_pattern": None,
         "required_tests": [
@@ -467,6 +512,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "user_facing": True,
     },
     "HV-2": {
+        "status_needle": r"\bHV-2\b|evidence-bearing context brief",
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,
         "required_tests": [
@@ -481,6 +527,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "user_facing": False,
     },
     "HV-0": {
+        "status_needle": r"\bHV-0\b|vision-assessment pilot|vision assessment",
         # The row must cite a real merged PR before the phase can pass.
         "pr_pattern": None,
         "required_tests": [
@@ -504,6 +551,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "user_facing": True,
     },
     "CLAUDE-LANE": {
+        "status_needle": r"CLAUDE-LANE",
         # PR lands in a sibling PR; missing files must fail the bar honestly
         # until both PRs merge (operator ruling, JEV-BAR spec).
         "pr_pattern": None,
@@ -516,6 +564,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "user_facing": True,
     },
     "OC-HANDOFF": {
+        "status_needle": r"OC-HANDOFF",
         "pr_pattern": r"PR #90|6aea14b",
         "required_tests": ["tests/test_oc_handoff_worker.py"],
         "required_files": [
@@ -539,6 +588,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
     # cannot see its merge is worse than no row: it is a false open on work
     # whose PR and green CI run are cited in the row itself.
     "CHAT-LANE": {
+        "status_needle": r"\bCHAT-LANE\b",
         "pr_pattern": r"PR #170|deb4859",
         "required_tests": [
             "tests/test_waist_response_shapes.py",
@@ -552,11 +602,13 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "DYN-ROT": {
+        "status_needle": r"\bDYN-ROT\b",
         "pr_pattern": r"PR #171|d78319f",
         "required_tests": ["tests/test_router_dynamic_rotation.py"],
         "required_files": ["harness/router.py", "harness/apply_policy.py"],
     },
     "JEV-CORE-HARDENING": {
+        "status_needle": r"\bJEV-CORE-HARDENING\b",
         "pr_pattern": r"PR #165|ede5d0f",
         "required_tests": [
             "tests/test_jev_core_hardening.py",
@@ -565,11 +617,13 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "required_files": ["harness/spend.py", "harness/ledger_analytics.py"],
     },
     "REPO-CARDS": {
+        "status_needle": r"\bREPO-CARDS\b",
         "pr_pattern": r"PR #164|bbe7f6e",
         "required_tests": ["tests/test_repo_cards.py"],
         "required_files": ["harness/repo_cards.py"],
     },
     "PROVISION-CORE": {
+        "status_needle": r"\bPROVISION-CORE\b",
         "pr_pattern": r"PR #166|24057b1",
         "required_tests": [
             "tests/test_provision.py",
@@ -579,12 +633,16 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         ],
         "required_files": ["harness/provision.py"],
     },
+    # Normalised by `_norm_phase`, so this key is upper-case while the canon
+    # row spells it lower-case after `JEV-P3`.
     "JEV-P3-CALIBRATION-ANALYSIS": {
+        "status_needle": r"\bJEV-P3-calibration-analysis\b",
         "pr_pattern": r"PR #169|c031dc5",
         "required_tests": ["tests/test_jev_calibration_analysis.py"],
         "required_files": ["harness/jev_calibration.py"],
     },
     "CIVICSCOPE-COMPLETION": {
+        "status_needle": r"CIVICSCOPE-COMPLETION",
         "pr_pattern": r"PR #1\b|PR #\d+ MERGED",
         "required_tests": ["tests/test_gates.test.ts"],
         "required_files": [
@@ -862,9 +920,9 @@ def _norm_phase(phase_id: str) -> str:
     if raw.startswith("P") and raw[1:2].isdigit():
         return f"JEV-P{raw[1:2]}"
     # A named track id keeps its canonical spelling. The old P-prefix
-    # catch-all rewrote PLAT-cmd-data to JEV-PLAT-CMD-DATA, which matched
-    # neither the PHASE_CONTRACTS table nor the STATUS-row needles -- the
-    # phase silently scored on an empty contract and an empty row.
+    # catch-all rewrote PLAT-cmd-data to JEV-PLAT-CMD-DATA, which matched no
+    # PHASE_CONTRACTS entry -- the phase silently scored on an empty contract
+    # and an empty row.
     return raw
 
 
@@ -886,115 +944,29 @@ def _row_id_cell(row: str) -> str:
     return re.sub(r"\s+", "", token).lower()
 
 
-#: An explicit bolded verdict in a row's own cell. Its presence is what
-#: separates a STATUS/tracker *conclusion* row from a vision-plan *spec*
-#: row that happens to share the same id.
-_STATUS_VERDICT_RE = re.compile(
-    r"\*\*(complete|in progress|open|blocked|partial|deferred)\*\*", re.I)
-
-
 def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
-    needles = {
-        # External project. The needle matches the phase id as it appears in
-        # that repository's roadmap, so its evidence row is found rather than
-        # silently scoring against nothing.
-        "CIVICSCOPE-COMPLETION": re.compile(r"CIVICSCOPE-COMPLETION", re.I),
-        # EV-0 has carried a PHASE_CONTRACTS entry since it was written
-        # but had no needle here, so `_status_row_for` matched nothing,
-        # `status_row` was None, and the phase scored 35.0/85.0 with
-        # pr_merged/origin_evidence/local_gates_green/ci_green all false --
-        # indistinguishable from a phase that never landed, and identical
-        # to the six rows PR #174 had just registered. The contract comment
-        # deliberately leaves `pr_pattern` None until the EV-0a probe
-        # receipt lands; that is a separate concern from whether the row is
-        # FOUND. With the needle the phase reads its own row and reports
-        # what that row actually says -- still incomplete, with a real
-        # blocker -- instead of an empty 35.0 with no stated cause.
-        "EV-0": re.compile(r"\bEV-0\b", re.I),
-        "JEV-P0": re.compile(r"JEV-P0|0 Contract|contract truth", re.I),
-        "JEV-P1": re.compile(r"JEV-P1|One owner|one owner \+ lanes", re.I),
-        "JEV-P2": re.compile(r"JEV-P2|2 Pillars|System One pillars", re.I),
-        "JEV-P3": re.compile(r"JEV-P3|3 Utilization|utilization", re.I),
-        "JEV-P4": re.compile(r"JEV-P4|4 Ops|ops / exit", re.I),
-        "JEV-COMPLETION": re.compile(r"JEV-COMPLETION|completion score|dogfood 0-100|Accountability", re.I),
-        "SITE": re.compile(r"SITE-\*|SITE-1|SITE-3\.\.9|proof bench site", re.I),
-        "JEV-P5": re.compile(r"JEV-P5|issue-sort buckets", re.I),
-        "HUL-A": re.compile(r"\bHUL-A\b", re.I),
-        "HUL-B": re.compile(r"\bHUL-B\b", re.I),
-        "HUL-C": re.compile(r"\bHUL-C\b", re.I),
-        "HUL-D": re.compile(r"\bHUL-D\b", re.I),
-        "JEV-LOG-SCHEMA": re.compile(r"JEV-LOG-schema", re.I),
-        "JEV-LOG-PARSE": re.compile(r"JEV-LOG-parse", re.I),
-        "JEV-LOG-FACTOR-PASS": re.compile(r"JEV-LOG-factor-pass", re.I),
-        "JEV-LOG-JUDGMENT": re.compile(r"JEV-LOG-judgment", re.I),
-        "JEV-LOG-ENVELOPE": re.compile(r"JEV-LOG-envelope", re.I),
-        "JEV-LOG-CLI": re.compile(r"JEV-LOG-cli", re.I),
-        "JEV-LOG-DOGFOOD": re.compile(r"JEV-LOG-dogfood", re.I),
-        "MS": re.compile(r"`MS-\*`|cheapest-capable", re.I),
-        "JEV-P6": re.compile(r"JEV-P6", re.I),
-        "HG": re.compile(r"HG-\*|hourglass composition", re.I),
-        "JEV-BAR": re.compile(r"JEV-BAR", re.I),
-        "PLAT-CMD-DATA": re.compile(r"\bPLAT-cmd-data\b", re.I),
-        "PLAT-OSAL-MODULE": re.compile(r"\bPLAT-osal-module\b", re.I),
-        "PLAT-CI-MATRIX": re.compile(r"\bPLAT-ci-matrix\b", re.I),
-        "PLAT-PARITY-TESTS": re.compile(r"\bPLAT-parity-tests\b", re.I),
-        "PLAT-DOCS": re.compile(r"\bPLAT-docs\b", re.I),
-        "HV-0": re.compile(r"\bHV-0\b|vision-assessment pilot|vision assessment", re.I),
-        "HV-1": re.compile(r"\bHV-1\b|stage-specific JEV integration", re.I),
-        "HV-2": re.compile(r"\bHV-2\b|evidence-bearing context brief", re.I),
-        "HV-3": re.compile(r"\bHV-3\b|token allowance and accounting owner", re.I),
-        "HV-4": re.compile(r"\bHV-4\b", re.I),
-        # Registered here (not only in PHASE_CONTRACTS) because the row lookup
-        # is what decides which STATUS row a phase is scored against. The
-        # identity FILTER below is what makes registering them safe: without
-        # it, both resolved to the `HV-3` row and inherited its `PR #100
-        # MERGED` claim. Plain word-boundary needles, matching `HV-4`, so a
-        # descriptive phrase can never act as a substring mention.
-        "HV-5": re.compile(r"\bHV-5\b", re.I),
-        "HV-6": re.compile(r"\bHV-6\b", re.I),
-        "DRV-1": re.compile(r"\bDRV-1\b", re.I),
-        # The six STATUS rows added by the 2026-10-04 canon reconcile. A
-        # needle is what makes `_status_row_for` resolve a phase to its OWN
-        # row; without one the phase scores against no row at all. Registered
-        # in both tables (here and in PHASE_CONTRACTS) because a needle
-        # without a contract still scores an empty contract, and a contract
-        # without a needle still finds no row.
-        "CHAT-LANE": re.compile(r"\bCHAT-LANE\b", re.I),
-        "DYN-ROT": re.compile(r"\bDYN-ROT\b", re.I),
-        "JEV-CORE-HARDENING": re.compile(r"\bJEV-CORE-HARDENING\b", re.I),
-        "REPO-CARDS": re.compile(r"\bREPO-CARDS\b", re.I),
-        "PROVISION-CORE": re.compile(r"\bPROVISION-CORE\b", re.I),
-        # Normalised by `_norm_phase`, so the contract key is upper-case
-        # while the canon row spells it lower-case after `JEV-P3`.
-        "JEV-P3-CALIBRATION-ANALYSIS": re.compile(
-            r"\bJEV-P3-calibration-analysis\b", re.I),
-        "DRV-2": re.compile(r"\bDRV-2\b", re.I),
-        "CLAUDE-LANE": re.compile(r"CLAUDE-LANE", re.I),
-        "OC-HANDOFF": re.compile(r"OC-HANDOFF", re.I),
-    }
-    pat = needles.get(phase_id)
+    # Registration is encoded ONCE, in PHASE_CONTRACTS: whether a phase is
+    # registered, what its contract requires, and how its STATUS row is found.
+    # The needle used to live in a second dict here, and the two drifted --
+    # EV-0 had a contract and no needle, so it resolved no row and scored
+    # 35.0/85.0 with pr_merged/origin_evidence/local_gates_green/ci_green all
+    # false, byte-identical to a phase that never landed.
+    needle = PHASE_CONTRACTS.get(phase_id, {}).get("status_needle")
+    pat = re.compile(needle, re.I) if needle else None
     if not pat or not roadmap_text:
         return None
-    statusish = re.compile(
-        r"complete|in progress|blocked|repair|\bopen\b|planned|MERGED|PR #", re.I)
     candidates: List[str] = []
     for line in roadmap_text.splitlines():
         stripped = line.strip()
         if not stripped.startswith("|") or not pat.search(stripped):
             continue
-        if not statusish.search(stripped):
+        if not phase_status_has_language(stripped):
             continue
-        # Skip pure work-item definition rows (ID | work text) without
-        # status language -- tested with `statusish`, the same signal the
-        # line above already computed. It used to hard-code the two words
-        # "complete"/"in progress" instead, which dropped any
-        # `JEV-P<n>-x` row that CONCLUDED something without those exact
-        # words: `JEV-P3-calibration-analysis` became invisible the moment
-        # its verdict cell stopped falsely claiming completion, even though
-        # it still carried PR #169 MERGED and a green CI run. A row that
-        # states a verdict is a conclusion row, not a spec row.
-        if re.search(r"^\|\s*`?JEV-P\d-[a-z]", stripped, re.I) and not statusish:
-            continue
+        # No separate spec-row skip is needed: a work-item definition row
+        # (ID | work text) carries no status language, so the check above
+        # already drops it. #174's explicit `JEV-P<n>-x` skip re-tested that
+        # same signal as `and not statusish` -- a compiled pattern, always
+        # truthy -- so it could never fire.
         candidates.append(stripped)
     if not candidates:
         return None
@@ -1015,7 +987,7 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
     # and a tracker row with no phase id in the cell are not another phase's
     # STATUS row, so they stay eligible and phases without an exact-id row
     # rank exactly as they always did.
-    other_phase_ids = {k.lower() for k in needles} - {phase_id.lower()}
+    other_phase_ids = {k.lower() for k in PHASE_CONTRACTS} - {phase_id.lower()}
     candidates = [r for r in candidates if _row_id_cell(r) not in other_phase_ids]
     if not candidates:
         return None
@@ -1056,9 +1028,9 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         # at all. Preferring a row that *concludes* over one that *defines*
         # separates the two deterministically, and it sits BELOW identity so
         # a mentioning row can never overtake the phase's own row.
-        if _STATUS_VERDICT_RE.search(row):
+        if phase_status_has_verdict(row):
             score += 30
-        if "**complete**" in low or "**in progress" in low or "**open**" in low:
+        if phase_status_names_core_verdict(low):
             score += 10
         # Word-boundary, not substring: a row that merely NAMES the flag
         # (``pr_merged``) or a longer identifier must not be preferred as if
@@ -1066,7 +1038,7 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         # that, and two rows landing on the same score left the winner to
         # document order. ``collect_phase_evidence`` already gated merges on
         # ``\bmerged\b``; this is the same rule applied to the preference.
-        merged_word = bool(re.search(r"\bmerged\b", low))
+        merged_word = phase_status_mentions_merge(low)
         pr_word = bool(re.search(r"\bpr\s*#", low))
         if pr_word or merged_word:
             score += 5
@@ -1146,19 +1118,9 @@ def collect_phase_evidence(repo_root: str, phase_id: str,
             evidence["origin_evidence"] = status_row
         else:
             pattern = contract.get("pr_pattern")
-            lowered = status_row.lower()
             mentions_pr = phase_status_mentions_pr(status_row, pattern)
-            # Match against the LOWERED row with lowered literals: the old
-            # uppercase "PR" pattern could never match, so "PR #104 open, merge
-            # pending" scored as merged (a fake-complete leak in the gate itself).
-            open_pr = bool(
-                re.search(r"\b(?:pr|pull request)\s*(?:#\d+)?\s*(?:is\s+)?open\b", lowered)
-                or re.search(r"\bopen\s+(?:pr|pull request)(?:\s+#\d+)?\b", lowered)
-                or re.search(r"\bno pr\b", lowered)
-            )
-            # Only the word "merged" is merge evidence; "merge pending" is a plan.
-            merged_word = bool(re.search(r"\bmerged\b", lowered))
-            # Presence of a PR id is not merge evidence while the row still says open.
+            open_pr = phase_status_says_pr_open(status_row)
+            merged_word = phase_status_mentions_merge(status_row)
             evidence["pr_merged"] = bool(mentions_pr and merged_word and not open_pr)
             evidence["origin_evidence"] = status_row
             claims_complete = phase_status_claims_complete(status_row)
