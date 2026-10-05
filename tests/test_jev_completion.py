@@ -1409,5 +1409,125 @@ class DriverPhaseRowsTests(unittest.TestCase):
                 self.assertTrue((root / rel).is_file(), (phase, rel))
 
 
+class ShippedCanonRowsAreRegisteredTests(unittest.TestCase):
+    """The six STATUS rows the 2026-10-04 canon reconcile added were prose the
+    completion engine never read: an unregistered id falls back to an empty
+    contract, `_status_row_for` matches no needle, and the phase scores
+    35.0/85.0 with every evidence gate false -- byte-identical to a phase that
+    has genuinely not landed. Four of the six canon rows say **complete** with
+    a merged PR and a green CI run cited inside them, so the invisible row was
+    a *false open* on shipped work.
+
+    These tests pin both directions through `collect_phase_evidence`, which is
+    the code-owned evidence path `harness jev-phase` scores.
+    """
+
+    #: canon row says **complete** with no open clause -> must report merged.
+    COMPLETE = ("JEV-CORE-HARDENING", "DYN-ROT", "CHAT-LANE")
+    #: canon row keeps an open clause -> must still report open.
+    OPEN = ("REPO-CARDS", "PROVISION-CORE", "JEV-P3-CALIBRATION-ANALYSIS")
+    ALL = COMPLETE + OPEN
+
+    def _repo_root(self):
+        return str(Path(__file__).resolve().parents[1])
+
+    def _roadmap(self):
+        return (Path(self._repo_root()) / "docs" / "jev-roadmap.md").read_text(
+            encoding="utf-8")
+
+    def test_every_shipped_row_is_registered_with_a_contract(self):
+        for phase in self.ALL:
+            self.assertIn(phase, PHASE_CONTRACTS, phase)
+            self.assertTrue(PHASE_CONTRACTS[phase]["pr_pattern"], phase)
+
+    def test_the_contracts_name_real_tests_and_files(self):
+        root = Path(self._repo_root())
+        for phase in self.ALL:
+            contract = PHASE_CONTRACTS[phase]
+            for rel in contract["required_tests"] + contract["required_files"]:
+                self.assertTrue((root / rel).is_file(), (phase, rel))
+
+    def test_each_row_resolves_to_its_own_canon_row(self):
+        roadmap = self._roadmap()
+        for phase in self.ALL:
+            row = _status_row_for(roadmap, phase)
+            self.assertIsNotNone(row, phase)
+            # Identity is the row's OWN first cell, not a row that merely
+            # mentions this phase in prose -- the same rule the driver rows are
+            # pinned by, and the leak that filter exists to stop. Case-folded:
+            # `_norm_phase` upper-cases the id while the canon row spells it
+            # `JEV-P3-calibration-analysis`.
+            first_cell = row.split("|")[1].lower()
+            self.assertIn("`" + phase.lower() + "`", first_cell,
+                          (phase, first_cell[:60]))
+
+    def test_a_complete_row_reports_its_merge_and_ci_evidence(self):
+        for phase in self.COMPLETE:
+            ev = collect_phase_evidence(self._repo_root(), phase)
+            self.assertTrue(ev["pr_merged"], (phase, ev["status_row"]))
+            # merged implies the checks were required green
+            self.assertTrue(ev["ci_green"], phase)
+            self.assertTrue(ev["local_gates_green"], phase)
+            self.assertEqual(ev["origin_evidence"], ev["status_row"], phase)
+            self.assertEqual(ev["open_blockers"], [], (phase, ev["open_blockers"]))
+            self.assertTrue(
+                phase_status_claims_complete(ev["status_row"]), phase)
+
+    def test_a_complete_row_scores_above_the_bar_through_the_real_gate(self):
+        """`harness jev-phase` is the surface an operator runs; it must agree
+        that a row the code can now see is markable complete."""
+        for phase in self.COMPLETE:
+            result = score_phase_completion(
+                collect_phase_evidence(self._repo_root(), phase), jev_policy=None)
+            self.assertTrue(result["bar"]["pass"], (phase, result["bar"]))
+            self.assertTrue(result["can_mark_complete"], (phase, result["bar"]))
+
+    def test_an_open_row_still_reports_open(self):
+        for phase in self.OPEN:
+            ev = collect_phase_evidence(self._repo_root(), phase)
+            self.assertTrue(ev["open_blockers"], (phase, ev["open_blockers"]))
+            result = score_phase_completion(ev, jev_policy=None)
+            self.assertFalse(result["bar"]["pass"], (phase, result["bar"]))
+            self.assertFalse(result["can_mark_complete"], (phase, result["bar"]))
+
+    def test_a_genuinely_open_row_does_not_claim_completion(self):
+        """PROVISION-CORE's PR really did merge; its WORK is open. This pins
+        the distinction that makes the registration honest: a visible merge is
+        not a completion. Registering the row must not turn the fallback's
+        uniform 35.0/False into a false pass just because the merge is now
+        readable."""
+        ev = collect_phase_evidence(self._repo_root(), "PROVISION-CORE")
+        self.assertTrue(ev["pr_merged"], ev["status_row"])
+        self.assertFalse(
+            phase_status_claims_complete(ev["status_row"]), ev["status_row"])
+        self.assertIn("STATUS row not complete", ev["open_blockers"])
+
+    def test_a_registered_row_is_not_scored_against_an_empty_contract(self):
+        """The unregistered failure mode, pinned directly: an empty contract
+        plus no needle yields 35.0 with every evidence gate false."""
+        for phase in self.ALL:
+            ev = collect_phase_evidence(self._repo_root(), phase)
+            self.assertIsNotNone(ev["status_row"], phase)
+            self.assertTrue(ev["required_tests"], phase)
+            self.assertEqual(ev["tests_missing"], [], phase)
+            self.assertEqual(ev["files_missing"], [], phase)
+
+    def test_registering_them_moved_no_pre_existing_phase_row(self):
+        """The needles table is shared: a new entry also joins the identity
+        FILTER every other phase is scored against, so this pins that adding
+        six rows did not re-point a neighbour onto one of them."""
+        roadmap = self._roadmap()
+        for phase in sorted(PHASE_CONTRACTS):
+            if phase in self.ALL:
+                continue
+            row = _status_row_for(roadmap, phase)
+            if row and row != "ambiguous STATUS row":
+                first_cell = row.split("|")[1].lower()
+                for new in self.ALL:
+                    self.assertNotIn("`" + new.lower() + "`", first_cell,
+                                     (phase, new))
+
+
+
 if __name__ == "__main__":
     unittest.main()
