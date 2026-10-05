@@ -1,7 +1,7 @@
 ---
 name: isolated-request
-description: Run one analysis prompt in a fresh, history-free headless Claude session (claude -p) on the cheapest capable model, read-only by default, and return the result plus its cost. Use for clean-context extraction, scans, and reviews that should not pollute the current session.
-argument-hint: "[--model haiku|sonnet|opus] [--write] [--budget USD] [--allow RULE] <prompt>"
+description: Run one analysis prompt in a fresh, history-free headless Claude session (claude -p) on the configured default model (or --model), read-only by default, and return the result plus its cost. Use for clean-context extraction, scans, and reviews that should not pollute the current session.
+argument-hint: "[--model <alias-or-id>] [--write] [--budget USD] [--allow RULE] <prompt>"
 disable-model-invocation: true
 allowed-tools: Bash(python .claude/skills/isolated-request/run.py *), Bash(.venv/Scripts/python.exe .claude/skills/isolated-request/run.py *), Bash(.venv/bin/python .claude/skills/isolated-request/run.py *), Write, Read
 ---
@@ -16,10 +16,9 @@ into this conversation.
 ## Procedure
 
 1. **Split flags from the prompt.** Leading flags you may see in `$ARGUMENTS`:
-   - `--model haiku|sonnet|opus` — default **sonnet**. Pick the cheapest capable
-     tier yourself when the user gave none: `haiku` for extraction / listing /
-     grep-shaped work, `sonnet` for analysis and review, `opus` only when the
-     user asks for it or the task is architectural judgment.
+   - `--model <alias-or-id>` — only when the user passes it. With no `--model`,
+     pass none to the helper: the child runs on the user's configured Claude
+     Code default model. Do not pick a tier yourself.
    - `--write` — allow edits (`acceptEdits`). Without it the session is
      read-only (`dontAsk`: anything not pre-approved by the project allowlist is
      refused, never prompted).
@@ -39,7 +38,7 @@ into this conversation.
    `.venv/Scripts/python.exe` only if `python` is missing):
 
    ```bash
-   python .claude/skills/isolated-request/run.py --model <tier> [--write] [--budget N] [--allow RULE]... --prompt-file tmp/claude/isolated-request-<slug>.md
+   python .claude/skills/isolated-request/run.py [--model <model>] [--write] [--budget N] [--allow RULE]... --prompt-file tmp/claude/isolated-request-<slug>.md
    ```
 
    Use a Bash timeout of 600000 ms. For work expected to run longer than ~9
@@ -58,7 +57,7 @@ into this conversation.
 ## Examples
 
 ```
-/isolated-request --model haiku list every public function in harness/jev_packs.py with its one-line docstring as JSON
+/isolated-request list every public function in harness/jev_packs.py with its one-line docstring as JSON
 /isolated-request scan tracked files for hardcoded secrets or API keys; list file, line, severity (mask values)
 /isolated-request --allow 'Bash(.venv/Scripts/python.exe -m unittest *)' run tests.test_jev_completion and report failures with the first traceback line
 ```

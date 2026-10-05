@@ -7,7 +7,7 @@ Inherits the "free lanes first, always" and "cheapest capable model" discipline:
     context-condensed micro-brief reasoning, and multi-round bug fixing.
   - Tier 2 (Frontier / Specialist): Architectural refactoring, concurrency,
     cryptographic/security invariants, cross-module protocols, and consensus mechanisms.
-    Reserved for frontier-class models (Fable 5.1 / GPT-6 / Claude Opus tier / top deep thinkers).
+    Reserved for frontier-class models (top deep-thinker tier on OpenRouter / Jev).
 
 Provides upfront task classification before spend occurs, ensuring expensive
 models are dispatched only when warranted and paired with dense micro-briefs.
@@ -36,14 +36,8 @@ TIER_2_FRONTIER = 2
 
 # Curated frontier aliases for operator and user convenience
 FRONTIER_ALIASES: Dict[str, str] = {
-    "fable-5.1": "fable/fable-5.1",
-    "fable/fable-5.1": "fable/fable-5.1",
     "gpt-6": "openai/gpt-6",
     "openai/gpt-6": "openai/gpt-6",
-    "claude-opus": "anthropic/claude-3-opus",
-    "anthropic/claude-3-opus": "anthropic/claude-3-opus",
-    "claude-3.5-sonnet": "anthropic/claude-3.5-sonnet",
-    "anthropic/claude-3.5-sonnet": "anthropic/claude-3.5-sonnet",
     "gpt-5.6-sol": "openai/gpt-5.6-sol",
     "sol": "openai/gpt-5.6-sol",
     "gpt-4.1": "openai/gpt-4.1",
@@ -100,8 +94,8 @@ def resolve_frontier_model(custom_frontier: Optional[str] = None, use_free: bool
     """Resolve a user or config frontier model, mapping aliases when present.
 
     The paid default is the price-efficient frontier: qwen3.8-max lists the
-    same intelligence tier as the flagship anthropic/openai options (53/100
-    vs fable-5.1 / gpt-6-astra) at $2/$6 in/out vs their $10/$50 -- frontier
+    same intelligence tier as the flagship frontier options (53/100
+    vs gpt-6-astra) at $2/$6 in/out vs their $10/$50 -- frontier
     work defaults there unless the operator pins something else.
     """
     if custom_frontier:

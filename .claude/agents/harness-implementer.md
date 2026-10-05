@@ -1,7 +1,6 @@
 ---
 name: harness-implementer
 description: Implements a written spec or plan phase in the Harness codebase with hermetic tests, in a feature worktree, and runs the gates. Use for code changes once scope and approach are decided; not for open-ended design.
-model: sonnet
 effort: high
 ---
 

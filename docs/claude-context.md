@@ -9,12 +9,12 @@ Freebuff lane on 2026-09-22). Canonical STATUS still lives only in
 
 | Path | Status | Purpose |
 |---|---|---|
-| `CLAUDE.md` (repo root) | **required** — auto-loaded by Claude Code | Imports `AGENTS.md`; model tiering, missions, gates, MCP |
+| `CLAUDE.md` (repo root) | **required** — auto-loaded by Claude Code | Imports `AGENTS.md`; delegation, missions, gates, MCP |
 | `AGENTS.md` (repo root) | **required** | Tool-neutral mission truth, model policy, rules |
 | `.claude/settings.json` | present | Project allowlist (hermetic gates, read-only git/gh); denies reads of key files |
-| `.claude/skills/isolated-mission/` | present | `/isolated-mission` — tiered mission loop; state = HUL mission pack |
+| `.claude/skills/isolated-mission/` | present | `/isolated-mission` — mission loop; state = HUL mission pack |
 | `.claude/skills/isolated-request/` | present | `/isolated-request` — one fresh `claude -p` session, result + cost |
-| `.claude/agents/harness-{scout,implementer,verifier}.md` | present | Haiku / Sonnet / Sonnet delegation tiers |
+| `.claude/agents/harness-{scout,implementer,verifier}.md` | present | scout / implementer / verifier roles (no model pin — inherit the session model) |
 | `.agents/skills/typesafe-ai/SKILL.md` | present | TypeSafe skill (pinned in `skills-lock.json`) |
 | `docs/jev-roadmap.md` | **CANON** on `origin/main` | STATUS + next slice |
 | `docs/jev-mission-prompt.md` | on `origin/main` | Mission prompts to paste / run headless |
@@ -44,12 +44,12 @@ Do not implement from a stale local STATUS.
 | Goal | How |
 |---|---|
 | Interactive mission on the next open row | `/isolated-mission --iterative --bar <ID> <mission>` (see `docs/jev-mission-prompt.md`) |
-| Unattended / scheduled mission | `claude -p --model opus --max-budget-usd <N> "/isolated-mission --bar <ID> ..."` from the repo root |
-| Clean-context scan or extraction | `/isolated-request --model haiku <prompt>` |
+| Unattended / scheduled mission | `claude -p --max-budget-usd <N> "/isolated-mission --bar <ID> ..."` from the repo root |
+| Clean-context scan or extraction | `/isolated-request <prompt>` |
 | Whole-board completion check | `python -m harness.cli jev-phase --all --repo-root . --local-only` |
 | Harness as tools inside Claude | local-scope MCP server (`CLAUDE.md` § Harness MCP) |
 
-Opus orchestrates and plans; Haiku scouts; Sonnet implements and verifies.
+No static model tiers: delegates inherit the session model unless `--model` names one.
 Mission state (receipts, dual budget, Jev bar evals, FINDINGS) lands in
 `tmp/claude/missions/<id>/` in the canonical HUL pack format.
 

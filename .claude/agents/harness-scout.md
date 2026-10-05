@@ -2,7 +2,6 @@
 name: harness-scout
 description: Cheap read-only scope extraction for Harness missions — finds the relevant files, patterns, dependencies, canon STATUS rows, and gate commands for a goal and returns compact JSON. Use for any grep/listing/inventory work before planning or implementing.
 tools: Read, Grep, Glob, Bash
-model: haiku
 effort: low
 ---
 

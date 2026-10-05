@@ -1,7 +1,7 @@
 ---
 name: isolated-mission
-description: Multi-tier mission loop — Haiku scout extracts scope, Opus plans only when justified, the cheapest capable model executes with injected context, a separate verifier plus the Jev bar grade it, and the loop continues until the bar passes or limits hit. State lives in a Harness HUL mission pack.
-argument-hint: "[--plan] [--scout-only] [--iterative] [--rounds N] [--bar PHASE_ID] [--engine agent|headless] [--model haiku|sonnet|opus] [--budget USD] [--scope-lock] [--max-scope KB] [--inject-file PATH] [--continue ID] <mission>"
+description: Mission loop — a scout extracts scope, a planner runs only when justified, an executor works from injected context, a separate verifier plus the Jev bar grade it, and the loop continues until the bar passes or limits hit. State lives in a Harness HUL mission pack.
+argument-hint: "[--plan] [--scout-only] [--iterative] [--rounds N] [--bar PHASE_ID] [--engine agent|headless] [--model <alias-or-id>] [--budget USD] [--scope-lock] [--max-scope KB] [--inject-file PATH] [--continue ID] <mission>"
 disable-model-invocation: true
 allowed-tools: Bash(python .claude/skills/isolated-mission/state.py *), Bash(.venv/Scripts/python.exe .claude/skills/isolated-mission/state.py *), Bash(python .claude/skills/isolated-request/run.py *), Bash(python -m harness.cli jev-phase *), Bash(.venv/Scripts/python.exe -m harness.cli jev-phase *), Bash(python -m unittest *), Bash(python -W error::ResourceWarning -m unittest *), Bash(python -m ruff check *), Bash(python audits/self/audit.py *), Write, Read, Glob, Grep, Bash(git status *), Bash(git diff *), Bash(git log *), Bash(git worktree list *)
 ---
@@ -11,8 +11,8 @@ allowed-tools: Bash(python .claude/skills/isolated-mission/state.py *), Bash(.ve
 Mission: **$ARGUMENTS**
 
 You (the main session) are the orchestrator and the only place strategic
-judgment happens. Every other phase runs in an isolated context on the
-cheapest capable tier, receives only the context injected for it, and returns
+judgment happens. Every other phase runs in an isolated context, receives
+only the context injected for it, and returns
 structured data. Builder ≠ grader: the verifier is never the executor.
 
 ## Mandatory sequence (every mission, including verification-only ones)
@@ -20,9 +20,9 @@ structured data. Builder ≠ grader: the verifier is never the executor.
 Do these in order; do not skip a step because the mission looks small.
 
 1. `state.py init` (or `state.py show` for `--continue`) — no pack, no mission.
-2. SCOUT via the `harness-scout` agent (Haiku) → artifact + receipt. Do not scout yourself.
+2. SCOUT via the `harness-scout` agent → artifact + receipt. Do not scout yourself.
 3. PLAN only if the rules in §2 say so → artifact + receipt.
-4. EXECUTE via an executor agent (Haiku/Sonnet) → receipt. For verification-only
+4. EXECUTE via an executor agent → receipt. For verification-only
    missions the executor is the gate run in step 5; record `--phase execute` for it.
 5. GATES: run the scout/plan gate commands **yourself**, each as ONE plain
    command from the repo root (pre-approved above, so they work in any permission
@@ -39,7 +39,7 @@ orphaned. If a gate command is denied, record `blocked` with the exact denial in
 FINDINGS and close the mission — never report a pass you did not observe.
 
 ```
-SCOUT (haiku) ──► PLAN (opus, only if justified) ──► EXECUTE (haiku|sonnet) ──► EVALUATE (verifier + Jev bar)
+SCOUT ──► PLAN (only if justified) ──► EXECUTE ──► EVALUATE (verifier + Jev bar)
       ▲                                                                                 │
       └──────────── loop: bar improvements become next round's scope ◄─────────────────┘
 ```
@@ -50,12 +50,12 @@ Flags (all optional; anything else is the mission text):
 
 | Flag | Meaning |
 |---|---|
-| `--plan` | force the Opus plan phase |
+| `--plan` | force the plan phase |
 | `--scout-only` | stop after scout; show scope for review |
 | `--iterative` / `--rounds N` | loop until done (default max 3 rounds) / exactly N rounds max |
 | `--bar PHASE_ID` | the canon STATUS id this mission must satisfy (e.g. `JEV-BAR`, `MS`); the Jev bar is then the completion gate |
 | `--engine agent\|headless` | `agent` (default): Agent tool subagents. `headless`: each phase is a `/isolated-request` process (`claude -p`) — use for unattended runs or when phases must not share permissions |
-| `--model TIER` | force the execute tier |
+| `--model MODEL` | model for the phase agents (alias or ID); default: inherit this session's model |
 | `--budget USD` | mission max cost for paid lanes (default 2.00; reserve 10%) |
 | `--scope-lock` | after round 1, never add files to scope |
 | `--max-scope KB` | refuse to inject more than this much file content per phase |
@@ -80,10 +80,10 @@ $PY .claude/skills/isolated-mission/state.py init --id <ID> --request "<mission>
 For `--continue ID`: run `state.py show --id ID`, read `resume`, `last_receipts`,
 `last_bar`, and resume at the next phase/round. Never redo completed rounds.
 
-## 1. SCOUT — always Haiku (skip only with `--inject-file`)
+## 1. SCOUT (skip only with `--inject-file`)
 
 Delegate to the `harness-scout` agent (Agent tool, `subagent_type: "harness-scout"`)
-or, with `--engine headless`, `/isolated-request --model haiku`. Prompt it with
+or, with `--engine headless`, `/isolated-request`. Prompt it with
 the mission and ask for **only** this JSON:
 
 ```json
@@ -96,25 +96,25 @@ the mission and ask for **only** this JSON:
 
 Save it: write to `tmp/claude/<ID>-scout.json`, then
 `state.py artifact --id <ID> --name scout-r<N>.json --file tmp/claude/<ID>-scout.json` and
-`state.py receipt --id <ID> --phase scout --round <N> --model haiku --tokens <subagent_tokens> --status ok --summary "<files> files, <effort>"`.
+`state.py receipt --id <ID> --phase scout --round <N> --model <model the agent ran on> --tokens <subagent_tokens> --status ok --summary "<files> files, <effort>"`.
 
 `--scout-only`: show the scope and stop.
 
-## 2. PLAN — Opus, only when justified
+## 2. PLAN — only when justified
 
 Run when `--plan`, or effort is Large/XLarge, or the previous evaluate returned
-`needs_replan`. If this session is already Opus, plan inline (that is the
-strategic use of Opus); otherwise delegate with `model: "opus"`. Output JSON:
+`needs_replan`. Plan inline in this session (planning is orchestrator
+judgment). Output JSON:
 `{approach, phases: [{id, work, files, tier, gate}], context_injection_points,
 risk_factors, validation_checkpoints, confidence}`. In Harness, the plan must name the
 canon STATUS row it updates, extend one policy owner (no parallel modules),
 and name hermetic gate tests. Save as `plan-r<N>.json` artifact + receipt.
 
-## 3. EXECUTE — cheapest capable tier, injected context only
+## 3. EXECUTE — injected context only
 
-Tier: `--model` if given; else `haiku` for Small/mechanical, `sonnet` for
-Medium+ (never Opus for execution unless the user forces it). Delegate to
-`harness-implementer` (sonnet) or a haiku general-purpose agent. Inject exactly:
+Model: `--model` if given; else inherit this session's model (Agent tool: omit
+`model`; headless: omit `--model`). Delegate to `harness-implementer` or a
+general-purpose agent. Inject exactly:
 
 1. the scoped file list (respect `--max-scope`; with `--scope-lock` no new files),
 2. patterns + dependency map from scout,
@@ -123,7 +123,7 @@ Medium+ (never Opus for execution unless the user forces it). Delegate to
 5. last round's bar `improvements` (declared buckets + suggested actions) as the work queue.
 
 Writes happen in a git worktree / feature branch, never on `main`. Parallel
-executors only for overlap-free file sets. Receipt: `--phase execute --model <tier>`.
+executors only for overlap-free file sets. Receipt: `--phase execute --model <model the agent ran on>`.
 
 ## 4. EVALUATE — separate verifier + Jev bar
 
@@ -176,7 +176,7 @@ spend by tier: subagent tokens from each receipt's `--tokens`, plus
 
 ## Rules
 
-- Opus only for orchestration and planning. Scout = Haiku. Execute = Haiku/Sonnet. Verify = Sonnet.
+- No static model tiers: every phase uses `--model` if given, else the session's model; receipts record the model that actually ran.
 - Each phase gets only its injection; never forward the whole conversation.
 - 0-hallucination: bar buckets/actions come from the operator pack; never invent new ones.
 - Fail ≠ approve. Blocked = exact command + output in FINDINGS, never "will do".

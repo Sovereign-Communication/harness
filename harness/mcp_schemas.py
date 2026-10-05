@@ -142,7 +142,7 @@ TOOL_SCHEMAS = [
             "execute": {"type": "boolean", "default": False, "description": "Execute the DAG if true; preview/plan only if false"},
             "parallel": {"type": "boolean", "default": True, "description": "Execute independent subtasks concurrently in parallel (default: on; isolation per the session's hourglass_isolate setting)"},
             "max_workers": {"type": "integer", "default": 4, "minimum": 1, "maximum": 16},
-            "frontier_model": {"type": "string", "description": "Frontier model or alias for Tier 2 nodes (e.g. fable-5.1, gpt-6)"},
+            "frontier_model": {"type": "string", "description": "Frontier model or alias for Tier 2 nodes (e.g. gpt-6, qwen-max)"},
             "decompose_llm": {"type": "boolean", "default": True,
                               "description": "Author the DAG with the cheapest tier-appropriate model "
                                              "(schema-validated; default: on when the hourglass is active; "

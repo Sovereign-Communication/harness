@@ -160,7 +160,7 @@ def build_parser():
     pp.add_argument("--no-parallel", dest="parallel", action="store_false",
                     help="execute stages serially (shared-tree mutex)")
     pp.add_argument("--max-workers", type=int, default=4, help="thread pool worker count for parallel execution")
-    pp.add_argument("--frontier-model", default=None, help="frontier model or alias for Tier 2 nodes (e.g. fable-5.1, gpt-6)")
+    pp.add_argument("--frontier-model", default=None, help="frontier model or alias for Tier 2 nodes (e.g. gpt-6, qwen-max)")
     pp.add_argument("--file", action="append", default=None, help="constrain candidate target files")
     pp.add_argument("--decompose-llm", dest="decompose_llm", action="store_true",
                     default=None,

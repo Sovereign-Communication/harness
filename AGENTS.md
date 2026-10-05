@@ -68,7 +68,7 @@ Live probe snapshot (2026-09-21, OpenRouter fusion key, small “OK” chat):
 Operator harness config (`~/.config/harness/config.json`) already arms paid escalation. For tracking runs prefer paid apply/judge via env or config (`HARNESS_USE_FREE=false`, paid pools in `harness/config.py`). The OpenRouter key has a small daily limit (≈$0.75 on 2026-09-22) — keep probes tiny.
 
 The model policy above governs **Harness's own lanes**. The policy for the
-coding agent's own tiers (Opus orchestrates; Haiku/Sonnet do the work) is in `CLAUDE.md`.
+coding agent's own delegation (no static model tiers) is in `CLAUDE.md`.
 
 ## Rules every agent keeps
 

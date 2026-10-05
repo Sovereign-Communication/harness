@@ -680,7 +680,7 @@ class LedgerAnalytics:
                 "baseline_frontier_cost": baseline_cost,
                 "net_savings": net_savings,
                 "savings_percent": savings_percent,
-                "baseline_reference": "qwen3.8-max / claude-3.7-sonnet (~$0.015/call)",
+                "baseline_reference": "qwen3.8-max (~$0.015/call)",
             }
 
         return report

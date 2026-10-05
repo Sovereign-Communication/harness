@@ -35,7 +35,7 @@ class RoutingTableTests(unittest.TestCase):
         # Models with existing variants are left untouched
         self.assertEqual(floor_model("deepseek/deepseek-chat:free"), "deepseek/deepseek-chat:free")
         self.assertEqual(floor_model("meta-llama/llama-3.3-70b-instruct:free"), "meta-llama/llama-3.3-70b-instruct:free")
-        self.assertEqual(floor_model("anthropic/claude-3.7-sonnet:floor"), "anthropic/claude-3.7-sonnet:floor")
+        self.assertEqual(floor_model("qwen/qwen3.8-max-0902:floor"), "qwen/qwen3.8-max-0902:floor")
         self.assertEqual(floor_model("openai/o3-mini:nitro"), "openai/o3-mini:nitro")
 
         # Disabled floor leaves slug untouched
@@ -46,7 +46,7 @@ class RoutingTableTests(unittest.TestCase):
         self.assertEqual(strip_variant_suffix("deepseek/deepseek-chat:floor"), "deepseek/deepseek-chat")
         self.assertEqual(strip_variant_suffix("google/gemini-2.0-flash-exp:free"), "google/gemini-2.0-flash-exp")
         self.assertEqual(strip_variant_suffix("openai/o3-mini:nitro"), "openai/o3-mini")
-        self.assertEqual(strip_variant_suffix("anthropic/claude-3.7-sonnet"), "anthropic/claude-3.7-sonnet")
+        self.assertEqual(strip_variant_suffix("qwen/qwen3.8-max-0902"), "qwen/qwen3.8-max-0902")
 
     def test_classify_task_tier(self):
         # T0: simple queries, docstrings, formatting
