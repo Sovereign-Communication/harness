@@ -1,6 +1,7 @@
 """Hermetic tests for the Jev phase-completion dogfood gate."""
 from __future__ import annotations
 
+import inspect
 import io
 import hashlib
 import hmac
@@ -1526,6 +1527,172 @@ class ShippedCanonRowsAreRegisteredTests(unittest.TestCase):
                 for new in self.ALL:
                     self.assertNotIn("`" + new.lower() + "`", first_cell,
                                      (phase, new))
+
+
+
+class PhaseRegistryHonestyTests(unittest.TestCase):
+    """Three ways the phase-completion gate used to hide itself.
+
+    1. `EV-0` carried a `PHASE_CONTRACTS` entry with no `_status_row_for`
+       needle, so `status_row` was None and the phase read 35.0/85.0 with
+       `pr_merged`/`origin_evidence`/`local_gates_green`/`ci_green` all
+       false -- byte-identical to a phase that never landed, while its
+       only real gap is the `EV-0a` live-probe receipt.
+    2. An unresolvable phase degraded to `pr_pattern=None` with empty
+       lists and filed the reason in `evidence["notes"]`, which
+       `_print_jev_phase_result` never prints: the operator got a score
+       with no stated cause, indistinguishable from a plain failure.
+    3. `no_open_blockers` stamped `status_dishonest` on ANY row with open
+       work, so a row that honestly says `**open**` was told to "Correct
+       the STATUS wording ... (no complete while open)" -- an
+       instruction to edit truthful prose into a completion claim.
+
+    `PHASE_CONTRACTS` and the `needles` dict encode the same fact in two
+    places and had already drifted once, so the first test pins that they
+    agree; the rest pin the two failure modes the drift produced.
+    """
+
+    #: EV-0's contract deliberately pins no PR until the EV-0a probe receipt
+    #: lands -- that is a separate concern from whether its row is FOUND.
+    EV0 = "EV-0"
+
+    HONEST_OPEN = (
+        "| `JEV-P0` contract truth layer | **open** -- the close-out receipt "
+        "is still open. | PR #34 merged 2026-09-02; CI green. |")
+    DISHONEST_COMPLETE = (
+        "| `JEV-P0` contract truth layer | **complete** -- the close-out "
+        "receipt is still open. | PR #34 merged 2026-09-02; CI green. |")
+    FOREIGN_ROW = "| `JEV-P9` a different phase | **complete** | PR #34 merged. |"
+
+    # The pack's status_dishonest advice. NOT edited in this change -- it is
+    # right for the row that really is dishonest, and only that row may see
+    # it (see test_a_row_claiming_complete_with_open_evidence_is_still_caught).
+    REWRITE_ADVICE = "Correct the STATUS wording"
+
+    def _repo_root(self):
+        return str(Path(__file__).resolve().parents[1])
+
+    def _roadmap(self):
+        return (Path(self._repo_root()) / "docs" / "jev-roadmap.md").read_text(
+            encoding="utf-8")
+
+    def _score(self, row, phase="JEV-P0"):
+        """Score `phase` against a one-row roadmap holding `row`."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _write_repo(root, row,
+                        tests=PHASE_CONTRACTS[phase]["required_tests"],
+                        files=PHASE_CONTRACTS[phase]["required_files"])
+            evidence = collect_phase_evidence(str(root), phase)
+            return evidence, score_phase_completion(evidence, jev_policy=None)
+
+    @staticmethod
+    def _buckets(result):
+        return [imp["bucket"] for imp in result["improvements"]]
+
+    def _needles(self):
+        """The `needles` keys `_status_row_for` actually consults.
+
+        It is a function-local dict, so it is read out of the source rather
+        than re-derived: re-deriving it here would just be a second registry
+        to drift.
+        """
+        block = inspect.getsource(_status_row_for).split("pat = needles.get", 1)[0]
+        return set(re.findall(
+            r'^\s*"([A-Za-z0-9][A-Za-z0-9_.\-]*)":\s*re\.compile', block, re.M))
+
+    def test_the_contracts_and_the_status_row_needles_agree(self):
+        """The drift check. A contract with no needle is a registered phase
+        the gate cannot see, and one needle with no contract is a row that
+        only exists to be an identity filter for its neighbours."""
+        contracts, needles = set(PHASE_CONTRACTS), self._needles()
+        self.assertEqual(sorted(contracts - needles), [],
+                         "PHASE_CONTRACTS entries with no _status_row_for "
+                         "needle: invisible to the gate (the EV-0 defect)")
+        self.assertEqual(sorted(needles - contracts), [],
+                         "_status_row_for needles with no PHASE_CONTRACTS "
+                         "entry: resolved but scored against an empty contract")
+
+    def test_ev0_resolves_its_own_canon_row(self):
+        row = _status_row_for(self._roadmap(), self.EV0)
+        self.assertIsNotNone(row, self.EV0)
+        self.assertIn("`" + self.EV0.lower() + "`", row.split("|")[1].lower())
+
+    def test_ev0_reports_its_real_open_work_not_an_unlanded_phase(self):
+        """Visible now, still incomplete: the `EV-0a` probe receipt really is
+        missing, so this must NOT pass -- but it must fail on what is
+        actually open, with `origin_evidence` pointing at its own row."""
+        ev = collect_phase_evidence(self._repo_root(), self.EV0)
+        self.assertIsNotNone(ev["status_row"], self.EV0)
+        self.assertEqual(ev["origin_evidence"], ev["status_row"], self.EV0)
+        self.assertFalse(ev["pr_merged"], ev["status_row"])
+        self.assertFalse(ev["local_gates_green"], ev["status_row"])
+        self.assertIn("STATUS row not complete", ev["open_blockers"])
+        result = score_phase_completion(ev, jev_policy=None)
+        self.assertFalse(result["can_mark_complete"], self.EV0)
+
+    def test_ev0_keeps_its_unpinned_pr_until_the_probe_receipt_lands(self):
+        """The needle is the fix; `pr_pattern: None` is deliberate and stays,
+        so no PR can be read as merged evidence before EV-0a has one."""
+        self.assertIsNone(PHASE_CONTRACTS[self.EV0]["pr_pattern"], self.EV0)
+
+    def test_an_unresolvable_phase_states_its_cause_where_the_operator_reads_it(self):
+        """The cause used to land in `notes`, which `jev-phase` never prints.
+        It must reach the printed `blockers:` lines."""
+        evidence, result = self._score(self.FOREIGN_ROW)
+        self.assertIsNone(evidence["status_row"])
+        self.assertTrue(
+            any("unresolvable phase" in b for b in evidence["open_blockers"]),
+            evidence["open_blockers"])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            harness_cli._print_jev_phase_result(result)
+        printed = buf.getvalue()
+        self.assertIn("unresolvable phase", printed)
+        self.assertIn("JEV-P0", printed)
+        # A named cause, not a score that merely reads like a failure.
+        self.assertIn("no STATUS row found for JEV-P0", printed)
+
+    def test_an_honest_open_row_is_not_told_to_rewrite_its_wording(self):
+        """`PROVISION-CORE`'s `**open**` cell is correct: its PR merged, its
+        work did not finish. Nothing needs correcting, so the bucket that
+        says otherwise must not appear and the advice must not be printed."""
+        for label, (evidence, result) in (
+                ("fixture", self._score(self.HONEST_OPEN)),
+                ("live", (lambda ev: (ev, score_phase_completion(ev, jev_policy=None)))(
+                    collect_phase_evidence(self._repo_root(), "PROVISION-CORE")))):
+            with self.subTest(label=label):
+                self.assertIn("STATUS row not complete", evidence["open_blockers"],
+                              evidence["status_row"])
+                self.assertFalse(result["can_mark_complete"], label)
+                self.assertNotIn("status_dishonest", self._buckets(result), label)
+                # The honest row keeps its BEST honesty level...
+                self.assertEqual(
+                    result["sentiment"]["axes"]["status_honesty"]["level"],
+                    result["sentiment"]["levels"][-1], label)
+                # ...and the operator is pointed at the real open work.
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    harness_cli._print_jev_phase_result(result)
+                self.assertNotIn(self.REWRITE_ADVICE, buf.getvalue(), label)
+
+    def test_a_row_claiming_complete_with_open_evidence_is_still_caught(self):
+        """The other direction: the same row with `**complete**` IS
+        dishonest, and must still be caught and still be given the advice."""
+        evidence, result = self._score(self.DISHONEST_COMPLETE)
+        self.assertIn(
+            "STATUS claims complete while row still lists open/repair/fail evidence",
+            evidence["open_blockers"])
+        self.assertFalse(result["hard_gates"]["no_open_blockers"])
+        self.assertIn("status_dishonest", self._buckets(result))
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            harness_cli._print_jev_phase_result(result)
+        printed = buf.getvalue()
+        self.assertIn("status_dishonest", printed)
+        self.assertIn(self.REWRITE_ADVICE, printed)
+        self.assertFalse(result["can_mark_complete"])
+
 
 
 

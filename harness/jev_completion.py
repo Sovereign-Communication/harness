@@ -899,6 +899,18 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         # that repository's roadmap, so its evidence row is found rather than
         # silently scoring against nothing.
         "CIVICSCOPE-COMPLETION": re.compile(r"CIVICSCOPE-COMPLETION", re.I),
+        # EV-0 has carried a PHASE_CONTRACTS entry since it was written
+        # but had no needle here, so `_status_row_for` matched nothing,
+        # `status_row` was None, and the phase scored 35.0/85.0 with
+        # pr_merged/origin_evidence/local_gates_green/ci_green all false --
+        # indistinguishable from a phase that never landed, and identical
+        # to the six rows PR #174 had just registered. The contract comment
+        # deliberately leaves `pr_pattern` None until the EV-0a probe
+        # receipt lands; that is a separate concern from whether the row is
+        # FOUND. With the needle the phase reads its own row and reports
+        # what that row actually says -- still incomplete, with a real
+        # blocker -- instead of an empty 35.0 with no stated cause.
+        "EV-0": re.compile(r"\bEV-0\b", re.I),
         "JEV-P0": re.compile(r"JEV-P0|0 Contract|contract truth", re.I),
         "JEV-P1": re.compile(r"JEV-P1|One owner|one owner \+ lanes", re.I),
         "JEV-P2": re.compile(r"JEV-P2|2 Pillars|System One pillars", re.I),
@@ -1162,6 +1174,14 @@ def collect_phase_evidence(repo_root: str, phase_id: str,
                 evidence["ci_green"] = True  # merged PR implies checks were required green
                 evidence["local_gates_green"] = True  # operator claimed green on merge path
     else:
+        # `notes` is not printed by `harness jev-phase`, so a phase whose
+        # row cannot be resolved used to report a bare score with no
+        # stated cause -- indistinguishable from a phase that simply
+        # failed. `open_blockers` IS printed, so the cause belongs there.
+        evidence["open_blockers"].append(
+            f"unresolvable phase: no STATUS row found for {phase} in "
+            "docs/jev-roadmap.md (registered in PHASE_CONTRACTS without a "
+            "_status_row_for needle, or an id that is not registered)")
         evidence["notes"].append(f"no STATUS row found for {phase} in docs/jev-roadmap.md")
 
     if tests_missing:
@@ -1385,12 +1405,31 @@ def score_phase_completion(
             add_improvement(info["bucket"], axis=axis, level=info["level"],
                             ordinal=info["ordinal"], source=info["source"])
 
+    # `no_open_blockers` is not by itself evidence that a row is dishonest.
+    # `axis_status_honesty`, computed above in the same call, already drew
+    # that line and gave its BEST level to a row that honestly says
+    # **open**; only a row that CLAIMS complete while listing a blocker
+    # scores 0 there. Because a hard gate is stamped at ordinal -1 it
+    # outranked that correct verdict, so an honestly-open row was told
+    # "correct the STATUS wording ... (no complete while open)" -- an
+    # instruction to edit truthful prose into a completion claim. Emit the
+    # bucket only for the real case; an open row's actual open work is
+    # reported by its own failing gates, its semantic axes and its
+    # printed blockers.
+    _row = evidence.get("status_row")
+    _row_is_dishonest = bool(
+        isinstance(_row, str) and _row
+        and phase_status_claims_complete(_row)
+        and phase_status_has_blocker(_row))
     for gate_name, bucket_id in _HARD_GATE_BUCKETS.items():
-        if not gates.get(gate_name):
-            # A code-certain hard-gate failure outranks any semantic axis
-            # flagging the same bucket -- ordinal -1 always dedupes to it.
-            add_improvement(bucket_id, axis=None, level=None, ordinal=-1.0,
-                            source="hard_gate")
+        if gates.get(gate_name):
+            continue
+        if gate_name == "no_open_blockers" and not _row_is_dishonest:
+            continue
+        # A code-certain hard-gate failure outranks any semantic axis
+        # flagging the same bucket -- ordinal -1 always dedupes to it.
+        add_improvement(bucket_id, axis=None, level=None, ordinal=-1.0,
+                        source="hard_gate")
 
     primary_gap = live_judgment.get("primary_gap") if live_judgment else None
     if primary_gap and primary_gap not in improvement_by_bucket and primary_gap in pack_doc["buckets"]:
