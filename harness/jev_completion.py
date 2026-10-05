@@ -528,6 +528,62 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
     # falls back to the generic pr_pattern=None rule but its STATUS row is never
     # matched, so it scores against no evidence at all. Registering it makes
     # CivicScore's own PR, tests and docs the contract.
+    # The 2026-10-04 recovered-WIP train merged six shipped slices
+    # (#164/#165/#166/#169/#170/#171) and gave each a canon STATUS row. Until
+    # these entries existed the rows were prose the engine never read: an
+    # unregistered id falls back to pr_pattern=None with an EMPTY
+    # required_tests/required_files, `collect_phase_evidence` finds no STATUS
+    # row at all, and the phase scores 35.0/85.0 with pr_merged/origin_
+    # evidence/local_gates_green/ci_green all false -- identical to a phase
+    # that has genuinely not landed. A row that says complete while the gate
+    # cannot see its merge is worse than no row: it is a false open on work
+    # whose PR and green CI run are cited in the row itself.
+    "CHAT-LANE": {
+        "pr_pattern": r"PR #170|deb4859",
+        "required_tests": [
+            "tests/test_waist_response_shapes.py",
+            "tests/test_chat_reasoning_memory.py",
+            "tests/test_agent_run_limits.py",
+        ],
+        "required_files": [
+            "harness/waist.py",
+            "harness/chat.py",
+            "harness/agent.py",
+        ],
+    },
+    "DYN-ROT": {
+        "pr_pattern": r"PR #171|d78319f",
+        "required_tests": ["tests/test_router_dynamic_rotation.py"],
+        "required_files": ["harness/router.py", "harness/apply_policy.py"],
+    },
+    "JEV-CORE-HARDENING": {
+        "pr_pattern": r"PR #165|ede5d0f",
+        "required_tests": [
+            "tests/test_jev_core_hardening.py",
+            "tests/test_jev_chaos.py",
+        ],
+        "required_files": ["harness/spend.py", "harness/ledger_analytics.py"],
+    },
+    "REPO-CARDS": {
+        "pr_pattern": r"PR #164|bbe7f6e",
+        "required_tests": ["tests/test_repo_cards.py"],
+        "required_files": ["harness/repo_cards.py"],
+    },
+    "PROVISION-CORE": {
+        "pr_pattern": r"PR #166|24057b1",
+        "required_tests": [
+            "tests/test_provision.py",
+            "tests/test_provision_hardening.py",
+            "tests/test_provision_structural.py",
+            "tests/test_provision_wiring.py",
+        ],
+        "required_files": ["harness/provision.py"],
+    },
+    "JEV-P3-CALIBRATION-ANALYSIS": {
+        "pr_pattern": r"PR #169|c031dc5",
+        "required_tests": ["tests/test_jev_calibration_analysis.py"],
+        "required_files": ["harness/jev_calibration.py"],
+    },
     "CIVICSCOPE-COMPLETION": {
         "pr_pattern": r"PR #1\b|PR #\d+ MERGED",
         "required_tests": ["tests/test_gates.test.ts"],
@@ -885,6 +941,21 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
         "HV-5": re.compile(r"\bHV-5\b", re.I),
         "HV-6": re.compile(r"\bHV-6\b", re.I),
         "DRV-1": re.compile(r"\bDRV-1\b", re.I),
+        # The six STATUS rows added by the 2026-10-04 canon reconcile. A
+        # needle is what makes `_status_row_for` resolve a phase to its OWN
+        # row; without one the phase scores against no row at all. Registered
+        # in both tables (here and in PHASE_CONTRACTS) because a needle
+        # without a contract still scores an empty contract, and a contract
+        # without a needle still finds no row.
+        "CHAT-LANE": re.compile(r"\bCHAT-LANE\b", re.I),
+        "DYN-ROT": re.compile(r"\bDYN-ROT\b", re.I),
+        "JEV-CORE-HARDENING": re.compile(r"\bJEV-CORE-HARDENING\b", re.I),
+        "REPO-CARDS": re.compile(r"\bREPO-CARDS\b", re.I),
+        "PROVISION-CORE": re.compile(r"\bPROVISION-CORE\b", re.I),
+        # Normalised by `_norm_phase`, so the contract key is upper-case
+        # while the canon row spells it lower-case after `JEV-P3`.
+        "JEV-P3-CALIBRATION-ANALYSIS": re.compile(
+            r"\bJEV-P3-calibration-analysis\b", re.I),
         "DRV-2": re.compile(r"\bDRV-2\b", re.I),
         "CLAUDE-LANE": re.compile(r"CLAUDE-LANE", re.I),
         "OC-HANDOFF": re.compile(r"OC-HANDOFF", re.I),
@@ -901,9 +972,16 @@ def _status_row_for(roadmap_text: str, phase_id: str) -> Optional[str]:
             continue
         if not statusish.search(stripped):
             continue
-        # Skip pure work-item definition rows (ID | work text) without status language.
-        if re.search(r"^\|\s*`?JEV-P\d-[a-z]", stripped, re.I) and "complete" not in stripped.lower() \
-                and "in progress" not in stripped.lower():
+        # Skip pure work-item definition rows (ID | work text) without
+        # status language -- tested with `statusish`, the same signal the
+        # line above already computed. It used to hard-code the two words
+        # "complete"/"in progress" instead, which dropped any
+        # `JEV-P<n>-x` row that CONCLUDED something without those exact
+        # words: `JEV-P3-calibration-analysis` became invisible the moment
+        # its verdict cell stopped falsely claiming completion, even though
+        # it still carried PR #169 MERGED and a green CI run. A row that
+        # states a verdict is a conclusion row, not a spec row.
+        if re.search(r"^\|\s*`?JEV-P\d-[a-z]", stripped, re.I) and not statusish:
             continue
         candidates.append(stripped)
     if not candidates:
