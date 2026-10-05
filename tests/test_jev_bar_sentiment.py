@@ -54,7 +54,12 @@ from harness.jev_packs import (
     match_completion_keywords,
     phase_status_claims_complete,
     phase_status_has_blocker,
+    phase_status_has_language,
     phase_status_has_residual,
+    phase_status_has_verdict,
+    phase_status_mentions_merge,
+    phase_status_names_core_verdict,
+    phase_status_says_pr_open,
     validate_completion_pack,
 )
 from harness.jev_policy import policy_for
@@ -411,6 +416,60 @@ class TestRegressionBlockers(unittest.TestCase):
         self.assertFalse(phase_status_claims_complete("| P1 | in progress | PR #35 |"))
 
 
+class StatusRowVocabularyTests(unittest.TestCase):
+    """What a STATUS row says, in one place.
+
+    `harness.jev_packs.phase_status_*` is the single owner of this
+    vocabulary. The phase-completion gate used to keep a second copy of the
+    verdict, status-language and merged-word rules beside it, which could
+    disagree with the pack's own reading of the same row.
+    """
+
+    def test_verdict_is_a_bolded_conclusion_in_the_rows_own_cell(self):
+        self.assertTrue(phase_status_has_verdict("| P1 | **in progress** | PR #35 |"))
+        self.assertTrue(phase_status_has_verdict("| P1 | **partial** | PR #35 |"))
+        # A vision-plan spec row states the contract and concludes nothing.
+        self.assertFalse(
+            phase_status_has_verdict("| P1 | Compose optional context/stages |"))
+
+    def test_status_language_is_exactly_what_a_spec_row_lacks(self):
+        self.assertTrue(phase_status_has_language("| P1 | **open** | receipt |"))
+        self.assertTrue(phase_status_has_language("| P1 | repair scheduled |"))
+        self.assertTrue(phase_status_has_language("| P1 | x | PR #35 MERGED |"))
+        self.assertFalse(
+            phase_status_has_language("| P1 | Compose optional context/stages |"))
+
+    def test_a_pr_that_is_open_never_counts_as_merged(self):
+        self.assertTrue(phase_status_says_pr_open("PR #104 open, merge pending"))
+        self.assertTrue(phase_status_says_pr_open("open PR #104"))
+        self.assertTrue(phase_status_says_pr_open("no PR yet"))
+        self.assertFalse(phase_status_says_pr_open("PR #104 merged 2026-09-02"))
+
+    def test_merge_word_is_word_boundary(self):
+        self.assertTrue(
+            phase_status_mentions_merge("**PR #171 MERGED** `d78319f`"))
+        # A row that merely NAMES the flag has not carried merge proof.
+        self.assertFalse(phase_status_mentions_merge("the pr_merged flag"))
+        self.assertFalse(phase_status_mentions_merge("merge pending"))
+
+    def test_core_verdict_is_deliberately_narrower_than_verdict(self):
+        self.assertTrue(phase_status_names_core_verdict("| P1 | **complete** |"))
+        self.assertTrue(phase_status_names_core_verdict("| P1 | **in progress** |"))
+        self.assertTrue(phase_status_names_core_verdict("| P1 | **open** |"))
+        # `**partial**` is a verdict, but it is not one of the three the
+        # row ranker rewards.
+        self.assertFalse(phase_status_names_core_verdict("| P1 | **partial** |"))
+        # The ranker's spelling of in-progress carries no closing marker.
+        self.assertFalse(phase_status_names_core_verdict("| P1 | **complete"))
+
+    def test_every_reader_refuses_something_that_is_not_a_row(self):
+        for reader in (phase_status_has_verdict, phase_status_has_language,
+                       phase_status_says_pr_open, phase_status_mentions_merge,
+                       phase_status_names_core_verdict):
+            with self.subTest(reader=reader.__name__):
+                self.assertFalse(reader(None))
+                self.assertFalse(reader(""))
+                self.assertFalse(reader(42))
 class TestKeyedPolicyPath(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

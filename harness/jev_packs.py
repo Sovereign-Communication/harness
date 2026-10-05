@@ -1592,6 +1592,19 @@ _COMPLETION_RESIDUAL_PATTERNS = (
 _GENERIC_PR_MENTION_RE = re.compile(r"PR #\d+", re.I)
 _DOGFOOD_EVIDENCE_RE = re.compile(r"\b(?:dogfood|smoke|receipt|live)\b", re.I)
 
+#: An explicit bolded verdict in a row's own cell. Its presence is what
+#: separates a STATUS/tracker *conclusion* row from a vision-plan *spec* row
+#: that happens to share the same id.
+STATUS_VERDICT_RE = re.compile(
+    r"\*\*(complete|in progress|open|blocked|partial|deferred)\*\*", re.I)
+
+#: Any status language at all: a verdict, an open/blocked clause, a repair or
+#: planning note, or merge evidence. This is the coarse test that separates
+#: "this row says something about the phase's state" from "this row merely
+#: mentions the id" -- the distinction a spec row fails.
+STATUS_LANGUAGE_RE = re.compile(
+    r"complete|in progress|blocked|repair|\bopen\b|planned|MERGED|PR #", re.I)
+
 
 def phase_status_has_blocker(text: Any) -> bool:
     """Word-boundary blocker-marker match (JEV-BAR). Never a bare substring:
@@ -1608,6 +1621,59 @@ def phase_status_has_residual(text: Any) -> bool:
     if not isinstance(text, str) or not text:
         return False
     return any(p.search(text) for p in _COMPLETION_RESIDUAL_PATTERNS)
+
+
+def phase_status_has_verdict(text: Any) -> bool:
+    """Does the row conclude anything about the phase (a bolded verdict)?"""
+    if not isinstance(text, str) or not text:
+        return False
+    return bool(STATUS_VERDICT_RE.search(text))
+
+
+def phase_status_has_language(text: Any) -> bool:
+    """Does the row carry status language at all -- verdict, open clause,
+    repair/planning note, or merge evidence? A spec row carries none."""
+    if not isinstance(text, str) or not text:
+        return False
+    return bool(STATUS_LANGUAGE_RE.search(text))
+
+
+def phase_status_says_pr_open(text: Any) -> bool:
+    """Does the row say the PR is open, or that there is no PR?
+
+    Matched against the LOWERED row with lowered literals: an uppercase
+    "PR" pattern could never match, so "PR #104 open, merge pending"
+    scored as merged -- a fake-complete leak in the gate itself. A PR id
+    is therefore not merge evidence while a row still says open."""
+    if not isinstance(text, str) or not text:
+        return False
+    lowered = text.lower()
+    return bool(
+        re.search(r"\b(?:pr|pull request)\s*(?:#\d+)?\s*(?:is\s+)?open\b", lowered)
+        or re.search(r"\bopen\s+(?:pr|pull request)(?:\s+#\d+)?\b", lowered)
+        or re.search(r"\bno pr\b", lowered))
+
+
+def phase_status_mentions_merge(text: Any) -> bool:
+    """Does the row name a merge? Word-boundary, so ``pr_merged`` and
+    ``unmerged`` do not count, and only the word itself -- "merge pending"
+    is a plan. Scoring and ranking both need this rule and used to each
+    spell it out separately."""
+    if not isinstance(text, str) or not text:
+        return False
+    return bool(re.search(r"\bmerged\b", text, re.I))
+
+
+def phase_status_names_core_verdict(text: Any) -> bool:
+    """Does the row name one of the three verdicts the row RANKER rewards?
+
+    Deliberately narrower than `phase_status_has_verdict`: it takes bare
+    ``**complete**`` / ``**in progress`` / ``**open**`` and nothing else, so
+    a row's ranking does not shift when the broader vocabulary grows."""
+    if not isinstance(text, str) or not text:
+        return False
+    low = text.lower()
+    return "**complete**" in low or "**in progress" in low or "**open**" in low
 
 
 def phase_status_claims_complete(text: Any) -> bool:
