@@ -1,0 +1,11 @@
+aspect,production_functions,with_aspect_questions,coverage
+jev-policy,263,100%
+server-transport,172,100%
+driver-orchestration,154,100%
+state-persistence,130,100%
+provider-adapters,67,100%
+cli-contracts,65,100%
+spend-economics,46,100%
+apply-gate,46,100%
+dag-workflow,22,100%
+consent,14,100%
