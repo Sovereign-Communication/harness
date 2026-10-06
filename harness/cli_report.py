@@ -39,7 +39,7 @@ def _emit(result, out, force_json=False):
         print(text)
 
 
-def _emit_by_status(result, out, *, continued=False):
+def _emit_by_status(result, out, *, continued=False, deferred_message=None):
     """Apply results through the ONE exit-code policy (results.py); this
     adds the resume hint a deferred run needs and the saturation advise."""
     # Terminal honesty: a run that exhausted its rounds on 429s / reasoning-
@@ -50,9 +50,10 @@ def _emit_by_status(result, out, *, continued=False):
     _emit(result, out)
     code = terminal_exit_code(result["status"])
     if code == 3:
-        eprint("[apply] task deferred; resume with: harness continue --state <out.json>"
-               if not continued else
-               "[apply] still deferred; resume again: harness continue --state <out.json>")
+        eprint(deferred_message or
+               ("[apply] task deferred; resume with: harness continue --state <out.json>"
+                if not continued else
+                "[apply] still deferred; resume again: harness continue --state <out.json>"))
     if code:
         sys.exit(code)
 
@@ -115,4 +116,3 @@ def _print_cost_table(report):
         eprint("-" * len(hdr))
         for m, d in sorted(by_model.items(), key=lambda item: item[1].get("cost", 0.0), reverse=True):
             eprint(f"{m:<40} {d.get('tier', 'T2'):<6} {d.get('calls', 0):>8} {d.get('cost', 0.0):>12.6f}")
-

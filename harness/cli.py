@@ -85,7 +85,7 @@ from .dag import TaskDAG, node_apply_kwargs
 from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
 from .pyramid_state import (
     dag_for_pending, load_state, node_routes_for_pending, persist_state)
-from .results import terminal_exit_code
+from .results import terminal_exit_code, verify_terminal_status
 from .saturation import advise
 from .validation import finite_number
 import sys
@@ -221,7 +221,11 @@ def _cmd_verify(opts, settings):
     # Terminal honesty: a fail-closed run on a saturated tier says so plainly
     # (one policy owner, harness/saturation.py).
     advise(panel_failures=result.get("panel_failures"))
-    _emit(result, opts.out)
+    result["status"] = verify_terminal_status(result)
+    _emit_by_status(
+        result, opts.out,
+        deferred_message=("[verify] review deferred/inconclusive; inspect the "
+                          "report before treating it as reviewed."))
 
 
 def _cmd_dogfood(opts, settings):
