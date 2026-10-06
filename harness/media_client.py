@@ -117,14 +117,16 @@ class MediaAdapter:
         import time
         deadline = time.time() + timeout
         while time.time() < deadline:
-            job = self._request("GET", "/v1/jobs/{}".format(job_id))
+            job = self._request("GET", "/v1/jobs/{}".format(
+                urllib.parse.quote(str(job_id), safe="")))
             if job.get("status") in ("succeeded", "failed", "refused"):
                 return self._envelope(job)
             time.sleep(interval)
         return {"status": "timeout", "job_id": job_id}
 
     def job(self, job_id):
-        return self._envelope(self._request("GET", "/v1/jobs/{}".format(job_id)))
+        return self._envelope(self._request(
+            "GET", "/v1/jobs/{}".format(urllib.parse.quote(str(job_id), safe=""))))
 
     def jobs(self, project=None, limit=20):
         q = "/v1/jobs?limit={}".format(int(limit))

@@ -1548,7 +1548,12 @@ class MissionsEndpointTests(ServerHarness):
         super().setUp()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = os.path.join(self.tmp.name, "missions")
+        # The missions endpoints jail ?root= inside ./missions, so the
+        # fixture pack tree lives under a temp working directory.
+        self._old_cwd = os.getcwd()
+        os.chdir(self.tmp.name)
+        self.addCleanup(os.chdir, self._old_cwd)
+        self.root = "missions"
 
     def _init_pack(self, mission_id):
         from harness import mission_record as mr
@@ -1676,6 +1681,39 @@ class MissionsEndpointTests(ServerHarness):
             conn.close()
         self.assertEqual(status, 400)
         self.assertIn("mission pack not found", data["error"])
+
+
+    def test_list_rejects_traversal_roots(self):
+        """?root= must stay inside ./missions: .., ../.. and absolute paths 400."""
+        for hostile in ("..", "../..", "/etc", "/tmp"):
+            conn = self._conn()
+            try:
+                status, data = _request(conn, "GET", "/api/missions?root=" + hostile)
+            finally:
+                conn.close()
+            self.assertEqual(status, 400, "root=%r" % hostile)
+            self.assertIn("invalid missions root", data["error"])
+
+    def test_detail_rejects_traversal_root(self):
+        self._init_pack("m-trav-1")
+        conn = self._conn()
+        try:
+            status, _ = _request(
+                conn, "GET", "/api/missions/m-trav-1?root=..")
+        finally:
+            conn.close()
+        self.assertEqual(status, 400)
+
+    def test_list_default_root_still_serves(self):
+        """No ?root= param keeps working (defaults to ./missions)."""
+        self._init_pack("m-def-1")
+        conn = self._conn()
+        try:
+            status, data = _request(conn, "GET", "/api/missions")
+        finally:
+            conn.close()
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], 1)
 
 
 if __name__ == "__main__":
