@@ -128,6 +128,17 @@ class VerifyTerminalExitTests(unittest.TestCase):
             cli.main(["verify", "--prompt", "Review this."])
         self.assertEqual(result["status"], "ok")
 
+    def test_malformed_consensus_exits_failed(self):
+        result = {"consensus": {}, "actual_cost": 0.0}
+        with mock.patch.object(cli, "load_settings", return_value=object()), \
+             mock.patch.object(cli, "_run_claims_verify",
+                               return_value=result), \
+             contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(["verify", "--prompt", "Review this."])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertEqual(result["status"], "failed")
+
 
 class PlanAllowHeuristicPreviewWiringTests(unittest.TestCase):
     """DF-HG-3b: --allow-heuristic-preview must reach compose_plan's

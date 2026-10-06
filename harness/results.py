@@ -54,8 +54,13 @@ def verify_terminal_status(result):
     consensus = result.get("consensus")
     if not isinstance(consensus, dict):
         return "failed"
-    if (consensus.get("defer") is True
-            or consensus.get("verdict_status") == "inconclusive"):
+    defer = consensus.get("defer")
+    if not isinstance(defer, bool):
+        return "failed"
+    verdict_status = consensus.get("verdict_status")
+    if verdict_status not in (None, "ok", "inconclusive"):
+        return "failed"
+    if defer or verdict_status == "inconclusive":
         return "deferred"
     return "ok"
 
