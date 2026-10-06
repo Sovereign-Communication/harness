@@ -37,6 +37,7 @@ Failures raise ``HarnessError``. JSONL appends and file rewrites follow the
 history/ledger append style and ``filesafety._atomic_write``.
 """
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -95,6 +96,25 @@ def pack_dir_for(root: Any, mission_id: str) -> Path:
     if root is None or root == "":
         raise HarnessError("mission pack root is required")
     return Path(root) / mid
+
+
+def resolve_missions_root(raw: Any) -> str:
+    """Validate a caller-supplied missions root, jailed under ``./missions``.
+
+    Mission packs live in a directory tree rooted at the missions base
+    directory. To prevent path traversal (``..``) or absolute-path escapes
+    (``/etc``), the resolved root must stay inside the base. Symlinks are
+    resolved, so a symlink inside the base pointing outside is rejected too.
+    Returns the input unchanged on success; raises HarnessError on escape.
+    Callers: the server ``?root=`` endpoints and the MCP ``mission_status``
+    tool's ``root`` argument.
+    """
+    raw = raw or "missions"
+    base = os.path.realpath("missions")
+    candidate = os.path.realpath(os.path.join(base, str(raw)))
+    if candidate != base and not candidate.startswith(base + os.sep):
+        raise HarnessError("invalid missions root: {!r}".format(raw))
+    return raw
 
 
 def _require_mapping(value: Any, what: str) -> Dict[str, Any]:

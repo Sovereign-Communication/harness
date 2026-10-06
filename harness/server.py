@@ -936,19 +936,14 @@ def _api_jev_phase_payload(repo_root, phase, min_score=85.0):
 def _missions_root_param(q):
     """Validate the ``?root=`` query param for the missions endpoints.
 
-    Mission packs are served from a directory tree. To prevent path
-    traversal (``?root=../../etc``) or absolute-path escapes
-    (``?root=/etc``), the resolved root must stay inside the server's
-    missions base directory (``./missions``). Symlinks are resolved, so a
-    symlink inside the base pointing outside is also rejected.
-    Raises HarnessError, which the API dispatch maps to HTTP 400.
+    Delegates to :func:`harness.mission_record.resolve_missions_root`: the
+    resolved root must stay inside the server's missions base directory
+    (``./missions``). Raises HarnessError, which the API dispatch maps to
+    HTTP 400.
     """
+    from . import mission_record as mr
     raw = (q.get("root") or ["missions"])[0] or "missions"
-    base = os.path.realpath("missions")
-    candidate = os.path.realpath(os.path.join(base, str(raw)))
-    if candidate != base and not candidate.startswith(base + os.sep):
-        raise HarnessError("invalid missions root: {!r}".format(raw))
-    return raw
+    return mr.resolve_missions_root(raw)
 
 
 def _list_missions(root, *, limit=25, offset=0):

@@ -1691,7 +1691,7 @@ class MissionsEndpointTests(ServerHarness):
                 status, data = _request(conn, "GET", "/api/missions?root=" + hostile)
             finally:
                 conn.close()
-            self.assertEqual(status, 400, "root=%r" % hostile)
+            self.assertEqual(status, 400, f"root={hostile!r}")
             self.assertIn("invalid missions root", data["error"])
 
     def test_detail_rejects_traversal_root(self):

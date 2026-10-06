@@ -240,7 +240,7 @@ class JobIdQuotingTests(unittest.TestCase):
             method, url = opener.calls[0]
             self.assertEqual(method, "GET")
             self.assertTrue(url.endswith("/v1/jobs/" + quoted),
-                            "hostile %r -> %s" % (hostile, url))
+                            f"hostile {hostile!r} -> {url}")
 
     def test_job_quotes_hostile_job_id(self):
         for hostile, quoted in [("../x", "..%2Fx"), ("a?b=c", "a%3Fb%3Dc")]:

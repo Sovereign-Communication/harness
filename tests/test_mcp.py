@@ -1131,11 +1131,17 @@ class MissionStatusToolTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # mission_status jails `root` under ./missions, so the fixture pack
+        # tree lives under a temp working directory.
+        self._old_cwd = os.getcwd()
+        os.chdir(self.tmp.name)
+        self.addCleanup(os.chdir, self._old_cwd)
+        self.root = "missions"
 
     def test_mission_status_returns_pack_summary(self):
         from harness import mission_record as mr
 
-        root = os.path.join(self.tmp.name, "missions")
+        root = self.root
         spec = mr.build_mission_spec(
             mission_id="m-mcp-1",
             request="Exercise mission_status over MCP",
@@ -1158,11 +1164,41 @@ class MissionStatusToolTests(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(root, "m-mcp-1", "STATUS.md")))
 
     def test_mission_status_unknown_id_raises(self):
-        root = os.path.join(self.tmp.name, "missions")
+        root = self.root
         os.makedirs(root, exist_ok=True)
         _, server = make_server()
         with self.assertRaisesRegex(Exception, "mission pack not found"):
             server._invoke("mission_status", {"mission_id": "does-not-exist", "root": root})
+
+    def test_mission_status_rejects_traversal_roots(self):
+        from harness.errors import HarnessError
+
+        _, server = make_server()
+        for hostile in ("..", "../..", "/etc", "/tmp"):
+            with self.subTest(root=hostile):
+                with self.assertRaises(HarnessError):
+                    server._invoke("mission_status",
+                                   {"mission_id": "m-mcp-1", "root": hostile})
+
+    def test_mission_status_default_root_serves(self):
+        from harness import mission_record as mr
+
+        spec = mr.build_mission_spec(
+            mission_id="m-mcp-2",
+            request="Default root serves the ./missions tree",
+            success_definition="mission_status works with no root arg",
+            max_cost_usd=0.50,
+            terminal_reserve_cost_usd=0.05,
+            in_scope=["harness/mcp.py"],
+            out_of_scope=["live network calls"],
+            persistence_root=self.root,
+            verifier_kind="hermetic-local",
+        )
+        mr.init_mission_pack(self.root, spec)
+
+        _, server = make_server()
+        result = server._invoke("mission_status", {"mission_id": "m-mcp-2"})
+        self.assertEqual(result["id"], "m-mcp-2")
 
 
 def _write_jev_repo(root, status_line):
