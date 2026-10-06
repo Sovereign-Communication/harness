@@ -307,7 +307,7 @@ class TestPlanningSurface(unittest.TestCase):
         opts_seq = SimpleNamespace(
             goal="Refactor auth system",
             file=["harness/auth.py"],
-            frontier_model="fable-5.1",
+            frontier_model="gpt-6",
             execute=True,
             parallel=False,
             max_workers=1,

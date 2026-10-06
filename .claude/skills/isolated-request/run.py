@@ -21,17 +21,16 @@ import subprocess
 import sys
 import time
 
-MODELS = ("haiku", "sonnet", "opus")
-DEFAULT_MODEL = "sonnet"
 DEFAULT_BUDGET_USD = 1.0
 DEFAULT_TIMEOUT_S = 900
 
 
 def build_command(opts, claude_bin: str) -> list:
     mode = "acceptEdits" if opts.write else "dontAsk"
-    cmd = [
-        claude_bin, "-p",
-        "--model", opts.model,
+    cmd = [claude_bin, "-p"]
+    if opts.model:  # omitted -> the CLI's configured default model
+        cmd += ["--model", opts.model]
+    cmd += [
         "--output-format", "json",
         "--no-session-persistence",
         "--max-budget-usd", str(opts.budget),
@@ -74,7 +73,9 @@ def parse_result(stdout: str) -> dict:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--model", choices=MODELS, default=DEFAULT_MODEL)
+    ap.add_argument("--model",
+                    help="model alias or full model ID; "
+                         "default: the user's configured Claude Code model")
     ap.add_argument("--write", action="store_true",
                     help="allow edits (acceptEdits); default is read-only dontAsk")
     ap.add_argument("--budget", type=float, default=DEFAULT_BUDGET_USD,
@@ -117,7 +118,7 @@ def main(argv=None) -> int:
         "ok": not is_error,
         "result": data.get("result"),
         "structured_output": data.get("structured_output"),
-        "model": opts.model,
+        "model": ",".join(data.get("modelUsage") or {}) or opts.model or "default",
         "cost_usd": data.get("total_cost_usd"),
         "num_turns": data.get("num_turns"),
         "duration_ms": data.get("duration_ms")

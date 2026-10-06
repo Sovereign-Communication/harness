@@ -570,8 +570,8 @@ class ComposePlanTests(_WaistFixture):
         self.assertTrue(any(not m.endswith(":free") for m in ladder_esc))
         self.assertIn("qwen/qwen3.8-max-0902", ladder_esc)
 
-        ladder_paid = resolve_waist_ladder(use_free=False, custom_frontier="claude-3.5-sonnet")
-        self.assertEqual(ladder_paid[0], "anthropic/claude-3.5-sonnet")
+        ladder_paid = resolve_waist_ladder(use_free=False, custom_frontier="qwen-max")
+        self.assertEqual(ladder_paid[0], "qwen/qwen3.8-max-0902")
 
     def test_compose_plan_rotates_on_429_to_next_free_model(self):
         attempts = []

@@ -2,7 +2,6 @@
 name: harness-verifier
 description: Adversarial verifier for Harness work — runs the named gates, reviews the diff against the spec and canon rules, runs the Jev bar, and returns a pass/fail verdict with evidence. Never the same agent that built the change.
 tools: Read, Grep, Glob, Bash
-model: sonnet
 effort: high
 ---
 

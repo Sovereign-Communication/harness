@@ -7,29 +7,28 @@ mission truth, model policy, rules). This file adds only how Claude Code works
 here. Canon STATUS lives in `docs/jev-roadmap.md` — update its rows; never start
 a parallel plan document.
 
-## Model tiering (cost policy)
+## Delegation (no static model tiers)
 
-The main session (Opus) is for orchestration, design, canon edits, and final
-review. Delegate everything else to the cheapest capable tier:
+Harness's own lanes use only OpenRouter and Jev models (policy in
+AGENTS.md). The coding agent's delegates pin no Claude model: agents,
+skills, and headless runs inherit the session's model unless the operator
+names one (`--model`).
 
-| Work | Delegate to | Model |
-|---|---|---|
-| scope extraction, grep/inventory sweeps, listing | `harness-scout` agent | Haiku |
-| implementing a written spec / plan phase | `harness-implementer` agent | Sonnet |
-| gate runs + adversarial review (builder ≠ grader) | `harness-verifier` agent | Sonnet |
-| one clean-context analysis in a fresh process | `/isolated-request` | Haiku/Sonnet |
-| multi-round mission with a completion bar | `/isolated-mission` | tiered per phase |
-
-In Workflow / Agent calls pass `model: "haiku"` or `"sonnet"` explicitly;
-leave it unset only for stages that genuinely need Opus judgment.
+| Work | Delegate to |
+|---|---|
+| scope extraction, grep/inventory sweeps, listing | `harness-scout` agent |
+| implementing a written spec / plan phase | `harness-implementer` agent |
+| gate runs + adversarial review (builder ≠ grader) | `harness-verifier` agent |
+| one clean-context analysis in a fresh process | `/isolated-request` |
+| multi-round mission with a completion bar | `/isolated-mission` |
 
 ## Missions and the Jev bar
 
-- `/isolated-mission [--bar PHASE_ID] <mission>` — Haiku scout → Opus plan only
-  when justified → cheapest execute → separate verifier + Jev bar → loop.
+- `/isolated-mission [--bar PHASE_ID] <mission>` — scout → plan only when
+  justified → execute → separate verifier + Jev bar → loop.
   State is a Harness HUL mission pack under `tmp/claude/missions/<id>/`
   (`python .claude/skills/isolated-mission/state.py show --id <id>`).
-- `/isolated-request [--model tier] <prompt>` — one fresh `claude -p` session,
+- `/isolated-request [--model <model>] <prompt>` — one fresh `claude -p` session,
   read-only by default, returns result + cost.
 - **Jev bar**: `python -m harness.cli jev-phase --phase <ID> --repo-root . --local-only`
   (add `--all` for the whole board). STATUS may say complete only on bar pass;

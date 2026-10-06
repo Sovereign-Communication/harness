@@ -3,8 +3,8 @@
 **Canon:** [jev-roadmap.md](jev-roadmap.md) only. Trust **origin/main** STATUS;
 a stale local copy is not evidence.
 
-These run the canon through `/isolated-mission` (Haiku scout → Opus plan only
-when justified → cheapest execute → separate verifier + Jev bar → loop). Mission
+These run the canon through `/isolated-mission` (scout → plan only
+when justified → execute → separate verifier + Jev bar → loop). Mission
 state lands in `tmp/claude/missions/<id>/` (HUL pack: receipts, dual budget,
 Jev bar evals, FINDINGS). Context: [claude-context.md](claude-context.md).
 
@@ -27,7 +27,7 @@ verifier green; then open the PR and paste gate tails + the bar output.
 Unattended (scheduled / cloud / CI shell):
 
 ```bash
-claude -p --model opus --max-budget-usd 10 --permission-mode acceptEdits \
+claude -p --max-budget-usd 10 --permission-mode acceptEdits \
   "/isolated-mission --iterative --rounds 3 --bar <ROW-ID> --budget 2 Implement canon row <ROW-ID> ..."
 ```
 

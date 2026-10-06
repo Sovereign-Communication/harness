@@ -32,10 +32,9 @@ class TestSlidingScale(unittest.TestCase):
         self.assertEqual(TIER_2_FRONTIER, 2)
 
     def test_frontier_aliases(self):
-        self.assertIn("fable-5.1", FRONTIER_ALIASES)
-        self.assertEqual(resolve_frontier_model("fable-5.1"), "fable/fable-5.1")
+        self.assertIn("gpt-6", FRONTIER_ALIASES)
         self.assertEqual(resolve_frontier_model("gpt-6"), "openai/gpt-6")
-        self.assertEqual(resolve_frontier_model("claude-opus"), "anthropic/claude-3-opus")
+        self.assertFalse(any(v.startswith("anthropic/") for v in FRONTIER_ALIASES.values()))
         self.assertEqual(resolve_frontier_model("sol"), "openai/gpt-5.6-sol")
         self.assertEqual(resolve_frontier_model("custom/model-x"), "custom/model-x")
         self.assertEqual(resolve_frontier_model(None, use_free=True), FREE_JUDGE)
@@ -74,11 +73,11 @@ class TestSlidingScale(unittest.TestCase):
             dependency_depth=3,
             is_leaf=False,
             use_free=False,
-            custom_frontier="fable-5.1",
+            custom_frontier="gpt-6",
         )
         self.assertEqual(c.tier, TIER_2_FRONTIER)
         self.assertGreaterEqual(c.score, 0.65)
-        self.assertEqual(c.recommended_model, "fable/fable-5.1")
+        self.assertEqual(c.recommended_model, "openai/gpt-6")
         self.assertEqual(c.estimated_cost_tier, "frontier")
         self.assertTrue(any("frontier keywords" in r for r in c.reasons))
         self.assertTrue(any("broad target file" in r for r in c.reasons))
@@ -118,8 +117,8 @@ class TestSlidingScale(unittest.TestCase):
         ladder_esc_1 = tier_model_ladder(TIER_1_DISTILLER, use_free=True, allow_escalation=True)
         self.assertGreaterEqual(len(ladder_esc_1), 4)
 
-        ladder_paid_2 = tier_model_ladder(TIER_2_FRONTIER, use_free=False, custom_frontier="fable-5.1")
-        self.assertEqual(ladder_paid_2[0], "fable/fable-5.1")
+        ladder_paid_2 = tier_model_ladder(TIER_2_FRONTIER, use_free=False, custom_frontier="gpt-6")
+        self.assertEqual(ladder_paid_2[0], "openai/gpt-6")
         self.assertIn("openai/gpt-5.6-sol", ladder_paid_2)
 
 
@@ -159,11 +158,11 @@ class TestSlidingScale(unittest.TestCase):
             route.cost_ceiling = 0.5  # type: ignore
 
     def test_settings_frontier_model_wiring(self):
-        s = load_settings({"frontier_model": "fable-5.1"})
-        self.assertEqual(s.frontier_model, "fable-5.1")
+        s = load_settings({"frontier_model": "gpt-6"})
+        self.assertEqual(s.frontier_model, "gpt-6")
         d = s.to_dict()
         self.assertIn("frontier_model", d)
-        self.assertEqual(d["frontier_model"], "fable-5.1")
+        self.assertEqual(d["frontier_model"], "gpt-6")
 
     def test_calibrated_abstention_and_pipeline(self):
         # Abstain if confidence < threshold
@@ -192,8 +191,8 @@ class TestSlidingScale(unittest.TestCase):
         ladder_free = resolve_planner_ladder(use_free=True)
         self.assertIn(":free", ladder_free[0])
 
-        ladder_paid = resolve_planner_ladder(use_free=False, custom_frontier="claude-3.7")
-        self.assertIn("claude", ladder_paid[0])
+        ladder_paid = resolve_planner_ladder(use_free=False, custom_frontier="example/frontier-x")
+        self.assertIn("frontier-x", ladder_paid[0])
 
         ladder_allow_paid = resolve_planner_ladder(use_free=True, allow_paid=True)
         self.assertGreaterEqual(len(ladder_allow_paid), 2)

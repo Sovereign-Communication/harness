@@ -31,7 +31,6 @@ TIER_MODELS: Dict[str, List[str]] = {
     ],
     TIER_3: [
         "qwen/qwen3.8-max-0902",
-        "anthropic/claude-3.7-sonnet",
         "openai/o3-mini",
     ],
 }
@@ -169,7 +168,7 @@ def classify_model_tier(model_id: str) -> str:
         if any(clean == strip_variant_suffix(x.lower()) for x in TIER_MODELS[tier]):
             return tier
     # Heuristics for models outside the default curated list
-    if any(k in clean for k in ("max", "sonnet", "opus", "o3", "o1", "gpt-4", "gpt-5", "sol", "r1")):
+    if any(k in clean for k in ("max", "o3", "o1", "gpt-4", "gpt-5", "sol", "r1")):
         return TIER_3
     if any(k in clean for k in ("flash", "reasoner", "mini", "medium")):
         return TIER_2

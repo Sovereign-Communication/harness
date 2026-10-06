@@ -27,9 +27,9 @@ do not implement phase code and you do not run a parallel plan: canon is
 - Reject any STATUS `complete` that lacks: merge SHA on `origin/main`, green CI,
   audit BAR MET, and a passing Jev bar. The bar's `improvements` list is the
   remediation you hand back to the CTO.
-- Spot-check cost discipline: Opus used only for orchestration; paid Harness
+- Spot-check cost discipline: no static model pins in agents or skills; paid Harness
   lanes on cheap rungs with private ledgers when concurrent.
-- Delegate audit sweeps to `harness-scout` / `harness-verifier`; keep Opus for the verdict.
+- Delegate audit sweeps to `harness-scout` / `harness-verifier`; keep the verdict in this session.
 - Do not edit product code or other repositories.
 
 ## Session close
