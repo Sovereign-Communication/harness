@@ -95,7 +95,36 @@ def pack_dir_for(root: Any, mission_id: str) -> Path:
     mid = validate_mission_id(mission_id)
     if root is None or root == "":
         raise HarnessError("mission pack root is required")
-    return Path(root) / mid
+    root_path = os.path.realpath(os.fspath(root))
+    return _path_within(root_path, os.path.join(root_path, mid),
+                        "mission pack directory")
+
+
+def _path_within_canonical_root(root: Any, path: Any, what: str) -> Path:
+    """Resolve ``path`` within an already-canonical, pinned ``root``.
+
+    Deliberately do not resolve ``root`` again: callers use this after they
+    have fixed a trust boundary, so a symlink change observed by this check
+    does not also redefine that boundary. This path check and later I/O are
+    separate filesystem operations; it does not eliminate their inherent
+    check/open race.
+    """
+    root_path = os.path.abspath(os.fspath(root))
+    path_real = os.path.realpath(os.fspath(path))
+    try:
+        common = os.path.commonpath((root_path, path_real))
+        inside = os.path.normcase(common) == os.path.normcase(root_path)
+    except ValueError:
+        inside = False
+    if not inside:
+        raise HarnessError(f"{what} escapes its root: {path!r}")
+    return Path(path_real)
+
+
+def _path_within(root: Any, path: Any, what: str) -> Path:
+    """Return ``path`` as a canonical path, refusing symlink escapes."""
+    root_path = os.path.realpath(os.fspath(root))
+    return _path_within_canonical_root(root_path, path, what)
 
 
 def resolve_missions_root(raw: Any) -> str:
@@ -105,16 +134,42 @@ def resolve_missions_root(raw: Any) -> str:
     directory. To prevent path traversal (``..``) or absolute-path escapes
     (``/etc``), the resolved root must stay inside the base. Symlinks are
     resolved, so a symlink inside the base pointing outside is rejected too.
-    Returns the input unchanged on success; raises HarnessError on escape.
+    Returns the canonical absolute path that callers must consume; raises
+    HarnessError on escape. The historical ``"missions"`` default names the
+    base itself, while other relative roots are relative to that base. A path
+    explicitly prefixed with ``missions/`` remains cwd-relative for callers
+    that pass the conventional default-root spelling with a subdirectory.
     Callers: the server ``?root=`` endpoints and the MCP ``mission_status``
     tool's ``root`` argument.
     """
-    raw = raw or "missions"
+    raw = str(raw or "missions")
     base = os.path.realpath("missions")
-    candidate = os.path.realpath(os.path.join(base, str(raw)))
-    if candidate != base and not candidate.startswith(base + os.sep):
+
+    # Preserve the existing default and cwd-root spelling. Other relative
+    # values are names beneath the jail (e.g. ``sibling`` means
+    # ``./missions/sibling``), never a path consumed relative to cwd after
+    # validation.
+    normalized = os.path.normpath(raw)
+    if normalized in ("", ".", "missions"):
+        candidate = base
+    elif os.path.isabs(normalized):
+        candidate = os.path.realpath(normalized)
+    elif os.path.normcase(normalized.split(os.sep, 1)[0]) == os.path.normcase(
+            "missions"):
+        candidate = os.path.realpath(normalized)
+    else:
+        candidate = os.path.realpath(os.path.join(base, normalized))
+
+    try:
+        common = os.path.commonpath((base, candidate))
+        inside = os.path.normcase(common) == os.path.normcase(base)
+    except ValueError:
+        # Different drives (Windows), malformed paths, and other non-common
+        # roots all fail closed.
+        inside = False
+    if not inside:
         raise HarnessError("invalid missions root: {!r}".format(raw))
-    return raw
+    return candidate
 
 
 def _require_mapping(value: Any, what: str) -> Dict[str, Any]:
@@ -421,45 +476,66 @@ class MissionPack:
     """Filesystem handle for one mission pack under ``root / id``."""
 
     def __init__(self, root: Any, mission_id: str):
-        self.root = Path(root)
         self.id = validate_mission_id(mission_id)
+        if root is None or root == "":
+            raise HarnessError("mission pack root is required")
+        # Pin both boundaries once. Re-resolving either boundary later would
+        # let a directory symlink swap redefine where this handle may reach.
+        self.root = Path(os.path.realpath(os.fspath(root)))
         self.dir = pack_dir_for(self.root, self.id)
+        self._expected_dir = self.dir
+
+    def _validated_dir(self) -> Path:
+        current = _path_within_canonical_root(
+            self.root, self._expected_dir, "mission pack directory")
+        if os.path.normcase(os.fspath(current)) != os.path.normcase(
+                os.fspath(self._expected_dir)):
+            raise HarnessError(
+                f"mission pack directory no longer resolves to its expected path: "
+                f"{self._expected_dir!r}")
+        return current
+
+    def path_for(self, name: str) -> Path:
+        """Resolve a child against the boundaries pinned at construction."""
+        pack_dir = self._validated_dir()
+        return _path_within_canonical_root(
+            self._expected_dir, pack_dir / name, "mission pack file")
 
     @property
     def mission_yaml(self) -> Path:
-        return self.dir / "mission.yaml"
+        return self.path_for("mission.yaml")
 
     @property
     def status_md(self) -> Path:
-        return self.dir / "STATUS.md"
+        return self.path_for("STATUS.md")
 
     @property
     def findings_md(self) -> Path:
-        return self.dir / "FINDINGS.md"
+        return self.path_for("FINDINGS.md")
 
     @property
     def receipts_path(self) -> Path:
-        return self.dir / "receipts.jsonl"
+        return self.path_for("receipts.jsonl")
 
     @property
     def jev_evals_path(self) -> Path:
-        return self.dir / "jev_evals.jsonl"
+        return self.path_for("jev_evals.jsonl")
 
     @property
     def budget_path(self) -> Path:
-        return self.dir / "budget.json"
+        return self.path_for("budget.json")
 
     @property
     def resume_path(self) -> Path:
-        return self.dir / "resume.json"
+        return self.path_for("resume.json")
 
     @property
     def artifacts_dir(self) -> Path:
-        return self.dir / "artifacts"
+        return self.path_for("artifacts")
 
     @property
     def index_md(self) -> Path:
-        return self.dir / "INDEX.md"
+        return self.path_for("INDEX.md")
 
     def spec(self) -> Dict[str, Any]:
         return validate_mission_spec(load_mission_yaml_file(self.mission_yaml))
@@ -970,7 +1046,7 @@ def evaluate_scope_on_pack(
 def generate_index_md(pack: MissionPack) -> str:
     entries = []
     for name in PACK_FILES:
-        path = pack.dir / name
+        path = pack.path_for(name)
         if path.is_dir():
             entries.append(f"- `{name}/` — directory")
         elif path.is_file():

@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -1179,6 +1180,137 @@ class MissionStatusToolTests(unittest.TestCase):
                 with self.assertRaises(HarnessError):
                     server._invoke("mission_status",
                                    {"mission_id": "m-mcp-1", "root": hostile})
+
+    def test_mission_status_relative_root_uses_validated_missions_path(self):
+        from harness import mission_record as mr
+
+        mission_id = "m-mcp-sibling"
+        inner_root = os.path.join("missions", "sibling")
+        outside_root = "sibling"
+        packs = {}
+        for root, request in ((inner_root, "inside missions jail"),
+                              (outside_root, "outside missions jail")):
+            spec = mr.build_mission_spec(
+                mission_id=mission_id,
+                request=request,
+                success_definition="MCP reads and writes only the jailed root",
+                max_cost_usd=0.50,
+                terminal_reserve_cost_usd=0.05,
+                in_scope=["harness/mcp.py"],
+                out_of_scope=["live network calls"],
+                persistence_root=root,
+                verifier_kind="hermetic-local",
+            )
+            packs[root] = mr.init_mission_pack(root, spec)
+
+        outside_status = packs[outside_root].status_md
+        outside_status.write_text("outside status sentinel\n", encoding="utf-8")
+
+        _, server = make_server()
+        result = server._invoke(
+            "mission_status", {"mission_id": mission_id, "root": "sibling"})
+
+        self.assertEqual(result["request"], "inside missions jail")
+        self.assertEqual(
+            result["pack_dir"],
+            os.path.join(os.path.realpath(inner_root), mission_id))
+        self.assertEqual(
+            outside_status.read_text(encoding="utf-8"),
+            "outside status sentinel\n")
+
+    def test_mission_status_rejects_symlink_outside_root(self):
+        from harness.errors import HarnessError
+
+        os.makedirs(self.root, exist_ok=True)
+        outside_root = os.path.join(self.tmp.name, "outside-missions")
+        os.makedirs(outside_root)
+        try:
+            os.symlink(outside_root, os.path.join(self.root, "escape"),
+                       target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"directory symlinks unavailable: {exc}")
+
+        _, server = make_server()
+        with self.assertRaises(HarnessError):
+            server._invoke(
+                "mission_status", {"mission_id": "m-mcp-1", "root": "escape"})
+
+    def test_mission_status_rejects_symlinked_pack_outside_root(self):
+        from harness import mission_record as mr
+        from harness.errors import HarnessError
+
+        mission_id = "m-mcp-pack-escape"
+        outside_root = os.path.join(self.tmp.name, "outside-missions")
+        os.makedirs(outside_root)
+        spec = mr.build_mission_spec(
+            mission_id=mission_id,
+            request="outside pack must not be read or rewritten",
+            success_definition="Pack directory symlinks do not cross the jail",
+            max_cost_usd=0.50,
+            terminal_reserve_cost_usd=0.05,
+            in_scope=["harness/mcp.py"],
+            out_of_scope=["live network calls"],
+            persistence_root=outside_root,
+            verifier_kind="hermetic-local",
+        )
+        outside_pack = mr.init_mission_pack(outside_root, spec)
+        outside_status = outside_pack.status_md
+        outside_index = outside_pack.index_md
+        outside_status.write_text("outside status sentinel\n", encoding="utf-8")
+        outside_index.write_text("outside index sentinel\n", encoding="utf-8")
+        os.makedirs(self.root, exist_ok=True)
+        try:
+            os.symlink(str(outside_pack.dir), os.path.join(self.root, mission_id),
+                       target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"directory symlinks unavailable: {exc}")
+
+        _, server = make_server()
+        with self.assertRaisesRegex(HarnessError, "mission pack directory escapes"):
+            server._invoke(
+                "mission_status", {"mission_id": mission_id, "root": "missions"})
+        self.assertEqual(outside_status.read_text(encoding="utf-8"),
+                         "outside status sentinel\n")
+        self.assertEqual(outside_index.read_text(encoding="utf-8"),
+                         "outside index sentinel\n")
+
+    def test_mission_status_rejects_symlinked_projection_files(self):
+        from harness import mission_record as mr
+        from harness.errors import HarnessError
+
+        os.makedirs(self.root, exist_ok=True)
+        _, server = make_server()
+        for filename in ("STATUS.md", "INDEX.md"):
+            with self.subTest(filename=filename):
+                mission_id = "m-mcp-file-" + filename.split(".", 1)[0].lower()
+                spec = mr.build_mission_spec(
+                    mission_id=mission_id,
+                    request="projection symlinks must not be followed",
+                    success_definition="outside sentinel remains unchanged",
+                    max_cost_usd=0.50,
+                    terminal_reserve_cost_usd=0.05,
+                    in_scope=["harness/mcp.py"],
+                    out_of_scope=["live network calls"],
+                    persistence_root=self.root,
+                    verifier_kind="hermetic-local",
+                )
+                pack = mr.init_mission_pack(self.root, spec)
+                outside = Path(self.tmp.name) / (mission_id + "-outside.md")
+                sentinel = f"outside {filename} sentinel\n"
+                outside.write_text(sentinel, encoding="utf-8")
+                projection = pack.dir / filename
+                projection.unlink()
+                try:
+                    os.symlink(str(outside), str(projection))
+                except (OSError, NotImplementedError) as exc:
+                    self.skipTest(f"file symlinks unavailable: {exc}")
+
+                with self.assertRaisesRegex(
+                        HarnessError, "mission pack file escapes its root"):
+                    server._invoke(
+                        "mission_status",
+                        {"mission_id": mission_id, "root": self.root})
+                self.assertEqual(outside.read_text(encoding="utf-8"), sentinel)
 
     def test_mission_status_default_root_serves(self):
         from harness import mission_record as mr

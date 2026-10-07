@@ -544,6 +544,85 @@ class MissionErrorPathTests(unittest.TestCase):
         with self.assertRaises(HarnessError):
             mr.pack_dir_for(None, "m-x")
 
+    def test_pack_directory_rejects_symlink_escape(self):
+        outside_root = Path(self.tmp.name) / "outside-missions"
+        outside_root.mkdir()
+        outside = mr.init_mission_pack(
+            outside_root,
+            _ok_spec(mid="m-pack-escape", root=str(outside_root)))
+        link = self.root / outside.id
+        try:
+            os.symlink(str(outside.dir), str(link), target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"directory symlinks unavailable: {exc}")
+        with self.assertRaisesRegex(HarnessError,
+                                   "mission pack directory escapes its root"):
+            mr.load_mission_pack(self.root, outside.id)
+
+    def test_pack_file_rejects_symlink_escape(self):
+        target = Path(self.tmp.name) / "outside-mission.yaml"
+        target.write_text(self.pack.mission_yaml.read_text(encoding="utf-8"),
+                          encoding="utf-8")
+        mission_yaml = self.pack.dir / "mission.yaml"
+        mission_yaml.unlink()
+        try:
+            os.symlink(str(target), str(mission_yaml))
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"file symlinks unavailable: {exc}")
+        with self.assertRaisesRegex(HarnessError,
+                                   "mission pack file escapes its root"):
+            mr.load_mission_pack(self.root, self.pack.id)
+
+    def test_pack_handle_rejects_swapped_pack_directory_symlink(self):
+        decoy = mr.init_mission_pack(
+            self.root, _ok_spec(mid="m-decoy", root=str(self.root)))
+        parked = self.root / "m-err-parked"
+        self.pack.dir.rename(parked)
+        try:
+            os.symlink(str(decoy.dir), str(self.pack.dir),
+                       target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            parked.rename(self.pack.dir)
+            self.skipTest(f"directory symlinks unavailable: {exc}")
+
+        with self.assertRaisesRegex(
+                HarnessError, "no longer resolves to its expected path"):
+            self.pack.spec()
+
+    def test_pack_handle_rejects_relocated_missions_root(self):
+        relocated = Path(self.tmp.name) / "relocated-missions"
+        self.root.rename(relocated)
+        try:
+            os.symlink(str(relocated), str(self.root), target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            relocated.rename(self.root)
+            self.skipTest(f"directory symlinks unavailable: {exc}")
+
+        with self.assertRaisesRegex(HarnessError,
+                                   "mission pack directory escapes its root"):
+            self.pack.spec()
+
+    def test_conventional_missions_prefix_ignores_resolved_base_name(self):
+        resolver_cwd = Path(self.tmp.name) / "resolver-cwd"
+        resolver_cwd.mkdir()
+        actual_root = Path(self.tmp.name) / "canonical-missions-root"
+        nested = actual_root / "nested"
+        nested.mkdir(parents=True)
+        try:
+            os.symlink(str(actual_root), str(resolver_cwd / "missions"),
+                       target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"directory symlinks unavailable: {exc}")
+
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(resolver_cwd)
+            resolved = mr.resolve_missions_root(
+                os.path.join("missions", "nested"))
+        finally:
+            os.chdir(old_cwd)
+        self.assertEqual(resolved, os.path.realpath(nested))
+
     def test_validate_mission_spec_rejects_non_mapping(self):
         with self.assertRaises(HarnessError):
             mr.validate_mission_spec("not-a-map")
