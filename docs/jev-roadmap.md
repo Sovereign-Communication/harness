@@ -33,7 +33,7 @@ Reconcile it against remote state before each merge.
   it as current STATUS evidence.
 - PR **#180** is the sole open PR, on
   `codex/df-cli-3-verify-defer` at
-  `6da467e8975358d56c70391ece2ca51f92c17adb` (this roadmap update), targeting
+  `63fdce6` (roadmap reconciliation and check-status follow-up), targeting
   `main`; its preceding code commit is `cd53a7e4006e96f80f51d11743ef338426a4686c`.
   It closes #144 once merged. At the code commit, 11/12 required checks passed;
   required audit/D12 failed at **43/46 = 93%** against baseline `3ac7bc2b9b`
@@ -43,10 +43,10 @@ Reconcile it against remote state before each merge.
   `cli.py:225`, while D12 reports it uncovered. Resolve this using execution
   and trace evidence before changing tests or the baseline. `sd_coverage_changed`
   reads committed trace data; it does not itself execute tests.
-- Pushing the roadmap commit restarted PR checks. At the time of this update,
-  Ubuntu installed-package, package, and checkout-hygiene checks passed; the
-  audit and platform/test matrix were still running. This document update does
-  not resolve the D12 failure; re-read current checks before merge.
+- The roadmap commits restarted PR checks. At `63fdce6`, handoff-scope and
+  checkout-hygiene passed; the audit, package, and platform/test matrix were
+  queued or running. The document update does not resolve the D12 failure;
+  re-read current checks before merge.
 - The coverage refresh runner inherits its process environment and home. A
   prior attempted full battery unexpectedly reached live provider paths; the
   approval review rejected another run because of that risk. Do not rerun it
