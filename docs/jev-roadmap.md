@@ -2,7 +2,7 @@
 
 **Status:** active tracking doc  
 **Implementer lanes:** Claude Code (`CLAUDE.md`, `/isolated-mission`), Codex, and Freebuff share this canon; use lane-specific handoffs as seat state, not parallel plans.
-**Audit date:** 2026-09-22 (Claude dogfood audit: 9 components, 31 confirmed findings — see `DF-*` below)  
+**Historical audit date:** 2026-09-22 (Claude dogfood audit: 9 components, 31 confirmed findings — see `DF-*` below); current repository sweep: 2026-10-05.
 **Live probe:** TypeSafe `POST https://api.typesafe.ai/v1/systemone` succeeded with key at `~/.config/harness/jev.env`
 
 This file is the **single source of truth** for Harness mission work (Jev / System One, HUL, hourglass, site, and follow-ups). Every future PR must carry an ID from the tracker below and reference an acceptance test named here. Do not open parallel ad-hoc plans — add or update rows here.
@@ -12,6 +12,114 @@ This file is the **single source of truth** for Harness mission work (Jev / Syst
 **Worktrees:** one per phase PR, `Harness-<slug>` off `origin/main` (convention in `AGENTS.md`); `git worktree list` is authoritative.
 
 Related design context (not the tracker): [system-one-integration.md](system-one-integration.md), [hourglass-frontier-eval.md](hourglass-frontier-eval.md) (D8), skill at `.agents/skills/typesafe-ai/SKILL.md`, live API at <https://docs.typesafe.ai/api.md>.
+
+---
+
+## Canonical current status — comprehensive sweep 2026-10-05
+
+This section supersedes older present-tense status statements and the previous
+“Next implementation slice.” Detailed dated audit narratives below are history;
+their old “open,” “next,” and “in progress” language is not current unless
+repeated here or in a live tracker row. This is the only operational plan.
+Reconcile it against remote state before each merge.
+
+### Verified remote and review state
+
+- Canonical repository: `Sovereign-Communication/harness`. The old
+  `Treystu/Harness` identity is a moved pointer and is not a reliable source.
+- At sweep time, `origin/main` was
+  `0676d6423d15b8f71c26c61099fbb8ccefcef715`. The operator checkout at
+  `4e2a5480849c870801cdb79178fe64c50f83f9d7` is one commit behind; do not use
+  it as current STATUS evidence.
+- PR **#180** is the sole open PR, on
+  `codex/df-cli-3-verify-defer` at
+  `cd53a7e4006e96f80f51d11743ef338426a4686c`, targeting `main`. It closes
+  #144 once merged. It is not merge-ready: 11/12 required checks passed;
+  required audit/D12 failed at **43/46 = 93%** against baseline `3ac7bc2b9b`
+  (bar 95%). Reported changed lines are `cli.py:225`, `cli_report.py:53`, and
+  `routing_table.py:171`. The newest review comment accepts the code/test
+  direction but flags a mismatch: the new CLI test should execute
+  `cli.py:225`, while D12 reports it uncovered. Resolve this using execution
+  and trace evidence before changing tests or the baseline. `sd_coverage_changed`
+  reads committed trace data; it does not itself execute tests.
+- The coverage refresh runner inherits its process environment and home. A
+  prior attempted full battery unexpectedly reached live provider paths; the
+  approval review rejected another run because of that risk. Do not rerun it
+  or use an indirect workaround without explicit operator authorization. First
+  make runner isolation and trace provenance reviewable, then request
+  authorization if a live-capable run is still required. Never hand-edit the
+  coverage baseline.
+- No submitted PR review or unresolved inline review thread was found on #180.
+  Its substantive conversation comment is tracked above. Re-read PR checks,
+  comments, and base SHA immediately before merge.
+
+### Current backlog and dependency order
+
+Only one phase PR may be active. Keep all work in the existing #180 PR until
+it lands; then take the next item below as its own reviewed PR from fresh
+`origin/main`. Each row stays open until its named acceptance evidence and
+required local gates are present.
+
+| Order | Canonical ID / source | Remaining work and acceptance evidence |
+|---|---|---|
+| 1 | **#180 / DF-CLI-3** | Resolve the D12 trace discrepancy on the actual merge base; make the coverage runner safe and its test execution/trace lineage auditable; obtain required changed-line coverage without falsifying or editing the baseline; local gates and all required PR checks green. Then merge #180 and confirm green post-merge `main`. |
+| 2 | **#179 / DF-CLI-4** | Recover only the CLI stderr notice and regression tests from `6269636c9b`; rebase on current `main` and fix its current `max_cost` ceiling failure. Do not carry unrelated patchsets. |
+| 3 | **#179 / DF-AUDIT-6 candidate** | Isolate and review the AST preflight strengthening from current branch evidence; establish a named phase contract and regression tests before implementation. An issue comment alone is not acceptance. |
+| 4 | **#179 / pack limits and JEV-P6 prose** | Reconcile the claimed 1,900-character seed cap / 1,886-character measurement with `tests/test_jev_repo_pack.py` setting `SEED_MAX_QUESTION_CHARS = 3400`. Decide and test one actual bound, then align the pack and roadmap prose. |
+| 5 | **DF-AUDIT-5** | Recheck completion clauses against merged #146 and #165: bounded iteration, visible fallback provenance, fallback-cause tests, and independent completion authority. Narrow this row to any production/test residual still missing; do not repeat delivered work. |
+| 6 | **GAP-plan-http / DF-UI-2** | Implementation is present from #155: `RUNNERS["plan"]`, `run_plan_task`, shared `compose_plan`/`PlanExecutor`, and `tests/test_plan_http_batch.py` cover HTTP dispatch, plan-only, and execution. Replace the stale operator-ruling request with a closure review: confirm registration in `PHASE_CONTRACTS` (or document why this GAP does not use a phase contract), run named gates, and close only on evidence. Dogfood face shipped with #148. |
+| 7 | **REPO-CARDS** | Generator landed in #164; add and verify its user-facing CLI/MCP face and CI drift check. Preserve source-grounded, deterministic card rules. |
+| 8 | **PROVISION-CORE** | Core landed in #166; add separately scoped production entry points (CLI, MCP, agent intent, GUI only as required), phase contract, consent/dry-run tests, and a safe live receipt. Do not widen the existing core or imply its unit tests alone ship the feature. |
+| 9 | **JEV-P3-calibration-analysis** | Analysis module landed in #169; wire it to real ledger evidence and a bounded operator threshold-application workflow, register phase contract/tests, and retain `jev-freeze` as settings owner. |
+| 10 | **DRV-1** | Code and CI are complete (#159/#161); only the paid-cheap live dogfood receipt is missing. Run through operator-gated model policy, record cost/fallback/verification evidence, and flip only when `harness jev-phase --phase DRV-1` passes. |
+| 11 | **DRV-2** | Implement a real consent/policy-gated input backend and live vision extraction behind declared driver actions; add backend conformance tests and prove `harness driver step` performs a permitted action. Synthetic inputs correctly refuse today. |
+| 12 | **EV-0 through EV-5** | Keep the dependency chain: resolve EV-0a discount semantics with its committed measurement receipt; EV-1 endpoint cost/capability index; EV-2 committed tier snapshot and freshness gate; EV-3 advisory Jev pool resolver; EV-4 bounded automatic movement (off by default); EV-5 CLI/MCP/UI/report and committed refresh workflow. Preserve economic invariants and use paid-cheap receipts. |
+| 13 | **OC-HANDOFF** | Worker safety implementation is merged (#90); remain gated until an operator supplies a valid signed candidate and findings-only output/receipt audit passes. Do not merge stale `87a672e8` wholesale: it is 246 commits behind and changes spend settlement from main’s book+flag+return to book+abort. Only findings may be written to `HANDOFF/OC_FINDINGS.md`; no external configuration or seat-state writes. |
+| 14 | **Exit: HUL ruling** | HUL A–D and HV consumers are complete. The old exit row’s “HUL A–D shipped **or** open-problem packs” condition is already satisfied by HUL A–D. Do not hold it open for an uncited extra ruling; verify originating authority, then close with existing evidence or amend the criterion through this reviewed plan PR. |
+| 15 | **#177 hygiene** | Its body is stale (references #173 as sole open PR, #144 as unimplemented, and old Phase 3 work). After #180 lands, update its disposition to cite landed fixes and list only validated residual hygiene items, then close when resolved. #144 is implemented by #180 pending merge; #168 was closed by owner on 2026-10-04. |
+| 16 | **Final landing and dogfood** | After selected backlog rows land, re-read canon and issue/PR state from remote; verify each merged phase gate and green `main` CI. Dogfood user-facing CLI/MCP/API/GUI paths with cheap paid models first where live judgment is required; record receipts, actual cost, fallback provenance, refusal/defer behavior, and regressions. Fix regressions in reviewed PRs, rerun affected gates, and update this canon only through a reviewed PR. |
+
+### Branches and worktrees — disposition
+
+The sweep found **93 local branch refs not ancestors of the then-current
+`origin/main`**, plus numerous worktrees. This is an inventory count, not 93
+backlog items: many are backups, WIP snapshots, duplicate patches, or historical
+Freebuff sessions. Compare patch identity and live PR/issue state before
+promoting any ref.
+
+- `codex/hv5-sovereignty-20260929` contains work already represented by merged
+  #146; do not replay those duplicate commits.
+- `codex/lane3-jev-phase-local-accounting-notice` at `6269636c9b` has one
+  potentially useful CLI notice commit; recover only that slice as described
+  above.
+- `codex/oc-handoff-jev-gate` at `87a672e8ad` must not land wholesale because
+  of the spend-settlement regression; extract only independently reviewed safe
+  improvements if still needed.
+- `codex/canon-reconcile-20261005` and the active #180 branch are review
+  candidates; reconcile distinct hunks against remote canon before cherry-pick.
+  The `canonical-plan-reconcile` worktree is already an ancestor of remote main
+  and is historical.
+- Preserve the dirty legacy Freebuff worktree at
+  `.freebuff/worktrees/86ac1455-199f-4d4d-96b4-46b235cd4bfb` until its untracked
+  `HANDOFF/MCP_ISOLATION_BASELINE_2026-10-03.md` and `tmp_phase_f/` are
+  classified and intentionally captured/discarded by their owner. Do not prune
+  or clean worktrees during backlog reconciliation.
+
+### Scope and status corrections
+
+- Replace the stale numbered “Next implementation slice” with the order above;
+  archival narratives must not define current status.
+- `DF-UI-2` dogfood is delivered by #148 and HTTP plan dispatch by #155; only
+  its explicit closure-contract review remains.
+- `JEV-P4-residual`, `JEV-P6`, `HV-0` through `HV-6`, `HV-2-use`, `HV-3-use`,
+  HUL A–D, Jev P0–P4, release publishing, #173, #178 and #171 are landed per
+  recorded evidence; do not reopen or repeat them.
+- The comment that the HV-5 sovereignty branch was rewritten is not evidence
+  that all current changes are unique or needed. Compare patches before recovery.
+- This sweep cannot honestly promise 99% certainty about every defect across
+  every historical ref. It records evidence, known limits, and exact remaining
+  closure conditions so new remote comments and CI changes can be incorporated
+  before each merge.
 
 ---
 
@@ -637,6 +745,11 @@ Antigravity session a4439ee2 ("Fix CI And Continue Work") ran while the Claude s
 
 ---
 
+The authoritative priority order and acceptance conditions are in
+[Canonical current status — comprehensive sweep 2026-10-05](#canonical-current-status--comprehensive-sweep-2026-10-05)
+above. This historical list is retired because it mixed completed rows with
+active work and contained stale dispositions. Keep one phase PR active and
+start only the first unblocked item from that current table.
 ## Retired playbooks (history)
 
 - **P2 repair playbook** (Freebuff lane, 2026-09-21): executed and closed — PR #36 `405bbc1` merged with hermetic lane parity, D12 coverage, audit BAR MET. Full text in git history of this file.
