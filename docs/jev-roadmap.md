@@ -756,6 +756,14 @@ The authoritative priority order and acceptance conditions are in
 above. This historical list is retired because it mixed completed rows with
 active work and contained stale dispositions. Keep one phase PR active and
 start only the first unblocked item from that current table.
+### Hourglass vision realization (`HV-*`)
+
+Purpose: realize [hourglass-vision.md](hourglass-vision.md) as a modular, token-budget-shaped workflow: broad context intake, constrained planning waist, then expanded-token execution, with JEV available as a composed set of typed decision integrations. This section is the operational plan for the vision; the linked document is the product definition.
+
+**Status note (2026-10-05 roadmap reconciliation):** the detailed `HV-0` through `HV-6` implementation rows previously lived in this section. They are now tracked in the canonical tables above — see [Canonical current status](#canonical-current-status--comprehensive-sweep-2026-10-05) and the [Tracker](#tracker) phase table (`HV-0` through `HV-6` rows). Per the Tracker, `HV-0` through `HV-6` are complete on `main`. The full historical text of this section is preserved in git history.
+
+**Shared completion rule:** every slice has named hermetic tests; actual and estimated token usage are labeled honestly; token limits and dollar ceilings are tested independently; malformed, missing, unkeyed, or unavailable JEV results cannot become live approval; the ledger/envelope records stage, integration/site, model, fallback, budget, and outcome; CLI/MCP/agent surfaces use the shared owner. No slice is complete from prose or an aggregate score alone.
+
 ## Retired playbooks (history)
 
 - **P2 repair playbook** (Freebuff lane, 2026-09-21): executed and closed — PR #36 `405bbc1` merged with hermetic lane parity, D12 coverage, audit BAR MET. Full text in git history of this file.
