@@ -933,6 +933,19 @@ def _api_jev_phase_payload(repo_root, phase, min_score=85.0):
                          min_score=min_score)
 
 
+def _missions_root_param(q):
+    """Validate the ``?root=`` query param for the missions endpoints.
+
+    Delegates to :func:`harness.mission_record.resolve_missions_root`: the
+    resolved root must stay inside the server's missions base directory
+    (``./missions``). Raises HarnessError, which the API dispatch maps to
+    HTTP 400.
+    """
+    from . import mission_record as mr
+    raw = (q.get("root") or ["missions"])[0] or "missions"
+    return mr.resolve_missions_root(raw)
+
+
 def _list_missions(root, *, limit=25, offset=0):
     """Return one bounded page of compact mission summaries.
 
@@ -1512,7 +1525,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
 
     def _api_missions_list(self, q):
         """GET /api/missions: compact summaries with bounded pagination."""
-        root = (q.get("root") or ["missions"])[0] or "missions"
+        root = _missions_root_param(q)
         limit_raw = (q.get("limit") or ["25"])[0] or "25"
         offset_raw = (q.get("offset") or ["0"])[0] or "0"
         limit = _opt_int({"limit": limit_raw}, "limit", 1, 100, 25)
@@ -1528,7 +1541,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         mission_status commands retain their established refresh behavior.
         """
         from . import mission_record as mr
-        root = (q.get("root") or ["missions"])[0] or "missions"
+        root = _missions_root_param(q)
         pack = mr.load_mission_pack(root, mission_id)
         return self._send_json(mr.pack_summary(pack))
 

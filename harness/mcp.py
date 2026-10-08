@@ -848,7 +848,8 @@ class McpServer:
             from . import mission_record as mr
             mission_id = validate_text(args.get("mission_id"), "mission_id", 256,
                                        required=True)
-            root = validate_text(args.get("root"), "root", 4096) or "missions"
+            root = mr.resolve_missions_root(
+                validate_text(args.get("root"), "root", 4096) or "missions")
             pack = mr.load_mission_pack(root, mission_id)
             mr.write_status(pack)
             mr.write_index(pack)

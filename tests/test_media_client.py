@@ -223,5 +223,56 @@ class MediaCliTests(unittest.TestCase):
         m.assert_called_once_with(["balance", "--project", "demo"])
 
 
+class JobIdQuotingTests(unittest.TestCase):
+    """job_id is interpolated into the request path: hostile values must be
+    percent-encoded (safe="") so they cannot alter the path structure."""
+
+    def _adapter(self, responses):
+        opener = _fake_opener(responses)
+        return MediaAdapter(base_url="http://media.local", opener=opener), opener
+
+    def test_wait_quotes_hostile_job_id(self):
+        cases = [("../x", "..%2Fx"), ("a?b=c", "a%3Fb%3Dc"), ("a/b", "a%2Fb")]
+        for hostile, quoted in cases:
+            done = {"id": hostile, "status": "succeeded", "kind": "image"}
+            adapter, opener = self._adapter([done])
+            adapter.wait(hostile, timeout=1.0)
+            method, url = opener.calls[0]
+            self.assertEqual(method, "GET")
+            self.assertTrue(url.endswith("/v1/jobs/" + quoted),
+                            f"hostile {hostile!r} -> {url}")
+
+    def test_job_quotes_hostile_job_id(self):
+        for hostile, quoted in [("../x", "..%2Fx"), ("a?b=c", "a%3Fb%3Dc")]:
+            done = {"id": hostile, "status": "succeeded", "kind": "image"}
+            adapter, opener = self._adapter([done])
+            adapter.job(hostile)
+            _, url = opener.calls[0]
+            self.assertTrue(url.endswith("/v1/jobs/" + quoted), url)
+
+    def test_normal_job_id_unchanged(self):
+        done = {"id": "job-1", "status": "succeeded", "kind": "image"}
+        adapter, opener = self._adapter([done])
+        env = adapter.job("job-1")
+        self.assertTrue(opener.calls[0][1].endswith("/v1/jobs/job-1"))
+        self.assertEqual(env["job_id"], "job-1")
+
+    def test_wait_rejects_empty_and_dot_segments_before_request(self):
+        for job_id in ("", ".", ".."):
+            with self.subTest(job_id=job_id):
+                adapter, opener = self._adapter([])
+                with self.assertRaisesRegex(ValueError, "non-empty path segment"):
+                    adapter.wait(job_id, timeout=1.0)
+                self.assertEqual(opener.calls, [])
+
+    def test_job_rejects_empty_and_dot_segments_before_request(self):
+        for job_id in ("", ".", ".."):
+            with self.subTest(job_id=job_id):
+                adapter, opener = self._adapter([])
+                with self.assertRaisesRegex(ValueError, "non-empty path segment"):
+                    adapter.job(job_id)
+                self.assertEqual(opener.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1548,7 +1548,12 @@ class MissionsEndpointTests(ServerHarness):
         super().setUp()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = os.path.join(self.tmp.name, "missions")
+        # The missions endpoints jail ?root= inside ./missions, so the
+        # fixture pack tree lives under a temp working directory.
+        self._old_cwd = os.getcwd()
+        os.chdir(self.tmp.name)
+        self.addCleanup(os.chdir, self._old_cwd)
+        self.root = "missions"
 
     def _init_pack(self, mission_id):
         from harness import mission_record as mr
@@ -1676,6 +1681,127 @@ class MissionsEndpointTests(ServerHarness):
             conn.close()
         self.assertEqual(status, 400)
         self.assertIn("mission pack not found", data["error"])
+
+
+    def test_list_rejects_traversal_roots(self):
+        """?root= must stay inside ./missions: .., ../.. and absolute paths 400."""
+        for hostile in ("..", "../..", "/etc", "/tmp"):
+            conn = self._conn()
+            try:
+                status, data = _request(conn, "GET", "/api/missions?root=" + hostile)
+            finally:
+                conn.close()
+            self.assertEqual(status, 400, f"root={hostile!r}")
+            self.assertIn("invalid missions root", data["error"])
+
+    def test_detail_rejects_traversal_root(self):
+        self._init_pack("m-trav-1")
+        conn = self._conn()
+        try:
+            status, _ = _request(
+                conn, "GET", "/api/missions/m-trav-1?root=..")
+        finally:
+            conn.close()
+        self.assertEqual(status, 400)
+
+    def test_detail_relative_root_uses_validated_missions_path(self):
+        """A short relative root is consumed at the same jailed path it validates."""
+        from harness import mission_record as mr
+
+        mission_id = "m-http-sibling"
+        inner_root = os.path.join("missions", "sibling")
+        outside_root = "sibling"
+        for root, request in ((inner_root, "inside missions jail"),
+                              (outside_root, "outside missions jail")):
+            spec = mr.build_mission_spec(
+                mission_id=mission_id,
+                request=request,
+                success_definition="The HTTP endpoint reads only the jailed root",
+                max_cost_usd=0.50,
+                terminal_reserve_cost_usd=0.05,
+                in_scope=["harness/server.py"],
+                out_of_scope=["live network calls"],
+                persistence_root=root,
+                verifier_kind="hermetic-local",
+            )
+            mr.init_mission_pack(root, spec)
+
+        conn = self._conn()
+        try:
+            status, data = _request(
+                conn, "GET",
+                f"/api/missions/{mission_id}?root=sibling")
+        finally:
+            conn.close()
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["request"], "inside missions jail")
+        self.assertEqual(
+            data["pack_dir"],
+            os.path.join(os.path.realpath(inner_root), mission_id))
+
+    def test_list_rejects_symlink_outside_root(self):
+        os.makedirs(self.root, exist_ok=True)
+        outside_root = os.path.join(self.tmp.name, "outside-missions")
+        os.makedirs(outside_root)
+        try:
+            os.symlink(outside_root, os.path.join(self.root, "escape"),
+                       target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"directory symlinks unavailable: {exc}")
+
+        conn = self._conn()
+        try:
+            status, data = _request(conn, "GET", "/api/missions?root=escape")
+        finally:
+            conn.close()
+        self.assertEqual(status, 400)
+        self.assertIn("invalid missions root", data["error"])
+
+    def test_detail_rejects_symlinked_pack_outside_root(self):
+        from harness import mission_record as mr
+
+        mission_id = "m-http-pack-escape"
+        outside_root = os.path.join(self.tmp.name, "outside-missions")
+        os.makedirs(outside_root)
+        spec = mr.build_mission_spec(
+            mission_id=mission_id,
+            request="outside pack must not be read",
+            success_definition="Pack directory symlinks do not cross the jail",
+            max_cost_usd=0.50,
+            terminal_reserve_cost_usd=0.05,
+            in_scope=["harness/server.py"],
+            out_of_scope=["live network calls"],
+            persistence_root=outside_root,
+            verifier_kind="hermetic-local",
+        )
+        outside_pack = mr.init_mission_pack(outside_root, spec)
+        os.makedirs(self.root, exist_ok=True)
+        try:
+            os.symlink(str(outside_pack.dir), os.path.join(self.root, mission_id),
+                       target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"directory symlinks unavailable: {exc}")
+
+        conn = self._conn()
+        try:
+            status, data = _request(
+                conn, "GET", f"/api/missions/{mission_id}?root=missions")
+        finally:
+            conn.close()
+        self.assertEqual(status, 400)
+        self.assertIn("mission pack directory escapes its root", data["error"])
+
+    def test_list_default_root_still_serves(self):
+        """No ?root= param keeps working (defaults to ./missions)."""
+        self._init_pack("m-def-1")
+        conn = self._conn()
+        try:
+            status, data = _request(conn, "GET", "/api/missions")
+        finally:
+            conn.close()
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], 1)
 
 
 if __name__ == "__main__":
