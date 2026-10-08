@@ -35,7 +35,7 @@ class PanelWiringTests(unittest.TestCase):
 
         def fake_panel_judge(**kwargs):
             captured["panel"] = kwargs.get("panel")
-            return {}
+            return {"consensus": {"defer": False}}
 
         with mock.patch.object(service, "governor_for",
                                side_effect=fake_governor), \
@@ -68,7 +68,7 @@ class PanelWiringTests(unittest.TestCase):
 
         def fake_panel_judge(**kwargs):
             captured["panel"] = kwargs.get("panel")
-            return {}
+            return {"consensus": {"defer": False}}
 
         with mock.patch.object(service, "governor_for",
                                side_effect=fake_governor), \
@@ -77,6 +77,56 @@ class PanelWiringTests(unittest.TestCase):
              mock.patch.object(service, "HttpTransport"):
             cli.main(["verify", "--prompt", "hi"])
         self.assertNotEqual(captured["panel"], [])
+
+
+class VerifyTerminalExitTests(unittest.TestCase):
+    def test_truncated_judge_writes_report_and_cost_then_exits_deferred(self):
+        """DF-CLI-3: an inconclusive truncated judge result is still written
+        in full, but cannot look like a completed review to CI callers."""
+        result = {
+            "judge_synthesis_status": "truncated",
+            "consensus": {
+                "defer": True,
+                "verdict_status": "inconclusive",
+                "judge_fallback_reason": "truncated",
+            },
+            "actual_cost": 0.0012,
+            "estimated_worst_case_cost": 0.002,
+            "verdict": {"summary": "informational fallback only"},
+        }
+        with tempfile.TemporaryDirectory() as td:
+            report_path = os.path.join(td, "verify.json")
+            stderr = io.StringIO()
+            with mock.patch.object(cli, "load_settings", return_value=object()), \
+                 mock.patch.object(cli, "_run_claims_verify",
+                                   return_value=result), \
+                 contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as ctx:
+                    cli.main(["verify", "--prompt", "Review this.",
+                              "--out", report_path])
+
+            self.assertEqual(ctx.exception.code, 3)
+            with open(report_path, encoding="utf-8") as report_file:
+                report = json.load(report_file)
+
+        self.assertEqual(report["status"], "deferred")
+        self.assertEqual(report["judge_synthesis_status"], "truncated")
+        self.assertEqual(report["actual_cost"], 0.0012)
+        self.assertEqual(report["estimated_worst_case_cost"], 0.002)
+        self.assertTrue(report["consensus"]["defer"])
+        self.assertIn("[OK] result written", stderr.getvalue())
+        self.assertIn("[verify] review deferred/inconclusive", stderr.getvalue())
+        self.assertNotIn("harness continue --state", stderr.getvalue())
+
+    def test_conclusive_verify_result_exits_zero(self):
+        result = {"consensus": {"defer": False, "verdict_status": "ok"},
+                  "actual_cost": 0.0}
+        with mock.patch.object(cli, "load_settings", return_value=object()), \
+             mock.patch.object(cli, "_run_claims_verify",
+                               return_value=result), \
+             contextlib.redirect_stdout(io.StringIO()):
+            cli.main(["verify", "--prompt", "Review this."])
+        self.assertEqual(result["status"], "ok")
 
 
 class PlanAllowHeuristicPreviewWiringTests(unittest.TestCase):
@@ -258,7 +308,8 @@ class MaxCostWiringTests(unittest.TestCase):
 
         with mock.patch.object(service, "governor_for",
                                side_effect=fake_governor), \
-             mock.patch.object(service, "panel_judge", return_value={}), \
+             mock.patch.object(service, "panel_judge",
+                               return_value={"consensus": {"defer": False}}), \
              mock.patch.object(service, "HttpTransport"):
             cli.main(["verify", "--prompt", "hi", "--max-cost", "0.005"])
         self.assertEqual(captured["override"], 0.005)
@@ -278,7 +329,8 @@ class MaxCostWiringTests(unittest.TestCase):
 
         with mock.patch.object(service, "governor_for",
                                side_effect=fake_governor), \
-             mock.patch.object(service, "panel_judge", return_value={}), \
+             mock.patch.object(service, "panel_judge",
+                               return_value={"consensus": {"defer": False}}), \
              mock.patch.object(service, "HttpTransport"):
             cli.main(["verify", "--prompt", "hi"])
         self.assertIsNone(captured["override"])
