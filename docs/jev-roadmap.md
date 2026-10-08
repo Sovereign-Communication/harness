@@ -29,8 +29,8 @@ Reconcile it against remote state before each merge.
   `Treystu/Harness` identity is a moved pointer and is not a reliable source.
 - At sweep time, `origin/main` was
   `0676d6423d15b8f71c26c61099fbb8ccefcef715`. The operator checkout at
-  `4e2a5480849c870801cdb79178fe64c50f83f9d7` is one commit behind; do not use
-  it as current STATUS evidence.
+  `4e2a5480849c870801cdb79178fe64c50f83f9d7` is an ancestor and 85 commits
+  behind by Git graph count; do not use it as current STATUS evidence.
 - PR **#180** is the sole open PR, on
   `codex/df-cli-3-verify-defer`, targeting `main`. Its code commit is
   `cd53a7e4006e96f80f51d11743ef338426a4686c`; this roadmap reconciliation is
