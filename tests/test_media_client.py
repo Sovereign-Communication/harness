@@ -257,6 +257,22 @@ class JobIdQuotingTests(unittest.TestCase):
         self.assertTrue(opener.calls[0][1].endswith("/v1/jobs/job-1"))
         self.assertEqual(env["job_id"], "job-1")
 
+    def test_wait_rejects_empty_and_dot_segments_before_request(self):
+        for job_id in ("", ".", ".."):
+            with self.subTest(job_id=job_id):
+                adapter, opener = self._adapter([])
+                with self.assertRaisesRegex(ValueError, "non-empty path segment"):
+                    adapter.wait(job_id, timeout=1.0)
+                self.assertEqual(opener.calls, [])
+
+    def test_job_rejects_empty_and_dot_segments_before_request(self):
+        for job_id in ("", ".", ".."):
+            with self.subTest(job_id=job_id):
+                adapter, opener = self._adapter([])
+                with self.assertRaisesRegex(ValueError, "non-empty path segment"):
+                    adapter.job(job_id)
+                self.assertEqual(opener.calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

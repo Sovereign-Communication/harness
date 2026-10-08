@@ -95,6 +95,19 @@ class MediaAdapter:
                 "media service unreachable at {} ({}). Start it with: media serve".format(self.base, e)
             ) from e
 
+    @staticmethod
+    def _quote_job_id(job_id):
+        """Encode a job ID as one non-empty URL path segment.
+
+        ``urllib.parse.quote(..., safe="")`` still preserves the unreserved
+        dot character, so standalone ``.`` and ``..`` must be rejected before
+        a proxy or upstream server can normalize them as path segments.
+        """
+        segment = str(job_id)
+        if not segment or segment in {".", ".."}:
+            raise ValueError("media job_id must be a non-empty path segment")
+        return urllib.parse.quote(segment, safe="")
+
     # ---- core API ----
 
     def image(self, prompt, project="default", wait=True, timeout=600.0, **params):
@@ -115,10 +128,11 @@ class MediaAdapter:
 
     def wait(self, job_id, timeout=600.0, interval=2.0):
         import time
+        quoted_job_id = self._quote_job_id(job_id)
         deadline = time.time() + timeout
         while time.time() < deadline:
             job = self._request("GET", "/v1/jobs/{}".format(
-                urllib.parse.quote(str(job_id), safe="")))
+                quoted_job_id))
             if job.get("status") in ("succeeded", "failed", "refused"):
                 return self._envelope(job)
             time.sleep(interval)
@@ -126,7 +140,7 @@ class MediaAdapter:
 
     def job(self, job_id):
         return self._envelope(self._request(
-            "GET", "/v1/jobs/{}".format(urllib.parse.quote(str(job_id), safe=""))))
+            "GET", "/v1/jobs/{}".format(self._quote_job_id(job_id))))
 
     def jobs(self, project=None, limit=20):
         q = "/v1/jobs?limit={}".format(int(limit))
