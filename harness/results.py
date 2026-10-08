@@ -44,6 +44,27 @@ def terminal_exit_code(status):
     return 3 if status == "deferred" else 2
 
 
+def verify_terminal_status(result):
+    """Derive verify's interface status from its authoritative consensus.
+
+    A judge fallback or inconclusive verdict is reviewable output, but it is
+    not a completed review. Missing consensus fails closed so malformed
+    results cannot accidentally report success.
+    """
+    consensus = result.get("consensus")
+    if not isinstance(consensus, dict):
+        return "failed"
+    defer = consensus.get("defer")
+    if not isinstance(defer, bool):
+        return "failed"
+    verdict_status = consensus.get("verdict_status")
+    if verdict_status not in (None, "ok", "inconclusive"):
+        return "failed"
+    if defer or verdict_status == "inconclusive":
+        return "deferred"
+    return "ok"
+
+
 def _round_entry(round_no, model, status, *, cost, verify_output,
                 changed=_OMIT, verify_passed=_OMIT, reason=None, error=None,
                 **extra):
