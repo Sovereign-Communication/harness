@@ -18,6 +18,7 @@ baseline JSON.
 """
 import io
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -53,11 +54,17 @@ def main():
     # trace.runfunc installs only sys.settrace; worker threads (the
     # executor's parallel dispatch) would run untraced and D12 would
     # report phantom coverage gaps for thread-executed lines.
+    previous_refresh_flag = os.environ.get("HARNESS_REFRESHING_COVERAGE_BASELINE")
+    os.environ["HARNESS_REFRESHING_COVERAGE_BASELINE"] = "1"
     threading.settrace(tr.globaltrace)
     try:
         ok = tr.runfunc(run_battery)
     finally:
         threading.settrace(None)
+        if previous_refresh_flag is None:
+            os.environ.pop("HARNESS_REFRESHING_COVERAGE_BASELINE", None)
+        else:
+            os.environ["HARNESS_REFRESHING_COVERAGE_BASELINE"] = previous_refresh_flag
     dt = time.time() - t0
     if not ok:
         print("ABORTED: battery failed under trace; no baseline written")
@@ -89,7 +96,9 @@ def main():
            "commit": head.stdout.strip(),
            "modules": baseline}
     # write_text(newline=...) needs 3.10+; the support floor is 3.9.
-    data = json.dumps(doc, sort_keys=True) + chr(10)
+    # Keep the generated artifact diffable by module; the baseline is a
+    # reviewable contract, not a minified blob.
+    data = json.dumps(doc, sort_keys=True, indent=1) + chr(10)
     with open(out, "w", encoding="utf-8", newline=chr(10)) as f:
         f.write(data)
     nmods = len(baseline)
@@ -102,6 +111,18 @@ def main():
     else:
         print("baseline refreshed:", nmods, "modules,", nlines,
               "lines -- commit the code change and baseline as one diff")
+
+    # The baseline-pin tests are necessarily skipped while their own input is
+    # being regenerated. Run them again against the completed artifact before
+    # reporting success, so bootstrap cannot leave a stale pin or a red D12.
+    suite = unittest.defaultTestLoader.discover(
+        start_dir=root + chr(47) + "tests",
+        pattern="test_audit_d12_coverage.py",
+        top_level_dir=root)
+    result = unittest.TextTestRunner(verbosity=1).run(suite)
+    if not result.wasSuccessful():
+        print("ABORTED: regenerated baseline failed its D12 pin checks")
+        return 1
     return 0
 
 

@@ -13,7 +13,7 @@ from unittest import mock
 
 from harness._http import HttpTransport
 from harness.config import HARD_MAX_COST, load_settings
-from harness.errors import HarnessError
+from harness.errors import HarnessError, ProviderUsageUnknown
 from harness.jev import JevEvaluationResult, JevEvaluator, jev_cost
 from harness.jev_packs import (
     DEFAULT_VISION_ASSESSMENT_PACK,
@@ -31,6 +31,8 @@ from harness.jev_packs import (
 from harness.jev_policy import policy_for
 from harness.ledger import AutonomyLedger
 from harness.tokens import estimate_prompt_tokens
+from harness.spend import SpendGovernor
+from tests._fake import FakeTransport
 
 
 def _answer(levels, selected=None, *, confidence=0.99, probabilities=None):
@@ -531,6 +533,83 @@ class VisionAssessmentPolicyTests(unittest.TestCase):
         self.assertIn("ledger unavailable", envelope.reasons[0])
         self.assertEqual(transport.calls, [])
         self.assertEqual(governor.reservations, [])
+
+    def test_lost_one_shot_response_keeps_vision_reservation(self):
+        class LostResponseTransport(RecordingTransport):
+            def post_once(self, *args, **kwargs):
+                raise ProviderUsageUnknown(
+                    "one-shot provider response ended before usage arrived",
+                    known_cost=0.003)
+
+        with mock.patch("harness.config.CONFIG_DIR", self.tmp.name), \
+                mock.patch("harness.config.resolve_api_key", return_value=None):
+            settings = load_settings({
+                "jev_api_key": "test-key", "jev_model": "jev-test"})
+        ledger = AutonomyLedger(os.path.join(self.tmp.name, "lost-response.jsonl"))
+        governor = SpendGovernor(FakeTransport(), "sk-test", max_cost=0.10)
+        policy = policy_for(
+            settings, transport=LostResponseTransport(), governor=governor,
+            ledger=ledger)
+
+        with self.assertRaises(ProviderUsageUnknown) as raised:
+            policy.evaluate_vision_assessment({"assessment": "hourglass"})
+
+        self.assertAlmostEqual(raised.exception.known_cost, 0.003)
+        self.assertTrue(raised.exception.cost_accounted)
+        self.assertAlmostEqual(governor.spent, 0.003)
+        self.assertGreater(governor.outstanding, 0.0)
+        self.assertGreater(governor.snapshot()["unknown_liability"], 0.0)
+        self.assertEqual(ledger.entries(), [])
+
+    def test_real_one_shot_transport_network_failure_keeps_vision_reservation(self):
+        import http.client
+
+        with mock.patch("harness.config.CONFIG_DIR", self.tmp.name), \
+                mock.patch("harness.config.resolve_api_key", return_value=None):
+            settings = load_settings({
+                "jev_api_key": "test-key", "jev_model": "jev-test"})
+        ledger = AutonomyLedger(os.path.join(self.tmp.name, "real-lost-response.jsonl"))
+        governor = SpendGovernor(FakeTransport(), "sk-test", max_cost=0.10)
+        transport = HttpTransport(cancel_check=lambda: False)
+        policy = policy_for(
+            settings, transport=transport, governor=governor, ledger=ledger)
+
+        with mock.patch.object(
+                transport, "_request_once_cancellable",
+                side_effect=http.client.IncompleteRead(b"partial", 20)) as request:
+            with self.assertRaises(ProviderUsageUnknown) as raised:
+                policy.evaluate_vision_assessment({"assessment": "hourglass"})
+
+        request.assert_called_once()
+        self.assertTrue(raised.exception.usage_unknown)
+        self.assertTrue(raised.exception.cost_accounted)
+        self.assertEqual(governor.spent, 0.0)
+        self.assertGreater(governor.outstanding, 0.0)
+        self.assertGreater(governor.snapshot()["unknown_liability"], 0.0)
+        self.assertEqual(ledger.entries(), [])
+
+    def test_one_shot_failures_keep_retry_spend(self):
+        cases = ((401, {"model": "jev-test"}),
+                 (422, {"model": "jev-test"}),
+                 (200, {"model": "jev-test", "answers": {}}))
+        for status, base_response in cases:
+            with self.subTest(status=status):
+                response = dict(base_response)
+                response["usage"] = {
+                    "input_tokens": 100, "output_tokens": 2,
+                    "retry_cost": 0.004}
+
+                class ResponseTransport:
+                    def post_once(self, *args, **kwargs):
+                        return status, response
+
+                evaluator = JevEvaluator(
+                    api_key="test-key", transport=ResponseTransport())
+                result = evaluator.evaluate_once(
+                    {"assessment": "one-shot retry spend"},
+                    {"answer": {"type": "noul", "instructions": "Is it usable?"}})
+                self.assertGreaterEqual(result.cost, 0.004)
+                self.assertTrue(result.discarded)
 
     def test_keyed_assessment_has_one_call_one_settlement_one_metadata_event(self):
         transport = RecordingTransport()

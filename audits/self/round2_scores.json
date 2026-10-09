@@ -2,16 +2,16 @@
   "scores": {
     "A": 10.0,
     "R": 10.0,
-    "SM": 10.0,
-    "SD": 10.0
+    "SM": 8.75,
+    "SD": 9.17
   },
   "jev_scores": {
     "A": 10.0,
     "R": 10.0,
-    "SM": 10.0,
-    "SD": 10.0
+    "SM": 8.75,
+    "SD": 9.17
   },
-  "jev_gate_pass": true,
+  "jev_gate_pass": false,
   "jev_eval": {
     "dimensions": {
       "A": {
@@ -20,7 +20,6 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.99,
         "evaluated": true
       },
       "R": {
@@ -29,42 +28,41 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.99,
         "evaluated": true
       },
       "SM": {
         "name": "Structural hygiene & maintainability",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 2,
+        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
+        "score": 8.75,
+        "bar_met": false,
         "evaluated": true
       },
       "SD": {
         "name": "Documentation & release integrity",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.97,
+        "level_index": 2,
+        "level": "approaching \u2014 minor non-safety gap below threshold (8.5-9.4)",
+        "score": 9.17,
+        "bar_met": false,
         "evaluated": true
       }
     },
     "scores": {
       "A": 10.0,
       "R": 10.0,
-      "SM": 10.0,
-      "SD": 10.0
+      "SM": 8.75,
+      "SD": 9.17
     },
-    "bar_95_pass": true,
-    "min_score": 10.0,
-    "is_fallback": false,
-    "reasons": [],
-    "model": "jev-1.13.0",
-    "cost": 5.5566e-05,
-    "input_tokens": 1323,
-    "output_tokens": 60
+    "bar_95_pass": false,
+    "min_score": 8.75,
+    "is_fallback": true,
+    "reasons": [
+      "unkeyed"
+    ],
+    "model": "jev-latest",
+    "cost": 0.0,
+    "input_tokens": 0,
+    "output_tokens": 0
   },
   "checks": {
     "A": [
@@ -224,7 +222,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 3948 tests in 232.428s\n\nOK (env scrubbed: HARNESS_JEV_KEY, HARNESS_USE_FREE; empty home)"
+        "evidence": "unittest: Ran 4044 tests in 342.999s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -261,14 +259,14 @@
       {
         "id": "S5",
         "label": "ruff clean",
-        "score": 1.0,
-        "evidence": "ruff check harness tests: clean"
+        "score": 0.0,
+        "evidence": "CHECK ERROR: PermissionError: [WinError 5] Access is denied"
       },
       {
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "84/84 modules imported by tests"
+        "evidence": "85/85 modules imported by tests"
       },
       {
         "id": "S7",
@@ -353,8 +351,8 @@
       {
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
-        "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 39/41 = 95% (bar 95%) vs baseline 219754e71c; untested: apply_policy.py:403; jev_completion.py:984)"
+        "score": 0.0,
+        "evidence": "changed-line coverage 577/824 = 70% (bar 95%) vs baseline 84bc8e56cf; untested: _http.py:30,31,32,33,45,46,48,50...; _http_worker.py:7,8,9,10,11,15,16,17...; agent.py:256,263,272,523,958,1026,1880; chat.py:84,88,111,401,402,406,407,409...; errors.py:25,26,28,29,51; events.py:87; executor.py:158,290; jev.py:819,823,828,837,838,840,841,925...; jev_policy.py:567,568,599,600,601,602,614,624...; osal.py:145,148,158,171,175,176,180,181...; panel.py:483; spend.py:493,511; web.py:90,91,92,272,274,341,343,405"
       }
     ]
   }

@@ -20,6 +20,7 @@ reporting a false failure.
 """
 
 import importlib.util
+import os
 import subprocess
 import unittest
 from pathlib import Path
@@ -47,6 +48,8 @@ class D12BaselinePinTests(unittest.TestCase):
         cls.audit = _load_audit()
 
     def test_baseline_names_a_commit_present_in_this_repository(self):
+        if os.environ.get("HARNESS_REFRESHING_COVERAGE_BASELINE") == "1":
+            self.skipTest("baseline refresh: pin is rechecked after regeneration")
         import json
         ref = json.loads(_BASELINE_PATH.read_text(encoding="utf-8-sig")).get(
             "commit", "")
@@ -62,6 +65,8 @@ class D12BaselinePinTests(unittest.TestCase):
             "(DF-AUDIT-3). Re-point and regenerate the baseline.")
 
     def test_d12_evaluates_rather_than_skipping(self):
+        if os.environ.get("HARNESS_REFRESHING_COVERAGE_BASELINE") == "1":
+            self.skipTest("baseline refresh: D12 is rechecked after regeneration")
         score, evidence = self.audit.sd_coverage_changed()
         if "not reachable" in evidence and \
                 _git("rev-parse", "--is-shallow-repository").stdout.strip() == "true":

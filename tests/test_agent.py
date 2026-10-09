@@ -11,6 +11,7 @@ from harness.agent import (
     discover_target_files,
     discover_verification_gate,
     enumerate_repo_files,
+    is_research_question,
     load_chat_history,
     save_chat_turn,
 )
@@ -31,11 +32,16 @@ from tests._fake import FakeTransport, _gov
 _TEST_GOVERNOR = _gov(FakeTransport(), max_cost=0.05)
 _TEST_GOVERNOR_PATCH = patch("harness.agent.governor_for",
                             return_value=(None, _TEST_GOVERNOR))
-_TEST_GOVERNOR_PATCH.start()
 _TEST_JEV_KEY_PATCH = patch("harness.config.resolve_jev_key", return_value=None)
-_TEST_JEV_KEY_PATCH.start()
 _TEST_JEV_ENV_PATCH = patch.dict(os.environ, {"HARNESS_JEV_DISABLE": "1"})
-_TEST_JEV_ENV_PATCH.start()
+
+
+def setUpModule():
+    # Do not modify process-wide configuration while unittest is importing
+    # sibling modules; only this module's tests need the hermetic overrides.
+    _TEST_GOVERNOR_PATCH.start()
+    _TEST_JEV_KEY_PATCH.start()
+    _TEST_JEV_ENV_PATCH.start()
 
 
 def tearDownModule():
@@ -70,6 +76,23 @@ def _lane_settings(**overrides):
 
 
 class TestAgentClassificationAndDiscovery(unittest.TestCase):
+    def test_domain_search_is_routed_as_research(self):
+        self.assertTrue(is_research_question(
+            "search the website freeoffgridcalculator.com and audit the UI/UX"))
+        self.assertTrue(is_research_question(
+            "search for freeoffgridcalculator.com and audit the UI/UX"))
+        self.assertTrue(is_research_question(
+            "take a look at https://freeoffgridcalculator.com"))
+        self.assertTrue(is_research_question("what is the latest news about AI?"))
+
+    def test_local_filenames_are_not_routed_as_web_research(self):
+        for prompt in ("How does app.py work?", "summarize README.md",
+                       "What is foo.bar?", "How does main.go work?",
+                       "summarize Cargo.lock", "what is widget.vue?",
+                       "Explain Program.cs", "inspect site/public/app.js"):
+            with self.subTest(prompt=prompt):
+                self.assertFalse(is_research_question(prompt))
+
     def test_classify_prompt_intent(self):
         # Conversational
         self.assertEqual(classify_prompt_intent("How does the router work?"), "conversation")
@@ -485,6 +508,18 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
                 sysmsg = m.call_args[1]["messages"][0]["content"]
         self.assertIn("NO web tools", sysmsg)
         self.assertIn("NO internet access", sysmsg)
+
+    def test_local_source_filename_does_not_trigger_web_with_web_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp))
+            with patch.object(agent, "_gather_web_context") as gather, \
+                 patch("harness.agent.chat",
+                       return_value=(200, self._mock_resp())), \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())):
+                agent.run_prompt("summarize Cargo.lock", session_id="w-local",
+                                 web=False, force_conversation=True)
+        gather.assert_not_called()
 
     def test_all_fetches_failed_falls_back_to_search(self):
         # The fetch-failed incident: a URL-prompt turn where the fetch died
@@ -1615,6 +1650,118 @@ class TestOrchestratorWiring(unittest.TestCase):
                 res = agent.run_prompt("Update util.py", auto_apply=True)
         self.assertEqual(res["status"], "failed")
         self.assertIn("completion judge unavailable", res["remaining_scope"])
+
+
+class TestHourglassWebAvailability(unittest.TestCase):
+    def test_missing_web_source_defers_before_any_model_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(),
+                                    history_dir=Path(tmp))
+            unavailable = [{"kind": "web", "ok": False,
+                            "note": "No web tools available in this environment"}]
+            with patch.object(agent, "_hourglass_request_context",
+                              return_value=("", {}, MagicMock(), unavailable)), \
+                 patch("harness.agent.governor_for") as governor:
+                result = agent.run_hourglass_request(
+                    "search for freeoffgridcalculator.com and audit the UI/UX")
+            self.assertEqual(result["status"], "deferred")
+            self.assertIn("I did not inspect", result["response"])
+            governor.assert_not_called()
+
+    def test_site_uptime_check_defers_on_search_snippet_before_model_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(),
+                                    history_dir=Path(tmp))
+            snippets_only = [{"kind": "search", "ok": True,
+                              "url": "https://example.test/",
+                              "text": "Search result snippet from last month."}]
+            with patch.object(agent, "_hourglass_request_context",
+                              return_value=("snippet context", {},
+                                            MagicMock(), snippets_only)), \
+                 patch("harness.agent.DEFAULT_FETCH_HOSTS",
+                       ("freeoffgridcalculator.com",)), \
+                 patch("harness.agent.governor_for") as governor:
+                result = agent.run_hourglass_request(
+                    "check freeoffgridcalculator.com and verify that it's up please")
+            self.assertEqual(result["status"], "deferred")
+            self.assertIn("successful direct fetch was not available",
+                          result["response"])
+            self.assertFalse(result["web_used"])
+            self.assertEqual(result["web_sources"], [])
+            governor.assert_not_called()
+
+    def test_site_uptime_check_can_continue_after_direct_fetch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(),
+                                    history_dir=Path(tmp))
+            fetched = [{"kind": "fetch", "ok": True,
+                        "url": "https://freeoffgridcalculator.com/", "text": "OK"}]
+            with patch.object(agent, "_hourglass_request_context",
+                              return_value=("page context", {},
+                                            MagicMock(), fetched)), \
+                 patch("harness.agent.DEFAULT_FETCH_HOSTS",
+                       ("freeoffgridcalculator.com",)), \
+                 patch("harness.agent.governor_for") as governor:
+                # A direct fetch is enough to pass the availability gate. Stop
+                # at the first model setup seam to keep the test hermetic.
+                governor.side_effect = RuntimeError("model setup reached")
+                with self.assertRaisesRegex(RuntimeError, "model setup reached"):
+                    agent.run_hourglass_request(
+                        "check freeoffgridcalculator.com and verify that it's up please")
+            governor.assert_called_once()
+
+    def test_site_uptime_check_rejects_unrelated_fetched_host(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(),
+                                    history_dir=Path(tmp))
+            fetched = [{"kind": "fetch", "ok": True,
+                        "url": "https://example.test/", "text": "OK"}]
+            with patch.object(agent, "_hourglass_request_context",
+                              return_value=("unrelated page context", {},
+                                            MagicMock(), fetched)), \
+                 patch("harness.agent.DEFAULT_FETCH_HOSTS",
+                       ("freeoffgridcalculator.com",)), \
+                 patch("harness.agent.governor_for") as governor:
+                result = agent.run_hourglass_request(
+                    "check freeoffgridcalculator.com and verify that it's up please")
+            self.assertEqual(result["status"], "deferred")
+            self.assertEqual(result["web_sources"], [])
+            governor.assert_not_called()
+
+    def test_site_uptime_production_route_uses_gate_without_live_jev(self):
+        prompt = "check freeoffgridcalculator.com and verify that it's up please"
+        snippets_only = [{"kind": "search", "ok": True,
+                          "url": "https://example.test/",
+                          "text": "Search result snippet."}]
+        with tempfile.TemporaryDirectory() as tmp:
+            for force_conversation in (False, True):
+                with self.subTest(force_conversation=force_conversation):
+                    agent = AutonomousAgent(settings=_lane_settings(),
+                                            history_dir=Path(tmp))
+                    with patch.object(agent, "_live_jev_available",
+                                      return_value=False), \
+                         patch.object(agent, "_hourglass_request_context",
+                                      return_value=("snippet context", {},
+                                                    MagicMock(), snippets_only)) as intake, \
+                         patch.object(agent, "_handle_conversation") as legacy:
+                        result = agent.run_prompt(
+                            prompt, force_conversation=force_conversation)
+                    self.assertEqual(result["status"], "deferred")
+                    legacy.assert_not_called()
+                    intake.assert_not_called()
+
+    def test_web_cancellation_is_not_swallowed_as_source_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(),
+                                    history_dir=Path(tmp))
+            with patch("harness.agent.governor_for",
+                       return_value=("test-key", _TEST_GOVERNOR)), \
+                 patch.object(agent, "_gather_web_context",
+                              side_effect=ToolCancelled("cancelled")):
+                with self.assertRaises(ToolCancelled):
+                    agent._handle_conversation(
+                        "search the web for a recent update", "test-sid",
+                        web=True)
 
 
 class TestHourglassLane(unittest.TestCase):

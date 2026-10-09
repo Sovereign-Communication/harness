@@ -7,6 +7,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from ._http import HttpTransport
 from .chat import assess_output, chat, extract_content_and_cost, governed_text, looks_truncated
@@ -204,13 +205,71 @@ DEFAULT_RUN_WALL_SECONDS = 120.0
 # question it had no evidence for.
 _RESEARCH_SUBJECTS = ("news", "research", "recent", "latest", "today",
                       "papers", "paper", "article", "articles", "study",
-                      "studies", "release", "releases", "update", "updates")
+                      "studies", "release", "releases", "update", "updates",
+                      "website", "web site", "domain")
 _RESEARCH_VERBS = ("find", "search", "look up", "lookup", "google",
                    "what's new", "whats new", "tell me about", "catch me up",
                    "summary of", "summarize", "summarise")
 _QUESTION_OPENERS = ("what", "who", "when", "where", "which", "why", "how",
                      "is ", "are ", "does ", "do ", "did ", "can you",
                      "could you", "any news", "has there")
+_DOMAIN_RE = re.compile(
+    r"(?:https?://)?(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?:/[^\s]*)?",
+    re.IGNORECASE)
+_COMMON_WEB_TLDS = frozenset({
+    "ai", "app", "biz", "co", "com", "dev", "edu", "gov", "info",
+    "io", "me", "net", "org", "site", "tech", "xyz",
+})
+_WEB_CONTEXT_WORDS = ("website", "web site", "domain", "url", "link")
+_WEB_LOOKUP_VERBS = _RESEARCH_VERBS + (
+    "look at", "take a look", "check", "inspect", "review", "audit",
+    "browse", "visit", "open", "fetch",
+)
+_SITE_STATUS_TERMS = (
+    "up", "down", "online", "offline", "available", "unavailable",
+    "reachable", "responding", "accessible",
+)
+
+
+def _requires_direct_site_status(prompt: str) -> bool:
+    """Whether the request asks for live status of a named public site.
+
+    Search snippets are not evidence that a site is currently reachable. Until
+    the bounded direct-probe capability lands, these requests must stop before
+    any model planning/review unless intake produced a successful page fetch.
+    """
+    cleaned = (prompt or "").strip().lower()
+    if not _DOMAIN_RE.search(cleaned):
+        return False
+    status = r"(?:" + "|".join(re.escape(word) for word in _SITE_STATUS_TERMS) + r")"
+    direct_question = re.search(
+        rf"\b(?:is|are)\b.{{0,48}}\b{status}\b", cleaned)
+    direct_check = re.search(
+        rf"\b(?:check|verify|confirm|test|ping|probe|see if|determine)\b"
+        rf".{{0,100}}\b{status}\b", cleaned)
+    return bool(direct_question or direct_check)
+
+
+def _requested_site_host(prompt: str) -> Optional[str]:
+    match = _DOMAIN_RE.search((prompt or "").strip().lower())
+    if not match:
+        return None
+    value = match.group(0)
+    if not value.startswith(("http://", "https://")):
+        value = "https://" + value
+    try:
+        return (urlsplit(value).hostname or "").lower() or None
+    except ValueError:
+        return None
+
+
+def _source_is_fetch_of(source: Dict[str, Any], host: Optional[str]) -> bool:
+    if not host or not source.get("ok") or source.get("kind") != "fetch":
+        return False
+    try:
+        return (urlsplit(str(source.get("url") or "")).hostname or "").lower() == host
+    except ValueError:
+        return False
 
 
 def is_research_question(prompt: str) -> bool:
@@ -225,13 +284,32 @@ def is_research_question(prompt: str) -> bool:
     cleaned = (prompt or "").strip().lower()
     if not cleaned:
         return False
-    if not any(subj in cleaned for subj in _RESEARCH_SUBJECTS):
-        return False
-    if any(v in cleaned for v in _RESEARCH_VERBS):
+    domain_match = _DOMAIN_RE.search(cleaned)
+    has_domain = bool(domain_match)
+    domain_host = (domain_match.group(0).split("/")[0]
+                   if domain_match else "")
+    domain_tld = domain_host.rsplit(".", 1)[-1] if "." in domain_host else ""
+    likely_web_domain = has_domain and domain_tld in _COMMON_WEB_TLDS
+    explicit_web = bool(re.search(r"https?://|\bwww\.", cleaned))
+    web_context = any(re.search(rf"\b{re.escape(word)}\b(?![./\\])", cleaned)
+                      for word in _WEB_CONTEXT_WORDS)
+    site_context = bool(re.search(r"\bsite\b(?![./\\])", cleaned))
+    research_subject = any(
+        subj in cleaned for subj in _RESEARCH_SUBJECTS
+        if subj not in ("website", "web site", "domain"))
+    lookup = any(v in cleaned for v in _WEB_LOOKUP_VERBS)
+    question = cleaned.startswith(_QUESTION_OPENERS)
+
+    # A URL or explicit website/domain/site phrase is clear web intent. A
+    # dotted filename by itself is not consent to send the prompt online.
+    if (explicit_web or (has_domain and (web_context or site_context))
+            or (likely_web_domain and lookup)):
         return True
-    if cleaned.endswith("?"):
+    if web_context and (lookup or question):
         return True
-    return cleaned.startswith(_QUESTION_OPENERS)
+    # Freshness topics such as news/releases need an explicit lookup-shaped
+    # request; a bare filename like Program.cs or main.go never supplies one.
+    return bool(research_subject and (lookup or question))
 
 
 def classify_prompt_intent(prompt: str) -> str:
@@ -327,7 +405,9 @@ class AutonomousAgent:
                      target="plan_lane")
                 return self._handle_edit(prompt, sid, auto_apply, cancel_check,
                                          use_jev_completion=self._live_jev_available())
-            if intent == "conversation" and self._live_jev_available():
+            if (intent == "conversation"
+                    and (self._live_jev_available()
+                         or _requires_direct_site_status(prompt))):
                 return self.run_hourglass_request(
                     prompt, session_id=sid, cancel_check=cancel_check, web=web,
                     max_tokens=max_tokens, reasoning_effort=reasoning_effort,
@@ -346,7 +426,8 @@ class AutonomousAgent:
         if intent == "driver":
             return self._handle_driver_task(prompt, sid, cancel_check=cancel_check)
         elif intent == "conversation":
-            if self._live_jev_available():
+            if (self._live_jev_available()
+                    or _requires_direct_site_status(prompt)):
                 return self.run_hourglass_request(
                     prompt, session_id=sid, cancel_check=cancel_check, web=web,
                     max_tokens=max_tokens, reasoning_effort=reasoning_effort,
@@ -438,6 +519,8 @@ class AutonomousAgent:
         if web:
             try:
                 web_sources = self._gather_web_context(prompt)
+            except ToolCancelled:
+                raise
             except Exception as exc:  # context failure must not kill the lane
                 web_sources = [{"kind": "web", "ok": False,
                                 "note": f"web tools error: {type(exc).__name__}"}]
@@ -655,11 +738,73 @@ class AutonomousAgent:
         # asked: answering "what is the latest news on X" from model memory is
         # how a run iterates six times on a question it had no evidence for.
         web = bool(web) or is_research_question(prompt)
+        needs_direct_status = _requires_direct_site_status(prompt)
+        requested_host = _requested_site_host(prompt) if needs_direct_status else None
+        allowed_hosts = {host.lower() for host in DEFAULT_FETCH_HOSTS}
+        if needs_direct_status and requested_host not in allowed_hosts:
+            reason = (f"The safe direct-fetch source does not allow "
+                      f"{requested_host or 'this host'}.")
+            response = ("I could not verify whether the requested site is up. "
+                        f"{reason} Search results are not current uptime evidence, "
+                        "and I did not inspect the site. Enable a safe direct-site "
+                        "probe and try again.")
+            result = {
+                "status": "deferred",
+                "intent": intent,
+                "prompt": prompt,
+                "response": response,
+                "model": None,
+                "cost": 0.0,
+                "defer_reason": "safe direct-site probe is unavailable for the host",
+                "next_step": "enable a safe direct-site probe",
+                "web_used": False,
+                "web_sources": [],
+            }
+            save_chat_turn(sid, result, self.history_dir)
+            emit("research_unavailable", reason=reason)
+            emit("hourglass_complete", status="deferred")
+            return result
         wall_budget = (DEFAULT_RUN_WALL_SECONDS if max_wall_seconds is None
                        else float(max_wall_seconds))
         deadline = time.monotonic() + max(0.0, wall_budget)
         context, files, brief, web_sources = self._hourglass_request_context(
             prompt, web=web)
+        has_web_evidence = any(source.get("ok") for source in web_sources)
+        has_direct_fetch = any(_source_is_fetch_of(source, requested_host)
+                               for source in web_sources)
+        if ((web and not has_web_evidence)
+                or (needs_direct_status and not has_direct_fetch)):
+            detail = next((str(source.get("note") or "").strip()
+                           for source in web_sources if source.get("note")), "")
+            if needs_direct_status:
+                reason = (detail or
+                          "Search results do not confirm the site's current status.")
+                response = ("I could not verify whether the requested site is "
+                            "up because a successful direct fetch was not "
+                            f"available. {reason} I did not verify the site. "
+                            "Enable a working direct web fetch and try again.")
+            else:
+                reason = detail or "No usable web source was returned for this request."
+                response = ("I could not complete the live web lookup. "
+                            f"{reason} I did not inspect the requested site. "
+                            "Enable a working web search/fetch source and try again, "
+                            "or provide the page content for an offline audit.")
+            result = {
+                "status": "deferred",
+                "intent": intent,
+                "prompt": prompt,
+                "response": response,
+                "model": None,
+                "cost": 0.0,
+                "defer_reason": "live web evidence is unavailable",
+                "next_step": "configure Web tools or provide the page content",
+                "web_used": False,
+                "web_sources": [],
+            }
+            save_chat_turn(sid, result, self.history_dir)
+            emit("research_unavailable", reason=reason)
+            emit("hourglass_complete", status="deferred")
+            return result
         past_turns = load_chat_history(sid, self.history_dir)[-10:]
         api_key, gov = governor_for(self.settings)
         policy = policy_for(
@@ -809,6 +954,8 @@ class AutonomousAgent:
                         if completion and completion.get("complete") is True:
                             status = "ok"
                             break
+                    except ToolCancelled:
+                        raise
                     except Exception:
                         pass
                 status = "needs_iteration"
@@ -875,6 +1022,8 @@ class AutonomousAgent:
                     })
                     save_chat_turn(sid, escalated, self.history_dir)
                     return escalated
+            except ToolCancelled:
+                raise
             except Exception:
                 pass
 
@@ -919,6 +1068,8 @@ class AutonomousAgent:
                 raise ToolCancelled("Prompt execution was cancelled by user")
             try:
                 web_sources = self._gather_web_context(prompt)
+            except ToolCancelled:
+                raise
             except Exception as e:  # web tools must never kill the chat lane
                 web_sources = [{"kind": "web", "ok": False, "note": f"web tools error: {e}"}]
             hosts = ", ".join(sorted(DEFAULT_FETCH_HOSTS)) or "(none configured)"
@@ -1725,6 +1876,8 @@ class AutonomousAgent:
                                               token_budget=run_token_budget)
                 if second_plan.get("status") != "refused":
                     plan = second_plan
+            except ToolCancelled:
+                raise
             except Exception:
                 pass
         if plan.get("status") == "refused":

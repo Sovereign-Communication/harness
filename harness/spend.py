@@ -25,7 +25,7 @@ from .config import (
     BYOK_DENYLIST_PREFIXES, BYOK_PREFIXES_PATH, load_byok_prefixes,
     save_byok_prefixes, DEFAULT_MAX_COST,
 )
-from .errors import HarnessError
+from .errors import HarnessError, ToolCancelled
 from .output import eprint
 from .tokens import estimate_prompt_tokens
 from .validation import finite_number
@@ -153,6 +153,7 @@ class SpendGovernor:
         self.spent = 0.0
         self.overruns = 0  # billed calls booked past the ceiling
         self._outstanding = 0.0
+        self._unknown_liability = 0.0
         self._reservations = []
         self._cost_by_model = {}
         # Fan-out safety (#10): spend mutations happen from panel threads.
@@ -170,6 +171,8 @@ class SpendGovernor:
     def verify_key(self):
         try:
             info = self.transport.get(OPENROUTER_KEY_URL, self.api_key)
+        except ToolCancelled:
+            raise
         except Exception as e:
             raise HarnessError(f"could not verify key limit: {e}") from e
         data = info.get("data", {})
@@ -289,6 +292,9 @@ class SpendGovernor:
                 "outstanding": round(float(self._outstanding), 6),
                 "ceiling": round(float(self.max_cost), 6),
             }
+            if self._unknown_liability > 0.0:
+                out["unknown_liability"] = round(
+                    float(self._unknown_liability), 6)
             if self.overruns:
                 out["overruns"] = self.overruns
             if self.terminal_reserve != 0.0 or self._phase != PHASE_ATTEMPT:
@@ -373,6 +379,8 @@ class SpendGovernor:
                 self._models = self.transport.get(OPENROUTER_MODELS_URL, self.api_key,
                                                   timeout=20).get("data", [])
                 self._models_fetched_at = time.time()
+            except ToolCancelled:
+                raise
             except Exception as e:
                 if self._models is not None:
                     eprint(f"[warn] model list refresh failed, using cached catalog: {e}")
@@ -471,6 +479,42 @@ class SpendGovernor:
             token = (label, amount)
             self._reservations.append(token)
             return token
+
+    def retain_unknown(self, amount, label):
+        """Keep conservative liability after dispatch loses its usage reply.
+
+        A provider may have accepted and billed the request. This cannot be a
+        normal ceiling-checked reservation because dispatch already happened;
+        retain the amount even if it puts the run over budget so every later
+        preflight sees the unresolved liability and refuses further spend.
+        """
+        amount = finite_number(amount or 0.0, "unknown liability", 0.0)
+        if amount <= 0.0:
+            return 0.0
+        with self._spend_lock:
+            self._outstanding += amount
+            self._unknown_liability += amount
+            self._reservations.append((f"{label} (usage unknown)", amount))
+        return amount
+
+    def reclassify_unknown(self, token):
+        """Convert an existing dispatch reservation into unknown liability.
+
+        This is the atomic form for callers that reserved before dispatch. The
+        amount stays outstanding, but it is surfaced separately so snapshots
+        and later budget decisions can identify unresolved provider usage.
+        """
+        with self._spend_lock:
+            try:
+                index = self._reservations.index(token)
+            except ValueError:
+                raise HarnessError(
+                    "reclassify of an unknown reservation token") from None
+            amount = token[1]
+            self._reservations[index] = (
+                f"{token[0]} (usage unknown)", amount)
+            self._unknown_liability += amount
+            return amount
 
     def reconcile(self, token, actual):
         """Settle a reservation: release the worst-case liability, record

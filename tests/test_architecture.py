@@ -220,7 +220,7 @@ class SkipHygieneTests(unittest.TestCase):
 
     # A reason must name one of these to count as a categorized gate.
     CATEGORIES = ("windows", "symlink", "posix", "mode bit", "platform",
-                  "api key", "deps", "numpy", "onnx", "train")
+                  "api key", "deps", "numpy", "onnx", "train", "baseline")
 
     def _tests_dir(self):
         return os.path.join(HERE, "tests")

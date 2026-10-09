@@ -134,6 +134,76 @@ def run(argv, cwd=None, timeout=None, input_text=None, env=None):
     return CommandResult(proc.returncode, proc.stdout or "", proc.stderr or "")
 
 
+def spawn_piped_process(argv, *, cwd=None, env=None):
+    """Start a shell-free child with private stdin/stdout/stderr pipes.
+
+    Worker processes are used for blocking operations that need to be
+    cancellable. Keep process creation and the Windows no-console policy in
+    this module, alongside every other subprocess boundary.
+    """
+    if isinstance(argv, str):
+        raise OsalError("osal.spawn_piped_process takes an argv list")
+    argv = [str(arg) for arg in argv]
+    if not argv:
+        raise OsalError("osal.spawn_piped_process: empty argv")
+    kwargs = {
+        "stdin": subprocess.PIPE,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "shell": False,
+    }
+    if cwd is not None:
+        kwargs["cwd"] = cwd
+    if env is not None:
+        kwargs["env"] = env
+    if IS_WINDOWS:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        kwargs["startupinfo"] = startupinfo
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return subprocess.Popen(argv, **kwargs)
+
+
+def terminate_and_reap(process, graceful_timeout=0.25, kill_timeout=2.0):
+    """Terminate a child and wait until it is reaped, escalating to kill."""
+    if process.poll() is not None:
+        return process.returncode
+    try:
+        process.terminate()
+    except OSError:
+        if process.poll() is not None:
+            return process.returncode
+    try:
+        return process.wait(timeout=graceful_timeout)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        process.kill()
+    except OSError:
+        if process.poll() is not None:
+            return process.returncode
+    try:
+        return process.wait(timeout=kill_timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise OsalError("child process could not be reaped after termination") from exc
+
+
+def kill_and_reap(process, timeout=2.0):
+    """Kill a child that must not outlive its caller and wait for reaping."""
+    if process.poll() is not None:
+        return process.returncode
+    try:
+        process.kill()
+    except OSError:
+        if process.poll() is not None:
+            return process.returncode
+    try:
+        return process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise OsalError("child process could not be reaped after kill") from exc
+
+
 # How long to keep draining a killed command's pipes before abandoning them.
 _DRAIN_SECONDS = 2
 
@@ -215,11 +285,19 @@ def run_tree(argv, cwd=None, timeout=None, env=None):
         try:
             process.communicate(timeout=_DRAIN_SECONDS)
         except subprocess.TimeoutExpired:
-            for pipe in (process.stdout, process.stderr):
-                try:
-                    pipe.close()
-                except OSError:
-                    pass
+            # On Windows ``communicate`` drains pipes in background threads.
+            # BufferedReader.close() waits for the reader's lock, so closing
+            # a pipe that a surviving descendant inherited can itself wait
+            # until that descendant exits.  The reader threads are daemons;
+            # leave their handles to be released when they eventually see
+            # EOF.  POSIX communicates synchronously, so closing there is
+            # immediate and remains the right cleanup.
+            if not IS_WINDOWS:
+                for pipe in (process.stdout, process.stderr):
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass
         try:
             process.wait(timeout=_DRAIN_SECONDS)
         except subprocess.TimeoutExpired:

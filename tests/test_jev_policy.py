@@ -5,6 +5,8 @@ import unittest
 from unittest.mock import patch
 
 from harness.config import load_settings
+from harness.errors import ProviderUsageUnknown, ToolCancelled
+from harness.jev import JevEvaluationResult
 from harness.jev_policy import (
     JEV_MAX_INPUT_TOKENS,
     aggregate_structural,
@@ -48,6 +50,12 @@ class JevPolicyTests(unittest.TestCase):
         settings = load_settings()
         settings.jev_api_key = None
         return settings
+
+    @staticmethod
+    def _keyed_settings():
+        with tempfile.TemporaryDirectory() as config_dir:
+            with patch("harness.config.CONFIG_DIR", config_dir):
+                return load_settings({"jev_api_key": "jev-key"})
 
     def test_unkeyed_fallback_is_zero_cost_and_enveloped(self):
         settings = self._unkeyed_settings()
@@ -115,6 +123,254 @@ class JevPolicyTests(unittest.TestCase):
         self.assertFalse(result.is_fallback)
         self.assertFalse(structural["is_fallback"])
         self.assertFalse(structural["native"])
+
+    def test_answer_cancellation_releases_reservation_once_and_propagates(self):
+        class CancellingEvaluator:
+            api_key = "jev-key"
+            model = "jev-test"
+
+            def evaluate(self, *args, **kwargs):
+                raise ToolCancelled()
+
+        class CountingGovernor:
+            def __init__(self):
+                self.reconciled = []
+
+            def reserve(self, worst, label):
+                return (label, worst)
+
+            def reconcile(self, token, actual):
+                self.reconciled.append((token, actual))
+
+        governor = CountingGovernor()
+        policy = policy_for(
+            load_settings({"jev_api_key": "jev-key"}),
+            evaluator=CancellingEvaluator(), governor=governor)
+
+        with self.assertRaises(ToolCancelled):
+            policy.evaluate_answer("question", "candidate", "context")
+
+        self.assertEqual(len(governor.reconciled), 1)
+        self.assertEqual(governor.reconciled[0][1], 0.0)
+        self.assertIsNone(getattr(policy._tl, "token", None))
+
+    def test_answer_cancellation_books_known_cost_once(self):
+        cancelled = ToolCancelled(known_cost=0.004)
+
+        class CancellingEvaluator:
+            api_key = "jev-key"
+            model = "jev-test"
+
+            def evaluate(self, *args, **kwargs):
+                raise cancelled
+
+        class CountingGovernor:
+            def __init__(self):
+                self.reconciled = []
+
+            def reserve(self, worst, label):
+                return (label, worst)
+
+            def reconcile(self, token, actual):
+                self.reconciled.append((token, actual))
+
+        governor = CountingGovernor()
+        policy = policy_for(
+            load_settings({"jev_api_key": "jev-key"}),
+            evaluator=CancellingEvaluator(), governor=governor)
+
+        with self.assertRaises(ToolCancelled) as raised:
+            policy.evaluate_answer("question", "candidate", "context")
+
+        self.assertIs(raised.exception, cancelled)
+        self.assertEqual(len(governor.reconciled), 1)
+        self.assertEqual(governor.reconciled[0][1], 0.004)
+        self.assertTrue(cancelled.cost_accounted)
+        self.assertIsNone(getattr(policy._tl, "token", None))
+
+    def test_unknown_provider_usage_keeps_reservation_and_books_known_spend(self):
+        from harness import events
+        from harness.events import task_context
+
+        class CancellingEvaluator:
+            api_key = "jev-key"
+            model = "jev-test"
+
+            def evaluate(self, *args, **kwargs):
+                raise ToolCancelled(known_cost=0.004, usage_unknown=True)
+
+        governor = SpendGovernor(FakeTransport(), "sk-test", max_cost=0.10)
+        policy = policy_for(
+            load_settings({"jev_api_key": "jev-key"}),
+            evaluator=CancellingEvaluator(), governor=governor)
+        seen = []
+        sink = seen.append
+        events.add_sink(sink)
+        self.addCleanup(events.remove_sink, sink)
+
+        with task_context("ui/unknown-run"):
+            with self.assertRaises(ToolCancelled) as raised:
+                policy.evaluate_answer("question", "candidate", "context",
+                                       task_id="ui/unknown-run")
+
+        self.assertTrue(raised.exception.usage_unknown)
+        self.assertTrue(raised.exception.cost_accounted)
+        self.assertAlmostEqual(governor.spent, 0.004)
+        self.assertGreater(governor.outstanding, 0.0)
+        self.assertIsNone(getattr(policy._tl, "token", None))
+        unknown = [ev for ev in seen if ev["type"] == "provider_usage_unknown"]
+        self.assertEqual(len(unknown), 1)
+        self.assertEqual(unknown[0]["task_id"], "ui/unknown-run")
+        self.assertGreater(unknown[0]["reserved_cost"], 0.0)
+
+    def test_real_evaluator_preserves_unknown_usage_and_retry_cost(self):
+        class LostResponseTransport:
+            def post(self, *args, **kwargs):
+                # Represents spend from earlier retry responses plus a final
+                # request whose usage response was lost.
+                raise ProviderUsageUnknown(
+                    "provider response ended before usage arrived",
+                    known_cost=0.004)
+
+        governor = SpendGovernor(FakeTransport(), "sk-test", max_cost=0.10)
+        policy = policy_for(
+            self._keyed_settings(),
+            transport=LostResponseTransport(), governor=governor)
+
+        with self.assertRaises(ProviderUsageUnknown) as raised:
+            policy.evaluate_provision(
+                {"task": "retry settlement"},
+                {"answer": {"type": "noul", "instructions": "Is the answer usable?"}})
+
+        self.assertAlmostEqual(raised.exception.known_cost, 0.004)
+        self.assertTrue(raised.exception.cost_accounted)
+        self.assertAlmostEqual(governor.spent, 0.004)
+        self.assertGreater(governor.outstanding, 0.0)
+        self.assertIsNone(getattr(policy._tl, "token", None))
+
+    def test_real_evaluator_settles_retry_spend_on_invalid_and_rejected_responses(self):
+        from harness.jev import JevEvaluator
+
+        usage = {"input_tokens": 100, "output_tokens": 2,
+                 "retry_cost": 0.004}
+        cases = ((200, {"model": "jev-test", "answers": {}, "usage": usage}),
+                 (401, {"model": "jev-test", "usage": usage}),
+                 (422, {"model": "jev-test", "usage": usage}))
+        for status, response in cases:
+            with self.subTest(status=status):
+                class ResponseTransport:
+                    def post(self, *args, **kwargs):
+                        return status, response
+
+                governor = SpendGovernor(FakeTransport(), "sk-test", max_cost=0.10)
+                evaluator = JevEvaluator(
+                    api_key="jev-key", transport=ResponseTransport())
+                policy = policy_for(
+                    self._keyed_settings(),
+                    evaluator=evaluator, governor=governor)
+
+                result, _structural = policy.evaluate_provision(
+                    {"task": "settle retry spend"},
+                    {"answer": {"type": "noul", "instructions": "Is it usable?"}})
+
+                self.assertGreaterEqual(result.cost, 0.004)
+                self.assertAlmostEqual(governor.spent, result.cost)
+                self.assertEqual(governor.outstanding, 0.0)
+
+    def test_real_http_truncated_response_retains_jev_unknown_liability(self):
+        import http.client
+        from harness._http import HttpTransport
+        from harness.jev import JevEvaluator
+
+        transport = HttpTransport(cancel_check=lambda: False)
+        governor = SpendGovernor(FakeTransport(), "sk-test", max_cost=0.10)
+        evaluator = JevEvaluator(api_key="jev-key", transport=transport)
+        policy = policy_for(
+            self._keyed_settings(), evaluator=evaluator, governor=governor)
+        with patch.object(
+                transport, "_request_once_cancellable",
+                side_effect=http.client.IncompleteRead(b"partial", 20)) as request:
+            with self.assertRaises(ProviderUsageUnknown) as raised:
+                policy.evaluate_provision(
+                    {"task": "truncated provider response"},
+                    {"answer": {"type": "noul", "instructions": "Is it usable?"}})
+
+        request.assert_called_once()
+        self.assertTrue(raised.exception.usage_unknown)
+        self.assertTrue(raised.exception.cost_accounted)
+        self.assertGreater(raised.exception.reserved_cost, 0.0)
+        self.assertEqual(governor.spent, 0.0)
+        self.assertGreater(governor.snapshot()["unknown_liability"], 0.0)
+
+    def test_malformed_final_response_preserves_transient_retry_charge(self):
+        import json
+        from harness._http import HttpTransport
+        from harness.jev import JevEvaluator
+
+        final_bodies = ({"usage": None}, {"usage": []}, [])
+        for final_body in final_bodies:
+            with self.subTest(final_body=final_body):
+                bodies = iter((
+                    (429, json.dumps({"usage": {"cost": 0.004}}), None),
+                    (200, json.dumps(final_body), None),
+                ))
+                transport = HttpTransport(cancel_check=lambda: False)
+                governor = SpendGovernor(FakeTransport(), "sk-test", max_cost=0.10)
+                evaluator = JevEvaluator(api_key="jev-key", transport=transport)
+                policy = policy_for(
+                    self._keyed_settings(), evaluator=evaluator,
+                    governor=governor)
+                with patch.object(HttpTransport, "MAX_RETRIES", 1), \
+                        patch.object(transport, "_request_once_cancellable",
+                                     side_effect=lambda *_a, **_k: next(bodies)), \
+                        patch.object(transport, "_retry_wait"):
+                    result, _structural = policy.evaluate_provision(
+                        {"task": "malformed final retry"},
+                        {"answer": {"type": "noul",
+                                    "instructions": "Is it usable?"}})
+
+                self.assertAlmostEqual(result.cost, 0.004)
+                self.assertTrue(result.discarded)
+                self.assertAlmostEqual(governor.spent, 0.004)
+                self.assertEqual(governor.outstanding, 0.0)
+
+    def test_cancellation_after_settlement_does_not_reconcile_twice(self):
+        class Evaluator:
+            api_key = "jev-key"
+            model = "jev-test"
+
+            def evaluate(self, *args, **kwargs):
+                return JevEvaluationResult(
+                    "pass", 0.9, 0.9,
+                    {"answer_sufficient": {"noul": 0.9},
+                     "iteration_required": {"noul": 0.1},
+                     "plan_required": {"noul": 0.1}},
+                    [], input_tokens=10, model=self.model)
+
+        class CountingGovernor:
+            def __init__(self):
+                self.reconciled = []
+
+            def reserve(self, worst, label):
+                return (label, worst)
+
+            def reconcile(self, token, actual):
+                self.reconciled.append((token, actual))
+
+        class CancellingLedger:
+            def append(self, *args, **kwargs):
+                raise ToolCancelled()
+
+        governor = CountingGovernor()
+        policy = policy_for(
+            load_settings({"jev_api_key": "jev-key"}), evaluator=Evaluator(),
+            governor=governor, ledger=CancellingLedger())
+
+        with self.assertRaises(ToolCancelled):
+            policy.evaluate_answer("question", "candidate", "context")
+
+        self.assertEqual(len(governor.reconciled), 1)
+        self.assertIsNone(getattr(policy._tl, "token", None))
 
     def test_live_call_reserves_and_records_actual_once(self):
         transport = _JevTransport(self._response(tokens=100))
