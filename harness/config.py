@@ -31,6 +31,10 @@ CONFIG_DIR = os.path.expanduser("~/.config/harness")
 
 # OpenRouter endpoints
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+# EV-7 Fireworks lane. The endpoint is canon confirmation item 3 and is
+# unconfirmed until the user confirms it in writing; the lane is off by default.
+FIREWORKS_CHAT_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
+FIREWORKS_MODEL_PREFIX = "accounts/fireworks/models/"
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 # Daily usage rankings (model_permaslug + total_tokens per day). The
@@ -469,18 +473,21 @@ _ENV_NAMES = {
     "jev_endpoint": "HARNESS_JEV_ENDPOINT",
     "jev_model": "HARNESS_JEV_MODEL",
     "min_confidence": "HARNESS_MIN_CONFIDENCE",
+    "openrouter_enabled": "HARNESS_OPENROUTER_ENABLED",
+    "fireworks_enabled": "HARNESS_FIREWORKS_ENABLED",
+    "fireworks_budget_usd": "HARNESS_FIREWORKS_BUDGET_USD",
 }
 
 
-def _read_key_file(path):
-    """Parse an `OPENROUTER_API_KEY=...` line out of an env file."""
+def _read_key_file(path, name="OPENROUTER_API_KEY"):
+    """Parse a `NAME=...` line (default OPENROUTER_API_KEY) out of an env file."""
     try:
         with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if "=" in line and not line.startswith("#"):
                     k, v = line.split("=", 1)
-                    if k.strip() == "OPENROUTER_API_KEY" and v.strip():
+                    if k.strip() == name and v.strip():
                         return v.strip().strip('"').strip("'")
     except OSError:
         return None
@@ -530,6 +537,28 @@ def resolve_api_key():
             eprint("[warn] using OPENROUTER_API_KEY from the process environment; "
                    "prefer a 0600 key file for interactive use.")
     return key
+
+
+def resolve_fireworks_key():
+    """Resolve the Fireworks key: scmorc file, harness file, then the env var.
+
+    Only presence is ever logged; the value is returned to the caller and
+    never echoed. Windows ACL hardening is a setup-time concern and is not
+    performed here.
+    """
+    for p in (
+        os.path.join(os.path.expanduser("~/.config/scmorc"), "fireworks.env"),
+        os.path.join(CONFIG_DIR, "fireworks.env"),
+    ):
+        k = _read_key_file(p, "FIREWORKS_API_KEY")
+        if k:
+            _warn_insecure_keyfile(p)
+            return k
+    key = os.environ.get("FIREWORKS_API_KEY")
+    if key:
+        eprint("[warn] using FIREWORKS_API_KEY from the process environment; "
+               "prefer a 0600 key file for interactive use.")
+    return key or None
 
 
 def resolve_jev_key():
@@ -594,7 +623,9 @@ class Settings:
                   jev_endpoint="https://api.typesafe.ai/v1/systemone",
                   jev_model="jev-latest", min_confidence=0.70,
                   token_budget_input=DEFAULT_TOKEN_BUDGET_INPUT,
-                  token_budget_output=DEFAULT_TOKEN_BUDGET_OUTPUT):
+                  token_budget_output=DEFAULT_TOKEN_BUDGET_OUTPUT,
+                  openrouter_enabled=True, fireworks_enabled=False,
+                  fireworks_budget_usd=0.0):
         self.use_free = use_free
         self.panel = list(panel)
         self.panel_pool = list(panel_pool)
@@ -656,6 +687,16 @@ class Settings:
         self.min_confidence = min_confidence
         self.token_budget_input = token_budget_input
         self.token_budget_output = token_budget_output
+        # EV-7 provider toggles. Fireworks is off by default and the budget is
+        # a local cap (the account balance is not readable). Both providers off
+        # would leave no route for any model, so it is refused here.
+        self.openrouter_enabled = bool(openrouter_enabled)
+        self.fireworks_enabled = bool(fireworks_enabled)
+        self.fireworks_budget_usd = float(fireworks_budget_usd)
+        if not self.openrouter_enabled and not self.fireworks_enabled:
+            raise HarnessError(
+                "at least one provider must be enabled: set openrouter_enabled "
+                "or fireworks_enabled (both off leaves no route for any model)")
         # The stages this run composes. None means "the Hourglass default",
         # i.e. every stage; the composition owner validates any subset.
         self.hourglass_stages = (list(hourglass_stages)
@@ -678,7 +719,8 @@ class Settings:
             "max_price_prompt", "max_price_completion", "jev_api_key", "jev_disabled",
             "jev_endpoint", "jev_model", "min_confidence",
             "token_budget_input", "token_budget_output",
-            "hourglass_stages")}
+            "hourglass_stages", "openrouter_enabled", "fireworks_enabled",
+            "fireworks_budget_usd")}
 
 
 # JEV-P4 freeze: the two settings an operator pins after first calibration,
@@ -717,7 +759,8 @@ def update_config(values):
         raise HarnessError(
             "unknown setting(s): " + ", ".join(sorted(unknown)))
     allowed = {"use_free", "allow_escalation", "max_cost", "task_max_cost",
-               "hourglass_stages", "token_budget_input", "token_budget_output"}
+               "hourglass_stages", "token_budget_input", "token_budget_output",
+               "openrouter_enabled", "fireworks_enabled", "fireworks_budget_usd"}
     allowed |= set(JEV_FREEZE_KEYS)
     disallowed = set(values) - allowed
     if disallowed:
@@ -919,6 +962,9 @@ def load_settings(overrides=None):
         jev_endpoint=str(get("jev_endpoint", "https://api.typesafe.ai/v1/systemone")),
         jev_model=str(get("jev_model", "jev-latest")),
         min_confidence=_num("min_confidence", float, 0.0, 1.0, 0.70),
+        openrouter_enabled=_as_bool(get("openrouter_enabled", True)),
+        fireworks_enabled=_as_bool(get("fireworks_enabled", False)),
+        fireworks_budget_usd=_num("fireworks_budget_usd", float, 0.0, 1_000_000.0, 0.0),
     )
 
 

@@ -23,7 +23,7 @@ import time
 from .config import (
     OPENROUTER_KEY_URL, OPENROUTER_MODELS_URL,
     BYOK_DENYLIST_PREFIXES, BYOK_PREFIXES_PATH, load_byok_prefixes,
-    save_byok_prefixes, DEFAULT_MAX_COST,
+    save_byok_prefixes, DEFAULT_MAX_COST, FIREWORKS_MODEL_PREFIX,
 )
 from .errors import HarnessError
 from .output import eprint
@@ -137,11 +137,15 @@ class SpendGovernor:
 
     def __init__(self, transport, api_key, expect_key_label=None,
                  max_cost=DEFAULT_MAX_COST, byok_prefixes_path=BYOK_PREFIXES_PATH,
-                 terminal_reserve=0.0):
+                 terminal_reserve=0.0, fireworks_budget_usd=0.0):
         self.transport = transport
         self.api_key = api_key
         self.expect_key_label = expect_key_label
         self.max_cost = finite_number(max_cost, "max_cost", 0.0)
+        # EV-7: local cap on Fireworks spend. The account balance is not
+        # readable, so this is the only ceiling Fireworks calls can see.
+        self.fireworks_budget_usd = finite_number(
+            fireworks_budget_usd, "fireworks_budget_usd", 0.0)
         self.terminal_reserve = finite_number(
             terminal_reserve, "terminal_reserve", 0.0)
         if self.terminal_reserve > self.max_cost:
@@ -540,6 +544,25 @@ class SpendGovernor:
             ceiling = self._phase_ceiling()
             return max(0.0, ceiling - (self.spent + self._outstanding))
 
+    def fireworks_spent(self):
+        """Recorded spend on Fireworks paths (labels carry the path prefix)."""
+        with self._spend_lock:
+            return sum(v for k, v in self._cost_by_model.items()
+                       if str(k).startswith(FIREWORKS_MODEL_PREFIX))
+
+    def assert_fireworks_budget(self, amount, label):
+        """Refuse a Fireworks call whose worst case would pass the local cap.
+
+        Called before dispatch with the worst-case estimate, so a call that
+        cannot fit is never sent. A cap of zero refuses every Fireworks call.
+        """
+        projected = self.fireworks_spent() + float(amount)
+        if projected > self.fireworks_budget_usd:
+            raise HarnessError(
+                f"Fireworks spend ${projected:.6f} would exceed the local budget "
+                f"${self.fireworks_budget_usd:.6f} (HARNESS_FIREWORKS_BUDGET_USD) "
+                f"for '{label}'; refusing to send.")
+
     # 5
     def record_actual(self, cost, label):
         """Record a billable response without ever moving ``spent`` over the
@@ -550,6 +573,13 @@ class SpendGovernor:
             raise HarnessError(f"invalid reported cost {cost!r} (after '{label}').") from None
         with self._spend_lock:
             ceiling = self._phase_ceiling()
+            if str(label).startswith(FIREWORKS_MODEL_PREFIX) and actual > 0.0:
+                projected = self.fireworks_spent() + actual
+                if projected > self.fireworks_budget_usd:
+                    raise HarnessError(
+                        f"Fireworks spend ${projected:.6f} would exceed the local "
+                        f"budget ${self.fireworks_budget_usd:.6f} after '{label}'. "
+                        "Aborting.")
             if actual > 0.0 and self.spent + self._outstanding + actual > ceiling:
                 if (self._phase == PHASE_ATTEMPT
                         and self.terminal_reserve > 0.0):
