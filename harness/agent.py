@@ -667,10 +667,11 @@ class AutonomousAgent:
             "evidence_summary": evidence_summary,
             "latency_s": latency,
         }
-        action_ledger = None
+        action_ledger = getattr(jev_policy, "ledger", None)
         jev_result = None
         try:
-            action_ledger = ledger_for(self.settings, caller="agent")
+            if action_ledger is None:
+                action_ledger = ledger_for(self.settings, caller="agent")
             # This route only resolves the local OpenRouter key for spend
             # accounting; JevEvaluator sends the sole model request to
             # System One. The site check never calls OpenRouter.
