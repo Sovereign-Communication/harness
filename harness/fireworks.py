@@ -14,7 +14,7 @@ records the price-based selection as deferred to EV-1.
 from dataclasses import dataclass
 from typing import Optional
 
-from .config import FIREWORKS_MODEL_PREFIX
+from .config import is_fireworks_model_path
 from .endpoint_pricing import FireworksOffer, fireworks_offers
 from .errors import HarnessError
 
@@ -28,10 +28,6 @@ class Route:
     wire_model: str
     route_reason: str
     offer: Optional[FireworksOffer] = None
-
-
-def is_fireworks_model(model):
-    return isinstance(model, str) and model.startswith(FIREWORKS_MODEL_PREFIX)
 
 
 def resolve_offer(model, offers=None):
@@ -49,7 +45,7 @@ def resolve_route(model, *, openrouter_enabled, fireworks_enabled, offers=None):
     A Fireworks path with Fireworks disabled raises instead of quietly moving
     to OpenRouter, because the operator asked for that provider by name.
     """
-    if is_fireworks_model(model):
+    if is_fireworks_model_path(model):
         if not fireworks_enabled:
             raise HarnessError(
                 f"model '{model}' is a Fireworks path but fireworks is disabled "

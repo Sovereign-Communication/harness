@@ -281,6 +281,15 @@ def _chat_reservation_slots(model_id, reasoning_effort="auto", max_429_retries=0
     return reasoning_slots * (max(0, int(max_429_retries)) + 1)
 
 
+def _usage_counts(usage):
+    """(prompt, completion) token counts; non-numeric counts read as zero."""
+    try:
+        return (int(usage.get("prompt_tokens") or 0),
+                int(usage.get("completion_tokens") or 0))
+    except (TypeError, ValueError):
+        return 0, 0
+
+
 def _ensure_accounted(governor, model, resp, usage):
     """Fill a missing usage.cost before any lane can bill the response.
 
@@ -293,11 +302,7 @@ def _ensure_accounted(governor, model, resp, usage):
     if governor.is_free(model):
         usage["cost"] = 0.0
         return
-    try:
-        prompt_tokens = int(usage.get("prompt_tokens") or 0)
-        completion_tokens = int(usage.get("completion_tokens") or 0)
-    except (TypeError, ValueError):
-        prompt_tokens = completion_tokens = 0
+    prompt_tokens, completion_tokens = _usage_counts(usage)
     if not prompt_tokens and not completion_tokens:
         from .errors import HarnessError
         raise HarnessError(
@@ -425,11 +430,7 @@ def _ensure_fireworks_accounted(offer, usage):
     The same fail-closed rule as the OpenRouter path: with neither a cost nor
     token counts the call is refused rather than booked as free.
     """
-    try:
-        prompt_tokens = int(usage.get("prompt_tokens") or 0)
-        completion_tokens = int(usage.get("completion_tokens") or 0)
-    except (TypeError, ValueError):
-        prompt_tokens = completion_tokens = 0
+    prompt_tokens, completion_tokens = _usage_counts(usage)
     if not prompt_tokens and not completion_tokens:
         raise HarnessError(
             f"Fireworks omitted usage accounting (no cost, no token counts) for "

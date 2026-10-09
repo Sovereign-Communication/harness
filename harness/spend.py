@@ -23,7 +23,7 @@ import time
 from .config import (
     OPENROUTER_KEY_URL, OPENROUTER_MODELS_URL,
     BYOK_DENYLIST_PREFIXES, BYOK_PREFIXES_PATH, load_byok_prefixes,
-    save_byok_prefixes, DEFAULT_MAX_COST, FIREWORKS_MODEL_PREFIX,
+    save_byok_prefixes, DEFAULT_MAX_COST, is_fireworks_model_path,
 )
 from .errors import HarnessError
 from .output import eprint
@@ -544,11 +544,15 @@ class SpendGovernor:
             ceiling = self._phase_ceiling()
             return max(0.0, ceiling - (self.spent + self._outstanding))
 
+    def _fireworks_spent_locked(self):
+        """Fireworks-labelled spend. Caller must hold ``_spend_lock``."""
+        return sum(v for k, v in self._cost_by_model.items()
+                   if is_fireworks_model_path(k))
+
     def fireworks_spent(self):
         """Recorded spend on Fireworks paths (labels carry the path prefix)."""
         with self._spend_lock:
-            return sum(v for k, v in self._cost_by_model.items()
-                       if str(k).startswith(FIREWORKS_MODEL_PREFIX))
+            return self._fireworks_spent_locked()
 
     def assert_fireworks_budget(self, amount, label):
         """Refuse a Fireworks call whose worst case would pass the local cap.
@@ -556,7 +560,8 @@ class SpendGovernor:
         Called before dispatch with the worst-case estimate, so a call that
         cannot fit is never sent. A cap of zero refuses every Fireworks call.
         """
-        projected = self.fireworks_spent() + float(amount)
+        with self._spend_lock:
+            projected = self._fireworks_spent_locked() + float(amount)
         if projected > self.fireworks_budget_usd:
             raise HarnessError(
                 f"Fireworks spend ${projected:.6f} would exceed the local budget "
@@ -573,8 +578,8 @@ class SpendGovernor:
             raise HarnessError(f"invalid reported cost {cost!r} (after '{label}').") from None
         with self._spend_lock:
             ceiling = self._phase_ceiling()
-            if str(label).startswith(FIREWORKS_MODEL_PREFIX) and actual > 0.0:
-                projected = self.fireworks_spent() + actual
+            if is_fireworks_model_path(label) and actual > 0.0:
+                projected = self._fireworks_spent_locked() + actual
                 if projected > self.fireworks_budget_usd:
                     raise HarnessError(
                         f"Fireworks spend ${projected:.6f} would exceed the local "
