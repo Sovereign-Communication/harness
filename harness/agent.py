@@ -174,6 +174,46 @@ MUTATION_KEYWORDS = frozenset({
     "correct", "optimize", "rewrite", "replace", "build", "execute", "apply",
 })
 
+# Request-lifecycle #200: action verbs and uptime phrasings that mark a
+# site-availability check. Question form alone must not outrank an explicit
+# action verb plus a URL/host target.
+_SITE_CHECK_VERBS = ("check", "verify", "test", "confirm", "look up",
+                      "lookup", "see")
+_SITE_UP_PHRASES = ("is up", "is down", "up right now", "still up",
+                     "loads", "loading", "reachable", "resolves",
+                     "online", "responding")
+
+
+def is_site_check_prompt(prompt: str) -> bool:
+    """True when a prompt asks whether a site/host is up (issue #200).
+
+    Requires a URL/host target plus an action verb or an uptime phrasing.
+    Genuine questions ("what is...?", "explain...") without a target, and
+    repo-centered directives (code extensions, mutation verbs on code,
+    plan-execution phrases, audit/driver keywords) never match."""
+    from .web import extract_site_target as _extract_target
+    cleaned = (prompt or "").strip().lower()
+    if not cleaned:
+        return False
+    if any(p in cleaned for p in EXECUTION_PHRASES):
+        return False
+    if _extract_target(prompt) is None:
+        return False
+    if re.search(r"\b[a-zA-Z0-9_\-./]+\.(?:py|rs|go|ts|js|md|json|toml|yaml|yml|c|cpp|h)\b", prompt):
+        return False
+    words = re.findall(r"\b[a-z_0-9-]+\b", cleaned)
+    if any(w in MUTATION_KEYWORDS for w in words):
+        return False
+    if any(v in cleaned for v in _SITE_CHECK_VERBS):
+        return True
+    if any(p in cleaned for p in _SITE_UP_PHRASES):
+        return True
+    # Question form with the verb and the state split around the host:
+    # "is X up?", "is X down right now?", "does X resolve?".
+    return bool(re.search(
+        r"\b(is|are|does|did|has)\b.*\b(up|down|loading|loads|reachable|resolves|online|responding|working)\b",
+        cleaned))
+
 EXECUTION_PHRASES = frozenset({
     "execute the plan", "execute plan", "run the plan", "run plan",
     "apply the plan", "apply plan", "test the plan", "test plan",
@@ -256,6 +296,12 @@ def classify_prompt_intent(prompt: str) -> str:
     # Check for explicit file extension occurrences
     has_file_ext = bool(re.search(r"\b[a-zA-Z0-9_\-./]+\.(?:py|rs|go|ts|js|md|json|toml|yaml|yml|c|cpp|h)\b", prompt))
 
+    # Request-lifecycle #200: an action verb plus a URL/host target is a
+    # site-availability check, even in question form. Ordinary questions
+    # without a target keep the conversation lane below.
+    if is_site_check_prompt(prompt):
+        return "simple-action"
+
     # Prompts asking conversational questions (or ending with ?) take precedence unless explicit files/paths are given
     if first_word in CONVERSATION_STARTERS or cleaned.endswith("?"):
         if not has_file_ext and not any(w in cleaned for w in ("refactor ", "implement ", "fix bug ", "add test", "execute ", "run ")):
@@ -322,6 +368,9 @@ class AutonomousAgent:
                 return self._handle_driver_task(prompt, sid, cancel_check=cancel_check)
             if intent == "audit":
                 return self._handle_audit(prompt, sid, cancel_check=cancel_check)
+            if intent == "simple-action":
+                return self.run_simple_action(prompt, session_id=sid,
+                                              cancel_check=cancel_check)
             if intent == "edit" and auto_apply:
                 emit("chat_escalated", reason="edit-intent in auto mode",
                      target="plan_lane")
@@ -345,6 +394,9 @@ class AutonomousAgent:
 
         if intent == "driver":
             return self._handle_driver_task(prompt, sid, cancel_check=cancel_check)
+        elif intent == "simple-action":
+            return self.run_simple_action(prompt, session_id=sid,
+                                          cancel_check=cancel_check)
         elif intent == "conversation":
             if self._live_jev_available():
                 return self.run_hourglass_request(
@@ -365,6 +417,91 @@ class AutonomousAgent:
     def _live_jev_available(self) -> bool:
         return bool(getattr(self.settings, "jev_api_key", None)
                     and not getattr(self.settings, "jev_disabled", False))
+
+    def run_simple_action(self, prompt: str, session_id: Optional[str] = None,
+                          cancel_check=None, probe_fn=None,
+                          resolve_fn=None) -> Dict[str, Any]:
+        """Execute one bounded read-only site-availability check (#202/#203).
+
+        Deterministic capability preflight runs before any model call; a
+        known mismatch returns an honest terminal result plus a ledger event
+        with zero model or decomposition calls. On success exactly one
+        bounded HTTPS probe runs -- no repo triage, DAG, or waist work --
+        and the verdict comes from observed probe evidence, never from
+        search snippets. ``probe_fn``/``resolve_fn`` are hermetic seams."""
+        from .web import extract_site_target as _extract_target
+        from .web import probe_public_site as _probe
+        sid = session_id or "default"
+        emit("simple_action_start", prompt=prompt, session_id=sid)
+        if cancel_check and cancel_check():
+            raise ToolCancelled("Prompt execution was cancelled by user")
+        target = _extract_target(prompt)
+        if target is None:
+            result = {
+                "status": "deferred", "intent": "simple-action",
+                "workflow_tier": "simple-action", "prompt": prompt,
+                "response": ("I could not find a site to check in that request. "
+                             "Name a URL or host such as https://example.com."),
+                "model": None, "cost": 0.0,
+                "defer_reason": "no site target in prompt",
+                "next_step": "rephrase with a URL or host to check",
+            }
+            save_chat_turn(sid, result, self.history_dir)
+            return result
+        try:
+            probe = (_probe(target, cancel_check=cancel_check,
+                            resolve_fn=resolve_fn,
+                            connect_fn=probe_fn) if probe_fn is not None
+                     else _probe(target, cancel_check=cancel_check,
+                                 resolve_fn=resolve_fn))
+        except HarnessError as e:
+            reason = str(e)
+            try:
+                ledger_for(self.settings, caller="agent").append(
+                    "simple_action", task_id=sid, event_note="preflight",
+                    status="refused", reason=reason, target=target,
+                    cost=0.0)
+            except Exception:
+                pass
+            result = {
+                "status": "deferred", "intent": "simple-action",
+                "workflow_tier": "simple-action", "prompt": prompt,
+                "response": f"I can't check that site: {reason}",
+                "model": None, "cost": 0.0, "target": target,
+                "defer_reason": reason,
+                "next_step": "provide a public https URL without credentials",
+            }
+            save_chat_turn(sid, result, self.history_dir)
+            emit("simple_action_complete", status="deferred", reason=reason)
+            return result
+        verdict = probe.get("verdict")
+        if verdict in ("up", "denied", "redirect"):
+            status, opener = "ok", "Yes"
+            if verdict == "denied":
+                opener = "Yes -- reachable but access was denied"
+            elif verdict == "redirect":
+                opener = "Yes -- it answers (with a redirect)"
+            response = f"{opener}: {probe.get('reason')}."
+        else:
+            status, response = "deferred", f"No: {probe.get('reason')}."
+        try:
+            ledger_for(self.settings, caller="agent").append(
+                "simple_action", task_id=sid, event_note="probe",
+                status=status, verdict=verdict, target=target,
+                http_status=probe.get("http_status"),
+                latency_s=probe.get("latency_s"), cost=0.0)
+        except Exception:
+            pass
+        result = {
+            "status": status, "intent": "simple-action",
+            "workflow_tier": "simple-action", "prompt": prompt,
+            "response": response, "model": None, "cost": 0.0,
+            "target": target, "probe": probe,
+            **({"defer_reason": probe.get("reason")} if status != "ok" else {}),
+        }
+        save_chat_turn(sid, result, self.history_dir)
+        emit("simple_action_complete", status=status, verdict=verdict)
+        return result
 
     def _gather_web_context(self, prompt: str) -> List[Dict[str, Any]]:
         # Web owns the network seams; pass those module functions through so
@@ -640,6 +777,9 @@ class AutonomousAgent:
              max_rounds=rounds)
         if intent == "audit":
             return self._handle_audit(prompt, sid, cancel_check)
+        if intent == "simple-action":
+            return self.run_simple_action(prompt, session_id=sid,
+                                          cancel_check=cancel_check)
         if intent == "edit":
             result = self._handle_edit(
                 prompt, sid, auto_apply, cancel_check,
@@ -851,9 +991,7 @@ class AutonomousAgent:
             },
         }
         marker_defer = CAPABILITY_MARKER in answer
-        if (marker_defer or status == "plan_required" or any(p in prompt.lower() for p in EXECUTION_PHRASES)) and (
-            self._auto_escalation_armed() or auto_apply or any(p in prompt.lower() for p in EXECUTION_PHRASES)
-        ):
+        if self._escalation_authorized(prompt, marker_defer, status):
             defer_reason = None
             if marker_defer:
                 head, _, tail = answer.partition(CAPABILITY_MARKER)
@@ -887,6 +1025,22 @@ class AutonomousAgent:
         emit("hourglass_complete", status=status,
              confidence=result["confidence"].get("observed"))
         return result
+
+    def _escalation_authorized(self, prompt: str, marker_defer: bool,
+                               status: Optional[str]) -> bool:
+        """Whether the hourglass answer lane may escalate to plan (issue #201).
+
+        An explicit execution directive may constrain the route, but
+        ``auto_apply=True`` alone never authorizes escalation -- the old
+        gate was vacuous because auto_apply defaults to true. Each clause
+        is independently testable; capability, scope, consent, and policy
+        checks still apply on the plan lane itself."""
+        lowered = (prompt or "").lower()
+        explicit_directive = any(p in lowered for p in EXECUTION_PHRASES)
+        trigger = bool(marker_defer or status == "plan_required"
+                       or explicit_directive)
+        return bool(trigger and (self._auto_escalation_armed()
+                                 or explicit_directive))
 
     def _auto_escalation_armed(self) -> bool:
         # Auto-escalation routes a chat defer into paid-capable plan
