@@ -395,8 +395,11 @@ class RunLifecycleTests(ServerHarness):
 class SettingsViewTests(ServerHarness):
     def test_settings_never_leak_secrets(self):
         secret_values = (
-            "jev-secret-fixture", "mcp-secret-fixture",
-            "label-secret-fixture", "paid-secret-fixture")
+            "sk-" + "or-v1-" + ("0123456789abcdef" * 4),
+            "mcp_test_token_" + ("0123456789abcdef" * 2),
+            "label-secret-fixture",
+            "sk-" + "proj-" + ("0123456789abcdef" * 2),
+        )
         class FakeSettings:
             def to_dict(self):
                 return {
@@ -426,6 +429,10 @@ class SettingsViewTests(ServerHarness):
                     self.assertTrue(payload["paid_key_present"])
                     for secret in secret_values:
                         self.assertNotIn(secret, blob)
+                    self.assertNotRegex(
+                        blob,
+                        r"(?i)(?:\bsk-(?:or-v1|proj|live)-[A-Za-z0-9_-]{16,}\b|\b[A-Za-z0-9_-]{32,}\b)",
+                    )
             finally:
                 conn.close()
 
