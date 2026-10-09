@@ -858,17 +858,40 @@ class IncidentReplayBudgetTests(unittest.TestCase):
 evidence-based result.
     """
 
-    def _replay(self, **run_kwargs):
-        counts = {"probe": 0, "jev": 0}
+    def _replay(self, prompt="check if example.com is up - respond yes/no",
+                http_status=200, keyed=False, **run_kwargs):
+        counts = {"probe": 0, "choice": 0, "jev": 0}
 
-        def fake_probe(*args, **kwargs):
+        def fake_probe(url, *args, **kwargs):
             counts["probe"] += 1
-            return {"ok": True, "http_status": 200, "verdict": "up",
-                    "reason": "'example.com' is up (HTTPS 200)",
-                    "latency_s": 0.2, "host": "example.com",
-                    "url": "https://example.com"}
+            host = str(url).split("://", 1)[-1].split("/", 1)[0]
+            denied = http_status == 403
+            return {
+                "ok": True,
+                "reachable": True,
+                "http_status": http_status,
+                "verdict": "denied" if denied else "up",
+                "reason": (
+                    f"'{host}' responds but denied page access (HTTPS 403); "
+                    "the host is reachable"
+                    if denied else f"'{host}' is up (HTTPS {http_status})"
+                ),
+                "latency_s": 0.2,
+                "host": host,
+                "url": str(url),
+            }
+
+        def fake_preflight(url, **kwargs):
+            host = str(url).split("://", 1)[-1].split("/", 1)[0]
+            return {"url": str(url), "host": host, "port": 443,
+                    "path": "/", "addresses": ("93.184.216.34",)}
 
         jev_policy = _site_jev(calls=[])
+        original_route = jev_policy.evaluate_request_workflow
+        def counted_route(*args, **kwargs):
+            counts["choice"] += 1
+            return original_route(*args, **kwargs)
+        jev_policy.evaluate_request_workflow = counted_route
         original_evaluate = jev_policy.evaluate_site_reachability
 
         def counted_jev(*args, **kwargs):
@@ -877,13 +900,20 @@ evidence-based result.
 
         jev_policy.evaluate_site_reachability = counted_jev
         with tempfile.TemporaryDirectory() as tmp:
-            agent = AutonomousAgent(settings=_lane_settings(),
+            settings = (_lane_settings(jev_api_key="jev-test",
+                                       jev_disabled=False)
+                        if keyed else _lane_settings())
+            agent = AutonomousAgent(settings=settings,
                                    history_dir=Path(tmp), root_dir=Path(tmp))
-            with patch("harness.web.probe_public_site",
+            with patch("harness.web.preflight_public_site",
+                       side_effect=fake_preflight), \
+                 patch("harness.web.probe_public_site",
                        side_effect=fake_probe), \
                  patch("harness.agent.chat",
                        side_effect=AssertionError("no OpenRouter calls")), \
                  patch("harness.agent.jev_for", return_value=jev_policy), \
+                 patch("harness.agent.jev_face_governor",
+                       return_value=MagicMock()), \
                  patch("harness.agent.governor_for",
                        side_effect=AssertionError("no spend governance")), \
                  patch.object(AutonomousAgent, "_handle_edit",
@@ -892,7 +922,7 @@ evidence-based result.
                        return_value=MagicMock()):
                 start = time.monotonic()
                 res = agent.run_prompt(
-                    "check if example.com is up - respond yes/no",
+                    prompt,
                     session_id="replay", **run_kwargs)
                 wall = time.monotonic() - start
         return res, counts, wall
@@ -914,6 +944,20 @@ evidence-based result.
     def test_replay_within_budgets_gui_path(self):
         res, counts, wall = self._replay(force_conversation=True)
         self._assert_replay(res, counts, wall)
+
+    def test_exact_freeoffgrid_uptime_prompt_with_403(self):
+        prompt = (
+            "can you quick verify if freeoffgridcalculator.com is live/up "
+            "right now? (simple request - just a yes/no required as a response)"
+        )
+        res, counts, wall = self._replay(
+            prompt, http_status=403, keyed=True)
+        self._assert_replay(res, counts, wall)
+        self.assertEqual(counts["choice"], 1)
+        self.assertEqual(res.get("target"),
+                         "https://freeoffgridcalculator.com")
+        self.assertEqual(res.get("probe", {}).get("http_status"), 403)
+        self.assertEqual(res.get("response"), "Yes.")
 
 
 if __name__ == "__main__":
