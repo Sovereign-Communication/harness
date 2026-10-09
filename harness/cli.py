@@ -1363,7 +1363,11 @@ def _cmd_jev_phase(opts, settings):
 
     if all_phases:
         # --all is a local accounting pass; one live judgment per phase could
-        # multiply spend unexpectedly.
+        # multiply spend unexpectedly. Keep the live-mode behavior visible
+        # even when JSON is selected, without contaminating its stdout payload.
+        if use_live:
+            eprint("jev-phase --all is a local accounting pass; live Jev is not called. "
+                   "Use --phase <ID> for a live phase judgment.")
         jev_policy = None
         board = score_all_phases(
             opts.repo_root, jev_policy=jev_policy, min_score=min_score,

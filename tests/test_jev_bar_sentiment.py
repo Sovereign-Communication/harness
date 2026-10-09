@@ -31,7 +31,7 @@ import os
 import tempfile
 from types import SimpleNamespace
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -803,9 +803,22 @@ class TestCliJevPhase(unittest.TestCase):
         board = {"phases": {}, "passing": [], "failing": [], "false_complete": []}
         with patch("harness.cli.score_all_phases", return_value=board) as score, \
              patch("harness.cli.policy_for", side_effect=AssertionError("provider path")):
-            with redirect_stdout(io.StringIO()):
-                _cmd_jev_phase(opts, settings=SimpleNamespace(max_cost=1.0))
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                _cmd_jev_phase(opts, settings=SimpleNamespace(max_cost=0.05))
         self.assertIsNone(score.call_args.kwargs["jev_policy"])
+        self.assertIn("live Jev is not called", stderr.getvalue())
+        self.assertEqual(json.loads(stdout.getvalue()), board)
+
+    def test_cli_all_local_only_does_not_emit_live_notice(self):
+        opts = self.parser.parse_args(["jev-phase", "--all", "--local-only", "--json"])
+        board = {"phases": {}, "passing": [], "failing": [], "false_complete": []}
+        with patch("harness.cli.score_all_phases", return_value=board):
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                _cmd_jev_phase(opts, settings=SimpleNamespace(max_cost=0.05))
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(json.loads(stdout.getvalue()), board)
 
     def test_single_phase_composes_bounded_governor_and_ledger(self):
         opts = self.parser.parse_args(["jev-phase", "--phase", "JEV-P1", "--json"])
