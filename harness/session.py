@@ -41,7 +41,9 @@ def governor_for(settings, max_cost_override=None):
         max_cost = finite_number(max_cost_override, "max_cost", 0.0,
                                  HARD_MAX_COST)
     gov = SpendGovernor(HttpTransport(), api_key, settings.expect_key_label,
-                        max_cost)
+                        max_cost,
+                        fireworks_budget_usd=getattr(
+                            settings, "fireworks_budget_usd", 0.0))
     gov.verify_key()
     return api_key, gov
 
@@ -70,7 +72,9 @@ def jev_face_governor(settings, max_cost_override=None):
         max_cost = finite_number(max_cost_override, "max_cost", 0.0,
                                  HARD_MAX_COST)
     return SpendGovernor(HttpTransport(), resolve_api_key(),
-                         settings.expect_key_label, max_cost)
+                         settings.expect_key_label, max_cost,
+                         fireworks_budget_usd=getattr(
+                             settings, "fireworks_budget_usd", 0.0))
 
 
 def ledger_for(settings, caller="cli"):
