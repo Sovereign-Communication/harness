@@ -13,11 +13,14 @@ import json
 import math
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from ._http import HttpTransport
+from .errors import ProviderUsageUnknown, ToolCancelled
+from .events import current_cancel_check, emit, provider_request_context
 
 # TypeSafe System One Jev pricing: $42 per billion tokens = $0.042 per million input tokens.
 # Output tokens are free ($0.00). Monthly included account credit: $5.00 (~119M input tokens).
@@ -560,7 +563,7 @@ class JevEvaluator:
         self.model = getattr(settings, "jev_model", "jev-latest") if settings else "jev-latest"
         self.min_confidence = getattr(settings, "min_confidence", 0.70) if settings else 0.70
         self.transport = transport or HttpTransport()
-        real_wire = type(self.transport) is HttpTransport
+        real_wire = HttpTransport.is_production_transport(self.transport)
         if cache is not None:
             self.cache = cache
         elif real_wire:
@@ -608,6 +611,13 @@ class JevEvaluator:
             active = _validate_questions(raw)
         except ValueError as exc:
             return self._failure(str(exc), fallback=False)
+
+        def check_cancelled():
+            check = current_cancel_check()
+            if check is not None and check():
+                raise ToolCancelled()
+
+        check_cancelled()
         local_state = state if isinstance(state, dict) else {"content": str(state)}
         state_hash = _digest(state, active)
 
@@ -628,18 +638,29 @@ class JevEvaluator:
             for _ in range(SINGLE_FLIGHT_ROUNDS):
                 cached = self.cache.get(cache_key)
                 if cached is not None:
+                    check_cancelled()
                     return self._cache_hit(cached)
                 flight, leader = self.cache.begin(cache_key)
                 if leader:
                     led.add(cache_key)
                     break
-                if not flight.event.wait(SINGLE_FLIGHT_WAIT_SECONDS):
+                deadline = time.monotonic() + SINGLE_FLIGHT_WAIT_SECONDS
+                while True:
+                    check_cancelled()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0.0:
+                        break
+                    if flight.event.wait(min(0.05, remaining)):
+                        break
+                if not flight.event.is_set():
                     break  # leader stalled or died: dispatch for ourselves
                 if flight.value is not None:
+                    check_cancelled()
                     return self._cache_hit(copy.deepcopy(flight.value))
         elif cache_key is not None:
             cached = self.cache.get(cache_key)
             if cached is not None:
+                check_cancelled()
                 return self._cache_hit(cached)
         site = ACTIVE_SITE.get()
         estimate = self._estimate_tokens(state, active)
@@ -666,11 +687,46 @@ class JevEvaluator:
                 # A policy asked for a reserved dispatch and none exists
                 # (a double, a re-used hook): never send unreserved.
                 return local("reservation_missing")
+            check_cancelled()
+            request_id = uuid.uuid4().hex
+            request_started = time.monotonic()
+            emit("model_request_start", model=self.model, attempt="jev",
+                 request_id=request_id)
             try:
-                status, resp = self.transport.post(
-                    self.endpoint, self.api_key,
-                    {"model": self.model, "state": state, "questions": active})
+                with provider_request_context(request_id, self.model, "jev"):
+                    status, resp = self.transport.post(
+                        self.endpoint, self.api_key,
+                        {"model": self.model, "state": state,
+                         "questions": active})
+                usage = resp.get("usage") if isinstance(resp, dict) else None
+                input_tokens, _output_tokens, input_observed, _output_observed = \
+                    self._observed_usage(usage)
+            except ProviderUsageUnknown:
+                outcome = "failure"
+                emit("model_request_end", model=self.model, attempt="jev",
+                     request_id=request_id, outcome="usage_unknown",
+                     usage_unknown=True,
+                     duration_s=round(time.monotonic() - request_started, 2))
+                raise
+            except ToolCancelled:
+                outcome = "neutral"
+                emit("model_request_end", model=self.model, attempt="jev",
+                     request_id=request_id, outcome="cancelled",
+                     duration_s=round(time.monotonic() - request_started, 2))
+                raise
+            except Exception:
+                outcome = "failure"
+                emit("model_request_end", model=self.model, attempt="jev",
+                     request_id=request_id, outcome="error",
+                     duration_s=round(time.monotonic() - request_started, 2))
+                return local("transport_failure")
+            emit("model_request_end", model=self.model, attempt="jev",
+                 request_id=request_id, outcome="response", http_status=status,
+                 duration_s=round(time.monotonic() - request_started, 2))
+            try:
                 if status == 200 and isinstance(resp, dict):
+                    usage = resp.get("usage") if isinstance(resp.get("usage"), dict) else {}
+                    retry_cost = self._retry_cost(usage)
                     try:
                         parsed = replace(self._parse_jev_response(resp, active),
                                          state_hash=state_hash)
@@ -688,6 +744,7 @@ class JevEvaluator:
                                 or output_tokens < 0):
                             output_tokens = 0
                         input_tokens = min(input_tokens, _usage_cap(estimate))
+                        known_cost = jev_cost(input_tokens) + retry_cost
                         # DF-JEV-3: the provider billed this response and we
                         # cannot use the answer. Mark it discarded so the
                         # caller can report the loss rather than degrading
@@ -695,9 +752,12 @@ class JevEvaluator:
                         return replace(self._failure(
                             "invalid TypeSafe response: " + str(exc), fallback=False,
                             input_tokens=input_tokens, output_tokens=output_tokens,
+                            usage_observed=(input_tokens > 0 or output_tokens > 0
+                                            or retry_cost > 0.0),
                             input_tokens_observed=input_tokens > 0,
                             output_tokens_observed=output_tokens > 0,
-                            discarded=input_tokens > 0), state_hash=state_hash)
+                            discarded=known_cost > 0.0,
+                            cost=known_cost), state_hash=state_hash)
                     settled, flag = _bounded_usage(parsed.input_tokens, estimate)
                     if flag == "usage_implausible":
                         # Not a believable bill: settle at the bound and flag
@@ -707,12 +767,17 @@ class JevEvaluator:
                             "tokens for a ~{}-token payload)".format(
                                 parsed.input_tokens, estimate),
                             fallback=False, input_tokens=settled,
+                            cost=jev_cost(settled) + retry_cost,
+                            usage_observed=(parsed.input_tokens > 0
+                                            or parsed.output_tokens > 0
+                                            or retry_cost > 0.0),
                             discarded=True,
                             fallback_reason="usage_implausible"),
                             state_hash=state_hash)
                     if flag == "usage_suspiciously_low":
                         parsed = replace(
-                            parsed, input_tokens=settled, cost=jev_cost(settled),
+                            parsed, input_tokens=settled,
+                            cost=jev_cost(settled) + retry_cost,
                             reasons=list(parsed.reasons) + [
                                 "usage_suspiciously_low: reported {} input tokens for "
                                 "a ~{}-token payload; settled at {}".format(
@@ -725,11 +790,55 @@ class JevEvaluator:
                         self.cache.put(cache_key, parsed)
                     return parsed
                 if status in (401, 422):
+                    usage = resp.get("usage") if isinstance(resp, dict) else None
+                    input_tokens, output_tokens, input_observed, output_observed = \
+                        self._observed_usage(usage)
+                    input_tokens = min(input_tokens, _usage_cap(estimate))
+                    retry_cost = self._retry_cost(usage)
+                    known_cost = jev_cost(input_tokens) + retry_cost
                     return replace(self._failure(
-                        f"TypeSafe request rejected (HTTP {status})", fallback=False),
+                        f"TypeSafe request rejected (HTTP {status})", fallback=False,
+                        input_tokens=input_tokens, output_tokens=output_tokens,
+                        usage_observed=(input_observed or output_observed
+                                        or retry_cost > 0.0),
+                        input_tokens_observed=input_observed,
+                        output_tokens_observed=output_observed,
+                        discarded=known_cost > 0.0,
+                        cost=known_cost),
                         state_hash=state_hash)
                 outcome = "failure"
-                return local("http_fallback")
+                fallback = local("http_fallback")
+                usage = resp.get("usage") if isinstance(resp, dict) else None
+                if isinstance(usage, dict):
+                    raw_reported = usage.get("cost")
+                    try:
+                        reported = (float(raw_reported)
+                                    if raw_reported is not None
+                                    and not isinstance(raw_reported, bool) else None)
+                    except (TypeError, ValueError):
+                        reported = None
+                    retry_cost = self._retry_cost(usage)
+                    tokens = usage.get("input_tokens", 0)
+                    if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
+                        tokens = 0
+                    if (isinstance(reported, bool) or reported is None
+                            or not math.isfinite(reported) or reported < 0.0):
+                        known_cost = jev_cost(tokens) + retry_cost
+                    else:
+                        known_cost = max(reported, retry_cost)
+                    if known_cost > 0.0:
+                        fallback = replace(
+                            fallback, cost=known_cost, input_tokens=tokens,
+                            input_tokens_observed=tokens > 0,
+                            usage_observed=(tokens > 0 or retry_cost > 0.0
+                                            or reported is not None))
+                return fallback
+            except ProviderUsageUnknown:
+                outcome = "failure"
+                raise
+            except ToolCancelled:
+                outcome = "neutral"
+                raise
             except Exception:
                 outcome = "failure"
                 return local("transport_failure")
@@ -752,7 +861,11 @@ class JevEvaluator:
                                  fallback_reason="circuit_open")
         outcome = "neutral"
         try:
-            result = self._evaluate_once(state, questions)
+            try:
+                result = self._evaluate_once(state, questions)
+            except ProviderUsageUnknown:
+                outcome = "failure"
+                raise
             if not result.is_fallback:
                 reason = result.reasons[0] if result.reasons else ""
                 if result.verdict != "fail" or result.answers:
@@ -791,20 +904,47 @@ class JevEvaluator:
             return self._failure(
                 "TypeSafe transport does not support a one-attempt request",
                 fallback=False)
+        request_id = uuid.uuid4().hex
+        request_started = time.monotonic()
+        emit("model_request_start", model=self.model, attempt="jev_once",
+             request_id=request_id)
         try:
-            status, response = post_once(
-                self.endpoint, self.api_key, payload)
+            with provider_request_context(request_id, self.model, "jev_once"):
+                status, response = post_once(
+                    self.endpoint, self.api_key, payload)
+            usage = response.get("usage") if isinstance(response, dict) else None
+            input_tokens, _output_tokens, input_observed, _output_observed = \
+                self._observed_usage(usage)
+        except ProviderUsageUnknown:
+            emit("model_request_end", model=self.model, attempt="jev_once",
+                 request_id=request_id, outcome="usage_unknown",
+                 usage_unknown=True,
+                 duration_s=round(time.monotonic() - request_started, 2))
+            raise
+        except ToolCancelled:
+            emit("model_request_end", model=self.model, attempt="jev_once",
+                 request_id=request_id, outcome="cancelled",
+                 duration_s=round(time.monotonic() - request_started, 2))
+            raise
         except Exception as exc:
+            emit("model_request_end", model=self.model, attempt="jev_once",
+                 request_id=request_id, outcome="error",
+                 duration_s=round(time.monotonic() - request_started, 2))
             return self._failure(
                 "TypeSafe transport failed (" + type(exc).__name__ + ")",
                 fallback=False)
+        emit("model_request_end", model=self.model, attempt="jev_once",
+             request_id=request_id, outcome="response", http_status=status,
+             duration_s=round(time.monotonic() - request_started, 2))
 
         usage = response.get("usage") if isinstance(response, dict) else None
         (input_tokens, output_tokens, input_observed,
          output_observed) = self._observed_usage(usage)
-        usage_observed = input_observed and output_observed
+        retry_cost = self._retry_cost(usage)
+        usage_observed = input_observed or output_observed or retry_cost > 0.0
         estimate = self._estimate_tokens(state, active)
         input_tokens = min(input_tokens, _usage_cap(estimate))
+        known_cost = jev_cost(input_tokens) + retry_cost
         model = response.get("model") if isinstance(response, dict) else None
         model_observed = isinstance(model, str) and bool(model.strip())
         if status != 200:
@@ -812,6 +952,7 @@ class JevEvaluator:
                 "TypeSafe request failed (HTTP {})".format(status),
                 fallback=False, input_tokens=input_tokens,
                 output_tokens=output_tokens, usage_observed=usage_observed,
+                cost=known_cost, discarded=known_cost > 0.0,
                 model=model if model_observed else self.model,
                 model_observed=model_observed,
                 input_tokens_observed=input_observed,
@@ -821,6 +962,7 @@ class JevEvaluator:
                 "invalid TypeSafe response: expected an object",
                 fallback=False, input_tokens=input_tokens,
                 output_tokens=output_tokens, usage_observed=usage_observed,
+                cost=known_cost, discarded=known_cost > 0.0,
                 input_tokens_observed=input_observed,
                 output_tokens_observed=output_observed)
         if not model_observed:
@@ -828,6 +970,7 @@ class JevEvaluator:
                 "invalid TypeSafe response: missing observed model identity",
                 fallback=False, input_tokens=input_tokens,
                 output_tokens=output_tokens, usage_observed=usage_observed,
+                cost=known_cost, discarded=known_cost > 0.0,
                 input_tokens_observed=input_observed,
                 output_tokens_observed=output_observed)
         answers = response.get("answers")
@@ -836,6 +979,7 @@ class JevEvaluator:
                 "invalid TypeSafe response: answer ids do not match the pack",
                 fallback=False, input_tokens=input_tokens,
                 output_tokens=output_tokens, usage_observed=usage_observed,
+                cost=known_cost, discarded=known_cost > 0.0,
                 model=model, model_observed=True,
                 input_tokens_observed=input_observed,
                 output_tokens_observed=output_observed)
@@ -851,7 +995,7 @@ class JevEvaluator:
                 output_tokens_observed=output_observed,
                 # DF-JEV-3: billed but unusable. Same discipline on the strict
                 # one-attempt path -- real usage settles, and the loss is named.
-                discarded=input_observed)
+                discarded=known_cost > 0.0, cost=known_cost)
         settled, flag = _bounded_usage(result.input_tokens, estimate)
         if flag == "usage_implausible":
             return self._failure(
@@ -862,10 +1006,12 @@ class JevEvaluator:
                 output_tokens=result.output_tokens, usage_observed=True,
                 model=result.model, model_observed=True,
                 input_tokens_observed=True, output_tokens_observed=True,
-                discarded=True, fallback_reason="usage_implausible")
+                discarded=True, fallback_reason="usage_implausible",
+                cost=jev_cost(settled) + retry_cost)
         if flag == "usage_suspiciously_low":
             return replace(
-                result, input_tokens=settled, cost=jev_cost(settled),
+                result, input_tokens=settled,
+                cost=jev_cost(settled) + retry_cost,
                 reasons=list(result.reasons) + [
                     "usage_suspiciously_low: reported {} input tokens for a "
                     "~{}-token payload; settled at {}".format(
@@ -893,6 +1039,17 @@ class JevEvaluator:
         return (values[0] or 0, values[1] or 0,
                 observed[0], observed[1])
 
+    @staticmethod
+    def _retry_cost(usage) -> float:
+        """Return validated provider-reported spend from prior attempts."""
+        if not isinstance(usage, dict):
+            return 0.0
+        value = usage.get("retry_cost", 0.0)
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value < 0.0):
+            return 0.0
+        return float(value)
+
     def _failure(self, reason: str, fallback: bool, input_tokens: int = 0,
                  output_tokens: int = 0, usage_observed: bool = False,
                  model: Optional[str] = None,
@@ -900,10 +1057,12 @@ class JevEvaluator:
                  input_tokens_observed: bool = False,
                  output_tokens_observed: bool = False,
                  discarded: bool = False,
-                 fallback_reason: Optional[str] = None) -> JevEvaluationResult:
+                 fallback_reason: Optional[str] = None,
+                 cost: Optional[float] = None) -> JevEvaluationResult:
         return JevEvaluationResult(
             "fail", 0.0, 0.0, {}, [reason],
-            cost=jev_cost(input_tokens), input_tokens=input_tokens,
+            cost=(jev_cost(input_tokens) if cost is None
+                  else max(0.0, float(cost))), input_tokens=input_tokens,
             output_tokens=output_tokens, is_fallback=fallback,
             model=model or self.model, usage_observed=usage_observed,
             model_observed=model_observed,
@@ -921,6 +1080,11 @@ class JevEvaluator:
             raise ValueError("usage.input_tokens must be a non-negative integer")
         if isinstance(output_tokens, bool) or not isinstance(output_tokens, int) or output_tokens < 0:
             raise ValueError("usage.output_tokens must be a non-negative integer")
+        retry_cost = usage.get("retry_cost", 0.0)
+        if (isinstance(retry_cost, bool)
+                or not isinstance(retry_cost, (int, float))
+                or not math.isfinite(retry_cost) or retry_cost < 0):
+            raise ValueError("usage.retry_cost must be a finite non-negative number")
         expected = _validate_questions(questions)
         answers = {}
         for key, question in expected.items():
@@ -944,7 +1108,8 @@ class JevEvaluator:
             else:
                 reasons.append(f"{key} (score): {answer['score']} (conf: {answer['confidence']})")
         return JevEvaluationResult(verdict, confidence, supported, answers, reasons,
-                                   cost=jev_cost(input_tokens), input_tokens=input_tokens,
+                                   cost=jev_cost(input_tokens) + retry_cost,
+                                   input_tokens=input_tokens,
                                    output_tokens=output_tokens, model=resp.get("model", self.model),
                                    usage_observed=True,
                                    model_observed=(isinstance(resp.get("model"), str)

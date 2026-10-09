@@ -9,10 +9,16 @@ reasoning-only traces, and truncation are protocol conditions, not content,
 and must never be mined for votes, file bodies, or consent decisions.
 """
 import json
+import math
+import time
+import uuid
 
 from .config import OPENROUTER_CHAT_URL
+from .errors import HarnessError, ProviderUsageUnknown, ToolCancelled
+from .events import emit, provider_request_context
 from .output import eprint
 from .routing_table import floor_model, strip_variant_suffix
+from .tokens import estimate_prompt_tokens
 
 REASONING_FALLBACK_PREFIX = "[NOTE] model returned no content"
 
@@ -61,28 +67,50 @@ def _extract_json(text):
 def _reported_cost(resp):
     """Read a provider-reported cost even when the HTTP response is an error."""
     try:
-        return float((resp.get("usage") or {}).get("cost") or 0.0)
+        usage = resp.get("usage") or {}
+        value = usage.get("cost")
+        if value is None:
+            value = usage.get("retry_cost")
+        if isinstance(value, bool) or value is None:
+            return 0.0
+        cost = float(value)
+        return cost if math.isfinite(cost) and cost >= 0.0 else 0.0
     except (AttributeError, TypeError, ValueError):
         return 0.0
 
 
-def _merge_retry_cost(resp, prior_cost):
-    """Carry a billable failed reasoning attempt into the retry response.
+def _retry_cost_value(usage):
+    if not isinstance(usage, dict):
+        return 0.0
+    value = usage.get("retry_cost", 0.0)
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or value < 0.0):
+        return 0.0
+    return float(value)
 
-    ``chat`` keeps its small ``(status, response)`` API, so callers observe one
-    response. Adding the prior attempt to ``usage.cost`` makes the governor and
-    the ledger charge the complete provider-reported total without silently
-    dropping a billable rejected request.
-    """
-    if not prior_cost or not isinstance(resp, dict):
+
+def _merge_retry_cost(resp, prior_cost):
+    """Carry a billable failed reasoning attempt into the retry response."""
+    if not prior_cost:
         return resp
-    usage = resp.setdefault("usage", {})
-    try:
-        current = float(usage.get("cost") or 0.0)
-    except (TypeError, ValueError):
-        current = 0.0
-    usage["cost"] = current + prior_cost
-    usage["retry_cost"] = prior_cost
+    if not isinstance(resp, dict):
+        # Keep known spend visible even if the retry body is not an object;
+        # downstream extraction will see a malformed answer and the charge.
+        return {"_http_response": resp,
+                "usage": {"retry_cost": prior_cost}}
+    usage = resp.get("usage")
+    if not isinstance(usage, dict):
+        resp["usage"] = {"retry_cost": prior_cost}
+        return resp
+    retry_cost = _retry_cost_value(usage)
+    usage["retry_cost"] = retry_cost + prior_cost
+    if "cost" in usage:
+        value = usage.get("cost")
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value < 0.0):
+            usage.pop("cost", None)
+        else:
+            usage["cost"] = float(value) + prior_cost
     return resp
 
 
@@ -346,11 +374,62 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
                 pass
         return payload
 
-    def _account(status, resp):
-        if governor is not None and status == 200 and isinstance(resp, dict):
-            usage = resp.get("usage")
-            if isinstance(usage, dict) and "cost" not in usage:
-                _ensure_accounted(governor, canonical_model, resp, usage)
+    def _account(status, resp, payload):
+        if status != 200:
+            return status, resp
+
+        usage = resp.get("usage") if isinstance(resp, dict) else None
+        retry_cost = _retry_cost_value(usage)
+        if isinstance(usage, dict):
+            cost = usage.get("cost")
+            valid_cost = (isinstance(cost, (int, float))
+                          and not isinstance(cost, bool)
+                          and math.isfinite(cost) and cost >= 0.0)
+            if not valid_cost:
+                usage.pop("cost", None)
+                if governor is not None:
+                    try:
+                        _ensure_accounted(governor, canonical_model, resp, usage)
+                    except HarnessError as exc:
+                        unknown = ProviderUsageUnknown(
+                            f"provider omitted usage accounting for paid model "
+                            f"'{canonical_model}'; refusing to accept a response "
+                            "whose cost cannot be established",
+                            known_cost=retry_cost)
+                        account_unknown_usage(unknown, payload)
+                        raise unknown from exc
+                elif retry_cost > 0.0:
+                    unknown = ProviderUsageUnknown(
+                        "provider omitted final usage after a billed retry; "
+                        "final request cost is unknown",
+                        known_cost=retry_cost)
+                    account_unknown_usage(unknown, payload)
+                    raise unknown
+                else:
+                    return status, resp
+                # Retry cost is separate until the final attempt's missing
+                # provider cost is estimated from its token counts.
+                usage["cost"] += retry_cost
+            return status, resp
+
+        # A successful HTTP status without an object-shaped usage record is
+        # still an unpriced provider call. Preserve any retry charges carried
+        # in the synthetic envelope, book those once, and hold liability for
+        # this final attempt instead of letting callers accept its content.
+        if governor is not None and not governor.is_free(canonical_model):
+            unknown = ProviderUsageUnknown(
+                f"provider returned no usable usage accounting for paid model "
+                f"'{canonical_model}'; refusing to bill blind",
+                known_cost=retry_cost)
+            account_unknown_usage(unknown, payload)
+            raise unknown
+        if retry_cost > 0.0:
+            unknown = ProviderUsageUnknown(
+                "provider omitted final usage after a billed retry; "
+                "final request cost is unknown",
+                known_cost=retry_cost)
+            account_unknown_usage(unknown, payload)
+            raise unknown
         return status, resp
 
     # A model already known to reject the reasoning parameter is called
@@ -358,7 +437,111 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
     # request and a retry every single time.
     want_reasoning = (_effort_to_send(reasoning_effort, model) is not None
                       and not reasoning_param_rejected(canonical_model))
-    status, resp = transport.post(OPENROUTER_CHAT_URL, api_key, build(want_reasoning))
+
+    def account_unknown_usage(exc, payload, prior_cost=0.0):
+        if prior_cost and not getattr(exc, "_chat_prior_cost_added", False):
+            exc.add_known_cost(prior_cost)
+            exc._chat_prior_cost_added = True
+        if not getattr(exc, "usage_unknown", False):
+            return
+        known_cost = max(0.0, float(getattr(exc, "known_cost", 0.0) or 0.0))
+        reserved_cost = 0.0
+        if governor is not None and not getattr(exc, "cost_accounted", False):
+            if known_cost > 0.0:
+                try:
+                    governor.record_actual(known_cost, canonical_model)
+                except HarnessError:
+                    governor.record_overrun(known_cost, canonical_model)
+            try:
+                prompt_text = "\n".join(
+                    str(message.get("content") or "")
+                    for message in (payload.get("messages") or [])
+                    if isinstance(message, dict))
+                prompt_price, completion_price = governor.fetch_pricing(
+                    [canonical_model])[canonical_model]
+                reserved_cost = (
+                    estimate_prompt_tokens(prompt_text) * prompt_price
+                    + max(0, int(max_tokens)) * completion_price)
+            except Exception:
+                # If price data is unavailable after an already-dispatched
+                # call, hold the whole configured budget to prevent another
+                # paid request from reusing it.
+                try:
+                    reserved_cost = max(
+                        float(governor.max_cost), float(governor.remaining()))
+                except Exception:
+                    reserved_cost = max(0.01, float(getattr(governor, "max_cost", 0.0) or 0.0))
+            retain = getattr(governor, "retain_unknown", None)
+            if callable(retain) and reserved_cost > 0.0:
+                retain(reserved_cost, canonical_model)
+            exc.cost_accounted = True
+            exc.reserved_cost = reserved_cost
+        emit("provider_usage_unknown", model=canonical_model,
+             known_cost=known_cost, reserved_cost=reserved_cost,
+             phase="openrouter")
+
+    def request(payload, attempt, prior_cost=0.0):
+        started = time.monotonic()
+        request_id = uuid.uuid4().hex
+        emit("model_request_start", model=model, attempt=attempt,
+             request_id=request_id)
+        try:
+            with provider_request_context(request_id, model, attempt):
+                status, resp = transport.post(
+                    OPENROUTER_CHAT_URL, api_key, payload)
+        except (ToolCancelled, ProviderUsageUnknown) as exc:
+            if getattr(exc, "usage_unknown", False):
+                account_unknown_usage(exc, payload, prior_cost)
+            emit("model_request_end", model=model, attempt=attempt,
+                 request_id=request_id,
+                 outcome=("cancelled" if isinstance(exc, ToolCancelled)
+                          else "error"),
+                 usage_unknown=bool(getattr(exc, "usage_unknown", False)),
+                 duration_s=round(time.monotonic() - started, 2))
+            raise
+        except (OSError, TimeoutError) as exc:
+            unknown = ProviderUsageUnknown(
+                "Provider response was lost after dispatch; usage is unknown "
+                "and this request will not be retransmitted automatically.",
+                known_cost=prior_cost)
+            account_unknown_usage(unknown, payload)
+            emit("model_request_end", model=model, attempt=attempt,
+                 request_id=request_id, outcome="error", usage_unknown=True,
+                 duration_s=round(time.monotonic() - started, 2))
+            raise unknown from exc
+        except Exception as exc:
+            emit("model_request_end", model=model, attempt=attempt,
+                 request_id=request_id,
+                 outcome=("cancelled" if type(exc).__name__ == "ToolCancelled"
+                          else "error"),
+                 duration_s=round(time.monotonic() - started, 2))
+            raise
+        emit("model_request_end", model=model, attempt=attempt,
+             request_id=request_id,
+             outcome="response", http_status=status,
+             duration_s=round(time.monotonic() - started, 2))
+        return status, resp
+
+    def account_cancelled(exc, additional_cost=0.0):
+        if getattr(exc, "cost_accounted", False):
+            return
+        exc.add_known_cost(additional_cost)
+        if (governor is not None and exc.known_cost > 0.0
+                and not exc.cost_accounted):
+            try:
+                governor.record_actual(exc.known_cost, canonical_model)
+            except HarnessError:
+                # The provider has already billed this response. Preserve the
+                # real spend even when it crossed the configured ceiling, and
+                # keep cancellation as the user-visible outcome.
+                governor.record_overrun(exc.known_cost, canonical_model)
+            exc.cost_accounted = True
+
+    try:
+        status, resp = request(build(want_reasoning), "primary")
+    except ToolCancelled as exc:
+        account_cancelled(exc)
+        raise
     if want_reasoning and status != 200:
         err = str(resp.get("error", {}).get("message", resp)
                   if isinstance(resp, dict) else resp).lower()
@@ -369,11 +552,15 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
             _events.emit("rotation", model=model, reason="reasoning_param_rejected",
                          note="provider retry without the reasoning parameter")
             prior_cost = _reported_cost(resp)
-            retry_status, retry_resp = transport.post(
-                OPENROUTER_CHAT_URL, api_key, build(False))
-            return _account(retry_status,
-                            _merge_retry_cost(retry_resp, prior_cost))
-    return _account(status, resp)
+            try:
+                retry_status, retry_resp = request(
+                    build(False), "reasoning_retry", prior_cost=prior_cost)
+            except ToolCancelled as exc:
+                account_cancelled(exc, prior_cost)
+                raise
+            retry_resp = _merge_retry_cost(retry_resp, prior_cost)
+            return _account(retry_status, retry_resp, build(False))
+    return _account(status, resp, build(want_reasoning))
 
 
 def governed_text(transport, api_key, governor, model, prompt, max_tokens,

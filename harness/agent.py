@@ -575,6 +575,8 @@ class AutonomousAgent:
         if web:
             try:
                 web_sources = self._gather_web_context(prompt)
+            except ToolCancelled:
+                raise
             except Exception as exc:  # context failure must not kill the lane
                 web_sources = [{"kind": "web", "ok": False,
                                 "note": f"web tools error: {type(exc).__name__}"}]
@@ -949,6 +951,8 @@ class AutonomousAgent:
                         if completion and completion.get("complete") is True:
                             status = "ok"
                             break
+                    except ToolCancelled:
+                        raise
                     except Exception:
                         pass
                 status = "needs_iteration"
@@ -1013,6 +1017,8 @@ class AutonomousAgent:
                     })
                     save_chat_turn(sid, escalated, self.history_dir)
                     return escalated
+            except ToolCancelled:
+                raise
             except Exception:
                 pass
 
@@ -1073,6 +1079,8 @@ class AutonomousAgent:
                 raise ToolCancelled("Prompt execution was cancelled by user")
             try:
                 web_sources = self._gather_web_context(prompt)
+            except ToolCancelled:
+                raise
             except Exception as e:  # web tools must never kill the chat lane
                 web_sources = [{"kind": "web", "ok": False, "note": f"web tools error: {e}"}]
             hosts = ", ".join(sorted(DEFAULT_FETCH_HOSTS)) or "(none configured)"
@@ -1882,6 +1890,8 @@ class AutonomousAgent:
                                               token_budget=run_token_budget)
                 if second_plan.get("status") != "refused":
                     plan = second_plan
+            except ToolCancelled:
+                raise
             except Exception:
                 pass
         if plan.get("status") == "refused":

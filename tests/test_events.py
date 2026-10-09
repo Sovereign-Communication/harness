@@ -9,6 +9,7 @@ import io
 import json
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 
 from harness import events, render
@@ -48,6 +49,32 @@ class EventsBusTests(unittest.TestCase):
         self.assertEqual(ev["task_id"], "t1")
         self.assertEqual(ev["seq"], 1)
         self.assertIsInstance(ev["ts"], float)
+
+    def test_task_context_adds_identity_only_to_unscoped_events(self):
+        got, sink = _collect()
+        events.add_sink(sink)
+        with events.task_context("ui/run-1", lambda: True):
+            events.emit("model_request_start", model="m")
+            events.emit("panel_call", task_id="explicit/run-2", model="other")
+            events.emit("provider_http_attempt", task_id=None, phase="start")
+            self.assertIs(events.current_cancel_check()(), True)
+        self.assertEqual(got[0]["task_id"], "ui/run-1")
+        self.assertEqual(got[1]["task_id"], "explicit/run-2")
+        self.assertEqual(got[2]["task_id"], "ui/run-1")
+        self.assertIsNone(events.current_cancel_check())
+
+    def test_submit_with_context_carries_run_id_and_cancellation(self):
+        got, sink = _collect()
+        events.add_sink(sink)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with events.task_context("ui/run-worker", lambda: True):
+                future = events.submit_with_context(
+                    pool, events.emit, "model_request_start", model="m")
+                future.result(timeout=2)
+                cancelled = events.submit_with_context(
+                    pool, lambda: events.current_cancel_check()())
+                self.assertTrue(cancelled.result(timeout=2))
+        self.assertEqual(got[0]["task_id"], "ui/run-worker")
 
     def test_seq_increases_across_events(self):
         got, sink = _collect()
