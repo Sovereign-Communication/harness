@@ -1,13 +1,32 @@
 """Spend-governor policy: per-token math, ceilings, key trust, payload guards."""
 import unittest
 
-from harness.errors import HarnessError
+from harness.errors import HarnessError, ToolCancelled
 from harness.panel import panel_judge
 from harness.tokens import estimate_prompt_tokens
 from tests._fake import FakeTransport, m, comp, _gov, P1, P2, JUDGE
 
 
 class CostMathTests(unittest.TestCase):
+    def test_key_verification_preserves_cancellation(self):
+        class CancelledTransport:
+            def get(self, *args, **kwargs):
+                raise ToolCancelled()
+
+        gov = _gov(CancelledTransport())
+        with self.assertRaises(ToolCancelled):
+            gov.verify_key()
+
+    def test_model_refresh_preserves_cancellation_even_with_cache(self):
+        class CancelledTransport:
+            def get(self, *args, **kwargs):
+                raise ToolCancelled()
+
+        gov = _gov(CancelledTransport())
+        gov._models = [{"id": "cached/model"}]
+        with self.assertRaises(ToolCancelled):
+            gov.fetch_models(refresh=True)
+
     def test_snapshot_reports_public_spend_state(self):
         gov = _gov(FakeTransport(models=[m(P1)]), max_cost=0.05)
         token = gov.reserve(0.00234567, "task_1")

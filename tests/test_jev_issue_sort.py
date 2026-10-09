@@ -7,6 +7,7 @@ import unittest
 from unittest import mock
 
 from harness.config import load_settings
+from harness.errors import ToolCancelled
 from harness.jev import JevEvaluationResult
 from harness.jev_packs import (issue_sort_question_pack, match_keywords,
                                sort_notes_into_buckets,
@@ -190,6 +191,29 @@ class EvaluateIssueSortTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.ledger = _ledger(self.tmp.name)
         self.pack = sample_pack()
+
+    def test_cancellation_is_not_keyword_fallback_and_releases_once(self):
+        class CancellingEvaluator(_CountingEvaluator):
+            def __init__(self):
+                super().__init__(keyed=True)
+
+            def evaluate(self, state, questions=None):
+                self.calls += 1
+                raise ToolCancelled()
+
+        governor = _CountingGovernor()
+        policy = JevPolicy(
+            load_settings({"jev_api_key": "jev-key"}),
+            evaluator=CancellingEvaluator(), governor=governor,
+            ledger=self.ledger)
+
+        with self.assertRaises(ToolCancelled):
+            policy.evaluate_issue_sort("auth token fail", self.pack)
+
+        self.assertEqual(len(governor.reconciled), 1)
+        self.assertEqual(governor.reconciled[0][1], 0.0)
+        self.assertEqual(_jev_evals(self.ledger), [])
+        self.assertIsNone(getattr(policy._tl, "token", None))
 
     def test_keyed_valid_choice_uses_pack_path_action_and_one_jev_eval(self):
         transport = _JevTransport({

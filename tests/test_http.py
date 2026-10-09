@@ -49,8 +49,10 @@ class RetryCostTests(unittest.TestCase):
              mock.patch.object(HttpTransport, "MAX_RETRIES", 2):
             status, resp = HttpTransport().post("https://openrouter.ai/api/v1/chat/completions", "k", {"model": "m"})
         self.assertEqual(status, 500)
-        self.assertAlmostEqual(resp["usage"]["cost"], 0.003)
+        self.assertNotIn("cost", resp["usage"])
         self.assertAlmostEqual(resp["usage"]["retry_cost"], 0.003)
+        from harness.chat import _reported_cost
+        self.assertAlmostEqual(_reported_cost(resp), 0.003)
 
     def test_clean_success_untouched(self):
         body = {"choices": [{"message": {"content": "ok"},

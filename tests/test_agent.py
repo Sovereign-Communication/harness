@@ -532,6 +532,18 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         self.assertIn("Web tools ARE attached", sysmsg)
         self.assertIn("www.anthropic.com", sysmsg)
 
+    def test_web_cancellation_is_not_swallowed_as_source_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp))
+            with patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch.object(agent, "_gather_web_context",
+                              side_effect=ToolCancelled("cancelled")):
+                with self.assertRaises(ToolCancelled):
+                    agent._handle_conversation(
+                        "search the web for a recent update", "test-sid",
+                        web=True)
+
     def test_web_true_search_success_attaches_sources_and_provenance(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))

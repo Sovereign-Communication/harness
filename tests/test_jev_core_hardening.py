@@ -13,7 +13,9 @@ from unittest import mock
 
 from harness._http import HttpTransport
 from harness.config import load_settings
-from harness.errors import HarnessError
+from harness.errors import HarnessError, ToolCancelled
+from harness.events import (add_sink, current_cancel_check, emit, remove_sink,
+                            cancellation_context, task_context)
 from harness.jev import (CircuitBreakers, JevCache, JevEvaluator,
                          PROCESS_CACHE, jev_cost)
 from harness.jev_policy import (BREAKER_FAILURE_THRESHOLD,
@@ -227,6 +229,64 @@ class CacheTests(_Base):
         self.assertIsNot(stub.cache, PROCESS_CACHE)
         self.assertIsNot(
             stub.cache, JevEvaluator(api_key="k", transport=CountingTransport()).cache)
+
+    def test_run_bound_real_transport_keeps_shared_cache_and_breaker(self):
+        transport = HttpTransport()
+        first = JevEvaluator(
+            api_key="cache-bound-key", transport=transport.with_cancel(lambda: False))
+        second = JevEvaluator(
+            api_key="cache-bound-key", transport=HttpTransport().with_cancel(
+                lambda: False))
+
+        self.assertIs(first.cache, PROCESS_CACHE)
+        self.assertIs(second.cache, PROCESS_CACHE)
+        self.assertIs(first.breakers, second.breakers)
+
+        class CustomHttpTransport(HttpTransport):
+            pass
+
+        custom_one = JevEvaluator(
+            api_key="cache-bound-key", transport=CustomHttpTransport())
+        custom_two = JevEvaluator(
+            api_key="cache-bound-key", transport=CustomHttpTransport())
+        self.assertIsNot(custom_one.cache, PROCESS_CACHE)
+        self.assertIsNot(custom_one.cache, custom_two.cache)
+        self.assertIsNot(custom_one.breakers, custom_two.breakers)
+
+    def test_single_flight_wait_is_cancellable_without_dispatch(self):
+        transport = CountingTransport(noul_resp())
+        cache = JevCache()
+        evaluator = JevEvaluator(api_key="key", transport=transport, cache=cache)
+        state = {"question": "same"}
+        questions = {"answer": {"type": "noul",
+                                "instructions": "Is the response usable?"}}
+        key = evaluator._cache_key(state, questions)
+        _flight, leader = cache.begin(key)
+        self.assertTrue(leader)
+        cancel = threading.Event()
+        entered = threading.Event()
+        outcomes = []
+
+        def waiter():
+            with cancellation_context(cancel.is_set):
+                entered.set()
+                try:
+                    evaluator.evaluate(state, questions)
+                except BaseException as exc:
+                    outcomes.append(exc)
+
+        thread = threading.Thread(target=waiter)
+        thread.start()
+        self.assertTrue(entered.wait(1.0))
+        time.sleep(0.1)  # allow the waiter to enter the shared-flight wait
+        cancel.set()
+        thread.join(1.0)
+        cache.finish(key)
+
+        self.assertFalse(thread.is_alive(), "cancel did not interrupt single-flight wait")
+        self.assertEqual(len(outcomes), 1)
+        self.assertIsInstance(outcomes[0], ToolCancelled)
+        self.assertEqual(transport.calls, [])
 
     def test_key_and_model_partition_the_cache(self):
         transport = CountingTransport(noul_resp())
@@ -1737,6 +1797,78 @@ class OtherSiteCacheTests(_Base):
 
 
 class FanOutPropagationTests(_Base):
+    def test_cancelled_backoff_books_known_cost_and_releases_once(self):
+        cancel = threading.Event()
+        transport = HttpTransport(cancel_check=cancel.is_set)
+        governor = self.governor()
+        policy = self.keyed(transport, governor=governor)
+
+        def transient_then_cancel(*_args):
+            cancel.set()
+            return 429, '{"usage":{"input_tokens":100}}', None
+
+        with mock.patch.object(
+                transport, "_request_once_cancellable",
+                side_effect=transient_then_cancel) as request:
+            with self.assertRaises(ToolCancelled) as cancelled:
+                policy.evaluate_answer("question", "candidate", "context")
+
+        expected = jev_cost(100)
+        request.assert_called_once()
+        self.assertAlmostEqual(cancelled.exception.known_cost, expected)
+        self.assertTrue(cancelled.exception.cost_accounted)
+        self.assertAlmostEqual(governor.spent, expected)
+        self.assertAlmostEqual(governor.outstanding, 0.0)
+
+    def test_workers_inherit_gui_task_and_cancellation_context(self):
+        policy = self.keyed(CountingTransport(noul_resp()))
+        cancel = threading.Event()
+        observed = []
+
+        def sink(event):
+            if event.get("type") == "fanout_context_test":
+                observed.append(event)
+
+        def job(label):
+            emit("fanout_context_test", label=label)
+            return current_cancel_check() is not None
+
+        add_sink(sink)
+        try:
+            with task_context("gui-jev-fanout", cancel.is_set):
+                result = policy.fan_out([("a", lambda: job("a")),
+                                         ("b", lambda: job("b"))])
+        finally:
+            remove_sink(sink)
+        self.assertEqual(result, [True, True])
+        self.assertEqual({event.get("task_id") for event in observed},
+                         {"gui-jev-fanout"})
+
+    def test_tool_cancelled_escapes_fanout_and_releases_reservation(self):
+        governor = self.governor()
+        policy = self.keyed(CountingTransport(noul_resp()), governor=governor)
+
+        def cancel_after_reserving():
+            policy._preflight(site="cancelled", max_input_tokens=20)
+            raise ToolCancelled()
+
+        with task_context("gui-jev-cancel", lambda: True):
+            with self.assertRaises(ToolCancelled):
+                policy.fan_out([("cancelled", cancel_after_reserving),
+                                ("sibling", lambda: "finished")])
+        self.assertEqual(governor._outstanding, 0.0)
+        self.assertEqual(self.rows(), [])
+
+    def test_evaluator_propagates_tool_cancellation(self):
+        class CancelledTransport:
+            def post(self, *_args, **_kwargs):
+                raise ToolCancelled()
+
+        evaluator = JevEvaluator(api_key="key", transport=CancelledTransport(),
+                                 cache=JevCache())
+        with self.assertRaises(ToolCancelled):
+            evaluator.evaluate({"request": "cancelled"})
+
     def test_harness_error_propagates_after_siblings_finish_in_job_order(self):
         policy = self.keyed(CountingTransport(noul_resp()))
         done = []
