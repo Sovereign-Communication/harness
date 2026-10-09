@@ -506,6 +506,17 @@ def build_parser():
                           "repo evidence, and the price gate reads only it)")
     pec.add_argument("--max-cost", type=float, default=None,
                      help="session cost ceiling in dollars (default: configured max_cost)")
+    pec.add_argument("--provider", default="openrouter",
+                     choices=("openrouter", "fireworks"),
+                     help="with --provider fireworks (plus "
+                          "--confirm-single-paid-call, --model and --max-cost) "
+                          "send the single paid Fireworks verification call")
+    pec.add_argument("--confirm-single-paid-call", action="store_true",
+                     help="confirm the one paid Fireworks verification call "
+                          "(required with --provider fireworks)")
+    pec.add_argument("--model", default=None,
+                     help="confirmed Fireworks model path for the single paid "
+                          "verification call (with --provider fireworks)")
     _add_output_flags(pec)
 
     ptrust = sub.add_parser("trust", help="Trust & correctness standing from ledger history "

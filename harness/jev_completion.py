@@ -184,6 +184,19 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "harness/session.py",
         ],
     },
+    # EV-8 (the single paid Fireworks call; see the EV-* section in the canon):
+    # the probe face, its one-shot refusal, and the receipt. The paid call
+    # itself runs only with the confirmation list answered and a budget set.
+    "EV-8": {
+        "status_needle": r"\bEV-8\b",
+        "pr_pattern": None,
+        "required_tests": ["tests/test_economics_fireworks_verify.py"],
+        "required_files": [
+            "harness/fireworks_probe.py",
+            "harness/cli.py",
+            "harness/cli_parser.py",
+        ],
+    },
     "JEV-P0": {
         "status_needle": r"JEV-P0|0 Contract|contract truth",
         "pr_pattern": r"PR #34|d042d70",

@@ -933,6 +933,37 @@ def _cmd_rankings(opts, settings):
     _emit(report, opts.out)
 
 
+def _cmd_fireworks_verify(opts, settings):
+    """EV-8's only shipped surface: the single paid Fireworks call.
+
+    No new command: ``harness economics --provider fireworks
+    --confirm-single-paid-call --model <confirmed-path> --max-cost <= 0.01``.
+    Every refusal lives in ``run_fireworks_probe`` (the ONE owner of the
+    one-shot rule); this face only resolves keys, builds the session, and
+    emits the report.
+    """
+    from .config import resolve_fireworks_key
+    from .fireworks_probe import run_fireworks_probe
+    if not getattr(opts, "confirm_single_paid_call", False):
+        raise HarnessError(
+            "the paid Fireworks verification sends real money; pass "
+            "--confirm-single-paid-call to confirm this one call.")
+    if not getattr(opts, "model", None):
+        raise HarnessError(
+            "pass --model accounts/fireworks/models/<slug> with a confirmed "
+            "model path for the verification call.")
+    if getattr(opts, "max_cost", None) is None:
+        raise HarnessError(
+            "pass an explicit --max-cost (at most $0.01) for the single paid "
+            "verification call.")
+    api_key, gov = _governor(settings, getattr(opts, "max_cost", None))
+    report = run_fireworks_probe(
+        HttpTransport(), api_key, resolve_fireworks_key(), gov,
+        _ledger(settings), model=opts.model, max_cost=opts.max_cost,
+        fireworks_enabled=getattr(settings, "fireworks_enabled", False))
+    _emit(report, opts.out)
+
+
 def _cmd_economics(opts, settings):
     """EV-0's only shipped surface: the EV-0a discount-truth probe.
 
@@ -949,6 +980,8 @@ def _cmd_economics(opts, settings):
     lands in the committed receipt and has to be committed like any other
     artifact the gate depends on.
     """
+    if getattr(opts, "provider", "openrouter") == "fireworks":
+        return _cmd_fireworks_verify(opts, settings)
     if not opts.probe_model:
         raise HarnessError(
             "`harness economics` runs the EV-0a discount probe; pass "
