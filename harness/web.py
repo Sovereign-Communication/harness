@@ -458,7 +458,6 @@ def _resolved_addresses_public(host, resolve_fn):
     Returns the address list on success. Raises :class:`HarnessError` when
     resolution fails, yields nothing, or any address is private, loopback,
     link-local, multicast, reserved, or unspecified -- the SSRF refusal."""
-    import ipaddress as _ipaddress
     try:
         infos = resolve_fn(host, 443)
     except Exception as e:
@@ -469,6 +468,11 @@ def _resolved_addresses_public(host, resolve_fn):
         ip = sockaddr[0] if sockaddr else None
         if ip:
             addrs.append(ip)
+    return _validate_public_addresses(host, addrs)
+
+
+def _validate_public_addresses(host, addrs):
+    import ipaddress as _ipaddress
     if not addrs:
         raise HarnessError(f"site probe refused: no addresses for '{host}'")
     for ip in addrs:
@@ -482,8 +486,48 @@ def _resolved_addresses_public(host, resolve_fn):
     return addrs
 
 
+def preflight_public_site(url, resolve_fn=None, cancel_check=None):
+    """Validate one HTTPS target and pin its public DNS addresses.
+
+    This is the no-HTTP capability/security preflight used before Jev
+    workflow selection. The resulting plan lets the later request use the
+    same DNS answers, so a hostname cannot change between preflight and probe.
+    """
+    import socket as _socket
+    if cancel_check and cancel_check():
+        from .errors import ToolCancelled as _Cancelled
+        raise _Cancelled("site probe cancelled by user")
+    if not url or not url.strip():
+        raise HarnessError("site probe refused: empty url")
+    u = url.strip()[:500]
+    try:
+        parsed = urllib.parse.urlsplit(u if "://" in u else f"https://{u}")
+    except ValueError:
+        raise HarnessError("site probe refused: malformed URL") from None
+    if parsed.scheme != "https":
+        raise HarnessError("site probe refused: only https:// URLs are probed")
+    if parsed.username or parsed.password or "@" in (parsed.netloc or ""):
+        raise HarnessError("site probe refused: credentials in URL are rejected")
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise HarnessError("site probe refused: no host in URL")
+    try:
+        port = parsed.port or 443
+    except ValueError:
+        raise HarnessError("site probe refused: malformed port") from None
+    if port != 443:
+        raise HarnessError("site probe refused: only the default https port is probed")
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+    resolve = resolve_fn or _socket.getaddrinfo
+    addrs = _resolved_addresses_public(host, resolve)
+    return {"url": u, "host": host, "port": port,
+            "path": path, "addresses": tuple(addrs)}
+
+
 def probe_public_site(url, timeout=8.0, cancel_check=None, resolve_fn=None,
-                      connect_fn=None):
+                      connect_fn=None, preflight_plan=None):
     """Perform one bounded HTTPS liveness probe against a public site.
 
     Returns a plain dict ``{ok, http_status, verdict, reason, latency_s,
@@ -499,25 +543,17 @@ def probe_public_site(url, timeout=8.0, cancel_check=None, resolve_fn=None,
     if cancel_check and cancel_check():
         from .errors import ToolCancelled as _Cancelled
         raise _Cancelled("site probe cancelled by user")
-    if not url or not url.strip():
-        raise HarnessError("site probe refused: empty url")
-    u = url.strip()[:500]
-    parsed = urllib.parse.urlsplit(u if "://" in u else f"https://{u}")
-    if parsed.scheme != "https":
-        raise HarnessError("site probe refused: only https:// URLs are probed")
-    if parsed.username or parsed.password or "@" in (parsed.netloc or ""):
-        raise HarnessError("site probe refused: credentials in URL are rejected")
-    host = (parsed.hostname or "").lower()
-    if not host:
-        raise HarnessError("site probe refused: no host in URL")
-    port = parsed.port or 443
-    if port != 443:
-        raise HarnessError("site probe refused: only the default https port is probed")
-    path = parsed.path or "/"
-    if parsed.query:
-        path += "?" + parsed.query
-    resolve = resolve_fn or _socket.getaddrinfo
-    addrs = _resolved_addresses_public(host, resolve)
+    plan = (preflight_plan if preflight_plan is not None
+            else preflight_public_site(url, resolve_fn=resolve_fn,
+                                       cancel_check=cancel_check))
+    raw_url = url.strip()[:500] if isinstance(url, str) else ""
+    if not isinstance(plan, dict) or plan.get("url") != raw_url:
+        raise HarnessError("site probe refused: preflight plan does not match url")
+    host = plan["host"]
+    port = plan["port"]
+    path = plan["path"]
+    u = plan["url"]
+    addrs = _validate_public_addresses(host, list(plan.get("addresses") or ()))
     if cancel_check and cancel_check():
         from .errors import ToolCancelled as _Cancelled
         raise _Cancelled("site probe cancelled by user")
@@ -594,7 +630,8 @@ def probe_public_site(url, timeout=8.0, cancel_check=None, resolve_fn=None,
 
 def _probe_verdict(host, url, status, location, latency, final_host):
     """Map one observed HTTP status to an honest liveness verdict."""
-    base = {"latency_s": round(float(latency), 2), "host": host, "url": url}
+    base = {"latency_s": round(float(latency), 2), "host": host,
+            "url": url, "reachable": True}
     if 200 <= status < 300:
         return {**base, "ok": True, "http_status": status, "verdict": "up",
                 "reason": f"'{host}' is up (HTTPS {status})"}
@@ -608,9 +645,18 @@ def _probe_verdict(host, url, status, location, latency, final_host):
                 "reason": (f"'{host}' answered with HTTPS {status}{dest}; "
                            f"redirects are not followed, so the destination "
                            f"is not claimed reachable")}
-    if status == 429 or 500 <= status < 600:
-        return {**base, "ok": False, "http_status": status, "verdict": "network",
-                "reason": f"'{host}' answered HTTPS {status}; uptime not established"}
+    if status == 429:
+        return {**base, "ok": False, "http_status": status,
+                "verdict": "rate_limited",
+                "reason": f"'{host}' responded but rate-limited the probe (HTTPS {status})"}
+    if 500 <= status < 600:
+        return {**base, "ok": False, "http_status": status,
+                "verdict": "server_error",
+                "reason": f"'{host}' responded with a server error (HTTPS {status})"}
+    if 400 <= status < 500:
+        return {**base, "ok": False, "http_status": status,
+                "verdict": "http_error",
+                "reason": f"'{host}' responded with an HTTP error (HTTPS {status})"}
     return {**base, "ok": False, "http_status": status or None,
             "verdict": "network",
             "reason": f"'{host}' gave an unusable response (HTTPS {status or '?'})"}

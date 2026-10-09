@@ -9,6 +9,22 @@ schemas only.
 
 TOOL_SCHEMAS = [
     {
+        "name": "site_check",
+        "title": "Check one public site's availability",
+        "description": (
+            "Run the shared freeform request lifecycle for one current "
+            "public-site availability question: Jev selects the workflow, "
+            "Harness performs at most one bounded HTTPS probe, and Jev judges "
+            "the observed response. No page-content research or mutation."),
+        "inputSchema": {"type": "object", "properties": {
+            "prompt": {"type": "string",
+                       "description": "Natural-language request to check one public site"},
+            "session_id": {"type": "string",
+                          "description": "Optional chat-history session id"},
+        }, "required": ["prompt"]},
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+    },
+    {
         "name": "panel_verify",
         "title": "Multi-model verification",
         "description": "Panel of cheap/free models answers a self-contained question, then a judge "

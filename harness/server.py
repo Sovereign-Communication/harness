@@ -853,8 +853,9 @@ class UiState:
                      ui_run=record["id"])
         try:
             runner = RUNNERS[record["kind"]]
-            result = runner(task_id, record["args"],
-                            cancel_flag.is_set)
+            with _events.task_scope(task_id):
+                result = runner(task_id, record["args"],
+                                cancel_flag.is_set)
             record["result"] = result
             record["status"] = str(result.get("status") or "done")
             if record["status"] == "cancelled":

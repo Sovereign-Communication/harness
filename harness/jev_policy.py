@@ -37,6 +37,8 @@ from .jev_packs import (
     LOG_FACTOR_SITE,
     PHASE_COMPLETION_SITE,
     PROVISION_SITE,
+    REQUEST_WORKFLOW_SITE,
+    SITE_REACHABILITY_SITE,
     REPO_SUMMARY_SITE,
     HOURGLASS_STAGE_DIMENSIONS,
     HOURGLASS_STAGE_PACK_ID,
@@ -67,6 +69,8 @@ from .jev_packs import (
     heuristic_route,
     hul_scope_question_pack,
     issue_sort_question_pack,
+    request_workflow_question_pack,
+    site_reachability_question_pack,
     log_factor_question_pack,
     match_completion_keywords,
     match_keywords,
@@ -269,7 +273,9 @@ class JevPolicy:
     def __init__(self, settings, *, transport=None, governor=None, ledger=None,
                  evaluator=None, breaker_threshold: Optional[int] = None,
                  breaker_cooldown: Optional[float] = None,
-                 clock: Optional[Callable[[], float]] = None):
+                 clock: Optional[Callable[[], float]] = None,
+                 request_timeout: float = 120.0,
+                 single_attempt: bool = False):
         if settings is None:
             raise HarnessError("Jev policy requires settings")
         self.settings = settings
@@ -302,12 +308,16 @@ class JevPolicy:
             transport=transport,
             settings=settings,
             breakers=breakers,
+            request_timeout=request_timeout,
+            single_attempt=single_attempt,
         ) if explicitly_disabled else evaluator or JevEvaluator(
             api_key=getattr(settings, "jev_api_key", None),
             endpoint=getattr(settings, "jev_endpoint", None),
             transport=transport,
             settings=settings,
             breakers=breakers,
+            request_timeout=request_timeout,
+            single_attempt=single_attempt,
         ))
 
     @property
@@ -3376,25 +3386,18 @@ class JevPolicy:
             "assessed" if assessed else "unassessed", result=result,
             reasons=reasons, perfect=bool(assessed and perfect))
 
-    def evaluate_provision(self, state, questions, *, site: str = PROVISION_SITE,
-                           task_id: Optional[str] = None,
-                           node_id: Optional[str] = None,
-                           max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
-        """Run one provisioning question pack (recipe choice or plan review).
-
-        ``harness/provision.py`` owns the packs' meaning and refuses any
-        answer outside its declared candidates; this method only owns the
-        dispatch, bounded spend, and the ONE ledger ``jev_eval``. Unkeyed
-        returns an honest ``is_fallback=True`` result with NO answers -- the
-        planner then falls back to its deterministic order, and nothing is
-        ever approved by a missing judgment. Returns ``(result, structural)``.
-        """
+    def evaluate_typed_pack(self, state, questions, *, site: str,
+                            task_id: Optional[str] = None,
+                            node_id: Optional[str] = None,
+                            max_input_tokens: int = JEV_MAX_INPUT_TOKENS,
+                            fallback_reason: str = "unkeyed Jev judgment is unavailable"):
+        """Dispatch one typed pack through the shared budget and ledger owner."""
         if not self.keyed:
             result = JevEvaluationResult(
                 "fail", 0.0, 0.0, {},
-                ["unkeyed: provisioning falls back to the deterministic plan"],
+                [fallback_reason],
                 is_fallback=True, model=self.evaluator.model,
-                fallback_reason="missing_key")
+                fallback_reason=self._no_key_reason())
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id)
             return result, structural
@@ -3416,6 +3419,34 @@ class JevPolicy:
                     pass
             return self._record_refusal(
                 str(exc), site=site, task_id=task_id, node_id=node_id)
+
+    def evaluate_site_reachability(self, state, *, task_id: Optional[str] = None,
+                                   max_input_tokens: int = 512):
+        """Ask one bounded Jev Noul whether a probe received an HTTPS response."""
+        return self.evaluate_typed_pack(
+            state, site_reachability_question_pack(),
+            site=SITE_REACHABILITY_SITE, task_id=task_id,
+            max_input_tokens=max_input_tokens,
+            fallback_reason="unkeyed Jev cannot judge site reachability")
+
+    def evaluate_request_workflow(self, state, *, task_id: Optional[str] = None,
+                                  max_input_tokens: int = 512):
+        """Choose answer/simple-action/plan for a freeform request candidate."""
+        return self.evaluate_typed_pack(
+            state, request_workflow_question_pack(),
+            site=REQUEST_WORKFLOW_SITE, task_id=task_id,
+            max_input_tokens=max_input_tokens,
+            fallback_reason="unkeyed Jev cannot select a request workflow")
+
+    def evaluate_provision(self, state, questions, *, site: str = PROVISION_SITE,
+                           task_id: Optional[str] = None,
+                           node_id: Optional[str] = None,
+                           max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+        """Run a provisioning question pack through shared spend and ledger."""
+        return self.evaluate_typed_pack(
+            state, questions, site=site, task_id=task_id, node_id=node_id,
+            max_input_tokens=max_input_tokens,
+            fallback_reason="unkeyed: provisioning falls back to the deterministic plan")
 
     @staticmethod
     def attach(envelope: Dict[str, Any], structural: Optional[Dict[str, Any]]):

@@ -51,6 +51,8 @@ import json
 import sys
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 # Guard against pathological sink counts; a UI registers one or two sinks.
 MAX_SINKS = 8
@@ -58,6 +60,7 @@ MAX_SINKS = 8
 _lock = threading.Lock()
 _sinks = []
 _seq = 0
+_active_task_id = ContextVar("harness_event_task_id", default=None)
 
 # Module-global for a one-time broken-sink warning; assigned only at module
 # level or inside emit() via the global statement (ruff F823 guard).
@@ -78,6 +81,10 @@ def emit(event_type, **fields):
         _seq += 1
         event = {"ts": time.time(), "seq": _seq, "type": event_type}
         event.update(fields)
+        if not event.get("task_id"):
+            task_id = _active_task_id.get()
+            if task_id:
+                event["task_id"] = task_id
         dead = []
         for sink in _sinks:
             try:
@@ -99,6 +106,16 @@ def add_sink(sink):
             return None
         _sinks.append(sink)
     return sink
+
+
+@contextmanager
+def task_scope(task_id):
+    """Attach one run's task id to otherwise unscoped events in this context."""
+    token = _active_task_id.set(task_id)
+    try:
+        yield
+    finally:
+        _active_task_id.reset(token)
 
 
 def remove_sink(sink):

@@ -21,6 +21,22 @@ class RaisingTransport(FakeTransport):
         raise OSError("offline")
 
 
+class OneShotTransport(FakeTransport):
+    def __init__(self, status=200, response=None):
+        super().__init__(status=status, response=response)
+        self.timeouts = []
+        self.retrying_posts = 0
+
+    def post_once(self, url, key, payload, timeout=120):
+        self.calls.append((url, key, payload))
+        self.timeouts.append(timeout)
+        return self.status, self.response
+
+    def post(self, url, key, payload):
+        self.retrying_posts += 1
+        raise AssertionError("single-attempt Jev must use post_once")
+
+
 def live_response(answers=None, input_tokens=100, output_tokens=20):
     return {"model": "jev-1.13.0", "answers": answers or {
         "supported": {"type": "noul", "noul": 0.94},
@@ -95,6 +111,29 @@ class JevP0Tests(unittest.TestCase):
         self.assertEqual(result.supported, 0.94)
         self.assertEqual(result.confidence, 0.91)
         self.assertEqual(result.verdict, "fail")
+
+    def test_single_attempt_uses_post_once_and_requested_timeout(self):
+        response = {
+            "model": "jev-test",
+            "answers": {"http_response_received": {"type": "noul", "noul": 0.999}},
+            "usage": {"input_tokens": 30, "output_tokens": 1},
+        }
+        transport = OneShotTransport(response=response)
+        evaluator = JevEvaluator(
+            api_key="key", transport=transport, request_timeout=10,
+            single_attempt=True)
+        result = evaluator.evaluate(
+            {"http_status": 200},
+            {"http_response_received": {
+                "type": "noul", "instructions": "Is the target responding?",
+                "criteria": {"true": "An HTTP status was received.",
+                             "false": "No HTTP status was received."},
+            }})
+        self.assertFalse(result.is_fallback)
+        self.assertEqual(result.answers["http_response_received"]["noul"], 0.999)
+        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(transport.retrying_posts, 0)
+        self.assertEqual(transport.timeouts, [10.0])
 
     def test_unkeyed_local_fallback_and_keyed_rejection(self):
         local = JevEvaluator().evaluate({"code": "x = 1\n"})

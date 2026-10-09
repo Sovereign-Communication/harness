@@ -20,9 +20,11 @@ class _JevTransport:
     def __init__(self, response):
         self.response = response
         self.calls = []
+        self.timeouts = []
 
     def post(self, url, key, payload, timeout=45):
         self.calls.append(payload)
+        self.timeouts.append(timeout)
         return 200, self.response
 
 
@@ -141,6 +143,98 @@ class JevPolicyTests(unittest.TestCase):
         self.assertEqual(events[0]["input_tokens"], 100)
         self.assertAlmostEqual(events[0]["cost"], expected)
         self.assertEqual(structural["cost"], result.cost)
+
+    def test_site_reachability_uses_one_typed_noul_through_shared_policy(self):
+        transport = _JevTransport({
+            "model": "jev-test",
+            "answers": {"http_response_received": {
+                "type": "noul", "noul": 0.999}},
+            "usage": {"input_tokens": 100, "output_tokens": 2},
+        })
+        governor = SpendGovernor(
+            FakeTransport(models=[m("jev-test", prompt="0", completion="0")]),
+            "sk-test", max_cost=0.10)
+        ledger = self._ledger()
+        policy = policy_for(
+            load_settings({"jev_api_key": "jev-key"}),
+            transport=transport, governor=governor, ledger=ledger,
+            request_timeout=10.0, single_attempt=True)
+
+        result, structural = policy.evaluate_site_reachability(
+            {"host": "example.com", "probe_outcome": "http_response",
+             "http_status": 200, "latency_s": 0.2},
+            task_id="site-check", max_input_tokens=512)
+
+        self.assertFalse(result.is_fallback)
+        self.assertEqual(result.answers["http_response_received"]["noul"], 0.999)
+        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(transport.timeouts, [10.0])
+        question = transport.calls[0]["questions"]["http_response_received"]
+        self.assertEqual(question["type"], "noul")
+        self.assertIn("http_status_received", question["instructions"])
+        self.assertIn("true", question["criteria"])
+        self.assertIn("false", question["criteria"])
+        events = ledger.entries()
+        self.assertEqual([event["event"] for event in events], ["jev_eval"])
+        self.assertEqual(events[0]["site"], "site_reachability")
+        self.assertEqual(structural["site"], "site_reachability")
+        self.assertLessEqual(governor.spent, 0.10)
+
+    def test_site_reachability_unkeyed_has_no_decision_answer(self):
+        policy = policy_for(self._unkeyed_settings())
+        result, structural = policy.evaluate_site_reachability(
+            {"probe_outcome": "http_response", "http_status": 200})
+        self.assertTrue(result.is_fallback)
+        self.assertEqual(result.answers, {})
+        self.assertTrue(structural["is_fallback"])
+        self.assertEqual(structural["fallback_reason"], "missing_key")
+
+    def test_request_workflow_uses_typed_choice_for_available_tiers(self):
+        transport = _JevTransport({
+            "model": "jev-test",
+            "answers": {"workflow_tier": {
+                "type": "choice", "choice": "simple-action",
+                "probabilities": {"simple-action": 0.999,
+                                  "answer": 0.0005, "plan": 0.0005},
+                "confidence": 0.999}},
+            "usage": {"input_tokens": 70, "output_tokens": 2},
+        })
+        governor = SpendGovernor(
+            FakeTransport(models=[m("jev-test", prompt="0", completion="0")]),
+            "sk-test", max_cost=0.10)
+        policy = policy_for(
+            load_settings({"jev_api_key": "jev-key"}),
+            transport=transport, governor=governor, ledger=self._ledger(),
+            request_timeout=10.0, single_attempt=True)
+        result, structural = policy.evaluate_request_workflow(
+            {"request": "is example.com up?"}, task_id="site-check",
+            max_input_tokens=512)
+
+        self.assertFalse(result.is_fallback)
+        self.assertEqual(result.answers["workflow_tier"]["choice"],
+                         "simple-action")
+        question = transport.calls[0]["questions"]["workflow_tier"]
+        self.assertEqual(question["type"], "choice")
+        self.assertEqual(set(question["criteria"]),
+                         {"answer", "simple-action", "plan"})
+        self.assertEqual(structural["site"], "request_workflow")
+        self.assertEqual(len(transport.calls), 1)
+
+    def test_site_reachability_preflight_refuses_before_dispatch(self):
+        transport = _JevTransport({"answers": {}})
+        governor = SpendGovernor(
+            FakeTransport(models=[m("jev-test", prompt="0", completion="0")]),
+            "sk-test", max_cost=0.000001)
+        policy = policy_for(
+            load_settings({"jev_api_key": "jev-key"}),
+            transport=transport, governor=governor)
+        result, structural = policy.evaluate_site_reachability(
+            {"probe_outcome": "http_response", "http_status": 200})
+        self.assertEqual(transport.calls, [])
+        self.assertFalse(result.is_fallback)
+        self.assertEqual(result.answers, {})
+        self.assertEqual(structural["site"], "site_reachability")
+        self.assertEqual(structural["cost"], 0.0)
 
     def test_preflight_refuses_before_transport(self):
         transport = _JevTransport(self._response(tokens=100))

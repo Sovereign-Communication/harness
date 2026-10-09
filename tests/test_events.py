@@ -49,6 +49,17 @@ class EventsBusTests(unittest.TestCase):
         self.assertEqual(ev["seq"], 1)
         self.assertIsInstance(ev["ts"], float)
 
+    def test_task_scope_tags_unscoped_events_and_restores_context(self):
+        got, sink = _collect()
+        events.add_sink(sink)
+        with events.task_scope("ui/run-1"):
+            events.emit("probe_start")
+            events.emit("explicit_task", task_id="other/run")
+        events.emit("outside")
+        self.assertEqual(got[0]["task_id"], "ui/run-1")
+        self.assertEqual(got[1]["task_id"], "other/run")
+        self.assertNotIn("task_id", got[2])
+
     def test_seq_increases_across_events(self):
         got, sink = _collect()
         events.add_sink(sink)

@@ -240,6 +240,9 @@ class McpProtocolTests(unittest.TestCase):
         # tools/list
         self.assertEqual(lines[1]["id"], 2)
         tools = {t["name"]: t for t in lines[1]["result"]["tools"]}
+        self.assertIn("site_check", tools)
+        self.assertTrue(tools["site_check"]["inputSchema"]["properties"]["prompt"])
+        self.assertTrue(tools["site_check"]["annotations"]["readOnlyHint"])
         self.assertIn("panel_verify", tools)
         self.assertIn("apply_edit", tools)
         self.assertIn("offer_work", tools)
@@ -254,6 +257,31 @@ class McpProtocolTests(unittest.TestCase):
         # ping
         self.assertEqual(lines[2]["id"], 3)
         self.assertEqual(lines[2]["result"], {})
+
+    def test_site_check_delegates_to_shared_agent_lifecycle(self):
+        import harness.mcp as mcp_module
+        expected = {
+            "status": "ok", "intent": "simple-action",
+            "workflow_tier": "simple-action",
+            "response": "Yes -- https://example.com responded with HTTPS 200.",
+        }
+        settings = SimpleNamespace()
+        transport, server = make_server()
+        with mock.patch.object(mcp_module, "load_settings",
+                               return_value=settings), \
+             mock.patch("harness.agent.AutonomousAgent.run_prompt",
+                        return_value=expected) as run_prompt:
+            result = server._invoke(
+                "site_check",
+                {"prompt": "check if example.com is up",
+                 "session_id": "mcp-site-check"},
+                cancel_check=lambda: False)
+
+        self.assertEqual(result, expected)
+        run_prompt.assert_called_once_with(
+            prompt="check if example.com is up", auto_apply=False,
+            session_id="mcp-site-check", cancel_check=mock.ANY,
+            force_conversation=True)
 
     def test_initialize_captures_client_caller(self):
         """The stdio peer names itself in clientInfo: the server tags its
@@ -997,6 +1025,7 @@ class LaneSchedulingTests(unittest.TestCase):
              "offer_work": "spendy",
              "log_judgment": "spendy",
              "route_query": "spendy",
+             "site_check": "observe",
              "ledger_status": "observe",
              "defer_work": "observe",
              "participation_report": "observe",

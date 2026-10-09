@@ -551,7 +551,9 @@ class JevEvaluator:
     def __init__(self, api_key: Optional[str] = None, endpoint: str = "https://api.typesafe.ai/v1/systemone",
                  transport: Optional[HttpTransport] = None, settings: Optional[Any] = None,
                  cache: Optional[JevCache] = None,
-                 breakers: Optional[CircuitBreakers] = None):
+                 breakers: Optional[CircuitBreakers] = None,
+                 request_timeout: float = 120.0,
+                 single_attempt: bool = False):
         self.explicitly_disabled = bool(getattr(settings, "jev_disabled", False)) if settings else False
         self.api_key = (None if self.explicitly_disabled else
                         api_key or (getattr(settings, "jev_api_key", None)
@@ -559,6 +561,8 @@ class JevEvaluator:
         self.endpoint = (getattr(settings, "jev_endpoint", endpoint) if settings else endpoint) or endpoint
         self.model = getattr(settings, "jev_model", "jev-latest") if settings else "jev-latest"
         self.min_confidence = getattr(settings, "min_confidence", 0.70) if settings else 0.70
+        self.request_timeout = max(0.1, float(request_timeout))
+        self.single_attempt = bool(single_attempt)
         self.transport = transport or HttpTransport()
         real_wire = type(self.transport) is HttpTransport
         if cache is not None:
@@ -667,9 +671,20 @@ class JevEvaluator:
                 # (a double, a re-used hook): never send unreserved.
                 return local("reservation_missing")
             try:
-                status, resp = self.transport.post(
-                    self.endpoint, self.api_key,
-                    {"model": self.model, "state": state, "questions": active})
+                payload = {"model": self.model, "state": state,
+                           "questions": active}
+                post_once = getattr(self.transport, "post_once", None)
+                if self.single_attempt and callable(post_once):
+                    status, resp = post_once(
+                        self.endpoint, self.api_key, payload,
+                        timeout=self.request_timeout)
+                elif self.request_timeout == 120.0:
+                    status, resp = self.transport.post(
+                        self.endpoint, self.api_key, payload)
+                else:
+                    status, resp = self.transport.post(
+                        self.endpoint, self.api_key, payload,
+                        timeout=self.request_timeout)
                 if status == 200 and isinstance(resp, dict):
                     try:
                         parsed = replace(self._parse_jev_response(resp, active),

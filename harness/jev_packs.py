@@ -35,6 +35,65 @@ MAX_FILE_TRIAGE = 15
 MAX_CLAIM_SUPPORT_PACK = 8
 MAX_CONTEXT_PACK_CHARS = 1200
 
+SITE_REACHABILITY_SITE = "site_reachability"
+REQUEST_WORKFLOW_SITE = "request_workflow"
+
+
+def request_workflow_question_pack() -> Dict[str, Dict[str, Any]]:
+    """Select the smallest lifecycle for a candidate freeform request."""
+    return {
+        "workflow_tier": {
+            "type": "choice",
+            "instructions": (
+                "Choose the smallest safe workflow that fully satisfies the "
+                "request. Use `simple-action` only for one clear, read-only "
+                "check of current public-site availability that can be "
+                "answered with one bounded HTTPS probe and an evidence "
+                "judgment."),
+            "criteria": {
+                "answer": (
+                    "The request asks for an explanation or ordinary answer "
+                    "that does not require a fresh external action."),
+                "simple-action": (
+                    "The request asks whether one named public website is "
+                    "currently reachable or up; one bounded HTTPS probe is "
+                    "sufficient, with no page-content research or mutation."),
+                "plan": (
+                    "The request requires code changes, multiple dependent "
+                    "actions, broad research, or other work that cannot be "
+                    "completed by one read-only HTTPS probe."),
+            },
+        },
+    }
+
+
+def site_reachability_question_pack() -> Dict[str, Dict[str, Any]]:
+    """One typed probability about whether the probed HTTPS host answered."""
+    return {
+        "http_response_received": {
+            "type": "noul",
+            "instructions": (
+                "Is the probe state's `http_status_received` field true? "
+                "Answer yes exactly when it is true: receipt of any valid "
+                "HTTP status proves the requested HTTPS endpoint responded. "
+                "Answer no when it is false. Do not infer page access or "
+                "application health from endpoint reachability."),
+            "criteria": {
+                "true": (
+                    "The probe state has `http_status_received=true` and a "
+                    "valid integer `http_status` from 100 through 599. Any "
+                    "status, including 403, proves the requested HTTPS "
+                    "endpoint answered this probe. A 403 means it responded "
+                    "but denied page access; it does not prove page health."),
+                "false": (
+                    "The probe state has `http_status_received=false` and no "
+                    "valid HTTP status because the request timed out or "
+                    "failed before receiving an HTTP response. This means "
+                    "unreachable on this probe only."),
+            },
+        },
+    }
+
 # HV-0: an operator-owned assessment pack.  Its JSON mirror lives under
 # packs/ and is checked against this runtime contract by tests.
 VISION_ASSESSMENT_SITE = "hourglass_vision_assessment"
