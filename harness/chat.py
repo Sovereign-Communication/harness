@@ -439,7 +439,7 @@ def _ensure_fireworks_accounted(offer, usage):
 
 
 def _chat_fireworks(transport, api_key, model, messages, max_tokens,
-                    governor=None, offers=None):
+                    governor=None):
     """One Fireworks chat completion.
 
     The payload is plain: no OpenRouter provider object, no floor, and no
@@ -447,7 +447,7 @@ def _chat_fireworks(transport, api_key, model, messages, max_tokens,
     confirmation item 4 and is unconfirmed. The worst case is checked against
     the local budget before anything is sent.
     """
-    offer = resolve_offer(model, offers)
+    offer = resolve_offer(model)
     payload = {"model": model, "messages": messages, "max_tokens": max_tokens}
     if governor is not None:
         governor.check_byok(model)
@@ -465,7 +465,7 @@ def _chat_fireworks(transport, api_key, model, messages, max_tokens,
 
 def chat_for_route(route, transport, openrouter_key, fireworks_key, messages,
                    max_tokens, reasoning_effort="auto", governor=None,
-                   offers=None, **kwargs):
+                   **kwargs):
     """Dispatch one call to the provider a Route names.
 
     OpenRouter routes go through the unchanged chat() path. Fireworks routes
@@ -477,7 +477,7 @@ def chat_for_route(route, transport, openrouter_key, fireworks_key, messages,
                 "Fireworks key missing: set ~/.config/scmorc/fireworks.env, "
                 "~/.config/harness/fireworks.env, or FIREWORKS_API_KEY")
         return _chat_fireworks(transport, fireworks_key, route.wire_model,
-                               messages, max_tokens, governor, offers)
+                               messages, max_tokens, governor)
     return chat(transport, openrouter_key, route.wire_model, messages, max_tokens,
                 reasoning_effort=reasoning_effort, governor=governor, **kwargs)
 

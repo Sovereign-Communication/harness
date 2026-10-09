@@ -24,7 +24,7 @@ from .chat import chat_for_route
 from .config import CONFIG_DIR
 from .discount_gate import REPO_ROOT
 from .errors import HarnessError
-from .fireworks import resolve_offer, resolve_route
+from .fireworks import resolve_route
 
 VERIFY_MESSAGE = "Reply with the single word: ok"
 VERIFY_MAX_TOKENS = 8
@@ -83,9 +83,10 @@ def run_fireworks_probe(transport, openrouter_key, fireworks_key, governor,
             f"--max-cost ${spend} is outside (0, ${VERIFY_MAX_COST_USD:.2f}] "
             "for the single paid verification call; refusing.")
     # Confirmed path only: raises for unconfirmed or non-Fireworks models.
-    offer = resolve_offer(model)
+    # resolve_route also loads the routable offer, so there is one pack scan.
     route = resolve_route(model, openrouter_enabled=True,
                           fireworks_enabled=True)
+    offer = route.offer
     if not fireworks_key:
         raise HarnessError(
             "Fireworks key missing: set ~/.config/scmorc/fireworks.env, "
@@ -99,7 +100,7 @@ def run_fireworks_probe(transport, openrouter_key, fireworks_key, governor,
     messages = [{"role": "user", "content": VERIFY_MESSAGE}]
     status, resp = chat_for_route(route, transport, openrouter_key,
                                   fireworks_key, messages, VERIFY_MAX_TOKENS,
-                                  reasoning_effort="none", governor=governor)
+                                  governor=governor)
     usage = resp.get("usage") if isinstance(resp, dict) else None
     usage = usage if isinstance(usage, dict) else {}
     if status != 200:

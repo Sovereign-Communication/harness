@@ -18,7 +18,7 @@ from harness import config
 from harness.chat import chat_for_route
 from harness.config import FIREWORKS_CHAT_URL, OPENROUTER_CHAT_URL, load_settings
 from harness.errors import HarnessError
-from harness.fireworks import (PROVIDER_FIREWORKS, PROVIDER_OPENROUTER,
+from harness.fireworks import (PROVIDER_FIREWORKS,
                                cost_estimate, resolve_offer, resolve_route)
 from harness.spend import SpendGovernor
 
@@ -80,7 +80,7 @@ class RouteTests(unittest.TestCase):
     def test_ordinary_models_stay_on_openrouter(self):
         route = resolve_route(OR_MODEL, openrouter_enabled=True,
                               fireworks_enabled=False)
-        self.assertEqual(route.provider, PROVIDER_OPENROUTER)
+        self.assertEqual(route.provider, "openrouter")
         self.assertEqual(route.wire_model, OR_MODEL)
 
     def test_fireworks_path_is_refused_while_fireworks_is_disabled(self):
@@ -91,7 +91,6 @@ class RouteTests(unittest.TestCase):
         route = resolve_route(NEMO, openrouter_enabled=True, fireworks_enabled=True)
         self.assertEqual(route.provider, PROVIDER_FIREWORKS)
         self.assertEqual(route.wire_model, NEMO)
-        self.assertEqual(route.route_reason, "explicit_fireworks_path")
         self.assertEqual(route.offer.model, "Nemotron Lightning 3.5 30B A3B")
 
     def test_unconfirmed_fireworks_path_raises_instead_of_guessing(self):

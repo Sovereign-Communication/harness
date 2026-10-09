@@ -18,7 +18,6 @@ from .config import FIREWORKS_MODEL_PREFIX
 from .endpoint_pricing import FireworksOffer, fireworks_offers
 from .errors import HarnessError
 
-PROVIDER_OPENROUTER = "openrouter"
 PROVIDER_FIREWORKS = "fireworks"
 
 
@@ -26,41 +25,34 @@ PROVIDER_FIREWORKS = "fireworks"
 class Route:
     provider: str
     wire_model: str
-    route_reason: str
     offer: Optional[FireworksOffer] = None
 
 
-def is_fireworks_model(model):
-    return isinstance(model, str) and model.startswith(FIREWORKS_MODEL_PREFIX)
-
-
-def resolve_offer(model, offers=None):
+def resolve_offer(model):
     """The routable Fireworks offer for a confirmed model path, else raise."""
-    pool = fireworks_offers() if offers is None else offers
-    for offer in pool:
+    for offer in fireworks_offers():
         if offer.path == model and offer.routable:
             return offer
     raise HarnessError(f"no confirmed Fireworks endpoint for '{model}'")
 
 
-def resolve_route(model, *, openrouter_enabled, fireworks_enabled, offers=None):
+def resolve_route(model, *, openrouter_enabled, fireworks_enabled):
     """Pick the provider for one model. Fails closed rather than falling back.
 
     A Fireworks path with Fireworks disabled raises instead of quietly moving
     to OpenRouter, because the operator asked for that provider by name.
     """
-    if is_fireworks_model(model):
+    if isinstance(model, str) and model.startswith(FIREWORKS_MODEL_PREFIX):
         if not fireworks_enabled:
             raise HarnessError(
                 f"model '{model}' is a Fireworks path but fireworks is disabled "
                 "(HARNESS_FIREWORKS_ENABLED)")
-        offer = resolve_offer(model, offers)
-        return Route(PROVIDER_FIREWORKS, model, "explicit_fireworks_path", offer)
+        return Route(PROVIDER_FIREWORKS, model, resolve_offer(model))
     if not openrouter_enabled:
         raise HarnessError(
             f"model '{model}' has no enabled provider: OpenRouter is disabled "
             "(HARNESS_OPENROUTER_ENABLED)")
-    return Route(PROVIDER_OPENROUTER, model, "openrouter_default")
+    return Route("openrouter", model)
 
 
 def cost_estimate(offer, prompt_tokens, completion_tokens):
