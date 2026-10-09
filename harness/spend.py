@@ -25,7 +25,7 @@ from .config import (
     BYOK_DENYLIST_PREFIXES, BYOK_PREFIXES_PATH, load_byok_prefixes,
     save_byok_prefixes, DEFAULT_MAX_COST,
 )
-from .errors import HarnessError
+from .errors import HarnessError, ToolCancelled
 from .output import eprint
 from .tokens import estimate_prompt_tokens
 from .validation import finite_number
@@ -170,6 +170,8 @@ class SpendGovernor:
     def verify_key(self):
         try:
             info = self.transport.get(OPENROUTER_KEY_URL, self.api_key)
+        except ToolCancelled:
+            raise
         except Exception as e:
             raise HarnessError(f"could not verify key limit: {e}") from e
         data = info.get("data", {})
@@ -373,6 +375,8 @@ class SpendGovernor:
                 self._models = self.transport.get(OPENROUTER_MODELS_URL, self.api_key,
                                                   timeout=20).get("data", [])
                 self._models_fetched_at = time.time()
+            except ToolCancelled:
+                raise
             except Exception as e:
                 if self._models is not None:
                     eprint(f"[warn] model list refresh failed, using cached catalog: {e}")

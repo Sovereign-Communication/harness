@@ -51,6 +51,8 @@ import json
 import sys
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar, copy_context
 
 # Guard against pathological sink counts; a UI registers one or two sinks.
 MAX_SINKS = 8
@@ -58,6 +60,46 @@ MAX_SINKS = 8
 _lock = threading.Lock()
 _sinks = []
 _seq = 0
+_task_id = ContextVar("harness_event_task_id", default=None)
+_cancel_check = ContextVar("harness_event_cancel_check", default=None)
+
+
+@contextmanager
+def task_context(task_id, cancel_check=None):
+    """Attach run identity and cancellation to one run's execution context."""
+    token = _task_id.set(task_id)
+    cancel_token = _cancel_check.set(cancel_check)
+    try:
+        yield
+    finally:
+        _cancel_check.reset(cancel_token)
+        _task_id.reset(token)
+
+
+def current_cancel_check():
+    """Return the active run's cancellation check, if this thread has one."""
+    return _cancel_check.get()
+
+
+def current_task_id():
+    """Return the active run identity for durable terminal receipts."""
+    return _task_id.get()
+
+
+@contextmanager
+def cancellation_context(cancel_check):
+    """Bind a cancellation signal without changing the current task id."""
+    token = _cancel_check.set(cancel_check)
+    try:
+        yield
+    finally:
+        _cancel_check.reset(token)
+
+
+def submit_with_context(executor, fn, *args, **kwargs):
+    """Submit one worker with this run's event and cancellation context."""
+    context = copy_context()
+    return executor.submit(context.run, fn, *args, **kwargs)
 
 # Module-global for a one-time broken-sink warning; assigned only at module
 # level or inside emit() via the global statement (ruff F823 guard).
@@ -77,6 +119,8 @@ def emit(event_type, **fields):
     with _lock:
         _seq += 1
         event = {"ts": time.time(), "seq": _seq, "type": event_type}
+        if "task_id" not in fields and _task_id.get() is not None:
+            fields["task_id"] = _task_id.get()
         event.update(fields)
         dead = []
         for sink in _sinks:

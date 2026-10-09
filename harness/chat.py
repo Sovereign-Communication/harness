@@ -9,8 +9,12 @@ reasoning-only traces, and truncation are protocol conditions, not content,
 and must never be mined for votes, file bodies, or consent decisions.
 """
 import json
+import time
+import uuid
 
 from .config import OPENROUTER_CHAT_URL
+from .errors import HarnessError, ToolCancelled
+from .events import emit
 from .output import eprint
 from .routing_table import floor_model, strip_variant_suffix
 
@@ -358,7 +362,45 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
     # request and a retry every single time.
     want_reasoning = (_effort_to_send(reasoning_effort, model) is not None
                       and not reasoning_param_rejected(canonical_model))
-    status, resp = transport.post(OPENROUTER_CHAT_URL, api_key, build(want_reasoning))
+
+    def request(payload, attempt):
+        started = time.monotonic()
+        request_id = uuid.uuid4().hex
+        emit("model_request_start", model=model, attempt=attempt,
+             request_id=request_id)
+        try:
+            status, resp = transport.post(OPENROUTER_CHAT_URL, api_key, payload)
+        except Exception as exc:
+            emit("model_request_end", model=model, attempt=attempt,
+                 request_id=request_id,
+                 outcome=("cancelled" if type(exc).__name__ == "ToolCancelled"
+                          else "error"),
+                 duration_s=round(time.monotonic() - started, 2))
+            raise
+        emit("model_request_end", model=model, attempt=attempt,
+             request_id=request_id,
+             outcome="response", http_status=status,
+             duration_s=round(time.monotonic() - started, 2))
+        return status, resp
+
+    def account_cancelled(exc, additional_cost=0.0):
+        exc.add_known_cost(additional_cost)
+        if (governor is not None and exc.known_cost > 0.0
+                and not exc.cost_accounted):
+            try:
+                governor.record_actual(exc.known_cost, canonical_model)
+            except HarnessError:
+                # The provider has already billed this response. Preserve the
+                # real spend even when it crossed the configured ceiling, and
+                # keep cancellation as the user-visible outcome.
+                governor.record_overrun(exc.known_cost, canonical_model)
+            exc.cost_accounted = True
+
+    try:
+        status, resp = request(build(want_reasoning), "primary")
+    except ToolCancelled as exc:
+        account_cancelled(exc)
+        raise
     if want_reasoning and status != 200:
         err = str(resp.get("error", {}).get("message", resp)
                   if isinstance(resp, dict) else resp).lower()
@@ -369,8 +411,11 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
             _events.emit("rotation", model=model, reason="reasoning_param_rejected",
                          note="provider retry without the reasoning parameter")
             prior_cost = _reported_cost(resp)
-            retry_status, retry_resp = transport.post(
-                OPENROUTER_CHAT_URL, api_key, build(False))
+            try:
+                retry_status, retry_resp = request(build(False), "reasoning_retry")
+            except ToolCancelled as exc:
+                account_cancelled(exc, prior_cost)
+                raise
             return _account(retry_status,
                             _merge_retry_cost(retry_resp, prior_cost))
     return _account(status, resp)

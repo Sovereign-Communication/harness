@@ -5,6 +5,8 @@ import unittest
 from unittest.mock import patch
 
 from harness.config import load_settings
+from harness.errors import ToolCancelled
+from harness.jev import JevEvaluationResult
 from harness.jev_policy import (
     JEV_MAX_INPUT_TOKENS,
     aggregate_structural,
@@ -115,6 +117,108 @@ class JevPolicyTests(unittest.TestCase):
         self.assertFalse(result.is_fallback)
         self.assertFalse(structural["is_fallback"])
         self.assertFalse(structural["native"])
+
+    def test_answer_cancellation_releases_reservation_once_and_propagates(self):
+        class CancellingEvaluator:
+            api_key = "jev-key"
+            model = "jev-test"
+
+            def evaluate(self, *args, **kwargs):
+                raise ToolCancelled()
+
+        class CountingGovernor:
+            def __init__(self):
+                self.reconciled = []
+
+            def reserve(self, worst, label):
+                return (label, worst)
+
+            def reconcile(self, token, actual):
+                self.reconciled.append((token, actual))
+
+        governor = CountingGovernor()
+        policy = policy_for(
+            load_settings({"jev_api_key": "jev-key"}),
+            evaluator=CancellingEvaluator(), governor=governor)
+
+        with self.assertRaises(ToolCancelled):
+            policy.evaluate_answer("question", "candidate", "context")
+
+        self.assertEqual(len(governor.reconciled), 1)
+        self.assertEqual(governor.reconciled[0][1], 0.0)
+        self.assertIsNone(getattr(policy._tl, "token", None))
+
+    def test_answer_cancellation_books_known_cost_once(self):
+        cancelled = ToolCancelled(known_cost=0.004)
+
+        class CancellingEvaluator:
+            api_key = "jev-key"
+            model = "jev-test"
+
+            def evaluate(self, *args, **kwargs):
+                raise cancelled
+
+        class CountingGovernor:
+            def __init__(self):
+                self.reconciled = []
+
+            def reserve(self, worst, label):
+                return (label, worst)
+
+            def reconcile(self, token, actual):
+                self.reconciled.append((token, actual))
+
+        governor = CountingGovernor()
+        policy = policy_for(
+            load_settings({"jev_api_key": "jev-key"}),
+            evaluator=CancellingEvaluator(), governor=governor)
+
+        with self.assertRaises(ToolCancelled) as raised:
+            policy.evaluate_answer("question", "candidate", "context")
+
+        self.assertIs(raised.exception, cancelled)
+        self.assertEqual(len(governor.reconciled), 1)
+        self.assertEqual(governor.reconciled[0][1], 0.004)
+        self.assertTrue(cancelled.cost_accounted)
+        self.assertIsNone(getattr(policy._tl, "token", None))
+
+    def test_cancellation_after_settlement_does_not_reconcile_twice(self):
+        class Evaluator:
+            api_key = "jev-key"
+            model = "jev-test"
+
+            def evaluate(self, *args, **kwargs):
+                return JevEvaluationResult(
+                    "pass", 0.9, 0.9,
+                    {"answer_sufficient": {"noul": 0.9},
+                     "iteration_required": {"noul": 0.1},
+                     "plan_required": {"noul": 0.1}},
+                    [], input_tokens=10, model=self.model)
+
+        class CountingGovernor:
+            def __init__(self):
+                self.reconciled = []
+
+            def reserve(self, worst, label):
+                return (label, worst)
+
+            def reconcile(self, token, actual):
+                self.reconciled.append((token, actual))
+
+        class CancellingLedger:
+            def append(self, *args, **kwargs):
+                raise ToolCancelled()
+
+        governor = CountingGovernor()
+        policy = policy_for(
+            load_settings({"jev_api_key": "jev-key"}), evaluator=Evaluator(),
+            governor=governor, ledger=CancellingLedger())
+
+        with self.assertRaises(ToolCancelled):
+            policy.evaluate_answer("question", "candidate", "context")
+
+        self.assertEqual(len(governor.reconciled), 1)
+        self.assertIsNone(getattr(policy._tl, "token", None))
 
     def test_live_call_reserves_and_records_actual_once(self):
         transport = _JevTransport(self._response(tokens=100))

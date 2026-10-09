@@ -18,7 +18,8 @@ from dataclasses import replace
 from typing import (Any, Callable, Dict, Iterable, List, Optional, Sequence,
                     Tuple)
 
-from .errors import HarnessError
+from .errors import HarnessError, ToolCancelled
+from .events import submit_with_context
 from .config import HARD_MAX_COST
 from .jev import (ACTIVE_GUARD, ACTIVE_RESERVER, ACTIVE_SITE, BREAKER_COOLDOWN_SECONDS,
                   BREAKER_FAILURE_THRESHOLD, CircuitBreakers,
@@ -482,7 +483,9 @@ class JevPolicy:
             try:
                 return job[1]()
             except BaseException as exc:
-                self._release_reservation()
+                self._release_reservation(exc)
+                if isinstance(exc, ToolCancelled):
+                    raise
                 if not fail_closed or not isinstance(exc, Exception):
                     raise
                 if isinstance(exc, HarnessError):
@@ -497,20 +500,24 @@ class JevPolicy:
             return [run(job, fail_closed=False) for job in jobs]
         with ThreadPoolExecutor(max_workers=workers,
                                 thread_name_prefix="jev-fanout") as pool:
-            futures = [pool.submit(run, job, fail_closed=True) for job in jobs]
+            futures = [submit_with_context(
+                pool, run, job, fail_closed=True) for job in jobs]
             results = [future.result() for future in futures]
         for item in results:
             if isinstance(item, _Escaped):
                 raise item.exc  # first HarnessError in job order
         return results
 
-    def _release_reservation(self) -> None:
+    def _release_reservation(self, error=None) -> None:
         """Release this thread's reservation if a call died holding it."""
         handle = getattr(self._tl, "token", None)
-        self._tl.token = None
         if handle is not None:
-            self._release(handle)
-        self._clear_dispatch_state()
+            if isinstance(error, ToolCancelled):
+                self._settle_cancelled(handle, error)
+            else:
+                self._release(handle)
+        else:
+            self._clear_dispatch_state()
 
     def _preflight(self, *, site: str, max_input_tokens: int,
                    eager: bool = False):
@@ -553,6 +560,12 @@ class JevPolicy:
 
     def _release(self, reservation) -> None:
         """Settle a reservation at zero (the call was refused or failed)."""
+        # ``_account`` clears the active handle immediately after settlement.
+        # An exception raised later (for example while appending the ledger
+        # row) must not reconcile that already-settled token a second time.
+        if getattr(self._tl, "token", None) is not reservation:
+            self._clear_dispatch_state()
+            return
         token = self._token_of(reservation)
         if token is not None and self.governor is not None:
             try:
@@ -560,6 +573,33 @@ class JevPolicy:
             except HarnessError:
                 pass  # already settled on the call's own path
         self._clear_dispatch_state(reservation)
+
+    def _settle_cancelled(self, reservation, error) -> None:
+        """Book known billed spend once, release liability, keep cancellation."""
+        if getattr(self._tl, "token", None) is not reservation:
+            # The normal accounting path already settled and cleared this
+            # handle; a later cancellation (for example, ledger I/O) must not
+            # reconcile the same token again.
+            self._clear_dispatch_state()
+            return
+        if getattr(error, "cost_accounted", False):
+            self._release(reservation)
+            return
+        cost = max(0.0, float(getattr(error, "known_cost", 0.0) or 0.0))
+        token = self._token_of(reservation)
+        model = getattr(self.evaluator, "model", None) or "jev"
+        try:
+            if token is not None and self.governor is not None:
+                self.governor.reconcile(token, cost)
+            elif self.governor is not None and cost > 0.0:
+                self.governor.record_actual(cost, model)
+        except HarnessError:
+            book = getattr(self.governor, "record_overrun", None)
+            if cost > 0.0 and callable(book):
+                book(cost, model)
+        finally:
+            self._clear_dispatch_state(reservation)
+        error.cost_accounted = True
 
     def _clear_dispatch_state(self, reservation=None) -> None:
         ACTIVE_SITE.set("")
@@ -791,6 +831,9 @@ class JevPolicy:
             )
             reservation = None
             return result, structural
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             return self._record_refusal(
@@ -1006,6 +1049,9 @@ class JevPolicy:
                 **{key: values.get(key) for key in signals},
             })
             return result, structural
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             values = {key: None for key in signals}
@@ -1128,6 +1174,9 @@ class JevPolicy:
                     else values["plan_required"] >= 0.5),
             })
             return result, structural
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             # Only a settlement failure happens AFTER a request was billed; a
@@ -1194,6 +1243,9 @@ class JevPolicy:
             structural = self._account(result, site=site, task_id=task_id,
                                        reservation=reservation)
             return result, structural
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             # Honest local triage is heuristic only; it never pretends to be live.
@@ -1241,6 +1293,9 @@ class JevPolicy:
                 result, site=site, task_id=task_id, reservation=reservation)
             reservation = None
             return result, structural
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             return self._record_refusal(
@@ -1311,6 +1366,9 @@ class JevPolicy:
                 })
             reservation = None
             return verdict, structural
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             result, structural = self._record_refusal(
@@ -1337,6 +1395,9 @@ class JevPolicy:
             )
             reservation = None
             return result, structural
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             return self._record_refusal(
@@ -1399,6 +1460,9 @@ class JevPolicy:
                 result, site=site, task_id=task_id, node_id=node_id,
                 reservation=reservation)
             return result, structural
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             route = heuristic_route(prompt, target_files)
@@ -1470,6 +1534,9 @@ class JevPolicy:
                 result, site=site, task_id=task_id, reservation=reservation)
             structural["files"] = list(result.answers["files"])
             return result, structural
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             picked = heuristic_file_relevance(goal, scoped, max_files=max_files)
@@ -1557,6 +1624,9 @@ class JevPolicy:
             structural["claim_flags"] = flags
             structural["skipped"] = False
             return result, structural
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             flags = [{"id": c["id"], "supported": None, "fallback": True}
@@ -1674,6 +1744,9 @@ class JevPolicy:
             structural["cannot_complete"] = bool(cannot)
             structural["missing_artifacts"] = missing
             return result, structural
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             post_dispatch = dispatched and self._sent(reservation)
@@ -1967,6 +2040,9 @@ class JevPolicy:
                 reservation=reservation)
             structural["determination"] = determination
             return result, structural, determination
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             determination = self._scope_determination(
@@ -2126,6 +2202,9 @@ class JevPolicy:
             result = self.evaluator.evaluate(
                 {"issue": issue_text, "pack_id": pack_doc["id"]},
                 questions)
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             return keyword_sort([str(exc)], reservation=reservation,
                                 reason=_refusal_reason(exc))
@@ -2277,6 +2356,9 @@ class JevPolicy:
                 site=site, max_input_tokens=max_input_tokens)
             result = self.evaluator.evaluate(
                 {"item": text, "pack_id": pack_doc["id"]}, questions)
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             return keyword_judgment([str(exc)], reservation=reservation,
                                     reason=_refusal_reason(exc))
@@ -2453,6 +2535,9 @@ class JevPolicy:
             reservation = self._preflight(
                 site=site, max_input_tokens=max_input_tokens)
             result = self.evaluator.evaluate(payload, questions)
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             return fallback_judgment([str(exc)], reservation=reservation,
                                      reason=_refusal_reason(exc))
@@ -2634,6 +2719,9 @@ class JevPolicy:
             result = self.evaluator.evaluate(
                 {"goal": goal_text, "pack_id": pack_doc["id"]},
                 questions)
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             return heuristic_route(
                 [str(exc)], _refusal_reason(exc), reservation=reservation)
@@ -2836,6 +2924,9 @@ class JevPolicy:
             reservation = self._preflight(
                 site=site, max_input_tokens=max_input_tokens)
             result = self.evaluator.evaluate(payload, questions)
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             return fallback_judgment([str(exc)], reservation=reservation,
                                      reason=_refusal_reason(exc))
@@ -3041,6 +3132,9 @@ class JevPolicy:
             reservation = self._preflight(
                 site=site, max_input_tokens=JEV_MAX_INPUT_TOKENS)
             result = self.evaluator.evaluate(payload, questions)
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
             return fallback_judgment(
                 [f"transport_error: {exc}"], reservation=reservation,
@@ -3293,6 +3387,9 @@ class JevPolicy:
 
         try:
             result = self.evaluator.evaluate_once(sanitized_state, questions)
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except Exception as exc:
             # An injected evaluator should not turn an exception into an
             # implicit fallback score; record the dispatched attempt once.
@@ -3408,12 +3505,11 @@ class JevPolicy:
                 reservation=reservation)
             reservation = None
             return result, structural
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
         except HarnessError as exc:
-            if reservation is not None and self.governor is not None:
-                try:
-                    self.governor.reconcile(reservation, 0.0)
-                except HarnessError:
-                    pass
+            self._release(reservation)
             return self._record_refusal(
                 str(exc), site=site, task_id=task_id, node_id=node_id)
 

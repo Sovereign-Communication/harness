@@ -13,11 +13,14 @@ import json
 import math
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from ._http import HttpTransport
+from .errors import ToolCancelled
+from .events import emit
 
 # TypeSafe System One Jev pricing: $42 per billion tokens = $0.042 per million input tokens.
 # Output tokens are free ($0.00). Monthly included account credit: $5.00 (~119M input tokens).
@@ -666,10 +669,33 @@ class JevEvaluator:
                 # A policy asked for a reserved dispatch and none exists
                 # (a double, a re-used hook): never send unreserved.
                 return local("reservation_missing")
+            request_id = uuid.uuid4().hex
+            request_started = time.monotonic()
+            emit("model_request_start", model=self.model, attempt="jev",
+                 request_id=request_id)
             try:
                 status, resp = self.transport.post(
                     self.endpoint, self.api_key,
                     {"model": self.model, "state": state, "questions": active})
+                usage = resp.get("usage") if isinstance(resp, dict) else None
+                input_tokens, _output_tokens, input_observed, _output_observed = \
+                    self._observed_usage(usage)
+            except ToolCancelled:
+                outcome = "neutral"
+                emit("model_request_end", model=self.model, attempt="jev",
+                     request_id=request_id, outcome="cancelled",
+                     duration_s=round(time.monotonic() - request_started, 2))
+                raise
+            except Exception:
+                outcome = "failure"
+                emit("model_request_end", model=self.model, attempt="jev",
+                     request_id=request_id, outcome="error",
+                     duration_s=round(time.monotonic() - request_started, 2))
+                return local("transport_failure")
+            emit("model_request_end", model=self.model, attempt="jev",
+                 request_id=request_id, outcome="response", http_status=status,
+                 duration_s=round(time.monotonic() - request_started, 2))
+            try:
                 if status == 200 and isinstance(resp, dict):
                     try:
                         parsed = replace(self._parse_jev_response(resp, active),
@@ -730,6 +756,9 @@ class JevEvaluator:
                         state_hash=state_hash)
                 outcome = "failure"
                 return local("http_fallback")
+            except ToolCancelled:
+                outcome = "neutral"
+                raise
             except Exception:
                 outcome = "failure"
                 return local("transport_failure")
@@ -791,13 +820,31 @@ class JevEvaluator:
             return self._failure(
                 "TypeSafe transport does not support a one-attempt request",
                 fallback=False)
+        request_id = uuid.uuid4().hex
+        request_started = time.monotonic()
+        emit("model_request_start", model=self.model, attempt="jev_once",
+             request_id=request_id)
         try:
             status, response = post_once(
                 self.endpoint, self.api_key, payload)
+            usage = response.get("usage") if isinstance(response, dict) else None
+            input_tokens, _output_tokens, input_observed, _output_observed = \
+                self._observed_usage(usage)
+        except ToolCancelled:
+            emit("model_request_end", model=self.model, attempt="jev_once",
+                 request_id=request_id, outcome="cancelled",
+                 duration_s=round(time.monotonic() - request_started, 2))
+            raise
         except Exception as exc:
+            emit("model_request_end", model=self.model, attempt="jev_once",
+                 request_id=request_id, outcome="error",
+                 duration_s=round(time.monotonic() - request_started, 2))
             return self._failure(
                 "TypeSafe transport failed (" + type(exc).__name__ + ")",
                 fallback=False)
+        emit("model_request_end", model=self.model, attempt="jev_once",
+             request_id=request_id, outcome="response", http_status=status,
+             duration_s=round(time.monotonic() - request_started, 2))
 
         usage = response.get("usage") if isinstance(response, dict) else None
         (input_tokens, output_tokens, input_observed,

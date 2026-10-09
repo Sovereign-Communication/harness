@@ -379,6 +379,11 @@ def run_chat_task(task_id, args, cancel_check):
     prompt = args["prompt"]
     root_dir = Path(args["root_dir"]) if args.get("root_dir") else None
     agent = AutonomousAgent(settings=settings, root_dir=root_dir)
+    # Bind cancellation at the network boundary as well as the orchestration
+    # checkpoints, so Stop can interrupt an in-flight provider request.
+    from ._http import HttpTransport
+    if isinstance(agent.transport, HttpTransport):
+        agent.transport = agent.transport.with_cancel(cancel_check)
     return agent.run_prompt(
         prompt=prompt,
         auto_apply=args.get("auto_apply", True),
@@ -853,8 +858,9 @@ class UiState:
                      ui_run=record["id"])
         try:
             runner = RUNNERS[record["kind"]]
-            result = runner(task_id, record["args"],
-                            cancel_flag.is_set)
+            with _events.task_context(task_id, cancel_flag.is_set):
+                result = runner(task_id, record["args"],
+                                cancel_flag.is_set)
             record["result"] = result
             record["status"] = str(result.get("status") or "done")
             if record["status"] == "cancelled":

@@ -9,11 +9,13 @@ import http.client
 import io
 import json
 import os
+import socket
 import shutil
 import tempfile
 import threading
 import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -390,6 +392,239 @@ class RunLifecycleTests(ServerHarness):
                 self.assertIn("panel_call", [e["type"] for e in gdata["events"]])
             finally:
                 conn.close()
+
+
+class AuthenticatedGuiStopTests(ServerHarness):
+    token = "gui-stop-integration-token"
+
+    def _auth_request(self, conn, method, path, body=None):
+        return _request(conn, method, path, body=body,
+                        headers={"X-Harness-Auth": self.token})
+
+    def test_blocked_chat_stop_finishes_and_next_prompt_starts(self):
+        from harness._http import HttpTransport
+
+        accepted = threading.Event()
+        peer_closed = threading.Event()
+
+        class BlockedProvider(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_args):
+                pass
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                self.rfile.read(length)
+                accepted.set()
+                self.connection.settimeout(6)
+                try:
+                    if not self.connection.recv(1):
+                        peer_closed.set()
+                except socket.timeout:
+                    pass
+                except OSError:
+                    peer_closed.set()
+
+        provider = ThreadingHTTPServer(("127.0.0.1", 0), BlockedProvider)
+        provider.daemon_threads = True
+        provider_thread = threading.Thread(target=provider.serve_forever,
+                                           daemon=True)
+        provider_thread.start()
+        self.addCleanup(provider.server_close)
+        self.addCleanup(provider.shutdown)
+
+        class FakeAgent:
+            def __init__(self, **_kwargs):
+                self.transport = HttpTransport()
+
+            def run_prompt(self, **kwargs):
+                if kwargs["prompt"] == "stuck":
+                    self.transport.post(
+                        f"http://127.0.0.1:{provider.server_port}/", "fixture", {},
+                        timeout=30)
+                return {"status": "ok", "response": "next prompt completed",
+                        "cost": 0.0}
+
+        conn = self._conn()
+        with mock.patch("harness.server.AutonomousAgent", FakeAgent), \
+             mock.patch("harness.server.load_settings",
+                        return_value=type("Settings", (),
+                                          {"allow_escalation": False})()):
+            try:
+                status, run = self._auth_request(
+                    conn, "POST", "/api/chat", {"prompt": "stuck"})
+                self.assertEqual(status, 201)
+                self.assertTrue(accepted.wait(5), "provider request was not dispatched")
+                status, stopped = self._auth_request(
+                    conn, "POST", f"/api/runs/{run['id']}/cancel", {})
+                self.assertEqual(status, 200)
+                self.assertTrue(stopped["cancel_requested"])
+                for _ in range(80):
+                    _, result = self._auth_request(
+                        conn, "GET", f"/api/runs/{run['id']}/result")
+                    if result["status"] != "running":
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(result["status"], "cancelled")
+                self.assertTrue(peer_closed.wait(3),
+                                "provider did not observe local request termination")
+
+                status, next_run = self._auth_request(
+                    conn, "POST", "/api/chat", {"prompt": "next"})
+                self.assertEqual(status, 201)
+                for _ in range(80):
+                    _, next_result = self._auth_request(
+                        conn, "GET", f"/api/runs/{next_run['id']}/result")
+                    if next_result["status"] != "running":
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(next_result["status"], "ok")
+                self.assertEqual(next_result["result"]["response"],
+                                 "next prompt completed")
+            finally:
+                conn.close()
+
+    def test_cancel_one_concurrent_run_keeps_other_socket_and_events_isolated(self):
+        from harness import chat as chat_module
+        from harness import events, osal
+        from harness._http import HttpTransport
+
+        blocked = threading.Event()
+        peer_closed = threading.Event()
+        client_ports = []
+        children = []
+        emitted = []
+
+        class ConcurrentProvider(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_args):
+                pass
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length))
+                prompt = payload["messages"][-1]["content"]
+                client_ports.append(self.client_address[1])
+                if prompt == "blocked":
+                    blocked.set()
+                    self.connection.settimeout(6)
+                    try:
+                        if not self.connection.recv(1):
+                            peer_closed.set()
+                    except socket.timeout:
+                        pass
+                    except OSError:
+                        peer_closed.set()
+                    return
+                body = json.dumps({
+                    "choices": [{"message": {"content": "fast completed"},
+                                 "finish_reason": "stop"}],
+                    "usage": {"cost": 0.0},
+                }).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        provider = ThreadingHTTPServer(("127.0.0.1", 0), ConcurrentProvider)
+        provider.daemon_threads = True
+        provider_thread = threading.Thread(target=provider.serve_forever,
+                                           daemon=True)
+        provider_thread.start()
+        self.addCleanup(provider.server_close)
+        self.addCleanup(provider.shutdown)
+
+        class FakeAgent:
+            def __init__(self, **_kwargs):
+                self.transport = HttpTransport()
+
+            def run_prompt(self, **kwargs):
+                status, response = chat_module.chat(
+                    self.transport, "fixture", "test/model",
+                    [{"role": "user", "content": kwargs["prompt"]}], 64,
+                    reasoning_effort="none")
+                return {
+                    "status": "ok" if status == 200 else "error",
+                    "response": response["choices"][0]["message"]["content"],
+                    "cost": 0.0,
+                }
+
+        real_spawn = osal.spawn_piped_process
+
+        def track_child(argv):
+            child = real_spawn(argv)
+            children.append(child)
+            return child
+
+        sink = emitted.append
+        events.add_sink(sink)
+        blocked_conn = self._conn()
+        fast_conn = self._conn()
+        try:
+            with mock.patch("harness.server.AutonomousAgent", FakeAgent), \
+                 mock.patch("harness.server.load_settings",
+                            return_value=type("Settings", (),
+                                              {"allow_escalation": False})()), \
+                 mock.patch.object(
+                     chat_module, "OPENROUTER_CHAT_URL",
+                     f"http://127.0.0.1:{provider.server_port}/"), \
+                 mock.patch("harness.osal.spawn_piped_process",
+                            side_effect=track_child):
+                status, blocked_run = self._auth_request(
+                    blocked_conn, "POST", "/api/chat", {"prompt": "blocked"})
+                self.assertEqual(status, 201)
+                self.assertTrue(blocked.wait(5))
+
+                status, fast_run = self._auth_request(
+                    fast_conn, "POST", "/api/chat", {"prompt": "fast"})
+                self.assertEqual(status, 201)
+                for _ in range(80):
+                    _, fast_result = self._auth_request(
+                        fast_conn, "GET", f"/api/runs/{fast_run['id']}/result")
+                    if fast_result["status"] != "running":
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(fast_result["status"], "ok")
+                self.assertEqual(
+                    fast_result["result"]["response"], "fast completed")
+
+                status, stopped = self._auth_request(
+                    blocked_conn, "POST",
+                    f"/api/runs/{blocked_run['id']}/cancel", {})
+                self.assertEqual(status, 200)
+                self.assertTrue(stopped["cancel_requested"])
+                for _ in range(80):
+                    _, blocked_result = self._auth_request(
+                        blocked_conn, "GET",
+                        f"/api/runs/{blocked_run['id']}/result")
+                    if blocked_result["status"] != "running":
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(blocked_result["status"], "cancelled")
+
+            self.assertTrue(peer_closed.wait(3))
+            self.assertEqual(len(children), 2)
+            self.assertEqual(len({child.pid for child in children}), 2)
+            self.assertTrue(all(child.poll() is not None for child in children))
+            self.assertEqual(len(set(client_ports)), 2)
+
+            starts = [event for event in emitted
+                      if event.get("type") == "model_request_start"]
+            ends = [event for event in emitted
+                    if event.get("type") == "model_request_end"]
+            self.assertEqual(
+                {event.get("task_id") for event in starts},
+                {blocked_run["task_id"], fast_run["task_id"]})
+            outcomes = {(event.get("task_id"), event.get("outcome"))
+                        for event in ends}
+            self.assertIn((blocked_run["task_id"], "cancelled"), outcomes)
+            self.assertIn((fast_run["task_id"], "response"), outcomes)
+        finally:
+            events.remove_sink(sink)
+            blocked_conn.close()
+            fast_conn.close()
 
 
 class SettingsViewTests(ServerHarness):
