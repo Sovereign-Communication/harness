@@ -143,12 +143,19 @@ class ToggleTests(_IsolatedHome):
         self.assertEqual(s.fireworks_budget_usd, 0.02)
 
     def test_toggles_are_settings_but_no_key_is(self):
+        os.environ["FIREWORKS_API_KEY"] = "fw-test-secret-value"
         s = load_settings(overrides={"fireworks_enabled": True,
                                      "fireworks_budget_usd": 0.05})
         d = s.to_dict()
         self.assertEqual(d["fireworks_enabled"], True)
         self.assertEqual(d["fireworks_budget_usd"], 0.05)
-        self.assertFalse(any("fireworks" in k and "key" in k for k in d))
+        # Fireworks keys only: toggles live in Settings, key material never
+        # does (resolved separately via resolve_fireworks_key()).
+        # startswith keeps legit non-fireworks keys (jev_api_key,
+        # expect_key_label) from tripping this guard.
+        self.assertFalse(any(k.startswith("fireworks") and "key" in k
+                             for k in d))
+        self.assertNotIn("fw-test-secret-value", list(d.values()))
 
 
 class KeyTests(_IsolatedHome):
