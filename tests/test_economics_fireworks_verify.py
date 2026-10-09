@@ -143,6 +143,38 @@ class ProbeTests(unittest.TestCase):
         self.assertFalse(os.path.exists(self.marker))
         self.assertEqual(t.calls, [])
 
+    def test_non_path_model_is_a_governed_refusal_not_an_attribute_error(self):
+        for bad in ("", None, 123, "vendor/some-model"):
+            t = RecordingTransport(_ok_resp({"cost": 0.0}))
+            with self.assertRaises(HarnessError, msg=f"model={bad!r}"):
+                self._run(t, model=bad)
+            self.assertEqual(t.calls, [])
+
+    def test_success_without_any_usage_accounting_is_refused_not_free(self):
+        # Each refusal burns the one shot (marker precedes dispatch), so
+        # every subcase gets fresh marker/receipt paths.
+        for usage in (None, {}, {"prompt_tokens": 0, "completion_tokens": 0}):
+            with tempfile.TemporaryDirectory() as tmp:
+                t = RecordingTransport(_ok_resp(usage))
+                gov = SpendGovernor(t, "or-key", max_cost=1.0,
+                                     fireworks_budget_usd=1.0)
+                with self.assertRaisesRegex(HarnessError, "bill blind"):
+                    run_fireworks_probe(
+                        t, "or-key", "fw-key", gov, StubLedger(),
+                        model=NEMO, max_cost=0.01, fireworks_enabled=True,
+                        marker_path=str(Path(tmp) / "m"),
+                        receipt_path=str(Path(tmp) / "r"))
+        with tempfile.TemporaryDirectory() as tmp:
+            t = RecordingTransport((200, "just a string"))
+            gov = SpendGovernor(t, "or-key", max_cost=1.0,
+                                 fireworks_budget_usd=1.0)
+            with self.assertRaisesRegex(HarnessError, "bill blind"):
+                run_fireworks_probe(
+                    t, "or-key", "fw-key", gov, StubLedger(),
+                    model=NEMO, max_cost=0.01, fireworks_enabled=True,
+                    marker_path=str(Path(tmp) / "m"),
+                    receipt_path=str(Path(tmp) / "r"))
+
     def test_max_cost_above_one_cent_is_refused(self):
         t = RecordingTransport(_ok_resp({"cost": 0.0}))
         with self.assertRaisesRegex(HarnessError, r"outside \(0,"):

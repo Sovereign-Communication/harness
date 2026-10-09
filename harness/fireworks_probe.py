@@ -24,7 +24,7 @@ from .chat import chat_for_route
 from .config import CONFIG_DIR
 from .discount_gate import REPO_ROOT
 from .errors import HarnessError
-from .fireworks import resolve_route
+from .fireworks import PROVIDER_FIREWORKS, resolve_route
 
 VERIFY_MESSAGE = "Reply with the single word: ok"
 VERIFY_MAX_TOKENS = 8
@@ -82,11 +82,17 @@ def run_fireworks_probe(transport, openrouter_key, fireworks_key, governor,
         raise HarnessError(
             f"--max-cost ${spend} is outside (0, ${VERIFY_MAX_COST_USD:.2f}] "
             "for the single paid verification call; refusing.")
-    # Confirmed path only: raises for unconfirmed or non-Fireworks models.
-    # resolve_route also loads the routable offer, so there is one pack scan.
+    # Confirmed path only: resolve_route raises for unconfirmed paths, and
+    # anything that is not a Fireworks route has no offer -- both refuse
+    # here as HarnessError so callers never see an AttributeError instead
+    # of the governed refusal.
     route = resolve_route(model, openrouter_enabled=True,
                           fireworks_enabled=True)
     offer = route.offer
+    if route.provider != PROVIDER_FIREWORKS or offer is None:
+        raise HarnessError(
+            "--model must be a confirmed Fireworks path "
+            "(accounts/fireworks/models/<slug>); refusing.")
     if not fireworks_key:
         raise HarnessError(
             "Fireworks key missing: set ~/.config/scmorc/fireworks.env, "
@@ -103,6 +109,14 @@ def run_fireworks_probe(transport, openrouter_key, fireworks_key, governor,
                                   governor=governor)
     usage = resp.get("usage") if isinstance(resp, dict) else None
     usage = usage if isinstance(usage, dict) else {}
+    if status == 200 and "cost" not in usage:
+        # _chat_fireworks fills cost whenever usage is a dict; reaching
+        # here without one means the provider sent no accounting at all.
+        # A paid call booked as $0 is the silent free-ride this probe
+        # exists to prevent, so it fails loudly instead.
+        raise HarnessError(
+            "Fireworks omitted usage accounting (no cost, no token counts) "
+            "for the verification call; refusing to bill blind")
     if status != 200:
         raise HarnessError(
             f"Fireworks verification failed with HTTP {status}: "
