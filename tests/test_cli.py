@@ -971,5 +971,26 @@ class CliPresentationOwnerTests(unittest.TestCase):
         _print_cost_table(mock_ledger.cost_report.return_value)
 
 
+class SiteCheckCliTests(unittest.TestCase):
+    def test_site_check_delegates_to_shared_agent_lifecycle(self):
+        expected = {
+            "status": "ok", "intent": "simple-action",
+            "workflow_tier": "simple-action",
+            "response": "Yes -- https://example.com responded with HTTPS 200.",
+        }
+        output = io.StringIO()
+        settings = mock.Mock()
+        with mock.patch("harness.cli.load_settings", return_value=settings), \
+             mock.patch("harness.agent.AutonomousAgent.run_prompt",
+                        return_value=expected) as run_prompt, \
+             contextlib.redirect_stdout(output):
+            cli.main(["site-check", "check", "if", "example.com", "is", "up"])
+
+        self.assertEqual(json.loads(output.getvalue()), expected)
+        run_prompt.assert_called_once_with(
+            prompt="check if example.com is up", auto_apply=False,
+            session_id=None, force_conversation=True)
+
+
 if __name__ == "__main__":
     unittest.main()

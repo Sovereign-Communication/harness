@@ -83,7 +83,8 @@ def ledger_for(settings, caller="cli"):
     return AutonomyLedger(settings.ledger_path, caller=caller)
 
 
-def jev_for(settings, transport=None, governor=None, ledger=None) -> JevPolicy:
+def jev_for(settings, transport=None, governor=None, ledger=None,
+            **options) -> JevPolicy:
     """Session composition for Jev: ONE policy owner (JEV-P4).
 
     Historically this returned a raw ``JevEvaluator`` — an orphan client
@@ -93,7 +94,7 @@ def jev_for(settings, transport=None, governor=None, ledger=None) -> JevPolicy:
     (tests), pass it via ``policy_for(..., evaluator=...)``.
     """
     return policy_for(settings, transport=transport, governor=governor,
-                      ledger=ledger)
+                      ledger=ledger, **options)
 
 
 def attest_model_for(settings):

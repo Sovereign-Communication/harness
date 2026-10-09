@@ -730,6 +730,25 @@ def _cmd_bench(opts, settings):
         sys.exit(2)
 
 
+def _cmd_site_check(opts, settings):
+    """Thin CLI face over AutonomousAgent's shared request lifecycle."""
+    from .agent import AutonomousAgent, is_site_check_prompt
+
+    prompt = " ".join(opts.prompt).strip()
+    if not is_site_check_prompt(prompt):
+        raise HarnessError(
+            "site-check requires a single current availability question "
+            "for a named public site")
+    agent = AutonomousAgent(settings=settings)
+    result = agent.run_prompt(
+        prompt=prompt, auto_apply=False, session_id=opts.session_id,
+        force_conversation=True)
+    _emit(result, opts.out)
+    code = terminal_exit_code(result.get("status"))
+    if code:
+        sys.exit(code)
+
+
 def _cmd_models(opts, settings):
     if opts.limit < 1:
         raise HarnessError("--limit must be a positive integer")
@@ -1492,6 +1511,7 @@ def _cmd_jev_freeze(opts, settings):
 # (opts, settings), so a signature drift fails loudly at dispatch instead of
 # silently mis-binding arguments.
 _DISPATCH = {
+    "site-check": _cmd_site_check,
     "verify": _cmd_verify,
     "lint-claims": _cmd_lint_claims,
     "brief": _cmd_brief,

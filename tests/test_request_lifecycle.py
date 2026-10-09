@@ -1,26 +1,26 @@
 """Request-lifecycle incident regressions (issues #200-#203, #207 slice).
 
 Hermetic: the site probe's network seams are injected fakes (or patched
-stdlib socket/ssl objects that never connect), so no test touches the
-network and no test spends model budget. A site availability check must
-classify as ``simple-action``, run exactly one bounded probe with zero
-model/decomposition calls, and answer honestly from observed probe
-evidence.
+stdlib socket/ssl objects that never connect), and Jev is a typed fake. A
+keyed site check must use one Jev Choice, run one bounded probe, use one Jev
+Noul, and answer honestly without OpenRouter or plan/decomposition calls.
 """
 import socket
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from harness.agent import (
     AutonomousAgent,
     classify_prompt_intent,
+    is_literal_greeting_request,
     is_site_check_prompt,
 )
 from harness.errors import HarnessError, ToolCancelled
-from harness.web import extract_site_target, probe_public_site
+from harness.web import extract_site_target, preflight_public_site, probe_public_site
 
 
 def _lane_settings(**overrides):
@@ -39,6 +39,31 @@ def _resolve_public(*ips):
     def _resolve(host, port):
         return [(2, 1, 6, "", (ip, port)) for ip in ips]
     return _resolve
+
+
+def _site_jev(probability=0.999, *, fallback=False, calls=None,
+              route_choice="simple-action", route_calls=None):
+    class Policy:
+        def evaluate_request_workflow(self, state, **kwargs):
+            if route_calls is not None:
+                route_calls.append((state, kwargs))
+            answers = ({"workflow_tier": {"type": "choice",
+                                           "choice": route_choice}}
+                       if route_choice is not None and not fallback else {})
+            return SimpleNamespace(
+                answers=answers, is_fallback=fallback, cost=0.0,
+                model="jev-test"), {"site": "request_workflow"}
+
+        def evaluate_site_reachability(self, state, **kwargs):
+            if calls is not None:
+                calls.append((state, kwargs))
+            answers = ({"http_response_received": {"type": "noul",
+                                            "noul": probability}}
+                       if probability is not None and not fallback else {})
+            return SimpleNamespace(
+                answers=answers, is_fallback=fallback, cost=0.0,
+                model="jev-test"), {"site": "site_reachability"}
+    return Policy()
 
 
 class SiteCheckClassifierTests(unittest.TestCase):
@@ -90,6 +115,52 @@ class SiteCheckClassifierTests(unittest.TestCase):
         self.assertIsNone(extract_site_target("what is up today?"))
 
 
+class LiteralGreetingFastPathTests(unittest.TestCase):
+    def test_recognizes_only_standalone_greeting_commands(self):
+        for prompt in (
+            "test - say hello and stop",
+            "say hi",
+            "please just reply with hey and stop",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertTrue(is_literal_greeting_request(prompt))
+        for prompt in (
+            "hello, can you explain Jev?",
+            "say hello and explain confidence",
+            "what does hello mean?",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertFalse(is_literal_greeting_request(prompt))
+
+    def test_gui_greeting_skips_web_jev_and_model_even_when_web_is_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(
+                settings=_lane_settings(jev_api_key="jev-test",
+                                        jev_disabled=False),
+                history_dir=Path(tmp), root_dir=Path(tmp))
+            with patch.object(
+                    agent, "run_hourglass_request",
+                    side_effect=AssertionError("no web or Jev review")), \
+                 patch.object(
+                    agent, "_handle_conversation",
+                    side_effect=AssertionError("no chat model call")), \
+                 patch("harness.agent.chat",
+                       side_effect=AssertionError("no OpenRouter call")), \
+                 patch("harness.agent.emit") as emitted:
+                result = agent.run_prompt(
+                    "test - say hello and stop", force_conversation=True,
+                    web=True, session_id="literal-greeting")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["response"], "Hello.")
+        self.assertEqual(result["workflow_tier"], "answer")
+        self.assertIsNone(result["model"])
+        self.assertEqual(result["cost"], 0.0)
+        self.assertEqual([call.args[0] for call in emitted.call_args_list], [
+            "chat_turn_start", "chat_quick_reply",
+        ])
+
+
 class PublicSiteProbeTests(unittest.TestCase):
     def test_https_200_is_up(self):
         out = probe_public_site(
@@ -117,13 +188,27 @@ class PublicSiteProbeTests(unittest.TestCase):
         self.assertEqual(out["verdict"], "redirect")
         self.assertIn("not followed", out["reason"])
 
-    def test_500_is_not_up(self):
+    def test_500_is_reachable_but_reports_server_error(self):
         out = probe_public_site(
             "https://example.com",
             resolve_fn=_resolve_public("93.184.216.34"),
             connect_fn=lambda host, path, timeout: (500, "", host))
         self.assertFalse(out["ok"])
+        self.assertTrue(out["reachable"])
+        self.assertEqual(out["verdict"], "server_error")
         self.assertEqual(out["http_status"], 500)
+
+    def test_429_and_other_4xx_are_reachable_http_responses(self):
+        for code, verdict in ((429, "rate_limited"), (404, "http_error")):
+            with self.subTest(code=code):
+                out = probe_public_site(
+                    "https://example.com",
+                    resolve_fn=_resolve_public("93.184.216.34"),
+                    connect_fn=lambda host, path, timeout, status=code:
+                    (status, "", host))
+                self.assertFalse(out["ok"])
+                self.assertTrue(out["reachable"])
+                self.assertEqual(out["verdict"], verdict)
 
     def test_private_address_is_refused(self):
         with self.assertRaises(HarnessError) as ctx:
@@ -169,9 +254,10 @@ class SimpleActionLaneTests(unittest.TestCase):
         return AutonomousAgent(settings=_lane_settings(),
                                history_dir=Path(tmp), root_dir=Path(tmp))
 
-    def test_success_answers_yes_with_zero_model_calls(self):
+    def test_success_uses_one_noul_and_answers_yes(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(tmp)
+            jev_calls = []
             with patch("harness.web.probe_public_site",
                        return_value={"ok": True, "http_status": 200,
                                      "verdict": "up",
@@ -180,6 +266,8 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "url": "https://example.com"}) as probe, \
                  patch("harness.agent.chat",
                        side_effect=AssertionError("no model calls")), \
+                 patch("harness.agent.jev_for",
+                       return_value=_site_jev(0.99, calls=jev_calls)) as jev, \
                  patch.object(AutonomousAgent, "_handle_edit",
                               side_effect=AssertionError("no plan lane")), \
                  patch("harness.agent.ledger_for",
@@ -192,6 +280,9 @@ class SimpleActionLaneTests(unittest.TestCase):
         self.assertIn("Yes", res["response"])
         self.assertEqual(res["cost"], 0.0)
         self.assertEqual(probe.call_count, 1)
+        self.assertEqual(jev.call_count, 1)
+        self.assertEqual(len(jev_calls), 1)
+        self.assertEqual(jev_calls[0][0]["http_status"], 200)
 
     def test_denied_is_still_reachable_yes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -202,16 +293,27 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "reason": "'example.com' responds but denied page access (HTTPS 403)",
                                      "latency_s": 0.4, "host": "example.com",
                                      "url": "https://example.com"}), \
+                 patch("harness.agent.jev_for",
+                       return_value=_site_jev(0.999)), \
                  patch("harness.agent.ledger_for",
-                       return_value=MagicMock()):
+                       return_value=MagicMock()), \
+                 patch("harness.agent.emit") as emitted:
                 res = agent.run_simple_action(
                     "check if example.com is up", session_id="s2",
                     probe_fn=lambda host, path, timeout: (403, "", host),
                     resolve_fn=_resolve_public("93.184.216.34"))
         self.assertEqual(res["status"], "ok")
-        self.assertIn("reachable", res["response"])
+        self.assertEqual(res["response"], "Yes.")
+        self.assertEqual(res["probe"]["http_status"], 403)
+        self.assertEqual(res["probe"]["verdict"], "denied")
+        event_types = [call.args[0] for call in emitted.call_args_list]
+        self.assertEqual(event_types, [
+            "simple_action_start", "simple_action_probe_start",
+            "simple_action_probe_complete", "simple_action_jev_start",
+            "simple_action_jev_complete", "simple_action_complete",
+        ])
 
-    def test_timeout_answers_no(self):
+    def test_timeout_can_answer_no_only_at_low_noul(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(tmp)
             with patch("harness.web.probe_public_site",
@@ -220,12 +322,134 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "reason": "'example.com' timed out",
                                      "latency_s": 8.0, "host": "example.com",
                                      "url": "https://example.com"}), \
+                 patch("harness.agent.jev_for",
+                       return_value=_site_jev(0.001)), \
                  patch("harness.agent.ledger_for",
                        return_value=MagicMock()):
                 res = agent.run_simple_action("is example.com up?",
                                               session_id="s3")
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["answer"], "no")
+        self.assertEqual(res["response"], "No.")
+        self.assertEqual(res["probe"]["verdict"], "timeout")
+        self.assertIsNone(res["probe"]["http_status"])
+
+    def test_middle_noul_is_inconclusive_without_escalation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            with patch("harness.web.probe_public_site",
+                       return_value={"ok": True, "http_status": 200,
+                                     "verdict": "up", "latency_s": 0.3,
+                                     "host": "example.com",
+                                     "url": "https://example.com"}), \
+                 patch("harness.agent.jev_for",
+                       return_value=_site_jev(0.73)), \
+                 patch("harness.agent.chat",
+                       side_effect=AssertionError("no OpenRouter escalation")), \
+                 patch.object(AutonomousAgent, "_handle_edit",
+                              side_effect=AssertionError("no plan escalation")), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                res = agent.run_simple_action("is example.com up?", session_id="s-mid")
         self.assertEqual(res["status"], "deferred")
-        self.assertTrue(res["response"].startswith("No"))
+        self.assertTrue(res["response"].startswith("Inconclusive"))
+
+    def test_unavailable_jev_does_not_turn_http_status_into_yes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            with patch("harness.web.probe_public_site",
+                       return_value={"ok": True, "http_status": 200,
+                                     "verdict": "up", "latency_s": 0.3,
+                                     "host": "example.com",
+                                     "url": "https://example.com"}), \
+                 patch("harness.agent.jev_for",
+                       return_value=_site_jev(None, fallback=True)), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                res = agent.run_simple_action("is example.com up?", session_id="s-no-jev")
+        self.assertEqual(res["status"], "deferred")
+        self.assertTrue(res["response"].startswith("Inconclusive"))
+        self.assertIsNone(res["jev"]["http_response_received"])
+
+    def test_invalid_noul_values_are_inconclusive(self):
+        for value in (True, 1.01, "0.999"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                agent = self._agent(tmp)
+                with patch("harness.web.probe_public_site",
+                           return_value={"ok": True, "http_status": 200,
+                                         "verdict": "up", "latency_s": 0.3,
+                                         "host": "example.com",
+                                         "url": "https://example.com"}), \
+                     patch("harness.agent.jev_for",
+                           return_value=_site_jev(value)), \
+                     patch("harness.agent.ledger_for",
+                           return_value=MagicMock()):
+                    res = agent.run_simple_action(
+                        "is example.com up?", session_id="s-invalid-noul")
+            self.assertEqual(res["status"], "deferred")
+            self.assertTrue(res["response"].startswith("Inconclusive"))
+
+    def test_server_error_is_a_yes_for_reachability_with_health_caveat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            with patch("harness.web.probe_public_site",
+                       return_value={"ok": False, "reachable": True,
+                                     "http_status": 503,
+                                     "verdict": "server_error",
+                                     "latency_s": 0.3, "host": "example.com",
+                                     "url": "https://example.com"}), \
+                 patch("harness.agent.jev_for",
+                       return_value=_site_jev(0.999)), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                res = agent.run_simple_action("is example.com up?", session_id="s-503")
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["response"], "Yes.")
+        self.assertEqual(res["probe"]["verdict"], "server_error")
+        self.assertEqual(res["probe"]["http_status"], 503)
+
+    def test_redirect_rate_limit_and_other_http_error_can_answer_yes(self):
+        cases = (
+            (302, "redirect"),
+            (429, "rate_limited"),
+            (404, "http_error"),
+        )
+        for code, verdict in cases:
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as tmp:
+                agent = self._agent(tmp)
+                with patch("harness.web.probe_public_site",
+                           return_value={"ok": False, "reachable": True,
+                                         "http_status": code,
+                                         "verdict": verdict,
+                                         "latency_s": 0.3,
+                                         "host": "example.com",
+                                         "url": "https://example.com"}), \
+                     patch("harness.agent.jev_for",
+                           return_value=_site_jev(0.999)), \
+                     patch("harness.agent.ledger_for",
+                           return_value=MagicMock()):
+                    res = agent.run_simple_action(
+                        "is example.com up?", session_id=f"s-{code}")
+            self.assertEqual(res["status"], "ok")
+            self.assertEqual(res["response"], "Yes.")
+            self.assertEqual(res["probe"]["http_status"], code)
+            self.assertEqual(res["probe"]["verdict"], verdict)
+
+    def test_timeout_with_high_jev_probability_stays_inconclusive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            with patch("harness.web.probe_public_site",
+                       return_value={"ok": False, "http_status": None,
+                                     "verdict": "timeout", "latency_s": 8.0,
+                                     "host": "example.com",
+                                     "url": "https://example.com"}), \
+                 patch("harness.agent.jev_for",
+                       return_value=_site_jev(0.999)), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                res = agent.run_simple_action("is example.com up?", session_id="s-timeout-high")
+        self.assertEqual(res["status"], "deferred")
+        self.assertTrue(res["response"].startswith("Inconclusive"))
 
     def test_refused_target_fails_honestly_with_zero_model_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -235,6 +459,8 @@ class SimpleActionLaneTests(unittest.TestCase):
                            "site probe refused: only https:// URLs are probed")), \
                  patch("harness.agent.chat",
                        side_effect=AssertionError("no model calls")), \
+                 patch("harness.agent.jev_for",
+                       side_effect=AssertionError("refused target must not call Jev")), \
                  patch.object(AutonomousAgent, "_handle_edit",
                               side_effect=AssertionError("no plan lane")), \
                  patch("harness.agent.ledger_for",
@@ -258,6 +484,8 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "url": "https://example.com"}), \
                  patch("harness.agent.chat",
                        side_effect=AssertionError("no model calls")), \
+                 patch("harness.agent.jev_for",
+                       return_value=_site_jev(0.999)), \
                  patch.object(AutonomousAgent, "_handle_edit",
                               side_effect=AssertionError("no plan lane")), \
                  patch("harness.agent.ledger_for",
@@ -267,6 +495,105 @@ class SimpleActionLaneTests(unittest.TestCase):
                     session_id="s5", force_conversation=True)
         self.assertEqual(res["intent"], "simple-action")
         self.assertEqual(res["status"], "ok")
+
+    def test_keyed_site_request_uses_jev_choice_then_one_probe_and_noul(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(
+                settings=_lane_settings(jev_api_key="jev-test",
+                                        jev_disabled=False),
+                history_dir=Path(tmp), root_dir=Path(tmp))
+            route_calls = []
+            noul_calls = []
+            policy = _site_jev(0.999, calls=noul_calls,
+                               route_calls=route_calls)
+            with patch("harness.web.preflight_public_site",
+                       return_value={"url": "https://example.com",
+                                     "host": "example.com", "port": 443,
+                                     "path": "/",
+                                     "addresses": ("93.184.216.34",)}), \
+                 patch("harness.web.probe_public_site",
+                       return_value={"ok": True, "http_status": 200,
+                                     "verdict": "up", "latency_s": 0.2,
+                                     "host": "example.com",
+                                     "url": "https://example.com"}) as probe, \
+                 patch("harness.agent.jev_for", return_value=policy) as jev, \
+                 patch("harness.agent.jev_face_governor",
+                       return_value=MagicMock()), \
+                 patch("harness.agent.chat",
+                       side_effect=AssertionError("no OpenRouter calls")), \
+                 patch.object(AutonomousAgent, "_handle_edit",
+                              side_effect=AssertionError("no plan lane")), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()), \
+                 patch("harness.agent.emit") as emitted:
+                result = agent.run_prompt(
+                    "is example.com up?", session_id="jev-route-site",
+                    force_conversation=True)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["workflow_tier"], "simple-action")
+        self.assertEqual(result["jev"]["workflow_tier"], "simple-action")
+        self.assertEqual(probe.call_count, 1)
+        self.assertEqual(len(route_calls), 1)
+        self.assertEqual(len(noul_calls), 1)
+        self.assertEqual(jev.call_count, 1)
+        self.assertEqual([call.args[0] for call in emitted.call_args_list], [
+            "chat_turn_start", "intent_classified",
+            "simple_action_start", "simple_action_preflight_start",
+            "simple_action_preflight_complete", "simple_action_route_start",
+            "simple_action_route_complete", "simple_action_probe_start",
+            "simple_action_probe_complete", "simple_action_jev_start",
+            "simple_action_jev_complete", "simple_action_complete",
+        ])
+
+    def test_jev_route_choice_other_than_simple_action_sends_no_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(
+                settings=_lane_settings(jev_api_key="jev-test",
+                                        jev_disabled=False),
+                history_dir=Path(tmp), root_dir=Path(tmp))
+            policy = _site_jev(route_choice="plan")
+            with patch("harness.web.preflight_public_site",
+                       return_value={"url": "https://example.com",
+                                     "host": "example.com", "port": 443,
+                                     "path": "/",
+                                     "addresses": ("93.184.216.34",)}), \
+                 patch("harness.agent.jev_for", return_value=policy), \
+                 patch("harness.agent.jev_face_governor",
+                       return_value=MagicMock()), \
+                 patch("harness.web.probe_public_site",
+                       side_effect=AssertionError("Jev chose plan; no probe")), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                result = agent.run_prompt(
+                    "is example.com up?", session_id="jev-route-plan",
+                    force_conversation=True)
+
+        self.assertEqual(result["status"], "deferred")
+        self.assertIn("no request was sent", result["response"])
+        self.assertEqual(result["jev"]["workflow_tier"], "plan")
+
+    def test_keyed_site_preflight_refusal_happens_before_jev(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(
+                settings=_lane_settings(jev_api_key="jev-test",
+                                        jev_disabled=False),
+                history_dir=Path(tmp), root_dir=Path(tmp))
+            with patch("harness.web.preflight_public_site",
+                       side_effect=HarnessError(
+                           "site probe refused: resolves to a private address")), \
+                 patch("harness.agent.jev_for",
+                       side_effect=AssertionError("unsafe target must not call Jev")), \
+                 patch("harness.web.probe_public_site",
+                       side_effect=AssertionError("unsafe target must not probe")), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                result = agent.run_prompt(
+                    "is example.com up?", session_id="jev-route-refuse",
+                    force_conversation=True)
+
+        self.assertEqual(result["status"], "deferred")
+        self.assertIn("private address", result["response"])
 
 
 class EscalationGateTests(unittest.TestCase):
@@ -339,6 +666,8 @@ class NonForceSimpleActionTests(unittest.TestCase):
                                      "url": "https://example.com"}), \
                  patch("harness.agent.chat",
                        side_effect=AssertionError("no model calls")), \
+                 patch("harness.agent.jev_for",
+                       return_value=_site_jev(0.999)), \
                  patch.object(AutonomousAgent, "_handle_edit",
                               side_effect=AssertionError("no plan lane")), \
                  patch("harness.agent.ledger_for",
@@ -358,6 +687,12 @@ class ProbeRefusalEdgeTests(unittest.TestCase):
         with self.assertRaisesRegex(HarnessError, "no host"):
             probe_public_site("https:///path",
                               resolve_fn=_resolve_public("93.184.216.34"))
+
+    def test_malformed_port_is_refused_by_preflight(self):
+        with self.assertRaisesRegex(HarnessError, "malformed port"):
+            preflight_public_site(
+                "https://example.com:not-a-port",
+                resolve_fn=_resolve_public("93.184.216.34"))
 
     def test_empty_resolution_is_refused(self):
         with self.assertRaisesRegex(HarnessError, "no addresses"):
@@ -512,16 +847,16 @@ class ProbeRealPathTests(unittest.TestCase):
 class IncidentReplayBudgetTests(unittest.TestCase):
     """#207 exit proof: the incident prompt replays within every budget.
 
-    Hermetic tripwires fail the test on any OpenRouter, Jev-policy,
-    spend-governor, or plan-lane call. Measured on the committed tree:
-    1 probe, 0 model/Jev calls, millisecond wall time, honest answer.
+    Hermetic tripwires fail the test on OpenRouter or plan-lane calls and
+    require one shared Jev Noul judgment after one probe. No live provider
+    call occurs in this replay; the typed policy contract is tested separately.
     Both freeform surfaces (default ``run_prompt`` and the GUI
     ``force_conversation`` path from server.py) must return the same
 evidence-based result.
     """
 
     def _replay(self, **run_kwargs):
-        counts = {"probe": 0}
+        counts = {"probe": 0, "jev": 0}
 
         def fake_probe(*args, **kwargs):
             counts["probe"] += 1
@@ -530,6 +865,14 @@ evidence-based result.
                     "latency_s": 0.2, "host": "example.com",
                     "url": "https://example.com"}
 
+        jev_policy = _site_jev(calls=[])
+        original_evaluate = jev_policy.evaluate_site_reachability
+
+        def counted_jev(*args, **kwargs):
+            counts["jev"] += 1
+            return original_evaluate(*args, **kwargs)
+
+        jev_policy.evaluate_site_reachability = counted_jev
         with tempfile.TemporaryDirectory() as tmp:
             agent = AutonomousAgent(settings=_lane_settings(),
                                    history_dir=Path(tmp), root_dir=Path(tmp))
@@ -537,8 +880,7 @@ evidence-based result.
                        side_effect=fake_probe), \
                  patch("harness.agent.chat",
                        side_effect=AssertionError("no OpenRouter calls")), \
-                 patch("harness.agent.policy_for",
-                       side_effect=AssertionError("no Jev calls")), \
+                 patch("harness.agent.jev_for", return_value=jev_policy), \
                  patch("harness.agent.governor_for",
                        side_effect=AssertionError("no spend governance")), \
                  patch.object(AutonomousAgent, "_handle_edit",
@@ -556,6 +898,7 @@ evidence-based result.
         self.assertEqual(res.get("intent"), "simple-action")
         self.assertEqual(res.get("status"), "ok")
         self.assertEqual(counts["probe"], 1)
+        self.assertEqual(counts["jev"], 1)
         self.assertIn("Yes", res.get("response", ""))
         self.assertNotIn("verified", res.get("response", "").lower())
         self.assertLessEqual(counts["probe"], 6)

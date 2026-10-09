@@ -63,10 +63,14 @@ directory is on `PATH`.
 ## Tools
 
 The server supports panel verification, scoped apply, consent, deferral,
-ledger status, participation reporting, spend status, and trust status.
+ledger status, participation reporting, spend status, trust status, and a
+read-only `site_check` tool for one bounded HTTPS availability probe reviewed
+by Jev. `site_check` accepts a natural-language request and runs the shared
+simple-action lifecycle; it does not escalate to the general model router.
 Results include machine-readable structured content and an `isError` flag
-for tool failures. Response frames correlate by request id, never by
-position: lanes run concurrently, so a later request may answer first.
+for tool failures.
+Response frames correlate by request id, never by position: lanes run
+concurrently, so a later request may answer first.
 
 ## Scheduling: lanes and deadlines
 

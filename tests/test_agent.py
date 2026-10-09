@@ -409,6 +409,19 @@ class TestAutonomousAgent(unittest.TestCase):
             loaded = load_chat_history("corrupt-test", history_dir=tmp_path)
             self.assertEqual(len(loaded), 1)
 
+            # Preserve a legacy single-file path and use a sibling directory
+            # for the current per-session JSONL histories.
+            legacy_path = tmp_path / "legacy-config"
+            legacy_path.mkdir()
+            (legacy_path / "chat_history").write_text(
+                "legacy history", encoding="utf-8")
+            with patch.dict(os.environ, {"HARNESS_CONFIG_DIR": str(legacy_path)}):
+                history_dir = get_default_history_dir()
+            self.assertEqual(history_dir, legacy_path / "chat_history_sessions")
+            self.assertTrue(history_dir.is_dir())
+            self.assertEqual((legacy_path / "chat_history").read_text(
+                encoding="utf-8"), "legacy history")
+
             # audit failure path
             agent = AutonomousAgent(history_dir=tmp_path)
             mock_ledger = MagicMock()
