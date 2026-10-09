@@ -33,7 +33,10 @@ Part 1 of 4 in EV-0's evidence layer: ``endpoint_pricing`` (this module),
 ``benchmark_ingest``, ``discount_probe``, ``discount_gate``.  Canon lives in
 ``docs/jev-roadmap.md`` (``EV-*``).
 """
+import json
 from dataclasses import dataclass, field
+
+from pathlib import Path
 
 from .config import (DISCOUNT_IS_MULTIPLIER, MAX_ENDPOINT_FETCHES_PER_RUN,
                      OPENROUTER_ENDPOINTS_URL)
@@ -285,3 +288,54 @@ def fetch_endpoints_for(transport, api_key, model_ids, *,
             # a clean stderr and a plausible artifact.
             eprint(f"[warn] economics: endpoint feed failed for {model_id}: {exc}")
     return {"priced": priced, "errors": errors}
+
+
+# -- EV-6: Fireworks as a second source of the same endpoint row ----------
+# The committed pack (generated from the dated snapshot by
+# audits/self/refresh_fireworks_pack.py) is the only file read here. Rates
+# are published per 1M tokens and converted to per-token dollars, the unit
+# EndpointPrice already uses. A model is routable only with a confirmed
+# model path; every other row stays priced evidence.
+FIREWORKS_PROVIDER = "fireworks"
+FIREWORKS_PACK = Path(__file__).resolve().parent.parent / "packs" / "fireworks.endpoints.json"
+_PER_MILLION = 1_000_000.0
+
+
+@dataclass(frozen=True)
+class FireworksOffer:
+    """One live-confirmed Fireworks Standard offer for one model."""
+
+    model: str
+    path: object  # accounts/... when the model path is confirmed, else None
+    price: EndpointPrice
+
+    @property
+    def routable(self):
+        return self.path is not None
+
+
+def fireworks_offers(pack_path=FIREWORKS_PACK):
+    """Every Fireworks offer in the committed pack, as per-endpoint prices.
+
+    A missing or malformed pack raises rather than returning an empty list:
+    an empty answer would read as "Fireworks has no offers" when the
+    evidence is actually missing.
+    """
+    try:
+        text = Path(pack_path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise HarnessError(f"Fireworks price pack missing: {pack_path}") from None
+    doc = json.loads(text)
+    models = doc.get("models") if isinstance(doc, dict) else None
+    if not isinstance(models, list):
+        raise HarnessError(f"Fireworks price pack has no model list: {pack_path}")
+    offers = []
+    for row in models:
+        price = EndpointPrice(
+            FIREWORKS_PROVIDER,
+            prompt=float(row["input"]) / _PER_MILLION,
+            completion=float(row["output"]) / _PER_MILLION,
+            input_cache_read=float(row["cached_input"]) / _PER_MILLION,
+        )
+        offers.append(FireworksOffer(row["name"], row.get("path"), price))
+    return offers

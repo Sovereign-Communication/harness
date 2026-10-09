@@ -155,6 +155,20 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "harness/discount_gate.py",
         ],
     },
+    # EV-6 (Fireworks evidence source, see the EV-* section in the canon): the
+    # generated pack is the only rate source. Parity and freshness are gated
+    # in the required test file, not here.
+    "EV-6": {
+        "status_needle": r"\bEV-6\b",
+        "pr_pattern": None,
+        "required_tests": ["tests/test_economics_fireworks_source.py"],
+        "required_files": [
+            "harness/endpoint_pricing.py",
+            "audits/self/refresh_fireworks_pack.py",
+            "packs/fireworks.endpoints.json",
+            "audits/self/dogfood/fireworks-price-snapshot.md",
+        ],
+    },
     "JEV-P0": {
         "status_needle": r"JEV-P0|0 Contract|contract truth",
         "pr_pattern": r"PR #34|d042d70",
