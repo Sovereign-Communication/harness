@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from harness.agent import AutonomousAgent
 from harness.config import DEFAULT_MAX_COST, DEFAULT_TASK_MAX_COST, load_settings
-from harness.errors import HarnessError
+from harness.errors import HarnessError, ToolCancelled
 from harness.lifecycle_guards import (
     AUTH_FAILED,
     BUDGET_REFUSED,
@@ -420,6 +420,230 @@ class WaistBreakerWiringTests(unittest.TestCase):
         self.assertEqual(plan["status"], "refused")
         self.assertEqual(len(decomposes), 1,
                          "the missing capability must not trigger a re-plan")
+
+
+class CoverageGapRegressionTests(unittest.TestCase):
+    """Pin the guard behaviors D12 flagged as never-executed (CI SD 8.33).
+
+    Each test drives a real branch through the public API -- no mocks
+    except the classifier-failure case, where a patched classifier
+    proves error classification degrades instead of raising.
+    """
+
+    def test_none_body_is_empty_text(self):
+        self.assertEqual(
+            classify_provider_failure(500), MODEL_UNAVAILABLE)
+
+    def test_unserializable_dict_body_falls_back_to_str(self):
+        self.assertEqual(
+            classify_provider_failure(None, {"k": object()}),
+            UNKNOWN_FAILURE)
+
+    def test_non_mapping_body_falls_back_to_str(self):
+        self.assertEqual(
+            classify_provider_failure(None, 12345), UNKNOWN_FAILURE)
+
+    def test_budget_hint_is_terminal_before_any_status(self):
+        self.assertEqual(
+            classify_provider_failure(None, "would eat terminal_reserve"),
+            BUDGET_REFUSED)
+
+    def test_429_with_spend_hint_stops_terminally(self):
+        self.assertEqual(
+            classify_provider_failure(429, "insufficient credit, top up"),
+            SPEND_EXHAUSTED)
+
+    def test_throttled_403_is_rate_limited(self):
+        self.assertEqual(
+            classify_provider_failure(403, "request throttled, slow down"),
+            RATE_LIMITED)
+
+    def test_plain_403_is_auth_failed(self):
+        self.assertEqual(
+            classify_provider_failure(403, "forbidden"), AUTH_FAILED)
+
+    def test_auth_hint_body_is_auth_failed(self):
+        self.assertEqual(
+            classify_provider_failure(418, "Unauthorized"), AUTH_FAILED)
+
+    def test_broken_classifier_degrades_instead_of_raising(self):
+        with patch("harness.lifecycle_guards.classify_provider_failure",
+                   side_effect=ValueError("boom")):
+            self.assertEqual(
+                classify_harness_error("HTTP 500: boom"), UNKNOWN_FAILURE)
+
+    def test_garbage_wait_seconds_are_ignored(self):
+        circuit = RateCircuit()
+        circuit.note_rate_limited("m", wait_s="not-a-number")
+        self.assertEqual(circuit.total_wait_s, 0.0)
+
+    def test_circular_payload_still_renders_a_key(self):
+        payload = {}
+        payload["me"] = payload
+        self.assertIsInstance(PhaseMemo.stable_key(payload), str)
+
+    def test_stray_non_dict_node_is_skipped(self):
+        self.assertFalse(
+            has_write_surface([], {"nodes": ["oops", {"name": "x"}]}))
+
+    def test_string_node_renders_unconfirmed(self):
+        out = render_refused_plan("Do it", "nope", nodes=["do the thing"])
+        self.assertIn("1. do the thing (unconfirmed)", out)
+
+
+# ---------------------------------------------------------------------------
+# Entry seams: cancellation, target extraction, probe verdicts, hourglass route
+# ---------------------------------------------------------------------------
+
+def _resolve_public(*ips):
+    def _resolve(host, port):
+        return [(2, 1, 6, "", (ip, port)) for ip in ips]
+    return _resolve
+
+
+class SimpleActionEntrySeamTests(unittest.TestCase):
+    def test_cancel_check_at_entry_raises_before_probe(self):
+        probed = []
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = _agent(tmp)
+            with self.assertRaises(ToolCancelled):
+                agent.run_simple_action(
+                    "Is https://example.com up?",
+                    probe_fn=lambda host, path, timeout: probed.append(1),
+                    cancel_check=lambda: True)
+        self.assertEqual(probed, [],
+                         "entry cancellation must pre-empt the probe")
+
+    def test_prompt_without_target_defers_with_next_step(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = _agent(tmp)
+            res = agent.run_simple_action("tell me a joke")
+        self.assertEqual(res["status"], "deferred")
+        self.assertEqual(res["defer_reason"], "no site target in prompt")
+        self.assertIn("could not find a site", res["response"])
+        self.assertIn("rephrase with a URL", res["next_step"])
+
+    def test_redirect_answers_yes_with_redirect(self):
+        def probe(host, path, timeout):
+            return (301, "https://example.com/new-path", host)
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = _agent(tmp)
+            res = agent.run_simple_action("Is https://example.com up?",
+                                          probe_fn=probe,
+                                          resolve_fn=_resolve_public("93.184.216.34"))
+        self.assertEqual(res["status"], "ok")
+        self.assertIn("redirect", res["response"])
+
+    def test_ledger_failure_on_probe_path_still_returns_ok(self):
+        def probe(host, path, timeout):
+            return (200, "", host)
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = _agent(tmp)
+            with patch("harness.agent.ledger_for",
+                       side_effect=RuntimeError("ledger down")):
+                res = agent.run_simple_action("Is https://example.com up?",
+                                              probe_fn=probe,
+                                              resolve_fn=_resolve_public("93.184.216.34"))
+        self.assertEqual(res["status"], "ok")
+
+    def test_preflight_probe_failure_with_ledger_down_still_defers(self):
+        def boom(host, path, timeout):
+            raise HarnessError("denied")
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = _agent(tmp)
+            with patch("harness.agent.ledger_for",
+                       side_effect=RuntimeError("ledger down")):
+                res = agent.run_simple_action("Is https://example.com up?",
+                                              probe_fn=boom,
+                                              resolve_fn=_resolve_public("93.184.216.34"))
+        self.assertEqual(res["status"], "deferred")
+        self.assertIn("can't check that site", res["response"])
+
+    def test_hourglass_routes_simple_action_without_model(self):
+        sentinel = {"status": "ok", "intent": "simple-action"}
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = _agent(tmp)
+            with patch.object(agent, "run_simple_action",
+                              return_value=sentinel) as run:
+                res = agent.run_hourglass_request("Is https://example.com up?")
+        self.assertIs(res, sentinel)
+        run.assert_called_once()
+
+
+class ProviderFailureTailTests(unittest.TestCase):
+    def test_plain_402_is_spend_exhausted(self):
+        self.assertEqual(classify_provider_failure(402, ""), SPEND_EXHAUSTED)
+
+    def test_unmatched_status_and_body_is_unknown(self):
+        self.assertEqual(classify_provider_failure(None, "wobbly"),
+                         UNKNOWN_FAILURE)
+
+    def test_model_hint_without_status_is_model_unavailable(self):
+        self.assertEqual(
+            classify_provider_failure(None, "model not found: m/x"),
+            MODEL_UNAVAILABLE)
+
+
+class WaistCooldownSkipTests(unittest.TestCase):
+    def _compose(self, **overrides):
+        from tests._fake import FakeTransport, _gov
+        from harness.waist import compose_plan
+        gov = _gov(FakeTransport(), max_cost=0.05)
+        kwargs = dict(transport=FakeTransport(), api_key="k", governor=gov, ledger=None,
+                      opts_goal="Update the helper", candidate_files=["pkg/mod.py"],
+                      decompose_llm=False, confirm=True, execute=False,
+                      use_free=False, frontier_model="m/front")
+        kwargs.update(overrides)
+        return compose_plan(**kwargs)
+
+    def _all_429(self, calls):
+        def confirm(**kwargs):
+            calls.append(kwargs.get("model"))
+            raise HarnessError("HTTP 429: rate limit exceeded")
+        return confirm
+
+    def test_repeated_rung_skips_cooldown_without_reconfirm(self):
+        calls = []
+        with patch("harness.waist.resolve_waist_ladder",
+                   return_value=["m1", "m1"]), \
+             patch("harness.waist.confirm_plan",
+                   side_effect=self._all_429(calls)):
+            with self.assertRaisesRegex(HarnessError,
+                                        "waist confirmation could not run"):
+                self._compose()
+        # The second rung sees m1 on cooldown and skips it without
+        # another confirm call; with no rung left the ladder raises.
+        self.assertEqual(calls, ["m1"])
+
+    def test_replan_notes_rate_limited_rung_then_returns_refusal(self):
+        from harness.dag import TaskDAG
+        calls = []
+        refused = {"status": "refused", "dag": {"nodes": []},
+                   "confirmation": {"verdict": "refused",
+                                    "reason": "plan too coarse",
+                                    "evidence": "", "cost": 0.0}}
+
+        def confirm(**kwargs):
+            calls.append(kwargs.get("model"))
+            if len(calls) <= 2:
+                if kwargs.get("model") == "m1":
+                    raise HarnessError("HTTP 429: rate limit exceeded")
+                return dict(refused)
+            raise HarnessError("HTTP 429: rate limit exceeded")
+
+        with patch("harness.waist.resolve_waist_ladder",
+                   return_value=["m1", "m2"]), \
+             patch("harness.waist.confirm_plan", side_effect=confirm), \
+             patch("harness.waist.decompose_via_llm",
+                   return_value=TaskDAG(nodes={})), \
+             patch("harness.waist._decompose_repo_context", return_value="ctx"):
+            plan = self._compose(decompose_llm=True, execute=True,
+                                 chat_fn=lambda prompt: ("{}", 0.0))
+        # First pass m1 (429) -> m2 (refused); the re-plan pass retries
+        # m2, hits 429 (noted, not fatal), and the retained coarse-plan
+        # refusal is returned instead of laundering the rate limit.
+        self.assertEqual(calls, ["m1", "m2", "m2"])
+        self.assertEqual(plan["status"], "refused")
 
 
 if __name__ == "__main__":
