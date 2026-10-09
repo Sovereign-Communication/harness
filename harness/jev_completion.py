@@ -169,6 +169,21 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "audits/self/dogfood/fireworks-price-snapshot.md",
         ],
     },
+    # EV-7 (Fireworks route, toggles, budget; see the EV-* section in the canon):
+    # the route decision, the Fireworks call shape, and the local budget. The
+    # cross-provider price index is EV-1 and is not part of this contract.
+    "EV-7": {
+        "status_needle": r"\bEV-7\b",
+        "pr_pattern": None,
+        "required_tests": ["tests/test_economics_fireworks_route.py"],
+        "required_files": [
+            "harness/fireworks.py",
+            "harness/chat.py",
+            "harness/spend.py",
+            "harness/config.py",
+            "harness/session.py",
+        ],
+    },
     "JEV-P0": {
         "status_needle": r"JEV-P0|0 Contract|contract truth",
         "pr_pattern": r"PR #34|d042d70",
