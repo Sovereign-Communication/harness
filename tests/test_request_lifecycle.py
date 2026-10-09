@@ -504,8 +504,10 @@ class SimpleActionLaneTests(unittest.TestCase):
                 history_dir=Path(tmp), root_dir=Path(tmp))
             route_calls = []
             noul_calls = []
+            action_ledger = MagicMock()
             policy = _site_jev(0.999, calls=noul_calls,
                                route_calls=route_calls)
+            policy.ledger = action_ledger
             with patch("harness.web.preflight_public_site",
                        return_value={"url": "https://example.com",
                                      "host": "example.com", "port": 443,
@@ -523,8 +525,8 @@ class SimpleActionLaneTests(unittest.TestCase):
                        side_effect=AssertionError("no OpenRouter calls")), \
                  patch.object(AutonomousAgent, "_handle_edit",
                               side_effect=AssertionError("no plan lane")), \
-                 patch("harness.agent.ledger_for",
-                       return_value=MagicMock()), \
+                  patch("harness.agent.ledger_for",
+                        return_value=action_ledger) as ledger_factory, \
                  patch("harness.agent.emit") as emitted:
                 result = agent.run_prompt(
                     "is example.com up?", session_id="jev-route-site",
@@ -537,6 +539,7 @@ class SimpleActionLaneTests(unittest.TestCase):
         self.assertEqual(len(route_calls), 1)
         self.assertEqual(len(noul_calls), 1)
         self.assertEqual(jev.call_count, 1)
+        self.assertEqual(ledger_factory.call_count, 1)
         self.assertEqual([call.args[0] for call in emitted.call_args_list], [
             "chat_turn_start", "intent_classified",
             "simple_action_start", "simple_action_preflight_start",
