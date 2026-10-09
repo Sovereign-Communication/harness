@@ -892,9 +892,12 @@ def _settings_view():
     # Expose routing posture, never the key itself: the UI must distinguish a
     # free primary lane from a paid escalation ladder.
     d["paid_key_present"] = bool(resolve_api_key())
-    if d.get("mcp_auth_token"):
-        d["mcp_auth_token"] = None
-        d["mcp_auth_token_present"] = True
+    # Settings are returned to the browser; serialize only presence for every
+    # provider/auth secret, never the configured value itself.
+    for field in ("jev_api_key", "mcp_auth_token"):
+        if field in d:
+            d[f"{field}_present"] = bool(d[field])
+            d[field] = None
     if d.get("expect_key_label"):
         # presence only; the label is never echoed (audit #9b rule)
         d["expect_key_label"] = None
