@@ -465,12 +465,13 @@ def _chat_fireworks(transport, api_key, model, messages, max_tokens,
 
 
 def chat_for_route(route, transport, openrouter_key, fireworks_key, messages,
-                   max_tokens, reasoning_effort="auto", governor=None,
-                   **kwargs):
+                   max_tokens, governor=None):
     """Dispatch one call to the provider a Route names.
 
-    OpenRouter routes go through the unchanged chat() path. Fireworks routes
-    use the plain Fireworks payload and never reach OpenRouter.
+    OpenRouter routes go through the unchanged chat() path with its defaults.
+    Fireworks routes use the plain Fireworks payload and never reach
+    OpenRouter. No per-call options: the only caller sends the fixed
+    verification shape, and EV-1 will own selection policy when it lands.
     """
     if route.provider == FIREWORKS_PROVIDER:
         if not fireworks_key:
@@ -480,7 +481,7 @@ def chat_for_route(route, transport, openrouter_key, fireworks_key, messages,
         return _chat_fireworks(transport, fireworks_key, route.wire_model,
                                messages, max_tokens, governor)
     return chat(transport, openrouter_key, route.wire_model, messages, max_tokens,
-                reasoning_effort=reasoning_effort, governor=governor, **kwargs)
+                governor=governor)
 
 
 def chat_ladder(settings) -> list:

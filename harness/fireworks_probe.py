@@ -75,13 +75,11 @@ def run_fireworks_probe(transport, openrouter_key, fireworks_key, governor,
             f"--max-cost ${spend} is outside (0, ${VERIFY_MAX_COST_USD:.2f}] "
             "for the single paid verification call; refusing.")
     # Confirmed path only: resolve_route raises for unconfirmed paths, and
-    # anything that is not a Fireworks route has no offer -- both refuse
-    # here as HarnessError so callers never see an AttributeError instead
-    # of the governed refusal.
+    # a non-Fireworks route refuses here with the governed HarnessError.
     route = resolve_route(model, openrouter_enabled=True,
                           fireworks_enabled=True)
     offer = route.offer
-    if route.provider != FIREWORKS_PROVIDER or offer is None:
+    if route.provider != FIREWORKS_PROVIDER:
         raise HarnessError(
             "--model must be a confirmed Fireworks path "
             "(accounts/fireworks/models/<slug>); refusing.")
@@ -113,7 +111,6 @@ def run_fireworks_probe(transport, openrouter_key, fireworks_key, governor,
         raise HarnessError(
             f"Fireworks verification failed with HTTP {status}: "
             f"{_sanitize_body(resp, (fireworks_key, openrouter_key))}")
-    content = ""
     try:
         content = resp["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
