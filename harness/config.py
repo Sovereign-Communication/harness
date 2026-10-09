@@ -35,6 +35,14 @@ OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 # unconfirmed until the user confirms it in writing; the lane is off by default.
 FIREWORKS_CHAT_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
 FIREWORKS_MODEL_PREFIX = "accounts/fireworks/models/"
+# Single owner of Fireworks identity: the provider tag on priced rows,
+# ledger entries and routes, plus what counts as a Fireworks model path.
+FIREWORKS_PROVIDER = "fireworks"
+
+
+def is_fireworks_model_path(label):
+    """True when a model id or spend label names a Fireworks serverless path."""
+    return isinstance(label, str) and label.startswith(FIREWORKS_MODEL_PREFIX)
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 # Daily usage rankings (model_permaslug + total_tokens per day). The

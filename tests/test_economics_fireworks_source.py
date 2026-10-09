@@ -20,8 +20,8 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
-from harness.endpoint_pricing import (FIREWORKS_PACK, FIREWORKS_PROVIDER,
-                                      fireworks_offers)
+from harness.config import FIREWORKS_PROVIDER
+from harness.endpoint_pricing import FIREWORKS_PACK, fireworks_offers
 from harness.errors import HarnessError
 
 ROOT = Path(__file__).resolve().parent.parent

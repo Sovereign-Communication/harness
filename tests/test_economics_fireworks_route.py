@@ -16,10 +16,10 @@ from unittest import mock
 
 from harness import config
 from harness.chat import chat_for_route
-from harness.config import FIREWORKS_CHAT_URL, OPENROUTER_CHAT_URL, load_settings
+from harness.config import (FIREWORKS_CHAT_URL, FIREWORKS_PROVIDER,
+                            OPENROUTER_CHAT_URL, load_settings)
 from harness.errors import HarnessError
-from harness.fireworks import (PROVIDER_FIREWORKS,
-                               cost_estimate, resolve_offer, resolve_route)
+from harness.fireworks import cost_estimate, resolve_offer, resolve_route
 from harness.spend import SpendGovernor
 
 NEMO = "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b"
@@ -89,7 +89,7 @@ class RouteTests(unittest.TestCase):
 
     def test_confirmed_fireworks_path_routes_to_fireworks_when_enabled(self):
         route = resolve_route(NEMO, openrouter_enabled=True, fireworks_enabled=True)
-        self.assertEqual(route.provider, PROVIDER_FIREWORKS)
+        self.assertEqual(route.provider, FIREWORKS_PROVIDER)
         self.assertEqual(route.wire_model, NEMO)
         self.assertEqual(route.offer.model, "Nemotron Lightning 3.5 30B A3B")
 

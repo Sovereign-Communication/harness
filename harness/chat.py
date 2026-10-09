@@ -10,9 +10,9 @@ and must never be mined for votes, file bodies, or consent decisions.
 """
 import json
 
-from .config import FIREWORKS_CHAT_URL, OPENROUTER_CHAT_URL
+from .config import FIREWORKS_CHAT_URL, FIREWORKS_PROVIDER, OPENROUTER_CHAT_URL
 from .errors import HarnessError
-from .fireworks import PROVIDER_FIREWORKS, cost_estimate, resolve_offer
+from .fireworks import cost_estimate, resolve_offer
 from .tokens import estimate_prompt_tokens
 from .output import eprint
 from .routing_table import floor_model, strip_variant_suffix
@@ -293,11 +293,7 @@ def _ensure_accounted(governor, model, resp, usage):
     if governor.is_free(model):
         usage["cost"] = 0.0
         return
-    try:
-        prompt_tokens = int(usage.get("prompt_tokens") or 0)
-        completion_tokens = int(usage.get("completion_tokens") or 0)
-    except (TypeError, ValueError):
-        prompt_tokens = completion_tokens = 0
+    prompt_tokens, completion_tokens = _usage_counts(usage)
     if not prompt_tokens and not completion_tokens:
         from .errors import HarnessError
         raise HarnessError(
@@ -419,17 +415,22 @@ def governed_text(transport, api_key, governor, model, prompt, max_tokens,
         raise HarnessError(f"empty response body from {model}")
     return content, cost
 
+def _usage_counts(usage):
+    """(prompt, completion) token counts; non-numeric counts read as zero."""
+    try:
+        return (int(usage.get("prompt_tokens") or 0),
+                int(usage.get("completion_tokens") or 0))
+    except (TypeError, ValueError):
+        return 0, 0
+
+
 def _ensure_fireworks_accounted(offer, usage):
     """Estimate a missing Fireworks usage.cost from the pack's Standard rates.
 
     The same fail-closed rule as the OpenRouter path: with neither a cost nor
     token counts the call is refused rather than booked as free.
     """
-    try:
-        prompt_tokens = int(usage.get("prompt_tokens") or 0)
-        completion_tokens = int(usage.get("completion_tokens") or 0)
-    except (TypeError, ValueError):
-        prompt_tokens = completion_tokens = 0
+    prompt_tokens, completion_tokens = _usage_counts(usage)
     if not prompt_tokens and not completion_tokens:
         raise HarnessError(
             f"Fireworks omitted usage accounting (no cost, no token counts) for "
@@ -471,7 +472,7 @@ def chat_for_route(route, transport, openrouter_key, fireworks_key, messages,
     OpenRouter routes go through the unchanged chat() path. Fireworks routes
     use the plain Fireworks payload and never reach OpenRouter.
     """
-    if route.provider == PROVIDER_FIREWORKS:
+    if route.provider == FIREWORKS_PROVIDER:
         if not fireworks_key:
             raise HarnessError(
                 "Fireworks key missing: set ~/.config/scmorc/fireworks.env, "

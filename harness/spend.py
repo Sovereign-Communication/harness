@@ -23,7 +23,7 @@ import time
 from .config import (
     OPENROUTER_KEY_URL, OPENROUTER_MODELS_URL,
     BYOK_DENYLIST_PREFIXES, BYOK_PREFIXES_PATH, load_byok_prefixes,
-    save_byok_prefixes, DEFAULT_MAX_COST, FIREWORKS_MODEL_PREFIX,
+    save_byok_prefixes, DEFAULT_MAX_COST, is_fireworks_model_path,
 )
 from .errors import HarnessError
 from .output import eprint
@@ -545,10 +545,10 @@ class SpendGovernor:
             return max(0.0, ceiling - (self.spent + self._outstanding))
 
     def fireworks_spent(self):
-        """Recorded spend on Fireworks paths (labels carry the path prefix)."""
+        """Recorded spend on Fireworks labels (see is_fireworks_model_path)."""
         with self._spend_lock:
             return sum(v for k, v in self._cost_by_model.items()
-                       if str(k).startswith(FIREWORKS_MODEL_PREFIX))
+                       if is_fireworks_model_path(k))
 
     def assert_fireworks_budget(self, amount, label):
         """Refuse a Fireworks call whose worst case would pass the local cap.
@@ -573,7 +573,7 @@ class SpendGovernor:
             raise HarnessError(f"invalid reported cost {cost!r} (after '{label}').") from None
         with self._spend_lock:
             ceiling = self._phase_ceiling()
-            if str(label).startswith(FIREWORKS_MODEL_PREFIX) and actual > 0.0:
+            if is_fireworks_model_path(label) and actual > 0.0:
                 projected = self.fireworks_spent() + actual
                 if projected > self.fireworks_budget_usd:
                     raise HarnessError(

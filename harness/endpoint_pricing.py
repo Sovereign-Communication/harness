@@ -38,8 +38,8 @@ from dataclasses import dataclass, field
 
 from pathlib import Path
 
-from .config import (DISCOUNT_IS_MULTIPLIER, MAX_ENDPOINT_FETCHES_PER_RUN,
-                     OPENROUTER_ENDPOINTS_URL)
+from .config import (DISCOUNT_IS_MULTIPLIER, FIREWORKS_PROVIDER,
+                      MAX_ENDPOINT_FETCHES_PER_RUN, OPENROUTER_ENDPOINTS_URL)
 from .errors import HarnessError
 from .events import emit
 from .output import eprint
@@ -296,7 +296,6 @@ def fetch_endpoints_for(transport, api_key, model_ids, *,
 # are published per 1M tokens and converted to per-token dollars, the unit
 # EndpointPrice already uses. A model is routable only with a confirmed
 # model path; every other row stays priced evidence.
-FIREWORKS_PROVIDER = "fireworks"
 FIREWORKS_PACK = Path(__file__).resolve().parent.parent / "packs" / "fireworks.endpoints.json"
 _PER_MILLION = 1_000_000.0
 

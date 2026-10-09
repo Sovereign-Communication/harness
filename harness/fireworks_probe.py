@@ -21,24 +21,16 @@ import json
 import os
 
 from .chat import chat_for_route
-from .config import CONFIG_DIR
+from .config import CONFIG_DIR, FIREWORKS_PROVIDER
 from .discount_gate import REPO_ROOT
 from .errors import HarnessError
-from .fireworks import PROVIDER_FIREWORKS, resolve_route
+from .fireworks import resolve_route
 
 VERIFY_MESSAGE = "Reply with the single word: ok"
 VERIFY_MAX_TOKENS = 8
 VERIFY_MAX_COST_USD = 0.01
 VERIFY_RECEIPT_REL = os.path.join(
     "audits", "self", "dogfood", "FIREWORKS_VERIFY_RECEIPT.json")
-
-
-def _default_marker_path():
-    return os.path.join(CONFIG_DIR, "fireworks_verify.marker")
-
-
-def _default_receipt_path():
-    return os.path.join(REPO_ROOT, VERIFY_RECEIPT_REL)
 
 
 def _sanitize_body(body, secrets):
@@ -62,8 +54,8 @@ def run_fireworks_probe(transport, openrouter_key, fireworks_key, governor,
     most $0.01. ``marker_path``/``receipt_path`` default to the machine-local
     marker and the committed receipt; tests override both with temp paths.
     """
-    marker = marker_path or _default_marker_path()
-    receipt = receipt_path or _default_receipt_path()
+    marker = marker_path or os.path.join(CONFIG_DIR, "fireworks_verify.marker")
+    receipt = receipt_path or os.path.join(REPO_ROOT, VERIFY_RECEIPT_REL)
     if os.path.exists(marker):
         raise HarnessError(
             "the Fireworks verification call already ran (marker exists); "
@@ -89,7 +81,7 @@ def run_fireworks_probe(transport, openrouter_key, fireworks_key, governor,
     route = resolve_route(model, openrouter_enabled=True,
                           fireworks_enabled=True)
     offer = route.offer
-    if route.provider != PROVIDER_FIREWORKS or offer is None:
+    if route.provider != FIREWORKS_PROVIDER or offer is None:
         raise HarnessError(
             "--model must be a confirmed Fireworks path "
             "(accounts/fireworks/models/<slug>); refusing.")
@@ -139,7 +131,7 @@ def run_fireworks_probe(transport, openrouter_key, fireworks_key, governor,
         "offer_model": offer.model,
     }
     if ledger is not None:
-        ledger.append("fireworks_verify", model=model, provider="fireworks",
+        ledger.append("fireworks_verify", model=model, provider=FIREWORKS_PROVIDER,
                       wire_model=model, route_reason="verify",
                       cost=cost, cost_estimated=report["cost_estimated"])
     rparent = os.path.dirname(os.path.abspath(receipt))
