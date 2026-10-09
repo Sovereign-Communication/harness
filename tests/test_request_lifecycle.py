@@ -9,6 +9,7 @@ evidence.
 """
 import socket
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -506,6 +507,67 @@ class ProbeRealPathTests(unittest.TestCase):
                 "https://example.com",
                 resolve_fn=_resolve_public("93.184.216.34"))
         self.assertEqual(out["verdict"], "up")
+
+
+class IncidentReplayBudgetTests(unittest.TestCase):
+    """#207 exit proof: the incident prompt replays within every budget.
+
+    Hermetic tripwires fail the test on any OpenRouter, Jev-policy,
+    spend-governor, or plan-lane call. Measured on the committed tree:
+    1 probe, 0 model/Jev calls, millisecond wall time, honest answer.
+    Both freeform surfaces (default ``run_prompt`` and the GUI
+    ``force_conversation`` path from server.py) must return the same
+evidence-based result.
+    """
+
+    def _replay(self, **run_kwargs):
+        counts = {"probe": 0}
+
+        def fake_probe(*args, **kwargs):
+            counts["probe"] += 1
+            return {"ok": True, "http_status": 200, "verdict": "up",
+                    "reason": "'example.com' is up (HTTPS 200)",
+                    "latency_s": 0.2, "host": "example.com",
+                    "url": "https://example.com"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(),
+                                   history_dir=Path(tmp), root_dir=Path(tmp))
+            with patch("harness.web.probe_public_site",
+                       side_effect=fake_probe), \
+                 patch("harness.agent.chat",
+                       side_effect=AssertionError("no OpenRouter calls")), \
+                 patch("harness.agent.policy_for",
+                       side_effect=AssertionError("no Jev calls")), \
+                 patch("harness.agent.governor_for",
+                       side_effect=AssertionError("no spend governance")), \
+                 patch.object(AutonomousAgent, "_handle_edit",
+                              side_effect=AssertionError("no plan lane")), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                start = time.monotonic()
+                res = agent.run_prompt(
+                    "check if example.com is up - respond yes/no",
+                    session_id="replay", **run_kwargs)
+                wall = time.monotonic() - start
+        return res, counts, wall
+
+    def _assert_replay(self, res, counts, wall):
+        self.assertEqual(res.get("intent"), "simple-action")
+        self.assertEqual(res.get("status"), "ok")
+        self.assertEqual(counts["probe"], 1)
+        self.assertIn("Yes", res.get("response", ""))
+        self.assertNotIn("verified", res.get("response", "").lower())
+        self.assertLessEqual(counts["probe"], 6)
+        self.assertLess(wall, 30)
+
+    def test_replay_within_budgets_default_path(self):
+        res, counts, wall = self._replay()
+        self._assert_replay(res, counts, wall)
+
+    def test_replay_within_budgets_gui_path(self):
+        res, counts, wall = self._replay(force_conversation=True)
+        self._assert_replay(res, counts, wall)
 
 
 if __name__ == "__main__":
