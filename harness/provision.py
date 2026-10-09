@@ -60,6 +60,7 @@ from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional,
 
 from . import osal
 from .errors import HarnessError
+from .provider_errors import ProviderSpendLimitError
 from .ledger import AutonomyLedger
 from .jev_packs import (PROVISION_PACK_VERSION, PROVISION_SITE,
                         provision_selection_question_pack,
@@ -2116,6 +2117,8 @@ def _jev_select(jev, goal, probe, candidates, task_id):
             {"goal": goal, "host": probe.jev_facts(), "candidates": ids,
              "pack_version": PROVISION_PACK_VERSION},
             questions, site=PROVISION_SITE, task_id=task_id)
+    except ProviderSpendLimitError:
+        raise
     except Exception as exc:  # any judgment failure degrades to the fixed order
         return None, [f"jev selection unavailable: {exc}"]
     if getattr(result, "is_fallback", True):
@@ -2136,6 +2139,8 @@ def _jev_review(jev, plan, task_id):
         result, _ = jev.evaluate_provision(
             state, provision_verification_question_pack(),
             site=PROVISION_SITE, task_id=task_id)
+    except ProviderSpendLimitError:
+        raise
     except Exception as exc:  # advisory only: any failure is a recorded fallback
         return {"is_fallback": True, "reason": str(exc)}, False
     if getattr(result, "is_fallback", True):

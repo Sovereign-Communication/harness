@@ -16,7 +16,9 @@ import threading
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Set
 
 from .dag import DAGNode, TaskDAG
-from .errors import HarnessError
+from .errors import HarnessError, ToolCancelled
+from .provider_errors import ProviderSpendLimitError
+from .events import submit_with_context
 from .filesafety import VERIFY_TIMEOUT, default_run_verify
 from .output import eprint
 from .repo_scope import _rebase_path, discover_verification_gate, rebase_gate
@@ -144,7 +146,8 @@ class ConcurrentExecutor:
 
         with ThreadPoolExecutor(max_workers=min(self.max_workers, len(files))) as pool:
             future_to_idx = {
-                pool.submit(self._run_file_with_lock, idx, fp, worker_fn): idx
+                submit_with_context(pool, self._run_file_with_lock,
+                                    idx, fp, worker_fn): idx
                 for idx, fp in indexed_files
             }
 
@@ -152,6 +155,10 @@ class ConcurrentExecutor:
                 idx = future_to_idx[future]
                 try:
                     res = future.result()
+                except ToolCancelled:
+                    raise
+                except ProviderSpendLimitError:
+                    raise
                 except Exception as exc:
                     res = {"status": "fatal", "error": str(exc), "file": indexed_files[idx][1]}
 
@@ -239,6 +246,8 @@ class ConcurrentExecutor:
                 for node in executable_nodes:
                     try:
                         res = self._run_node_with_locks(node, worker_fn)
+                    except ProviderSpendLimitError:
+                        raise
                     except Exception as exc:
                         res = {"status": "fatal", "error": str(exc), "node_id": node.node_id}
 
@@ -272,15 +281,22 @@ class ConcurrentExecutor:
                     if parallel_nodes:
                         with ThreadPoolExecutor(max_workers=min(self.max_workers, len(parallel_nodes))) as pool:
                             future_to_node = {
-                                pool.submit(self._run_node_reserved, node, worker_fn,
-                                            reserver,
-                                            (handles.get(node) or {}).get("path")): node
+                                submit_with_context(
+                                    pool, self._run_node_reserved, node, worker_fn,
+                                    reserver,
+                                    (handles.get(node) or {}).get("path")): node
                                 for node in parallel_nodes
                             }
                             for future in as_completed(future_to_node):
                                 node = future_to_node[future]
                                 try:
                                     stage_results[node] = future.result()
+                                except ToolCancelled:
+                                    raise
+                                except ProviderSpendLimitError:
+                                    for pending in future_to_node:
+                                        pending.cancel()
+                                    raise
                                 except Exception as exc:
                                     stage_results[node] = {
                                         "status": "fatal", "error": str(exc),
@@ -306,6 +322,8 @@ class ConcurrentExecutor:
                         try:
                             stage_results[node] = self._run_node_reserved(
                                 node, worker_fn, reserver, None)
+                        except ProviderSpendLimitError:
+                            raise
                         except Exception as exc:
                             stage_results[node] = {
                                 "status": "fatal", "error": str(exc),

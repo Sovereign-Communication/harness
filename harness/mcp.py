@@ -480,11 +480,15 @@ class McpServer:
             return {"jsonrpc": "2.0", "id": request_id,
                     "error": {"code": -32800, "message": "Request cancelled"}}
         except HarnessError as exc:
+            error_kind = getattr(exc, "kind", "harness_error")
+            known_cost = max(0.0, float(getattr(exc, "known_cost", 0.0) or 0.0))
             return {"jsonrpc": "2.0", "id": request_id,
                     "result": {
                         "content": [{"type": "text", "text": f"HarnessError: {exc}"}],
                         "isError": True,
-                        "errorKind": getattr(exc, "kind", "harness_error"),
+                        "errorKind": error_kind,
+                        "error_kind": error_kind,
+                        **({"known_cost_usd": known_cost} if known_cost else {}),
                     }}
         except ValueError as exc:
             return {"jsonrpc": "2.0", "id": request_id,

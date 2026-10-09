@@ -41,6 +41,16 @@ def _jev_row_cost(entry, in_tok):
     differently the same dollar would be counted once in one and twice in the
     other.
     """
+    # A terminal provider-spend receipt can carry an exact cost even when
+    # the provider stopped before returning itemized tokens. This field is
+    # written only from measured response usage or the TypeSafe per-token
+    # rate, so preserve it instead of treating the failed call as free.
+    if entry.get("result_state") == "provider_spend_limit":
+        try:
+            known = max(0.0, float(entry.get("known_cost_usd") or 0.0))
+        except (TypeError, ValueError):
+            known = 0.0
+        return known, known > 0.0
     if in_tok <= 0 or entry.get("is_fallback"):
         return 0.0, False
     from .jev import jev_cost  # lazy: matches this module's import discipline
@@ -684,4 +694,3 @@ class LedgerAnalytics:
             }
 
         return report
-

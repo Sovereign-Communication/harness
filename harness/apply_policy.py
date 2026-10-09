@@ -24,6 +24,7 @@ from .chat import (
 from . import events as _events
 from .consent import probe_consent, consent_renew
 from .errors import HarnessError, ToolCancelled
+from .provider_errors import ProviderSpendLimitError
 from .token_budget import USAGE_ACTUAL, USAGE_UNAVAILABLE
 from .output import eprint
 from .prompts import build_apply_prompt, consent_mechanics_text
@@ -298,6 +299,8 @@ class ApplyEngineMixin:
         try:
             known_models = {entry.get("id") for entry in self.governor.fetch_models()}
             candidates = [m_ for m_ in candidates if m_ in known_models]
+        except ProviderSpendLimitError:
+            raise
         except HarnessError:
             pass
         return candidates
@@ -351,6 +354,11 @@ class ApplyEngineMixin:
                 status, resp = chat(self.transport, self.api_key, attempt_model,
                                     [{"role": "user", "content": prompt}], req.max_tokens,
                                     req.reasoning, self.reasoning_token_budget, self.governor)
+            except ProviderSpendLimitError:
+                if token_allowance is not None:
+                    req.token_budget.settle(token_allowance,
+                                            source=USAGE_UNAVAILABLE)
+                raise
             except Exception:
                 if token_allowance is not None:
                     req.token_budget.settle(token_allowance,
@@ -587,6 +595,8 @@ class ApplyEngineMixin:
                         jev_result, ladder_size=len(self.router.escalation_pool),
                         current_rung=max(state.round_no - 1, 0),
                         condensed_context=failure_context)
+            except ProviderSpendLimitError:
+                raise
             except HarnessError:
                 state.pending_jev_directive = None
 

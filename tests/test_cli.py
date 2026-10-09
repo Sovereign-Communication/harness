@@ -9,7 +9,26 @@ from unittest import mock
 from harness import cli, service, session
 from harness.config import load_settings
 from harness.errors import HarnessError
+from harness.provider_errors import ProviderSpendLimitError
 from harness.router import Router
+
+
+class ProviderSpendLimitSurfaceTests(unittest.TestCase):
+    def test_cli_labels_provider_spend_limit_as_fatal_and_stops(self):
+        stderr = io.StringIO()
+        with mock.patch.object(
+                cli, "load_settings",
+                side_effect=ProviderSpendLimitError(
+                    "provider key status reports no remaining spend allowance",
+                    known_cost=0.000012)), \
+             contextlib.redirect_stderr(stderr), \
+             self.assertRaises(SystemExit) as ctx:
+            cli.main(["cost"])
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn("[FATAL] [provider_spend_limit] Upstream provider spend limit exhausted",
+                      stderr.getvalue())
+        self.assertIn("operation was stopped", stderr.getvalue())
+        self.assertIn("known billed usage: $0.000012", stderr.getvalue())
 
 
 class PanelWiringTests(unittest.TestCase):

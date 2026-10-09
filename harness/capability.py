@@ -26,6 +26,7 @@ from dataclasses import dataclass, replace
 
 from .config import CAPABILITIES_PATH, CAPABILITIES_TTL
 from .output import eprint
+from .provider_errors import ProviderSpendLimitError
 
 # ---- score weights (task-aware) ----------------------------------------------
 # Capability is blended from three declared signals. Structured JSON is the
@@ -483,6 +484,8 @@ def _probe_is_free(governor, model):
         return False
     try:
         return bool(is_free(model))
+    except ProviderSpendLimitError:
+        raise
     except Exception:
         return False
 
@@ -536,6 +539,8 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
                 status, resp = chat(transport, api_key, m,
                                     [{"role": "user", "content": q}], max_tokens,
                                     eff, 0.4, governor)
+            except ProviderSpendLimitError:
+                raise
             except Exception as exc:
                 error_message = str(exc)
             byok_skip = False
@@ -546,6 +551,8 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
                 try:
                     _content, _finish, raw_cost, is_byok = \
                         extract_content_and_cost(resp)
+                except ProviderSpendLimitError:
+                    raise
                 except Exception:
                     raw_cost, is_byok = 0.0, False
                 if is_byok and not _probe_is_free(governor, m):
@@ -573,6 +580,8 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
                     if record_actual is not None:
                         try:
                             record_actual(error_cost, m)
+                        except ProviderSpendLimitError:
+                            raise
                         except Exception as exc:
                             error_message = str(exc)
                             status, resp = None, {}
@@ -587,6 +596,8 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
                 if record_byok is not None:
                     try:
                         record_byok(m)
+                    except ProviderSpendLimitError:
+                        raise
                     except Exception:
                         pass
                 error_message = ("paid BYOK route; probe skipped "
@@ -610,6 +621,8 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
                     if isinstance(parsed, dict):
                         ok = True
                         corr = parsed.get("answer") == want
+                except ProviderSpendLimitError:
+                    raise
                 except Exception as exc:
                     error_message = str(exc)
             # A successful HTTP response with empty/non-JSON content is still a
@@ -729,6 +742,8 @@ def order_pool(pool, profiles, report, ledger=None, task="default", free_tier=No
             eprint("[local_fit] advisory stood down: degenerate artifact ("
                    + str(_advice["degenerate"]) + "); baseline order kept")
         return list(_advice.get("ordered") or ordered)
+    except ProviderSpendLimitError:
+        raise
     except Exception:
         # The advisory layer must never break routing.
         return ordered
@@ -776,6 +791,8 @@ def ordered_pool(pool, *, governor, ledger, task, free_tier, profiles=None,
             # than an echo that would displace a caller's configured model.
             return list(pool), None
         return ordered, profiles_
+    except ProviderSpendLimitError:
+        raise
     except Exception as e:
         eprint(f"[capability] unavailable ({e}); routing on the given order.")
         return list(pool or []), None

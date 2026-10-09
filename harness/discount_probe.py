@@ -43,6 +43,9 @@ from .endpoint_pricing import fetch_endpoints_for
 from .errors import HarnessError
 from .events import emit
 from .output import eprint
+from .provider_errors import (ProviderSpendLimitError,
+                              account_provider_spend_limit,
+                              raise_for_provider_spend_limit)
 from .routing_table import floor_model, strip_variant_suffix
 from .validation import optional_float
 
@@ -107,7 +110,19 @@ def run_discount_probe(transport, api_key, governor, model_id, *,
                "messages": [{"role": "user", "content": prompt}]}
     emit("economics_discount_probe", model=canonical, phase="start",
          max_discount=endpoints.max_discount)
-    status, resp = transport.post(OPENROUTER_CHAT_URL, api_key, payload, timeout=60)
+    try:
+        status, resp = transport.post(OPENROUTER_CHAT_URL, api_key, payload,
+                                      timeout=60)
+        usage = resp.get("usage") if isinstance(resp, dict) else None
+        known_cost = optional_float(
+            usage.get("cost") if isinstance(usage, dict) else None) or 0.0
+        raise_for_provider_spend_limit(status, resp, known_cost=known_cost)
+    except ProviderSpendLimitError as exc:
+        account_provider_spend_limit(exc, governor, canonical)
+        emit("provider_spend_limit", model=canonical,
+             http_status=exc.http_status,
+             known_cost_usd=exc.known_cost)
+        raise
 
     record = {
         "schema": ECONOMICS_SCHEMA_VERSION,
@@ -151,6 +166,11 @@ def run_discount_probe(transport, api_key, governor, model_id, *,
         emit("economics_discount_probe", model=canonical, phase="end",
              semantics=DISCOUNT_UNRESOLVED, reason="no_reported_cost")
         return record
+    if governor is not None:
+        try:
+            governor.record_actual(actual, canonical)
+        except HarnessError:
+            governor.record_overrun(actual, canonical)
     if prompt_tokens is None or completion_tokens is None:
         record.update({"semantics": DISCOUNT_UNRESOLVED,
                        "reason": "response carried no itemized token usage"})

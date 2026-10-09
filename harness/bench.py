@@ -30,6 +30,7 @@ import os
 from .filesafety import _atomic_write, default_run_verify, VERIFY_TIMEOUT
 from . import events as _events
 from .errors import HarnessError
+from .provider_errors import ProviderSpendLimitError
 from .output import eprint
 
 
@@ -199,6 +200,8 @@ def run_bench(engine, manifest_tasks, runner=None):
                     max_rotations=task.get("max_rotations", 3),
                     task_runner=task_runner,
                 )
+            except ProviderSpendLimitError:
+                raise
             except HarnessError as e:
                 r = {"status": "error", "error": str(e)}
             results.append({"name": name, **r})

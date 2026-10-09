@@ -19,6 +19,7 @@ from .tokens import estimate_prompt_tokens
 from .dag import TaskDAG, DAGNode, node_apply_kwargs
 from .prompts import MAX_FILE_LINES
 from .errors import HarnessError, ToolCancelled
+from .provider_errors import ProviderSpendLimitError
 from .events import emit
 from .orchestrator import assess_completion, drive, keyword_fallback, triage_files
 from .prompts import CAPABILITY_MARKER
@@ -110,6 +111,8 @@ def _resolve_lane_max_tokens(
                         avail_dollar = max(0.0, float(rem_dollars) - prompt_tok * pp_val)
                         dollar_tokens = int(avail_dollar / float(cp))
                         allocated = min(allocated, dollar_tokens)
+        except ProviderSpendLimitError:
+            raise
         except Exception:
             pass
     return max(0, allocated)
@@ -204,13 +207,26 @@ DEFAULT_RUN_WALL_SECONDS = 120.0
 # question it had no evidence for.
 _RESEARCH_SUBJECTS = ("news", "research", "recent", "latest", "today",
                       "papers", "paper", "article", "articles", "study",
-                      "studies", "release", "releases", "update", "updates")
+                      "studies", "release", "releases", "update", "updates",
+                      "website", "web site", "domain")
 _RESEARCH_VERBS = ("find", "search", "look up", "lookup", "google",
                    "what's new", "whats new", "tell me about", "catch me up",
                    "summary of", "summarize", "summarise")
 _QUESTION_OPENERS = ("what", "who", "when", "where", "which", "why", "how",
                      "is ", "are ", "does ", "do ", "did ", "can you",
                      "could you", "any news", "has there")
+_DOMAIN_RE = re.compile(
+    r"(?:https?://)?(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?:/[^\s]*)?",
+    re.IGNORECASE)
+_COMMON_WEB_TLDS = frozenset({
+    "ai", "app", "biz", "co", "com", "dev", "edu", "gov", "info",
+    "io", "me", "net", "org", "site", "tech", "xyz",
+})
+_WEB_CONTEXT_WORDS = ("website", "web site", "domain", "url", "link")
+_WEB_LOOKUP_VERBS = _RESEARCH_VERBS + (
+    "look at", "take a look", "check", "inspect", "review", "audit",
+    "browse", "visit", "open", "fetch",
+)
 
 
 def is_research_question(prompt: str) -> bool:
@@ -225,13 +241,32 @@ def is_research_question(prompt: str) -> bool:
     cleaned = (prompt or "").strip().lower()
     if not cleaned:
         return False
-    if not any(subj in cleaned for subj in _RESEARCH_SUBJECTS):
-        return False
-    if any(v in cleaned for v in _RESEARCH_VERBS):
+    domain_match = _DOMAIN_RE.search(cleaned)
+    has_domain = bool(domain_match)
+    domain_host = (domain_match.group(0).split("/")[0]
+                   if domain_match else "")
+    domain_tld = domain_host.rsplit(".", 1)[-1] if "." in domain_host else ""
+    likely_web_domain = has_domain and domain_tld in _COMMON_WEB_TLDS
+    explicit_web = bool(re.search(r"https?://|\bwww\.", cleaned))
+    web_context = any(re.search(rf"\b{re.escape(word)}\b(?![./\\])", cleaned)
+                      for word in _WEB_CONTEXT_WORDS)
+    site_context = bool(re.search(r"\bsite\b(?![./\\])", cleaned))
+    research_subject = any(
+        subj in cleaned for subj in _RESEARCH_SUBJECTS
+        if subj not in ("website", "web site", "domain"))
+    lookup = any(v in cleaned for v in _WEB_LOOKUP_VERBS)
+    question = cleaned.startswith(_QUESTION_OPENERS)
+
+    # A URL or explicit website/domain/site phrase is clear web intent. A
+    # dotted filename by itself is not consent to send the prompt online.
+    if (explicit_web or (has_domain and (web_context or site_context))
+            or (likely_web_domain and lookup)):
         return True
-    if cleaned.endswith("?"):
+    if web_context and (lookup or question):
         return True
-    return cleaned.startswith(_QUESTION_OPENERS)
+    # Freshness topics such as news/releases need an explicit lookup-shaped
+    # request; a bare filename like Program.cs or main.go never supplies one.
+    return bool(research_subject and (lookup or question))
 
 
 def classify_prompt_intent(prompt: str) -> str:
@@ -438,6 +473,10 @@ class AutonomousAgent:
         if web:
             try:
                 web_sources = self._gather_web_context(prompt)
+            except ToolCancelled:
+                raise
+            except ProviderSpendLimitError:
+                raise
             except Exception as exc:  # context failure must not kill the lane
                 web_sources = [{"kind": "web", "ok": False,
                                 "note": f"web tools error: {type(exc).__name__}"}]
@@ -540,6 +579,8 @@ class AutonomousAgent:
                     transport=self.transport, api_key=api_key, model=model,
                     messages=messages, max_tokens=allocated_tokens,
                     reasoning_effort=lane_effort, governor=gov)
+            except ProviderSpendLimitError:
+                raise
             except HarnessError as exc:
                 attempts.append(f"{model}: {exc}")
                 continue
@@ -660,6 +701,30 @@ class AutonomousAgent:
         deadline = time.monotonic() + max(0.0, wall_budget)
         context, files, brief, web_sources = self._hourglass_request_context(
             prompt, web=web)
+        if web and not any(source.get("ok") for source in web_sources):
+            detail = next((str(source.get("note") or "").strip()
+                           for source in web_sources if source.get("note")), "")
+            reason = detail or "No usable web source was returned for this request."
+            response = ("I could not complete the live web lookup. "
+                        f"{reason} I did not inspect the requested site. "
+                        "Enable a working web search/fetch source and try again, "
+                        "or provide the page content for an offline audit.")
+            result = {
+                "status": "deferred",
+                "intent": intent,
+                "prompt": prompt,
+                "response": response,
+                "model": None,
+                "cost": 0.0,
+                "defer_reason": "live web evidence is unavailable",
+                "next_step": "configure Web tools or provide the page content",
+                "web_used": False,
+                "web_sources": [],
+            }
+            save_chat_turn(sid, result, self.history_dir)
+            emit("research_unavailable", reason=reason)
+            emit("hourglass_complete", status="deferred")
+            return result
         past_turns = load_chat_history(sid, self.history_dir)[-10:]
         api_key, gov = governor_for(self.settings)
         policy = policy_for(
@@ -809,6 +874,10 @@ class AutonomousAgent:
                         if completion and completion.get("complete") is True:
                             status = "ok"
                             break
+                    except ToolCancelled:
+                        raise
+                    except ProviderSpendLimitError:
+                        raise
                     except Exception:
                         pass
                 status = "needs_iteration"
@@ -875,6 +944,10 @@ class AutonomousAgent:
                     })
                     save_chat_turn(sid, escalated, self.history_dir)
                     return escalated
+            except ToolCancelled:
+                raise
+            except ProviderSpendLimitError:
+                raise
             except Exception:
                 pass
 
@@ -919,6 +992,10 @@ class AutonomousAgent:
                 raise ToolCancelled("Prompt execution was cancelled by user")
             try:
                 web_sources = self._gather_web_context(prompt)
+            except ToolCancelled:
+                raise
+            except ProviderSpendLimitError:
+                raise
             except Exception as e:  # web tools must never kill the chat lane
                 web_sources = [{"kind": "web", "ok": False, "note": f"web tools error: {e}"}]
             hosts = ", ".join(sorted(DEFAULT_FETCH_HOSTS)) or "(none configured)"
@@ -977,6 +1054,8 @@ class AutonomousAgent:
                     reasoning_effort=lane_effort,
                     governor=gov,
                 )
+            except ProviderSpendLimitError:
+                raise
             except HarnessError as e:
                 note = str(e)
             else:
@@ -1079,6 +1158,8 @@ class AutonomousAgent:
                         prompt, session_id, auto_apply=True,
                         cancel_check=cancel_check,
                         escalation_note=defer_reason)
+                except ProviderSpendLimitError:
+                    raise
                 except HarnessError as e:
                     # The handoff failed (no routable target files, plan
                     # refusal, ...): the honest defer stands with the failure
@@ -1204,6 +1285,8 @@ class AutonomousAgent:
                                                model, prompt_text, 2048,
                                                label="orchestrate")
                     return content
+                except ProviderSpendLimitError:
+                    raise
                 except HarnessError as e:
                     last = e
             raise last or HarnessError("orchestration ladder empty")
@@ -1282,6 +1365,8 @@ class AutonomousAgent:
                 _result, structural = eval_res[0], eval_res[1]
             else:
                 _result, structural = None, getattr(eval_res, "structural", {}) or {}
+        except ProviderSpendLimitError:
+            raise
         except (HarnessError, TypeError, ValueError) as exc:
             return {"signals": {}, "native": False,
                     "error": "{0}: {1}".format(type(exc).__name__, exc)}
@@ -1481,6 +1566,8 @@ class AutonomousAgent:
                                        restart.get("target"),
                                        "; ".join(restart.get("reasons") or []))),
                     }
+        except ProviderSpendLimitError:
+            raise
         except HarnessError:
             pass
         return plan
@@ -1499,6 +1586,8 @@ class AutonomousAgent:
                 cand = str(conv["response"]).strip()
                 if not cand.startswith("The waist confirmation gate refused"):
                     answer_text = cand
+        except ProviderSpendLimitError:
+            raise
         except (Exception, AssertionError):
             pass
 
@@ -1569,6 +1658,8 @@ class AutonomousAgent:
             gov = governor_for(self.settings)[1]
             picked = triage_files(prompt, repo_files,
                                   self._orchestrator_chat_fn(gov))
+        except ProviderSpendLimitError:
+            raise
         except HarnessError:
             picked = []
         if not picked:
@@ -1670,6 +1761,8 @@ class AutonomousAgent:
                     text = fp.read_text(encoding="utf-8")
                     file_contents[tf] = text
                     original_contents[tf] = text
+                except ProviderSpendLimitError:
+                    raise
                 except Exception:
                     pass
 
@@ -1725,6 +1818,10 @@ class AutonomousAgent:
                                               token_budget=run_token_budget)
                 if second_plan.get("status") != "refused":
                     plan = second_plan
+            except ToolCancelled:
+                raise
+            except ProviderSpendLimitError:
+                raise
             except Exception:
                 pass
         if plan.get("status") == "refused":
@@ -2042,6 +2139,8 @@ class AutonomousAgent:
                             tofile=f"b/{tf}",
                         )
                         diffs.append("".join(diff))
+                except ProviderSpendLimitError:
+                    raise
                 except Exception:
                     pass
 

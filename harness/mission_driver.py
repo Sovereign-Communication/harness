@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, Set
 
 from .errors import HarnessError
+from .provider_errors import ProviderSpendLimitError
 from .jev_policy import flush_all_fallbacks
 from . import mission_record as mr
 
@@ -429,6 +430,8 @@ def _run_mission(
                     task_id=task_id or pack.id,
                 )
                 last_determination = determination
+            except ProviderSpendLimitError:
+                raise
             except HarnessError as exc:
                 last_determination = {
                     "complete": False,

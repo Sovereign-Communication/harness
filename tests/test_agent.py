@@ -11,6 +11,7 @@ from harness.agent import (
     discover_target_files,
     discover_verification_gate,
     enumerate_repo_files,
+    is_research_question,
     load_chat_history,
     save_chat_turn,
 )
@@ -70,6 +71,23 @@ def _lane_settings(**overrides):
 
 
 class TestAgentClassificationAndDiscovery(unittest.TestCase):
+    def test_domain_search_is_routed_as_research(self):
+        self.assertTrue(is_research_question(
+            "search the website freeoffgridcalculator.com and audit the UI/UX"))
+        self.assertTrue(is_research_question(
+            "search for freeoffgridcalculator.com and audit the UI/UX"))
+        self.assertTrue(is_research_question(
+            "take a look at https://freeoffgridcalculator.com"))
+        self.assertTrue(is_research_question("what is the latest news about AI?"))
+
+    def test_local_filenames_are_not_routed_as_web_research(self):
+        for prompt in ("How does app.py work?", "summarize README.md",
+                       "What is foo.bar?", "How does main.go work?",
+                       "summarize Cargo.lock", "what is widget.vue?",
+                       "Explain Program.cs", "inspect site/public/app.js"):
+            with self.subTest(prompt=prompt):
+                self.assertFalse(is_research_question(prompt))
+
     def test_classify_prompt_intent(self):
         # Conversational
         self.assertEqual(classify_prompt_intent("How does the router work?"), "conversation")
@@ -485,6 +503,18 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
                 sysmsg = m.call_args[1]["messages"][0]["content"]
         self.assertIn("NO web tools", sysmsg)
         self.assertIn("NO internet access", sysmsg)
+
+    def test_local_source_filename_does_not_trigger_web_with_web_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(Path(tmp))
+            with patch.object(agent, "_gather_web_context") as gather, \
+                 patch("harness.agent.chat",
+                       return_value=(200, self._mock_resp())), \
+                 patch("harness.agent.governor_for",
+                       return_value=(None, MagicMock())):
+                agent.run_prompt("summarize Cargo.lock", session_id="w-local",
+                                 web=False, force_conversation=True)
+        gather.assert_not_called()
 
     def test_all_fetches_failed_falls_back_to_search(self):
         # The fetch-failed incident: a URL-prompt turn where the fetch died
@@ -1615,6 +1645,36 @@ class TestOrchestratorWiring(unittest.TestCase):
                 res = agent.run_prompt("Update util.py", auto_apply=True)
         self.assertEqual(res["status"], "failed")
         self.assertIn("completion judge unavailable", res["remaining_scope"])
+
+
+class TestHourglassWebAvailability(unittest.TestCase):
+    def test_missing_web_source_defers_before_any_model_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(),
+                                    history_dir=Path(tmp))
+            unavailable = [{"kind": "web", "ok": False,
+                            "note": "No web tools available in this environment"}]
+            with patch.object(agent, "_hourglass_request_context",
+                              return_value=("", {}, MagicMock(), unavailable)), \
+                 patch("harness.agent.governor_for") as governor:
+                result = agent.run_hourglass_request(
+                    "search for freeoffgridcalculator.com and audit the UI/UX")
+            self.assertEqual(result["status"], "deferred")
+            self.assertIn("I did not inspect", result["response"])
+            governor.assert_not_called()
+
+    def test_web_cancellation_is_not_swallowed_as_source_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(),
+                                    history_dir=Path(tmp))
+            with patch("harness.agent.governor_for",
+                       return_value=("test-key", _TEST_GOVERNOR)), \
+                 patch.object(agent, "_gather_web_context",
+                              side_effect=ToolCancelled("cancelled")):
+                with self.assertRaises(ToolCancelled):
+                    agent._handle_conversation(
+                        "search the web for a recent update", "test-sid",
+                        web=True)
 
 
 class TestHourglassLane(unittest.TestCase):

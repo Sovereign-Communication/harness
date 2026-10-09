@@ -37,6 +37,7 @@ from .condenser import distill_context
 from .config import CAPABILITIES_PATH, DEFAULT_APPLY_MAX_TOKENS, ESCALATION_POOL_FREE, ESCALATION_POOL_PAID, FREE_JUDGE
 from .dag import DAGNode, TaskDAG
 from .errors import HarnessError
+from .provider_errors import ProviderSpendLimitError
 from .output import eprint
 from .prompts import MAX_FILE_LINES
 from .repo_scope import discover_verification_gate, gate_for_targets
@@ -610,6 +611,8 @@ def _call_worst_case(governor, model, max_tokens) -> float:
     try:
         pricing = governor.fetch_pricing([model])
         _pp, cp = pricing[model]
+    except ProviderSpendLimitError:
+        raise
     except Exception:
         return 0.0
     try:
@@ -663,6 +666,8 @@ def composed_worst_case(
                 try:
                     model = resolve_scout_ladder(use_free=use_free,
                                                  custom_frontier=frontier_model)[0]
+                except ProviderSpendLimitError:
+                    raise
                 except Exception:
                     model = None
             decompose_cost = _call_worst_case(governor, model, DECOMPOSE_MAX_TOKENS)
@@ -672,6 +677,8 @@ def composed_worst_case(
                 try:
                     model = resolve_scout_ladder(use_free=use_free,
                                                  custom_frontier=frontier_model)[0]
+                except ProviderSpendLimitError:
+                    raise
                 except Exception:
                     model = None
             consensus_cost = _call_worst_case(governor, model, 256)
@@ -680,6 +687,8 @@ def composed_worst_case(
                 ladder = resolve_waist_ladder(
                     use_free=use_free, custom_frontier=frontier_model,
                     allow_escalation=allow_escalation)
+            except ProviderSpendLimitError:
+                raise
             except Exception:
                 ladder = [frontier_model] if frontier_model else []
             # Worst-case: every ladder rung could be attempted across the
@@ -693,6 +702,8 @@ def composed_worst_case(
     if governor is not None and callable(getattr(governor, "remaining", None)):
         try:
             remaining = float(governor.remaining())
+        except ProviderSpendLimitError:
+            raise
         except Exception:
             remaining = None
     plan_ceiling = None
@@ -1312,6 +1323,8 @@ def confirm_plan(*, transport, api_key, governor, ledger, plan_result,
         text, _cost = chat_fn(prompt)
         try:
             verdict = parse_waist_verdict(text)
+        except ProviderSpendLimitError:
+            raise
         except HarnessError:
             # Fail closed on a malformed verdict: the spend already happened,
             # the plan stays unconfirmed, and the raw body is the evidence.
@@ -1541,6 +1554,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                                  if decompose_model else "llm:injected")
                 last_exc = None
                 break
+            except ProviderSpendLimitError:
+                raise
             except HarnessError as exc:
                 last_exc = exc
                 if attempt == 1:
@@ -1606,6 +1621,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             try:
                 consensus_model = resolve_scout_ladder(
                     use_free=use_free, custom_frontier=frontier_model)[0]
+            except ProviderSpendLimitError:
+                raise
             except Exception:
                 consensus_model = frontier_model
         try:
@@ -1614,6 +1631,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                 transport=transport, api_key=api_key, governor=governor,
                 ledger=ledger, plan_result=plan_result,
                 model=consensus_model, chat_fn=None)
+        except ProviderSpendLimitError:
+            raise
         except HarnessError as exc:
             # Fail closed on unparseable consensus when the operator armed it.
             if not execute:
@@ -1655,6 +1674,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                     consensus=consensus)
                 plan_result_confirmed = res
                 break
+            except ProviderSpendLimitError:
+                raise
             except HarnessError as exc:
                 last_exc = exc
                 from . import events as _events
@@ -1715,8 +1736,12 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                             if re_res.get("status") != "refused":
                                 plan_result = re_res
                                 break
+                        except ProviderSpendLimitError:
+                            raise
                         except HarnessError:
                             continue
+                except ProviderSpendLimitError:
+                    raise
                 except HarnessError as exc:
                     eprint(f"[plan] Critique re-planning failed ({exc}); retaining initial result")
 
@@ -1889,6 +1914,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                             "signals": signals,
                             "native": bool((structural or {}).get("native")),
                         }
+                    except ProviderSpendLimitError:
+                        raise
                     except (HarnessError, TypeError, ValueError):
                         plan_result["stage_judgments"]["context"] = {
                             "dimension": "context_intake", "signals": {}, "native": False
@@ -2182,6 +2209,8 @@ def compose_arguments(settings, *, goal, files, root=None,
             else:
                 try:
                     brief_pack = json.loads(brief)
+                except ProviderSpendLimitError:
+                    raise
                 except Exception:
                     brief_pack = None
         elif isinstance(brief, dict):
@@ -2268,6 +2297,8 @@ def intake_brief(goal, files, *, reader=None, jev_policy=None,
                 "signals": signals,
                 "native": bool((structural or {}).get("native")),
             }
+        except ProviderSpendLimitError:
+            raise
         except (HarnessError, TypeError, ValueError):
             judgment = {"dimension": "context_intake", "signals": {}, "native": False}
     return {
@@ -3005,6 +3036,8 @@ def run_planning(*, goal, budget, stage_budget=None, files=(), reader=None, brie
             try:
                 jev_signals, native = _jev_sufficiency(jev_policy, goal, pack,
                                                       site=site)
+            except ProviderSpendLimitError:
+                raise
             except HarnessError:
                 jev_signals, native = {}, False
             if native and sources > 0:
@@ -3039,6 +3072,8 @@ def run_planning(*, goal, budget, stage_budget=None, files=(), reader=None, brie
     if planner is not None and pack is not None:
         try:
             dag = _validated_plan(planner(goal, pack), max_nodes=max_nodes)
+        except ProviderSpendLimitError:
+            raise
         except HarnessError as exc:
             return PlanningOutcome(
                 OUTCOME_DEFER, reason="plan_rejected: {0}".format(exc),

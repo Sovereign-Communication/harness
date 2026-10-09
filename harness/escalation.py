@@ -15,6 +15,7 @@ from .chat import (_chat_reservation_slots, chat, extract_content_and_cost,
                    assess_output)
 from .config import effective_lane_policy
 from .errors import HarnessError
+from .provider_errors import ProviderSpendLimitError
 from .output import eprint
 from .sliding_scale import (decide_probe_verify_escalate, model_family,
                             should_abstain)
@@ -318,6 +319,8 @@ class EscalationDriver:
                      for _ in range(slots)]
             try:
                 self.governor.preflight(prompt, calls)
+            except ProviderSpendLimitError:
+                raise
             except HarnessError as exc:
                 eprint(f"[escalation] rung {rung} refused by spend governor: {exc}")
                 break

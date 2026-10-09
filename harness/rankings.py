@@ -23,6 +23,7 @@ from . import events as _events
 from .chat import _extract_json, chat, extract_content_and_cost, _reported_cost
 from .config import OPENROUTER_RANKINGS_URL, shipped_model_ids
 from .errors import HarnessError
+from .provider_errors import ProviderSpendLimitError
 from .output import eprint
 
 # How many ranked models to report by default.
@@ -232,6 +233,8 @@ def build_rankings_report(transport, api_key, governor, *,
             _events.emit("rankings_probe", model=model, phase="start")
             try:
                 ok, detail, cost = _probe_vote(transport, api_key, governor, model)
+            except ProviderSpendLimitError:
+                raise
             except HarnessError as exc:
                 ok, detail, cost = False, str(exc), 0.0
             cand["probe"] = {"ok": ok, "detail": detail, "cost": cost}

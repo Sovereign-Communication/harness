@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .errors import HarnessError
+from .provider_errors import ProviderSpendLimitError
 from .jev_packs import REPO_SUMMARY_SITE, validate_repo_summary_pack
 from .repo_items import (
     build_elements,
@@ -202,6 +203,8 @@ def analyze_repo(root: Any, pack: Any, make_policy: PolicyFactory, *,
         try:
             _result, structural, judgment = policy.evaluate_repo_summary(
                 state, pack_doc, task_id=task_id)
+        except ProviderSpendLimitError:
+            raise
         except HarnessError as exc:
             # A spend refusal is retryable on resume and means the money ran
             # out. Anything else is a real failure and must say so (DF-JEV-4).

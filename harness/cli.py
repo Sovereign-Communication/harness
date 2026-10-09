@@ -1572,7 +1572,10 @@ def main(argv=None):
             settings = load_settings()
         _DISPATCH[opts.command](opts, settings)
     except HarnessError as e:
-        print(f"[FATAL] {e}", file=sys.stderr)
+        kind = getattr(e, "kind", "harness_error")
+        cost = max(0.0, float(getattr(e, "known_cost", 0.0) or 0.0))
+        usage = f" (known billed usage: ${cost:.6f})" if cost else ""
+        print(f"[FATAL] [{kind}] {e}{usage}", file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:
         print("[interrupted] aborted by user (Ctrl-C); no further spend", file=sys.stderr)

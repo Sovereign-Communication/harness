@@ -5,6 +5,8 @@ import unittest
 from unittest.mock import patch
 
 from harness.config import load_settings
+from harness.errors import ToolCancelled
+from harness.jev import JevEvaluationResult
 from harness.jev_policy import (
     JEV_MAX_INPUT_TOKENS,
     aggregate_structural,
@@ -12,6 +14,7 @@ from harness.jev_policy import (
     policy_for,
 )
 from harness.ledger import AutonomyLedger
+from harness.provider_errors import ProviderSpendLimitError
 from harness.spend import SpendGovernor
 from tests._fake import FakeTransport, m
 
@@ -115,6 +118,103 @@ class JevPolicyTests(unittest.TestCase):
         self.assertFalse(result.is_fallback)
         self.assertFalse(structural["is_fallback"])
         self.assertFalse(structural["native"])
+
+    def test_answer_cancellation_releases_reservation_once_and_propagates(self):
+        class CancellingEvaluator:
+            api_key = "jev-key"
+            model = "jev-test"
+
+            def evaluate(self, *args, **kwargs):
+                raise ToolCancelled()
+
+        class CountingGovernor:
+            def __init__(self):
+                self.reconciled = []
+
+            def reserve(self, worst, label):
+                return (label, worst)
+
+            def reconcile(self, token, actual):
+                self.reconciled.append((token, actual))
+
+        governor = CountingGovernor()
+        policy = policy_for(
+            load_settings({"jev_api_key": "jev-key"}),
+            evaluator=CancellingEvaluator(), governor=governor)
+
+        with self.assertRaises(ToolCancelled):
+            policy.evaluate_answer("question", "candidate", "context")
+
+        self.assertEqual(len(governor.reconciled), 1)
+        self.assertEqual(governor.reconciled[0][1], 0.0)
+        self.assertIsNone(getattr(policy._tl, "token", None))
+
+    def test_provider_spend_limit_propagates_and_settles_known_usage(self):
+        class CappedEvaluator:
+            api_key = "jev-key"
+            model = "jev-test"
+
+            def evaluate(self, *args, **kwargs):
+                raise ProviderSpendLimitError("cap", known_cost=0.000004)
+
+        governor = SpendGovernor(FakeTransport(), "sk-test", max_cost=0.10)
+        ledger = self._ledger()
+        policy = policy_for(
+            load_settings({"jev_api_key": "jev-key"}), evaluator=CappedEvaluator(),
+            governor=governor, ledger=ledger)
+        with self.assertRaises(ProviderSpendLimitError) as ctx:
+            policy.evaluate_answer("question", "candidate", "context",
+                                   task_id="provider-cap-task")
+        self.assertEqual(ctx.exception.kind, "provider_spend_limit")
+        self.assertTrue(ctx.exception.cost_accounted)
+        self.assertAlmostEqual(governor.spent, 0.000004)
+        self.assertAlmostEqual(governor.outstanding, 0.0)
+        rows = [entry for entry in ledger.entries()
+                if entry["event"] == "jev_eval"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["task_id"], "provider-cap-task")
+        self.assertEqual(rows[0]["result_state"], "provider_spend_limit")
+        self.assertEqual(rows[0]["error_kind"], "provider_spend_limit")
+        self.assertAlmostEqual(rows[0]["cost"], 0.000004)
+        self.assertAlmostEqual(ledger.cost_report()["total_cost"], 0.000004)
+
+    def test_cancellation_after_settlement_does_not_reconcile_twice(self):
+        class Evaluator:
+            api_key = "jev-key"
+            model = "jev-test"
+
+            def evaluate(self, *args, **kwargs):
+                return JevEvaluationResult(
+                    "pass", 0.9, 0.9,
+                    {"answer_sufficient": {"noul": 0.9},
+                     "iteration_required": {"noul": 0.1},
+                     "plan_required": {"noul": 0.1}},
+                    [], input_tokens=10, model=self.model)
+
+        class CountingGovernor:
+            def __init__(self):
+                self.reconciled = []
+
+            def reserve(self, worst, label):
+                return (label, worst)
+
+            def reconcile(self, token, actual):
+                self.reconciled.append((token, actual))
+
+        class CancellingLedger:
+            def append(self, *args, **kwargs):
+                raise ToolCancelled()
+
+        governor = CountingGovernor()
+        policy = policy_for(
+            load_settings({"jev_api_key": "jev-key"}), evaluator=Evaluator(),
+            governor=governor, ledger=CancellingLedger())
+
+        with self.assertRaises(ToolCancelled):
+            policy.evaluate_answer("question", "candidate", "context")
+
+        self.assertEqual(len(governor.reconciled), 1)
+        self.assertIsNone(getattr(policy._tl, "token", None))
 
     def test_live_call_reserves_and_records_actual_once(self):
         transport = _JevTransport(self._response(tokens=100))

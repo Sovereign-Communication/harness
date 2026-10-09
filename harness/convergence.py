@@ -15,6 +15,7 @@ from .chat import (_chat_reservation_slots, _extract_json, _reported_cost,
                    assess_output, chat, extract_content_and_cost)
 from .config import MIN_CONVERGENCE_PANEL_TOKENS, MIN_SYNTHESIS_TOKENS
 from .errors import HarnessError
+from .provider_errors import ProviderSpendLimitError
 from .output import eprint
 
 MAX_429_RETRIES = 2
@@ -404,6 +405,8 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
             continue
         try:
             governor.fetch_pricing([m_])
+        except ProviderSpendLimitError:
+            raise
         except HarnessError as e:
             if i == 0:
                 raise

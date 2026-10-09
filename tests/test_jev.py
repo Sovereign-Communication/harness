@@ -4,6 +4,7 @@ from unittest import mock
 
 from harness.config import load_settings
 from harness.jev import JevEvaluator, jev_cost
+from harness.provider_errors import ProviderSpendLimitError
 
 
 class FakeTransport:
@@ -21,6 +22,16 @@ class RaisingTransport(FakeTransport):
         raise OSError("offline")
 
 
+class SpendLimitedTransport(FakeTransport):
+    def post(self, url, key, payload):
+        self.calls.append((url, key, payload))
+        raise ProviderSpendLimitError("cap")
+
+    def post_once(self, url, key, payload):
+        self.calls.append((url, key, payload))
+        raise ProviderSpendLimitError("cap")
+
+
 def live_response(answers=None, input_tokens=100, output_tokens=20):
     return {"model": "jev-1.13.0", "answers": answers or {
         "supported": {"type": "noul", "noul": 0.94},
@@ -32,6 +43,28 @@ def live_response(answers=None, input_tokens=100, output_tokens=20):
 
 
 class JevP0Tests(unittest.TestCase):
+    def test_provider_spend_limit_is_not_converted_to_a_local_fallback(self):
+        evaluator = JevEvaluator(api_key="key", transport=SpendLimitedTransport())
+        with self.assertRaises(ProviderSpendLimitError):
+            evaluator.evaluate(
+                {"x": 1},
+                {"supported": {"type": "noul", "instructions": "Is x valid?"}})
+        with self.assertRaises(ProviderSpendLimitError):
+            evaluator.evaluate_once(
+                {"x": 1},
+                {"supported": {"type": "noul", "instructions": "Is x valid?"}})
+
+    def test_provider_spend_limit_http_response_is_classified(self):
+        transport = FakeTransport(status=402, response={
+            "error": {"message": "Payment required"},
+            "usage": {"input_tokens": 100, "output_tokens": 2},
+        })
+        with self.assertRaises(ProviderSpendLimitError) as ctx:
+            JevEvaluator(api_key="key", transport=transport).evaluate(
+                {"x": 1},
+                {"supported": {"type": "noul", "instructions": "Is x valid?"}})
+        self.assertAlmostEqual(ctx.exception.known_cost, 100 * 0.042 / 1_000_000)
+
     def test_cost_is_input_only_and_exposed(self):
         self.assertEqual(jev_cost(1_000_000), 0.042)
         self.assertEqual(jev_cost(0), 0.0)

@@ -25,7 +25,8 @@ from .config import (
     BYOK_DENYLIST_PREFIXES, BYOK_PREFIXES_PATH, load_byok_prefixes,
     save_byok_prefixes, DEFAULT_MAX_COST,
 )
-from .errors import HarnessError
+from .errors import HarnessError, ToolCancelled
+from .provider_errors import ProviderSpendLimitError
 from .output import eprint
 from .tokens import estimate_prompt_tokens
 from .validation import finite_number
@@ -170,6 +171,10 @@ class SpendGovernor:
     def verify_key(self):
         try:
             info = self.transport.get(OPENROUTER_KEY_URL, self.api_key)
+        except ToolCancelled:
+            raise
+        except ProviderSpendLimitError:
+            raise
         except Exception as e:
             raise HarnessError(f"could not verify key limit: {e}") from e
         data = info.get("data", {})
@@ -178,8 +183,16 @@ class SpendGovernor:
         if limit is None:
             raise HarnessError(
                 f"key '{label}' has NO spend limit configured. Refusing to run.")
-        remaining = data.get("limit_remaining", 0)
-        eprint(f"[OK] using key '{label}', limit=${limit}, remaining=${remaining:.6f} "
+        remaining = data.get("limit_remaining")
+        if isinstance(remaining, (int, float)) and not isinstance(remaining, bool) \
+                and remaining <= 0:
+            raise ProviderSpendLimitError(
+                "provider key status reports no remaining spend allowance")
+        remaining_display = (f"${remaining:.6f}"
+                             if isinstance(remaining, (int, float))
+                             and not isinstance(remaining, bool)
+                             else "unknown")
+        eprint(f"[OK] using key '{label}', limit=${limit}, remaining={remaining_display} "
                f"(resets: {data.get('limit_reset')})")
         from . import events as _events
         _events.emit("spend_check", lane="key", limit=limit, remaining=remaining,
@@ -373,6 +386,10 @@ class SpendGovernor:
                 self._models = self.transport.get(OPENROUTER_MODELS_URL, self.api_key,
                                                   timeout=20).get("data", [])
                 self._models_fetched_at = time.time()
+            except ToolCancelled:
+                raise
+            except ProviderSpendLimitError:
+                raise
             except Exception as e:
                 if self._models is not None:
                     eprint(f"[warn] model list refresh failed, using cached catalog: {e}")

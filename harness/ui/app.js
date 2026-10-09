@@ -159,6 +159,7 @@ let paidEnabled = true;
 let webEnabled = localStorage.getItem("harness_web_enabled") === "true";
 let workDir = localStorage.getItem("harness_workdir") || "";
 let currentRunId = null;
+let activeAgentMessage = null;
 let pollTimer = null;
 let eventSeq = 0;
 let routeRequestSeq = 0;
@@ -473,9 +474,27 @@ function setupInputHandlers() {
 
   stopBtn.addEventListener("click", async () => {
     if (currentRunId) {
+      stopBtn.disabled = true;
+      stopBtn.title = "Stop requested; waiting for the active request to close...";
+      if (activeAgentMessage) {
+        activeAgentMessage.stopRequested = true;
+        activeAgentMessage.stepperTitleText.textContent = "Stop requested; closing the active request...";
+      }
       try {
-        await api(`/api/runs/${currentRunId}/cancel`, { method: "POST" });
-      } catch (_e) {}
+        const result = await api(`/api/runs/${currentRunId}/cancel`, { method: "POST" });
+        if (!result.cancel_requested) throw new Error("server did not accept the stop request");
+        if (activeAgentMessage) {
+          activeAgentMessage.activeRequests = {};
+          activeAgentMessage.activeRequestAt = null;
+        }
+      } catch (_e) {
+        stopBtn.disabled = false;
+        stopBtn.title = "Stop execution";
+        if (activeAgentMessage) {
+          activeAgentMessage.stopRequested = false;
+          activeAgentMessage.stepperTitleText.textContent = "Stop request failed; try again.";
+        }
+      }
     }
   });
 }
@@ -492,6 +511,7 @@ async function submitPrompt(prompt) {
 
   // Append Agent Card with Live Progress Stepper
   const agentMsg = createAgentMessageCard();
+  activeAgentMessage = agentMsg;
   $("#chat-feed").appendChild(agentMsg.card);
   scrollToBottom();
 
@@ -517,6 +537,7 @@ async function submitPrompt(prompt) {
       } catch (err) {
         agentMsg.stepper.hidden = true;
         agentMsg.body.innerHTML = `<p style="color:var(--red);">Error starting task: ${esc(err.message)}</p>`;
+        activeAgentMessage = null;
         setInFlight(false);
       }
     }
@@ -536,12 +557,21 @@ function pollExecution(runId, agentMsg) {
           handleLiveEvent(ev, agentMsg);
         }
       }
+      if (agentMsg.stopRequested) {
+        agentMsg.stepperTitleText.textContent = "Stop requested; closing the active request...";
+      } else if (Object.keys(agentMsg.activeRequests || {}).length) {
+        updateActiveProviderProgress(agentMsg);
+      }
 
       // 2. Check run status
       const resData = await api(`/api/runs/${runId}/result`);
       if (resData.status !== "running") {
         clearInterval(pollTimer);
         currentRunId = null;
+        agentMsg.stopRequested = false;
+        agentMsg.activeRequests = {};
+        agentMsg.activeRequestAt = null;
+        activeAgentMessage = null;
         setInFlight(false);
         renderFinalResult(resData, agentMsg);
         pollSpend();
@@ -643,7 +673,61 @@ function handleLiveEvent(ev, agentMsg) {
   let label = "";
   let icon = "✓";
 
-  if (ev.type === "web_search") {
+  if (ev.type === "chat_turn_start") {
+    label = "Request accepted; preparing context and routing.";
+    agentMsg.stepperTitleText.textContent = "Preparing your request...";
+  } else if (ev.type === "hourglass_request") {
+    label = `Request review started (${ev.intent || "general"}; up to ${ev.max_rounds || 1} answer round(s)).`;
+    agentMsg.stepperTitleText.textContent = "Reviewing your request...";
+  } else if (ev.type === "model_request_start") {
+    if (!agentMsg.activeRequests) agentMsg.activeRequests = {};
+    const requestId = String(ev.request_id || `event-${ev.seq || Date.now()}`);
+    agentMsg.activeRequests[requestId] = {
+      model: ev.model || "provider",
+      attempt: ev.attempt || "request",
+      startedAt: Date.now(),
+    };
+    updateActiveProviderProgress(agentMsg);
+    const retry = ev.attempt === "reasoning_retry" ? " (retry without reasoning)" : "";
+    label = `Calling ${ev.model || "provider"}${retry}; waiting for the response.`;
+    if (!agentMsg.stopRequested) {
+      updateActiveProviderProgress(agentMsg);
+    }
+  } else if (ev.type === "model_request_end") {
+    const requests = agentMsg.activeRequests || {};
+    let requestId = ev.request_id ? String(ev.request_id) : null;
+    if (!requestId || !Object.prototype.hasOwnProperty.call(requests, requestId)) {
+      requestId = Object.keys(requests).find((key) =>
+        requests[key].model === (ev.model || "provider") &&
+        requests[key].attempt === (ev.attempt || "request"));
+    }
+    if (requestId) delete requests[requestId];
+    agentMsg.activeRequests = requests;
+    const remainingRequests = Object.keys(requests).length;
+    if (remainingRequests) updateActiveProviderProgress(agentMsg);
+    else agentMsg.activeRequestAt = null;
+    const seconds = Number(ev.duration_s || 0).toFixed(1);
+    label = ev.outcome === "response"
+      ? `${ev.model || "Provider"} replied HTTP ${ev.http_status} in ${seconds}s.`
+      : `${ev.model || "Provider"} request ${ev.outcome || "ended"} after ${seconds}s.`;
+    if (!agentMsg.stopRequested && !remainingRequests) {
+      agentMsg.stepperTitleText.textContent = ev.outcome === "response"
+        ? "Assessing the response..." : `Provider request ${ev.outcome || "ended"}.`;
+    }
+  } else if (ev.type === "rotation") {
+    const detail = String(ev.note || ev.reason || "provider response unusable").slice(0, 140);
+    label = `${ev.model || "Model"} failed: ${detail}`;
+    agentMsg.stepperTitleText.textContent = "Trying the next configured model...";
+  } else if (ev.type === "answer_judged") {
+    label = `Jev reviewed answer round ${ev.round || "?"}${ev.status ? ` (${ev.status})` : ""}.`;
+    agentMsg.stepperTitleText.textContent = "Reviewing the answer...";
+  } else if (ev.type === "chat_escalated") {
+    label = `Handing off to ${ev.target || "another lane"}: ${String(ev.reason || "").slice(0, 140)}`;
+    agentMsg.stepperTitleText.textContent = `Switching to ${ev.target || "another lane"}...`;
+  } else if (ev.type === "research_unavailable") {
+    label = `Web research stopped before model retries: ${String(ev.reason || "no usable source").slice(0, 160)}`;
+    agentMsg.stepperTitleText.textContent = "Web research unavailable; stopping early.";
+  } else if (ev.type === "web_search") {
     label = ev.phase === "start" ? `Web search: ${ev.query || ""}` : `Web search completed (${ev.results || 0} results)`;
     icon = "🌐";
     activateModularAspect(agentMsg, "web_search", ev.phase === "start" ? "Web Search" : `Search (${ev.results || 0} hits)`, "🌐");
@@ -791,7 +875,8 @@ function hideConsentBanner() {
 function renderFinalResult(runRecord, agentMsg) {
   hideConsentBanner();
   agentMsg.spinner.hidden = true;
-  agentMsg.stepperTitleText.textContent = "Execution complete";
+  agentMsg.stepperTitleText.textContent = runRecord.status === "error"
+    ? "Execution stopped" : "Execution complete";
 
   if (runRecord.status === "cancelled") {
     agentMsg.body.innerHTML = `<p style="color:var(--yellow);">Execution cancelled by user.</p>`;
@@ -801,9 +886,23 @@ function renderFinalResult(runRecord, agentMsg) {
   const res = runRecord.result || {};
   const responseText = res.response || runRecord.error || "Completed.";
 
+  if (runRecord.status === "error") {
+    const kind = String(runRecord.error_kind || "harness_error");
+    agentMsg.body.innerHTML = `<p style="color:var(--red);"><strong>${esc(kind)}</strong>: ${esc(responseText)}</p>`;
+    if (kind === "provider_spend_limit") {
+      const billed = Number(runRecord.known_cost_usd || 0);
+      const stopNote = document.createElement("div");
+      stopNote.className = "deferred-note";
+      stopNote.innerHTML = `<p style="color:var(--yellow); margin:8px 0 0;">
+        <strong>Stopped: provider spend limit</strong>${billed > 0 ? `<br><span>Known billed usage: $${billed.toFixed(6)}</span>` : ""}
+      </p>`;
+      agentMsg.body.appendChild(stopNote);
+    }
+    return;
+  }
+
   // Render Markdown Body
   agentMsg.body.innerHTML = renderSimpleMarkdown(responseText);
-
   // An honest deferral is an outcome, not an error: show the reason and the
   // resume path the lane owes the operator.
   if (res.status === "deferred") {
@@ -878,7 +977,7 @@ function createAgentMessageCard() {
         <div class="stepper-header" onclick="this.nextElementSibling.nextElementSibling.hidden = !this.nextElementSibling.nextElementSibling.hidden">
           <div class="stepper-title">
             <span class="spinner"></span>
-            <span class="stepper-title-text">Processing task with Jev driver...</span>
+            <span class="stepper-title-text">Starting request...</span>
           </div>
           <span style="font-size:10px; color:var(--dim);">collapse</span>
         </div>
@@ -902,7 +1001,28 @@ function createAgentMessageCard() {
     phaseList: null,
     phaseItems: {},
     orchRound: 1,
+    activeRequestAt: null,
+    activeRequests: {},
+    stopRequested: false,
   };
+}
+
+function updateActiveProviderProgress(agentMsg) {
+  const active = Object.values(agentMsg.activeRequests || {});
+  if (!active.length) {
+    agentMsg.activeRequestAt = null;
+    return;
+  }
+  const earliest = Math.min(...active.map((request) => request.startedAt));
+  agentMsg.activeRequestAt = earliest;
+  const elapsed = Math.max(0, Math.floor((Date.now() - earliest) / 1000));
+  const models = [...new Set(active.map((request) => request.model || "provider"))];
+  const summary = active.length === 1
+    ? `${models[0]} (${active[0].attempt})`
+    : `${active.length} provider requests (${models.slice(0, 3).join(", ")}${models.length > 3 ? ", ..." : ""})`;
+  if (!agentMsg.stopRequested) {
+    agentMsg.stepperTitleText.textContent = `Waiting for ${summary} (${elapsed}s)...`;
+  }
 }
 
 // Simple Markdown & Diff Helpers
@@ -941,6 +1061,8 @@ function renderDiffLines(diffText) {
 function setInFlight(inFlight) {
   $("#btn-send").hidden = inFlight;
   $("#btn-stop").hidden = !inFlight;
+  $("#btn-stop").disabled = false;
+  $("#btn-stop").title = "Stop execution";
   $("#prompt-input").disabled = inFlight;
   if (!inFlight) $("#prompt-input").focus();
 }

@@ -40,6 +40,7 @@ from .config import (DISCOUNT_IS_MULTIPLIER, MAX_ENDPOINT_FETCHES_PER_RUN,
 from .errors import HarnessError
 from .events import emit
 from .output import eprint
+from .provider_errors import ProviderSpendLimitError
 from .routing_table import strip_variant_suffix
 from .validation import finite_number, optional_float
 
@@ -275,6 +276,8 @@ def fetch_endpoints_for(transport, api_key, model_ids, *,
     for model_id in ids:
         try:
             priced[model_id] = fetch_endpoints(transport, api_key, model_id)
+        except ProviderSpendLimitError:
+            raise
         except HarnessError as exc:
             errors[model_id] = str(exc)
             # Announced HERE, at the point of isolation, because this is the

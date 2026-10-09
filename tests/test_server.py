@@ -9,17 +9,20 @@ import http.client
 import io
 import json
 import os
+import socket
 import shutil
 import tempfile
 import threading
 import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
 from harness import server as ui_server
 from harness.server import make_server, validate_dispatch
 from harness.errors import HarnessError
+from harness.provider_errors import ProviderSpendLimitError
 
 
 def _request(conn, method, path, body=None, headers=None, host="127.0.0.1"):
@@ -392,6 +395,98 @@ class RunLifecycleTests(ServerHarness):
                 conn.close()
 
 
+class AuthenticatedGuiStopTests(ServerHarness):
+    token = "gui-stop-integration-token"
+
+    def _auth_request(self, conn, method, path, body=None):
+        return _request(conn, method, path, body=body,
+                        headers={"X-Harness-Auth": self.token})
+
+    def test_blocked_chat_stop_finishes_and_next_prompt_starts(self):
+        from harness._http import HttpTransport
+
+        accepted = threading.Event()
+        peer_closed = threading.Event()
+
+        class BlockedProvider(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_args):
+                pass
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                self.rfile.read(length)
+                accepted.set()
+                self.connection.settimeout(6)
+                try:
+                    if not self.connection.recv(1):
+                        peer_closed.set()
+                except socket.timeout:
+                    pass
+                except OSError:
+                    peer_closed.set()
+
+        provider = ThreadingHTTPServer(("127.0.0.1", 0), BlockedProvider)
+        provider.daemon_threads = True
+        provider_thread = threading.Thread(target=provider.serve_forever,
+                                           daemon=True)
+        provider_thread.start()
+        self.addCleanup(provider.server_close)
+        self.addCleanup(provider.shutdown)
+
+        class FakeAgent:
+            def __init__(self, **_kwargs):
+                self.transport = HttpTransport()
+
+            def run_prompt(self, **kwargs):
+                if kwargs["prompt"] == "stuck":
+                    self.transport.post(
+                        f"http://127.0.0.1:{provider.server_port}/", "fixture", {},
+                        timeout=30)
+                return {"status": "ok", "response": "next prompt completed",
+                        "cost": 0.0}
+
+        conn = self._conn()
+        with mock.patch("harness.server.AutonomousAgent", FakeAgent), \
+             mock.patch("harness.server.load_settings",
+                        return_value=type("Settings", (),
+                                          {"allow_escalation": False})()):
+            try:
+                status, run = self._auth_request(
+                    conn, "POST", "/api/chat", {"prompt": "stuck"})
+                self.assertEqual(status, 201)
+                self.assertTrue(accepted.wait(5), "provider request was not dispatched")
+                status, stopped = self._auth_request(
+                    conn, "POST", f"/api/runs/{run['id']}/cancel", {})
+                self.assertEqual(status, 200)
+                self.assertTrue(stopped["cancel_requested"])
+                for _ in range(80):
+                    _, result = self._auth_request(
+                        conn, "GET", f"/api/runs/{run['id']}/result")
+                    if result["status"] != "running":
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(result["status"], "cancelled")
+                self.assertTrue(peer_closed.wait(3),
+                                "provider did not observe local request termination")
+
+                status, next_run = self._auth_request(
+                    conn, "POST", "/api/chat", {"prompt": "next"})
+                self.assertEqual(status, 201)
+                for _ in range(80):
+                    _, next_result = self._auth_request(
+                        conn, "GET", f"/api/runs/{next_run['id']}/result")
+                    if next_result["status"] != "running":
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(next_result["status"], "ok")
+                self.assertEqual(next_result["result"]["response"],
+                                 "next prompt completed")
+            finally:
+                conn.close()
+
+
 class SettingsViewTests(ServerHarness):
     def test_settings_never_leak_secrets(self):
         conn = self._conn()
@@ -632,6 +727,57 @@ class RoutingMetadataTests(unittest.TestCase):
 
 
 class TtlCacheTests(unittest.TestCase):
+    def test_gui_run_and_http_error_preserve_provider_spend_limit_kind(self):
+        ui = ui_server.UiState()
+
+        def capped_runner(*_args):
+            raise ProviderSpendLimitError("account balance is too low",
+                                          known_cost=0.000012)
+
+        with mock.patch.dict(ui_server.RUNNERS, {"chat": capped_runner}):
+            record = ui.create_run("chat", {})
+            record["thread"].join(timeout=2)
+        public = ui.run_public(record, with_result=True)
+        self.assertEqual(public["status"], "error")
+        self.assertEqual(public["error_kind"], "provider_spend_limit")
+        self.assertAlmostEqual(public["known_cost_usd"], 0.000012)
+        self.assertIn("operation was stopped", public["error"])
+
+        handler = object.__new__(ui_server.UiRequestHandler)
+        handler._send_json = mock.Mock()
+        handler._error(400, public["error"],
+                       error_kind=public["error_kind"],
+                       known_cost_usd=public["known_cost_usd"])
+        payload = handler._send_json.call_args.args[0]
+        self.assertEqual(payload["error_kind"], "provider_spend_limit")
+        self.assertAlmostEqual(payload["known_cost_usd"], 0.000012)
+
+    def test_synchronous_get_and_post_include_known_spend_limit_cost(self):
+        error = ProviderSpendLimitError("account balance is too low",
+                                        known_cost=0.000012)
+        get_handler = object.__new__(ui_server.UiRequestHandler)
+        get_handler.path = "/api/cost"
+        get_handler._send_json = mock.Mock()
+        with mock.patch.object(get_handler, "_guard", return_value=True), \
+                mock.patch.object(get_handler, "_api_cost", side_effect=error):
+            get_handler.do_GET()
+        get_payload = get_handler._send_json.call_args.args[0]
+        self.assertEqual(get_payload["error_kind"], "provider_spend_limit")
+        self.assertAlmostEqual(get_payload["known_cost_usd"], 0.000012)
+
+        post_handler = object.__new__(ui_server.UiRequestHandler)
+        post_handler.path = "/api/chat"
+        post_handler.headers = {"Content-Length": "2"}
+        post_handler.rfile = io.BytesIO(b"{}")
+        post_handler._send_json = mock.Mock()
+        with mock.patch.object(post_handler, "_guard", return_value=True), \
+                mock.patch.object(post_handler, "_api_dispatch",
+                                  side_effect=error):
+            post_handler.do_POST()
+        post_payload = post_handler._send_json.call_args.args[0]
+        self.assertEqual(post_payload["error_kind"], "provider_spend_limit")
+        self.assertAlmostEqual(post_payload["known_cost_usd"], 0.000012)
+
     def test_cached_collapses_calls_within_ttl(self):
         ui = ui_server.UiState()
         calls = []

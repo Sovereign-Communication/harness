@@ -8,6 +8,7 @@ from harness.batch import BatchOptions, run_batch
 from harness.dag import DAGNode, TaskDAG
 from harness.errors import HarnessError
 from harness.executor import ConcurrentExecutor, FileLockManager, PlanExecutor
+from harness.provider_errors import ProviderSpendLimitError
 
 
 class FileLockManagerTests(unittest.TestCase):
@@ -54,6 +55,15 @@ class FileLockManagerTests(unittest.TestCase):
 
 
 class ConcurrentExecutorTests(unittest.TestCase):
+    def test_provider_spend_limit_aborts_keep_going_execution(self):
+        executor = ConcurrentExecutor(max_workers=1)
+
+        def worker(_idx, _path):
+            raise ProviderSpendLimitError("cap")
+
+        with self.assertRaises(ProviderSpendLimitError):
+            executor.execute_files(["f1.py"], worker, keep_going=True)
+
     def test_plan_summary_does_not_treat_empty_execution_as_success(self):
         summary = PlanExecutor.summarize({})
         self.assertFalse(summary["all_ok"])

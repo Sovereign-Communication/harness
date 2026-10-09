@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable, Dict, List
 
 from .errors import HarnessError, ToolCancelled
+from .provider_errors import ProviderSpendLimitError
 
 MAX_TRIAGE_FILES = 15
 MAX_ORCH_ROUNDS = 3
@@ -116,6 +117,8 @@ def triage_files(goal, files, chat_fn, max_files=MAX_TRIAGE_FILES,
             if not result.is_fallback:
                 # Keyed live answer said nothing relevant — keep empty.
                 return []
+        except ProviderSpendLimitError:
+            raise
         except (HarnessError, OSError, ValueError):
             pass
         return keyword_fallback(goal, files, max_files=max_files)
@@ -124,6 +127,8 @@ def triage_files(goal, files, chat_fn, max_files=MAX_TRIAGE_FILES,
                                    max_n=max_files)
     try:
         data = _extract_json_blob(chat_fn(prompt))
+    except ProviderSpendLimitError:
+        raise
     except (HarnessError, OSError, ValueError):
         return []
     if not isinstance(data, dict) or not isinstance(data.get("files"), list):
@@ -396,6 +401,8 @@ def drive(*, goal: str, target_files: List[str], initial_plan: Dict,
                 continue
         try:
             verdict = assess_completion(goal, summary, completion_chat)
+        except ProviderSpendLimitError:
+            raise
         except HarnessError as exc:
             emit("orchestration_note", note=f"completion judge failed: {exc}")
             verdict = None

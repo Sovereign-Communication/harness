@@ -31,6 +31,7 @@ from harness.discount_gate import (REPO_ROOT, discount_verdict_path,
                                    resolve_discount_semantics)
 from harness.discount_probe import run_discount_probe
 from harness.errors import HarnessError
+from harness.provider_errors import ProviderSpendLimitError
 
 
 def _offer(name, prompt, completion, discount=0.0):
@@ -187,6 +188,61 @@ class ProbeDecisionTests(unittest.TestCase):
         # :floor routing is deliberate -- it routes to whichever provider is
         # actually cheapest, which is the charge being measured.
         self.assertTrue(payload["model"].endswith(":floor"))
+
+    def test_direct_spend_limit_response_is_classified_and_accounted(self):
+        offers = [_offer("Only", 2e-6, 10e-6, discount=0.5)]
+
+        class CappedTransport(ProbeTransport):
+            def post(self, url, api_key, payload, timeout=60):
+                return 402, {
+                    "error": {"code": "payment_required",
+                              "message": "Payment required"},
+                    "usage": {"cost": 0.002},
+                }
+
+        class Governor:
+            def __init__(self):
+                self.actual = []
+
+            def check_byok(self, _model):
+                pass
+
+            def preflight(self, *_args):
+                pass
+
+            def record_actual(self, cost, model):
+                self.actual.append((cost, model))
+
+        governor = Governor()
+        with self.assertRaises(ProviderSpendLimitError) as ctx:
+            run_discount_probe(CappedTransport(offers, usage=None), "k",
+                               governor, "acme/sol")
+        self.assertEqual(ctx.exception.kind, "provider_spend_limit")
+        self.assertAlmostEqual(ctx.exception.known_cost, 0.002)
+        self.assertTrue(ctx.exception.cost_accounted)
+        self.assertEqual(governor.actual, [(0.002, "acme/sol")])
+
+    def test_successful_probe_accounts_provider_reported_cost(self):
+        offers = [_offer("Only", 2e-6, 10e-6, discount=0.5)]
+        cost = self._usage(offers, apply_discount=False)
+
+        class Governor:
+            def __init__(self):
+                self.actual = []
+
+            def check_byok(self, _model):
+                pass
+
+            def preflight(self, *_args):
+                pass
+
+            def record_actual(self, amount, model):
+                self.actual.append((amount, model))
+
+        governor = Governor()
+        transport = ProbeTransport(offers, usage=cost)
+        run_discount_probe(transport, "k", governor, "acme/sol")
+        self.assertEqual(governor.actual, [(cost["cost"], "acme/sol")])
 
 
 class ProbeFetchBoundTests(unittest.TestCase):

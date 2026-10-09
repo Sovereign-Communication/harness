@@ -9,6 +9,7 @@ import io
 import json
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 
 from harness import events, render
@@ -48,6 +49,30 @@ class EventsBusTests(unittest.TestCase):
         self.assertEqual(ev["task_id"], "t1")
         self.assertEqual(ev["seq"], 1)
         self.assertIsInstance(ev["ts"], float)
+
+    def test_task_context_adds_identity_only_to_unscoped_events(self):
+        got, sink = _collect()
+        events.add_sink(sink)
+        with events.task_context("ui/run-1", lambda: True):
+            events.emit("model_request_start", model="m")
+            events.emit("panel_call", task_id="explicit/run-2", model="other")
+            self.assertIs(events.current_cancel_check()(), True)
+        self.assertEqual(got[0]["task_id"], "ui/run-1")
+        self.assertEqual(got[1]["task_id"], "explicit/run-2")
+        self.assertIsNone(events.current_cancel_check())
+
+    def test_submit_with_context_carries_run_id_and_cancellation(self):
+        got, sink = _collect()
+        events.add_sink(sink)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with events.task_context("ui/run-worker", lambda: True):
+                future = events.submit_with_context(
+                    pool, events.emit, "model_request_start", model="m")
+                future.result(timeout=2)
+                cancelled = events.submit_with_context(
+                    pool, lambda: events.current_cancel_check()())
+                self.assertTrue(cancelled.result(timeout=2))
+        self.assertEqual(got[0]["task_id"], "ui/run-worker")
 
     def test_seq_increases_across_events(self):
         got, sink = _collect()
@@ -107,6 +132,27 @@ class EventsBusTests(unittest.TestCase):
             if s is not None:
                 sinks.append(s)
         self.assertEqual(len(sinks), events.MAX_SINKS)
+
+    def test_spend_limit_latch_stops_queued_worker_before_provider_call(self):
+        from harness.provider_errors import ProviderSpendLimitError
+
+        called = []
+
+        def exhaust():
+            raise ProviderSpendLimitError("cap")
+
+        def queued_provider_call():
+            events.raise_if_provider_spend_limited()
+            called.append(True)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            first = events.submit_with_context(pool, exhaust)
+            second = events.submit_with_context(pool, queued_provider_call)
+            with self.assertRaises(ProviderSpendLimitError):
+                first.result(timeout=2)
+            with self.assertRaises(ProviderSpendLimitError):
+                second.result(timeout=2)
+        self.assertEqual(called, [])
 
 
 class RenderTests(unittest.TestCase):

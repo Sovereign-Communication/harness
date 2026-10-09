@@ -11,6 +11,7 @@ from unittest import mock
 
 from harness.apply import ApplyEngine
 from harness.spend import SpendGovernor
+from harness.provider_errors import ProviderSpendLimitError
 from harness.ledger import AutonomyLedger
 from harness.mcp import McpServer
 from harness.mcp_lanes import LANES, lane_for
@@ -777,6 +778,23 @@ class McpProtocolTests(unittest.TestCase):
         self.assertTrue(result["isError"])
         self.assertEqual(result["errorKind"], "harness_error")
         self.assertIn("prompt is required", result["content"][0]["text"])
+
+    def test_mcp_serializes_provider_spend_limit_kind(self):
+        _, server = make_server()
+        with mock.patch.object(
+                server, "_invoke",
+                side_effect=ProviderSpendLimitError(
+                    "account balance is too low", known_cost=0.000012)):
+            reply = server._handle({
+                "jsonrpc": "2.0", "id": 25, "method": "tools/call",
+                "params": {"name": "spend_status", "arguments": {}},
+            })
+        result = reply["result"]
+        self.assertTrue(result["isError"])
+        self.assertEqual(result["errorKind"], "provider_spend_limit")
+        self.assertEqual(result["error_kind"], "provider_spend_limit")
+        self.assertIn("spend limit exhausted", result["content"][0]["text"])
+        self.assertAlmostEqual(result["known_cost_usd"], 0.000012)
 
     def test_mcp_validates_ledger_limit(self):
         feed = ('{"jsonrpc":"2.0","id":24,"method":"tools/call",'

@@ -28,6 +28,7 @@ from .chat import (chat, extract_content_and_cost, _extract_json, _reported_cost
                    _chat_reservation_slots,
                    REASONING_FALLBACK_PREFIX)  # noqa: F401
 from .errors import HarnessError
+from .provider_errors import ProviderSpendLimitError
 from .output import eprint
 from .tokens import estimate_prompt_tokens
 from .token_budget import USAGE_ACTUAL, USAGE_UNAVAILABLE
@@ -195,6 +196,8 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
             continue
         try:
             governor.fetch_pricing([m_])
+        except ProviderSpendLimitError:
+            raise
         except HarnessError:
             if i == 0:
                 raise

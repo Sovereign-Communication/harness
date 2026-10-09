@@ -51,6 +51,8 @@ import json
 import sys
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar, copy_context
 
 # Guard against pathological sink counts; a UI registers one or two sinks.
 MAX_SINKS = 8
@@ -58,6 +60,79 @@ MAX_SINKS = 8
 _lock = threading.Lock()
 _sinks = []
 _seq = 0
+_task_id = ContextVar("harness_event_task_id", default=None)
+_cancel_check = ContextVar("harness_event_cancel_check", default=None)
+_terminal_spend_limit = ContextVar("harness_terminal_spend_limit", default=None)
+
+
+@contextmanager
+def task_context(task_id, cancel_check=None):
+    """Attach run identity and cancellation to one run's execution context."""
+    token = _task_id.set(task_id)
+    cancel_token = _cancel_check.set(cancel_check)
+    terminal_token = _terminal_spend_limit.set({})
+    try:
+        yield
+    finally:
+        _terminal_spend_limit.reset(terminal_token)
+        _cancel_check.reset(cancel_token)
+        _task_id.reset(token)
+
+
+def current_cancel_check():
+    """Return the active run's cancellation check, if this thread has one."""
+    return _cancel_check.get()
+
+
+def current_task_id():
+    """Return the active run identity for durable terminal receipts."""
+    return _task_id.get()
+
+
+def mark_provider_spend_limit(error):
+    """Latch terminal provider exhaustion for this operation and its workers."""
+    state = _terminal_spend_limit.get()
+    if state is not None and "error" not in state:
+        state["error"] = {
+            "http_status": getattr(error, "http_status", None),
+        }
+
+
+def raise_if_provider_spend_limited(*, known_cost=0.0):
+    """Prevent queued or retrying worker calls after a sibling hits the cap."""
+    state = _terminal_spend_limit.get()
+    if state is not None and "error" in state:
+        from .provider_errors import ProviderSpendLimitError
+        raise ProviderSpendLimitError(
+            "a sibling request already exhausted the provider spend limit",
+            http_status=state["error"].get("http_status"),
+            known_cost=known_cost,
+        )
+
+
+def submit_with_context(executor, fn, *args, **kwargs):
+    """Submit one worker with this run's event and cancellation context."""
+    context = copy_context()
+    state = _terminal_spend_limit.get()
+    if state is None:
+        # CLI and library fan-outs may not have a server task context. Give
+        # every worker submitted to this pool one shared terminal-stop latch.
+        state = getattr(executor, "_harness_terminal_spend_limit", None)
+        if state is None:
+            state = {}
+            try:
+                executor._harness_terminal_spend_limit = state
+            except Exception:
+                pass
+
+    def invoke():
+        token = _terminal_spend_limit.set(state)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _terminal_spend_limit.reset(token)
+
+    return executor.submit(context.run, invoke)
 
 # Module-global for a one-time broken-sink warning; assigned only at module
 # level or inside emit() via the global statement (ruff F823 guard).
@@ -77,6 +152,8 @@ def emit(event_type, **fields):
     with _lock:
         _seq += 1
         event = {"ts": time.time(), "seq": _seq, "type": event_type}
+        if "task_id" not in fields and _task_id.get() is not None:
+            fields["task_id"] = _task_id.get()
         event.update(fields)
         dead = []
         for sink in _sinks:

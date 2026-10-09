@@ -379,6 +379,11 @@ def run_chat_task(task_id, args, cancel_check):
     prompt = args["prompt"]
     root_dir = Path(args["root_dir"]) if args.get("root_dir") else None
     agent = AutonomousAgent(settings=settings, root_dir=root_dir)
+    # Bind cancellation at the network boundary as well as the orchestration
+    # checkpoints, so Stop can interrupt an in-flight provider request.
+    from ._http import HttpTransport
+    if isinstance(agent.transport, HttpTransport):
+        agent.transport = agent.transport.with_cancel(cancel_check)
     return agent.run_prompt(
         prompt=prompt,
         auto_apply=args.get("auto_apply", True),
@@ -853,8 +858,9 @@ class UiState:
                      ui_run=record["id"])
         try:
             runner = RUNNERS[record["kind"]]
-            result = runner(task_id, record["args"],
-                            cancel_flag.is_set)
+            with _events.task_context(task_id, cancel_flag.is_set):
+                result = runner(task_id, record["args"],
+                                cancel_flag.is_set)
             record["result"] = result
             record["status"] = str(result.get("status") or "done")
             if record["status"] == "cancelled":
@@ -863,6 +869,10 @@ class UiState:
                 record["error"] = "cancelled by user"
         except HarnessError as e:
             record["error"] = str(e)
+            record["error_kind"] = getattr(e, "kind", "harness_error")
+            known_cost = max(0.0, float(getattr(e, "known_cost", 0.0) or 0.0))
+            if known_cost:
+                record["known_cost_usd"] = known_cost
             record["status"] = "error"
         except ToolCancelled:
             # The user cancelled the run; that is not a failure of the work.
@@ -873,12 +883,14 @@ class UiState:
             record["status"] = "error"
         record["finished_at"] = time.time()
         _events.emit("run_finished", task_id=task_id, kind=record["kind"],
-                     ui_run=record["id"], status=record["status"])
+                     ui_run=record["id"], status=record["status"],
+                     error_kind=record.get("error_kind"),
+                     known_cost_usd=record.get("known_cost_usd"))
 
     def run_public(self, record, with_result=False):
         out = {k: record.get(k) for k in
-               ("id", "kind", "task_id", "status", "error", "created_at",
-                "finished_at")}
+               ("id", "kind", "task_id", "status", "error", "error_kind",
+                "known_cost_usd", "created_at", "finished_at")}
         out["cancelled"] = bool(record["_cancel"].is_set())
         if with_result:
             out["result"] = record.get("result")
@@ -994,8 +1006,14 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _error(self, code, message, close=False):
-        self._send_json({"error": message}, code, close=close)
+    def _error(self, code, message, close=False, error_kind=None,
+               known_cost_usd=None):
+        payload = {"error": message}
+        if error_kind:
+            payload["error_kind"] = error_kind
+        if known_cost_usd is not None:
+            payload["known_cost_usd"] = max(0.0, float(known_cost_usd))
+        self._send_json(payload, code, close=close)
 
     def _drain_body(self, limit=1 << 20):
         """Read and discard (a bounded amount of) the request body.
@@ -1133,7 +1151,9 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_mission_detail(m.group(1), q)
             return self._error(404, f"no such endpoint: {path}")
         except HarnessError as e:
-            return self._error(400, str(e))
+            return self._error(400, str(e),
+                               error_kind=getattr(e, "kind", "harness_error"),
+                               known_cost_usd=getattr(e, "known_cost", None))
         except Exception as e:
             return self._error(500, f"{type(e).__name__}: {e}")
 
@@ -1171,7 +1191,9 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_cancel(m.group(1))
             return self._error(404, f"no such endpoint: {parsed.path}")
         except HarnessError as e:
-            return self._error(400, str(e))
+            return self._error(400, str(e),
+                               error_kind=getattr(e, "kind", "harness_error"),
+                               known_cost_usd=getattr(e, "known_cost", None))
         except Exception as e:
             return self._error(500, f"{type(e).__name__}: {e}")
 

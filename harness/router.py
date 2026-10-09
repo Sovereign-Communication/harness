@@ -14,6 +14,7 @@ back to the last tier that needed escalation (judge-gated, data-driven).
 
 
 from .dynamic_allocation import rank_models_dynamically
+from .provider_errors import ProviderSpendLimitError
 from .sliding_scale import (
     classify_task_tier,
     resolve_frontier_model,
@@ -162,6 +163,8 @@ class Router:
                     eval_res, _ = self.jev_policy.evaluate_route(
                         instruction, list(target_files or []), site="router")
                     jev_route = eval_res.answers.get("route")
+            except ProviderSpendLimitError:
+                raise
             except Exception:
                 pass
         classification = classify_task_tier(
@@ -234,4 +237,3 @@ class Router:
         if self.escalation_pool and self._escalation_rung < len(self.escalation_pool):
             return self._escalation_rung, self.escalation_pool[self._escalation_rung]
         return None
-

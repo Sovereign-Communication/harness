@@ -17,6 +17,7 @@ import time
 from .chat import (_chat_reservation_slots, _extract_json, _reported_cost,
                    assess_output, chat, extract_content_and_cost,
                    looks_truncated, REASONING_FALLBACK_PREFIX)
+from ._http import interruptible_sleep
 from .capability import ordered_pool
 from .config import DEFAULT_MAX_TOKENS, PanelLanePolicy
 from . import events as _events
@@ -25,6 +26,7 @@ from .convergence import (MAX_429_RETRIES,
                           extract_claim_verdicts, run_convergence_specialist,
                           tally_convergence)
 from .errors import HarnessError
+from .provider_errors import ProviderSpendLimitError
 from .output import eprint
 from .tokens import estimate_prompt_tokens
 
@@ -188,6 +190,8 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                 claim_texts if claim_texts is not None else [],
                 claim_evidence if claim_evidence is not None else prompt,
                 enabled=True, site="claims", task_id=task_id)
+        except ProviderSpendLimitError:
+            raise
         except Exception as exc:  # advisory only — never break panel dispatch
             claim_support = {"skipped": True, "error": str(exc), "claim_flags": []}
 
@@ -323,10 +327,12 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             status, resp = chat(transport, api_key, model,
                                 [{"role": "user", "content": prompt}], policy.vote.tokens,
                                 policy.vote.effort, reasoning_token_budget, governor)
+            response_cost = _reported_cost(resp)
             if cancel_check and cancel_check():
                 from .errors import ToolCancelled
+                if response_cost:
+                    governor.record_actual(response_cost, model)
                 raise ToolCancelled()
-            response_cost = _reported_cost(resp)
             response_cost_recorded = False
             if status != 429 or retry_count >= MAX_429_RETRIES:
                 break
@@ -344,15 +350,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             _events.emit("rotation", task_id=task_id, model=model,
                          reason="rate_limited", retry=retry_count)
             delay = RETRY_429_BACKOFF_SECONDS * retry_count
-            if cancel_check:
-                if cancel_check():
-                    from .errors import ToolCancelled
-                    raise ToolCancelled()
-                time.sleep(min(delay, 0.1))
-                if delay > 0.1:
-                    time.sleep(delay - 0.1)
-            else:
-                time.sleep(delay)
+            interruptible_sleep(delay, cancel_check)
         elapsed = time.time() - t0
         if status != 200:
             err = resp.get("error", {}).get("message", str(resp)) if isinstance(resp, dict) else str(resp)
@@ -454,7 +452,8 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             if _first is None:
                 break
             tried += 1
-            _futures.add(_pool.submit(_run_panel_slot, _first))
+            _futures.add(_events.submit_with_context(
+                _pool, _run_panel_slot, _first))
         while _futures and len(panel_results) < target:
             _done, _futures = concurrent.futures.wait(
                 _futures, return_when=concurrent.futures.FIRST_COMPLETED)
@@ -465,7 +464,8 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                         _next_model = next(candidates, None)
                         if _next_model is not None:
                             tried += 1
-                            _futures.add(_pool.submit(_run_panel_slot, _next_model))
+                            _futures.add(_events.submit_with_context(
+                                _pool, _run_panel_slot, _next_model))
                     continue
                 if _slot["ok"]:
                     panel_results.append(_slot["result"])
@@ -483,7 +483,8 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                         _next_model = next(candidates, None)
                         if _next_model is not None:
                             tried += 1
-                            _futures.add(_pool.submit(_run_panel_slot, _next_model))
+                            _futures.add(_events.submit_with_context(
+                                _pool, _run_panel_slot, _next_model))
     if not panel_results:
         raise HarnessError("all panel calls failed. Aborting.")
     # Report votes in pool order regardless of completion order: with a fast
