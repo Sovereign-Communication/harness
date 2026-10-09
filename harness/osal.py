@@ -267,7 +267,8 @@ def run_tree(argv, cwd=None, timeout=None, env=None):
     if env is not None:
         kwargs["env"] = env
     if IS_WINDOWS:
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        kwargs["creationflags"] = getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     else:
         kwargs["start_new_session"] = True
     try:
