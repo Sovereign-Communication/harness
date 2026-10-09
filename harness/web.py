@@ -415,6 +415,207 @@ def find_urls(prompt):
     return [u[:500] for u in _URL_RE.findall(prompt or "")]
 
 
+# ---- bounded public-site liveness probe (request-lifecycle #202) -----------
+# A read-only uptime check must not enter repo triage, DAG decomposition, or
+# waist confirmation, and it must never treat search snippets as liveness
+# evidence. This probe answers one question -- does this public host answer
+# HTTPS -- with SSRF guards: https only, no credentials, default port only,
+# every resolved address must be globally public (DNS pinned through the
+# connection with TLS hostname validation), no redirects followed, short
+# timeout, small body cap, no cookies or auth. All network seams are
+# injectable so hermetic tests never touch the network.
+_SITE_TARGET_RE = re.compile(
+    r"(?P<scheme>https?://)?(?P<host>(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"[A-Za-z]{2,})(?::(?P<port>\d{1,5}))?(?P<path>/[^\s)>\]'\"]*)?"
+)
+_PROBE_CONNECT_TIMEOUT = 5.0
+_PROBE_READ_TIMEOUT = 4.0
+_PROBE_MAX_BYTES = 8192
+
+
+def extract_site_target(prompt):
+    """Return a normalized ``https://host[/path]`` for an uptime-check prompt.
+
+    Prefers an explicit URL from :func:`find_urls`; otherwise accepts a bare
+    public hostname (``example.com``, ``www.example.com/path``). Returns
+    ``None`` when no candidate is present. Never raises for prompt text."""
+    urls = find_urls(prompt or "")
+    if urls:
+        return urls[0][:500]
+    m = _SITE_TARGET_RE.search(prompt or "")
+    if not m:
+        return None
+    host = m.group("host")
+    if len(host) > 253:
+        return None
+    path = m.group("path") or ""
+    return f"https://{host.lower()}{path[:200]}"
+
+
+def _resolved_addresses_public(host, resolve_fn):
+    """Resolve *host* and require every address to be globally public.
+
+    Returns the address list on success. Raises :class:`HarnessError` when
+    resolution fails, yields nothing, or any address is private, loopback,
+    link-local, multicast, reserved, or unspecified -- the SSRF refusal."""
+    import ipaddress as _ipaddress
+    try:
+        infos = resolve_fn(host, 443)
+    except Exception as e:
+        raise HarnessError(f"site probe refused: DNS resolution failed for '{host}': {e}") from e
+    addrs = []
+    for info in infos or []:
+        sockaddr = info[4] if len(info) > 4 else None
+        ip = sockaddr[0] if sockaddr else None
+        if ip:
+            addrs.append(ip)
+    if not addrs:
+        raise HarnessError(f"site probe refused: no addresses for '{host}'")
+    for ip in addrs:
+        try:
+            parsed = _ipaddress.ip_address(ip)
+        except ValueError:
+            raise HarnessError(f"site probe refused: unparseable address '{ip}'") from None
+        if not parsed.is_global:
+            raise HarnessError(
+                f"site probe refused: '{host}' resolves to non-public address")
+    return addrs
+
+
+def probe_public_site(url, timeout=8.0, cancel_check=None, resolve_fn=None,
+                      connect_fn=None):
+    """Perform one bounded HTTPS liveness probe against a public site.
+
+    Returns a plain dict ``{ok, http_status, verdict, reason, latency_s,
+    host, url}`` where *verdict* is one of ``up``, ``denied``, ``redirect``,
+    ``timeout``, ``network``, or ``refused``. Environmental outcomes are
+    returned, never raised; only policy refusals (credentials, unsafe
+    scheme/port, non-public address) raise :class:`HarnessError` so the
+    caller can render an honest terminal refusal before any model call.
+    """
+    import socket as _socket
+    import ssl as _ssl
+    import time as _time
+    if cancel_check and cancel_check():
+        from .errors import ToolCancelled as _Cancelled
+        raise _Cancelled("site probe cancelled by user")
+    if not url or not url.strip():
+        raise HarnessError("site probe refused: empty url")
+    u = url.strip()[:500]
+    parsed = urllib.parse.urlsplit(u if "://" in u else f"https://{u}")
+    if parsed.scheme != "https":
+        raise HarnessError("site probe refused: only https:// URLs are probed")
+    if parsed.username or parsed.password or "@" in (parsed.netloc or ""):
+        raise HarnessError("site probe refused: credentials in URL are rejected")
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise HarnessError("site probe refused: no host in URL")
+    port = parsed.port or 443
+    if port != 443:
+        raise HarnessError("site probe refused: only the default https port is probed")
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+    resolve = resolve_fn or _socket.getaddrinfo
+    addrs = _resolved_addresses_public(host, resolve)
+    if cancel_check and cancel_check():
+        from .errors import ToolCancelled as _Cancelled
+        raise _Cancelled("site probe cancelled by user")
+    deadline = _time.monotonic() + max(1.0, float(timeout))
+    start = _time.monotonic()
+    raw_sock = tls_sock = None
+    try:
+        if connect_fn is not None:
+            status, reason, final_host = connect_fn(host, path, timeout)
+            latency = _time.monotonic() - start
+            return _probe_verdict(host, u, status, reason, latency, final_host)
+        ctx = _ssl.create_default_context()
+        conn_timeout = min(_PROBE_CONNECT_TIMEOUT, max(1.0, deadline - _time.monotonic()))
+        raw_sock = _socket.create_connection((addrs[0], port), timeout=conn_timeout)
+        raw_sock.settimeout(max(1.0, deadline - _time.monotonic()))
+        tls_sock = ctx.wrap_socket(raw_sock, server_hostname=host)
+        request = (f"GET {path[:200]} HTTP/1.1\r\nHost: {host}\r\n"
+                   f"User-Agent: {_USER_AGENT}\r\nAccept: text/html,*/*;q=0.8\r\n"
+                   f"Connection: close\r\n\r\n")
+        tls_sock.sendall(request.encode("ascii", "replace"))
+        chunks = []
+        received = 0
+        while received < _PROBE_MAX_BYTES:
+            remaining = max(0.5, deadline - _time.monotonic())
+            tls_sock.settimeout(remaining)
+            try:
+                data = tls_sock.recv(min(4096, _PROBE_MAX_BYTES - received))
+            except (_socket.timeout, TimeoutError):
+                latency = _time.monotonic() - start
+                return {"ok": False, "http_status": None, "verdict": "timeout",
+                        "reason": f"'{host}' did not answer within the probe budget",
+                        "latency_s": round(latency, 2), "host": host, "url": u}
+            if not data:
+                break
+            chunks.append(data)
+            received += len(data)
+            if b"\r\n\r\n" in b"".join(chunks):
+                break
+        latency = _time.monotonic() - start
+        head = b"".join(chunks).decode("iso-8859-1", "replace")
+        status_line = head.splitlines()[0] if head.splitlines() else ""
+        parts = status_line.split()
+        try:
+            status = int(parts[1]) if len(parts) > 1 else 0
+        except ValueError:
+            status = 0
+        location = ""
+        for line in head.splitlines()[1:]:
+            if line.lower().startswith("location:"):
+                location = line.split(":", 1)[1].strip()[:200]
+                break
+        return _probe_verdict(host, u, status, location, latency, host)
+    except (HarnessError, Exception) as e:
+        from .errors import HarnessError as _HarnessError
+        if isinstance(e, _HarnessError):
+            raise
+        latency = _time.monotonic() - start
+        text = str(e)
+        if "timed out" in text or "timeout" in text.lower():
+            return {"ok": False, "http_status": None, "verdict": "timeout",
+                    "reason": f"'{host}' timed out", "latency_s": round(latency, 2),
+                    "host": host, "url": u}
+        return {"ok": False, "http_status": None, "verdict": "network",
+                "reason": f"'{host}' unreachable: {text[:160]}",
+                "latency_s": round(latency, 2), "host": host, "url": u}
+    finally:
+        for sock in (tls_sock, raw_sock):
+            try:
+                if sock is not None:
+                    sock.close()
+            except Exception:
+                pass
+
+
+def _probe_verdict(host, url, status, location, latency, final_host):
+    """Map one observed HTTP status to an honest liveness verdict."""
+    base = {"latency_s": round(float(latency), 2), "host": host, "url": url}
+    if 200 <= status < 300:
+        return {**base, "ok": True, "http_status": status, "verdict": "up",
+                "reason": f"'{host}' is up (HTTPS {status})"}
+    if status in (401, 402, 403, 407):
+        return {**base, "ok": True, "http_status": status, "verdict": "denied",
+                "reason": (f"'{host}' responds but denied page access "
+                           f"(HTTPS {status}); the host is reachable")}
+    if 300 <= status < 400:
+        dest = f" -> {location}" if location else ""
+        return {**base, "ok": True, "http_status": status, "verdict": "redirect",
+                "reason": (f"'{host}' answered with HTTPS {status}{dest}; "
+                           f"redirects are not followed, so the destination "
+                           f"is not claimed reachable")}
+    if status == 429 or 500 <= status < 600:
+        return {**base, "ok": False, "http_status": status, "verdict": "network",
+                "reason": f"'{host}' answered HTTPS {status}; uptime not established"}
+    return {**base, "ok": False, "http_status": status or None,
+            "verdict": "network",
+            "reason": f"'{host}' gave an unusable response (HTTPS {status or '?'})"}
+
+
 def extract_query(prompt, max_words=10):
     """Reduce a natural-language prompt to a search query (stopwords out, spellings normalized)."""
     words = re.findall(r"[a-zA-Z0-9_']+", (prompt or "").lower())

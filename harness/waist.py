@@ -1643,10 +1643,26 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         ladder = resolve_waist_ladder(
             use_free=use_free, custom_frontier=frontier_model,
             allow_escalation=allow_escalation)
+        # #204: one circuit per run -- throttled models stay skipped and
+        # the wait ceiling stops a storm with an honest rate-limited error.
+        from .lifecycle_guards import (
+            RATE_LIMITED,
+            RateCircuit,
+            classify_harness_error,
+            is_terminal_failure,
+        )
+        _rate_circuit = RateCircuit()
         plan_result_confirmed = None
         last_exc = None
         for rung_idx, candidate_model in enumerate(ladder):
+            if _rate_circuit.should_skip(candidate_model):
+                from . import events as _events
+                _events.emit("rotation", model=candidate_model,
+                             reason="rate_limited_cooldown",
+                             note=f"waist rung {rung_idx + 1}/{len(ladder)} skipped (rate-limit cooldown)")
+                continue
             try:
+                _rate_circuit.check_wait_budget()
                 res = confirm_plan(
                     transport=transport, api_key=api_key, governor=governor,
                     ledger=ledger, plan_result=plan_result, model=candidate_model,
@@ -1657,6 +1673,13 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                 break
             except HarnessError as exc:
                 last_exc = exc
+                _kind = classify_harness_error(str(exc))
+                if is_terminal_failure(_kind):
+                    # #204/#199: spend-cap exhaustion (or Harness budget
+                    # refusal) stops with no retry and no model rotation.
+                    raise
+                if _kind == RATE_LIMITED:
+                    _rate_circuit.note_rate_limited(candidate_model)
                 from . import events as _events
                 _events.emit("rotation", model=candidate_model, reason=str(exc),
                              note=f"waist confirmation failed on rung {rung_idx + 1}/{len(ladder)}")
@@ -1676,49 +1699,68 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             if plan_result.get("status") == "refused" and execute and decompose_llm:
                 refusal_reason = plan_result.get("confirmation", {}).get("reason", "")
                 from . import events as _events
-                _events.emit("orchestration_note",
-                             note=f"Waist refused plan ('{refusal_reason}'); re-planning with critique")
-                critique_prompt = (
-                    f"{opts_goal}\n\n"
-                    f"[ARCHITECTURAL REVIEW CRITIQUE]: The previous plan was rejected: "
-                    f"'{refusal_reason}'. "
-                    f"Address this critique directly: ensure all iteration loops, conditional branching, "
-                    f"dependencies, and granular steps are properly structured into the DAG."
-                )
-                try:
-                    critique_context = _decompose_repo_context(
-                        critique_prompt, candidate_files, root=root,
-                        ledger=ledger)
-                    re_decomposed = decompose_via_llm(
-                        lambda p: chat_fn(p)[0], critique_prompt,
-                        candidate_files=candidate_files,
-                        repo_context=critique_context)
-                    re_plan = plan_task(
-                        goal=plan_goal, candidate_files=candidate_files,
-                        custom_frontier=frontier_model, use_free=use_free,
-                        decomposed_dag=re_decomposed, root=root, run_gate=run_gate,
-                        allow_escalation=allow_escalation)
-                    re_plan["decomposition"] = decomposition + ":critique_replan"
-                    re_plan = _fit_plan_to_single_pass(
-                        re_plan, goal=opts_goal, candidate_files=candidate_files,
-                        custom_frontier=frontier_model, use_free=use_free, root=root,
-                        run_gate=run_gate, max_tokens=max_tokens,
-                        allow_escalation=allow_escalation)
-                    for candidate_model in ladder:
-                        try:
-                            re_res = confirm_plan(
-                                transport=transport, api_key=api_key, governor=governor,
-                                ledger=ledger, plan_result=re_plan, model=candidate_model,
-                                use_free=use_free, custom_frontier=frontier_model,
-                                root=root, run_gate=run_gate, chat_fn=None,
-                                consensus=consensus)
-                            if re_res.get("status") != "refused":
-                                plan_result = re_res
-                                break
-                        except HarnessError:
-                            continue
-                except HarnessError as exc:
-                    eprint(f"[plan] Critique re-planning failed ({exc}); retaining initial result")
+                from .lifecycle_guards import is_missing_tool_refusal as _is_missing_tool
+                if _is_missing_tool(refusal_reason):
+                    # #205: absent capability -- no re-plan could fix it.
+                    _events.emit("orchestration_note",
+                                 note=f"Waist refused plan ('{refusal_reason}'); "
+                                      "missing capability, not re-planning")
+                else:
+                    _events.emit("orchestration_note",
+                                 note=f"Waist refused plan ('{refusal_reason}'); re-planning with critique")
+                    critique_prompt = (
+                        f"{opts_goal}\n\n"
+                        f"[ARCHITECTURAL REVIEW CRITIQUE]: The previous plan was rejected: "
+                        f"'{refusal_reason}'. "
+                        f"Address this critique directly: ensure all iteration loops, conditional branching, "
+                        f"dependencies, and granular steps are properly structured into the DAG."
+                    )
+                    try:
+                        critique_context = _decompose_repo_context(
+                            critique_prompt, candidate_files, root=root,
+                            ledger=ledger)
+                        re_decomposed = decompose_via_llm(
+                            lambda p: chat_fn(p)[0], critique_prompt,
+                            candidate_files=candidate_files,
+                            repo_context=critique_context)
+                        re_plan = plan_task(
+                            goal=plan_goal, candidate_files=candidate_files,
+                            custom_frontier=frontier_model, use_free=use_free,
+                            decomposed_dag=re_decomposed, root=root, run_gate=run_gate,
+                            allow_escalation=allow_escalation)
+                        re_plan["decomposition"] = decomposition + ":critique_replan"
+                        re_plan = _fit_plan_to_single_pass(
+                            re_plan, goal=opts_goal, candidate_files=candidate_files,
+                            custom_frontier=frontier_model, use_free=use_free, root=root,
+                            run_gate=run_gate, max_tokens=max_tokens,
+                            allow_escalation=allow_escalation)
+                        # #204: the re-plan confirm is another plan attempt
+                        # on the same run -- rate-limited rungs stay skipped.
+                        for candidate_model in _rate_circuit.available(ladder):
+                            try:
+                                _rate_circuit.check_wait_budget()
+                                re_res = confirm_plan(
+                                    transport=transport, api_key=api_key, governor=governor,
+                                    ledger=ledger, plan_result=re_plan, model=candidate_model,
+                                    use_free=use_free, custom_frontier=frontier_model,
+                                    root=root, run_gate=run_gate, chat_fn=None,
+                                    consensus=consensus)
+                                if re_res.get("status") != "refused":
+                                    plan_result = re_res
+                                    break
+                            except HarnessError as _re_exc:
+                                _re_kind = classify_harness_error(str(_re_exc))
+                                if is_terminal_failure(_re_kind):
+                                    raise
+                                if _re_kind == RATE_LIMITED:
+                                    _rate_circuit.note_rate_limited(candidate_model)
+                                continue
+                    except HarnessError as exc:
+                        # #204: terminal spend stays terminal -- retaining the
+                        # refusal would launder an exhausted key into a plan.
+                        if is_terminal_failure(classify_harness_error(str(exc))):
+                            raise
+                        eprint(f"[plan] Critique re-planning failed ({exc}); retaining initial result")
 
             if plan_result.get("status") != "refused":
                 # An amend/split verdict replaces the node set: re-fit it, or the

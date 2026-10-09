@@ -1854,6 +1854,8 @@ class TestHourglassLane(unittest.TestCase):
         self.assertIn("Autonomous Waist Gate Guard", res["response"])
 
     def test_refused_edit_ignores_a_canned_gate_refusal_and_lists_stages(self):
+        # #206: a refused plan renders as refused -- never as verified --
+        # with its composed-but-unconfirmed stages labeled as such.
         with tempfile.TemporaryDirectory() as tmp:
             agent, _ = self._lane(Path(tmp))
             canned = {"response": "The waist confirmation gate refused this."}
@@ -1863,10 +1865,10 @@ class TestHourglassLane(unittest.TestCase):
                                           "ref2")
         self.assertNotIn("The waist confirmation gate refused this.",
                          res["response"])
-        self.assertIn("Analysis & Proposed Plan", res["response"])
-        self.assertIn("`util.py`", res["response"])
-        self.assertIn("- `context`", res["response"])
-        self.assertIn("- `execution`", res["response"])
+        self.assertIn("Plan refused", res["response"])
+        self.assertNotIn("verified", res["response"].lower())
+        self.assertIn("- `context` (composed, unconfirmed)", res["response"])
+        self.assertIn("- `execution` (composed, unconfirmed)", res["response"])
 
     def test_refused_edit_lists_dag_nodes_when_the_conversation_lane_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1877,7 +1879,10 @@ class TestHourglassLane(unittest.TestCase):
                               side_effect=RuntimeError("lane down")):
                 res = agent._refused_edit(plan, "Update util.py", [], "ref3")
         self.assertIn("1. **n1**: do the chunk", res["response"])
-        self.assertIn("identified repository components", res["response"])
+        # #206: the refused frame carries the node list without the old
+        # "identified repository components" verified-plan template.
+        self.assertIn("Plan refused", res["response"])
+        self.assertNotIn("verified", res["response"].lower())
 
     # -- execution directives resume the prior plan ------------------------
 
