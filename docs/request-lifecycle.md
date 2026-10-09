@@ -1,10 +1,12 @@
 # Request lifecycle: simple requests get simple executions
 
 Issues #200-#207. Status: #200 (classifier), #201 (escalation gate), #202
-(probe tier), #203 (capability preflight) implemented in this lane; #204
-(429 circuit breaker), #205 (refusal-loop guard), #206 (honest terminal
-output) remain as named follow-ups; #207 closes when all siblings land
-with the incident replay below re-verified.
+(probe tier), #203 (capability preflight) implemented in the first lane;
+#204 (429 circuit breaker), #205 (refusal-loop guard + phase memo), #206
+(honest terminal output) implemented in the second lane
+(`harness/lifecycle_guards.py`, wired into the waist ladder/re-plan and
+the agent refusal renderer); #207 closes when all siblings land with the
+incident replay below re-verified.
 
 ## Tiers
 

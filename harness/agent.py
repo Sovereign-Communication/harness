@@ -1657,31 +1657,34 @@ class AutonomousAgent:
             pass
 
         if not answer_text:
+            # #206: refused/empty renders as refused, never as verified.
+            from .lifecycle_guards import render_refused_plan
             dag = plan.get("dag") or {}
-            nodes = dag.get("nodes") or []
-            targets_str = ", ".join(f"`{t}`" for t in target_files) if target_files else "identified repository components"
-            plan_summary_lines = []
-            if nodes:
-                plan_summary_lines.append("**Planned Execution Stages:**")
-                for i, node in enumerate(nodes[:5], 1):
-                    plan_summary_lines.append(f"{i}. **{node.get('name', 'Stage')}**: {node.get('summary', node.get('description', ''))}")
-            elif plan.get("stages"):
-                plan_summary_lines.append("**Planned Execution Stages:**")
-                for s in plan.get("stages")[:5]:
-                    plan_summary_lines.append(f"- `{s}`")
-            stages_block = ("\n" + "\n".join(plan_summary_lines) + "\n\n") if plan_summary_lines else ""
-            answer_text = (
-                f"### Analysis & Proposed Plan for `{prompt}`\n\n"
-                f"Harness evaluated your request across {targets_str}.{stages_block}"
-                f"The planned changes were structured and verified by the waist planner."
-            )
+            answer_text = render_refused_plan(
+                prompt, reason,
+                stages=plan.get("stages"),
+                nodes=dag.get("nodes"),
+            ).rstrip("\n")
 
-        response_text = (
-            f"{answer_text}\n\n"
-            f"---\n"
-            f"**Autonomous Waist Gate Guard:** Automated file writes were held ({reason}). "
-            f"Review the planned changes above or confirm execution to proceed."
+        # #206: guard speaks only to the real write surface; deduped to one.
+        from .lifecycle_guards import (
+            dedupe_notices,
+            has_write_surface,
+            render_gate_guard,
         )
+        guard_block = render_gate_guard(
+            reason,
+            has_write_surface(target_files, plan.get("dag")),
+        )
+        notice_blocks = dedupe_notices([guard_block] if guard_block else [])
+        if notice_blocks:
+            response_text = (
+                f"{answer_text}\n\n"
+                f"---\n"
+                + "\n".join(notice_blocks)
+            )
+        else:
+            response_text = answer_text
 
         result = {
             "status": "refused",
