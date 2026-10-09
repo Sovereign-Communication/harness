@@ -1,11 +1,13 @@
 """Request-lifecycle incident regressions (issues #200-#203, #207 slice).
 
-Hermetic: the site probe's network seams are injected fakes, so no test
-touches the network and no test spends model budget. A site availability
-check must classify as ``simple-action``, run exactly one bounded probe
-with zero model/decomposition calls, and answer honestly from observed
-probe evidence.
+Hermetic: the site probe's network seams are injected fakes (or patched
+stdlib socket/ssl objects that never connect), so no test touches the
+network and no test spends model budget. A site availability check must
+classify as ``simple-action``, run exactly one bounded probe with zero
+model/decomposition calls, and answer honestly from observed probe
+evidence.
 """
+import socket
 import tempfile
 import unittest
 from pathlib import Path
@@ -294,6 +296,216 @@ class EscalationGateTests(unittest.TestCase):
             agent = self._agent(tmp)
             self.assertFalse(agent._escalation_authorized(
                 "what is the capital of France?", False, "ok"))
+
+
+class SiteCheckPromptEdgeTests(unittest.TestCase):
+    def test_empty_prompt_is_not_a_site_check(self):
+        self.assertFalse(is_site_check_prompt(""))
+        self.assertFalse(is_site_check_prompt("   "))
+
+    def test_plan_execution_phrase_with_a_host_stays_out(self):
+        self.assertFalse(is_site_check_prompt("execute the plan for example.com"))
+        self.assertEqual(classify_prompt_intent("execute the plan for example.com"),
+                         "edit")
+
+    def test_action_verb_without_a_target_is_not_a_site_check(self):
+        self.assertFalse(is_site_check_prompt("check the weekly report"))
+
+    def test_mutation_verb_with_a_host_is_not_a_site_check(self):
+        self.assertFalse(is_site_check_prompt("fix example.com"))
+
+    def test_bare_uptime_phrasing_without_a_verb_is_a_site_check(self):
+        self.assertTrue(is_site_check_prompt("example.com reachable?"))
+        self.assertEqual(classify_prompt_intent("example.com reachable?"),
+                         "simple-action")
+
+    def test_overlong_host_is_not_a_target(self):
+        host = "{0}.{0}.{0}.{0}.abcdef.com".format("a" * 61)
+        self.assertGreater(len(host), 253)
+        self.assertIsNone(extract_site_target(f"is {host} up?"))
+
+
+class NonForceSimpleActionTests(unittest.TestCase):
+    def test_default_run_prompt_path_selects_simple_action(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(),
+                                   history_dir=Path(tmp), root_dir=Path(tmp))
+            with patch("harness.web.probe_public_site",
+                       return_value={"ok": True, "http_status": 200,
+                                     "verdict": "up",
+                                     "reason": "'example.com' is up (HTTPS 200)",
+                                     "latency_s": 0.2, "host": "example.com",
+                                     "url": "https://example.com"}), \
+                 patch("harness.agent.chat",
+                       side_effect=AssertionError("no model calls")), \
+                 patch.object(AutonomousAgent, "_handle_edit",
+                              side_effect=AssertionError("no plan lane")), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                res = agent.run_prompt("check if example.com is up",
+                                       session_id="nf1")
+        self.assertEqual(res["intent"], "simple-action")
+        self.assertEqual(res["status"], "ok")
+
+
+class ProbeRefusalEdgeTests(unittest.TestCase):
+    def test_empty_url_is_refused(self):
+        with self.assertRaisesRegex(HarnessError, "empty url"):
+            probe_public_site("   ", resolve_fn=_resolve_public("93.184.216.34"))
+
+    def test_url_without_a_host_is_refused(self):
+        with self.assertRaisesRegex(HarnessError, "no host"):
+            probe_public_site("https:///path",
+                              resolve_fn=_resolve_public("93.184.216.34"))
+
+    def test_empty_resolution_is_refused(self):
+        with self.assertRaisesRegex(HarnessError, "no addresses"):
+            probe_public_site("https://example.com", resolve_fn=lambda h, p: [])
+
+    def test_unparseable_address_is_refused(self):
+        def _weird(host, port):
+            return [(2, 1, 6, "", (":::", port))]
+        with self.assertRaisesRegex(HarnessError, "unparseable address"):
+            probe_public_site("https://example.com", resolve_fn=_weird)
+
+    def test_query_string_reaches_the_wire_path(self):
+        seen = {}
+
+        def _capture(host, path, timeout):
+            seen["path"] = path
+            return (200, "", host)
+
+        out = probe_public_site("https://example.com/s?q=1",
+                                resolve_fn=_resolve_public("93.184.216.34"),
+                                connect_fn=_capture)
+        self.assertEqual(seen["path"], "/s?q=1")
+        self.assertEqual(out["verdict"], "up")
+
+    def test_cancel_after_resolve_aborts(self):
+        with self.assertRaises(ToolCancelled):
+            probe_public_site("https://example.com",
+                              cancel_check=iter([False, True]).__next__,
+                              resolve_fn=_resolve_public("93.184.216.34"))
+
+    def test_unusable_status_is_a_network_verdict(self):
+        out = probe_public_site(
+            "https://example.com",
+            resolve_fn=_resolve_public("93.184.216.34"),
+            connect_fn=lambda host, path, timeout: (123, "", host))
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["verdict"], "network")
+        self.assertEqual(out["http_status"], 123)
+
+
+class _ScriptedSocket:
+    """Hermetic stand-in for a connected socket: scripted recvs, recorded close."""
+
+    def __init__(self, recvs):
+        self._recvs = list(recvs)
+        self.sent = []
+        self.closed = False
+
+    def settimeout(self, timeout):
+        pass
+
+    def sendall(self, data):
+        self.sent.append(data)
+
+    def recv(self, n):
+        if not self._recvs:
+            return b""
+        item = self._recvs.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    def close(self):
+        self.closed = True
+
+
+class ProbeRealPathTests(unittest.TestCase):
+    """The real socket/SSL read loop with patched stdlib seams (no network)."""
+
+    def _run(self, recvs, create_side_effect=None):
+        raw, tls = _ScriptedSocket([]), _ScriptedSocket(recvs)
+        ctx = MagicMock()
+        ctx.wrap_socket.return_value = tls
+        with patch("socket.create_connection", return_value=raw) as conn, \
+             patch("ssl.create_default_context", return_value=ctx):
+            if create_side_effect is not None:
+                conn.side_effect = create_side_effect
+            out = probe_public_site(
+                "https://example.com/s?q=1",
+                resolve_fn=_resolve_public("93.184.216.34"))
+        return out, raw, tls, ctx
+
+    def test_split_response_reads_to_headers_and_reports_up(self):
+        out, raw, tls, ctx = self._run([
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/html",
+            b"\r\n\r\nhello",
+        ])
+        self.assertEqual(out["verdict"], "up")
+        self.assertEqual(out["http_status"], 200)
+        request = b"".join(tls.sent)
+        self.assertIn(b"Host: example.com", request)
+        self.assertIn(b"GET /s?q=1 ", request)
+        self.assertTrue(raw.closed and tls.closed)
+        ctx.wrap_socket.assert_called_once()
+
+    def test_redirect_location_is_reported_not_followed(self):
+        out, _, _, _ = self._run([
+            b"HTTP/1.1 301 Moved\r\nLocation: https://other.example/\r\n\r\n",
+        ])
+        self.assertEqual(out["verdict"], "redirect")
+        self.assertIn("other.example", out["reason"])
+        self.assertIn("not followed", out["reason"])
+
+    def test_recv_timeout_is_a_timeout_verdict(self):
+        out, _, _, _ = self._run([socket.timeout("timed out")])
+        self.assertEqual(out["verdict"], "timeout")
+        self.assertIsNone(out["http_status"])
+
+    def test_empty_body_is_an_unusable_network_verdict(self):
+        out, _, _, _ = self._run([])
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["verdict"], "network")
+        self.assertIsNone(out["http_status"])
+
+    def test_malformed_status_is_an_unusable_network_verdict(self):
+        out, _, _, _ = self._run([b"HTTP/1.1 XX\r\n\r\n"])
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["verdict"], "network")
+
+    def test_policy_error_before_dispatch_is_reraised(self):
+        with self.assertRaises(HarnessError):
+            self._run([], create_side_effect=HarnessError("nope"))
+
+    def test_connect_timeout_maps_to_timeout(self):
+        out, _, _, _ = self._run([], create_side_effect=OSError("timed out"))
+        self.assertEqual(out["verdict"], "timeout")
+
+    def test_connect_refusal_maps_to_network(self):
+        out, _, _, _ = self._run([],
+                                 create_side_effect=OSError("refused"))
+        self.assertEqual(out["verdict"], "network")
+        self.assertIn("unreachable", out["reason"])
+
+    def test_closing_sockets_never_fails_the_probe(self):
+        class _BadClose(_ScriptedSocket):
+            def close(self):
+                raise OSError("already closed")
+
+        raw, tls = _BadClose([]), _BadClose([
+            b"HTTP/1.1 200 OK\r\n\r\n",
+        ])
+        ctx = MagicMock()
+        ctx.wrap_socket.return_value = tls
+        with patch("socket.create_connection", return_value=raw), \
+             patch("ssl.create_default_context", return_value=ctx):
+            out = probe_public_site(
+                "https://example.com",
+                resolve_fn=_resolve_public("93.184.216.34"))
+        self.assertEqual(out["verdict"], "up")
 
 
 if __name__ == "__main__":
