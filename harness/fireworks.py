@@ -30,16 +30,15 @@ class Route:
     offer: Optional[FireworksOffer] = None
 
 
-def resolve_offer(model, offers=None):
+def resolve_offer(model):
     """The routable Fireworks offer for a confirmed model path, else raise."""
-    pool = fireworks_offers() if offers is None else offers
-    for offer in pool:
+    for offer in fireworks_offers():
         if offer.path == model and offer.routable:
             return offer
     raise HarnessError(f"no confirmed Fireworks endpoint for '{model}'")
 
 
-def resolve_route(model, *, openrouter_enabled, fireworks_enabled, offers=None):
+def resolve_route(model, *, openrouter_enabled, fireworks_enabled):
     """Pick the provider for one model. Fails closed rather than falling back.
 
     A Fireworks path with Fireworks disabled raises instead of quietly moving
@@ -50,7 +49,7 @@ def resolve_route(model, *, openrouter_enabled, fireworks_enabled, offers=None):
             raise HarnessError(
                 f"model '{model}' is a Fireworks path but fireworks is disabled "
                 "(HARNESS_FIREWORKS_ENABLED)")
-        offer = resolve_offer(model, offers)
+        offer = resolve_offer(model)
         return Route(PROVIDER_FIREWORKS, model, "explicit_fireworks_path", offer)
     if not openrouter_enabled:
         raise HarnessError(
