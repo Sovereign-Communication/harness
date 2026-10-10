@@ -501,7 +501,7 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
     fair to them; non-reasoning models run with reasoning off.
     """
     from .chat import (chat, extract_content_and_cost, _extract_json,
-                       _reported_cost, _chat_reservation_slots)
+                       _reported_cost, _chat_reservation_slots, record_response)
     results = {}
     tid = task_id or "bench/probe"
     for m in models:
@@ -561,7 +561,7 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
                         call_cost = 0.0
                     record_actual = getattr(governor, "record_actual", None)
                     if record_actual is not None:
-                        record_actual(call_cost, m)
+                        record_response(governor, resp, call_cost, m)
             else:
                 # Error bodies can still carry a billable cost (a rejected
                 # reasoning param, a throttled-but-metered 429): dropping it
@@ -572,7 +572,7 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
                     record_actual = getattr(governor, "record_actual", None)
                     if record_actual is not None:
                         try:
-                            record_actual(error_cost, m)
+                            record_response(governor, resp, error_cost, m)
                         except Exception as exc:
                             error_message = str(exc)
                             status, resp = None, {}

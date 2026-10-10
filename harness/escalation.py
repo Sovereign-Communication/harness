@@ -12,7 +12,7 @@ plans from apply output (apply returns file content, not judge JSON).
 """
 from . import events as _events
 from .chat import (_chat_reservation_slots, chat, extract_content_and_cost,
-                   assess_output)
+                   assess_output, record_response)
 from .config import effective_lane_policy
 from .errors import HarnessError
 from .output import eprint
@@ -337,7 +337,7 @@ class EscalationDriver:
                 except (TypeError, ValueError):
                     pass
                 if error_cost:
-                    self.governor.record_actual(error_cost, model)
+                    record_response(self.governor, resp, error_cost, model)
                 eprint(f"[escalation] rung {rung} model {model}: HTTP {status}; {error}")
                 state.rounds.append({
                     "phase": "escalation", "rung": rung, "model": model,
@@ -365,7 +365,7 @@ class EscalationDriver:
                 self._ledger(model, rung, "error", 0.0, reason="paid BYOK route")
                 continue
 
-            self.governor.record_actual(cost, model)
+            record_response(self.governor, resp, cost, model)
             # A capability deferral is not file content -- hand it to finish_fn
             # (which routes HARNESS_DEFER) instead of treating it as a write.
             usable, unusable = assess_output(content, finish, allow_truncated=False)

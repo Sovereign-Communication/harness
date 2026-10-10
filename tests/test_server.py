@@ -393,6 +393,27 @@ class RunLifecycleTests(ServerHarness):
 
 
 class SettingsViewTests(ServerHarness):
+    def test_configured_jev_secret_is_redacted_on_both_settings_methods(self):
+        settings = mock.Mock()
+        settings.to_dict.side_effect = lambda: {
+            "jev_api_key": "jev-fixture-private-value", "mcp_auth_token": "mcp-private",
+            "fireworks_api_key": "fireworks-private", "max_cost": 0.05}
+        with mock.patch.object(ui_server, "load_settings", return_value=settings), \
+             mock.patch.object(ui_server, "resolve_api_key", return_value=None), \
+             mock.patch.object(ui_server, "update_config"):
+            conn = self._conn()
+            try:
+                for method, body in (("GET", None), ("POST", {"max_cost": 0.1})):
+                    status, data = _request(conn, method, "/api/settings", body)
+                    self.assertEqual(status, 200)
+                    view = data.get("settings", data)
+                    for field in ("jev_api_key", "mcp_auth_token", "fireworks_api_key"):
+                        self.assertIsNone(view[field])
+                        self.assertTrue(view[field + "_present"])
+                    self.assertNotIn("private", json.dumps(view))
+            finally:
+                conn.close()
+
     def test_settings_never_leak_secrets(self):
         conn = self._conn()
         try:
@@ -1491,7 +1512,8 @@ class JevCreditEndpointTests(ServerHarness):
     def _get(self, path):
         gov = mock.Mock(spent=0.0, max_cost=0.05)
         gov.key_status.return_value = {"keyed": False}
-        with mock.patch.object(ui_server, "load_settings"), \
+        from harness.config import load_settings
+        with mock.patch.object(ui_server, "load_settings", return_value=load_settings()), \
              mock.patch.object(ui_server, "ledger_for", return_value=self.ledger), \
              mock.patch.object(ui_server, "governor_for", return_value=(None, gov)):
             conn = self._conn()
@@ -1522,6 +1544,40 @@ class JevCreditEndpointTests(ServerHarness):
         self.assertEqual(data["session"]["ceiling"], 0.05)
         _, cost = self._get("/api/cost")
         self.assertEqual(data["jev"], cost["jev"])
+
+    def test_jev_remains_readable_without_openrouter(self):
+        settings = mock.Mock(max_cost=0.05, jev_max_cost=0.003)
+        with mock.patch.object(ui_server, "load_settings", return_value=settings), \
+             mock.patch.object(ui_server, "ledger_for", return_value=self.ledger), \
+             mock.patch.object(ui_server, "governor_for",
+                               side_effect=HarnessError("private provider response")):
+            conn = self._conn()
+            try:
+                status, data = _request(conn, "GET", "/api/spend")
+            finally:
+                conn.close()
+        self.assertEqual(status, 200)
+        self.assertFalse(data["openrouter_available"])
+        self.assertIsNone(data["session"]["spent"])
+        self._assert_jev_block(data["jev"])
+        self.assertEqual(data["jev_limit"], 0.003)
+        self.assertNotIn("private provider response", json.dumps(data))
+
+    def test_account_spend_does_not_use_new_governor_zero(self):
+        gov = mock.Mock(spent=0.0, max_cost=0.05)
+        gov.key_status.return_value = {"limit": 1.0, "remaining": 0.7}
+        from harness.config import load_settings
+        with mock.patch.object(ui_server, "load_settings", return_value=load_settings()), \
+             mock.patch.object(ui_server, "ledger_for", return_value=self.ledger), \
+             mock.patch.object(ui_server, "governor_for", return_value=(None, gov)):
+            conn = self._conn()
+            try:
+                status, data = _request(conn, "GET", "/api/spend")
+            finally:
+                conn.close()
+        self.assertEqual(status, 200)
+        self.assertAlmostEqual(data["account_spent"], 0.3)
+        self.assertEqual(data["account_source"], "provider_key_status")
 
     def test_spend_endpoint_omits_jev_when_report_has_none(self):
         gov = mock.Mock(spent=0.0, max_cost=0.05)

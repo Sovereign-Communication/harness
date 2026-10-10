@@ -193,7 +193,7 @@ def authorize_diff(transport, api_key, governor, ledger, *, task_id, model,
     HarnessError on deny, unparseable output, transport error -- every
     failure path refuses the write (fail-closed, no fallback to intent)."""
     from .chat import chat, extract_content_and_cost, _extract_json, \
-        _reported_cost, REASONING_FALLBACK_PREFIX
+        _reported_cost, REASONING_FALLBACK_PREFIX, record_response
 
     new_sha = compute_diff_sha256(new_content)
     base_sha = compute_diff_sha256(current_content)
@@ -218,7 +218,7 @@ def authorize_diff(transport, api_key, governor, ledger, *, task_id, model,
         content, _, _, is_byok = extract_content_and_cost(resp)
         reported = _reported_cost(resp)
         if reported:
-            governor.record_actual(reported, model)
+            record_response(governor, resp, reported, model)
         if content and not content.startswith(REASONING_FALLBACK_PREFIX):
             raw = content
     parsed = _extract_json(raw) if raw else None

@@ -25,7 +25,7 @@ from typing import Optional, Dict, Any, Tuple
 
 from . import events as _events
 from .chat import (chat, extract_content_and_cost, _extract_json, _reported_cost,
-                   _chat_reservation_slots,
+                   _chat_reservation_slots, record_response,
                    REASONING_FALLBACK_PREFIX)  # noqa: F401
 from .errors import HarnessError
 from .output import eprint
@@ -225,7 +225,7 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
         if status != 200:
             reported = _reported_cost(resp)
             if reported:
-                governor.record_actual(reported, m_)
+                record_response(governor, resp, reported, m_)
                 tracked_cost = reported
             return None, None, tracked_cost, reported, False, f"HTTP {status}"
         content, _, _, is_byok = extract_content_and_cost(resp)
@@ -235,7 +235,7 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
             governor.record_byok(m_)
             return None, None, 0.0, reported, True, "paid BYOK route"
         if reported:
-            governor.record_actual(reported, m_)
+            record_response(governor, resp, reported, m_)
             tracked_cost = reported
         if not content:
             return content, None, tracked_cost, reported, False, "empty response"

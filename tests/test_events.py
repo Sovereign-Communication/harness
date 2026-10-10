@@ -49,6 +49,36 @@ class EventsBusTests(unittest.TestCase):
         self.assertEqual(ev["seq"], 1)
         self.assertIsInstance(ev["ts"], float)
 
+    def test_task_context_is_nested_and_restored(self):
+        got, sink = _collect()
+        events.add_sink(sink)
+        with events.task_context("outer"):
+            events.emit("web_search")
+            with events.task_context("inner"):
+                events.emit("provider_result")
+            events.emit("answer_judged", task_id="explicit")
+            events.emit("context_condensed")
+        events.emit("unscoped")
+        self.assertEqual([e.get("task_id") for e in got],
+                         ["outer", "inner", "explicit", "outer", None])
+
+    def test_task_context_does_not_cross_concurrent_runs(self):
+        import threading
+        got, sink = _collect()
+        events.add_sink(sink)
+        barrier = threading.Barrier(2)
+        def run(task):
+            with events.task_context(task):
+                barrier.wait(timeout=3)
+                events.emit("progress", expected=task)
+        threads = [threading.Thread(target=run, args=(task,)) for task in ("a", "b")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+        self.assertEqual(len(got), 2)
+        self.assertTrue(all(e["task_id"] == e["expected"] for e in got))
+
     def test_seq_increases_across_events(self):
         got, sink = _collect()
         events.add_sink(sink)

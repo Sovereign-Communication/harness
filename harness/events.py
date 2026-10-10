@@ -48,6 +48,8 @@ Event vocabulary (one place, so producers stay consistent):
 have no task context); consumers must tolerate its absence.
 """
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 import sys
 import threading
 import time
@@ -58,6 +60,17 @@ MAX_SINKS = 8
 _lock = threading.Lock()
 _sinks = []
 _seq = 0
+_task_id = ContextVar("harness_event_task_id", default=None)
+
+
+@contextmanager
+def task_context(task_id):
+    """Scope otherwise-unattributed events without leaking concurrent runs."""
+    token = _task_id.set(task_id)
+    try:
+        yield
+    finally:
+        _task_id.reset(token)
 
 # Module-global for a one-time broken-sink warning; assigned only at module
 # level or inside emit() via the global statement (ruff F823 guard).
@@ -78,6 +91,8 @@ def emit(event_type, **fields):
         _seq += 1
         event = {"ts": time.time(), "seq": _seq, "type": event_type}
         event.update(fields)
+        if not event.get("task_id") and _task_id.get():
+            event["task_id"] = _task_id.get()
         dead = []
         for sink in _sinks:
             try:

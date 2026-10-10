@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from ._http import HttpTransport
-from .chat import assess_output, chat, extract_content_and_cost, governed_text, looks_truncated
+from .chat import assess_output, chat, extract_content_and_cost, governed_text, looks_truncated, record_response
 from .condenser import distill_context, condense_error_log
 from .config import (
     Settings, effective_lane_policy, load_settings, resolve_api_key,
@@ -244,7 +244,8 @@ DEFAULT_RUN_WALL_SECONDS = 120.0
 # question it had no evidence for.
 _RESEARCH_SUBJECTS = ("news", "research", "recent", "latest", "today",
                       "papers", "paper", "article", "articles", "study",
-                      "studies", "release", "releases", "update", "updates")
+                      "studies", "release", "releases", "update", "updates",
+                      "weather", "forecast")
 _RESEARCH_VERBS = ("find", "search", "look up", "lookup", "google",
                    "what's new", "whats new", "tell me about", "catch me up",
                    "summary of", "summarize", "summarise")
@@ -550,8 +551,9 @@ class AutonomousAgent:
         model.  Web evidence is added only when the caller explicitly enables
         the existing bounded web lane.
         """
-        candidates = discover_target_files(prompt, self.root_dir)
-        if not candidates:
+        research = is_research_question(prompt)
+        candidates = [] if research else discover_target_files(prompt, self.root_dir)
+        if not candidates and not research:
             candidates = keyword_fallback(
                 prompt, enumerate_repo_files(self.root_dir),
                 max_files=_MAX_HOURGLASS_CONTEXT_FILES)
@@ -692,7 +694,7 @@ class AutonomousAgent:
                 attempts.append(f"{model}: BYOK route refused")
                 continue
             if cost:
-                gov.record_actual(cost, model)
+                record_response(gov, response, cost, model)
             usable, why = assess_output(content, finish_reason)
             if usable and looks_truncated(content):
                 usable, why = False, "response truncated mid-body"
@@ -1036,6 +1038,8 @@ class AutonomousAgent:
         is independently testable; capability, scope, consent, and policy
         checks still apply on the plan lane itself."""
         lowered = (prompt or "").lower()
+        if is_research_question(prompt) and classify_prompt_intent(prompt) != "edit":
+            return False
         explicit_directive = any(p in lowered for p in EXECUTION_PHRASES)
         trigger = bool(marker_defer or status == "plan_required"
                        or explicit_directive)
@@ -1148,7 +1152,7 @@ class AutonomousAgent:
                         # (the provider charged for it); only usable content
                         # ends the walk.
                         if cost:
-                            gov.record_actual(cost, model)
+                            record_response(gov, resp, cost, model)
                         usable, why = assess_output(content, finish_reason)
                         if usable and looks_truncated(content):
                             # Providers do not always report finish_reason
@@ -1226,7 +1230,8 @@ class AutonomousAgent:
             # hourglass plan lane (frontier-planned DAG, governed apply with
             # paid escalation rungs). Truncation defers keep their "continue"
             # resume instead: the content already exists, it needs more room.
-            if not truncation_defer and self._auto_escalation_armed():
+            if (not truncation_defer and not is_research_question(prompt)
+                    and self._auto_escalation_armed()):
                 emit("chat_escalated", reason=defer_reason, target="plan_lane")
                 try:
                     return self._handle_edit(

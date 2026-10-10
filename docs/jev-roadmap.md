@@ -15,10 +15,194 @@ Related design context (not the tracker): [system-one-integration.md](system-one
 
 ---
 
-## Canonical current status — comprehensive sweep 2026-10-05
+## Canonical current status — final burndown 2026-10-10
 
-This section supersedes older present-tense status statements and the previous
-“Next implementation slice.” Detailed dated audit narratives below are history;
+This section is the **only current execution order**. Earlier dated sweeps below
+are history, not active queues. Snapshot: fetched `origin/main` and this worktree
+both name `6bd04a2c6b1bfa31c4e42322b40254fa08e46517`; [main CI 37889190311](https://github.com/Sovereign-Communication/harness/actions/runs/37889190311)
+is successful on that exact SHA. There are 26 open issues and three open PRs at
+snapshot time (re-query before landing). No commit, push, PR creation or merge
+is authorized by this reconciliation itself. Preserve other worktrees.
+
+### Landed versus verified
+
+| Change | Remote evidence | Current disposition |
+|---|---|---|
+| CLI inconclusive/deferred exit, `DF-CLI-3` / #144 | #180 merged `84bc8e5`; main CI 37788329447 successful | Delivered; stop treating #180 as an open blocker. Re-run `tests/test_cli.py` / `tests/test_cli_report.py` against current code. |
+| Media job-ID and mission-root containment, `DF-MEDIA-1` / `DF-SEC-1` | #194 merged `76e887d`; its immediate main CI 37751532426 **failed**; later current main CI is green | Delivered, not evidence of an all-green original merge. Re-run hostile-ID / root / pack-symlink regressions; security umbrella #184–186 remains open. |
+| Request lifecycle first slice | #209 merged `e9aa467`; `docs/request-lifecycle.md`, `harness/lifecycle_guards.py`, and two test modules landed | Site probe and honest refusal output delivered. #200–207 remain open: zero-Jev routing contradicts their Choice/Noul requirement; no CLI/MCP freeform lifecycle face; retry-wait accounting and phase memoization incomplete. Do not close siblings from the PR title/body. |
+| D12 baseline reachability | #210 merged `7a3cbde`; #209 added executed coverage and module map | Current baseline is reachable. Never repoint merely to make changed lines disappear; preserve trace lineage and >=95% exercised changed-line coverage. |
+| Fireworks design | #208 merged `6bd04a2` | EV-6..8 canon exists; a design merge is not a working second provider. |
+| Settings credential redaction | #214 open, head `ea9b280`, all 12 checks successful, no submitted review | **P0** prerequisite before key-enabled GUI testing; review and land only through its existing PR. |
+| GUI cancellation/progress | #213 open, head `2c6c9e3`, 11/12 checks successful | Audit fails D12 **675/1155 = 58%**, SD 9.17/10. Trace subprocess worker execution honestly; add uncovered-path tests, independent review, and authenticated Stop/next-prompt dogfood. |
+| Fireworks explicit secondary lane | #212 open, head `47f475e`, 11/12 checks successful | Audit fails D10 missing `fireworks` ownership and D12 **427/505 = 85%**, SD 8.33/10. Explicit-path helper alone is not production failover or cross-provider cheapest-capable routing. |
+
+### Execution order, file ownership, and acceptance
+
+Only **one implementation phase is promoted for landing at a time**; the three
+pre-existing PRs are parked review candidates, not permission for parallel
+merges. A user-reported problem is a current P1 blocker (credential exposure is
+P0), even if already known. Reproduce, attach to its owning issue, fix the cause,
+rerun affected gates, and record the new SHA/receipt. Unknown provider usage is
+not zero; local cancellation does not prove remote billing stopped.
+
+| Priority / source | Owned files or artifact | Required remaining behavior and verification |
+|---|---|---|
+| P0 #184 / PR #214 | `harness/server.py`, `tests/test_server.py` | Redact every configured secret in authenticated GET **and** POST settings, including Jev and future Fireworks credentials. Verify absent/empty/present cases and no values in logs, events, JSON or browser. Independent review first. |
+| P1 #211 | `tests/test_agent.py`, focused import-order regression | Move global patches from import to module fixture lifetime; reproduce original subset's five keyed-policy failures, run both module orders and full suite with network guard. Current local repair: original 147-test ordering changed from five failures to 147 passing; not yet merged or complete. |
+| P1 operator report: GUI spend + Jev ceiling (`DF-UI-5`, owned by #177 until dedicated issue) | `harness/server.py:_api_spend`, `harness/ui/app.js`, `harness/ui/index.html`, `harness/config.py`, `harness/spend.py`, `harness/session.py` | Report OpenRouter account usage separately from per-run ceilings; do not construct a fresh governor and call its zero spend the active session. Jev ledger/rate data remains readable when OpenRouter is unavailable. Display source, UTC month, observed/estimated/unknown usage, verified $0.042/M input rate and free output. Add validated runtime Jev cap, atomic reserve/reconcile under the existing governor, independent of but never widening total/token ceilings. Test zero cap, exact cap, concurrency, cache, overruns and all faces. Browser test real configured read-only account status after redaction. |
+| P1 #198 / PR #213 | `_http.py`, proposed HTTP worker in PR #213, `osal.py`, events, agent/waist consumers, server/UI; PR's named tests | Header/body/backoff Stop promptly reaches terminal cancellation, child disconnect/reap, task-ID event isolation, visible wait/status/retry and next prompt ready. Preserve billed/unknown usage and concurrent requests. Connect uptime handling to #207; cancellation-only PR cannot silently close that separate acceptance clause. D12 >=95%, independent review, authenticated browser fixture. |
+| P1 #199 then #204 | `harness/errors.py`, `results.py`, `_http.py`, `chat.py`, `lifecycle_guards.py`, callers/CLI/MCP/server/UI | One typed spend-exhaustion contract; ordinary per-minute quota or insufficient capacity **must remain rate limiting**, not credit exhaustion. Stop capped key without retry/rotation; account returned usage; sanitized CLI nonzero / MCP `isError`+stable `errorKind` / GUI terminal message. Circuit is per run across attempts/providers and accumulates real retry wait under a ceiling. Inject clocks and distinct 402/429/auth/budget cases, then tiny paid success receipts. |
+| P1 #200–203, #207 | `agent.py`, `jev_policy.py`, `jev_packs.py`, `web.py`, CLI/parser, MCP schemas/lanes, server | Preserve deterministic preflight before spend and public-IP/TLS/redirect/timeout/cancel safety. Fix substring classifier (`latest`/`testing`/`downloads` currently misroute). Jev Choice selects `answer/simple-action/plan` before lane entry; a Noul judges observed reachability afterward. Shared typed lifecycle on GUI/CLI/MCP, no second owner, explicit degradation only. Incident replay: one probe, zero OpenRouter calls, <=2 Jev / <=6 total calls, <30s; detached capability -> zero models. Test positive and negative neighboring prompts, all HTTP outcomes and cross-surface parity. |
+| P1 #205–206 | `waist.py`, `agent.py`, `lifecycle_guards.py`, `tests/test_lifecycle_guards_204_205_206.py` | Refusal renderer/write-surface scoping delivered; retain it. `PhaseMemo` and `RefusalLoopGuard` have **no production callers**. Wire stable evidence/auth/config/question keys plus invalidation and same-refusal stop; useful critiques must address the cause. Caller-path tests, not helper-only tests; empty/unconfirmed plans never verified. |
+| P1 Fireworks #212 / EV-6..8 plus EV-1..5 / #195–197 | Existing PR: `fireworks.py`, `endpoint_pricing.py`, `packs/fireworks.endpoints.json`, `chat.py`, `config.py`, `spend.py`, `session.py`; consumers in panel/apply/consent/waist/router | Finish **existing** secondary-provider PR, not a duplicate. Prove real production dispatch without requiring an OpenRouter key; atomic provider+run reservations, unknown usage refusal/conservative accounting, terminal billing preserved on error/cancel, sanitized key resolution and disabled-provider behavior. Current `chat_for_route` has no production caller in PR files; its budget is check-only and races. Extend single endpoint index to compare whole OpenRouter/Fireworks offers with capability, freshness, availability, cache policy and measured task cost; no mixing input/output across endpoints. Redundancy across provider outage, not retries against an exhausted key. Same-task A/B receipts include quality/verification, tokens, dollars, latency and fallback provenance. No automatic price-only promotion or fabricated account balance. |
+| P2 #179 (`DF-CLI-4`, `DF-AUDIT-6`, pack-size discrepancy) | CLI/parser/tests, `audits/self/audit.py`, repo pack tests | Recover only narrow notice/AST preflight slices; stdout JSON unchanged, no notice for local-only. Check positive retry max_tokens via AST. Resolve 1,900 vs 3,400 seed cap in one measured/tested contract. Never import the stale OC settlement-abort change. |
+| P2 #182–183 / #181 | `docs/jev-completion/*.csv`, source-owner caller context | Export/recover source SHA, exact function key, workstream, question/criteria version, caller/callee evidence, answer, disposition and regression/PR. 29 stated >=.80 prescription candidates are a review queue, **zero execution-ready**; artifact recount currently finds 37 non-test rows >=.80. Do not implement from concentration scores. Context-expansion `deepened/pinpoints/pattern_fits` provenance is missing; no external audit DB is present in the operator repo inventory. |
+| P2 #184–186 / #181 | Exact keys in `battery_security.csv` joined to `conclusive_findings.csv` **by workstream** | Recount before closure: naive union shows 17 unmatched keys, but prescription-only matches do not discharge security. Record per-key, per-workstream reasoned disposition; #194 resolves its four threat-model concerns only. New settings exposure is independently tracked by #214. Verify inputs, secrets, auth, fail-closed behavior with adversarial caller-path tests. |
+| P2 #187–188 / #181 | All 562 keys in `battery_testplan.csv`, 190 driver/core + 372 other candidates | Link each key to executed tests or reasoned not-needed disposition, preserve historical line key plus current symbol identity. Exact changed-line trace and branch/negative-path evidence; model question coverage is **not** executed coverage. Refactor hard-to-test functions only after a confirmed need. |
+| P2 #190–191 / #181 | `battery_concurrency.csv`: 238 keys, 81 driver/core +157 other | Five exact concurrency dispositions are false positives; 233 await lane review. Verify locks, atomic reservations, cancellation, event routing, persistence and recovery with real threads/processes and invariant assertions; do not add blanket locks from scores. |
+| P2 #192 / #181 | 17 stated stubs, `dag.py`, `providers.py`, `web.py` and full source inventory | Recover exact candidate list/provenance; distinguish abstract protocols/intentional sentinels from missing implementations. Implement confirmed production gaps or record caller-grounded disposition. No zero-stub claim until all candidates have evidence. #189 dead-code is closed; do not delete its exonerated live paths. |
+| P2 REPO-CARDS / #177 | `repo_cards.py`, CLI/MCP, CI | Generator shipped; user-facing CLI/MCP and deterministic CI drift face remain. Source-grounded rows, `--check` nonzero on drift, byte-identical regeneration. Existing phase contract exists; extend it rather than add a duplicate. |
+| P2 PROVISION-CORE / #177 | `provision.py`, CLI/MCP/agent and required GUI face | Core shipped, zero production callers. Add scoped dry-run/consent-bound entry points, argv allowlist, content-digest approvals, own irreversible approval, bounded live read-only probe receipt. Contract already registered; expand required surface tests. No external instance/config mutation. |
+| P2 JEV-P3-calibration-analysis / #177 | `jev_calibration.py`, ledger analytics, `jev-freeze` faces | Module shipped, zero production callers. Feed real ledger records into bounded advisory threshold workflow; `jev-freeze` stays settings owner; no automatic bar lowering. Register surface tests on existing contract. |
+| P2 DRV-1 / #177 | `perception_client.py`, real driver service, driver CLI/MCP/GUI | Only paid-cheap conformance dogfood receipt remains: route/auth, honest HTTP-200 refusal, contract errors, cost/fallback/usage and verified chain. Gate currently 84.99; no implementation replay. |
+| P2 DRV-2 / #177 | `driver_core/osal.py`, executor registry, extraction providers | Real consent/policy-gated input backend and live vision extraction; today declared synthetic inputs always refuse. Backend conformance, cross-verified extraction before Jev, permitted real action receipt. Never synthesize consent or use external instance changes. |
+| Gated OC-HANDOFF / #177 | `examples/oc_handoff/worker.py`, only `HANDOFF/OC_FINDINGS.md` output | Signed locally approved candidate, native bounded Jev receipt, fixed verifier/state roots, expiry/replay/digest/exact-file audit, crash/restart proof. No candidate/receipt exists; do not fabricate or touch external/seat-state files. |
+| P2 GAP-plan-http / DF-UI-2 / #177 | `server.py`, `tests/test_plan_http_batch.py`, shared compose/executor | #148 dogfood and #155 HTTP plan dispatch shipped. Closure review must cite dispatch/plan-only/execute tests; GAP rows use named acceptance tests rather than mandatory phase contracts (GAP-recondense precedent). Remove stale request for approval; no second plan implementation. |
+| P2 DF-AUDIT-5 + HUL Exit / #177 | Native/fallback envelopes, independent completion authority, existing HUL evidence | Narrow DF-AUDIT-5 to actual residual after #146/#165; test fallback causes/bounded iterations. HUL A–D and HV consumers shipped; original Exit **or** criterion already satisfied, so resolve stale extra-ruling wording by reviewed evidence, not invented packs. |
+| P2 CIVICSCOPE-COMPLETION / #177 | `PHASE_CONTRACTS` external-looking `tools/completion-gate.mjs`, `tests/test_gates.test.ts` | Registered gate scores 0 with no STATUS row/files in Harness. Determine ownership from originating authority; either provide a scoped Harness contract or disposition external registry contamination. Do not edit another repo to make this board pass. |
+| Deferred GAP-jury / JEV-P2-jury | Existing operator ruling | Deferred, not implementation work; preserve the ruling. |
+| Final #177 / #181 | Canon, issue dispositions, package/interface matrix | Reconcile every open issue and residual above; full registered local gates, >=95% D12, independent review, fresh PR and post-merge CI, then CLI/MCP/API/browser dogfood, paid-cheap receipts, auth/refusal/defer/resume/concurrency/billing proof. Pricing/economics and #195–197 require actual task quality and cost, not token-price rankings alone. |
+
+### Saved implementation checkpoint — 2026-10-10 22:46 UTC
+
+Operator authorized committing and pushing this feature branch to preserve the
+work at the time limit. This is a **WIP checkpoint, not phase completion, PR
+approval, or permission to merge**. All unresolved rows above remain open.
+
+**Implemented and exercised locally:** credential redaction for GET/POST
+settings; OpenRouter key-cap usage distinct from a new governor's zero run
+spend; ledger-estimated Jev price/monthly usage survives unavailable OpenRouter;
+validated runtime Jev cap with concurrent reservations under the total governor;
+Fireworks key-file resolution, disabled-provider toggles and local run cap;
+confirmed price pack/generator with reviewed GLM same-model mapping; real shared
+chat dispatch, whole-endpoint comparison, provider pinning, bounded zero-billed
+429/5xx failover, usage estimates and conservative uncertain-dispatch liability;
+legacy callers avoid billing centrally settled responses twice. Fireworks pack
+routing refuses prices older than seven days and enforces confirmed context
+limits. Unmapped models preserve the original OpenRouter path. Test-agent
+patches start at module fixture time, not import. Weather/research no longer
+selects repo files or escalates into edits; request-thread progress has scoped
+IDs with nested/concurrent isolation tests.
+
+**Verification receipts:** final focused run before the last freshness-test
+addition: **699 tests OK, 8 skipped, 57.755s**, no network-guard violations;
+ruff/compileall and diff whitespace checks pass. Whole-board local-only:
+39 passing / 8 failing / zero false-complete. Full suite attempt timed out
+(exit 124 at 1500s); audit failed (exit 1): A 10, R 9.29, SM 10, SD 7.50, D12
+473/561 = 84% versus committed baseline, before final edits. Do not call these
+passing. Generated failing audit scoreboard is excluded from this checkpoint;
+coverage baseline was **not** repointed or modified. Raw ignored receipts:
+`tmp/burndown/final-focused.log`, `checks.json`, `audit.log`, `board.json`.
+
+**Live same-task smoke:** prompt “Reply with only the word OK, no explanation”,
+256 output cap, both returned exact OK / HTTP 200 / stop. Fireworks GLM:
+22 input / 39 completion tokens, estimated $0.0000228, 1.212s; OpenRouter same
+model: 22 input / 3 completion tokens, reported $0.0000021384, 5.723s. Shared
+spent $0.0000249384 under $0.01. Private credential values are excluded; sanitized
+receipt is `tmp/burndown/provider-smoke.json`. This tiny case proves dispatch,
+not coding quality, representative performance, reasoning equivalence, or a
+universal cheapest-capable claim.
+
+**Weather incident:** run `5abc46d97dd6` looked idle because only run_accepted
+had its UI ID. Global telemetry proved search completed, then keyword “events”
+selected `harness/events.py` and a semantic plan signal escalated into repeated
+repository planning. Cancel flag did not promptly end in-flight work; the owned
+GUI process was stopped/restarted, not claimed remotely unbilled. Browser replay
+completed with visible search/context/response and no edit escalation, but
+returned Seattle evidence and incorrectly called 96778 an Oahu ZIP. **Actual
+forecast fulfillment remains FAILED**, not completed. GUI now shows OR usage,
+Jev estimate/cap and FW ready/cap; “ready” means credential presence, not health.
+
+**Independent review:** read-only reviewer could not run tests, budget limited
+its scope. Discount concern is answered by `resolve_discount_semantics` before
+`rates_for`: multiplier behavior applies only for its matching recorded verdict;
+no guessed promotion. Fixed its unmapped-call behavior/options regression,
+price-age/context guards and duplicate-fetch race. Remaining review tasks:
+
+1. **P0/P1 verification before landing:** rerun the complete suite with diagnosis
+   of the 1500s timeout; trace executed changed lines honestly to >=95%; rerun
+   all audit gates, corpus integrity and installed-wheel smoke after packaging
+   the external price pack correctly. Confirm documented module map and source
+   references. Obtain an independent final diff review, existing PR ownership
+   reconciliation, then fresh CI. Do not merge this WIP branch while red.
+2. **Weather fulfillment:** exact ZIP geolocation (96778 is on Hawaii Island),
+   source-location/date relevance, authoritative forecast/alert evidence with
+   reviewed safe-host policy; reject Seattle/wrong-location snippets before
+   synthesis. Add observed-outcome/Jev sufficiency and negative-neighbor tests;
+   preserve honest defer when evidence is missing. Ensure no model invents ZIP
+   geography. Repeat the exact prompt through GUI/CLI/MCP.
+3. **Cancellation/time bounds:** finish PR #213's interruptible HTTP worker and
+   task-ID propagation into executor/panel child threads; ContextVar currently
+   scopes request threads only. Deadline must bound network/body/retry work,
+   not just between rounds. Persist unknown/billed liability; verify Stop then
+   next prompt in browser and hermetic blocked-provider fixtures.
+4. **Two-provider completion:** standalone Fireworks model catalogs/pools and
+   all CLI/MCP faces still need end-to-end verification; mapped requests may
+   still hit OpenRouter aggregate preflight/key verification before dispatch,
+   so an OpenRouter outage can block otherwise available Fireworks. Fix this
+   without bypassing key identity, capability or price gates. Avoid overlapping
+   DAG-node/per-call worst-case reservations without weakening either ceiling.
+   Cache freshness and enforce the endpoint-fetch bound under parallel calls;
+   bound retained response-identity and comparison state. Add missing usage,
+   malformed/negative/NaN cost, BYOK, max-price alternative, exact-cap and total
+   liability regression paths. Inspect model-specific reasoning equivalence:
+   today's cost difference reflects 39 vs 3 completion tokens, not just rates.
+5. **Jev cap/accounting:** shared native policy has overrun recovery, but confirm
+   all no-reservation/legacy `record_actual` and driver Jev faces retain billed
+   provider overruns before aborting. Check every cap setting GET/POST and zero
+   cap through CLI/MCP/API; monthly usage remains a local ledger estimate, not
+   a provider balance. Reject both provider toggles disabled before writes.
+6. **Telemetry/economics:** provider_result events currently expose attempted
+   costs/latency; persist sanitized provider receipts into the ledger and expose
+   per-provider measured task-quality/cost comparisons in GUI/CLI/MCP. Broaden
+   reviewed same-model mappings and capability evidence, not fuzzy names or
+   price-only promotions. Complete EV-1..8 criteria/receipts in the rows above.
+7. **All pre-existing burndown work remains:** #198–207 lifecycle/circuit/memo,
+   #179 narrow repairs; #181 exact-key security/test/concurrency/stub disposition;
+   #195–197 economics; REPO-CARDS/PROVISION/calibration surfaces; DRV live gates;
+   OC authorized evidence; GAP-plan-http closure review; CIVICSCOPE ownership;
+   final authenticated acceptance. Deferred jury stays deferred. Use the detailed
+   file ownership/test/dependency table above; no parallel operational plan.
+
+### Evidence limits and condensed handoff
+
+- Whole-board **local-only** run on the snapshot: 39 passing / 8 failing / zero
+  false-complete flags. Failing: CIVICSCOPE-COMPLETION, DRV-1, DRV-2, EV-0,
+  JEV-P3-CALIBRATION-ANALYSIS, OC-HANDOFF, PROVISION-CORE, REPO-CARDS. This gate
+  reads evidence claims; it does **not** execute every phase's tests or query CI.
+  It also does not register #198–207/EV-1..8, so a green board subset cannot
+  certify full repo functionality.
+- Run artifacts/check logs live in ignored `tmp/burndown/`; do not commit keys,
+  copied operator configuration or raw private ledgers. GUI at loopback :8787
+  initially uses credential-free isolated state, because #214 is not yet landed.
+  Real browser incident replay returned reachable-but-denied HTTPS 403 with
+  zero model spend; this is a run observation, not an uptime guarantee.
+- Independent read-only review confirmed the lifecycle/circuit/memo gaps but
+  could not run shell checks and did not review every audit artifact. It is
+  supporting evidence, not approval or 99%+ correctness. Typed Jev confidence
+  measures a question distribution, not probability the whole repo works.
+- No branch/worktree cleanup, external instance changes, synthetic completion,
+  jury invention, baseline manipulation, or red-CI merge is permitted. User
+  reports preempt the queue; each requires reproduction and a regression.
+
+---
+
+## Historical comprehensive sweep 2026-10-05 (superseded)
+
+This dated section is superseded by the 2026-10-10 final burndown above.
+Its former “Next implementation slice” and remote snapshot are historical;
+Detailed dated audit narratives below are history;
 their old “open,” “next,” and “in progress” language is not current unless
 repeated here or in a live tracker row. This is the only operational plan.
 Reconcile it against remote state before each merge.
@@ -59,7 +243,7 @@ Reconcile it against remote state before each merge.
   Its substantive conversation comment is tracked above. Re-read PR checks,
   comments, and base SHA immediately before merge.
 
-### Current backlog and dependency order
+### Historical backlog and dependency order (2026-10-05)
 
 Only one phase PR may be active. Keep all work in the existing #180 PR until
 it lands; then take the next item below as its own reviewed PR from fresh
@@ -766,7 +950,7 @@ Antigravity session a4439ee2 ("Fix CI And Continue Work") ran while the Claude s
 ---
 
 The authoritative priority order and acceptance conditions are in
-[Canonical current status — comprehensive sweep 2026-10-05](#canonical-current-status--comprehensive-sweep-2026-10-05)
+[Canonical current status — final burndown 2026-10-10](#canonical-current-status--final-burndown-2026-10-10)
 above. This historical list is retired because it mixed completed rows with
 active work and contained stale dispositions. Keep one phase PR active and
 start only the first unblocked item from that current table.
@@ -774,7 +958,7 @@ start only the first unblocked item from that current table.
 
 Purpose: realize [hourglass-vision.md](hourglass-vision.md) as a modular, token-budget-shaped workflow: broad context intake, constrained planning waist, then expanded-token execution, with JEV available as a composed set of typed decision integrations. This section is the operational plan for the vision; the linked document is the product definition.
 
-**Status note (2026-10-05 roadmap reconciliation):** the detailed `HV-0` through `HV-6` implementation rows previously lived in this section. They are now tracked in the canonical tables above — see [Canonical current status](#canonical-current-status--comprehensive-sweep-2026-10-05) and the [Tracker](#tracker) phase table (`HV-0` through `HV-6` rows). Per the Tracker, `HV-0` through `HV-6` are complete on `main`. The full historical text of this section is preserved in git history.
+**Status note (2026-10-05 roadmap reconciliation):** the detailed `HV-0` through `HV-6` implementation rows previously lived in this section. They are now tracked in the canonical tables above — see [Canonical current status](#canonical-current-status--final-burndown-2026-10-10) and the [Tracker](#tracker) phase table (`HV-0` through `HV-6` rows). Per the Tracker, `HV-0` through `HV-6` are complete on `main`. The full historical text of this section is preserved in git history.
 
 **Shared completion rule:** every slice has named hermetic tests; actual and estimated token usage are labeled honestly; token limits and dollar ceilings are tested independently; malformed, missing, unkeyed, or unavailable JEV results cannot become live approval; the ledger/envelope records stage, integration/site, model, fallback, budget, and outcome; CLI/MCP/agent surfaces use the shared owner. No slice is complete from prose or an aggregate score alone.
 

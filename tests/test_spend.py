@@ -106,6 +106,70 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(len(fake.chat_posts()), 2)
 
 
+class JevCeilingTests(unittest.TestCase):
+    def _governor(self, cap):
+        from harness.spend import SpendGovernor
+        return SpendGovernor(FakeTransport(), None, max_cost=0.05,
+                             jev_max_cost=cap)
+
+    def test_jev_ceiling_narrows_total_and_includes_reservations(self):
+        gov = self._governor(0.002)
+        token = gov.reserve(0.002, "jev:plan")
+        with self.assertRaisesRegex(HarnessError, "Jev ceiling"):
+            gov.reserve(0.0001, "jev:answer")
+        gov.reconcile(token, 0.001)
+        second = gov.reserve(0.001, "jev:answer")
+        gov.reconcile(second, 0.001)
+        with self.assertRaisesRegex(HarnessError, "Jev ceiling"):
+            gov.preflight_jev(1)
+        gov.record_actual(0.001, "test/model")  # independent provider still fits
+
+    def test_zero_cap_refuses_before_dispatch_but_zero_release_works(self):
+        gov = self._governor(0)
+        with self.assertRaisesRegex(HarnessError, "Jev ceiling"):
+            gov.reserve(0.001, "jev:plan")
+        token = gov.reserve(0, "jev:cache")
+        gov.reconcile(token, 0)
+        self.assertEqual(gov.spent, 0)
+
+    def test_actual_overrun_releases_liability_and_is_booked_honestly(self):
+        gov = self._governor(0.001)
+        token = gov.reserve(0.001, "jev:plan")
+        with self.assertRaisesRegex(HarnessError, "Jev ceiling"):
+            gov.reconcile(token, 0.002)
+        self.assertEqual(gov.outstanding, 0)
+        gov.record_overrun(0.002, "jev-1.13.0")
+        self.assertEqual(gov.spent, 0.002)
+        with self.assertRaisesRegex(HarnessError, "Jev ceiling"):
+            gov.reserve(0.0001, "jev:next")
+
+    def test_total_ceiling_cannot_be_widened_by_jev_ceiling(self):
+        gov = self._governor(1)
+        with self.assertRaises(HarnessError):
+            gov.reserve(0.06, "jev:plan")
+
+    def test_concurrent_jev_reservations_share_one_cap(self):
+        import threading
+        gov = self._governor(0.001)
+        admitted = []
+        lock = threading.Lock()
+        def reserve():
+            try:
+                token = gov.reserve(0.0006, "jev:parallel")
+            except HarnessError:
+                return
+            with lock:
+                admitted.append(token)
+        threads = [threading.Thread(target=reserve) for _ in range(10)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(len(admitted), 1)
+        gov.reconcile(admitted[0], 0.0005)
+        self.assertEqual(gov.spent, 0.0005)
+
+
 class ReservationTests(unittest.TestCase):
     """MR-6 verdict pins: reservations are real liabilities; concurrent
     dispatch can never push spent + outstanding over the ceiling."""

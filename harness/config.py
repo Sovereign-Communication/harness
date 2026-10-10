@@ -31,6 +31,16 @@ CONFIG_DIR = os.path.expanduser("~/.config/harness")
 
 # OpenRouter endpoints
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+FIREWORKS_CHAT_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
+FIREWORKS_MODEL_PREFIX = "accounts/fireworks/models/"
+
+
+def is_fireworks_model_path(label):
+    """Whether a model or spend label names a Fireworks serverless path."""
+    return isinstance(label, str) and label.startswith(FIREWORKS_MODEL_PREFIX)
+
+
+# OpenRouter account and catalog endpoints.
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 # Daily usage rankings (model_permaslug + total_tokens per day). The
@@ -436,6 +446,10 @@ _ENV_NAMES = {
     "escalation_pool": "HARNESS_ESCALATION_POOL",
     "escalation_model": "HARNESS_ESCALATION_MODEL",
     "max_cost": "HARNESS_MAX_COST",
+    "jev_max_cost": "HARNESS_JEV_MAX_COST",
+    "openrouter_enabled": "HARNESS_OPENROUTER_ENABLED",
+    "fireworks_enabled": "HARNESS_FIREWORKS_ENABLED",
+    "fireworks_budget_usd": "HARNESS_FIREWORKS_BUDGET_USD",
     "task_max_cost": "HARNESS_TASK_MAX_COST",
     "max_tokens": "HARNESS_MAX_TOKENS",
     "apply_max_tokens": "HARNESS_APPLY_MAX_TOKENS",
@@ -472,7 +486,7 @@ _ENV_NAMES = {
 }
 
 
-def _read_key_file(path):
+def _read_key_file(path, name="OPENROUTER_API_KEY"):
     """Parse an `OPENROUTER_API_KEY=...` line out of an env file."""
     try:
         with open(path, encoding="utf-8") as f:
@@ -480,7 +494,7 @@ def _read_key_file(path):
                 line = line.strip()
                 if "=" in line and not line.startswith("#"):
                     k, v = line.split("=", 1)
-                    if k.strip() == "OPENROUTER_API_KEY" and v.strip():
+                    if k.strip() == name and v.strip():
                         return v.strip().strip('"').strip("'")
     except OSError:
         return None
@@ -530,6 +544,17 @@ def resolve_api_key():
             eprint("[warn] using OPENROUTER_API_KEY from the process environment; "
                    "prefer a 0600 key file for interactive use.")
     return key
+
+
+def resolve_fireworks_key():
+    """Resolve Fireworks credentials separately from serializable settings."""
+    for path in (os.path.join(os.path.expanduser("~/.config/scmorc"), "fireworks.env"),
+                 os.path.join(CONFIG_DIR, "fireworks.env")):
+        key = _read_key_file(path, "FIREWORKS_API_KEY")
+        if key:
+            _warn_insecure_keyfile(path)
+            return key
+    return os.environ.get("FIREWORKS_API_KEY") or None
 
 
 def resolve_jev_key():
@@ -593,8 +618,11 @@ class Settings:
                   jev_disabled=False,
                   jev_endpoint="https://api.typesafe.ai/v1/systemone",
                   jev_model="jev-latest", min_confidence=0.70,
+                  jev_max_cost=DEFAULT_MAX_COST,
                   token_budget_input=DEFAULT_TOKEN_BUDGET_INPUT,
-                  token_budget_output=DEFAULT_TOKEN_BUDGET_OUTPUT):
+                  token_budget_output=DEFAULT_TOKEN_BUDGET_OUTPUT,
+                  openrouter_enabled=True, fireworks_enabled=False,
+                  fireworks_budget_usd=0.0):
         self.use_free = use_free
         self.panel = list(panel)
         self.panel_pool = list(panel_pool)
@@ -653,6 +681,12 @@ class Settings:
         self.jev_disabled = bool(jev_disabled)
         self.jev_endpoint = jev_endpoint
         self.jev_model = jev_model or "jev-latest"
+        self.jev_max_cost = jev_max_cost
+        self.openrouter_enabled = bool(openrouter_enabled)
+        self.fireworks_enabled = bool(fireworks_enabled)
+        self.fireworks_budget_usd = fireworks_budget_usd
+        if not self.openrouter_enabled and not self.fireworks_enabled:
+            raise HarnessError("at least one provider must be enabled")
         self.min_confidence = min_confidence
         self.token_budget_input = token_budget_input
         self.token_budget_output = token_budget_output
@@ -676,9 +710,10 @@ class Settings:
             "hourglass_require_attestation", "hourglass_decompose",
             "openrouter_floor_default",
             "max_price_prompt", "max_price_completion", "jev_api_key", "jev_disabled",
-            "jev_endpoint", "jev_model", "min_confidence",
+            "jev_endpoint", "jev_model", "min_confidence", "jev_max_cost",
             "token_budget_input", "token_budget_output",
-            "hourglass_stages")}
+            "hourglass_stages", "openrouter_enabled", "fireworks_enabled",
+            "fireworks_budget_usd")}
 
 
 # JEV-P4 freeze: the two settings an operator pins after first calibration,
@@ -716,8 +751,9 @@ def update_config(values):
     if unknown:
         raise HarnessError(
             "unknown setting(s): " + ", ".join(sorted(unknown)))
-    allowed = {"use_free", "allow_escalation", "max_cost", "task_max_cost",
-               "hourglass_stages", "token_budget_input", "token_budget_output"}
+    allowed = {"use_free", "allow_escalation", "max_cost", "task_max_cost", "jev_max_cost",
+               "hourglass_stages", "token_budget_input", "token_budget_output",
+               "openrouter_enabled", "fireworks_enabled", "fireworks_budget_usd"}
     allowed |= set(JEV_FREEZE_KEYS)
     disallowed = set(values) - allowed
     if disallowed:
@@ -919,6 +955,10 @@ def load_settings(overrides=None):
         jev_endpoint=str(get("jev_endpoint", "https://api.typesafe.ai/v1/systemone")),
         jev_model=str(get("jev_model", "jev-latest")),
         min_confidence=_num("min_confidence", float, 0.0, 1.0, 0.70),
+        jev_max_cost=_num("jev_max_cost", float, 0.0, HARD_MAX_COST, max_cost),
+        openrouter_enabled=_as_bool(get("openrouter_enabled", True)),
+        fireworks_enabled=_as_bool(get("fireworks_enabled", False)),
+        fireworks_budget_usd=_num("fireworks_budget_usd", float, 0.0, HARD_MAX_COST, 0.0),
     )
 
 

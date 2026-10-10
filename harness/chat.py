@@ -306,9 +306,9 @@ def _ensure_accounted(governor, model, resp, usage):
     usage["cost_estimated"] = True
 
 
-def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto",
+def _chat_openrouter(transport, api_key, model, messages, max_tokens, reasoning_effort="auto",
          reasoning_token_budget=0.4, governor=None, enable_floor=True,
-         max_price=None, provider_sort="price"):
+         max_price=None, provider_sort="price", provider_name=None):
     """One chat completion with the spend governor's payload guards.
 
     Reasoning is included whenever the effort mode resolves to a value --
@@ -328,6 +328,8 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
         model_to_send = floor_model(model, enable_floor=enable_floor)
         payload = {"model": model_to_send, "messages": messages, "max_tokens": max_tokens}
         provider_obj = {}
+        if provider_name:
+            provider_obj.update(only=[provider_name], allow_fallbacks=False)
         if provider_sort:
             provider_obj["sort"] = provider_sort
         if max_price:
@@ -347,7 +349,7 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
         return payload
 
     def _account(status, resp):
-        if governor is not None and status == 200 and isinstance(resp, dict):
+        if governor is not None and provider_name is None and status == 200 and isinstance(resp, dict):
             usage = resp.get("usage")
             if isinstance(usage, dict) and "cost" not in usage:
                 _ensure_accounted(governor, canonical_model, resp, usage)
@@ -374,6 +376,35 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
             return _account(retry_status,
                             _merge_retry_cost(retry_resp, prior_cost))
     return _account(status, resp)
+
+
+def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto",
+         reasoning_token_budget=0.4, governor=None, enable_floor=True,
+         max_price=None, provider_sort="price"):
+    """Shared production dispatch; enabled second lanes use atomic reservations."""
+    from .config import is_fireworks_model_path
+    from .fireworks import comparable_model, dispatch
+    if is_fireworks_model_path(model) or (governor is not None
+                                         and getattr(governor, "fireworks_enabled", False)
+                                         and comparable_model(model)):
+        return dispatch(transport, api_key, model, messages, max_tokens, governor,
+                        reasoning_effort, reasoning_token_budget, max_price,
+                        enable_floor, provider_sort)
+    if governor is not None and not getattr(governor, "openrouter_enabled", True):
+        from .errors import HarnessError
+        raise HarnessError("OpenRouter is disabled")
+    return _chat_openrouter(transport, api_key, model, messages, max_tokens,
+                            reasoning_effort, reasoning_token_budget, governor,
+                            enable_floor, max_price, provider_sort)
+
+
+def record_response(governor, response, cost, label):
+    """Avoid rebilling centrally settled calls; retain minimal fake governors."""
+    accounted = getattr(governor, "_accounted_responses", {})
+    if (isinstance(accounted, dict) and id(response) in accounted
+            and accounted[id(response)] is response):
+        return
+    governor.record_actual(cost, label)
 
 
 def governed_text(transport, api_key, governor, model, prompt, max_tokens,
@@ -411,7 +442,7 @@ def governed_text(transport, api_key, governor, model, prompt, max_tokens,
             f"response for {model} was BYOK-routed; spend is not tracked on "
             "this key, so the call is refused")
     if cost:
-        governor.record_actual(cost, model)
+        record_response(governor, resp, cost, model)
     if not content or not content.strip():
         raise HarnessError(f"empty response body from {model}")
     return content, cost

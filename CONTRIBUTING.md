@@ -193,6 +193,7 @@ statement covers the CI matrix by direct execution.
 |---|---|
 | `harness/config.py` | settings, key resolution, lane curation |
 | `harness/spend.py` | SpendGovernor: spend ceilings, BYOK, model discovery |
+| `harness/fireworks.py` | Confirmed second-provider dispatch, same-model whole-endpoint comparison and bounded failover; spend uses the shared governor |
 | `harness/router.py` | cheap-first routing ladder: model pools, rotation, gated escalation |
 | `harness/capability.py` | model capability profiles + observed evidence |
 | `harness/saturation.py` | one free-tier saturation policy: per-attempt evidence -> the plain-language verdict terminal surfaces print when the tier fail-closes |

@@ -853,8 +853,9 @@ class UiState:
                      ui_run=record["id"])
         try:
             runner = RUNNERS[record["kind"]]
-            result = runner(task_id, record["args"],
-                            cancel_flag.is_set)
+            with _events.task_context(task_id):
+                result = runner(task_id, record["args"],
+                                cancel_flag.is_set)
             record["result"] = result
             record["status"] = str(result.get("status") or "done")
             if record["status"] == "cancelled":
@@ -892,9 +893,12 @@ def _settings_view():
     # Expose routing posture, never the key itself: the UI must distinguish a
     # free primary lane from a paid escalation ladder.
     d["paid_key_present"] = bool(resolve_api_key())
-    if d.get("mcp_auth_token"):
-        d["mcp_auth_token"] = None
-        d["mcp_auth_token_present"] = True
+    from .config import resolve_fireworks_key
+    d["fireworks_key_present"] = bool(resolve_fireworks_key())
+    for field in ("jev_api_key", "mcp_auth_token", "fireworks_api_key"):
+        if field in d:
+            d[field + "_present"] = bool(d[field])
+            d[field] = None
     if d.get("expect_key_label"):
         # presence only; the label is never echoed (audit #9b rule)
         d["expect_key_label"] = None
@@ -1344,19 +1348,46 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             update_config(body)
         except HarnessError as e:
             return self._error(400, str(e))
+        with self.ui.lock:
+            self.ui._api_cache.pop("spend", None)
         return self._send_json({"settings": _settings_view()})
 
     def _api_spend(self):
         def build():
             settings = load_settings()
-            _, gov = governor_for(settings)
-            d = gov.key_status()
-            d["session"] = {"spent": gov.spent, "ceiling": gov.max_cost,
-                            "remaining": max(0.0, gov.max_cost - gov.spent)}
             ledger = ledger_for(settings)
             c_report = ledger.cost_report()
+            # Jev is an independent provider: missing/unavailable OpenRouter
+            # must not hide the ledger-backed Jev price and monthly estimate.
+            try:
+                _, gov = governor_for(settings)
+                d = gov.key_status()
+                # Account usage is not a new governor's (always zero) run spend.
+                limit, remaining = d.get("limit"), d.get("remaining")
+                d["account_spent"] = (max(0.0, limit - remaining)
+                                      if isinstance(limit, (int, float))
+                                      and isinstance(remaining, (int, float)) else None)
+                d["account_source"] = "provider_key_status"
+                d["session"] = {"spent": gov.spent, "ceiling": gov.max_cost,
+                                "remaining": max(0.0, gov.max_cost - gov.spent)}
+            except HarnessError:
+                d = {"openrouter_available": False,
+                     "openrouter_error": "OpenRouter account status unavailable; check key and provider",
+                     "session": {"spent": None, "ceiling": settings.max_cost,
+                                 "remaining": None}}
+            from .config import resolve_fireworks_key
+            fw_cap = getattr(settings, "fireworks_budget_usd", 0)
+            d["fireworks"] = {
+                "enabled": getattr(settings, "fireworks_enabled", False) is True,
+                "key_present": bool(resolve_fireworks_key()),
+                "run_ceiling": min(fw_cap, settings.max_cost)
+                               if isinstance(fw_cap, (int, float)) else 0,
+                "source": "local_run_cap_not_account_balance"}
             if "jev" in c_report:
                 d["jev"] = c_report["jev"]
+                d["jev_limit"] = min(getattr(settings, "jev_max_cost", settings.max_cost),
+                                     settings.max_cost)
+                d["jev_source"] = "local_ledger_month_estimate"
             return d
         return self._send_json(self.ui.cached("spend", build))
 

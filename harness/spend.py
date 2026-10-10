@@ -137,11 +137,24 @@ class SpendGovernor:
 
     def __init__(self, transport, api_key, expect_key_label=None,
                  max_cost=DEFAULT_MAX_COST, byok_prefixes_path=BYOK_PREFIXES_PATH,
-                 terminal_reserve=0.0):
+                 terminal_reserve=0.0, jev_max_cost=None,
+                 fireworks_budget_usd=0.0, fireworks_key=None,
+                 openrouter_enabled=True, fireworks_enabled=False):
         self.transport = transport
         self.api_key = api_key
         self.expect_key_label = expect_key_label
         self.max_cost = finite_number(max_cost, "max_cost", 0.0)
+        self.jev_max_cost = finite_number(
+            self.max_cost if jev_max_cost is None else jev_max_cost,
+            "jev_max_cost", 0.0)
+        self.fireworks_budget_usd = finite_number(
+            fireworks_budget_usd, "fireworks_budget_usd", 0.0)
+        self.fireworks_key = fireworks_key
+        self.openrouter_enabled = openrouter_enabled
+        self.fireworks_enabled = fireworks_enabled
+        self.route_comparisons = []
+        self._accounted_responses = {}
+        self._endpoint_cache = {}
         self.terminal_reserve = finite_number(
             terminal_reserve, "terminal_reserve", 0.0)
         if self.terminal_reserve > self.max_cost:
@@ -339,8 +352,15 @@ class SpendGovernor:
 
     # 2
     def fetch_pricing(self, model_ids):
-        missing = [m_ for m_ in model_ids if m_ not in self._pricing_cache
-                   or time.time() - self._pricing_fetched_at > self._CATALOG_TTL]
+        from .config import is_fireworks_model_path
+        from .fireworks import resolve_offer
+        direct = {}
+        for model in model_ids:
+            if is_fireworks_model_path(model):
+                offer = resolve_offer(model)
+                direct[model] = (offer.price.prompt, offer.price.completion)
+        missing = [m_ for m_ in model_ids if m_ not in direct and (m_ not in self._pricing_cache
+                   or time.time() - self._pricing_fetched_at > self._CATALOG_TTL)]
         if missing:
             models = self.fetch_models(refresh=True)
             by_id = {m_["id"]: m_ for m_ in models}
@@ -360,7 +380,8 @@ class SpendGovernor:
                 except (TypeError, ValueError):
                     raise HarnessError(f"could not parse pricing for '{mid}': {p}") from None
             self._pricing_fetched_at = time.time()
-        return {m_: self._pricing_cache[m_] for m_ in model_ids}
+        return {m_: direct[m_] if m_ in direct else self._pricing_cache[m_]
+                for m_ in model_ids}
 
     def fetch_models(self, refresh=False):
         """Live GET /models, cached per governor instance. The cache expires
@@ -389,6 +410,7 @@ class SpendGovernor:
         from .jev import jev_cost
         worst = jev_cost(input_tokens)
         with self._spend_lock:
+            self._check_jev_budget_locked(worst, "jev:" + label)
             ceiling = self._phase_ceiling()
             if self.spent + self._outstanding + worst > ceiling:
                 raise HarnessError(
@@ -438,6 +460,40 @@ class SpendGovernor:
                     f"phase={self._phase}). Refusing.")
         return total, breakdown
 
+    @staticmethod
+    def _is_jev_label(label):
+        return str(label).startswith(("jev:", "jev-")) or label == "jev"
+
+    def _check_jev_budget_locked(self, amount, label, include_reserved=True):
+        if not self._is_jev_label(label) or amount <= 0.0:
+            return
+        spent = sum(value for key, value in self._cost_by_model.items()
+                    if self._is_jev_label(key))
+        outstanding = (sum(value for key, value in self._reservations
+                           if self._is_jev_label(key)) if include_reserved else 0.0)
+        if spent + outstanding + amount > self.jev_max_cost:
+            raise HarnessError(
+                f"Jev spend+reserved ${spent + outstanding + amount:.6f} "
+                f"would exceed Jev ceiling ${self.jev_max_cost:.6f}; refusing.")
+
+    def _check_fireworks_budget_locked(self, amount, label):
+        from .config import is_fireworks_model_path
+        if not is_fireworks_model_path(label) or amount <= 0:
+            return
+        spent = sum(v for k, v in self._cost_by_model.items() if is_fireworks_model_path(k))
+        outstanding = sum(v for k, v in self._reservations if is_fireworks_model_path(k))
+        if spent + outstanding + amount > self.fireworks_budget_usd:
+            raise HarnessError(
+                f"Fireworks spend+reserved ${spent + outstanding + amount:.6f} "
+                f"exceeds local budget ${self.fireworks_budget_usd:.6f}; refusing.")
+
+    def record_response(self, response, cost, label):
+        """Bill legacy calls; dual-provider dispatch already settled its reservation."""
+        if (id(response) in self._accounted_responses
+                and self._accounted_responses[id(response)] is response):
+            return
+        self.record_actual(cost, label)
+
     # 4b
     def reserve(self, amount, label):
         """Atomically reserve worst-case spend for an in-flight call.
@@ -452,6 +508,8 @@ class SpendGovernor:
         """
         amount = finite_number(amount or 0.0, "reservation", 0.0)
         with self._spend_lock:
+            self._check_jev_budget_locked(amount, label)
+            self._check_fireworks_budget_locked(amount, label)
             ceiling = self._phase_ceiling()
             if self.spent + self._outstanding + amount > ceiling:
                 if (self._phase == PHASE_ATTEMPT
@@ -489,6 +547,8 @@ class SpendGovernor:
         except HarnessError:
             raise HarnessError(f"invalid reported cost {actual!r} (after '{label}').") from None
         with self._spend_lock:
+            self._check_jev_budget_locked(actual_f, label)
+            self._check_fireworks_budget_locked(actual_f, label)
             ceiling = self._phase_ceiling()
             # A zero settlement can never breach a ceiling (even one already
             # exceeded by a booked overrun), so it is never refused.
@@ -549,6 +609,8 @@ class SpendGovernor:
         except HarnessError:
             raise HarnessError(f"invalid reported cost {cost!r} (after '{label}').") from None
         with self._spend_lock:
+            self._check_jev_budget_locked(actual, label)
+            self._check_fireworks_budget_locked(actual, label)
             ceiling = self._phase_ceiling()
             if actual > 0.0 and self.spent + self._outstanding + actual > ceiling:
                 if (self._phase == PHASE_ATTEMPT

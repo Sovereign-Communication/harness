@@ -18,7 +18,7 @@ from .ledger import AutonomyLedger
 from .router import Router
 from .saturation import pre_run_warning
 from .spend import SpendGovernor
-from .config import HARD_MAX_COST, resolve_api_key
+from .config import HARD_MAX_COST, resolve_api_key, resolve_fireworks_key
 from .errors import HarnessError
 from .validation import finite_number
 
@@ -28,7 +28,8 @@ def governor_for(settings, max_cost_override=None):
     ``(api_key, governor)``. The key is threaded to every engine-routed
     chat call by engine_for -- regression-pinned (the round-1 401 failure)."""
     api_key = resolve_api_key()
-    if not api_key:
+    fireworks_key = resolve_fireworks_key() if getattr(settings, "fireworks_enabled", False) else None
+    if not api_key and not fireworks_key:
         raise HarnessError(
             "no OpenRouter API key found (OPENROUTER_API_KEY env, "
             "~/.config/scmorc/openrouter*.env, or ~/.config/harness/openrouter.env).")
@@ -41,8 +42,13 @@ def governor_for(settings, max_cost_override=None):
         max_cost = finite_number(max_cost_override, "max_cost", 0.0,
                                  HARD_MAX_COST)
     gov = SpendGovernor(HttpTransport(), api_key, settings.expect_key_label,
-                        max_cost)
-    gov.verify_key()
+                        max_cost, jev_max_cost=getattr(settings, "jev_max_cost", max_cost),
+                        fireworks_key=fireworks_key,
+                        fireworks_enabled=getattr(settings, "fireworks_enabled", False),
+                        openrouter_enabled=getattr(settings, "openrouter_enabled", True),
+                        fireworks_budget_usd=getattr(settings, "fireworks_budget_usd", 0))
+    if api_key and gov.openrouter_enabled:
+        gov.verify_key()
     return api_key, gov
 
 
@@ -70,7 +76,8 @@ def jev_face_governor(settings, max_cost_override=None):
         max_cost = finite_number(max_cost_override, "max_cost", 0.0,
                                  HARD_MAX_COST)
     return SpendGovernor(HttpTransport(), resolve_api_key(),
-                         settings.expect_key_label, max_cost)
+                         settings.expect_key_label, max_cost,
+                         jev_max_cost=getattr(settings, "jev_max_cost", max_cost))
 
 
 def ledger_for(settings, caller="cli"):

@@ -18,7 +18,7 @@ from .prompts import (
 from .results import (_defer_result, _http_error, _round_entry,
                        model_envelope)
 from .chat import (
-    chat, extract_content_and_cost, _extract_json,
+    chat, extract_content_and_cost, _extract_json, record_response,
     REASONING_FALLBACK_PREFIX, _reported_cost, _chat_reservation_slots,
 )
 from . import events as _events
@@ -51,7 +51,7 @@ class ApplyEngineMixin:
                                 if isinstance(r, dict)]))
         return result
 
-    def _record_billable(self, req, model_id, amount, status, **fields):
+    def _record_billable(self, req, model_id, amount, status, response=None, **fields):
         """Record every billable apply attempt, including rotated failures."""
         try:
             amount = float(amount or 0.0)
@@ -64,7 +64,7 @@ class ApplyEngineMixin:
         }
         event_fields.update(fields)
         try:
-            self.governor.record_actual(amount, model_id)
+            record_response(self.governor, response, amount, model_id)
         except HarnessError:
             # Preserve an auditable attempted charge without claiming it was
             # tracked. The governor remains authoritative for the hard key
@@ -378,7 +378,7 @@ class ApplyEngineMixin:
                 err = _http_error(status, resp)
                 outcome.last_error = err
                 self._record_billable(req, attempt_model, _reported_cost(resp), "error",
-                                      error=err, http_status=status,
+                                      response=resp, error=err, http_status=status,
                                       retryable=status == 429)
                 state.failed_models.add(attempt_model)
                 self._note_model_health(attempt_model, ok=False)
@@ -408,7 +408,7 @@ class ApplyEngineMixin:
                 elif not content or content.startswith(REASONING_FALLBACK_PREFIX):
                     # No usable output: a reasoning-only response must NOT be
                     # treated as file content (it would corrupt the target).
-                    self._record_billable(req, attempt_model, cost, "error",
+                    self._record_billable(req, attempt_model, cost, "error", response=resp,
                                           reason="no usable content")
                     outcome.last_error = ("model returned a reasoning-only response "
                                           "(no usable content)")
@@ -421,7 +421,7 @@ class ApplyEngineMixin:
                 else:
                     ready, ready_reason, content = _parse_ready(content)
                     if ready == "defer":
-                        self._record_billable(req, attempt_model, cost, "deferred",
+                        self._record_billable(req, attempt_model, cost, "deferred", response=resp,
                                               readiness="defer",
                                               reason=ready_reason or "model declared not ready")
                         self.ledger.append("readiness", task_id=req.task_id,
@@ -439,7 +439,7 @@ class ApplyEngineMixin:
                                      reason="readiness_defer", detail=ready_reason,
                                      round=state.round_no)
                     else:
-                        self._record_billable(req, attempt_model, cost, "ok", readiness=ready)
+                        self._record_billable(req, attempt_model, cost, "ok", response=resp, readiness=ready)
                         if ready == "missing":
                             eprint(f"[apply] {attempt_model} did not emit HARNESS_READY; "
                                    f"treating as confident (verify + DEFER still guard).")
@@ -691,7 +691,7 @@ class ApplyEngineMixin:
                             "high", self.reasoning_token_budget, self.governor)
         if status != 200:
             err = _http_error(status, resp)
-            self._record_billable(req, esc["model"], _reported_cost(resp), "error",
+            self._record_billable(req, esc["model"], _reported_cost(resp), "error", response=resp,
                                   escalation=True, error=err, http_status=status)
             state.rounds.append(_round_entry("escalation", esc["model"], "api_error",
                                              cost=_reported_cost(resp), verify_output="",
@@ -710,7 +710,7 @@ class ApplyEngineMixin:
         else:
             usable = bool(content and not content.startswith(REASONING_FALLBACK_PREFIX))
             self._record_billable(req, esc["model"], cost,
-                                  "ok" if usable else "error", escalation=True)
+                                  "ok" if usable else "error", response=resp, escalation=True)
             if not usable:
                 content = None
         new_content = _extract_file_content(content) if content else state.current_content

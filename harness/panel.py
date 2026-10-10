@@ -15,7 +15,7 @@ import concurrent.futures
 import time
 
 from .chat import (_chat_reservation_slots, _extract_json, _reported_cost,
-                   assess_output, chat, extract_content_and_cost,
+                   assess_output, chat, extract_content_and_cost, record_response,
                    looks_truncated, REASONING_FALLBACK_PREFIX)
 from .capability import ordered_pool
 from .config import DEFAULT_MAX_TOKENS, PanelLanePolicy
@@ -123,7 +123,7 @@ def _run_judge_attempt(*, transport, api_key, governor, judge_prompt, model,
                     else ("truncated" if looks_truncated(content)
                           else "unparseable"))
     if cost and not paid_byok:
-        governor.record_actual(cost, model)
+        record_response(governor, resp, cost, model)
     if ledger and task_id:
         fields = dict(event_note="judge", model=model, task_type=task_type,
                       json_expected=True, json_ok=note == "parseable",
@@ -331,7 +331,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             if status != 429 or retry_count >= MAX_429_RETRIES:
                 break
             if response_cost:
-                governor.record_actual(response_cost, f"{model} (429 retry)")
+                record_response(governor, resp, response_cost, f"{model} (429 retry)")
             response_cost_recorded = True
             if ledger and task_id:
                 ledger.append("model_result", task_id=task_id, event_note="panel",
@@ -358,7 +358,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             err = resp.get("error", {}).get("message", str(resp)) if isinstance(resp, dict) else str(resp)
             cost = response_cost
             if cost and not response_cost_recorded:
-                governor.record_actual(cost, model)
+                record_response(governor, resp, cost, model)
             panel_failures.append({"model": model, "reason": err,
                                    "status": status, "cost": cost,
                                     "retries": retry_count})
@@ -396,7 +396,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             # judge never sees them and convergence cannot count them as
             # participation. (Truncation is tolerated in prose mode with a
             # warning below; structured mode rejects it via valid_claims.)
-            governor.record_actual(cost, model)
+            record_response(governor, resp, cost, model)
             panel_failures.append({"model": model, "reason": unusable,
                                     "status": "invalid_output", "cost": cost,
                                     "retries": retry_count})
@@ -411,7 +411,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             _events.emit("rotation", task_id=task_id, model=model,
                          reason="unusable_output", detail=unusable)
             return None
-        governor.record_actual(cost, model)
+        record_response(governor, resp, cost, model)
         eprint(f"[panel] {model}: cost=${cost:.6f}, finish_reason={finish_reason}, {elapsed:.1f}s")
         _events.emit("panel_vote", task_id=task_id, model=model, cost=cost,
                      finish_reason=finish_reason, elapsed_s=round(elapsed, 3),

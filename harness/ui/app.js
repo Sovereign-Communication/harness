@@ -306,6 +306,24 @@ function setupHeaderControls() {
   // against the hard ceiling and refuses out-of-range values).
   const meter = $("#spend-meter");
   const capPop = $("#cap-popover");
+  const fwMeter = $("#fireworks-spend-meter");
+  if (fwMeter && capPop) {
+    fwMeter.classList.add("clickable");
+    fwMeter.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (capPop.hidden) openCapPopover("fireworks_budget_usd");
+      else closeCapPopover();
+    });
+  }
+  const jevMeter = $("#jev-spend-meter");
+  if (jevMeter && capPop) {
+    jevMeter.classList.add("clickable");
+    jevMeter.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (capPop.hidden) openCapPopover("jev_max_cost");
+      else closeCapPopover();
+    });
+  }
   if (meter && capPop) {
     meter.classList.add("clickable");
     meter.addEventListener("click", (ev) => {
@@ -1018,18 +1036,30 @@ async function pollSpend() {
       return;
     }
     const s = spend.session || {};
-    $("#spend-val").textContent = fmtCost(s.spent || 0);
-    $("#spend-limit").textContent = `/ ${fmtCost(s.ceiling || 0.05)}`;
-    markSpendAvailable();
+    if (spend.openrouter_available === false) {
+      markSpendUnavailable(spend.openrouter_error);
+    } else {
+      markSpendAvailable();
+      $("#spend-val").textContent = typeof spend.account_spent === "number"
+        ? `OR: ${fmtCost(spend.account_spent)}` : "OR: —";
+      $("#spend-limit").textContent = `/ ${fmtCost(spend.limit)} key cap`;
+      $("#spend-meter").title = `OpenRouter key cap usage (not run spend); run ceiling ${fmtCost(s.ceiling)}. Click to adjust run ceiling.`;
+    }
+    if (spend.fireworks) {
+      const fw = spend.fireworks;
+      $("#fireworks-spend-val").textContent = fw.enabled ? (fw.key_present ? "FW: ready" : "FW: no key") : "FW: off";
+      $("#fireworks-spend-limit").textContent = `· cap ${fmtCost(fw.run_ceiling)}`;
+      $("#fireworks-spend-meter").title = "Fireworks local per-run ceiling (not account balance). Enable via provider settings; click to set its cap.";
+    }
     if (spend.jev) {
       const j = spend.jev;
       const elVal = $("#jev-spend-val");
       const elLim = $("#jev-spend-limit");
       const elMeter = $("#jev-spend-meter");
       if (elVal) elVal.textContent = `Jev: ${fmtCost(j.cost || 0)}`;
-      if (elLim) elLim.textContent = `/ $${Number(j.monthly_credit || 5.0).toFixed(2)}`;
+      if (elLim) elLim.textContent = `/ $${Number(j.monthly_credit ?? 5.0).toFixed(2)} · cap ${fmtCost(spend.jev_limit)}`;
       if (elMeter) {
-        elMeter.title = `TypeSafe Jev: ${fmtCost(j.cost || 0)} spent of $${Number(j.monthly_credit || 5.0).toFixed(2)} monthly credit (${Number(j.input_tokens || 0).toLocaleString()} tokens, ${(j.used_percent || 0).toFixed(1)}% used, $${Number(j.remaining_credit || 5.0).toFixed(4)} remaining)`;
+        elMeter.title = `TypeSafe Jev: ${fmtCost(j.cost || 0)} spent of $${Number(j.monthly_credit || 5.0).toFixed(2)} monthly credit (${Number(j.input_tokens || 0).toLocaleString()} tokens, ${(j.used_percent || 0).toFixed(1)}% used, $${Number(j.remaining_credit ?? 5.0).toFixed(4)} remaining; ledger estimate, not provider balance; $${j.price_per_million_input}/M input, output free). Click to adjust Jev per-run cap.`;
       }
     }
   } catch (err) {
@@ -1065,9 +1095,12 @@ function markSpendAvailable() {
 const CAP_SLIDER_MIN = 0.01;
 const CAP_SLIDER_MAX = 1.00;
 
-function openCapPopover() {
+let capSetting = "max_cost";
+function openCapPopover(setting = "max_cost") {
+  capSetting = setting;
   const pop = $("#cap-popover");
-  const current = (backendSettings && backendSettings.max_cost) || 0.05;
+  $(".cap-title").textContent = setting === "jev_max_cost" ? "Jev per-run ceiling" : setting === "fireworks_budget_usd" ? "Fireworks per-run ceiling" : "Run cost ceiling";
+  const current = (backendSettings && backendSettings[setting]) ?? 0.05;
   $("#cap-text").value = current.toFixed(2);
   $("#cap-slider").max = String(CAP_SLIDER_MAX);
   $("#cap-slider").min = String(CAP_SLIDER_MIN);
@@ -1091,21 +1124,22 @@ async function saveCap(raw) {
   const errEl = $("#cap-error");
   errEl.hidden = true;
   const v = Number(raw);
-  if (!Number.isFinite(v) || v <= 0) {
-    errEl.textContent = "Enter a positive dollar amount";
+  if (!Number.isFinite(v) || v < 0 || (capSetting === "max_cost" && v === 0)) {
+    errEl.textContent = "Enter a non-negative dollar amount (run ceiling must be positive)";
     errEl.hidden = false;
     return;
   }
   try {
     const data = await api("/api/settings", {
       method: "POST",
-      body: JSON.stringify({ max_cost: v }),
+      body: JSON.stringify({ [capSetting]: v }),
     });
     backendSettings = data.settings || backendSettings;
     if (backendSettings && typeof backendSettings.max_cost === "number") {
       $("#spend-limit").textContent = `/ ${fmtCost(backendSettings.max_cost)}`;
     }
     closeCapPopover();
+    pollSpend();
   } catch (e) {
     errEl.textContent = e.message;
     errEl.hidden = false;

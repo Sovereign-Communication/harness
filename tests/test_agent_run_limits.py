@@ -69,6 +69,10 @@ class ResearchQuestionTests(unittest.TestCase):
                        "update the README with the new release notes"):
             self.assertFalse(is_research_question(prompt), prompt)
 
+    def test_weather_lookup_is_research_not_repository_work(self):
+        prompt = "search for the weather near 96778 and see if there's any upcoming significant events in the forecast?"
+        self.assertTrue(is_research_question(prompt))
+
     def test_empty_is_not_a_research_question(self):
         for prompt in ("", "   ", None):
             self.assertFalse(is_research_question(prompt))
@@ -150,6 +154,21 @@ class ResearchQuestionWebRoutingTests(_RunCase):
             "can you find news about recent papers on riemann?",
             max_wall_seconds=0.0)
         self.assertTrue(seen.get("web"))
+
+    def test_weather_cannot_escalate_into_edit_lane(self):
+        agent = self._agent()
+        prompt = "search for the weather near 96778 and see if there's any upcoming significant events in the forecast?"
+        with patch.object(agent, "_auto_escalation_armed", return_value=True):
+            self.assertFalse(agent._escalation_authorized(prompt, True, "plan_required"))
+
+    def test_weather_context_does_not_read_events_module(self):
+        agent = self._agent()
+        prompt = "search weather near 96778 and upcoming events in the forecast?"
+        with patch("harness.agent.discover_target_files", side_effect=AssertionError("repo lookup")), \
+                patch("harness.agent.enumerate_repo_files", side_effect=AssertionError("repo scan")), \
+                patch.object(agent, "_gather_web_context", return_value=[]):
+            _, files, _, _ = agent._hourglass_request_context(prompt, web=True)
+        self.assertEqual(files, {})
 
     def test_a_plain_question_does_not(self):
         _result, seen, _calls = self._run("2+2", max_wall_seconds=0.0)
