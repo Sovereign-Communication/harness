@@ -504,7 +504,7 @@ class AutonomousAgent:
         emit("simple_action_complete", status=status, verdict=verdict)
         return result
 
-    def _gather_web_context(self, prompt: str) -> List[Dict[str, Any]]:
+    def _gather_web_context(self, prompt: str, cancel_check=None) -> List[Dict[str, Any]]:
         # Web owns the network seams; pass those module functions through so
         # policy and hermetic test patches remain at the single owner.
         import harness.web as _web
@@ -516,6 +516,7 @@ class AutonomousAgent:
             find_urls_fn=_web.find_urls,
             extract_query_fn=_web.extract_query,
             max_sources=_MAX_WEB_SOURCES,
+            cancel_check=cancel_check,
         )
 
     @staticmethod
@@ -543,7 +544,8 @@ class AutonomousAgent:
                 return " ".join(sentence.split())[:200]
         return None
 
-    def _hourglass_request_context(self, prompt: str, web: bool = False):
+    def _hourglass_request_context(self, prompt: str, web: bool = False,
+                                     cancel_check=None):
         """Gather a bounded, cheap intake brief for a non-edit request.
 
         Intake is local and deterministic: explicit paths win, then filename
@@ -575,11 +577,27 @@ class AutonomousAgent:
         context = brief.to_prompt_context()[:_MAX_HOURGLASS_CONTEXT_CHARS]
         web_sources = []
         if web:
+            if cancel_check is not None and cancel_check():
+                raise ToolCancelled("Prompt execution was cancelled by user")
             try:
-                web_sources = self._gather_web_context(prompt)
+                try:
+                    web_sources = self._gather_web_context(
+                        prompt, cancel_check=cancel_check)
+                except TypeError:
+                    # Hermetic stubs with the old (prompt) shape stay valid.
+                    web_sources = self._gather_web_context(prompt)
+            except ToolCancelled:
+                raise
             except Exception as exc:  # context failure must not kill the lane
                 web_sources = [{"kind": "web", "ok": False,
                                 "note": f"web tools error: {type(exc).__name__}"}]
+            try:
+                from .web import location_scope_note as _scope_note
+                scope = _scope_note(prompt)
+            except Exception:
+                scope = None
+            if scope:
+                context += "\n\n" + scope
             for source in web_sources:
                 if source.get("ok"):
                     body = str(source.get("text") or "")[:_MAX_WEB_CONTEXT_CHARS]
@@ -800,8 +818,13 @@ class AutonomousAgent:
         wall_budget = (DEFAULT_RUN_WALL_SECONDS if max_wall_seconds is None
                        else float(max_wall_seconds))
         deadline = time.monotonic() + max(0.0, wall_budget)
-        context, files, brief, web_sources = self._hourglass_request_context(
-            prompt, web=web)
+        try:
+            context, files, brief, web_sources = self._hourglass_request_context(
+                prompt, web=web, cancel_check=cancel_check)
+        except TypeError:
+            # Hermetic stubs with the old (prompt, web) shape stay valid.
+            context, files, brief, web_sources = self._hourglass_request_context(
+                prompt, web=web)
         past_turns = load_chat_history(sid, self.history_dir)[-10:]
         api_key, gov = governor_for(self.settings)
         policy = policy_for(
@@ -1076,7 +1099,13 @@ class AutonomousAgent:
             if cancel_check and cancel_check():
                 raise ToolCancelled("Prompt execution was cancelled by user")
             try:
-                web_sources = self._gather_web_context(prompt)
+                try:
+                    web_sources = self._gather_web_context(
+                        prompt, cancel_check=cancel_check)
+                except TypeError:
+                    web_sources = self._gather_web_context(prompt)
+            except ToolCancelled:
+                raise
             except Exception as e:  # web tools must never kill the chat lane
                 web_sources = [{"kind": "web", "ok": False, "note": f"web tools error: {e}"}]
             hosts = ", ".join(sorted(DEFAULT_FETCH_HOSTS)) or "(none configured)"

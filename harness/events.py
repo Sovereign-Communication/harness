@@ -72,6 +72,52 @@ def task_context(task_id):
     finally:
         _task_id.reset(token)
 
+
+def current_task_id():
+    """Return the task id bound in this thread, or None."""
+    return _task_id.get()
+
+
+def wrap_with_task_id(fn):
+    """Rebind the submitting thread's task id inside a pool child.
+
+    ``ThreadPoolExecutor`` children start with a blank context, so events
+    emitted there lose the run's stream (the GUI replay that looked idle
+    had only ``run_accepted`` with its UI id). Captured once at submit
+    time; a missing id stays missing rather than leaking a neighbor's.
+    """
+    tid = _task_id.get()
+    if tid is None:
+        return fn
+
+    def _wrapped(*args, **kwargs):
+        token = _task_id.set(tid)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _task_id.reset(token)
+    return _wrapped
+
+
+def sleep_or_cancel(total_seconds, cancel_check=None, interval=0.05):
+    """Sleep interruptibly; raise ToolCancelled the moment cancel trips.
+
+    Retry/backoff paths must never sit out a full delay after the user hit
+    Stop -- poll the cooperative flag on a short cadence instead. A set
+    flag raises immediately without sleeping at all.
+    """
+    if cancel_check is not None and cancel_check():
+        from .errors import ToolCancelled as _Cancelled
+        raise _Cancelled("Prompt execution was cancelled by user")
+    remaining = max(0.0, float(total_seconds or 0.0))
+    step = max(0.005, min(float(interval or 0.05), remaining or 0.0))
+    while remaining > 0:
+        time.sleep(min(step, remaining))
+        remaining -= step
+        if cancel_check is not None and cancel_check():
+            from .errors import ToolCancelled as _Cancelled
+            raise _Cancelled("Prompt execution was cancelled by user")
+
 # Module-global for a one-time broken-sink warning; assigned only at module
 # level or inside emit() via the global statement (ruff F823 guard).
 _warned_sink = None

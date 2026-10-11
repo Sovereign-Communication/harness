@@ -4,7 +4,6 @@ The transport is an injectable seam so every engine path can be tested
 hermetically (no network) by substituting a fake transport.
 """
 import json
-import time
 import urllib.error
 import urllib.request
 
@@ -58,9 +57,13 @@ class HttpTransport(Transport):
     def _header(self, resp, name):
         return resp.headers.get(name) if resp.headers else None
 
-    def get(self, url, api_key, timeout=15):
+    def get(self, url, api_key, timeout=15, cancel_check=None):
+        from . import events as _events
+        from .errors import ToolCancelled as _Cancelled
         last_err = None
         for attempt in range(self.MAX_RETRIES + 1):
+            if cancel_check is not None and cancel_check():
+                raise _Cancelled("Prompt execution was cancelled by user")
             req = urllib.request.Request(
                 url, headers={"Authorization": f"Bearer {api_key}"})
             try:
@@ -71,8 +74,10 @@ class HttpTransport(Transport):
                 e.close()  # release the error stream; code/headers stay readable
                 if self._transient(e.code) and attempt < self.MAX_RETRIES:
                     last_err = e
-                    time.sleep(self._retry_delay(attempt, e.headers.get("Retry-After")
-                                                 if e.headers else None))
+                    _events.sleep_or_cancel(
+                        self._retry_delay(attempt, e.headers.get("Retry-After")
+                                          if e.headers else None),
+                        cancel_check)
                     continue
                 try:
                     return json.loads(body)
@@ -81,7 +86,8 @@ class HttpTransport(Transport):
             except (urllib.error.URLError, OSError, TimeoutError) as e:
                 if attempt < self.MAX_RETRIES:
                     last_err = e
-                    time.sleep(self._retry_delay(attempt, None))
+                    _events.sleep_or_cancel(
+                        self._retry_delay(attempt, None), cancel_check)
                     continue
                 raise
         raise last_err
@@ -112,10 +118,14 @@ class HttpTransport(Transport):
         usage["retry_cost"] = usage.get("retry_cost", 0.0) + amount
         return parsed
 
-    def post(self, url, api_key, payload, timeout=120):
+    def post(self, url, api_key, payload, timeout=120, cancel_check=None):
+        from . import events as _events
+        from .errors import ToolCancelled as _Cancelled
         data = json.dumps(payload).encode("utf-8")
         dropped = 0.0
         for attempt in range(self.MAX_RETRIES + 1):
+            if cancel_check is not None and cancel_check():
+                raise _Cancelled("Prompt execution was cancelled by user")
             req = urllib.request.Request(
                 url, data=data,
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -136,8 +146,10 @@ class HttpTransport(Transport):
                     parsed = {"error": {"message": body}}
                 if self._transient(e.code) and attempt < self.MAX_RETRIES:
                     dropped += self._retry_cost_of(parsed)
-                    time.sleep(self._retry_delay(attempt, e.headers.get("Retry-After")
-                                                 if e.headers else None))
+                    _events.sleep_or_cancel(
+                        self._retry_delay(attempt, e.headers.get("Retry-After")
+                                          if e.headers else None),
+                        cancel_check)
                     continue
                 return e.code, self._carry_retry_cost(parsed, dropped)
         raise OSError("unreachable: retries exhausted without a response")

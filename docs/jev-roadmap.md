@@ -196,6 +196,46 @@ price-age/context guards and duplicate-fetch race. Remaining review tasks:
   jury invention, baseline manipulation, or red-CI merge is permitted. User
   reports preempt the queue; each requires reproduction and a regression.
 
+### Saved implementation checkpoint — 2026-10-11 (weather ZIP + prompt cancel)
+
+Operator authorized committing and pushing this feature branch to preserve the
+work. This is a **WIP checkpoint, not phase completion, PR approval, or
+permission to merge**. All unresolved rows above remain open.
+
+**Weather ZIP relevance (fixes review task 2 in part):** `harness/web.py`
+now anchors exact 5-digit ZIPs — `extract_query` leads with the ZIP,
+`filter_search_relevance` drops results not mentioning it (Seattle for 96778
+→ dropped → honest defer), `gather_web_context` re-filters defensively, and
+`location_scope_note` forbids invented ZIP geography in synthesis.
+Authoritative forecast hosts (`weather.gov`, `forecast.weather.gov`,
+`api.weather.gov`) joined the fetch allowlist. `harness/agent.py` injects the
+scope note into hourglass context. Hermetic 96778 replay: query leads with
+`96778`, only `forecast.weather.gov…96778` evidence retained, `files == {}`,
+scope guard present. New tests in `tests/test_web.py` (5 cases). Still open:
+live-network forecast proof, GUI/CLI/MCP parity replay, negative-neighbor and
+Jev-sufficiency tests.
+
+**Prompt cancellation (fixes review task 3 in part, PR #213 still open):**
+`harness/events.py` owns `sleep_or_cancel`, `wrap_with_task_id`,
+`current_task_id`. `harness/_http.py` (`get`/`post`), `harness/web.py`
+(`fetch_url`/`gather_web_context`), `harness/agent.py` (web-intake
+threading), `harness/panel.py` (429-backoff + fan-out wait), and
+`harness/executor.py` (`execute_files`/`execute_dag`) all honor a set
+cancel flag promptly with `ToolCancelled` and propagate the run's task id
+into pool children; cancelled pool waits no longer join long children.
+New `tests/test_cancel_prompt.py` (12 hermetic, wall-time-bounded cases).
+Still open: browser Stop→next-prompt verification, blocked-provider hermetic
+fixtures, unknown/billed-liability persistence, PR #213 reconciliation.
+
+**Verification receipts:** 120 tests OK with `-W error::ResourceWarning`
+(`test_web`, `test_agent_run_limits`, `test_events`, `test_http`,
+`test_executor`, `test_panel`, `test_cancel_prompt`,
+`test_server.RunLifecycleTests`); ruff and `compileall` clean on all touched
+files. Full suite, audit/D12 gates, and live receipts were **not** rerun —
+the 1500s full-suite timeout, failing audit (D12 473/561 = 84%), and
+OpenRouter-outage independence for Fireworks remain open. Do not merge while
+red.
+
 ---
 
 ## Historical comprehensive sweep 2026-10-05 (superseded)

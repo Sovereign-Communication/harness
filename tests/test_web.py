@@ -323,6 +323,39 @@ class ExtractionHelpersTests(unittest.TestCase):
     def test_extract_query_empty(self):
         self.assertEqual(web.extract_query("can you verify?"), "")
 
+    def test_extract_query_leads_with_zip_anchor(self):
+        q = web.extract_query(
+            "search for the weather near 96778 and see if there's any upcoming significant events in the forecast?")
+        self.assertIn("96778", q.split())
+        self.assertEqual(q.split()[0], "96778")
+        self.assertIn("weather", q.split())
+
+    def test_zip_relevance_keeps_only_matching_location(self):
+        results = [
+            {"title": "Seattle weather forecast", "url": "https://wx.example/seattle",
+             "snippet": "Seattle rain this weekend"},
+            {"title": "96778 weather forecast", "url": "https://forecast.weather.gov/x?zip=96778",
+             "snippet": "Pahala HI 96778 forecast"},
+        ]
+        kept = web.filter_search_relevance("96778 weather forecast", results)
+        self.assertEqual(len(kept), 1)
+        self.assertIn("96778", kept[0]["title"] + kept[0]["snippet"] + kept[0]["url"])
+
+    def test_zip_relevance_with_no_match_defers_honestly(self):
+        results = [{"title": "Seattle weather", "url": "https://wx.example/sea",
+                     "snippet": "Seattle rain"}]
+        self.assertEqual(web.filter_search_relevance("96778 weather", results), [])
+
+    def test_location_scope_note_forbids_invented_geography(self):
+        note = web.location_scope_note("search weather near 96778?")
+        self.assertIn("96778", note)
+        self.assertIn("do not state or infer", note.lower())
+        self.assertIsNone(web.location_scope_note("search weather?"))
+
+    def test_weather_hosts_are_fetchable(self):
+        for host in ("weather.gov", "forecast.weather.gov", "api.weather.gov"):
+            self.assertIn(host, web.DEFAULT_FETCH_HOSTS)
+
 
 
 class GatherWebContextTests(unittest.TestCase):

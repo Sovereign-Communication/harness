@@ -344,15 +344,8 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             _events.emit("rotation", task_id=task_id, model=model,
                          reason="rate_limited", retry=retry_count)
             delay = RETRY_429_BACKOFF_SECONDS * retry_count
-            if cancel_check:
-                if cancel_check():
-                    from .errors import ToolCancelled
-                    raise ToolCancelled()
-                time.sleep(min(delay, 0.1))
-                if delay > 0.1:
-                    time.sleep(delay - 0.1)
-            else:
-                time.sleep(delay)
+            # Interruptible: Stop during backoff must not sit out the delay.
+            _events.sleep_or_cancel(delay, cancel_check)
         elapsed = time.time() - t0
         if status != 200:
             err = resp.get("error", {}).get("message", str(resp)) if isinstance(resp, dict) else str(resp)
@@ -447,25 +440,51 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     candidates = iter(panel_pool)
     tried = 0
     _futures = set()
-    with concurrent.futures.ThreadPoolExecutor(
-            max_workers=target if _parallel else 1) as _pool:
+    from .errors import ToolCancelled as _Cancelled
+    _pool = concurrent.futures.ThreadPoolExecutor(
+        max_workers=target if _parallel else 1)
+    _fan_cancelled = False
+    try:
+        def _pool_submit(pool, fn, *a):
+            return pool.submit(_events.wrap_with_task_id(fn), *a)
         for _ in range(target):
+            if cancel_check and cancel_check():
+                _fan_cancelled = True
+                raise _Cancelled("Prompt execution was cancelled by user")
             _first = next(candidates, None)
             if _first is None:
                 break
             tried += 1
-            _futures.add(_pool.submit(_run_panel_slot, _first))
+            _futures.add(_pool_submit(_pool, _run_panel_slot, _first))
         while _futures and len(panel_results) < target:
+            if cancel_check and cancel_check():
+                _fan_cancelled = True
+                for _f in _futures:
+                    _f.cancel()
+                raise _Cancelled("Prompt execution was cancelled by user")
             _done, _futures = concurrent.futures.wait(
-                _futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                _futures, timeout=0.05,
+                return_when=concurrent.futures.FIRST_COMPLETED)
             for _fut in _done:
-                _slot = _fut.result()
+                try:
+                    _slot = _fut.result()
+                except _Cancelled:
+                    _fan_cancelled = True
+                    for _f in _futures:
+                        _f.cancel()
+                    raise
                 if _slot is None:
                     if len(panel_results) < target:
+                        if cancel_check and cancel_check():
+                            _fan_cancelled = True
+                            for _f in _futures:
+                                _f.cancel()
+                            raise _Cancelled(
+                                "Prompt execution was cancelled by user")
                         _next_model = next(candidates, None)
                         if _next_model is not None:
                             tried += 1
-                            _futures.add(_pool.submit(_run_panel_slot, _next_model))
+                            _futures.add(_pool_submit(_pool, _run_panel_slot, _next_model))
                     continue
                 if _slot["ok"]:
                     panel_results.append(_slot["result"])
@@ -483,7 +502,12 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                         _next_model = next(candidates, None)
                         if _next_model is not None:
                             tried += 1
-                            _futures.add(_pool.submit(_run_panel_slot, _next_model))
+                            _futures.add(_pool_submit(_pool, _run_panel_slot, _next_model))
+    finally:
+        try:
+            _pool.shutdown(wait=not _fan_cancelled, cancel_futures=True)
+        except TypeError:
+            _pool.shutdown(wait=not _fan_cancelled)
     if not panel_results:
         raise HarnessError("all panel calls failed. Aborting.")
     # Report votes in pool order regardless of completion order: with a fast

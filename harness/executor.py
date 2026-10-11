@@ -8,7 +8,7 @@ Provides:
   reservations, worktree isolation, per-node routing) shared by the CLI,
   MCP, and the agent's edit lane.
 """
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
 import os
@@ -129,12 +129,19 @@ class ConcurrentExecutor:
         worker_fn: Callable[[int, str], Dict[str, Any]],
         *,
         keep_going: bool = False,
+        cancel_check=None,
     ) -> List[Dict[str, Any]]:
         """Execute worker_fn(index, file_path) concurrently over files.
 
         Returns results in the original file order. Under fail-fast (keep_going=False),
-        execution stops upon the first non-success result.
+        execution stops upon the first non-success result. A set cancel_check
+        stops the wait promptly with ToolCancelled instead of draining the
+        stage; child workers inherit the submitting thread's task id so
+        their events stay on the run's stream.
         """
+        from concurrent.futures import wait as _wait, FIRST_COMPLETED as _FIRST
+        from . import events as _events
+        from .errors import ToolCancelled as _Cancelled
         if not files:
             return []
 
@@ -142,27 +149,51 @@ class ConcurrentExecutor:
         results: Dict[int, Dict[str, Any]] = {}
         first_failure: Optional[Dict[str, Any]] = None
 
-        with ThreadPoolExecutor(max_workers=min(self.max_workers, len(files))) as pool:
+        pool = ThreadPoolExecutor(max_workers=min(self.max_workers, len(files)))
+        _cancelled = False
+        try:
             future_to_idx = {
-                pool.submit(self._run_file_with_lock, idx, fp, worker_fn): idx
+                pool.submit(_events.wrap_with_task_id(
+                    self._run_file_with_lock), idx, fp, worker_fn): idx
                 for idx, fp in indexed_files
             }
 
-            for future in as_completed(future_to_idx):
-                idx = future_to_idx[future]
-                try:
-                    res = future.result()
-                except Exception as exc:
-                    res = {"status": "fatal", "error": str(exc), "file": indexed_files[idx][1]}
-
-                results[idx] = res
-                if res.get("status") not in SUCCESS_STATUSES:
-                    if first_failure is None:
-                        first_failure = res
-                    if not keep_going:
-                        # Cancel pending futures
-                        for f in future_to_idx:
+            pending = set(future_to_idx)
+            while pending:
+                if cancel_check is not None and cancel_check():
+                    _cancelled = True
+                    for f in pending:
+                        f.cancel()
+                    raise _Cancelled("Prompt execution was cancelled by user")
+                done, pending = _wait(pending, timeout=0.05,
+                                      return_when=_FIRST)
+                for future in done:
+                    idx = future_to_idx[future]
+                    try:
+                        res = future.result()
+                    except _Cancelled:
+                        _cancelled = True
+                        for f in pending:
                             f.cancel()
+                        raise
+                    except Exception as exc:
+                        res = {"status": "fatal", "error": str(exc), "file": indexed_files[idx][1]}
+
+                    results[idx] = res
+                    if res.get("status") not in SUCCESS_STATUSES:
+                        if first_failure is None:
+                            first_failure = res
+                        if not keep_going:
+                            # Cancel pending futures
+                            for f in future_to_idx:
+                                f.cancel()
+        finally:
+            # A cancelled wait must not join long-running children: Stop
+            # returns promptly while started workers run out on their own.
+            try:
+                pool.shutdown(wait=not _cancelled, cancel_futures=True)
+            except TypeError:
+                pool.shutdown(wait=not _cancelled)
 
         # Re-assemble in original order, stopping at first failure if not keep_going
         ordered_results: List[Dict[str, Any]] = []
@@ -192,6 +223,7 @@ class ConcurrentExecutor:
         reserver=None,
         isolator=None,
         on_stage_done=None,
+        cancel_check=None,
     ) -> Dict[str, Any]:
         """Execute a TaskDAG stage-by-stage (batch by batch) concurrently.
 
@@ -219,6 +251,9 @@ class ConcurrentExecutor:
         failed_nodes: Set[str] = set()
 
         for batch in batches:
+            if cancel_check is not None and cancel_check():
+                from .errors import ToolCancelled as _Cancelled0
+                raise _Cancelled0("Prompt execution was cancelled by user")
             # Check if any node in this batch depends on a failed node
             executable_nodes: List[DAGNode] = []
             for node in batch:
@@ -237,6 +272,9 @@ class ConcurrentExecutor:
 
             if self.max_workers == 1:
                 for node in executable_nodes:
+                    if cancel_check is not None and cancel_check():
+                        from .errors import ToolCancelled as _Cancelled1
+                        raise _Cancelled1("Prompt execution was cancelled by user")
                     try:
                         res = self._run_node_with_locks(node, worker_fn)
                     except Exception as exc:
@@ -270,30 +308,63 @@ class ConcurrentExecutor:
                     parallel_nodes = iso_nodes if isolator is not None and parallel \
                         else list(executable_nodes)
                     if parallel_nodes:
-                        with ThreadPoolExecutor(max_workers=min(self.max_workers, len(parallel_nodes))) as pool:
+                        from concurrent.futures import wait as _wait2, FIRST_COMPLETED as _FIRST2
+                        from . import events as _events2
+                        from .errors import ToolCancelled as _Cancelled2
+                        _cancel = cancel_check
+                        pool = ThreadPoolExecutor(max_workers=min(self.max_workers, len(parallel_nodes)))
+                        _stage_cancelled = False
+                        try:
                             future_to_node = {
-                                pool.submit(self._run_node_reserved, node, worker_fn,
+                                pool.submit(_events2.wrap_with_task_id(
+                                    self._run_node_reserved), node, worker_fn,
                                             reserver,
                                             (handles.get(node) or {}).get("path")): node
                                 for node in parallel_nodes
                             }
-                            for future in as_completed(future_to_node):
-                                node = future_to_node[future]
-                                try:
-                                    stage_results[node] = future.result()
-                                except Exception as exc:
-                                    stage_results[node] = {
-                                        "status": "fatal", "error": str(exc),
-                                        "node_id": node.node_id,
-                                    }
-                                if (not keep_going and
-                                        stage_results[node].get("status") not in SUCCESS_STATUSES):
-                                    for f in future_to_node:
+                            _pending = set(future_to_node)
+                            while _pending:
+                                if _cancel is not None and _cancel():
+                                    _stage_cancelled = True
+                                    for f in _pending:
                                         f.cancel()
+                                    raise _Cancelled2(
+                                        "Prompt execution was cancelled by user")
+                                _done, _pending = _wait2(
+                                    _pending, timeout=0.05,
+                                    return_when=_FIRST2)
+                                for future in _done:
+                                    node = future_to_node[future]
+                                    try:
+                                        stage_results[node] = future.result()
+                                    except _Cancelled2:
+                                        _stage_cancelled = True
+                                        for f in _pending:
+                                            f.cancel()
+                                        raise
+                                    except Exception as exc:
+                                        stage_results[node] = {
+                                            "status": "fatal", "error": str(exc),
+                                            "node_id": node.node_id,
+                                        }
+                                    if (not keep_going and
+                                            stage_results[node].get("status") not in SUCCESS_STATUSES):
+                                        for f in future_to_node:
+                                            f.cancel()
+                        finally:
+                            try:
+                                pool.shutdown(wait=not _stage_cancelled,
+                                              cancel_futures=True)
+                            except TypeError:
+                                pool.shutdown(wait=not _stage_cancelled)
 
                     # Serial shared-tree arm: overlapping targets never share
                     # a worktree; they run one-at-a-time under the mutex.
                     for node in shared_nodes:
+                        if cancel_check is not None and cancel_check():
+                            from .errors import ToolCancelled as _Cancelled3
+                            raise _Cancelled3(
+                                "Prompt execution was cancelled by user")
                         if (not keep_going and any(
                                 stage_results.get(n, {}).get("status") not in SUCCESS_STATUSES
                                 for n in parallel_nodes)):

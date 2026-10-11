@@ -29,7 +29,6 @@ import binascii
 import html as _html
 import os
 import re
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -58,6 +57,12 @@ DEFAULT_FETCH_HOSTS = frozenset({
     "arxiv.org",
     "scientificamerican.com",
     "quantamagazine.org",
+    # Authoritative US forecast pages so a ZIP-anchored weather lookup can
+    # enrich its snippet with primary-page text instead of a search fragment.
+    "weather.gov",
+    "www.weather.gov",
+    "forecast.weather.gov",
+    "api.weather.gov",
 })
 
 _USER_AGENT = (
@@ -195,14 +200,57 @@ _IRRELEVANT_PATTERNS = (
 )
 
 
+_ZIP_RE = re.compile(r"\b(\d{5})\b")
+
+
+def extract_zip_codes(text):
+    """Return 5-digit ZIP codes in prompt/query order, deduplicated."""
+    seen = []
+    for m in _ZIP_RE.finditer(text or ""):
+        z = m.group(1)
+        if z not in seen:
+            seen.append(z)
+    return seen
+
+
+def location_scope_note(prompt):
+    """Ground synthesis for an exact-ZIP lookup so the model cannot invent
+    ZIP geography (the 96778 incident: Seattle evidence answered for a
+    Hawai'i Island ZIP, then mislabeled it Oahu). Returns None when the
+    prompt names no ZIP."""
+    zips = extract_zip_codes(prompt)
+    if not zips:
+        return None
+    z = zips[0]
+    return (
+        f"LOCATION SCOPE: the request is anchored to ZIP {z}. Only use web "
+        f"evidence that mentions {z}; if no such evidence is present, say so "
+        "and do not state or infer the ZIP's city, island, county, or state."
+    )
+
+
 def filter_search_relevance(query, results):
-    """Filter out non-informational spam or navigational clutter."""
+    """Filter out non-informational spam or navigational clutter.
+
+    When the query names an exact 5-digit ZIP, additionally require the
+    result to mention that ZIP (title, snippet, or URL). A wrong-location
+    snippet (e.g. Seattle for 96778) is dropped so the caller honestly
+    defers instead of synthesizing a forecast for the wrong place."""
     if not results:
         return results
     filtered = [
         r for r in results
         if not any(pat.search(r.get("title", "")) for pat in _IRRELEVANT_PATTERNS)
     ]
+    zips = extract_zip_codes(query)
+    if zips:
+        anchored = []
+        for r in filtered:
+            hay = " ".join((r.get("title", ""), r.get("snippet", ""),
+                              r.get("url", "")))
+            if any(z in hay for z in zips):
+                anchored.append(r)
+        return anchored
     return filtered
 
 
@@ -289,7 +337,7 @@ def _page_title(page_html):
     return _clean_text(m.group(1))[:200] if m else ""
 
 
-def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000):
+def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000, cancel_check=None):
     """Fetch ONE allowlisted https URL and return {url, title, text}.
 
     Refusals are HarnessErrors with machine-readable messages:
@@ -308,10 +356,15 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000):
     if not host or host not in allowed:
         raise HarnessError(
             f"web fetch refused: host '{host or '?'}' is not on the fetch allowlist")
+    from .errors import ToolCancelled as _Cancelled
+    if cancel_check is not None and cancel_check():
+        raise _Cancelled("Prompt execution was cancelled by user")
     emit("web_fetch", phase="start", url=u)
     raw = final_url = None
     error_note = None
     for attempt in (1, 2):
+        if cancel_check is not None and cancel_check():
+            raise _Cancelled("Prompt execution was cancelled by user")
         try:
             status, raw, final_url = _http_get(u, timeout=timeout)
             if status == 200:
@@ -325,7 +378,8 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000):
             error_note = f"web fetch failed: {e}"
         if attempt == 1:
             emit("web_fetch", phase="retry", url=u)
-            time.sleep(1.5)
+            from . import events as _events
+            _events.sleep_or_cancel(1.5, cancel_check)
     if error_note is not None or raw is None:
         emit("web_fetch", phase="end", ok=False, url=u)
         raise HarnessError(error_note or "web fetch failed: empty response")
@@ -343,7 +397,7 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000):
             "text": text}
 
 
-def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, fetch_url_fn=None, search_web_fn=None, find_urls_fn=None, extract_query_fn=None, max_sources=3):
+def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, fetch_url_fn=None, search_web_fn=None, find_urls_fn=None, extract_query_fn=None, max_sources=3, cancel_check=None):
     """Single-owner web evidence gathering for one chat turn.
 
     Fetches allowlisted URLs in the prompt (one per URL, up to max_sources);
@@ -357,26 +411,44 @@ def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, fetch_
     find_fn = find_urls_fn if find_urls_fn is not None else find_urls
     extract_fn = extract_query_fn if extract_query_fn is not None else extract_query
     sources: List[Dict[str, Any]] = []
+    from .errors import ToolCancelled as _Cancelled
     urls = find_fn(prompt)[:max_sources]
     if urls:
         for u in urls:
+            if cancel_check is not None and cancel_check():
+                raise _Cancelled("Prompt execution was cancelled by user")
             try:
-                page = fetch_fn(u, allowed_hosts=allowed_hosts)
+                try:
+                    page = fetch_fn(u, allowed_hosts=allowed_hosts,
+                                    cancel_check=cancel_check)
+                except TypeError:
+                    page = fetch_fn(u, allowed_hosts=allowed_hosts)
                 sources.append({"kind": "fetch", "ok": True, "url": page["url"], "title": page["title"], "text": page["text"]})
             except HarnessError as e:
                 sources.append({"kind": "fetch", "ok": False, "url": u, "note": str(e)})
         if any(s["ok"] for s in sources):
             return sources
     try:
-        results = search_fn(extract_fn(prompt))
+        query = extract_fn(prompt)
+        results = search_fn(query)
+        # Defense in depth: search_web already relevance-filters, but an
+        # injected search seam (or future caller) must not smuggle a
+        # wrong-location snippet past a ZIP-anchored request.
+        results = filter_search_relevance(query, results)
         for r in results[:max_sources]:
             r_url = r.get("url", "")
             r_host = (urllib.parse.urlsplit(r_url).hostname or "").lower()
             allowed = {h.lower() for h in (allowed_hosts or [])}
+            if cancel_check is not None and cancel_check():
+                raise _Cancelled("Prompt execution was cancelled by user")
             # If the discovered source is from an allowlisted host, enrich snippet with primary page text
             if r_host in allowed and not any(s.get("kind") == "fetch" and s.get("ok") for s in sources):
                 try:
-                    page = fetch_fn(r_url, allowed_hosts=allowed_hosts)
+                    try:
+                        page = fetch_fn(r_url, allowed_hosts=allowed_hosts,
+                                        cancel_check=cancel_check)
+                    except TypeError:
+                        page = fetch_fn(r_url, allowed_hosts=allowed_hosts)
                     sources.append({"kind": "fetch", "ok": True, "url": page["url"], "title": page["title"], "text": page["text"]})
                     continue
                 except Exception:
@@ -617,11 +689,19 @@ def _probe_verdict(host, url, status, location, latency, final_host):
 
 
 def extract_query(prompt, max_words=10):
-    """Reduce a natural-language prompt to a search query (stopwords out, spellings normalized)."""
+    """Reduce a natural-language prompt to a search query (stopwords out, spellings normalized).
+
+    Exact 5-digit ZIPs are load-bearing location anchors (never stopwords,
+    never truncated away): they lead the query so the search stays on the
+    requested place instead of drifting to an unrelated city."""
+    zips = extract_zip_codes(prompt)
     words = re.findall(r"[a-zA-Z0-9_']+", (prompt or "").lower())
     kept = []
     for w in words:
         w_fixed = _QUERY_SPELLING_FIXES.get(w, w)
+        if w_fixed in zips:
+            continue  # re-attached up front in prompt order
         if w_fixed not in _QUERY_STOPWORDS and len(w_fixed) > 1:
             kept.append(w_fixed)
-    return " ".join(kept[:max_words]).strip()
+    ordered = zips + kept
+    return " ".join(ordered[:max(1, max_words)]).strip()
