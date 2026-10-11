@@ -394,14 +394,47 @@ class RunLifecycleTests(ServerHarness):
 
 class SettingsViewTests(ServerHarness):
     def test_settings_never_leak_secrets(self):
+        secret_values = (
+            "sk-" + "or-v1-" + ("0123456789abcdef" * 4),
+            "mcp_test_token_" + ("0123456789abcdef" * 2),
+            "label-secret-fixture",
+            "sk-" + "proj-" + ("0123456789abcdef" * 2),
+        )
+        class FakeSettings:
+            def to_dict(self):
+                return {
+                    "jev_api_key": secret_values[0],
+                    "mcp_auth_token": secret_values[1],
+                    "expect_key_label": secret_values[2],
+                    "max_cost": 0.25,
+                }
         conn = self._conn()
-        try:
-            _, data = _request(conn, "GET", "/api/settings")
-            blob = json.dumps(data)
-            self.assertNotIn("mcp_auth_token\": \"", blob)
-            self.assertNotIn("expect_key_label\": \"", blob)
-        finally:
-            conn.close()
+        with mock.patch.object(ui_server, "load_settings",
+                               return_value=FakeSettings()), \
+             mock.patch.object(ui_server, "resolve_api_key",
+                               return_value=secret_values[3]), \
+             mock.patch.object(ui_server, "update_config"):
+            try:
+                for method, body in (("GET", None),
+                                    ("POST", {"max_cost": 0.1})):
+                    _, data = _request(conn, method, "/api/settings", body)
+                    payload = data.get("settings", data)
+                    blob = json.dumps(payload)
+                    self.assertIsNone(payload["jev_api_key"])
+                    self.assertTrue(payload["jev_api_key_present"])
+                    self.assertIsNone(payload["mcp_auth_token"])
+                    self.assertTrue(payload["mcp_auth_token_present"])
+                    self.assertIsNone(payload["expect_key_label"])
+                    self.assertTrue(payload["expect_key_label_present"])
+                    self.assertTrue(payload["paid_key_present"])
+                    for secret in secret_values:
+                        self.assertNotIn(secret, blob)
+                    self.assertNotRegex(
+                        blob,
+                        r"(?i)(?:\bsk-(?:or-v1|proj|live)-[A-Za-z0-9_-]{16,}\b|\b[A-Za-z0-9_-]{32,}\b)",
+                    )
+            finally:
+                conn.close()
 
 
 class TrustEndpointTests(ServerHarness):
