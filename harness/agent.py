@@ -274,8 +274,40 @@ def is_research_question(prompt: str) -> bool:
     return cleaned.startswith(_QUESTION_OPENERS)
 
 
+# Lookup subjects are answered from one live fact fetch plus one cheap
+# answer -- never from multi-round deliberation. A subject is required so
+# ordinary conversation cannot take the fast lane by accident.
+_LOOKUP_SUBJECTS = ("weather", "forecast", "temperature", "rain", "snow",
+                    "storm", "hurricane", "humidity", "wind", "uv index")
+_LOOKUP_OPENERS = ("what", "how", "when", "will", "is ", "are ",
+                   "tell me", "show me", "give me", "find", "search",
+                   "look up", "lookup")
+
+
+def is_lookup_question(prompt: str) -> bool:
+    """True when a prompt asks one factual question a live source answers.
+
+    A lookup *subject* is required, and the prompt must read as a question
+    or a lookup request -- so "update the forecast page" (an edit with a
+    subject word) stays out. Mutation intent is decided by the classifier
+    ordering around this predicate, not inside it.
+    """
+    cleaned = (prompt or "").strip().lower()
+    if not cleaned:
+        return False
+    if not any(subj in cleaned for subj in _LOOKUP_SUBJECTS):
+        return False
+    if cleaned.endswith("?"):
+        return True
+    if cleaned.startswith(_LOOKUP_OPENERS):
+        return True
+    # Bare lookup requests ("Pahoa forecast") name the subject with no
+    # question mark; the classifier's mutation guard keeps edits out.
+    return any(req in cleaned for req in ("forecast", "weather"))
+
+
 def classify_prompt_intent(prompt: str) -> str:
-    # Classify a natural language prompt into conversation, edit, or audit
+    # Classify a natural language prompt into conversation, edit, lookup, or audit
     cleaned = prompt.strip().lower()
     words = re.findall(r"\b[a-z_0-9-]+\b", cleaned)
     first_word = words[0] if words else ""
@@ -301,6 +333,16 @@ def classify_prompt_intent(prompt: str) -> str:
     # without a target keep the conversation lane below.
     if is_site_check_prompt(prompt):
         return "simple-action"
+
+    # Factual lookups skip the deliberation lanes: one fact fetch plus one
+    # cheap answer. Edits, audits, driver work, and site checks keep priority
+    # above; an explicit file or mutation verb stays out of the fast lane.
+    if (is_lookup_question(prompt) and not has_file_ext
+            and not any(w in words for w in MUTATION_KEYWORDS)
+            and not any(p in cleaned for p in EXECUTION_PHRASES)
+            and not any(w in cleaned for w in ("refactor ", "implement ",
+                                               "fix bug ", "add test", "execute ", "run "))):
+        return "lookup"
 
     # Prompts asking conversational questions (or ending with ?) take precedence unless explicit files/paths are given
     if first_word in CONVERSATION_STARTERS or cleaned.endswith("?"):
@@ -371,6 +413,11 @@ class AutonomousAgent:
             if intent == "simple-action":
                 return self.run_simple_action(prompt, session_id=sid,
                                               cancel_check=cancel_check)
+            if intent == "lookup":
+                return self._handle_lookup(
+                    prompt, sid, cancel_check, max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
+                    token_budget=token_budget)
             if intent == "edit" and auto_apply:
                 emit("chat_escalated", reason="edit-intent in auto mode",
                      target="plan_lane")
@@ -397,6 +444,11 @@ class AutonomousAgent:
         elif intent == "simple-action":
             return self.run_simple_action(prompt, session_id=sid,
                                           cancel_check=cancel_check)
+        elif intent == "lookup":
+            return self._handle_lookup(
+                prompt, sid, cancel_check, max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
+                token_budget=token_budget)
         elif intent == "conversation":
             if self._live_jev_available():
                 return self.run_hourglass_request(
@@ -780,6 +832,11 @@ class AutonomousAgent:
         if intent == "simple-action":
             return self.run_simple_action(prompt, session_id=sid,
                                           cancel_check=cancel_check)
+        if intent == "lookup":
+            return self._handle_lookup(
+                prompt, sid, cancel_check, max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
+                token_budget=token_budget)
         if intent == "edit":
             result = self._handle_edit(
                 prompt, sid, auto_apply, cancel_check,
@@ -1263,6 +1320,104 @@ class AutonomousAgent:
 
         save_chat_turn(session_id, result, self.history_dir)
         emit("chat_response", intent="conversation", cost=cost, model=model)
+        return result
+
+    def _handle_lookup(
+        self,
+        prompt: str,
+        session_id: str,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        max_tokens: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+        token_budget: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        # One fact fetch plus one cheap answer. No answer rounds, no Jev
+        # review, no plan handoff: a lookup that cannot answer in one shot
+        # fails honestly (or falls back to the single-shot conversation
+        # lane) instead of escalating a simple question into deliberation.
+        from . import weather as _weather
+        sid = session_id or "default"
+        emit("lookup_start", prompt=prompt, session_id=sid)
+        try:
+            facts = _weather.lookup_weather(prompt)
+        except HarnessError as e:
+            emit("lookup_fallback", reason=str(e), target="conversation")
+            return self._handle_conversation(
+                prompt, sid, cancel_check, web=True,
+                max_tokens=max_tokens, reasoning_effort=reasoning_effort,
+                token_budget=token_budget)
+        api_key, gov = governor_for(self.settings)
+        target_tokens, lane_effort = effective_lane_policy(
+            "chat", max_tokens=max_tokens, reasoning_effort=reasoning_effort)
+        cap = min(target_tokens, 400)
+        system = ("Answer ONLY from the live facts below; do not invent "
+                  "other sources. One short answer, no preamble.\n\n"
+                  "[Live facts -- cite only these]\n" + facts["summary"])
+        messages = [{"role": "system", "content": system}]
+        for turn in load_chat_history(sid, self.history_dir)[-4:]:
+            if turn.get("prompt"):
+                messages.append({"role": "user", "content": turn["prompt"]})
+            if turn.get("response"):
+                messages.append({"role": "assistant",
+                                 "content": turn["response"]})
+        messages.append({"role": "user", "content": prompt})
+        # Cheapest rung plus exactly one rotation spare: a lookup never
+        # walks the ladder.
+        answered = None
+        attempts: List[str] = []
+        cost = 0.0
+        for model in self._chat_ladder(self.settings)[:2]:
+            if cancel_check and cancel_check():
+                raise ToolCancelled("Prompt execution was cancelled by user")
+            allocated = _resolve_lane_max_tokens(
+                gov, model, prompt, cap, token_budget=token_budget)
+            if allocated < 1:
+                attempts.append(f"{model}: insufficient budget")
+                continue
+            try:
+                gov.preflight(prompt, [("chat", model, allocated, 0)])
+                status, resp = chat(
+                    transport=self.transport, api_key=api_key, model=model,
+                    messages=messages, max_tokens=allocated,
+                    reasoning_effort=lane_effort, governor=gov)
+            except HarnessError as e:
+                attempts.append(f"{model}: {e}")
+                emit("rotation", model=model, reason="lookup_advance",
+                     note=str(e))
+                continue
+            if status != 200:
+                attempts.append(f"{model}: HTTP {status}")
+                emit("rotation", model=model, reason="lookup_advance",
+                     note=f"HTTP {status}")
+                continue
+            content, finish_reason, cost, _is_byok = \
+                extract_content_and_cost(resp)
+            if cost:
+                gov.record_actual(cost, model)
+            usable, why = assess_output(content, finish_reason)
+            if not usable:
+                attempts.append(f"{model}: {why}")
+                emit("rotation", model=model, reason="lookup_advance",
+                     note=str(why))
+                continue
+            answered = (model, content or "")
+            break
+        if answered is None:
+            raise HarnessError(
+                "lookup failed on every attempt: " + "; ".join(attempts))
+        model, response_text = answered
+        result = {
+            "status": "ok",
+            "intent": "lookup",
+            "prompt": prompt,
+            "response": response_text,
+            "model": model,
+            "cost": round(cost, 6),
+            "web_used": True,
+            "lookup": {"place": facts["place"], "day": facts["day"]},
+        }
+        save_chat_turn(sid, result, self.history_dir)
+        emit("chat_response", intent="lookup", cost=cost, model=model)
         return result
 
     def _handle_audit(
