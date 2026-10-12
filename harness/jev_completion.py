@@ -155,6 +155,35 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "harness/discount_gate.py",
         ],
     },
+    # EV-6 (Fireworks evidence source, see the EV-* section in the canon): the
+    # generated pack is the only rate source. Parity and freshness are gated
+    # in the required test file, not here.
+    "EV-6": {
+        "status_needle": r"\bEV-6\b",
+        "pr_pattern": None,
+        "required_tests": ["tests/test_economics_fireworks_source.py"],
+        "required_files": [
+            "harness/endpoint_pricing.py",
+            "audits/self/refresh_fireworks_pack.py",
+            "packs/fireworks.endpoints.json",
+            "audits/self/dogfood/fireworks-price-snapshot.md",
+        ],
+    },
+    # EV-7 (Fireworks route, toggles, budget; see the EV-* section in the canon):
+    # the route decision, the Fireworks call shape, and the local budget. The
+    # cross-provider price index is EV-1 and is not part of this contract.
+    "EV-7": {
+        "status_needle": r"\bEV-7\b",
+        "pr_pattern": None,
+        "required_tests": ["tests/test_economics_fireworks_route.py"],
+        "required_files": [
+            "harness/fireworks.py",
+            "harness/chat.py",
+            "harness/spend.py",
+            "harness/config.py",
+            "harness/session.py",
+        ],
+    },
     "JEV-P0": {
         "status_needle": r"JEV-P0|0 Contract|contract truth",
         "pr_pattern": r"PR #34|d042d70",
