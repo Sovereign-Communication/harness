@@ -15,14 +15,14 @@ Related design context (not the tracker): [system-one-integration.md](system-one
 
 ---
 
-## Canonical current status — proposed final burndown 2026-10-14
+## Canonical current status — final burndown 2026-10-14
 
-Verified remote `main`: `6cc8b87738dec360a208544d745d80d7ca443528`, the merge commit for #213. Its merge-result core CI run 38641021718 is pending; the preceding `main` core CI run 38176973913 passed on `7b0fad6`. Rankings-report run 38258395065 failed because no OpenRouter API key was available; it did not refresh rankings. This section is the proposed operational plan, incorporating the operator Jev ruling below and pending reviewed serial landing. It supersedes older present-tense snapshots after merge. No completion status is changed by this reconciliation.
+Verified remote `main`: `6cc8b87738dec360a208544d745d80d7ca443528`, the merge commit for #213. Its merge-result core CI run 38641021718 passed; the preceding `main` core CI run 38176973913 passed on `7b0fad6`. Rankings-report run 38258395065 failed because no OpenRouter API key was available; it did not refresh rankings. This section is the operational plan incorporating the operator rulings below. It supersedes older present-tense snapshots. No completion status is changed by this reconciliation.
 
 ### Landed versus verified
 - #180: deferred/inconclusive verify exit contract. #193: audit data only. #194: scoped security fixes. #209: simple-request code, requiring acceptance reconciliation for #200–#207. #208: Fireworks economics design only. #210: coverage baseline maintenance. #214: provider-secret redaction.
-- #213 merged as `6cc8b87` from reviewed head `75a6b71`; #198 auto-closed. All 12 PR checks passed, as did an independent 55-test battery and installed-wheel worker smoke. Local self-audit used native Jev and scored 10/10 on all four dimensions. These certify the PR head, not the still-pending merge-result run, and do not close #207's broader lifecycle acceptance.
-- #212 (`1d06fed`) is draft with its 12 prior checks green and remains held behind EV-4, EV-6 evidence and the missing production wiring/accounting dependencies. Do not create a competing implementation phase. #216's old red-coverage description is stale; disposition #217 only after merge-result `main` CI is green.
+- #213 merged as `6cc8b87` from reviewed head `75a6b71`; #198 auto-closed. All 12 PR checks passed, as did an independent 55-test battery and installed-wheel worker smoke. Local self-audit used native Jev and scored 10/10 on all four dimensions. Merge-result CI 38641021718 also passed. These checks do not close #207's broader lifecycle acceptance.
+- #212 (`1d06fed`) is draft with its 12 prior checks green and remains held behind EV-4, EV-6 evidence and the missing production wiring/accounting dependencies. Do not create a competing implementation phase. #216's old red-coverage description is stale; #217 is closed after green merge-result CI.
 - Local Jev board: 39 passing, 8 failing, zero false-complete flags. This is local heuristic/document evidence, not a live integration certification.
 
 ### Primary milestone: general simple-request reliability
@@ -94,7 +94,7 @@ Also preserve `C:\Users\SCM\.freebuff\worktrees\efd322d6\Harness`. It remains an
 
 ### Verification recorded this pass
 
-Before merge, #213 head `75a6b71` passed all 12 workflow checks, an independent 55-test battery, installed-wheel HTTP-worker smoke, and local self-audit with native Jev at 10/10 on all four dimensions. A plain ambient-key `unittest` invocation failed, while the audit's isolated hermetic suite passed; record both rather than treating the ambient failure as green. Merge-result core CI run 38641021718 remains pending on `6cc8b87`.
+Before merge, #213 head `75a6b71` passed all 12 workflow checks, an independent 55-test battery, installed-wheel HTTP-worker smoke, and local self-audit with native Jev at 10/10 on all four dimensions. A plain ambient-key `unittest` invocation failed, while the audit's isolated hermetic suite passed; record both rather than treating the ambient failure as green. Merge-result core CI run 38641021718 passed on `6cc8b87`.
 
 The earlier 108 focused lifecycle/guard tests passed outside the sandbox after temporary-directory permission errors in the initial sandbox run. Pre-merge stable-main GUI/API site smoke returned HTTPS200 in about 1.84 seconds, model=null, cost=0; this proves only the deterministic probe, not #207's required Jev pre/post or CLI/MCP parity. GUI in-process read-only driver is healthy; direct CLI/MCP driver service remains unconfigured/unverified. The PBJ baseline above incurred `$0.0001254825`; no further paid provider trial was performed in this planning pass. Rankings failure cause was verified in the failed job log: no OpenRouter key available.
 
