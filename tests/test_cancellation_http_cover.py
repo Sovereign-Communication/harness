@@ -484,4 +484,3 @@ class TestHttpPostOnceCover(unittest.TestCase):
                                    urllib.error.URLError("down"))):
             with self.assertRaises(ToolCancelled):
                 wire.post_once("http://127.0.0.1/", "k", {"model": "m"})
-
