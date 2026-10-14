@@ -187,12 +187,37 @@ class RunTreeBranchTests(unittest.TestCase):
                 pass
 
         stubborn = Stubborn()
-        with mock.patch.object(osal.subprocess, "Popen", return_value=stubborn),                 mock.patch.object(osal, "_kill_tree"),                 mock.patch.object(osal, "_DRAIN_SECONDS", 0.01):
+        with mock.patch.object(osal.subprocess, "Popen", return_value=stubborn),                 mock.patch.object(osal, "_kill_tree"),                 mock.patch.object(osal, "_DRAIN_SECONDS", 0.01),                 mock.patch.object(osal, "IS_WINDOWS", False):
             result = osal.run_tree(["x"], timeout=0.01)
         self.assertIsNotNone(timeout)
         self.assertEqual(result.returncode, 124)
         stubborn.stdout.close.assert_called_once()
         stubborn.stderr.close.assert_called_once()
+
+    def test_windows_does_not_block_closing_inherited_pipes(self):
+        class Stubborn:
+            pid = 5
+            returncode = None
+
+            def __init__(self):
+                self.stdout = mock.Mock()
+                self.stderr = mock.Mock()
+
+            def communicate(self, timeout=None):
+                raise osal.subprocess.TimeoutExpired("x", timeout)
+
+            def wait(self, timeout=None):
+                raise osal.subprocess.TimeoutExpired("x", timeout)
+
+            def kill(self):
+                pass
+
+        stubborn = Stubborn()
+        with mock.patch.object(osal.subprocess, "Popen", return_value=stubborn),                 mock.patch.object(osal, "_kill_tree"),                 mock.patch.object(osal, "_DRAIN_SECONDS", 0.01),                 mock.patch.object(osal, "IS_WINDOWS", True):
+            result = osal.run_tree(["x"], timeout=0.01)
+        self.assertEqual(result.returncode, 124)
+        stubborn.stdout.close.assert_not_called()
+        stubborn.stderr.close.assert_not_called()
 
     def test_the_posix_launch_path_starts_a_new_session(self):
         captured = {}

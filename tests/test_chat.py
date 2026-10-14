@@ -1,5 +1,6 @@
 """Response extraction: content/cost pulls and the reasoning-only fallback."""
 import unittest
+from unittest import mock
 
 from harness.chat import (_extract_json, chat, extract_content_and_cost,
                           governed_text)
@@ -47,6 +48,81 @@ class CostAccountingTests(unittest.TestCase):
     def _gov(self, fake):
         return SpendGovernor(fake, "sk-test")
 
+    def test_reasoning_retry_keeps_prior_spend_when_final_usage_is_malformed(self):
+        final_bodies = ({"choices": [{"message": {"content": "answer"}}],
+                         "usage": None},
+                        {"choices": [{"message": {"content": "answer"}}],
+                         "usage": []},
+                        {"choices": [{"message": {"content": "answer"}}],
+                         "usage": {}},
+                        {"choices": [{"message": {"content": "answer"}}]},
+                        [])
+        for final_body in final_bodies:
+            with self.subTest(final_body=final_body):
+                class RetryTransport:
+                    def __init__(self):
+                        self.calls = 0
+
+                    def post(self, *_args, **_kwargs):
+                        self.calls += 1
+                        if self.calls == 1:
+                            return 400, {
+                                "error": {"message":
+                                          "unsupported parameter: reasoning"},
+                                "usage": {"cost": 0.004},
+                            }
+                        return 200, final_body
+
+                transport = RetryTransport()
+                governor = self._gov(FakeTransport(
+                    models=[m("test/model", "0.000001", "0.000001")]))
+                with mock.patch("harness.chat._effort_to_send",
+                                return_value="low"), \
+                        mock.patch("harness.chat.reasoning_param_rejected",
+                                   return_value=False):
+                    with self.assertRaisesRegex(
+                            HarnessError, "omitted final usage|omitted usage|no usable usage"):
+                        chat(transport, "test-key", "test/model",
+                             [{"role": "user", "content": "hi"}], 64,
+                             reasoning_effort="low", governor=governor)
+
+                self.assertEqual(transport.calls, 2)
+                self.assertAlmostEqual(governor.spent, 0.004)
+                self.assertGreater(governor.snapshot()["unknown_liability"], 0.0)
+
+    def test_transport_retry_then_unpriced_success_fails_closed(self):
+        from harness._http import HttpTransport
+        import json
+
+        final_bodies = ({"choices": [{"message": {"content": "answer"}}],
+                         "usage": None},
+                        {"choices": [{"message": {"content": "answer"}}],
+                         "usage": []},
+                        {"choices": [{"message": {"content": "answer"}}],
+                         "usage": {}},
+                        {"choices": [{"message": {"content": "answer"}}]},
+                        [])
+        for final_body in final_bodies:
+            with self.subTest(final_body=final_body):
+                wire = HttpTransport(cancel_check=lambda: False)
+                bodies = iter((
+                    (429, json.dumps({"usage": {"cost": 0.004}}), None),
+                    (200, json.dumps(final_body), None),
+                ))
+                fake = FakeTransport(models=[m("test/model", "0.000001", "0.000001")])
+                governor = self._gov(fake)
+                with mock.patch.object(
+                        wire, "_request_once_cancellable",
+                        side_effect=lambda *_args, **_kwargs: next(bodies)), \
+                        mock.patch.object(wire, "_retry_wait"):
+                    with self.assertRaisesRegex(
+                            HarnessError, "omitted final usage|omitted usage|no usable usage"):
+                        chat(wire, "test-key", "test/model",
+                             [{"role": "user", "content": "hi"}], 64,
+                             governor=governor)
+                self.assertAlmostEqual(governor.spent, 0.004)
+                self.assertGreater(governor.snapshot()["unknown_liability"], 0.0)
+
     def test_reported_cost_passes_through_untouched(self):
         fake = FakeTransport(models=[m("paid/x", "0.000001", "0.000002")],
                              posts=[_resp(cost=0.004)])
@@ -89,6 +165,28 @@ class CostAccountingTests(unittest.TestCase):
                             governor=gov)
         self.assertAlmostEqual(resp["usage"]["cost"], 0.002)
         self.assertTrue(resp["usage"]["cost_estimated"])
+
+    def test_missing_final_cost_adds_known_transport_retry_charge(self):
+        from harness._http import HttpTransport
+        import json
+
+        wire = HttpTransport(cancel_check=lambda: False)
+        final = _resp(prompt_tokens=1000, completion_tokens=500)
+        bodies = iter((
+            (429, json.dumps({"usage": {"cost": 0.001}}), None),
+            (200, json.dumps(final), None),
+        ))
+        with mock.patch.object(
+                wire, "_request_once_cancellable",
+                side_effect=lambda *_a, **_k: next(bodies)), \
+                mock.patch.object(wire, "_retry_wait"):
+            fake = FakeTransport(models=[m("paid/x", "0.000001", "0.000002")])
+            gov = self._gov(fake)
+            status, resp = chat(
+                wire, "k", "paid/x", [{"role": "user", "content": "hi"}], 64,
+                governor=gov)
+        self.assertEqual(status, 200)
+        self.assertAlmostEqual(resp["usage"]["cost"], 0.003)
 
     def test_blind_paid_response_fails_closed(self):
         fake = FakeTransport(models=[m("paid/x", "0.000001", "0.000002")],

@@ -64,6 +64,9 @@ class ResearchQuestionTests(unittest.TestCase):
         for prompt in ("find the bug in auth.py",
                        "fix the failing test in test_waist.py",
                        "refactor auth.py to use tokens",
+                       "review site/public/assets/app.js",
+                       r"inspect site\public\assets\app.js",
+                       "review site.py",
                        "run the tests",
                        "2+2",
                        "update the README with the new release notes"):

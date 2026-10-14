@@ -29,13 +29,12 @@ import binascii
 import html as _html
 import os
 import re
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-from .errors import HarnessError
-from .events import emit
+from .errors import HarnessError, ToolCancelled
+from .events import current_cancel_check, emit
 
 # The one search endpoint. Operator-configurable via env because the choice
 # of search provider is policy, not code. Only the query varies per call.
@@ -77,6 +76,20 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def _http_get(url, timeout=12.0):
     """One bounded GET: bounded body, no redirects, no credentials sent."""
+    cancel_check = current_cancel_check()
+    if cancel_check is not None:
+        from ._http import cancellable_request
+        status, raw, _retry_after, final_url = cancellable_request(
+            "GET", url,
+            headers={
+                "User-Agent": _USER_AGENT,
+                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+            },
+            timeout=timeout, cancel_check=cancel_check,
+            max_bytes=_MAX_BYTES + 1, no_redirect=True)
+        if len(raw) > _MAX_BYTES:
+            raw = raw[:_MAX_BYTES]
+        return status, raw, final_url
     req = urllib.request.Request(
         url,
         headers={
@@ -255,6 +268,10 @@ def search_web(query, max_results=5, timeout=12.0):
     )
     try:
         status, raw, _ = _http_get(url, timeout=timeout)
+    except ToolCancelled:
+        emit("web_search", phase="end", ok=False, query=q,
+             reason="cancelled")
+        raise
     except (urllib.error.URLError, urllib.error.HTTPError, OSError,
             ValueError) as e:
         emit("web_search", phase="end", ok=False, query=q)
@@ -320,12 +337,17 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000):
             error_note = f"web fetch HTTP {status}"
             if status not in (429, 500, 502, 503, 504):
                 break  # deterministic status: a retry cannot change it
+        except ToolCancelled:
+            emit("web_fetch", phase="end", ok=False, url=u,
+                 reason="cancelled")
+            raise
         except (urllib.error.URLError, urllib.error.HTTPError, OSError,
                 ValueError) as e:
             error_note = f"web fetch failed: {e}"
         if attempt == 1:
             emit("web_fetch", phase="retry", url=u)
-            time.sleep(1.5)
+            from ._http import interruptible_sleep
+            interruptible_sleep(1.5, current_cancel_check())
     if error_note is not None or raw is None:
         emit("web_fetch", phase="end", ok=False, url=u)
         raise HarnessError(error_note or "web fetch failed: empty response")
@@ -379,6 +401,8 @@ def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, fetch_
                     page = fetch_fn(r_url, allowed_hosts=allowed_hosts)
                     sources.append({"kind": "fetch", "ok": True, "url": page["url"], "title": page["title"], "text": page["text"]})
                     continue
+                except ToolCancelled:
+                    raise
                 except Exception:
                     pass
             sources.append({"kind": "search", "ok": True, "url": r["url"], "title": r["title"], "text": r["snippet"]})
