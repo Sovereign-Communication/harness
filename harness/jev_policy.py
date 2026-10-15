@@ -33,6 +33,7 @@ from .route_pack import (ROUTE_QUERY_SITE, choose_rung_for_tier, fallback_route,
                          validate_route_pack)
 from .jev_packs import (
     ANSWER_PACK_VERSION,
+    SIMPLE_STRATEGY_PACK_VERSION,
     AUDIT_DIMENSIONS_SITE,
     HUL_SCOPE_SITE,
     LOG_FACTOR_SITE,
@@ -58,6 +59,7 @@ from .jev_packs import (
     SCOPE_COVERAGE_HOLD,
     SCOPE_NOUL_HOLD,
     answer_question_pack,
+    simple_strategy_question_pack,
     claim_support_question_pack,
     claims_from_payload,
     completion_bar_question_pack,
@@ -1114,6 +1116,87 @@ class JevPolicy:
                 ["hourglass stage judgment unavailable: " + str(exc)],
                 is_fallback=False, model=self.evaluator.model)
             return finish(fallback, values, False)
+
+    def evaluate_simple_strategy(
+            self, prompt: str, context: str = "", *,
+            site: str = "simple-strategy", task_id: Optional[str] = None,
+            max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+        """Choose a pre-answer strategy without granting tool authority.
+
+        Choice concentration and probabilities are retained as observations;
+        only the explicit selected option controls this narrow transition.
+        Unavailable Jev yields an honest ``direct_answer`` fallback because
+        deterministic request-kind checks already excluded tool/current work.
+        """
+        options = {"direct_answer", "needs_tool", "ambiguous"}
+
+        def fallback(reason: str, *, result=None):
+            raw_result = result
+            fb = JevEvaluationResult(
+                "fail", 0.0, 0.0,
+                {"strategy": "direct_answer",
+                 "probabilities": None, "concentration": None,
+                 "pack_version": SIMPLE_STRATEGY_PACK_VERSION},
+                [reason],
+                cost=float(getattr(raw_result, "cost", 0.0) or 0.0),
+                input_tokens=getattr(raw_result, "input_tokens", None),
+                output_tokens=getattr(raw_result, "output_tokens", None),
+                is_fallback=True,
+                model=getattr(raw_result, "model", self.evaluator.model),
+                discarded=bool(getattr(raw_result, "discarded", False)),
+                fallback_reason=(getattr(raw_result, "fallback_reason", None)
+                                 or "strategy_unavailable"),
+            )
+            return fb
+
+        reservation = None
+        try:
+            reservation = self._preflight(
+                site=site, max_input_tokens=max_input_tokens)
+            result = self.evaluator.evaluate(
+                {"request": str(prompt or "")[:1400],
+                 "relevant_history": str(context or "")[:1200]},
+                simple_strategy_question_pack())
+            raw = result.answers if isinstance(result.answers, dict) else {}
+            answer = raw.get("strategy")
+            choice = answer.get("choice") if isinstance(answer, dict) else None
+            probabilities = (answer.get("probabilities")
+                             if isinstance(answer, dict) else None)
+            concentration = (answer.get("confidence")
+                             if isinstance(answer, dict) else None)
+            valid = (not result.is_fallback and choice in options
+                     and isinstance(probabilities, dict)
+                     and all(name in probabilities for name in options))
+            if valid:
+                normalized = {
+                    "strategy": choice,
+                    "probabilities": dict(probabilities),
+                    "concentration": concentration,
+                    "pack_version": SIMPLE_STRATEGY_PACK_VERSION,
+                }
+                result = replace(result, answers=normalized, is_fallback=False)
+            else:
+                reason = ((result.reasons or ["simple strategy unavailable"])[0])
+                result = fallback(str(reason), result=result)
+            structural = self._account(
+                result, site=site, task_id=task_id, reservation=reservation)
+            structural.update(result.answers)
+            structural["native"] = not result.is_fallback
+            return result, structural
+        except ProviderUsageUnknown as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
+        except ToolCancelled as exc:
+            self._settle_cancelled(reservation, exc)
+            raise
+        except HarnessError as exc:
+            self._release(reservation)
+            result = fallback(str(exc))
+            structural = self._account(
+                result, site=site, task_id=task_id)
+            structural.update(result.answers)
+            structural["native"] = False
+            return result, structural
 
     def evaluate_answer(
             self, prompt: str, answer: str, context: str = "", *,

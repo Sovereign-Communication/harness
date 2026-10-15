@@ -527,11 +527,11 @@ class AgentAnswerLoopTests(unittest.TestCase):
         edit.assert_not_called()
         convo.assert_called_once()
 
-    def test_live_jev_conversation_routes_to_hourglass(self):
+    def test_live_jev_non_simple_conversation_routes_to_hourglass(self):
         agent = AutonomousAgent(settings=load_settings(), root_dir=Path("."))
         with patch.object(agent, "_live_jev_available", return_value=True), \
              patch.object(agent, "run_hourglass_request", return_value={"status": "ok"}) as run:
-            agent.run_prompt("Explain a concept")
+            agent.run_prompt("What is happening tomorrow?")
         run.assert_called_once()
 
     def test_answer_generation_keeps_history_web_but_jev_payload_excludes_them(self):
