@@ -749,9 +749,11 @@ class AutonomousAgent:
             review_available = bool(post and post.get("native"))
             review_passed = bool(
                 review_available
+                and post.get("verdict") == "pass"
                 and isinstance(post.get("answer_sufficient"), (int, float))
                 and float(post["answer_sufficient"]) >= float(
                     getattr(self.settings, "min_confidence", 0.70))
+                and not bool(post.get("plan_required"))
                 and not bool(post.get("iteration_required")))
             result = {
                 "status": status, "intent": "conversation",

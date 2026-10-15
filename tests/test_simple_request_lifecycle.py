@@ -44,7 +44,8 @@ def _pre(*, native=True, strategy="direct_answer"):
 
 def _post(*, native=True, sufficient=0.95):
     return SimpleNamespace(is_fallback=not native), {
-        "native": native, "answer_sufficient": sufficient,
+        "native": native, "verdict": "pass" if native else "fail",
+        "answer_sufficient": sufficient,
         "iteration_required": False, "plan_required": False,
         "cost": 0.000001,
     }
@@ -57,6 +58,20 @@ class RequestKindTests(unittest.TestCase):
             "Explain why ice floats in a few sentences.",
             "Rewrite this: Thanks for waiting.",
             "What is 17 * 23?",
+        ):
+            with self.subTest(prompt=prompt):
+                intent = classify_prompt_intent(prompt)
+                self.assertEqual(intent, "conversation")
+                self.assertTrue(is_simple_answer_request(prompt, intent=intent))
+
+    def test_imperative_calculation_and_conversion_are_simple(self):
+        for prompt in (
+            "Calculate 17 times 23.",
+            "Compute 17 times 23.",
+            "Convert 3 miles to kilometers.",
+            "Please calculate 17 times 23.",
+            "Could you compute 17 times 23?",
+            "Can you convert 3 miles to kilometers?",
         ):
             with self.subTest(prompt=prompt):
                 intent = classify_prompt_intent(prompt)
@@ -334,6 +349,36 @@ class SimpleLifecycleTests(unittest.TestCase):
         self.assertEqual(policy.evaluate_simple_strategy.call_count, 1)
         self.assertEqual(policy.evaluate_answer.call_count, 1)
         self.assertEqual(result["simple_request"]["generation_calls"], 1)
+        self.assertTrue(result["simple_request"]["post_review_passed"])
+
+    def test_failed_review_and_plan_signal_are_not_reported_as_passed(self):
+        failed_judgment = SimpleNamespace(verdict="fail")
+        failed_review = {
+            "native": True,
+            "verdict": "fail",
+            "answer_sufficient": 0.96,
+            "iteration_required": False,
+            "plan_required": True,
+            "cost": 0.000001,
+        }
+        result, _, _ = self._run(post=(failed_judgment, failed_review))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["simple_request"]["post"]["verdict"], "fail")
+        self.assertTrue(result["simple_request"]["post"]["plan_required"])
+        self.assertFalse(result["simple_request"]["post_review_passed"])
+
+    def test_shared_prompt_entry_routes_imperative_conversion_to_simple_lane(self):
+        with (
+            patch.object(self.agent, "_live_jev_available", return_value=True),
+            patch.object(self.agent, "run_simple_request",
+                         return_value={"status": "ok", "workflow_tier": "simple-answer"}) as simple,
+            patch.object(self.agent, "run_hourglass_request") as hourglass,
+        ):
+            result = self.agent.run_prompt(
+                "Convert 3 miles to kilometers.", session_id="conversion")
+        self.assertEqual(result["workflow_tier"], "simple-answer")
+        simple.assert_called_once()
+        hourglass.assert_not_called()
 
     def test_jev_unavailable_before_and_after_keeps_useful_answer(self):
         result, _, _ = self._run(pre=_pre(native=False),

@@ -33,6 +33,10 @@ _SIMPLE_OPENERS = (
     "what ", "how ", "why ", "explain ", "describe ", "tell me ",
     "can you explain ", "could you explain ", "summarize ", "summarise ",
     "rewrite ", "rephrase ",
+    "calculate ", "compute ", "convert ",
+    "please calculate ", "please compute ", "please convert ",
+    "can you calculate ", "can you compute ", "can you convert ",
+    "could you calculate ", "could you compute ", "could you convert ",
 )
 _REPO_ACTION_WORDS = frozenset({
     "fix", "implement", "add", "refactor", "update", "change", "modify",
