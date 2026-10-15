@@ -1350,7 +1350,7 @@ const vm = require("node:vm");
 const source = process.env.HARNESS_AUTH_CLIENT;
 const storage = new Map();
 const calls = [];
-const location = { hash: "#harness-auth=a%2Fb%20%23%3F%26%C3%A9", pathname: "/", search: "?view=chat" };
+const location = { hash: "#harness-auth=%2Fa%2Fb%20%23%3F%26%C3%A9", pathname: "/", search: "?view=chat" };
 let replaced = null;
 const history = { state: { keep: true }, replaceState(...args) { replaced = args; location.hash = ""; } };
 const localStorage = {
@@ -1370,12 +1370,24 @@ vm.runInContext(source, context);
 assert.equal(await vm.runInContext("api('/api/status')", context).then(x => x.status), "ok");
 assert.equal(calls.length, 1);
 assert.equal(calls[0].url, "/api/status");
-assert.equal(calls[0].headers["X-Harness-Auth"], "a/b #?&é");
+assert.equal(calls[0].headers["X-Harness-Auth"], "/a/b #?&é");
 assert.equal(replaced[0], history.state);
 assert.equal(replaced[1], "");
 assert.equal(replaced[2], "/?view=chat");
 assert.equal(location.hash, "");
-assert.equal(storage.get("harness_ui_auth_token"), "a/b #?&é");
+assert.equal(storage.get("harness_ui_auth_token"), "/a/b #?&é");
+
+let routeReplaced = false;
+const routeLocation = { hash: "#/chat", pathname: "/", search: "" };
+const routeContext = vm.createContext({
+  window: {}, document: { getElementById() { return null; } },
+  location: routeLocation,
+  history: { state: null, replaceState() { routeReplaced = true; } },
+  localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+});
+vm.runInContext(source, routeContext);
+assert.equal(routeLocation.hash, "#/chat");
+assert.equal(routeReplaced, false);
  })().catch(error => { console.error(error); process.exitCode = 1; });
 '''
         env = dict(os.environ, HARNESS_AUTH_CLIENT=client)
