@@ -19,6 +19,18 @@ from tests.test_server import ServerHarness, _request
 _OLD_FIXED_TOKEN = "harness-driver-session-token-1234"
 
 
+class ExplicitDriverSelectionTest(unittest.TestCase):
+    def test_explicit_service_is_not_replaced_by_bundled_driver(self):
+        for setting in ("DRIVER_BASE_URL", "DRIVER_CONFIG_PATH"):
+            with self.subTest(setting=setting), patch.dict(
+                    os.environ, {setting: "explicit"}, clear=True), patch(
+                    "harness.perception_client.PerceptionAdapter") as adapter, patch(
+                    "harness.server.ensure_driver_daemon") as start, patch.dict(
+                    ui_server._DRIVER_DAEMON, {"base_url": "old"}, clear=True):
+                self.assertIs(ui_server._driver_adapter(), adapter.return_value)
+                start.assert_not_called()
+
+
 def tearDownModule():
     # Belt and braces: every case below stops the daemon it starts, but a
     # leaked listening socket would surface as a ResourceWarning at GC and
@@ -73,6 +85,29 @@ class ServerDriverEndpointsTest(unittest.TestCase):
 
     def _post(self, path, body):
         return self._call("POST", path, body)
+
+    def test_unavailable_explicit_service_fails_closed_through_api(self):
+        import socket
+        # Keep the port bound but not listening so no other process can take it.
+        with socket.socket() as unavailable, tempfile.TemporaryDirectory() as tmp:
+            unavailable.bind(("127.0.0.1", 0))
+            env = {
+                "DRIVER_BASE_URL": "http://127.0.0.1:{}".format(
+                    unavailable.getsockname()[1]),
+                "DRIVER_CONFIG_PATH": os.path.join(tmp, "absent.json"),
+            }
+            with patch.dict(os.environ, env), patch.dict(
+                    ui_server._DRIVER_DAEMON, {}, clear=True), patch.object(
+                    ui_server, "ensure_driver_daemon") as start:
+                status, health = self._get("/api/driver/health")
+                self.assertEqual(status, 200)
+                self.assertFalse(health["ok"])
+                status, _ = self._post("/api/driver/start", {})
+                self.assertEqual(status, 500)
+                status, _ = self._post("/api/driver/step", {
+                    "target": "Observe without acting", "schema": "gui"})
+                self.assertEqual(status, 503)
+                start.assert_not_called()
 
     @patch("harness.server.UiRequestHandler._get_driver_adapter")
     def test_api_driver_health_success(self, mock_get_adapter):
@@ -461,7 +496,7 @@ class DriverDaemonTest(DriverEnvMixin, unittest.TestCase):
         again = ui_server._driver_adapter()
         self.assertEqual(again.base, adapter.base)
 
-    def test_a_listener_that_never_answers_does_not_stall_the_probe(self):
+    def test_explicit_silent_listener_is_not_replaced_by_bundled_driver(self):
         import socket
         silent = socket.socket()
         silent.bind(("127.0.0.1", 0))
@@ -474,9 +509,8 @@ class DriverDaemonTest(DriverEnvMixin, unittest.TestCase):
             started = time.time()
             adapter = ui_server._driver_adapter()
         self.assertLess(time.time() - started, 10)
-        # It gave up on the silent endpoint and started its own driver.
-        self.assertIn("httpd", ui_server._DRIVER_DAEMON)
-        self.assertEqual(adapter.token, ui_server._DRIVER_DAEMON["token"])
+        self.assertEqual(ui_server._DRIVER_DAEMON, {})
+        self.assertEqual(adapter.base, url)
 
     def test_a_driver_that_cannot_start_degrades_to_the_plain_adapter(self):
         with patch.object(PerceptionAdapter, "health",

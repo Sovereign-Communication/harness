@@ -956,6 +956,37 @@ async function renderDriver(root) {
         $("div", {}, $("span", { class: "muted small" }, "Cost USD: "), $("code", {}, money(step.cost_usd || env.cost_usd || 0.0)))
       )
     );
+    if (env.capture && typeof env.capture === "object" && env.capture.source) {
+      body.append($("p", { class: "small", style: "margin: 0.4rem 0;" },
+        $("b", {}, "Capture source: "), String(env.capture.source)));
+    }
+    const agreement = env.agreement;
+    if (agreement && typeof agreement === "object") {
+      const fields = Array.isArray(agreement.fields) ? agreement.fields : [];
+      const agreed = fields.filter(field => field && field.agreed)
+        .map(field => field.field).filter(Boolean);
+      const contested = fields.filter(field => field && field.contested)
+        .map(field => field.field).filter(Boolean);
+      const count = value => Number.isFinite(Number(value)) ? Number(value) : 0;
+      body.append($("p", { class: "small", style: "margin: 0.4rem 0;" },
+        $("b", {}, "Cross-check: "),
+        (agreement.outcome || "reported") + "; " + count(agreement.answering) + "/" + count(agreement.asked) + " extractors answered"));
+      if (agreed.length) {
+        body.append($("p", { class: "small", style: "margin: 0.4rem 0;" },
+          $("b", {}, "Agreed fields: "), agreed.join(", ")));
+      }
+      if (contested.length) {
+        body.append($("p", { class: "small", style: "margin: 0.4rem 0;" },
+          $("b", {}, "Disputed fields: "), contested.join(", ")));
+      }
+    }
+    const decision = env.decision;
+    if (decision && typeof decision === "object" &&
+        (decision.recommended_action || decision.stop_reason)) {
+      body.append($("p", { class: "small", style: "margin: 0.4rem 0;" },
+        $("b", {}, decision.recommended_action ? "Decision: " : "Decision stopped: "),
+        String(decision.recommended_action || decision.stop_reason)));
+    }
     if (env.detail) {
       body.append($("p", { class: "small", style: "margin: 0.4rem 0;" }, $("b", {}, "Detail: "), env.detail));
     }
@@ -1074,13 +1105,36 @@ async function renderDriver(root) {
     try {
       const h = await api("/api/driver/health");
       const isUp = h.status === "up";
+      const declaredSources = h.sources || [];
+      const settings = h.settings && typeof h.settings === "object" ? h.settings : {};
+      const settingState = key => typeof settings[key] === "boolean"
+        ? (settings[key] ? "on" : "off") : "not reported";
       const pill = $("span", {
         class: `driver-status-pill ${isUp ? "pill-good" : "pill-bad"}`
-      }, isUp ? `● Active (v${h.version || "3.4.0"})` : "○ Down");
-      const sources = (h.sources || []).length
-        ? h.sources.map(s => $("span", { class: "driver-source-badge" }, s))
+      }, isUp ? `● Active${h.version ? ` (v${h.version})` : ""}` : "○ Down");
+      const sources = declaredSources.length
+        ? declaredSources.map(s => $("span", { class: "driver-source-badge" }, s))
         : [$("span", { class: "muted small" }, "None declared")];
-      const startBtn = $("button", { class: "pane-fetch", type: "button", style: "margin-left: 0.5rem;" }, "Restart / Recheck");
+      const visionBadges = [
+        $("span", { class: "driver-source-badge" },
+          "Screen source: " + (declaredSources.includes("screen") ? "on" : "off")),
+        $("span", { class: "driver-source-badge" }, "Pixels: " + settingState("jev_images")),
+        $("span", { class: "driver-source-badge" }, "Frame history: " + settingState("jev_frames")),
+        $("span", { class: "driver-source-badge" }, "Box questions: " + settingState("jev_box")),
+      ];
+      let pixelGuidance;
+      if (!isUp) {
+        pixelGuidance = h.error || "Driver service is down. Start it, then check again.";
+      } else if (!declaredSources.includes("screen")) {
+        pixelGuidance = "To enable screen capture, set DRIVER_SCREEN=1 in the driver service environment and restart it.";
+      } else if (settings.jev_images === false) {
+        pixelGuidance = "Screen capture is declared. Pixel input is off; set DRIVER_JEV_IMAGES=1 and restart the driver service to enable it.";
+      } else if (settings.jev_images === true) {
+        pixelGuidance = "Pixel input is enabled. Frame history and Box questions also require their own opt-ins: DRIVER_JEV_FRAMES=1 and DRIVER_JEV_BOX=1.";
+      } else {
+        pixelGuidance = "This driver does not report its vision flags. Check the service environment for DRIVER_JEV_IMAGES=1; frame history and Box questions use separate opt-ins.";
+      }
+      const startBtn = $("button", { class: "pane-fetch", type: "button", style: "margin-left: 0.5rem;" }, "Start / Check");
       startBtn.onclick = async () => {
         startBtn.disabled = true;
         try {
@@ -1098,7 +1152,14 @@ async function renderDriver(root) {
           $("span", { class: "small" }, "Active Perception Tiers:"),
           ...sources,
           startBtn
-        )
+        ),
+        $("div", { style: "display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; margin-top: 0.6rem;" },
+          $("span", { class: "small" }, "Vision options:"),
+          ...visionBadges
+        ),
+        $("p", { class: "muted small", style: "margin-top: 0.6rem;" },
+          pixelGuidance + " This panel checks the service; it cannot change its settings."),
+        h.error ? $("p", { class: "muted small" }, "Service diagnostic: " + String(h.error)) : ""
       );
     } catch (err) {
       aspectHost.replaceChildren($("p", { class: "muted small" }, `Health check failed: ${err.message}`));

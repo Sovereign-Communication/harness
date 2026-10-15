@@ -9,6 +9,37 @@ reaches it through one thin adapter,
 contract described below. The adapter speaks plain HTTP, so it works against
 any service that exposes the same contract; `DRIVER_BASE_URL` selects which.
 
+### Use the current driver-core vision service
+
+Harness can use a newer, separately installed `driver-core` service without
+copying its implementation into this repository. Keep it in its own virtual
+environment: both distributions contain the top-level `driver_core` package,
+so installing them into one environment can overwrite files.
+
+Start that service on loopback from its isolated environment, for example
+`python -I -m driver_core serve --host 127.0.0.1 --port 8791`. Configure the
+service process with its own `DRIVER_*` settings. Screen capture requires
+`DRIVER_SCREEN=1`; pixel input is a further opt-in with
+`DRIVER_JEV_IMAGES=1`. Frame history and Box questions remain separate opt-ins
+(`DRIVER_JEV_FRAMES=1` and `DRIVER_JEV_BOX=1`); frame history and Box also
+require pixel input. Keep the model key, service bearer token, and audit path
+in the service's protected environment; do not put credentials in command
+arguments, URLs, or logs.
+
+Before starting Harness, set `DRIVER_BASE_URL=http://127.0.0.1:8791` and the
+same `DRIVER_TOKEN` for its GUI, CLI, and MCP processes. An explicitly selected
+endpoint or `DRIVER_CONFIG_PATH` is used as-is: if it is unavailable, Harness
+reports the failure instead of silently switching to its bundled driver.
+Without explicit selection, the existing bundled-driver behavior remains.
+The GUI's Driver pane reports the selected service's version and declared
+sources. It shows pixel, frame-history, and Box settings when the service
+returns them; older services show ?not reported,? which is unknown rather than
+off. To use pixels, choose the `screen` schema for a one-step request. The same
+schema is available through `harness driver step` and the MCP `driver_step`
+tool. The GUI reports the capture source, consensus result, agreed field names,
+and decision without returning screenshot bytes or extracted values. It cannot
+enable service settings; change the service environment and restart it.
+
 Nothing here names a model, provider, or screen-reading library. The driver
 resolves its own extractor pool and Jev model from its settings.
 

@@ -561,10 +561,13 @@ def ensure_driver_daemon(port=None):
 
 
 def _driver_adapter(autostart=True):
-    """An adapter for the driver: an already-reachable one, else our own."""
+    """Use an explicitly selected service, else the bundled local driver."""
     from .perception_client import PerceptionAdapter
     adapter = PerceptionAdapter()
-    if not autostart:
+    # An explicit endpoint or config path owns its lifecycle. Do not mask a
+    # missing or unhealthy external driver with the older bundled package.
+    if (not autostart or os.environ.get("DRIVER_BASE_URL")
+            or os.environ.get("DRIVER_CONFIG_PATH")):
         return adapter
     if _DRIVER_DAEMON:
         return ensure_driver_daemon()
