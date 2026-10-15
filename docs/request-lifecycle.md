@@ -33,6 +33,10 @@ generation call, then asks Jev to review the answer when time permits. Jev
 outage degrades to a direct answer with fallback provenance; it does not
 trigger repo intake, search, or planning. Requests that require current data,
 tools, file access, or execution stay on their specialized lane.
+Answer-shaped imperative arithmetic and unit conversions (such as “calculate,”
+“compute,” and “convert”) use this same bounded answer lane. The structured
+`post_review_passed` flag is true only for a native Jev pass with sufficient
+answer support and no plan or iteration request.
 
 A self-referential question about the current date or time is answered from
 the machine clock before provider setup. An explicit timezone abbreviation
