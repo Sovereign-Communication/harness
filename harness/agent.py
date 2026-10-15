@@ -27,6 +27,7 @@ from .escalation import escalation_evidence, escalation_evidence_fields
 from .executor import PlanExecutor
 from .history import load_chat_history, save_chat_turn
 from .simple_request import (
+    answer_clock as simple_clock_answer,
     answer_prompt as simple_answer_prompt,
     is_current_information_request,
     is_simple_answer_request,
@@ -648,6 +649,26 @@ class AutonomousAgent:
                 receipt("deferred", reason=reason, generation_calls=0,
                         input_tokens=0, output_tokens=0)
                 save_chat_turn(sid, result, self.history_dir)
+                return result
+            # Clock questions are answered from the machine clock with zero
+            # model or Jev calls -- no lookup exists to run.  The answer
+            # names its source so it never poses as verified world time.
+            clock_answer = simple_clock_answer(prompt)
+            if clock_answer is not None:
+                result = {
+                    "status": "ok", "intent": intent,
+                    "workflow_tier": "simple-answer", "prompt": prompt,
+                    "response": clock_answer, "model": None,
+                    "cost": 0.0,
+                    "simple_request": {"generation_calls": 0,
+                                       "clock": True},
+                }
+                receipt("ok", reason="machine-clock answer",
+                        generation_calls=0, input_tokens=0, output_tokens=0,
+                        cost=0.0)
+                save_chat_turn(sid, result, self.history_dir)
+                emit("simple_request_complete", status="ok", model=None,
+                     cost=0.0)
                 return result
             cancelled_or_late("governor setup")
             with cancellation_context(combined_cancel):

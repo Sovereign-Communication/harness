@@ -283,6 +283,13 @@ class McpProtocolTests(unittest.TestCase):
             session_id="mcp-site-check", cancel_check=mock.ANY,
             force_conversation=True)
 
+    def test_site_check_rejects_non_site_prompt(self):
+        from harness.errors import HarnessError
+        transport, server = make_server()
+        with self.assertRaises(HarnessError):
+            server._invoke("site_check", {"prompt": "tell me a joke"},
+                           cancel_check=lambda: False)
+
     def test_initialize_captures_client_caller(self):
         """The stdio peer names itself in clientInfo: the server tags its
         session authorship so ledger evidence attributes to the caller."""

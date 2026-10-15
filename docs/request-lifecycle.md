@@ -14,7 +14,7 @@ User-workflow tiers are separate from model-routing tiers:
 
 | Tier | When | What runs |
 |---|---|---|
-| `answer` | ordinary questions, Q&A, small lookups | chat lane (existing) |
+| `answer` | ordinary questions, Q&A, stable small requests | bounded simple-answer lifecycle; deterministic current clock questions use the machine clock directly |
 | `simple-action` | read-only single-step check with a URL/host target (e.g. site up?) | public-target preflight, Jev Choice, one bounded probe, one typed Jev Noul; zero OpenRouter calls |
 | `plan` | repo work, multi-step execution | hourglass plan lane (existing) |
 
@@ -24,6 +24,22 @@ A narrowly matched command whose entire requested output is a greeting (for
 example, `test - say hello and stop`) returns `Hello.` before intent, web, or
 model routing. The result costs zero and is saved in chat history. Questions
 or prompts with additional requested content keep their normal route.
+
+## Stable simple answers and clock requests
+
+Stable, no-tool questions enter `run_simple_request`: it keeps only relevant
+recent history, asks Jev for a bounded answer strategy, performs at most one
+generation call, then asks Jev to review the answer when time permits. Jev
+outage degrades to a direct answer with fallback provenance; it does not
+trigger repo intake, search, or planning. Requests that require current data,
+tools, file access, or execution stay on their specialized lane.
+
+A self-referential question about the current date or time is answered from
+the machine clock before provider setup. An explicit timezone abbreviation
+such as HST uses its fixed UTC offset and is named in the response, which
+states that no lookup was run. This path has
+zero model, Jev, and network calls. Questions about event times (for example,
+when a meeting starts) remain ordinary requests.
 
 ## Order of operations for other freeform requests
 

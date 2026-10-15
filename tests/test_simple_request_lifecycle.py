@@ -7,11 +7,17 @@ import unittest
 
 from harness.agent import AutonomousAgent, classify_prompt_intent
 from harness.config import load_settings
-from harness.errors import HarnessError, ToolCancelled
+from harness.errors import (
+    HarnessError,
+    ProviderUsageUnknown,
+    ToolCancelled,
+)
 from harness.jev_policy import policy_for
 from harness.simple_request import (
+    answer_clock,
     is_current_information_request,
     is_simple_answer_request,
+    parse_clock_request,
     relevant_history,
 )
 from harness.spend import SpendGovernor
@@ -81,6 +87,32 @@ class RequestKindTests(unittest.TestCase):
                                     max_turns=1)
         self.assertEqual(selected[0]["response"], "fermentation")
 
+    def test_empty_and_file_target_prompts_are_not_current(self):
+        self.assertFalse(is_current_information_request(""))
+        self.assertFalse(is_current_information_request(
+            "Summarize the latest changes in harness/agent.py"))
+        self.assertFalse(is_simple_answer_request(
+            "What is in harness/agent.py?"))
+
+    def test_simple_answer_guards_intent_and_length(self):
+        self.assertFalse(is_simple_answer_request(
+            "What is this?", intent="edit"))
+        self.assertFalse(is_simple_answer_request(
+            "What is " + "x" * 2000 + "?", intent="conversation"))
+        self.assertFalse(is_simple_answer_request(
+            "Fix the bug?", intent="conversation"))
+
+    def test_history_skips_lexically_unrelated_turns(self):
+        turns = [{"prompt": "pasta recipe",
+                  "response": "boil water"}]
+        self.assertEqual(
+            relevant_history("quantum tunneling explained", turns), [])
+
+    def test_history_skips_turns_beyond_the_char_budget(self):
+        turns = [{"prompt": "pasta", "response": "x" * 5000}]
+        self.assertEqual(
+            relevant_history("pasta", turns, max_chars=100), [])
+
 
 class SimpleStrategyPolicyTests(unittest.TestCase):
     def test_missing_key_falls_back_without_dispatch(self):
@@ -144,6 +176,120 @@ class SimpleStrategyPolicyTests(unittest.TestCase):
                 self.assertTrue(result.is_fallback)
                 self.assertFalse(structural["native"])
                 self.assertEqual(structural["strategy"], "direct_answer")
+
+    def _live_strategy_policy(self):
+        gov = SpendGovernor(FakeTransport(), "key", max_cost=0.01)
+        return policy_for(_settings(Path(".")), transport=FakeTransport(),
+                          governor=gov, ledger=MagicMock())
+
+    def test_strategy_harness_error_degrades_to_direct_answer(self):
+        policy = self._live_strategy_policy()
+        with patch.object(policy.evaluator, "evaluate",
+                           side_effect=HarnessError("strategy refused")):
+            result, structural = policy.evaluate_simple_strategy(
+                "Explain ice")
+        self.assertTrue(result.is_fallback)
+        self.assertFalse(structural["native"])
+        self.assertEqual(structural["strategy"], "direct_answer")
+        self.assertIn("strategy refused", result.reasons[0])
+
+    def test_strategy_provider_usage_unknown_propagates(self):
+        policy = self._live_strategy_policy()
+        with patch.object(policy.evaluator, "evaluate",
+                           side_effect=ProviderUsageUnknown("usage unknown")), \
+             self.assertRaises(ProviderUsageUnknown):
+            policy.evaluate_simple_strategy("Explain ice")
+
+    def test_strategy_cancellation_propagates(self):
+        policy = self._live_strategy_policy()
+        with patch.object(policy.evaluator, "evaluate",
+                           side_effect=ToolCancelled("stop")), \
+             self.assertRaises(ToolCancelled):
+            policy.evaluate_simple_strategy("Explain ice")
+
+
+class ClockFastPathTests(unittest.TestCase):
+    def test_exact_user_query_routes_to_hst(self):
+        self.assertEqual(
+            parse_clock_request("What is the current date and time in HST?"),
+            "HST")
+
+    def test_bare_clock_questions_use_machine_local(self):
+        for prompt in ("What time is it?", "What's today's date?",
+                       "What day is it?", "Tell me the time."):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(parse_clock_request(prompt), "")
+
+    def test_event_time_questions_are_not_clock_questions(self):
+        for prompt in ("What time is the meeting?",
+                       "What date was the treaty signed?",
+                       "What time does the store open?",
+                       "What is the meeting time in Boston?",
+                       "Fix the current time now?",
+                       "Fix the bug in executor.py."):
+            with self.subTest(prompt=prompt):
+                self.assertIsNone(parse_clock_request(prompt))
+                self.assertIsNone(answer_clock(prompt))
+
+    def test_naive_injected_clock_value_is_treated_as_utc(self):
+        from datetime import datetime
+        answer = answer_clock(
+            "What is the current time in HST?", now=datetime(2026, 10, 15, 16))
+        self.assertIn("6:00 AM", answer)
+        self.assertIn("HST", answer)
+
+    def test_local_clock_answer_names_its_source(self):
+        from datetime import datetime, timezone
+        answer = answer_clock(
+            "What time is it?", now=datetime(2026, 10, 15, 16,
+                                             tzinfo=timezone.utc))
+        self.assertIn("machine-local time", answer)
+        self.assertIn("machine's clock", answer)
+        self.assertIn("no lookup was run", answer)
+
+    def test_hst_answer_is_fixed_utc_minus_10(self):
+        from datetime import datetime, timezone
+        now = datetime(2026, 10, 15, 16, 0, tzinfo=timezone.utc)
+        answer = answer_clock("What is the current date and time in HST?",
+                              now=now)
+        self.assertIn("6:00 AM", answer)
+        self.assertIn("HST", answer)
+        self.assertIn("UTC-10", answer)
+        self.assertIn("machine's clock", answer)
+
+    def test_requested_timezone_abbreviation_uses_its_fixed_offset(self):
+        from datetime import datetime, timezone
+        now = datetime(2026, 10, 15, 16, 0, tzinfo=timezone.utc)
+        answer = answer_clock("What is the current time in PST?", now=now)
+        self.assertIn("PST", answer)
+        self.assertIn("UTC-8", answer)
+
+    def test_clock_answer_makes_zero_model_or_jev_calls(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+        from harness.agent import AutonomousAgent
+        for force_conversation in (False, True):
+            with self.subTest(force_conversation=force_conversation), \
+                 tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                agent = AutonomousAgent(
+                    settings=_settings(root), root_dir=root,
+                    history_dir=root, transport=MagicMock())
+                with patch("harness.agent.governor_for",
+                           side_effect=AssertionError("no governor")), \
+                     patch("harness.agent.policy_for",
+                           side_effect=AssertionError("no Jev")), \
+                     patch("harness.agent.governed_completion",
+                           side_effect=AssertionError("no model")):
+                    result = agent.run_prompt(
+                        "What is the current date and time in HST?",
+                        session_id="clock-test",
+                        force_conversation=force_conversation)
+                self.assertEqual(result["status"], "ok")
+                self.assertEqual(result["cost"], 0.0)
+                self.assertTrue(result["simple_request"]["clock"])
+                self.assertIn("HST", result["response"])
 
 
 class SimpleLifecycleTests(unittest.TestCase):
@@ -339,6 +485,121 @@ class SimpleLifecycleTests(unittest.TestCase):
         self.assertEqual(len(post_calls), 3)
         self.assertEqual(len(jev_calls), 2)
         self.assertEqual(len(post_calls) - len(jev_calls), 1)
+
+
+class SimpleRequestEdgeTests(unittest.TestCase):
+    """Cover the cancellation, pool, budget, and deadline edges."""
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.agent = AutonomousAgent(
+            settings=_settings(self.root), root_dir=self.root,
+            history_dir=self.root, transport=MagicMock())
+        self.gov = MagicMock()
+        self.ledger = MagicMock()
+
+    def _patches(self, policy, **overrides):
+        patches = {
+            "governor_for": patch(
+                "harness.agent.governor_for",
+                return_value=("key", self.gov)),
+            "policy_for": patch(
+                "harness.agent.policy_for", return_value=policy),
+            "ledger_for": patch(
+                "harness.agent.ledger_for", return_value=self.ledger),
+            "intake": patch(
+                "harness.agent.enumerate_repo_files",
+                side_effect=AssertionError("no repo intake")),
+        }
+        patches.update(overrides)
+        return patches
+
+    def _policy(self):
+        policy = MagicMock()
+        policy.evaluate_simple_strategy.return_value = _pre()
+        policy.evaluate_answer.return_value = _post()
+        return policy
+
+    def test_immediate_cancel_is_ledgered_and_reraised(self):
+        policy = self._policy()
+        patches = self._patches(policy)
+        with patches["governor_for"], patches["policy_for"], \
+             patches["ledger_for"], patches["intake"]:
+            with self.assertRaises(ToolCancelled):
+                self.agent.run_simple_request(
+                    "Explain ice?", session_id="s", cancel_check=lambda: True)
+        _, kwargs = self.ledger.append.call_args_list[-1]
+        self.assertEqual(kwargs["status"], "cancelled")
+
+    def test_cancel_after_deadline_without_answer_defers(self):
+        policy = self._policy()
+        calls = {"n": 0}
+
+        def clock():
+            calls["n"] += 1
+            return 0.0 if calls["n"] <= 4 else 2.0
+
+        patches = self._patches(policy)
+        with patch("harness.agent.time.monotonic", side_effect=clock), \
+             patches["governor_for"], patches["policy_for"], \
+             patches["ledger_for"], patches["intake"], \
+             patch("harness.agent.governed_completion",
+                   side_effect=ToolCancelled("provider stopped")):
+            result = self.agent.run_simple_request(
+                "Explain ice?", session_id="s", max_wall_seconds=1)
+        self.assertEqual(result["status"], "deferred")
+        self.assertIn("deadline exhausted", result["defer_reason"])
+        _, kwargs = self.ledger.append.call_args_list[-1]
+        self.assertEqual(kwargs["status"], "deferred")
+
+    def test_empty_model_pool_is_a_terminal_deferral(self):
+        policy = self._policy()
+        self.agent.settings.panel_pool = []
+        patches = self._patches(policy)
+        with patches["governor_for"], patches["policy_for"], \
+             patches["ledger_for"], patches["intake"], \
+             patch.object(AutonomousAgent, "_chat_ladder", return_value=[]):
+            result = self.agent.run_simple_request(
+                "Explain ice?", session_id="s")
+        self.assertEqual(result["status"], "deferred")
+        self.assertIn("model pool is empty", result["defer_reason"])
+
+    def test_exhausted_shared_budget_leaves_no_answer_tokens(self):
+        policy = self._policy()
+        patches = self._patches(policy)
+        with patches["governor_for"], patches["policy_for"], \
+             patches["ledger_for"], patches["intake"], \
+             patch("harness.agent._resolve_lane_max_tokens", return_value=0):
+            result = self.agent.run_simple_request(
+                "Explain ice?", session_id="s")
+        self.assertEqual(result["status"], "deferred")
+        self.assertIn("no answer tokens", result["defer_reason"])
+
+    def test_deadline_after_generation_skips_post_review(self):
+        policy = self._policy()
+        calls = {"n": 0}
+
+        def clock():
+            calls["n"] += 1
+            return 0.0 if calls["n"] <= 4 else 2.0
+
+        completion = {
+            "content": "Ice floats.", "model": "cheap-test-model",
+            "cost": 0.000002, "input_tokens": 5, "output_tokens": 4,
+            "cost_estimated": False,
+        }
+        patches = self._patches(policy)
+        with patch("harness.agent.time.monotonic", side_effect=clock), \
+             patches["governor_for"], patches["policy_for"], \
+             patches["ledger_for"], patches["intake"], \
+             patch("harness.agent.governed_completion",
+                   return_value=completion):
+            result = self.agent.run_simple_request(
+                "Explain ice?", session_id="s", max_wall_seconds=1)
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("deadline", result["simple_request"]["post_skipped"])
+        policy.evaluate_answer.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -599,6 +599,185 @@ class SimpleActionLaneTests(unittest.TestCase):
         self.assertIn("private address", result["response"])
 
 
+class SimpleActionLifecycleBranchTests(unittest.TestCase):
+    """Route-selection branches of the shared Choice→probe→Noul lifecycle."""
+    def _agent(self, tmp):
+        return AutonomousAgent(
+            settings=_lane_settings(jev_api_key="jev-test",
+                                    jev_disabled=False),
+            history_dir=Path(tmp), root_dir=Path(tmp))
+
+    def _plan(self):
+        return {"url": "https://example.com", "host": "example.com",
+                "port": 443, "path": "/",
+                "addresses": ("93.184.216.34",)}
+
+    def test_prompt_without_a_target_stays_terminal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            with patch("harness.web.extract_site_target",
+                       return_value=None), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                res = agent._run_simple_action_lifecycle(
+                    "is example.com up?", session_id="s-no-target")
+        self.assertEqual(res["status"], "deferred")
+        self.assertEqual(res["defer_reason"], "no site target in prompt")
+
+    def test_cancel_before_route_selection_aborts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            with patch("harness.web.preflight_public_site",
+                       return_value=self._plan()), \
+                 patch("harness.agent.jev_for",
+                       return_value=_site_jev(0.99)), \
+                 patch("harness.agent.jev_face_governor",
+                       return_value=MagicMock()), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                with self.assertRaises(ToolCancelled):
+                    agent._run_simple_action_lifecycle(
+                        "is example.com up?", session_id="s-cancel-route",
+                        cancel_check=lambda: True)
+
+    def test_route_outage_defers_without_a_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            policy = MagicMock()
+            policy.evaluate_request_workflow.side_effect = RuntimeError(
+                "route down")
+            with patch("harness.web.preflight_public_site",
+                       return_value=self._plan()), \
+                 patch("harness.agent.jev_for", return_value=policy), \
+                 patch("harness.agent.jev_face_governor",
+                       return_value=MagicMock()), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                res = agent._run_simple_action_lifecycle(
+                    "is example.com up?", session_id="s-route-down")
+        self.assertEqual(res["status"], "deferred")
+        self.assertIn("Jev could not select", res["response"])
+        self.assertEqual(res["defer_reason"],
+                         "Jev workflow selection was unavailable")
+
+    def test_route_cancellation_propagates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            policy = MagicMock()
+            policy.evaluate_request_workflow.side_effect = ToolCancelled(
+                "route stopped")
+            with patch("harness.web.preflight_public_site",
+                       return_value=self._plan()), \
+                 patch("harness.agent.jev_for", return_value=policy), \
+                 patch("harness.agent.jev_face_governor",
+                       return_value=MagicMock()), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                with self.assertRaises(ToolCancelled):
+                    agent._run_simple_action_lifecycle(
+                        "is example.com up?", session_id="s-route-cancel")
+
+    def test_non_simple_action_choice_defers_without_a_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            with patch("harness.web.preflight_public_site",
+                       return_value=self._plan()), \
+                 patch("harness.agent.jev_for",
+                       return_value=_site_jev(route_choice="needs_tool")), \
+                 patch("harness.agent.jev_face_governor",
+                       return_value=MagicMock()), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                res = agent._run_simple_action_lifecycle(
+                    "is example.com up?", session_id="s-other-choice")
+        self.assertEqual(res["status"], "deferred")
+        self.assertIn("did not select the bounded", res["defer_reason"])
+
+    def test_cancel_after_route_selection_aborts_before_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            with patch("harness.web.preflight_public_site",
+                       return_value=self._plan()), \
+                 patch("harness.agent.jev_for",
+                       return_value=_site_jev(route_choice="simple-action")), \
+                 patch("harness.agent.jev_face_governor",
+                       return_value=MagicMock()), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                with self.assertRaises(ToolCancelled):
+                    agent._run_simple_action_lifecycle(
+                        "is example.com up?", session_id="s-cancel-late",
+                        cancel_check=iter([False, True]).__next__)
+
+
+class SimpleActionProbeSeamTests(unittest.TestCase):
+    """Probe-invocation seams of run_simple_action."""
+    def _agent(self, tmp):
+        return AutonomousAgent(settings=_lane_settings(),
+                               history_dir=Path(tmp), root_dir=Path(tmp))
+
+    def _up(self, **overrides):
+        probe = {"ok": True, "http_status": 200, "verdict": "up",
+                 "reason": "'example.com' is up (HTTPS 200)",
+                 "latency_s": 0.4, "host": "example.com",
+                 "url": "https://example.com"}
+        probe.update(overrides)
+        return probe
+
+    def _plan(self):
+        return {"url": "https://example.com", "host": "example.com",
+                "port": 443, "path": "/",
+                "addresses": ("93.184.216.34",)}
+
+    def test_injected_resolve_fn_reaches_the_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            with patch("harness.web.probe_public_site",
+                       return_value=self._up()) as probe, \
+                 patch("harness.agent.jev_for",
+                       return_value=_site_jev(0.99)), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                res = agent.run_simple_action(
+                    "is example.com up?", session_id="s-resolve",
+                    resolve_fn=_resolve_public("93.184.216.34"),
+                    preflight_plan=self._plan())
+        self.assertEqual(res["status"], "ok")
+        _, kwargs = probe.call_args
+        self.assertIsNotNone(kwargs.get("resolve_fn"))
+        self.assertNotIn("connect_fn", kwargs)
+
+    def test_cancel_after_probe_aborts_before_judgment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            with patch("harness.web.probe_public_site",
+                       return_value=self._up()), \
+                 patch("harness.agent.jev_for",
+                       return_value=_site_jev(0.99)), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                with self.assertRaises(ToolCancelled):
+                    agent.run_simple_action(
+                        "is example.com up?", session_id="s-cancel-probe",
+                        cancel_check=iter([False, True]).__next__)
+
+    def test_unusable_latency_is_recorded_as_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            jev_calls = []
+            with patch("harness.web.probe_public_site",
+                       return_value=self._up(latency_s="soon")), \
+                 patch("harness.agent.jev_for",
+                       return_value=_site_jev(0.99, calls=jev_calls)), \
+                 patch("harness.agent.ledger_for",
+                       return_value=MagicMock()):
+                res = agent.run_simple_action(
+                    "is example.com up?", session_id="s-latency")
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(len(jev_calls), 1)
+        self.assertIsNone(jev_calls[0][0]["latency_s"])
+
+
 class EscalationGateTests(unittest.TestCase):
     def _agent(self, tmp):
         return AutonomousAgent(settings=_lane_settings(),
@@ -696,6 +875,21 @@ class ProbeRefusalEdgeTests(unittest.TestCase):
             preflight_public_site(
                 "https://example.com:not-a-port",
                 resolve_fn=_resolve_public("93.184.216.34"))
+
+    def test_malformed_url_is_refused_by_preflight(self):
+        with self.assertRaisesRegex(HarnessError, "malformed URL"):
+            preflight_public_site(
+                "https://[::1",
+                resolve_fn=_resolve_public("93.184.216.34"))
+
+    def test_plan_url_mismatch_is_refused_before_connect(self):
+        def _no_network(*args, **kwargs):
+            raise AssertionError("no network on plan mismatch")
+        plan = {"url": "https://other.example/", "host": "other.example",
+                "port": 443, "path": "/", "addresses": ()}
+        with self.assertRaisesRegex(HarnessError, "does not match"):
+            probe_public_site("https://example.com/", preflight_plan=plan,
+                              resolve_fn=_no_network, connect_fn=_no_network)
 
     def test_empty_resolution_is_refused(self):
         with self.assertRaisesRegex(HarnessError, "no addresses"):
