@@ -971,5 +971,51 @@ class CliPresentationOwnerTests(unittest.TestCase):
         _print_cost_table(mock_ledger.cost_report.return_value)
 
 
+class SiteCheckCliTests(unittest.TestCase):
+    def test_site_check_delegates_to_shared_agent_lifecycle(self):
+        expected = {
+            "status": "ok", "intent": "simple-action",
+            "workflow_tier": "simple-action",
+            "response": "Yes -- https://example.com responded with HTTPS 200.",
+        }
+        output = io.StringIO()
+        settings = mock.Mock()
+        with mock.patch("harness.cli.load_settings", return_value=settings), \
+             mock.patch("harness.agent.AutonomousAgent.run_prompt",
+                        return_value=expected) as run_prompt, \
+             contextlib.redirect_stdout(output):
+            cli.main(["site-check", "check", "if", "example.com", "is", "up"])
+
+        self.assertEqual(json.loads(output.getvalue()), expected)
+        run_prompt.assert_called_once_with(
+            prompt="check if example.com is up", auto_apply=False,
+            session_id=None, force_conversation=True)
+
+    def test_site_check_rejects_non_site_prompt(self):
+        from types import SimpleNamespace
+        opts = SimpleNamespace(prompt=["tell", "me", "a", "joke"],
+                               session_id="s1", out=None)
+        with self.assertRaises(HarnessError):
+            cli._cmd_site_check(opts, mock.Mock())
+
+    def test_site_check_deferred_status_exits_nonzero(self):
+        deferred = {
+            "status": "deferred", "intent": "simple-action",
+            "workflow_tier": "simple-action",
+            "response": "Inconclusive -- no request was sent.",
+        }
+        output = io.StringIO()
+        settings = mock.Mock()
+        with mock.patch("harness.cli.load_settings", return_value=settings), \
+             mock.patch("harness.agent.AutonomousAgent.run_prompt",
+                        return_value=deferred), \
+             contextlib.redirect_stdout(output):
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(["site-check", "check", "if", "example.com",
+                          "is", "up"])
+        self.assertEqual(ctx.exception.code, 3)
+        self.assertEqual(json.loads(output.getvalue()), deferred)
+
+
 if __name__ == "__main__":
     unittest.main()

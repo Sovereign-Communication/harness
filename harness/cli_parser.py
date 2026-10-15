@@ -100,6 +100,16 @@ def build_parser():
     sub.add_parser("desktop", help="Native desktop window over the same web UI "
                                    "(pywebview; browser fallback)")
 
+    psite_check = sub.add_parser(
+        "site-check",
+        help="Run one Jev-routed, bounded HTTPS availability check")
+    psite_check.add_argument(
+        "prompt", nargs="+",
+        help="natural-language request to check one public site's availability")
+    psite_check.add_argument("--session-id", default=None,
+                             help="optional shared chat-history session id")
+    _add_output_flags(psite_check)
+
     pv = sub.add_parser("verify", help="Panel + judge verification (back-compat with fusion_lite.py)")
     pv.add_argument("--prompt-file")
     pv.add_argument("--prompt")

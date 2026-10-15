@@ -19,6 +19,10 @@ def get_default_history_dir() -> Path:
     # Resolve directory for persisted conversation histories
     base = Path(os.environ.get("HARNESS_CONFIG_DIR", Path.home() / ".config" / "harness"))
     history_dir = base / "chat_history"
+    if history_dir.exists() and not history_dir.is_dir():
+        # Older installs may have used this path as a single history file.
+        # Preserve it and store per-session JSONL files in a sibling directory.
+        history_dir = base / "chat_history_sessions"
     history_dir.mkdir(parents=True, exist_ok=True)
     return history_dir
 

@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import __version__
 from . import events as _events
 from . import trust as trust_policy
+from .agent import AutonomousAgent, is_site_check_prompt
 from .batch import BatchOptions
 from .consent import probe_consent
 from .continuation import validate_continuation
@@ -520,6 +521,21 @@ class McpServer:
         raise HarnessError(message)
 
     def _invoke(self, name, args, cancel_check=None):
+        if name == "site_check":
+            prompt = validate_mcp_prompt(args.get("prompt"))
+            if not is_site_check_prompt(prompt):
+                raise HarnessError(
+                    "site_check requires a single current availability "
+                    "question for a named public site")
+            settings = self.settings or load_settings()
+            session_id = (validate_mcp_task_id(args.get("session_id"))
+                          if args.get("session_id") is not None else None)
+            agent = AutonomousAgent(settings=settings,
+                                    transport=self.transport)
+            return agent.run_prompt(
+                prompt=prompt, auto_apply=False, session_id=session_id,
+                cancel_check=cancel_check, force_conversation=True)
+
         if name == "panel_verify":
             prompt = validate_mcp_prompt(args.get("prompt"))
             # Lane defaults (panel pool, judge, convergence, specialists) are

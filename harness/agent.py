@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from ._http import HttpTransport
-from .chat import assess_output, chat, extract_content_and_cost, governed_text, looks_truncated
+from .chat import (assess_output, chat, extract_content_and_cost,
+                   governed_completion, governed_text, looks_truncated)
 from .condenser import distill_context, condense_error_log
 from .config import (
     Settings, effective_lane_policy, load_settings, resolve_api_key,
@@ -19,19 +20,30 @@ from .tokens import estimate_prompt_tokens
 from .dag import TaskDAG, DAGNode, node_apply_kwargs
 from .prompts import MAX_FILE_LINES
 from .errors import HarnessError, ToolCancelled
-from .events import emit
+from .events import cancellation_context, emit
 from .orchestrator import assess_completion, drive, keyword_fallback, triage_files
 from .prompts import CAPABILITY_MARKER
 from .escalation import escalation_evidence, escalation_evidence_fields
 from .executor import PlanExecutor
 from .history import load_chat_history, save_chat_turn
+from .simple_request import (
+    answer_clock as simple_clock_answer,
+    answer_prompt as simple_answer_prompt,
+    is_current_information_request,
+    is_simple_answer_request,
+    is_supplied_text_rewrite,
+    relevant_history as simple_relevant_history,
+)
 from .repo_scope import (
     discover_target_files,
     discover_verification_gate,
     enumerate_repo_files,
 )
 from .results import SUCCESS_STATUSES, _http_error, model_envelope
-from .session import apply_session, attest_model_for, governor_for, jev_for, ledger_for
+from .session import (
+    apply_session, attest_model_for, governor_for, jev_face_governor,
+    jev_for, ledger_for,
+)
 from .jev_policy import (
     JevPolicy, aggregate_structural, jev_cost_ceiling, policy_for,
 )
@@ -251,6 +263,17 @@ _RESEARCH_VERBS = ("find", "search", "look up", "lookup", "google",
 _QUESTION_OPENERS = ("what", "who", "when", "where", "which", "why", "how",
                      "is ", "are ", "does ", "do ", "did ", "can you",
                      "could you", "any news", "has there")
+_LITERAL_GREETING_RE = re.compile(
+    r"^(?:test\s*[-:,]\s*)?(?:please\s+)?(?:just\s+)?"
+    r"(?:say|reply(?:\s+with)?|respond(?:\s+with)?)\s+"
+    r"(?:hello|hi|hey)(?:\s+and\s+(?:stop|nothing else))?[.!]?$",
+    re.IGNORECASE)
+
+
+def is_literal_greeting_request(prompt: str) -> bool:
+    """Recognize a command whose complete requested output is a greeting."""
+    cleaned = " ".join((prompt or "").split())
+    return bool(_LITERAL_GREETING_RE.fullmatch(cleaned))
 
 
 def is_research_question(prompt: str) -> bool:
@@ -307,6 +330,11 @@ def classify_prompt_intent(prompt: str) -> str:
         if not has_file_ext and not any(w in cleaned for w in ("refactor ", "implement ", "fix bug ", "add test", "execute ", "run ")):
             return "conversation"
 
+    # Transforming prose supplied in the prompt is conversational work.  A
+    # named source file (or a second repo mutation verb) remains an edit.
+    if is_supplied_text_rewrite(prompt):
+        return "conversation"
+
     has_mutation_verb = any(w in MUTATION_KEYWORDS for w in words)
 
     if has_mutation_verb or has_file_ext:
@@ -353,6 +381,17 @@ class AutonomousAgent:
         sid = session_id or "default"
         emit("chat_turn_start", prompt=prompt, session_id=sid)
 
+        if is_literal_greeting_request(prompt):
+            result = {
+                "status": "ok", "intent": "conversation",
+                "workflow_tier": "answer", "prompt": prompt,
+                "answer": "Hello.", "response": "Hello.",
+                "model": None, "cost": 0.0,
+            }
+            save_chat_turn(sid, result, self.history_dir)
+            emit("chat_quick_reply", reason_code="literal_greeting")
+            return result
+
         if force_conversation:
             # UI chat is conversational by default -- but an edit-intent
             # prompt (mutation verbs / explicit files) in Auto mode is repo
@@ -369,13 +408,18 @@ class AutonomousAgent:
             if intent == "audit":
                 return self._handle_audit(prompt, sid, cancel_check=cancel_check)
             if intent == "simple-action":
-                return self.run_simple_action(prompt, session_id=sid,
-                                              cancel_check=cancel_check)
+                return self._run_simple_action_lifecycle(
+                    prompt, session_id=sid, cancel_check=cancel_check)
             if intent == "edit" and auto_apply:
                 emit("chat_escalated", reason="edit-intent in auto mode",
                      target="plan_lane")
                 return self._handle_edit(prompt, sid, auto_apply, cancel_check,
                                          use_jev_completion=self._live_jev_available())
+            if is_simple_answer_request(prompt, intent=intent):
+                return self.run_simple_request(
+                    prompt, session_id=sid, cancel_check=cancel_check,
+                    max_tokens=max_tokens, reasoning_effort=reasoning_effort,
+                    token_budget=token_budget)
             if intent == "conversation" and self._live_jev_available():
                 return self.run_hourglass_request(
                     prompt, session_id=sid, cancel_check=cancel_check, web=web,
@@ -395,9 +439,14 @@ class AutonomousAgent:
         if intent == "driver":
             return self._handle_driver_task(prompt, sid, cancel_check=cancel_check)
         elif intent == "simple-action":
-            return self.run_simple_action(prompt, session_id=sid,
-                                          cancel_check=cancel_check)
+            return self._run_simple_action_lifecycle(
+                prompt, session_id=sid, cancel_check=cancel_check)
         elif intent == "conversation":
+            if is_simple_answer_request(prompt, intent=intent):
+                return self.run_simple_request(
+                    prompt, session_id=sid, cancel_check=cancel_check,
+                    max_tokens=max_tokens, reasoning_effort=reasoning_effort,
+                    token_budget=token_budget)
             if self._live_jev_available():
                 return self.run_hourglass_request(
                     prompt, session_id=sid, cancel_check=cancel_check, web=web,
@@ -418,9 +467,398 @@ class AutonomousAgent:
         return bool(getattr(self.settings, "jev_api_key", None)
                     and not getattr(self.settings, "jev_disabled", False))
 
+    def _run_simple_action_lifecycle(self, prompt: str,
+                                     session_id: Optional[str] = None,
+                                     cancel_check=None) -> Dict[str, Any]:
+        """Use one typed Choice before the probe, then one evidence Noul.
+
+        The deterministic classifier identifies a candidate site-check
+        request; Jev selects whether it really belongs in the one-probe
+        simple-action tier. Other Jev choices do not trigger an OpenRouter
+        or plan escalation from this bounded lane.
+        """
+        sid = session_id or "default"
+        if not self._live_jev_available():
+            return self.run_simple_action(
+                prompt, session_id=sid, cancel_check=cancel_check)
+
+        from .web import extract_site_target as _extract_target
+        from .web import preflight_public_site as _preflight
+        target = _extract_target(prompt)
+        if target is None:
+            return self.run_simple_action(
+                prompt, session_id=sid, cancel_check=cancel_check)
+        emit("simple_action_start", prompt=prompt, session_id=sid)
+        emit("simple_action_preflight_start", target=target)
+        try:
+            preflight_plan = _preflight(target, cancel_check=cancel_check)
+        except HarnessError as exc:
+            return self._simple_action_preflight_refusal(
+                prompt, sid, target, str(exc))
+        emit("simple_action_preflight_complete", target=target)
+
+        policy = jev_for(
+            self.settings, transport=self.transport,
+            governor=jev_face_governor(self.settings),
+            ledger=ledger_for(self.settings, caller="agent"),
+            request_timeout=10.0, single_attempt=True)
+        emit("simple_action_route_start", session_id=sid)
+        if cancel_check and cancel_check():
+            raise ToolCancelled("Prompt execution was cancelled by user")
+        try:
+            route_result, _route_structural = policy.evaluate_request_workflow(
+                {"request": prompt}, task_id=sid, max_input_tokens=512)
+        except ToolCancelled:
+            raise
+        except Exception as exc:
+            emit("simple_action_route_unavailable",
+                 error_type=type(exc).__name__)
+            result = {
+                "status": "deferred", "intent": "simple-action",
+                "workflow_tier": "simple-action", "prompt": prompt,
+                "response": ("Inconclusive -- Jev could not select the "
+                             "site-check workflow; no request was sent."),
+                "model": None, "cost": 0.0,
+                "defer_reason": "Jev workflow selection was unavailable",
+                "next_step": "retry the bounded site-check request",
+                "jev": {"workflow_tier": None, "is_fallback": True},
+            }
+            save_chat_turn(sid, result, self.history_dir)
+            emit("simple_action_complete", status="deferred",
+                 reason_code="jev_route_unavailable")
+            return result
+
+        route_answer = (route_result.answers.get("workflow_tier")
+                        if isinstance(route_result.answers, dict) else None)
+        choice = (route_answer.get("choice")
+                  if isinstance(route_answer, dict) else None)
+        if choice not in {"answer", "simple-action", "plan"}:
+            choice = None
+        fallback = bool(getattr(route_result, "is_fallback", True))
+        emit("simple_action_route_complete", selected=choice,
+             fallback=fallback)
+        if cancel_check and cancel_check():
+            raise ToolCancelled("Prompt execution was cancelled by user")
+        if fallback or choice != "simple-action":
+            reason = ("Jev did not select the bounded site-check workflow"
+                      if not fallback else
+                      "Jev did not provide a usable workflow choice")
+            result = {
+                "status": "deferred", "intent": "simple-action",
+                "workflow_tier": "simple-action", "prompt": prompt,
+                "response": ("Inconclusive -- " + reason +
+                             "; no request was sent."),
+                "model": getattr(route_result, "model", None),
+                "cost": float(getattr(route_result, "cost", 0.0) or 0.0),
+                "defer_reason": reason,
+                "next_step": "rephrase as a single current site-availability check",
+                "jev": {"workflow_tier": choice,
+                        "is_fallback": fallback},
+            }
+            save_chat_turn(sid, result, self.history_dir)
+            emit("simple_action_complete", status="deferred",
+                 reason_code="jev_route_not_simple_action")
+            return result
+        return self.run_simple_action(
+            prompt, session_id=sid, cancel_check=cancel_check,
+            jev_policy=policy, workflow_choice=choice,
+            prior_jev_cost=float(getattr(route_result, "cost", 0.0) or 0.0),
+            preflight_plan=preflight_plan, started=True)
+
+    def _simple_action_preflight_refusal(self, prompt, session_id, target,
+                                         reason):
+        try:
+            ledger_for(self.settings, caller="agent").append(
+                "simple_action", task_id=session_id, event_note="preflight",
+                status="refused", reason=reason, target=target, cost=0.0)
+        except Exception:
+            pass
+        result = {
+            "status": "deferred", "intent": "simple-action",
+            "workflow_tier": "simple-action", "prompt": prompt,
+            "response": f"I can't check that site: {reason}",
+            "model": None, "cost": 0.0, "target": target,
+            "defer_reason": reason,
+            "next_step": "provide a public https URL without credentials",
+        }
+        save_chat_turn(session_id, result, self.history_dir)
+        emit("simple_action_probe_refused", target=target,
+             reason_code="preflight_refused")
+        emit("simple_action_complete", status="deferred",
+             reason_code="preflight_refused")
+        return result
+
+    def run_simple_request(
+            self, prompt: str, *, session_id: Optional[str] = None,
+            cancel_check=None, max_tokens: Optional[int] = None,
+            reasoning_effort: Optional[str] = None,
+            token_budget: Optional[Any] = None,
+            max_wall_seconds: float = 60.0) -> Dict[str, Any]:
+        """Answer one stable no-tool request with one governed completion.
+
+        Deterministic request-kind checks own the boundary.  Jev supplies one
+        pre-answer Choice and one post-answer sufficiency assessment when
+        available; either Jev outage degrades honestly without adding a model
+        judge or turning the request into repo work.
+        """
+        sid = session_id or "default"
+        started = time.monotonic()
+        deadline = started + max(0.0, float(max_wall_seconds))
+        ledger = ledger_for(self.settings, caller="agent")
+        generation_attempts = 0
+        pre_cost = 0.0
+        generation_cost = 0.0
+        answer = None
+        model = None
+        completion = None
+
+        def combined_cancel():
+            return bool((cancel_check and cancel_check())
+                        or time.monotonic() >= deadline)
+
+        def cancelled_or_late(stage: str):
+            if cancel_check and cancel_check():
+                raise ToolCancelled("Prompt execution was cancelled by user")
+            if time.monotonic() >= deadline:
+                raise HarnessError(
+                    f"simple request deadline exhausted before {stage}")
+
+        def receipt(status: str, **fields):
+            return ledger.append(
+                "simple_request_result", task_id=sid, status=status,
+                workflow_tier="simple-answer", elapsed_ms=round(
+                    (time.monotonic() - started) * 1000), **fields)
+
+        emit("simple_request_start", prompt=prompt, session_id=sid)
+        try:
+            # Public callers cannot bypass the deterministic boundary by
+            # invoking this method directly.  Jev Choice is advisory routing
+            # evidence; it never grants file, tool, execution, or write scope.
+            intent = classify_prompt_intent(prompt)
+            if not is_simple_answer_request(prompt, intent=intent):
+                reason = "request is outside the stable no-tool answer lane"
+                result = {
+                    "status": "deferred", "intent": intent,
+                    "workflow_tier": "simple-answer", "prompt": prompt,
+                    "response": reason.capitalize() + ".",
+                    "model": None, "cost": 0.0,
+                    "defer_reason": reason,
+                    "next_step": "use the existing specialized or clarification lane",
+                    "simple_request": {"generation_calls": 0},
+                }
+                receipt("deferred", reason=reason, generation_calls=0,
+                        input_tokens=0, output_tokens=0)
+                save_chat_turn(sid, result, self.history_dir)
+                return result
+            # Clock questions are answered from the machine clock with zero
+            # model or Jev calls -- no lookup exists to run.  The answer
+            # names its source so it never poses as verified world time.
+            clock_answer = simple_clock_answer(prompt)
+            if clock_answer is not None:
+                result = {
+                    "status": "ok", "intent": intent,
+                    "workflow_tier": "simple-answer", "prompt": prompt,
+                    "response": clock_answer, "model": None,
+                    "cost": 0.0,
+                    "simple_request": {"generation_calls": 0,
+                                       "clock": True},
+                }
+                receipt("ok", reason="machine-clock answer",
+                        generation_calls=0, input_tokens=0, output_tokens=0,
+                        cost=0.0)
+                save_chat_turn(sid, result, self.history_dir)
+                emit("simple_request_complete", status="ok", model=None,
+                     cost=0.0)
+                return result
+            cancelled_or_late("governor setup")
+            with cancellation_context(combined_cancel):
+                api_key, gov = governor_for(self.settings)
+            policy = policy_for(
+                self.settings, transport=self.transport, governor=gov,
+                ledger=ledger)
+            turns = simple_relevant_history(
+                prompt, load_chat_history(sid, self.history_dir))
+            context_text = "\n".join(
+                f"User: {turn['prompt']}\nAssistant: {turn['response']}"
+                for turn in turns)
+
+            cancelled_or_late("Jev strategy")
+            with cancellation_context(combined_cancel):
+                _pre_result, pre = policy.evaluate_simple_strategy(
+                    prompt, context_text, task_id=sid)
+            pre_cost = float(pre.get("cost") or 0.0)
+            strategy = pre.get("strategy") or "direct_answer"
+            if bool(pre.get("native")) and strategy != "direct_answer":
+                reason = ("request needs a tool-backed lane" if strategy == "needs_tool"
+                          else "request needs clarification")
+                result = {
+                    "status": "deferred", "intent": "conversation",
+                    "workflow_tier": "simple-answer", "prompt": prompt,
+                    "response": reason.capitalize() + ".",
+                    "model": None, "cost": round(pre_cost, 6),
+                    "defer_reason": reason,
+                    "next_step": "clarify the request or use the appropriate tool lane",
+                    "simple_request": {"pre": pre, "post": None,
+                                       "generation_calls": 0},
+                }
+                receipt("deferred", reason=reason, cost=round(pre_cost, 6),
+                        generation_calls=0, input_tokens=0, output_tokens=0)
+                save_chat_turn(sid, result, self.history_dir)
+                return result
+
+            cancelled_or_late("answer generation")
+            ladder = list(getattr(self.settings, "panel_pool", ()) or [])
+            if not ladder:
+                ladder = self._chat_ladder(self.settings)
+            if not ladder:
+                raise HarnessError("simple answer model pool is empty")
+            model = ladder[0]
+            target_tokens, lane_effort = effective_lane_policy(
+                "answer", max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort)
+            generation_prompt = simple_answer_prompt(prompt, turns)
+            allocated = _resolve_lane_max_tokens(
+                gov, model, generation_prompt, target_tokens,
+                token_budget=token_budget)
+            if allocated < 1:
+                raise HarnessError("shared budget leaves no answer tokens")
+            generation_attempts = 1
+            with cancellation_context(combined_cancel):
+                completion = governed_completion(
+                    self.transport, api_key, gov, model, generation_prompt,
+                    allocated, label="simple-answer",
+                    reasoning_effort=lane_effort)
+            answer = str(completion["content"]).strip()
+            generation_cost = float(completion.get("cost") or 0.0)
+
+            post = None
+            post_cost = 0.0
+            post_skipped = None
+            if time.monotonic() < deadline:
+                with cancellation_context(combined_cancel):
+                    _post_result, post = policy.evaluate_answer(
+                        prompt, answer, context_text,
+                        site="simple-answer-post", task_id=sid)
+                post_cost = float(post.get("cost") or 0.0)
+            else:
+                post_skipped = "deadline exhausted after answer generation"
+
+            refusal = self._refusal_reason(answer)
+            status = "deferred" if refusal else "ok"
+            total_cost = pre_cost + generation_cost + post_cost
+            review_available = bool(post and post.get("native"))
+            review_passed = bool(
+                review_available
+                and isinstance(post.get("answer_sufficient"), (int, float))
+                and float(post["answer_sufficient"]) >= float(
+                    getattr(self.settings, "min_confidence", 0.70))
+                and not bool(post.get("iteration_required")))
+            result = {
+                "status": status, "intent": "conversation",
+                "workflow_tier": "simple-answer", "prompt": prompt,
+                "response": answer, "model": model,
+                "cost": round(total_cost, 6),
+                "simple_request": {
+                    "pre": pre, "post": post,
+                    "post_skipped": post_skipped,
+                    "post_review_available": review_available,
+                    "post_review_passed": review_passed,
+                    "generation_calls": 1,
+                    "history_turns": len(turns),
+                    "deadline_seconds": float(max_wall_seconds),
+                },
+                **({"defer_reason": refusal,
+                    "next_step": "review the refusal or clarify the request"}
+                   if refusal else {}),
+            }
+            receipt(
+                status, model=model, cost=round(total_cost, 6),
+                generation_cost=round(generation_cost, 6),
+                generation_calls=1,
+                input_tokens=completion.get("input_tokens"),
+                output_tokens=completion.get("output_tokens"),
+                usage_source=("estimated" if completion.get("cost_estimated")
+                              else "provider"),
+                jev_pre_native=bool(pre.get("native")),
+                jev_post_native=review_available,
+                jev_post_passed=review_passed,
+                refusal=bool(refusal), deadline_exhausted=bool(post_skipped))
+            save_chat_turn(sid, result, self.history_dir)
+            emit("simple_request_complete", status=status, model=model,
+                 cost=total_cost)
+            return result
+        except ToolCancelled as exc:
+            if time.monotonic() < deadline:
+                receipt("cancelled", generation_calls=generation_attempts)
+                raise
+            reason = "simple request deadline exhausted during provider call"
+            known_cost = float(getattr(exc, "known_cost", 0.0) or 0.0)
+            if answer:
+                total_cost = pre_cost + generation_cost + known_cost
+                receipt(
+                    "ok", reason=reason, model=model,
+                    generation_calls=generation_attempts,
+                    cost=round(total_cost, 6),
+                    input_tokens=(completion or {}).get("input_tokens"),
+                    output_tokens=(completion or {}).get("output_tokens"),
+                    deadline_exhausted=True, jev_post_native=False)
+                result = {
+                    "status": "ok", "intent": "conversation",
+                    "workflow_tier": "simple-answer", "prompt": prompt,
+                    "response": answer, "model": model,
+                    "cost": round(total_cost, 6),
+                    "simple_request": {
+                        "generation_calls": generation_attempts,
+                        "post": None, "post_review_available": False,
+                        "post_skipped": reason,
+                    },
+                }
+                save_chat_turn(sid, result, self.history_dir)
+                return result
+            receipt("deferred", reason=reason,
+                    generation_calls=generation_attempts,
+                    known_cost=known_cost)
+            result = {
+                "status": "deferred", "intent": "conversation",
+                "workflow_tier": "simple-answer", "prompt": prompt,
+                "response": ("The bounded answer deadline expired. No "
+                             "repository or write action was attempted."),
+                "model": None,
+                "cost": round(known_cost, 6),
+                "defer_reason": reason,
+                "next_step": "retry the ordinary answer",
+                "simple_request": {"generation_calls": generation_attempts},
+            }
+            save_chat_turn(sid, result, self.history_dir)
+            return result
+        except HarnessError as exc:
+            reason = str(exc)
+            known_cost = float(getattr(exc, "known_cost", 0.0) or 0.0)
+            receipt(
+                "deferred", reason=reason,
+                generation_calls=generation_attempts,
+                known_cost=known_cost,
+                reserved_cost=float(getattr(exc, "reserved_cost", 0.0) or 0.0),
+                usage_unknown=bool(getattr(exc, "usage_unknown", False)))
+            result = {
+                "status": "deferred", "intent": "conversation",
+                "workflow_tier": "simple-answer", "prompt": prompt,
+                "response": ("I could not complete the bounded answer call. "
+                             "No repository or write action was attempted."),
+                "model": None, "cost": round(known_cost, 6),
+                "defer_reason": reason,
+                "next_step": "retry the ordinary answer when the model service is available",
+                "simple_request": {"generation_calls": generation_attempts},
+            }
+            save_chat_turn(sid, result, self.history_dir)
+            return result
+
     def run_simple_action(self, prompt: str, session_id: Optional[str] = None,
                           cancel_check=None, probe_fn=None,
-                          resolve_fn=None) -> Dict[str, Any]:
+                          resolve_fn=None, jev_policy=None,
+                          workflow_choice=None, prior_jev_cost: float = 0.0,
+                          preflight_plan=None, started=False
+                          ) -> Dict[str, Any]:
         """Execute one bounded read-only site-availability check (#202/#203).
 
         Deterministic capability preflight runs before any model call; a
@@ -432,7 +870,8 @@ class AutonomousAgent:
         from .web import extract_site_target as _extract_target
         from .web import probe_public_site as _probe
         sid = session_id or "default"
-        emit("simple_action_start", prompt=prompt, session_id=sid)
+        if not started:
+            emit("simple_action_start", prompt=prompt, session_id=sid)
         if cancel_check and cancel_check():
             raise ToolCancelled("Prompt execution was cancelled by user")
         target = _extract_target(prompt)
@@ -447,60 +886,164 @@ class AutonomousAgent:
                 "next_step": "rephrase with a URL or host to check",
             }
             save_chat_turn(sid, result, self.history_dir)
+            emit("simple_action_complete", status="deferred",
+                 reason_code="no_site_target")
             return result
+        emit("simple_action_probe_start", target=target)
         try:
-            probe = (_probe(target, cancel_check=cancel_check,
-                            resolve_fn=resolve_fn,
-                            connect_fn=probe_fn) if probe_fn is not None
-                     else _probe(target, cancel_check=cancel_check,
-                                 resolve_fn=resolve_fn))
+            probe_kwargs = {"cancel_check": cancel_check}
+            if probe_fn is not None:
+                probe_kwargs.update(resolve_fn=resolve_fn,
+                                    connect_fn=probe_fn)
+            elif resolve_fn is not None:
+                probe_kwargs["resolve_fn"] = resolve_fn
+            if preflight_plan is not None:
+                probe_kwargs["preflight_plan"] = preflight_plan
+            probe = _probe(target, **probe_kwargs)
         except HarnessError as e:
-            reason = str(e)
-            try:
-                ledger_for(self.settings, caller="agent").append(
-                    "simple_action", task_id=sid, event_note="preflight",
-                    status="refused", reason=reason, target=target,
-                    cost=0.0)
-            except Exception:
-                pass
-            result = {
-                "status": "deferred", "intent": "simple-action",
-                "workflow_tier": "simple-action", "prompt": prompt,
-                "response": f"I can't check that site: {reason}",
-                "model": None, "cost": 0.0, "target": target,
-                "defer_reason": reason,
-                "next_step": "provide a public https URL without credentials",
-            }
-            save_chat_turn(sid, result, self.history_dir)
-            emit("simple_action_complete", status="deferred", reason=reason)
-            return result
+            return self._simple_action_preflight_refusal(
+                prompt, sid, target, str(e))
+        emit("simple_action_probe_complete", target=target,
+             verdict=probe.get("verdict"),
+             http_status=probe.get("http_status"),
+             latency_s=probe.get("latency_s"))
+        if cancel_check and cancel_check():
+            raise ToolCancelled("Prompt execution was cancelled by user")
         verdict = probe.get("verdict")
-        if verdict in ("up", "denied", "redirect"):
-            status, opener = "ok", "Yes"
+        http_status = probe.get("http_status")
+        response_received = (
+            isinstance(http_status, int) and not isinstance(http_status, bool)
+            and 100 <= http_status <= 599)
+        latency = probe.get("latency_s")
+        if (isinstance(latency, bool)
+                or not isinstance(latency, (int, float))
+                or latency < 0):
+            latency = None
+        status_class = (f"{http_status // 100}xx"
+                        if response_received else None)
+        if response_received:
             if verdict == "denied":
-                opener = "Yes -- reachable but access was denied"
+                evidence_summary = (
+                    f"The requested HTTPS endpoint responded to this probe "
+                    f"with HTTP {http_status}. This confirms endpoint "
+                    "reachability; page access was denied.")
             elif verdict == "redirect":
-                opener = "Yes -- it answers (with a redirect)"
-            response = f"{opener}: {probe.get('reason')}."
+                evidence_summary = (
+                    f"The requested HTTPS endpoint responded to this probe "
+                    f"with HTTP {http_status} redirect; it is reachable, "
+                    "but the destination was not checked.")
+            elif verdict in ("server_error", "rate_limited", "http_error"):
+                evidence_summary = (
+                    f"The requested HTTPS endpoint responded to this probe "
+                    f"with HTTP {http_status}; it is reachable but returned "
+                    "an HTTP error.")
+            else:
+                evidence_summary = (
+                    f"The requested HTTPS endpoint responded to this probe "
+                    f"with HTTP {http_status}; it is reachable.")
         else:
-            status, response = "deferred", f"No: {probe.get('reason')}."
+            evidence_summary = (
+                f"No HTTP response was received; the probe ended with "
+                f"{verdict or 'an unknown transport result'}.")
+        probe_evidence = {
+            "host": target,
+            "probe_outcome": "http_response" if response_received else (
+                verdict if verdict in ("timeout", "network") else "no_http_response"),
+            "http_status": http_status if response_received else None,
+            "http_status_received": response_received,
+            "http_status_class": status_class,
+            "probe_verdict": verdict,
+            "evidence_summary": evidence_summary,
+            "latency_s": latency,
+        }
+        action_ledger = getattr(jev_policy, "ledger", None)
+        jev_result = None
         try:
-            ledger_for(self.settings, caller="agent").append(
+            if action_ledger is None:
+                action_ledger = ledger_for(self.settings, caller="agent")
+            # This route only resolves the local OpenRouter key for spend
+            # accounting; JevEvaluator sends the sole model request to
+            # System One. The site check never calls OpenRouter.
+            policy = jev_policy or jev_for(
+                self.settings, transport=self.transport,
+                governor=jev_face_governor(self.settings),
+                ledger=action_ledger, request_timeout=10.0,
+                single_attempt=True)
+            emit("simple_action_jev_start", target=target)
+            jev_result, _structural = policy.evaluate_site_reachability(
+                probe_evidence, task_id=sid, max_input_tokens=512)
+        except Exception as exc:
+            emit("simple_action_jev_unavailable",
+                 error_type=type(exc).__name__)
+        answer = (jev_result.answers.get("http_response_received")
+                  if jev_result and isinstance(jev_result.answers, dict)
+                  else None)
+        probability = answer.get("noul") if isinstance(answer, dict) else None
+        if (jev_result is None or jev_result.is_fallback
+                or isinstance(probability, bool)
+                or not isinstance(probability, (int, float))
+                or not 0.0 <= float(probability) <= 1.0):
+            probability = None
+        else:
+            probability = float(probability)
+        emit("simple_action_jev_complete", target=target,
+             http_response_received=probability,
+             fallback=bool(getattr(jev_result, "is_fallback", True)))
+
+        answer_text = None
+        if response_received and probability is not None and probability >= 0.99:
+            status = "ok"
+            answer_text = "yes"
+            response = "Yes."
+        elif (not response_received and probability is not None
+              and probability <= 0.01):
+            status = "ok"
+            answer_text = "no"
+            response = "No."
+        else:
+            status = "deferred"
+            if response_received:
+                reason = (f"HTTPS {http_status} was received, but Jev's "
+                          "reachability judgment did not meet the 99% yes threshold")
+            else:
+                reason = (f"the probe returned no HTTPS status ({verdict or 'unknown'}), "
+                          "so it cannot establish that the site is up")
+            if probability is None:
+                reason += "; Jev did not provide a usable Noul judgment"
+            else:
+                reason += f" (Jev yes probability: {probability:.3f})"
+            response = f"Inconclusive -- {reason}."
+        try:
+            if action_ledger is None:
+                action_ledger = ledger_for(self.settings, caller="agent")
+            action_ledger.append(
                 "simple_action", task_id=sid, event_note="probe",
                 status=status, verdict=verdict, target=target,
                 http_status=probe.get("http_status"),
-                latency_s=probe.get("latency_s"), cost=0.0)
+                latency_s=probe.get("latency_s"), jev_noul=probability,
+                jev_model=getattr(jev_result, "model", None),
+                jev_fallback=bool(getattr(jev_result, "is_fallback", True)),
+                cost=0.0)
         except Exception:
             pass
         result = {
             "status": status, "intent": "simple-action",
             "workflow_tier": "simple-action", "prompt": prompt,
-            "response": response, "model": None, "cost": 0.0,
+            "answer": answer_text, "response": response,
+            "model": getattr(jev_result, "model", None),
+            "cost": (float(prior_jev_cost or 0.0)
+                     + float(getattr(jev_result, "cost", 0.0) or 0.0)),
             "target": target, "probe": probe,
-            **({"defer_reason": probe.get("reason")} if status != "ok" else {}),
+            "jev": {"workflow_tier": workflow_choice,
+                    "http_response_received": probability,
+                    "threshold_yes": 0.99, "threshold_no": 0.01,
+                    "is_fallback": bool(getattr(jev_result,
+                                                  "is_fallback", True))},
+            **({"defer_reason": response} if status != "ok" else {}),
         }
         save_chat_turn(sid, result, self.history_dir)
-        emit("simple_action_complete", status=status, verdict=verdict)
+        emit("simple_action_complete", status=status, answer=answer_text,
+             verdict=verdict)
         return result
 
     def _gather_web_context(self, prompt: str) -> List[Dict[str, Any]]:
@@ -796,7 +1339,8 @@ class AutonomousAgent:
         # A research question earns the web lane whether or not the caller
         # asked: answering "what is the latest news on X" from model memory is
         # how a run iterates six times on a question it had no evidence for.
-        web = bool(web) or is_research_question(prompt)
+        web = (bool(web) or is_research_question(prompt)
+               or is_current_information_request(prompt))
         wall_budget = (DEFAULT_RUN_WALL_SECONDS if max_wall_seconds is None
                        else float(max_wall_seconds))
         deadline = time.monotonic() + max(0.0, wall_budget)

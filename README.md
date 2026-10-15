@@ -411,7 +411,7 @@ Wire into any MCP host (Claude Code, Cursor, your own agents):
 { "mcpServers": { "harness": { "command": "harness-mcp" } } }
 ```
 
-Tools (`tools/list` order): `panel_verify`, `apply_edit`, `offer_work`, `defer_work`,
+Tools (`tools/list` order): `site_check`, `panel_verify`, `apply_edit`, `offer_work`, `defer_work`,
 `ledger_status`, `participation_report`, `spend_status`, `trust_status`, `plan_and_execute`,
 `issue_sort`, `route_query`, `mission_status`, `continue_work`, `log_judgment`, `jev_phase`,
 `jev_freeze`, `dogfood`, `generate_brief`, `driver_step`, `driver_health`, `driver_vocabulary`,

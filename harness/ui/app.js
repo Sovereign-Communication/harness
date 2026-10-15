@@ -703,6 +703,7 @@ function handleLiveEvent(ev, agentMsg) {
 
   let label = "";
   let icon = "✓";
+  let active = false;
 
   if (ev.type === "chat_turn_start") {
     label = "Request accepted; preparing context and routing.";
@@ -785,6 +786,93 @@ function handleLiveEvent(ev, agentMsg) {
   } else if (ev.type === "research_unavailable") {
     label = `Web research stopped before model retries: ${String(ev.reason || "no usable source").slice(0, 160)}`;
     agentMsg.stepperTitleText.textContent = "Web research unavailable; stopping early.";
+  } else if (ev.type === "simple_action_route_start") {
+    label = "Jev is selecting the request workflow...";
+    icon = "⌛";
+    active = true;
+    agentMsg.stepperTitleText.textContent = "Jev is selecting a bounded action...";
+    activateModularAspect(agentMsg, "simple_action_route", "Jev Choice", "⌛");
+  } else if (ev.type === "simple_action_route_complete") {
+    label = ev.selected === "simple-action"
+      ? "Jev selected the one-probe simple-action workflow"
+      : `Jev selected ${ev.selected || "no usable workflow"}; no site probe will run`;
+    icon = ev.selected === "simple-action" && !ev.fallback ? "✓" : "⚠";
+    agentMsg.stepperTitleText.textContent = ev.selected === "simple-action"
+      ? "Preparing the site check..." : "Site check stopped before a probe";
+    activateModularAspect(agentMsg, "simple_action_route", "Jev Choice", icon);
+  } else if (ev.type === "simple_action_route_unavailable") {
+    label = "Jev could not select a workflow; no site probe was sent";
+    icon = "⚠";
+    activateModularAspect(agentMsg, "simple_action_route", "Jev Unavailable", icon);
+  } else if (ev.type === "simple_action_start") {
+    label = "Preparing one bounded site-availability check";
+    icon = "⌛";
+    active = true;
+    agentMsg.stepperTitleText.textContent = "Checking site availability...";
+    activateModularAspect(agentMsg, "simple_action", "Site Check", "⌛");
+  } else if (ev.type === "simple_action_preflight_start") {
+    label = `Checking public HTTPS target safety for ${ev.target || "the site"}...`;
+    icon = "⌛";
+    active = true;
+    agentMsg.stepperTitleText.textContent = "Checking target safety...";
+    activateModularAspect(agentMsg, "simple_action_preflight", "Safety Check", "⌛");
+  } else if (ev.type === "simple_action_preflight_complete") {
+    label = "Target passed HTTPS and public-address checks; Jev can route the request";
+    agentMsg.stepperTitleText.textContent = "Jev is selecting the request workflow...";
+    activateModularAspect(agentMsg, "simple_action_preflight", "Safety Check", "✓");
+  } else if (ev.type === "simple_action_probe_start") {
+    label = `Sending one HTTPS probe to ${ev.target || "the site"}...`;
+    icon = "⌛";
+    active = true;
+    agentMsg.stepperTitleText.textContent = "Checking the HTTPS endpoint...";
+    activateModularAspect(agentMsg, "simple_action_probe", "HTTPS Probe", "⌛");
+  } else if (ev.type === "simple_action_probe_complete") {
+    const status = Number.isInteger(ev.http_status)
+      ? `HTTP ${ev.http_status}` : "no HTTP response";
+    const details = ev.verdict === "denied" ? " (access denied; endpoint responded)"
+      : ev.verdict === "redirect" ? " (redirect; destination not checked)"
+      : ev.verdict === "rate_limited" ? " (rate limited)"
+      : ev.verdict === "server_error" ? " (server error)" : "";
+    const elapsed = Number.isFinite(ev.latency_s)
+      ? ` in ${ev.latency_s.toFixed(2)}s` : "";
+    label = `HTTPS probe received ${status}${details}${elapsed}`;
+    agentMsg.stepperTitleText.textContent = "Jev is checking the observed response...";
+    activateModularAspect(agentMsg, "simple_action_probe", `Probe: ${status}`, "✓");
+  } else if (ev.type === "simple_action_probe_refused") {
+    label = "HTTPS probe stopped by the public-site safety check";
+    icon = "⚠";
+    activateModularAspect(agentMsg, "simple_action_probe", "Probe Refused", "⚠");
+  } else if (ev.type === "simple_action_jev_start") {
+    label = "Jev is judging whether the response shows the site is reachable...";
+    icon = "⌛";
+    active = true;
+    agentMsg.stepperTitleText.textContent = "Jev is judging the response...";
+    activateModularAspect(agentMsg, "simple_action_jev", "Jev Judgment", "⌛");
+  } else if (ev.type === "simple_action_jev_complete") {
+    const probability = Number.isFinite(ev.http_response_received)
+      ? ev.http_response_received : null;
+    if (probability === null) {
+      label = "Jev could not provide a usable yes/no judgment; result stays inconclusive";
+      icon = "⚠";
+    } else {
+      const pct = (probability * 100).toFixed(1);
+      const thresholdMet = probability >= 0.99;
+      label = `Jev yes probability ${pct}%${thresholdMet ? "; 99% threshold met" : "; below 99% threshold"}`;
+      icon = thresholdMet ? "✓" : "…";
+    }
+    agentMsg.stepperTitleText.textContent = "Site-check result ready";
+    activateModularAspect(agentMsg, "simple_action_jev", "Jev Judgment", icon);
+  } else if (ev.type === "simple_action_jev_unavailable") {
+    label = "Jev is unavailable; the site check will remain inconclusive";
+    icon = "⚠";
+    activateModularAspect(agentMsg, "simple_action_jev", "Jev Unavailable", "⚠");
+  } else if (ev.type === "simple_action_complete") {
+    label = ev.status === "ok"
+      ? `Site check complete${ev.answer ? `: ${ev.answer}` : ""}`
+      : "Site check inconclusive";
+    icon = ev.status === "ok" ? "✓" : "⚠";
+    agentMsg.stepperTitleText.textContent = "Execution complete";
+    activateModularAspect(agentMsg, "simple_action", label, icon);
   } else if (ev.type === "web_search") {
     label = ev.phase === "start" ? `Web search: ${ev.query || ""}` : `Web search completed (${ev.results || 0} results)`;
     icon = "🌐";
@@ -880,7 +968,7 @@ function handleLiveEvent(ev, agentMsg) {
 
   if (label) {
     const item = document.createElement("div");
-    item.className = "step-item done";
+    item.className = active ? "step-item active" : "step-item done";
     item.innerHTML = `<span class="step-icon">${esc(icon)}</span> <span>${esc(label)}</span>`;
     body.appendChild(item);
     scrollToBottom();

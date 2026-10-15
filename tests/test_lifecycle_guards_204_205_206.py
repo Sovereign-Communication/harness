@@ -523,7 +523,12 @@ class SimpleActionEntrySeamTests(unittest.TestCase):
         self.assertIn("could not find a site", res["response"])
         self.assertIn("rephrase with a URL", res["next_step"])
 
-    def test_redirect_answers_yes_with_redirect(self):
+    def test_redirect_without_noul_is_inconclusive(self):
+        # #207 Noul-gated contract: a probe HTTP status alone never answers
+        # yes -- the yes requires a live Jev Noul >= 0.99. Without a key the
+        # judgment is fallback, so even a 301 redirect stays inconclusive.
+        # The Noul-gated yes path is pinned in test_request_lifecycle.py
+        # (test_redirect_rate_limit_and_other_http_error_can_answer_yes).
         def probe(host, path, timeout):
             return (301, "https://example.com/new-path", host)
         with tempfile.TemporaryDirectory() as tmp:
@@ -531,10 +536,14 @@ class SimpleActionEntrySeamTests(unittest.TestCase):
             res = agent.run_simple_action("Is https://example.com up?",
                                           probe_fn=probe,
                                           resolve_fn=_resolve_public("93.184.216.34"))
-        self.assertEqual(res["status"], "ok")
-        self.assertIn("redirect", res["response"])
+        self.assertEqual(res["status"], "deferred")
+        self.assertTrue(res["response"].startswith("Inconclusive"))
+        self.assertIsNone(res["jev"]["http_response_received"])
 
-    def test_ledger_failure_on_probe_path_still_returns_ok(self):
+    def test_ledger_failure_on_probe_path_defers_without_noul(self):
+        # #207 Noul-gated contract: ledger failure is tolerated (append is
+        # best-effort), but the yes still requires a live Jev Noul. With the
+        # ledger down and no usable judgment, the probe stays inconclusive.
         def probe(host, path, timeout):
             return (200, "", host)
         with tempfile.TemporaryDirectory() as tmp:
@@ -544,7 +553,8 @@ class SimpleActionEntrySeamTests(unittest.TestCase):
                 res = agent.run_simple_action("Is https://example.com up?",
                                               probe_fn=probe,
                                               resolve_fn=_resolve_public("93.184.216.34"))
-        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["status"], "deferred")
+        self.assertTrue(res["response"].startswith("Inconclusive"))
 
     def test_preflight_probe_failure_with_ledger_down_still_defers(self):
         def boom(host, path, timeout):
