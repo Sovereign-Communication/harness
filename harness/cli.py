@@ -26,6 +26,7 @@ import json
 import os
 import tempfile
 import time
+from .agent import AutonomousAgent, is_site_check_prompt
 from .consent import probe_consent
 from .config import (
     DEFAULT_MAX_COST,
@@ -732,8 +733,6 @@ def _cmd_bench(opts, settings):
 
 def _cmd_site_check(opts, settings):
     """Thin CLI face over AutonomousAgent's shared request lifecycle."""
-    from .agent import AutonomousAgent, is_site_check_prompt
-
     prompt = " ".join(opts.prompt).strip()
     if not is_site_check_prompt(prompt):
         raise HarnessError(

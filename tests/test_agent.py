@@ -250,17 +250,33 @@ class TestAutonomousAgent(unittest.TestCase):
             agent.run_prompt("Explain router", cancel_check=lambda: True)
 
     def test_handle_conversation(self):
+        # #207 bounded lane: question-shaped conversation prompts route to
+        # run_simple_request (one Jev Choice + one governed generation + one
+        # sufficiency check) instead of the raw chat path.
         with tempfile.TemporaryDirectory() as tmp:
             hdir = Path(tmp)
             agent = AutonomousAgent(history_dir=hdir)
 
-            mock_resp = {
-                "choices": [{"message": {"content": "The router routes models."}}],
-                "usage": {"cost": 0.0001},
+            policy = MagicMock()
+            policy.evaluate_simple_strategy.return_value = (
+                MagicMock(is_fallback=False),
+                {"native": True, "strategy": "direct_answer", "cost": 0.0},
+            )
+            policy.evaluate_answer.return_value = (
+                MagicMock(is_fallback=False),
+                {"native": True, "answer_sufficient": 0.95,
+                 "iteration_required": False, "cost": 0.0},
+            )
+            completion = {
+                "content": "The router routes models.", "model": "m",
+                "cost": 0.0001, "input_tokens": 10, "output_tokens": 5,
+                "cost_estimated": False,
             }
 
-            with patch("harness.agent.chat", return_value=(200, mock_resp)), \
-                 patch("harness.agent.governor_for", return_value=(None, MagicMock())):
+            with patch("harness.agent.policy_for", return_value=policy), \
+                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                 patch("harness.agent.governed_completion",
+                       return_value=completion):
                 res = agent.run_prompt("How does the router work?", session_id="s1")
                 self.assertEqual(res["status"], "ok")
                 self.assertEqual(res["intent"], "conversation")
@@ -433,21 +449,37 @@ class TestAutonomousAgent(unittest.TestCase):
                 self.assertIn("failed at record sequence 42", res["response"])
 
     def test_conversation_multi_turn_history(self):
+        # #207 bounded lane: prior turns travel inside the single-generation
+        # prompt instead of the raw chat message list.
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             save_chat_turn("sess_1", {"prompt": "what is 2+2?", "response": "2+2 is 4"}, history_dir=tmp_path)
             agent = AutonomousAgent(history_dir=tmp_path)
-            with patch("harness.agent.chat") as mock_chat, \
-                 patch("harness.agent.governor_for", return_value=(None, MagicMock())):
-                mock_chat.return_value = (200, {"choices": [{"message": {"content": "It is 4"}}], "usage": {"cost": 0.0}})
+            policy = MagicMock()
+            policy.evaluate_simple_strategy.return_value = (
+                MagicMock(is_fallback=False),
+                {"native": True, "strategy": "direct_answer", "cost": 0.0},
+            )
+            policy.evaluate_answer.return_value = (
+                MagicMock(is_fallback=False),
+                {"native": True, "answer_sufficient": 0.95,
+                 "iteration_required": False, "cost": 0.0},
+            )
+            completion = {
+                "content": "It is 4", "model": "m",
+                "cost": 0.0, "input_tokens": 10, "output_tokens": 3,
+                "cost_estimated": False,
+            }
+            with patch("harness.agent.policy_for", return_value=policy), \
+                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                 patch("harness.agent.governed_completion",
+                       return_value=completion) as generate:
                 res = agent.run_prompt("and what is that plus 2?", session_id="sess_1")
                 self.assertEqual(res["status"], "ok")
-                chat_args = mock_chat.call_args[1]
-                messages = chat_args["messages"]
-                self.assertEqual(len(messages), 4)
-                self.assertEqual(messages[1]["content"], "what is 2+2?")
-                self.assertEqual(messages[2]["content"], "2+2 is 4")
-                self.assertEqual(messages[3]["content"], "and what is that plus 2?")
+                generation_prompt = generate.call_args[0][4]
+                self.assertIn("what is 2+2?", generation_prompt)
+                self.assertIn("2+2 is 4", generation_prompt)
+                self.assertIn("and what is that plus 2?", generation_prompt)
 
     def test_force_conversation_bypasses_classifier(self):
         """UI chat path: force_conversation=True always routes to _handle_conversation,
@@ -530,6 +562,9 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         # "You have NO internet access" even on web-enabled runs, so the
         # model denied the attached tools. Web-on prompts must state what
         # is attached (search + allowlist hosts) and never deny access.
+        # NOTE (#207): question-shaped web prompts now take the bounded
+        # simple-answer lane, so this pins the conversation handler's
+        # system prompt directly instead of via run_prompt routing.
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
             with patch("harness.web.search_web", return_value=[]), \
@@ -538,8 +573,8 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
                  patch("harness.agent.governor_for",
                        return_value=(None, MagicMock())):
                 with self.assertRaises(HarnessError):
-                    agent.run_prompt("can you access google.com?",
-                                     session_id="w1b", web=True)
+                    agent._handle_conversation("can you access google.com?",
+                                               "w1b", None, web=True)
                 sysmsg = mc.call_args[1]["messages"][0]["content"]
         self.assertNotIn("NO internet access", sysmsg)
         self.assertIn("Web tools ARE attached", sysmsg)
@@ -1492,9 +1527,13 @@ class TestOrchestratorWiring(unittest.TestCase):
         self.assertEqual(res["status"], "ok")
 
     def test_force_conversation_question_stays_conversational(self):
+        # #207 bounded lane: force_conversation keeps the conversational
+        # intent but still honors the deterministic simple-answer boundary,
+        # so the seam is run_simple_request (intent "conversation"), never
+        # the edit/orchestrator path.
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
-            with patch.object(AutonomousAgent, "_handle_conversation",
+            with patch.object(AutonomousAgent, "run_simple_request",
                               return_value={"status": "ok",
                                             "intent": "conversation"}) as h:
                 res = agent.run_prompt("How does the router work?",

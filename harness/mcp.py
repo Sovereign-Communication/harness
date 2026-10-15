@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import __version__
 from . import events as _events
 from . import trust as trust_policy
+from .agent import AutonomousAgent, is_site_check_prompt
 from .batch import BatchOptions
 from .consent import probe_consent
 from .continuation import validate_continuation
@@ -521,7 +522,6 @@ class McpServer:
 
     def _invoke(self, name, args, cancel_check=None):
         if name == "site_check":
-            from .agent import AutonomousAgent, is_site_check_prompt
             prompt = validate_mcp_prompt(args.get("prompt"))
             if not is_site_check_prompt(prompt):
                 raise HarnessError(
