@@ -565,7 +565,8 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
 
 def governed_completion(transport, api_key, governor, model, prompt, max_tokens,
                         label="ask", reasoning_effort="auto",
-                        reasoning_token_budget=0.4):
+                        reasoning_token_budget=0.4,
+                        preserve_billed_overrun=False):
     """Single-shot governed call with provider-reported usage metadata.
 
     This is the sole preflight/chat/billing owner for direct text helpers.
@@ -592,8 +593,21 @@ def governed_completion(transport, api_key, governor, model, prompt, max_tokens,
         raise HarnessError(
             f"response for {model} was BYOK-routed; spend is not tracked on "
             "this key, so the call is refused")
+    budget_overrun = None
     if cost:
-        governor.record_actual(cost, model)
+        try:
+            governor.record_actual(cost, model)
+        except HarnessError as exc:
+            # A post-dispatch provider price/usage mismatch cannot undo the
+            # charge. Book it, attach the exact amount, and let a bounded
+            # answer lane return already-paid useful content without making
+            # the next Jev call. Other callers retain the existing raise.
+            governor.record_overrun(cost, model)
+            exc.known_cost = float(cost)
+            exc.cost_accounted = True
+            if not preserve_billed_overrun:
+                raise
+            budget_overrun = str(exc)
     if not content or not content.strip():
         raise HarnessError(f"empty response body from {model}")
     usage = resp.get("usage") if isinstance(resp, dict) else None
@@ -606,6 +620,7 @@ def governed_completion(transport, api_key, governor, model, prompt, max_tokens,
         "input_tokens": usage.get("prompt_tokens", usage.get("input_tokens")),
         "output_tokens": usage.get("completion_tokens", usage.get("output_tokens")),
         "cost_estimated": bool(usage.get("cost_estimated", False)),
+        **({"budget_overrun": budget_overrun} if budget_overrun else {}),
     }
 
 

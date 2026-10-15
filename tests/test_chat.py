@@ -3,7 +3,7 @@ import unittest
 from unittest import mock
 
 from harness.chat import (_extract_json, chat, extract_content_and_cost,
-                          governed_text)
+                          governed_completion, governed_text)
 from harness.errors import HarnessError
 from harness.spend import SpendGovernor
 from tests._fake import FakeTransport, comp, m
@@ -47,6 +47,32 @@ class CostAccountingTests(unittest.TestCase):
 
     def _gov(self, fake):
         return SpendGovernor(fake, "sk-test")
+
+    def test_known_billed_overrun_is_booked_and_preserved_for_simple_answer(self):
+        gov = mock.Mock()
+        gov.check_byok.return_value = None
+        gov.preflight.return_value = None
+        gov.record_actual.side_effect = HarnessError(
+            "actual running cost $0.002000 would exceed ceiling $0.001000")
+        with mock.patch("harness.chat.chat", return_value=(200, _resp(cost=0.002))):
+            completion = governed_completion(
+                mock.Mock(), "k", gov, "paid/x", "question", 128,
+                preserve_billed_overrun=True)
+        gov.record_overrun.assert_called_once_with(0.002, "paid/x")
+        self.assertEqual(completion["content"], "ok")
+        self.assertEqual(completion["cost"], 0.002)
+        self.assertIn("exceed ceiling", completion["budget_overrun"])
+
+    def test_known_billed_overrun_exception_keeps_cost_for_other_callers(self):
+        gov = mock.Mock()
+        gov.check_byok.return_value = None
+        gov.preflight.return_value = None
+        gov.record_actual.side_effect = HarnessError("over ceiling")
+        with mock.patch("harness.chat.chat", return_value=(200, _resp(cost=0.002))):
+            with self.assertRaises(HarnessError) as ctx:
+                governed_completion(mock.Mock(), "k", gov, "paid/x", "q", 128)
+        gov.record_overrun.assert_called_once_with(0.002, "paid/x")
+        self.assertEqual(ctx.exception.known_cost, 0.002)
 
     def test_reasoning_retry_keeps_prior_spend_when_final_usage_is_malformed(self):
         final_bodies = ({"choices": [{"message": {"content": "answer"}}],

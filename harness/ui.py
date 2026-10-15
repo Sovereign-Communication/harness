@@ -19,7 +19,7 @@ import sys
 import threading
 
 from . import osal
-from .server import make_server
+from .server import authenticated_ui_url, make_server
 
 
 def _open_window(url, token):
@@ -27,11 +27,12 @@ def _open_window(url, token):
     try:
         import webview  # optional: sovereign-harness[desktop]
     except ImportError:
-        osal.open_url(url + "#" + token)
+        osal.open_url(authenticated_ui_url(url, token))
         return "browser"
     # A desktop window is an unshared context; the token rides the URL
     # fragment so it is visible to the page but never sent to the network.
-    webview.create_window("Harness", url + "#" + token, width=1280, height=860)
+    webview.create_window("Harness", authenticated_ui_url(url, token),
+                          width=1280, height=860)
     webview.start()
     return "webview"
 
@@ -119,7 +120,7 @@ def main(argv=None):
     if mode is None:
         mode = _open_window(url, token)
     else:
-        osal.open_url(url + "#" + token)
+        osal.open_url(authenticated_ui_url(url, token))
     if mode == "browser":
         # No pywebview: keep the server in the foreground so the process
         # has a lifecycle (Ctrl-C stops it).
