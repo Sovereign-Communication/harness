@@ -19,6 +19,7 @@ from .simple_request import (
     is_current_information_request,
     is_simple_answer_request,
     relevant_history as simple_relevant_history,
+    resolve_answer_retry as resolve_simple_answer_retry,
 )
 from .token_budget import resolve_lane_max_tokens as _resolve_lane_max_tokens
 
@@ -166,8 +167,9 @@ class SimpleAnswerLifecycleMixin:
             policy = policy_for(
                 self.settings, transport=self.transport, governor=gov,
                 ledger=ledger)
-            turns = simple_relevant_history(
-                prompt, load_chat_history(sid, self.history_dir))
+            saved_turns = load_chat_history(sid, self.history_dir)
+            effective_prompt = resolve_simple_answer_retry(prompt, saved_turns)
+            turns = simple_relevant_history(effective_prompt, saved_turns)
             if resuming:
                 turns = [turn for turn in turns
                          if turn.get("prompt") != prompt]
@@ -185,7 +187,7 @@ class SimpleAnswerLifecycleMixin:
                 with cancellation_context(combined_cancel):
                     def evaluate_strategy_once():
                         _result, structural = policy.evaluate_simple_strategy(
-                            prompt, context_text, task_id=sid)
+                            effective_prompt, context_text, task_id=sid)
                         return dict(structural or {})
 
                     pre = self.lifecycle.provider_call(
@@ -268,7 +270,7 @@ class SimpleAnswerLifecycleMixin:
                 target_tokens, lane_effort = effective_lane_policy(
                     "answer", max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort)
-                generation_prompt = simple_answer_prompt(prompt, turns)
+                generation_prompt = simple_answer_prompt(effective_prompt, turns)
                 allocated = _resolve_lane_max_tokens(
                     gov, model, generation_prompt, target_tokens,
                     token_budget=token_budget)
@@ -283,7 +285,8 @@ class SimpleAnswerLifecycleMixin:
                             self.transport, api_key, gov, model,
                             generation_prompt, allocated,
                             label="simple-answer",
-                            reasoning_effort=lane_effort),
+                            reasoning_effort=lane_effort,
+                            preserve_billed_overrun=True),
                         cost=lambda value: float(value.get("cost") or 0.0),
                         retry_unknown=True)
                 answer = str(completion["content"]).strip()
@@ -302,11 +305,15 @@ class SimpleAnswerLifecycleMixin:
             post = None
             post_cost = 0.0
             post_skipped = None
-            if time.monotonic() < deadline:
+            budget_overrun = (completion or {}).get("budget_overrun")
+            if budget_overrun:
+                post_skipped = ("answer was returned after provider cost"
+                                " exceeded the ceiling")
+            elif time.monotonic() < deadline:
                 with cancellation_context(combined_cancel):
                     def evaluate_post_once():
                         post_result, structural = policy.evaluate_answer(
-                            prompt, answer, context_text,
+                            effective_prompt, answer, context_text,
                             site="simple-answer-post", task_id=sid)
                         saved = dict(structural or {})
                         verdict = saved.get(
@@ -370,6 +377,10 @@ class SimpleAnswerLifecycleMixin:
                     "generation_calls": 1,
                     "history_turns": len(turns),
                     "deadline_seconds": float(max_wall_seconds),
+                    **({"resolved_prompt": effective_prompt}
+                       if effective_prompt != prompt else {}),
+                    **({"budget_overrun": budget_overrun}
+                       if budget_overrun else {}),
                 },
                 **({"defer_reason": refusal,
                     "next_step": "review the refusal or clarify the request"}
