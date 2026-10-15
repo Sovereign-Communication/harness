@@ -1017,5 +1017,20 @@ class SiteCheckCliTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue()), deferred)
 
 
+class AskCliTests(unittest.TestCase):
+    def test_ask_delegates_to_shared_conversational_lifecycle(self):
+        expected = {"status": "ok", "response": "The answer."}
+        output = io.StringIO()
+        with mock.patch("harness.cli.load_settings", return_value=mock.Mock()), \
+             mock.patch("harness.agent.AutonomousAgent.run_prompt",
+                        return_value=expected) as run_prompt, \
+             contextlib.redirect_stdout(output):
+            cli.main(["ask", "what's", "the", "answer?", "--session-id", "s1"])
+        self.assertEqual(json.loads(output.getvalue()), expected)
+        run_prompt.assert_called_once_with(
+            prompt="what's the answer?", auto_apply=False, session_id="s1",
+            force_conversation=True)
+
+
 if __name__ == "__main__":
     unittest.main()

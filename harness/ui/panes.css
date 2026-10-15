@@ -422,7 +422,7 @@
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 1.5rem;
-  max-width: 440px;
+  max-width: 560px;
   width: 90%;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   display: flex;
@@ -438,6 +438,34 @@
   font-size: 0.85rem;
   color: var(--muted);
   line-height: 1.4;
+}
+.auth-help {
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.auth-help p {
+  margin: 0;
+}
+.auth-help p + p {
+  margin-top: 0.55rem;
+}
+.auth-help strong,
+.auth-label {
+  color: var(--ink);
+}
+.auth-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.auth-feedback {
+  margin: 0;
+  color: var(--bad);
+  font-size: 0.82rem;
 }
 .auth-actions {
   display: flex;

@@ -748,6 +748,19 @@ def _cmd_site_check(opts, settings):
         sys.exit(code)
 
 
+def _cmd_ask(opts, settings):
+    """CLI face over the same conversational owner used by the GUI."""
+    prompt = " ".join(opts.prompt).strip()
+    agent = AutonomousAgent(settings=settings)
+    result = agent.run_prompt(
+        prompt=prompt, auto_apply=False, session_id=opts.session_id,
+        force_conversation=True)
+    _emit(result, opts.out)
+    code = terminal_exit_code(result.get("status"))
+    if code:
+        sys.exit(code)
+
+
 def _cmd_models(opts, settings):
     if opts.limit < 1:
         raise HarnessError("--limit must be a positive integer")
@@ -1510,6 +1523,7 @@ def _cmd_jev_freeze(opts, settings):
 # (opts, settings), so a signature drift fails loudly at dispatch instead of
 # silently mis-binding arguments.
 _DISPATCH = {
+    "ask": _cmd_ask,
     "site-check": _cmd_site_check,
     "verify": _cmd_verify,
     "lint-claims": _cmd_lint_claims,

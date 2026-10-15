@@ -31,7 +31,7 @@ import uuid
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
 
 from . import events as _events
 from .agent import AutonomousAgent, classify_prompt_intent
@@ -1686,6 +1686,13 @@ def make_server(host="127.0.0.1", port=8765, auth_token=None):
     return httpd
 
 
+def authenticated_ui_url(url, token):
+    """Pass UI auth to the browser in its client-only fragment, never a query."""
+    if not token:
+        return url
+    return f"{url}#harness-auth={quote(str(token), safe='')}"
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="harness serve",
@@ -1711,7 +1718,7 @@ def main(argv=None):
         print("[OK] /api routes require header X-Harness-Auth: <your token>",
               file=sys.stderr)
     if opts.open:
-        osal.open_url(url)
+        osal.open_url(authenticated_ui_url(url, httpd.ui.auth_token))
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

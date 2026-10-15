@@ -33,6 +33,7 @@ from .simple_request import (
     is_simple_answer_request,
     is_supplied_text_rewrite,
     relevant_history as simple_relevant_history,
+    resolve_answer_retry as resolve_simple_answer_retry,
 )
 from .repo_scope import (
     discover_target_files,
@@ -676,8 +677,9 @@ class AutonomousAgent:
             policy = policy_for(
                 self.settings, transport=self.transport, governor=gov,
                 ledger=ledger)
-            turns = simple_relevant_history(
-                prompt, load_chat_history(sid, self.history_dir))
+            saved_turns = load_chat_history(sid, self.history_dir)
+            effective_prompt = resolve_simple_answer_retry(prompt, saved_turns)
+            turns = simple_relevant_history(effective_prompt, saved_turns)
             context_text = "\n".join(
                 f"User: {turn['prompt']}\nAssistant: {turn['response']}"
                 for turn in turns)
@@ -685,7 +687,7 @@ class AutonomousAgent:
             cancelled_or_late("Jev strategy")
             with cancellation_context(combined_cancel):
                 _pre_result, pre = policy.evaluate_simple_strategy(
-                    prompt, context_text, task_id=sid)
+                    effective_prompt, context_text, task_id=sid)
             pre_cost = float(pre.get("cost") or 0.0)
             strategy = pre.get("strategy") or "direct_answer"
             if bool(pre.get("native")) and strategy != "direct_answer":
@@ -716,7 +718,7 @@ class AutonomousAgent:
             target_tokens, lane_effort = effective_lane_policy(
                 "answer", max_tokens=max_tokens,
                 reasoning_effort=reasoning_effort)
-            generation_prompt = simple_answer_prompt(prompt, turns)
+            generation_prompt = simple_answer_prompt(effective_prompt, turns)
             allocated = _resolve_lane_max_tokens(
                 gov, model, generation_prompt, target_tokens,
                 token_budget=token_budget)
@@ -727,17 +729,21 @@ class AutonomousAgent:
                 completion = governed_completion(
                     self.transport, api_key, gov, model, generation_prompt,
                     allocated, label="simple-answer",
-                    reasoning_effort=lane_effort)
+                    reasoning_effort=lane_effort,
+                    preserve_billed_overrun=True)
             answer = str(completion["content"]).strip()
             generation_cost = float(completion.get("cost") or 0.0)
 
             post = None
             post_cost = 0.0
             post_skipped = None
-            if time.monotonic() < deadline:
+            budget_overrun = completion.get("budget_overrun")
+            if budget_overrun:
+                post_skipped = "answer was returned after provider cost exceeded the ceiling"
+            elif time.monotonic() < deadline:
                 with cancellation_context(combined_cancel):
                     _post_result, post = policy.evaluate_answer(
-                        prompt, answer, context_text,
+                        effective_prompt, answer, context_text,
                         site="simple-answer-post", task_id=sid)
                 post_cost = float(post.get("cost") or 0.0)
             else:
@@ -768,6 +774,10 @@ class AutonomousAgent:
                     "generation_calls": 1,
                     "history_turns": len(turns),
                     "deadline_seconds": float(max_wall_seconds),
+                    **({"resolved_prompt": effective_prompt}
+                       if effective_prompt != prompt else {}),
+                    **({"budget_overrun": budget_overrun}
+                       if budget_overrun else {}),
                 },
                 **({"defer_reason": refusal,
                     "next_step": "review the refusal or clarify the request"}

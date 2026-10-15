@@ -48,6 +48,16 @@ _STOP_WORDS = frozenset({
     "in", "is", "it", "me", "of", "on", "please", "the", "this", "to",
     "what", "why", "with", "you",
 })
+_RETRY_REQUEST_RE = re.compile(
+    r"^(?:(?:please|can you|could you)\s+)?"
+    r"(?:try again|retry(?: that)?|answer again|"
+    r"(?:fulfil|fulfill) (?:the )?original (?:request|question)(?: in full)?|"
+    r"answer (?:the )?original (?:request|question)(?: in full)?)"
+    r"(?:\s+please)?"
+    r"[.!?\s]*$", re.IGNORECASE)
+_ANAPHORIC_FOLLOWUP_RE = re.compile(
+    r"\b(?:that|this|it|they|them|those|these|there|same|again|"
+    r"above|earlier|previous(?:ly)?|original)\b", re.IGNORECASE)
 
 
 # A clock question asks what time it is *now* -- answerable from the
@@ -97,7 +107,9 @@ def parse_clock_request(prompt: str) -> Optional[str]:
     if words & _REPO_ACTION_WORDS:
         return None
     match = _TZ_RE.search(text.upper())
-    return match.group(1) if match else ""
+    if match:
+        return match.group(1)
+    return "HST" if re.search(r"\bhawaii\b", lowered) else ""
 
 
 def answer_clock(prompt: str, now: Optional[datetime] = None) -> Optional[str]:
@@ -163,6 +175,8 @@ def is_simple_answer_request(prompt: str, *, intent: str = "conversation") -> bo
         return True
     if is_current_information_request(text):
         return False
+    if is_answer_retry_request(text):
+        return True
     # Require an answer-shaped request.  Bare fragments remain on the normal
     # conversation lane instead of being guessed into this lifecycle.
     return bool(
@@ -172,22 +186,66 @@ def is_simple_answer_request(prompt: str, *, intent: str = "conversation") -> bo
     )
 
 
+def is_answer_retry_request(prompt: str) -> bool:
+    """Recognize short retries that should reuse the ordinary answer lane."""
+    return bool(_RETRY_REQUEST_RE.fullmatch((prompt or "").strip()))
+
+
+def resolve_answer_retry(prompt: str, turns: Iterable[Dict[str, Any]]) -> str:
+    """Resolve a retry to the referenced substantive request in-session.
+
+    Short retry controls refer to the latest request with an answer. Explicit
+    "original request" wording refers to the first substantive request.
+    Skip prior retry controls so repeated retries do not target the control
+    text itself.
+    """
+    if not is_answer_retry_request(prompt):
+        return prompt
+    substantive = []
+    for turn in turns:
+        metadata = turn.get("simple_request") or {}
+        prior = str(turn.get("resolved_prompt")
+                    or metadata.get("resolved_prompt")
+                    or turn.get("prompt") or "").strip()
+        if prior and not is_answer_retry_request(prior):
+            substantive.append(prior)
+    if not substantive:
+        return prompt
+    if re.search(r"\boriginal\b", prompt, re.IGNORECASE):
+        return substantive[0]
+    return substantive[-1]
+
+
 def relevant_history(prompt: str, turns: Iterable[Dict[str, Any]], *,
                      max_turns: int = 3, max_chars: int = 2400) -> List[Dict[str, str]]:
-    """Keep a small, lexical-overlap slice of prior conversational turns."""
+    """Keep a small topical slice, retaining the antecedent for follow-ups."""
     prompt_terms = set(_WORD_RE.findall((prompt or "").lower())) - _STOP_WORDS
+    anaphoric = bool(_ANAPHORIC_FOLLOWUP_RE.search(prompt or ""))
     kept: List[Dict[str, str]] = []
     used = 0
-    for turn in reversed(list(turns)):
+    ordered = list(turns)
+    # “How many nanometers long is that?” has no useful lexical overlap with
+    # “the longest continuous road” after stop-word removal. Retain only the
+    # nearest prior answer as its antecedent; unrelated older turns still use
+    # the normal lexical filter.
+    antecedent = next((len(ordered) - 1 - i for i, turn in enumerate(reversed(ordered))
+                       if turn.get("prompt") and turn.get("response")), None)
+    for index in range(len(ordered) - 1, -1, -1):
+        turn = ordered[index]
         prior_prompt = str(turn.get("prompt") or "")
         response = str(turn.get("response") or "")
         terms = set(_WORD_RE.findall(prior_prompt.lower())) - _STOP_WORDS
-        if prompt_terms and not prompt_terms.intersection(terms):
+        retry_control = is_answer_retry_request(prior_prompt)
+        if retry_control and not response:
+            continue
+        if (prompt_terms and not prompt_terms.intersection(terms)
+                and not (anaphoric and index == antecedent)):
             continue
         size = len(prior_prompt) + len(response)
         if not prior_prompt or used + size > max_chars:
             continue
-        kept.append({"prompt": prior_prompt, "response": response})
+        kept.append({"prompt": str(turn.get("resolved_prompt") or prior_prompt),
+                     "response": response})
         used += size
         if len(kept) >= max_turns:
             break

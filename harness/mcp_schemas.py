@@ -9,6 +9,19 @@ schemas only.
 
 TOOL_SCHEMAS = [
     {
+        "name": "ask",
+        "title": "Answer an ordinary request",
+        "description": (
+            "Answer one conversational request through the shared Harness "
+            "lifecycle. Short follow-ups reuse the session's prior context; "
+            "this tool does not grant repository-write scope."),
+        "inputSchema": {"type": "object", "properties": {
+            "prompt": {"type": "string", "description": "Question or short ordinary request"},
+            "session_id": {"type": "string", "description": "Optional shared chat-history session id"},
+        }, "required": ["prompt"]},
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+    },
+    {
         "name": "site_check",
         "title": "Check one public site's availability",
         "description": (

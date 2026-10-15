@@ -243,6 +243,9 @@ class McpProtocolTests(unittest.TestCase):
         self.assertIn("site_check", tools)
         self.assertTrue(tools["site_check"]["inputSchema"]["properties"]["prompt"])
         self.assertTrue(tools["site_check"]["annotations"]["readOnlyHint"])
+        self.assertIn("ask", tools)
+        self.assertTrue(tools["ask"]["inputSchema"]["properties"]["prompt"])
+        self.assertTrue(tools["ask"]["annotations"]["readOnlyHint"])
         self.assertIn("panel_verify", tools)
         self.assertIn("apply_edit", tools)
         self.assertIn("offer_work", tools)
@@ -257,6 +260,26 @@ class McpProtocolTests(unittest.TestCase):
         # ping
         self.assertEqual(lines[2]["id"], 3)
         self.assertEqual(lines[2]["result"], {})
+
+    def test_ask_delegates_to_shared_conversational_lifecycle(self):
+        import harness.mcp as mcp_module
+        expected = {"status": "ok", "response": "3.06e19 nanometers."}
+        settings = SimpleNamespace()
+        transport, server = make_server()
+        with mock.patch.object(mcp_module, "load_settings",
+                               return_value=settings), \
+             mock.patch("harness.agent.AutonomousAgent.run_prompt",
+                        return_value=expected) as run_prompt:
+            result = server._invoke(
+                "ask",
+                {"prompt": "How many nanometers long is that?",
+                 "session_id": "mcp-followup"},
+                cancel_check=lambda: False)
+        self.assertEqual(result, expected)
+        run_prompt.assert_called_once_with(
+            prompt="How many nanometers long is that?", auto_apply=False,
+            session_id="mcp-followup", cancel_check=mock.ANY,
+            force_conversation=True)
 
     def test_site_check_delegates_to_shared_agent_lifecycle(self):
         import harness.mcp as mcp_module
@@ -1028,6 +1051,7 @@ class LaneSchedulingTests(unittest.TestCase):
              "continue_work": "mutation",
              "jev_freeze": "mutation",
              "dogfood": "mutation",
+             "ask": "spendy",
              "panel_verify": "spendy",
              "offer_work": "spendy",
              "log_judgment": "spendy",

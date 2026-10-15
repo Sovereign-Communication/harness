@@ -110,6 +110,13 @@ def build_parser():
                              help="optional shared chat-history session id")
     _add_output_flags(psite_check)
 
+    pask = sub.add_parser(
+        "ask", help="Answer one ordinary conversational request through the shared lifecycle")
+    pask.add_argument("prompt", nargs="+", help="ordinary question or short request")
+    pask.add_argument("--session-id", default=None,
+                      help="optional shared chat-history session id")
+    _add_output_flags(pask)
+
     pv = sub.add_parser("verify", help="Panel + judge verification (back-compat with fusion_lite.py)")
     pv.add_argument("--prompt-file")
     pv.add_argument("--prompt")
