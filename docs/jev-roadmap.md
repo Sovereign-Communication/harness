@@ -2,7 +2,7 @@
 
 **Status:** active tracking doc  
 **Implementer lanes:** Claude Code (`CLAUDE.md`, `/isolated-mission`), Codex, and Freebuff share this canon; use lane-specific handoffs as seat state, not parallel plans.
-**Historical audit date:** 2026-09-22 (Claude dogfood audit: 9 components, 31 confirmed findings — see `DF-*` below); current repository sweep: 2026-10-05.
+**Historical audit date:** 2026-09-22 (Claude dogfood audit: 9 components, 31 confirmed findings — see `DF-*` below); current repository sweep: 2026-10-14.
 **Live probe:** TypeSafe `POST https://api.typesafe.ai/v1/systemone` succeeded with key at `~/.config/harness/jev.env`
 
 This file is the **single source of truth** for Harness mission work (Jev / System One, HUL, hourglass, site, and follow-ups). Every future PR must carry an ID from the tracker below and reference an acceptance test named here. Do not open parallel ad-hoc plans — add or update rows here.
@@ -15,117 +15,88 @@ Related design context (not the tracker): [system-one-integration.md](system-one
 
 ---
 
-## Canonical current status — comprehensive sweep 2026-10-05
+## Canonical current status — final burndown 2026-10-14
 
-This section supersedes older present-tense status statements and the previous
-“Next implementation slice.” Detailed dated audit narratives below are history;
-their old “open,” “next,” and “in progress” language is not current unless
-repeated here or in a live tracker row. This is the only operational plan.
-Reconcile it against remote state before each merge.
+Verified remote `main`: `6cc8b87738dec360a208544d745d80d7ca443528`, the merge commit for #213. Its merge-result core CI run 38641021718 passed; the preceding `main` core CI run 38176973913 passed on `7b0fad6`. Rankings-report run 38258395065 failed because no OpenRouter API key was available; it did not refresh rankings. This section is the operational plan incorporating the operator rulings below. It supersedes older present-tense snapshots. No completion status is changed by this reconciliation.
 
-### Verified remote and review state
+### Landed versus verified
+- #180: deferred/inconclusive verify exit contract. #193: audit data only. #194: scoped security fixes. #209: simple-request code, requiring acceptance reconciliation for #200–#207. #208: Fireworks economics design only. #210: coverage baseline maintenance. #214: provider-secret redaction.
+- #213 merged as `6cc8b87` from reviewed head `75a6b71`; #198 auto-closed. All 12 PR checks passed, as did an independent 55-test battery and installed-wheel worker smoke. Local self-audit used native Jev and scored 10/10 on all four dimensions. Merge-result CI 38641021718 also passed. These checks do not close #207's broader lifecycle acceptance.
+- #212 (`1d06fed`) is draft with its 12 prior checks green and remains held behind EV-4, EV-6 evidence and the missing production wiring/accounting dependencies. Do not create a competing implementation phase. #216's old red-coverage description is stale; #217 is closed after green merge-result CI.
+- Local Jev board: 39 passing, 8 failing, zero false-complete flags. This is local heuristic/document evidence, not a live integration certification.
 
-- Canonical repository: `Sovereign-Communication/harness`. The old
-  `Treystu/Harness` identity is a moved pointer and is not a reliable source.
-- At sweep time, `origin/main` was
-  `0676d6423d15b8f71c26c61099fbb8ccefcef715`. The operator checkout at
-  `4e2a5480849c870801cdb79178fe64c50f83f9d7` is an ancestor and 85 commits
-  behind by Git graph count; do not use it as current STATUS evidence.
-- PR **#180** is the sole open PR, on
-  `codex/df-cli-3-verify-defer`, targeting `main`. Its code commit is
-  `cd53a7e4006e96f80f51d11743ef338426a4686c`; this roadmap reconciliation is
-  pushed as follow-up commits on that same branch.
-  It closes #144 once merged. At the code commit, 11/12 required checks passed;
-  required audit/D12 failed at **43/46 = 93%** against baseline `3ac7bc2b9b`
-  (bar 95%). Reported changed lines are `cli.py:225`, `cli_report.py:53`, and
-  `routing_table.py:171`. The newest review comment accepts the code/test
-  direction but flags a mismatch: the new CLI test should execute
-  `cli.py:225`, while D12 reports it uncovered. Resolve this using execution
-  and trace evidence before changing tests or the baseline. `sd_coverage_changed`
-  reads committed trace data; it does not itself execute tests.
-- The roadmap commits restarted PR checks. Handoff-scope and checkout-hygiene
-  passed on an intermediate plan-update commit; the audit, package, and
-  platform/test matrix were queued or running. Further plan commits restart
-  checks, so inspect the current PR head before merge. This document update
-  does not resolve the D12 failure.
-- The coverage refresh runner inherits its process environment and home. A
-  prior attempted full battery unexpectedly reached live provider paths; the
-  approval review rejected another run because of that risk. Do not rerun it
-  or use an indirect workaround without explicit operator authorization. First
-  make runner isolation and trace provenance reviewable, then request
-  authorization if a live-capable run is still required. Never hand-edit the
-  coverage baseline.
-- No submitted PR review or unresolved inline review thread was found on #180.
-  Its substantive conversation comment is tracked above. Re-read PR checks,
-  comments, and base SHA immediately before merge.
+### Primary milestone: general simple-request reliability
 
-### Current backlog and dependency order
+Operator clarification: weather is one regression example, not the product objective. First optimize the shared request lifecycle for ordinary simple requests, then advance to medium/large tasks. Do not build a weather-specific fix and claim this milestone complete.
 
-Only one phase PR may be active. Keep all work in the existing #180 PR until
-it lands; then take the next item below as its own reviewed PR from fresh
-`origin/main`. Each row stays open until its named acceptance evidence and
-required local gates are present.
+Representative acceptance matrix:
+- Everyday instructions: "How do I make a peanut butter and jelly sandwich?" Answer directly with accurate, concise steps; no web search, repository scan/AST packing, tool execution, or generic planning DAG.
+- Stable factual explanation: explain why ice floats in a few sentences; verify correctness and requested length.
+- Small reasoning/calculation: a basic unit conversion or arithmetic question; verify against deterministic expected output.
+- Text transformation: summarize or rewrite supplied short text; check fidelity and constraints, without outside retrieval.
+- Current-information lookup: the original 96778 forecast/alerts question; use current source evidence and honest missing-data handling.
+- Bounded read-only action: site availability; exactly one permitted probe and evidence-grounded result.
+- Ambiguous or unsupported request: one useful clarification or explicit limitation rather than speculative work, loops, or fabricated success.
 
-| Order | Canonical ID / source | Remaining work and acceptance evidence |
-|---|---|---|
-| 1 | **#180 / DF-CLI-3** | Resolve the D12 trace discrepancy on the actual merge base; make the coverage runner safe and its test execution/trace lineage auditable; obtain required changed-line coverage without falsifying or editing the baseline; local gates and all required PR checks green. Then merge #180 and confirm green post-merge `main`. |
-| 2 | **#179 / DF-CLI-4** | Recover only the CLI stderr notice and regression tests from `6269636c9b`; rebase on current `main` and fix its current `max_cost` ceiling failure. Do not carry unrelated patchsets. |
-| 3 | **#179 / DF-AUDIT-6 candidate** | Isolate and review the AST preflight strengthening from current branch evidence; establish a named phase contract and regression tests before implementation. An issue comment alone is not acceptance. |
-| 4 | **#179 / pack limits and JEV-P6 prose** | Reconcile the claimed 1,900-character seed cap / 1,886-character measurement with `tests/test_jev_repo_pack.py` setting `SEED_MAX_QUESTION_CHARS = 3400`. Decide and test one actual bound, then align the pack and roadmap prose. |
-| 5 | **DF-AUDIT-5** | Recheck completion clauses against merged #146 and #165: bounded iteration, visible fallback provenance, fallback-cause tests, and independent completion authority. Narrow this row to any production/test residual still missing; do not repeat delivered work. |
-| 6 | **GAP-plan-http / DF-UI-2** | Implementation is present from #155: `RUNNERS["plan"]`, `run_plan_task`, shared `compose_plan`/`PlanExecutor`, and `tests/test_plan_http_batch.py` cover HTTP dispatch, plan-only, and execution. Replace the stale operator-ruling request with a closure review: confirm registration in `PHASE_CONTRACTS` (or document why this GAP does not use a phase contract), run named gates, and close only on evidence. Dogfood face shipped with #148. |
-| 7 | **REPO-CARDS** | Generator landed in #164; add and verify its user-facing CLI/MCP face and CI drift check. Preserve source-grounded, deterministic card rules. |
-| 8 | **PROVISION-CORE** | Core landed in #166; add separately scoped production entry points (CLI, MCP, agent intent, GUI only as required), phase contract, consent/dry-run tests, and a safe live receipt. Do not widen the existing core or imply its unit tests alone ship the feature. |
-| 9 | **JEV-P3-calibration-analysis** | Analysis module landed in #169; wire it to real ledger evidence and a bounded operator threshold-application workflow, register phase contract/tests, and retain `jev-freeze` as settings owner. |
-| 10 | **DRV-1** | Code and CI are complete (#159/#161); only the paid-cheap live dogfood receipt is missing. Run through operator-gated model policy, record cost/fallback/verification evidence, and flip only when `harness jev-phase --phase DRV-1` passes. |
-| 11 | **DRV-2** | Implement a real consent/policy-gated input backend and live vision extraction behind declared driver actions; add backend conformance tests and prove `harness driver step` performs a permitted action. Synthetic inputs correctly refuse today. |
-| 12 | **EV-0 through EV-5** | Keep the dependency chain: resolve EV-0a discount semantics with its committed measurement receipt; EV-1 endpoint cost/capability index; EV-2 committed tier snapshot and freshness gate; EV-3 advisory Jev pool resolver; EV-4 bounded automatic movement (off by default); EV-5 CLI/MCP/UI/report and committed refresh workflow. Preserve economic invariants and use paid-cheap receipts. |
-| 13 | **OC-HANDOFF** | Worker safety implementation is merged (#90); remain gated until an operator supplies a valid signed candidate and findings-only output/receipt audit passes. Do not merge stale `87a672e8` wholesale: it is 246 commits behind and changes spend settlement from main’s book+flag+return to book+abort. Only findings may be written to `HANDOFF/OC_FINDINGS.md`; no external configuration or seat-state writes. |
-| 14 | **Exit: HUL ruling** | HUL A–D and HV consumers are complete. The old exit row’s “HUL A–D shipped **or** open-problem packs” condition is already satisfied by HUL A–D. Do not hold it open for an uncited extra ruling; verify originating authority, then close with existing evidence or amend the criterion through this reviewed plan PR. |
-| 15 | **#177 hygiene** | Its body is stale (references #173 as sole open PR, #144 as unimplemented, and old Phase 3 work). After #180 lands, update its disposition to cite landed fixes and list only validated residual hygiene items, then close when resolved. #144 is implemented by #180 pending merge; #168 was closed by owner on 2026-10-04. |
-| 16 | **Final landing and dogfood** | After selected backlog rows land, re-read canon and issue/PR state from remote; verify each merged phase gate and green `main` CI. Dogfood user-facing CLI/MCP/API/GUI paths with cheap paid models first where live judgment is required; record receipts, actual cost, fallback provenance, refusal/defer behavior, and regressions. Fix regressions in reviewed PRs, rerun affected gates, and update this canon only through a reviewed PR. |
+For each category use held-out paraphrases, not prompt-specific routing. Cover Jev healthy and unavailable (including post-action failure), cold/warm sessions, unrelated prior repository context, cancellation and provider failure. Preserve authorized capability/safety boundaries. GUI, CLI and MCP must invoke or delegate to the same lifecycle owner; document missing surfaces rather than silently substituting another path.
 
-### Branches and worktrees — disposition
+Jev should evaluate the proposed minimal response/action strategy and the result when available, using compact task-relevant context. Code owns known checks and execution. In outage mode, safe requests still receive useful answers through the bounded answer/tool path with honest verification provenance; deterministic checks cannot certify arbitrary factual prose. Preserve independent grounded validation appropriate to the task, without fabricating semantic certainty or making a redundant generic judge/planner mandatory for every answer.
 
-The sweep found **93 local branch refs not ancestors of the then-current
-`origin/main`**, plus numerous worktrees. This is an inventory count, not 93
-backlog items: many are backups, WIP snapshots, duplicate patches, or historical
-Freebuff sessions. Compare patch identity and live PR/issue state before
-promoting any ref.
+Initial measurable engineering targets (proposed, not achieved guarantees): ordinary no-tool answers use one successful cheap-capable answer generation, at most two Jev judgments, and no irrelevant retrieval/AST/DAG or redundant generative completion judge on the successful path. Measure end-to-end and per-stage latency, first useful output, input/output tokens, all attempts and full cost. Target ordinary no-tool p95 <=10s across at least 20 varied requests per Jev mode; retain the existing <30s bounded site-check contract. Current-information tasks have explicit retrieval and end-to-end deadlines. Stop at shared request budget on failure; do not multiply retries across stages. Initial paid smoke remains capped at $0.005 total; a representative benchmark is a separate bounded run, with estimated cost reviewed before execution. Small samples demonstrate behavior, not 99% statistical confidence.
 
-- `codex/hv5-sovereignty-20260929` contains work already represented by merged
-  #146; do not replay those duplicate commits.
-- `codex/lane3-jev-phase-local-accounting-notice` at `6269636c9b` has one
-  potentially useful CLI notice commit; recover only that slice as described
-  above.
-- `codex/oc-handoff-jev-gate` at `87a672e8ad` must not land wholesale because
-  of the spend-settlement regression; extract only independently reviewed safe
-  improvements if still needed.
-- `codex/canon-reconcile-20261005` and the active #180 branch are review
-  candidates; reconcile distinct hunks against remote canon before cherry-pick.
-  The `canonical-plan-reconcile` worktree is already an ancestor of remote main
-  and is historical.
-- Preserve the dirty legacy Freebuff worktree at
-  `.freebuff/worktrees/86ac1455-199f-4d4d-96b4-46b235cd4bfb` until its untracked
-  `HANDOFF/MCP_ISOLATION_BASELINE_2026-10-03.md` and `tmp_phase_f/` are
-  classified and intentionally captured/discarded by their owner. Do not prune
-  or clean worktrees during backlog reconciliation.
+The repo-local PBJ baseline at `tmp/provider-baseline-pbj-1791995619/summary.json` records 5.396 seconds, `$0.0001254825`, one model call and no Jev call. It is useful baseline evidence only: it does not exercise Jev pre/post, outage handling, surface parity or the full request matrix, and its spend is not yet present in the #196 ledger/accounting owner.
 
-### Scope and status corrections
+Ordering correction: runtime/cancellation and enforceable budgets support this milestone; the sandwich/stable-answer path must not wait for all Fireworks/economics or broad audit work. First establish baseline receipts, identify shared bottlenecks, implement the smallest general change with regressions and independent review, then replay the matrix. Cross-provider optimization follows on the same fixtures after its dependencies. Critical confirmed safety defects can interrupt. #207 owns the shared lifecycle milestone, #219 remains one regression case, and #177 owns sequencing. Weather success alone, a zero-model site probe, or green CI does not close the milestone.
 
-- Replace the stale numbered “Next implementation slice” with the order above;
-  archival narratives must not define current status.
-- `DF-UI-2` dogfood is delivered by #148 and HTTP plan dispatch by #155; only
-  its explicit closure-contract review remains.
-- `JEV-P4-residual`, `JEV-P6`, `HV-0` through `HV-6`, `HV-2-use`, `HV-3-use`,
-  HUL A–D, Jev P0–P4, release publishing, #173, #178 and #171 are landed per
-  recorded evidence; do not reopen or repeat them.
-- The comment that the HV-5 sovereignty branch was rewritten is not evidence
-  that all current changes are unique or needed. Compare patches before recovery.
-- This sweep cannot honestly promise 99% certainty about every defect across
-  every historical ref. It records evidence, known limits, and exact remaining
-  closure conditions so new remote comments and CI changes can be incorporated
-  before each merge.
+Source review already shows the generic conversation hourglass gathers request context and may call a separate generative completion judge after Jev; the non-Jev conversation path walks a model ladder. These are investigation targets, not yet proven root causes for every slow response. Validate real traces before changing them. The operator resumed execution on 2026-10-14 and authorized bounded live dogfood and serial implementation toward the full burndown; the earlier planning-only stand-down is superseded.
+
+
+
+Source-grounded implementation target: server.run_chat_task -> AutonomousAgent.run_prompt sends keyed everyday conversation into run_hourglass_request, which invokes _hourglass_request_context before answering. That context path can enumerate repository files and distill AST context; the answer path permits model-ladder attempts, semantic rounds, and a separate assess_completion generation. Introduce the general answer/simple-action/plan decision before repository intake, with a compact Jev preflight and explicit degraded router. For ordinary answers, bypass unrelated repository/web/plan work, use one governed successful answer plus Jev post-check, and reuse post-check evidence instead of a redundant generic completion call. A rejected answer may trigger only bounded task-relevant revision; a request for planning never grants write authorization or automatically replays the full pipeline. Preserve specialized lanes for requests needing tools/current evidence. Regression assertions must count repo enumeration, AST, web, answer/Jev/judge calls, and all retries. This is a reviewed implementation proposal, not a completed fix.
+
+### Priority and issue ownership
+1. **P0 current operator blocker #219**: weather 96778 fails on missing HTTP worker in a temporary checkout. Runtime/package provenance, installed-worker smoke, exact prompt replay, truthful empty-retrieval result. #198 auto-closed through merged #213; #199 remains distinct. Restore GUI/driver availability for operator testing and wait for #213's merge-result CI before disposing #217.
+2. **P1 execution bounds and simple requests**: reconcile merged #213 cancellation behavior with #199 spend exhaustion, #215 enforceable no-escalation and #200–#207 acceptance: shared GUI/CLI/MCP lifecycle, capability preflight, bounded retry/refusal and one honest terminal result. Test #211 isolation early wherever it affects these checks. Operator ruling: retain Jev scoring of the proposed bounded action and observed result even for easy requests. Preserve #207 Choice→probe→Noul acceptance (at most two Jev calls; zero OpenRouter calls for site probes); code owns deterministic safety and execution. Measure overhead and expose Jev fallback/defer honestly. A zero-model probe is partial evidence only.
+3. **P1 provider economics**: EV-0→EV-5 dependency chain, EV-6 evidence, EV-7 #212 after EV-4, EV-8 bounded live receipts; #195 task routing, #196 token/cost accounting, #197 reversible trials, #216 review requirements. #212 currently has no production callers of `resolve_route`/`chat_for_route`, and shared actual-cost settlement is deferred. OpenRouter pricing refresh alone does not establish cheapest-capable cross-provider routing. Require fresh session catalog/price provenance, task eligibility, explicit unknown/stale behavior and total successful-task cost including retries/judging.
+4. **Validated audit priorities #181**: #182 reviewable deepened/pinpoints/pattern_fits exports and exact-key provenance; #183 prescriptions (zero execution-ready; 9 highest candidates false positives); #184–#186 security; #187–#188 test gaps; #190–#191 concurrency; #192 stubs. Prioritize reproducible reachable severity, not heuristic rank/count. #189 stays closed. Recompute residuals after #194/#214. Confirmed critical security may interrupt sequence.
+5. **Canonical residuals**: #179 CLI notice / AST preflight / seed-bound reconciliation; DRV-1 live receipt; DRV-2 real consent input and vision; REPO-CARDS CLI/MCP/CI; PROVISION production entry points; calibration ledger/application workflow; OC signed-candidate dependency; explicit CIVICSCOPE scope disposition. Retain DF-AUDIT-5 residual recheck, GAP-plan-http/DF-UI-2 closure-contract review, and Exit: HUL originating-authority/criterion review; shipped HUL does not automatically close that tracked review. CIVICSCOPE currently scores 0 with no STATUS row and missing tests/test_gates.test.ts plus tools/completion-gate.mjs: require in-repo evidence/contract or explicit reviewed defer/removal. No redoing completed HUL/HV/Jev phases or deferred jury. Close #177 only after every child has evidence-backed disposition.
+6. **Infrastructure #218**: owner installs Blacksmith app before runner changes; separate from product correctness. Failed rankings credential behavior needs an explicit disposition in economics work.
+
+### Operator requirement: Jev must not be a single point of failure
+
+Retain Jev pre-action and post-result judgments when available. When Jev is unavailable, supported safe simple requests must still complete through deterministic capability/policy checks, bounded execution, and evidence-based result validation. Jev outage alone is not a reason to refuse an otherwise supported safe request.
+
+- Cover missing key, authentication failure, quota exhaustion/429, timeout, transport failure, malformed judgment, and outage between pre-action and post-result judgment. An explicit valid Jev refusal is not an outage and must not be bypassed as fallback.
+- Detect absent credentials without a network attempt; bound other attempts by the request deadline and circuit-break repeated failures. Do not add unbounded retries or silently escalate to expensive models.
+- Preserve consent, authorization, SSRF/tool restrictions, spend caps and cancellation in degraded mode. If deterministic checks cannot establish that the requested action is permitted or evidence cannot support an answer, defer only that unresolved action/claim with an actionable explanation.
+- Distinguish execution status from verification provenance: a successful deterministic result remains useful, visibly marked `Jev unavailable; deterministic verification`, with failure reason and partial pre/post judgment provenance. Never mark it Jev-verified or claim unavailable evidence.
+- For the weather request (#219), continue available forecast/alert retrieval with location, source and retrieval time; bounded permitted synthesis may be used where needed. No forecast data means an honest unavailable-data result, not 'no significant weather'.
+- Do not repeat an already executed action because post-result Jev failed. Preserve the original result and any incurred usage; recovery affects subsequent requests rather than replaying side effects.
+- GUI, CLI and MCP must share this contract. Required tests: Jev healthy, absent before request, failed before execution, failed after execution, repeated outage, restored next request, cancellation, and valid refusal. Assert bounded calls/latency/spend, preserved policy, no duplicate execution, honest terminal status and provenance.
+
+Both Jev-backed and Jev-unavailable modes are release gates for the simple-task matrix. Existing zero-model site smoke is partial degraded-path evidence only; it does not prove outage handling or surface parity. Applies to #207 lifecycle, #219 weather and #177 burndown; this is a plan/acceptance update, not a claim that implementation is complete.
+
+
+### Release acceptance and live budget
+Before medium/large tasks, pass a small-task matrix: normal answer, exact weather prompt, deterministic site probe, empty retrieval, missing capability/credential, provider spend cap/429, timeout, active/repeated cancellation followed by success, and refusal termination. Check GUI/CLI/MCP parity. Each receipt records source/time, runtime commit, model/provider, catalog age, attempts, elapsed time, tokens, conservative reservation and actual/unresolved spend, fallback, one truthful terminal result, and independent verification.
+
+Use fixtures for failures. Proposed initial paid smoke ceiling: $0.005 total, one tiny paid OpenRouter response and one Fireworks response, no failover/escalation; only after reservation/call-count controls are enforceable and prerequisites pass. User authorized live API testing; this is an intentionally smaller working limit, not permission to exhaust account credit. Tiny receipts prove integration, not model quality ranking.
+
+Every code phase: focused regressions + required local gates + independent review + green merge-result CI, followed by live evidence where required and canonical phase gate. Track claims as passed/failed/unverified; no unsupported 99% confidence promise. New operator reports are immediate blockers: deduplicate, map issue/priority, then reproduce and resolve in this serial lane.
+
+
+
+### Worktree preservation
+
+Preserve parked and dirty worktrees; do not prune or replay historical branches during this burndown. HV-5 duplicate commits are already represented by merged #146. Never merge 87a672e8 wholesale: it reverses main's spend-settlement policy; extract only independently reviewed safe residuals. Recover only the scoped #179 CLI/AST/pack changes. Preserve .freebuff/worktrees/86ac1455-199f-4d4d-96b4-46b235cd4bfb and its untracked HANDOFF/MCP_ISOLATION_BASELINE_2026-10-03.md and tmp_phase_f/ until owner disposition. Do not run the GUI from a mutable temporary rebase tree.
+
+Also preserve `C:\Users\SCM\.freebuff\worktrees\efd322d6\Harness`. It remains an uncommitted generic simple-request experiment based on old `7b0fad6`; its newest source write was 2026-10-14 00:16:07 HST and `C:\Users\SCM\AppData\Roaming\Freebuff\logs\orchestrator-stderr.log` last wrote at 00:35:12 with expired/superseded-session errors. At the 11:32 HST recheck neither location had changed, so there was no evidence that session was still writing. After #213, port only narrow generic intent and regression ideas with fresh review. Do not carry its mandatory independent-generative-judge assertion: the operator requirement above keeps Jev pre/post and task-appropriate grounded validation while removing a redundant generic completion judge from the normal successful path.
+
+### Verification recorded this pass
+
+Before merge, #213 head `75a6b71` passed all 12 workflow checks, an independent 55-test battery, installed-wheel HTTP-worker smoke, and local self-audit with native Jev at 10/10 on all four dimensions. A plain ambient-key `unittest` invocation failed, while the audit's isolated hermetic suite passed; record both rather than treating the ambient failure as green. Merge-result core CI run 38641021718 passed on `6cc8b87`.
+
+The earlier 108 focused lifecycle/guard tests passed outside the sandbox after temporary-directory permission errors in the initial sandbox run. Pre-merge stable-main GUI/API site smoke returned HTTPS200 in about 1.84 seconds, model=null, cost=0; this proves only the deterministic probe, not #207's required Jev pre/post or CLI/MCP parity. GUI in-process read-only driver is healthy; direct CLI/MCP driver service remains unconfigured/unverified. The PBJ baseline above incurred `$0.0001254825`; no further paid provider trial was performed in this planning pass. Rankings failure cause was verified in the failed job log: no OpenRouter key available.
 
 ---
 
