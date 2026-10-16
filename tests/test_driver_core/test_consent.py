@@ -292,6 +292,49 @@ class InputBackendTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(seen, [("click", None, "OK")])
 
+    def test_native_windows_backend_focuses_one_exact_title(self):
+        class WindowApi:
+            def __init__(self):
+                self.focused = []
+
+            def find_exact_visible(self, title):
+                return [42] if title == "Harness smoke target" else []
+
+            def focus(self, hwnd, title):
+                self.focused.append((hwnd, title))
+                return True
+
+        api = WindowApi()
+        backend = osal.native_input_backend(
+            platform="windows", window_api=api)
+        ok, detail = osal.send_input(
+            "focus", target="Harness smoke target", backend=backend)
+        self.assertTrue(ok, detail)
+        self.assertEqual(api.focused, [(42, "Harness smoke target")])
+        self.assertEqual(backend.supported_kinds, ("focus",))
+
+    def test_native_windows_backend_refuses_ambiguous_and_other_kinds(self):
+        class WindowApi:
+            def find_exact_visible(self, title):
+                return [42, 43]
+
+            def focus(self, hwnd, title):
+                raise AssertionError("ambiguous targets must never be focused")
+
+        backend = osal.native_input_backend(
+            platform="windows", window_api=WindowApi())
+        ok, detail = osal.send_input(
+            "focus", target="Duplicate", backend=backend)
+        self.assertFalse(ok)
+        self.assertIn("found 2", detail)
+        ok, detail = osal.send_input("click", target="Duplicate",
+                                    backend=backend)
+        self.assertFalse(ok)
+        self.assertIn("does not support 'click'", detail)
+
+    def test_native_backend_is_unavailable_on_unsupported_platforms(self):
+        self.assertIsNone(osal.native_input_backend(platform="linux"))
+
     def test_a_backend_can_be_withdrawn_at_runtime(self):
         """Observe the machine, never drive it -- as a policy, not an
         accident of never having configured it."""

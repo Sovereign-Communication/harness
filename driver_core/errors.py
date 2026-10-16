@@ -12,6 +12,14 @@ class DriverError(Exception):
     """Base class for every driver-core failure."""
 
 
+class PersistentStateUnavailable(DriverError):
+    """Safety state could not be checked or durably updated."""
+
+
+class ExecutionOutcomeUnknown(PersistentStateUnavailable):
+    """An action succeeded but its durable completion could not be recorded."""
+
+
 class SchemaError(DriverError):
     """A declared schema was malformed, or a state did not satisfy it."""
 
