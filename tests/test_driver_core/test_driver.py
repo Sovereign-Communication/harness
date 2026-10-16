@@ -319,8 +319,12 @@ class ExecutionSafetyTests(unittest.TestCase):
 
     def test_dry_run_produces_the_record_without_the_effect(self):
         performed = []
-        registry = build_read_only_registry()
-        registry.register("click", lambda a, p: performed.append(p))
+        def backend(kind, value=None, target=None):
+            performed.append((kind, value, target))
+            return True, "sent"
+        backend.supported_kinds = ("click",)
+        registry = build_driver_registry(allow_write=True,
+                                         input_backend=backend)
         executor = Executor(vocabulary=DEFAULT_VOCABULARY, registry=registry,
                             dry_run=True, audit=MemoryAuditLog())
         result = executor.execute("click", {"target": "OK"},

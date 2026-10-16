@@ -164,6 +164,9 @@ class Settings:
     #: the only one that cannot be re-derived from a structured input, so it
     #: is never enabled by the presence of another setting.
     screen_enabled: bool = False
+    #: The in-repo native input backend is a separate, explicit opt-in. It is
+    #: still constrained by ``allow_write`` and per-action consent.
+    native_input_enabled: bool = False
 
     def __post_init__(self):
         if not self.base_url.startswith(("http://", "https://")):
@@ -216,6 +219,7 @@ class Settings:
             "confidence_threshold": self.confidence_threshold,
             "dry_run": self.dry_run,
             "allow_write": self.allow_write,
+            "native_input_enabled": self.native_input_enabled,
         }
         return data
 
@@ -262,21 +266,26 @@ def load_settings(env=None, **overrides):
         mcp_tool=env.get(ENV_PREFIX + "MCP_TOOL", ""),
         dom_url=env.get(ENV_PREFIX + "DOM_URL", ""),
         screen_enabled=_env_bool(env, "SCREEN", False),
+        native_input_enabled=_env_bool(env, "NATIVE_INPUT", False),
     )
     return settings.with_overrides(**overrides) if overrides else settings
 
 
-def default_audit_path():
-    """The audit log's home, under this project's own state directory.
-
-    Namespaced so it can never collide with another project's state, and
-    created lazily by the audit module rather than at import time -- a library
-    that writes to disk on import is a library nobody can safely import twice.
-    """
+def _default_state_directory():
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_STATE_HOME")
     if base:
-        return str(Path(base) / "driver-core" / "audit.jsonl")
-    return str(Path.home() / ".driver-core" / "audit.jsonl")
+        return Path(base) / "driver-core"
+    return Path.home() / ".driver-core"
+
+
+def default_audit_path():
+    """The audit log's home, under this project's own state directory."""
+    return str(_default_state_directory() / "audit.jsonl")
+
+
+def default_consent_ledger_path():
+    """Stable per-user replay state, independent of audit-log configuration."""
+    return str(_default_state_directory() / "rest-consents.sqlite3")
 
 
 def assert_no_foreign_reads(names):

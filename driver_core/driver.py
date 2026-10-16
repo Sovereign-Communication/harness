@@ -40,7 +40,7 @@ and the audit log records it as a first-class event.
 """
 import uuid
 
-from . import policy
+from . import osal, policy
 from .actions import DEFAULT_VOCABULARY
 from .audit import (
     KIND_CAPTURE, KIND_ESCALATION, KIND_EXTRACTION, KIND_REFUSAL, AuditLog,
@@ -49,9 +49,10 @@ from .audit import (
 from .budget import Budget
 from .consensus import tally
 from .config import Settings, default_audit_path, load_settings
-from .errors import PerceptionUnavailable, VocabularyError
+from .errors import (PerceptionUnavailable, PersistentStateUnavailable,
+                     VocabularyError)
 from .executor import Executor
-from .executor_registry import build_driver_registry, executability
+from .executor_registry import INPUT_BACKED, build_driver_registry, executability
 from .extractors import ExtractorPool
 from .jev_client import JevClient
 from .perception import select_capture
@@ -122,7 +123,8 @@ class Driver:
 
     def __init__(self, *, audit, settings=None, budget=None,
                  vocabulary=DEFAULT_VOCABULARY, pool=None, jev=None,
-                 executor=None, sources=None, screen=None, pools=None):
+                 executor=None, sources=None, screen=None, pools=None,
+                 input_backend=osal.USE_REGISTERED_INPUT_BACKEND):
         self.settings = settings or load_settings()
         self.budget = budget or Budget(self.settings.run_ceiling_usd,
                                        step_ceiling_usd=self.settings.step_ceiling_usd)
@@ -174,10 +176,18 @@ class Driver:
         if executor is not None:
             same_chain(getattr(executor, "audit", None), self.audit,
                        type(executor).__name__)
+        if (input_backend is osal.USE_REGISTERED_INPUT_BACKEND
+                and self.settings.allow_write
+                and self.settings.native_input_enabled):
+            # The native backend is never installed as process-global state.
+            # Each driver gets only the backend its own explicit settings
+            # authorize, so a second driver cannot inherit this capability.
+            input_backend = osal.native_input_backend()
         self.executor = executor or Executor(
             vocabulary=vocabulary,
             registry=build_driver_registry(
-                allow_write=self.settings.allow_write),
+                allow_write=self.settings.allow_write,
+                input_backend=input_backend),
             dry_run=self.settings.dry_run,
             audit=self.audit)
 
@@ -258,10 +268,23 @@ class Driver:
                               capture=capture, agreement=agreement,
                               decision=decision, receipt=receipt,
                               cost=decision.cost)
+        if (action.requires_consent and consent is None
+                and action.name in INPUT_BACKED):
+            return self._stop(
+                step_id, "execution", "execution_refused",
+                f"action {action.name!r} is {action.action_class} and no "
+                "consent was supplied", capture=capture,
+                agreement=agreement, decision=decision, receipt=receipt,
+                cost=decision.cost,
+                needs=executability(action, self.executor.registry)[1])
         try:
             execution = self.executor.execute(
                 action.name, _params_for(action, params),
                 consent=consent, step_id=step_id)
+        except PersistentStateUnavailable:
+            # Durable replay-state failures must reach the REST boundary as
+            # server errors, not as ordinary action refusals.
+            raise
         except Exception as exc:
             return self._stop(step_id, "execution", "execution_refused", str(exc),
                               capture=capture, agreement=agreement,

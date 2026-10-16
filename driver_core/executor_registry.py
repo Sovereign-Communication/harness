@@ -22,6 +22,11 @@ consent refuses, and a matching consent against an unregistered executor also
 refuses. The second case is the more useful of the two, because it is the
 one that means "this build cannot do that, whatever anyone asks".
 
+The optional native Windows backend is also driver-local, requires both
+``DRIVER_ALLOW_WRITE`` and ``DRIVER_NATIVE_INPUT``, and reports only the input
+kinds it can actually perform. An embedding application may continue to
+register its own process-wide backend through :mod:`driver_core.osal`.
+
 OS contact lives in exactly one module for the same reason the host
 project enforces it: a place that reaches for ``subprocess`` in one file and
 ``os`` in another grows a different idea of what a subprocess is on each
@@ -53,32 +58,38 @@ def _sent(kind, result):
     return {"kind": kind, "sent": True}
 
 
-def _click(action, params):
+def _click(action, params, *, input_backend=osal.USE_REGISTERED_INPUT_BACKEND):
     """``click``: activate a declared, resolved element."""
-    return _sent("click", osal.send_input("click", target=params["target"]))
+    return _sent("click", osal.send_input(
+        "click", target=params["target"], backend=input_backend))
 
 
-def _type_text(action, params):
+def _type_text(action, params, *, input_backend=osal.USE_REGISTERED_INPUT_BACKEND):
     """``type_text``: type a literal string into the focused element."""
-    return _sent("type", osal.send_input("type", value=params["text"]))
+    return _sent("type", osal.send_input(
+        "type", value=params["text"], backend=input_backend))
 
 
-def _press_key(action, params):
+def _press_key(action, params, *, input_backend=osal.USE_REGISTERED_INPUT_BACKEND):
     """``press_key``: send a declared key combination."""
-    return _sent("key", osal.send_input("key", value=params["keys"]))
+    return _sent("key", osal.send_input(
+        "key", value=params["keys"], backend=input_backend))
 
 
-def _focus(action, params):
+def _focus(action, params, *, input_backend=osal.USE_REGISTERED_INPUT_BACKEND):
     """``focus``: bring a declared window or element to the foreground."""
-    return _sent("focus", osal.send_input("focus", target=params["target"]))
+    return _sent("focus", osal.send_input(
+        "focus", target=params["target"], backend=input_backend))
 
 
-def _scroll(action, params):
+def _scroll(action, params, *, input_backend=osal.USE_REGISTERED_INPUT_BACKEND):
     """``scroll``: scroll the focused scrollable region."""
-    return _sent("scroll", osal.send_input("scroll", value=params["direction"]))
+    return _sent("scroll", osal.send_input(
+        "scroll", value=params["direction"], backend=input_backend))
 
 
-def _submit_irreversible(action, params):
+def _submit_irreversible(
+        action, params, *, input_backend=osal.USE_REGISTERED_INPUT_BACKEND):
     """``submit_irreversible``: activate a control that cannot be undone.
 
     A distinct input kind rather than a ``click``, so a backend is told the
@@ -87,7 +98,8 @@ def _submit_irreversible(action, params):
     time this handler runs there is exactly one approved, unrepeatable
     activation of exactly one named control.
     """
-    return _sent("submit", osal.send_input("submit", target=params["target"]))
+    return _sent("submit", osal.send_input(
+        "submit", target=params["target"], backend=input_backend))
 
 
 def _write_file(action, params):
@@ -133,6 +145,34 @@ WRITE_EXECUTORS = {
 INPUT_BACKED = ("click", "type_text", "press_key", "focus", "scroll",
                 "submit_irreversible")
 
+INPUT_KIND_FOR_EXECUTOR = {
+    "click": "click",
+    "type_text": "type",
+    "press_key": "key",
+    "focus": "focus",
+    "scroll": "scroll",
+    "submit_irreversible": "submit",
+}
+
+
+def input_backend_needs(action, registry):
+    """Return any input capability required before ``action`` may run."""
+    if action.executor not in INPUT_BACKED:
+        return []
+
+    platform = osal.platform_name()
+    backend = registry.input_backend_for(platform)
+    if backend is None:
+        return [f"register an input backend for {platform} "
+                f"(driver_core.osal.register_input_backend); no registered "
+                f"backend exists, so {action.name} is declared, not executable"]
+
+    kind = INPUT_KIND_FOR_EXECUTOR[action.executor]
+    if not osal.input_backend_supports(backend, kind):
+        return [f"input backend for {platform} does not support {kind!r}, "
+                f"so {action.name} is declared, not executable"]
+    return []
+
 
 def executability(action, registry):
     """Whether ``action`` can run on this driver *right now*.
@@ -148,12 +188,7 @@ def executability(action, registry):
     if registry.get(action.executor) is None:
         needs.append(f"executor {action.executor!r} is not registered."
                      f"{registry.policy_note}")
-    if (action.executor in INPUT_BACKED
-            and osal.platform_name() not in osal.input_backends()):
-        needs.append(f"register an input backend for {osal.platform_name()} "
-                     f"(driver_core.osal.register_input_backend); none is "
-                     f"registered, so {action.name} is declared, not "
-                     f"executable")
+    needs.extend(input_backend_needs(action, registry))
     return (not needs), needs
 
 
@@ -169,10 +204,19 @@ WRITE_DISABLED_NOTE = (
 class ExecutorRegistry:
     """A closed name -> handler map."""
 
-    def __init__(self, handlers=None, *, policy_note=""):
+    def __init__(self, handlers=None, *, policy_note="",
+                 input_backend=osal.USE_REGISTERED_INPUT_BACKEND):
         self._handlers = dict(handlers or {})
         #: Extra text appended to the "not registered" refusal.
         self.policy_note = policy_note
+        #: A driver-local backend, or the process registration seam when the
+        #: sentinel is left in place. Explicit None means no backend.
+        self.input_backend = osal.freeze_input_backend(input_backend)
+
+    def input_backend_for(self, platform):
+        if self.input_backend is osal.USE_REGISTERED_INPUT_BACKEND:
+            return osal.input_backends().get(platform)
+        return self.input_backend
 
     def register(self, name, handler):
         if not callable(handler):
@@ -196,7 +240,8 @@ class ExecutorRegistry:
         return len(self._handlers)
 
     def clone(self):
-        return ExecutorRegistry(self._handlers, policy_note=self.policy_note)
+        return ExecutorRegistry(self._handlers, policy_note=self.policy_note,
+                                input_backend=self.input_backend)
 
 
 def _noop(action, params):
@@ -247,7 +292,8 @@ def build_read_only_registry(state_provider=None):
     return registry
 
 
-def build_driver_registry(state_provider=None, *, allow_write=False):
+def build_driver_registry(state_provider=None, *, allow_write=False,
+                          input_backend=osal.USE_REGISTERED_INPUT_BACKEND):
     """What a :class:`~driver_core.driver.Driver` runs with.
 
     Read-only executors always. The mutating and irreversible ones only when
@@ -258,8 +304,16 @@ def build_driver_registry(state_provider=None, *, allow_write=False):
     delete files.
     """
     registry = build_read_only_registry(state_provider)
+    input_backend = osal.freeze_input_backend(input_backend)
+    registry.input_backend = input_backend
     if allow_write:
         for name, handler in WRITE_EXECUTORS.items():
+            if name in INPUT_BACKED and input_backend is not \
+                    osal.USE_REGISTERED_INPUT_BACKEND:
+                def handler_with_backend(action, params, _handler=handler):
+                    return _handler(action, params,
+                                    input_backend=input_backend)
+                handler = handler_with_backend
             registry.register(name, handler)
     else:
         registry.policy_note = WRITE_DISABLED_NOTE
