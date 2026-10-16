@@ -149,23 +149,29 @@ class DriverLiveConformanceTest(unittest.TestCase):
 
     def test_assertion_5_4xx_boundary_raises_perception_unavailable(self):
         """5. 4xx boundary -> PerceptionUnavailable (e.g. absent schema)."""
-        # Absent schema is a 400 bad request from server, adapter must raise
-        req = urllib.request.Request(
-            f"{self.base_url}/step",
-            data=json.dumps({"target": "cli"}).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.token}",
-            },
-            method="POST",
-        )
-        with self.assertRaises(urllib.error.HTTPError) as ctx:
-            urllib.request.urlopen(req)
-        self.assertEqual(ctx.exception.code, 400)
-        body = json.loads(ctx.exception.read().decode("utf-8"))
-        self.assertFalse(body.get("ok"))
-        self.assertIn("schema is required", body.get("error", ""))
-        ctx.exception.close()
+        # Absent, empty and whitespace-only schemas share the established
+        # required-schema refusal on the real loopback HTTP surface.
+        for step_body in (
+                {"target": "cli"},
+                {"target": "cli", "schema": ""},
+                {"target": "cli", "schema": "  "}):
+            req = urllib.request.Request(
+                f"{self.base_url}/step",
+                data=json.dumps(step_body).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.token}",
+                },
+                method="POST",
+            )
+            with self.subTest(body=step_body):
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(req)
+                self.assertEqual(ctx.exception.code, 400)
+                body = json.loads(ctx.exception.read().decode("utf-8"))
+                self.assertFalse(body.get("ok"))
+                self.assertIn("schema is required", body.get("error", ""))
+                ctx.exception.close()
 
         # Through adapter, absent schema raises PerceptionUnavailable
         with self.assertRaises(PerceptionUnavailable):

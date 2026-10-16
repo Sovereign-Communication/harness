@@ -163,9 +163,7 @@ class Service:
             return _wrapped(400, {
                 "ok": False, "error": "target must be a non-empty string"})
         schema_name = body.get("schema")
-        if ("schema" in body
-                and (not isinstance(schema_name, str)
-                     or not schema_name.strip())):
+        if "schema" in body and not isinstance(schema_name, str):
             return _wrapped(400, {"ok": False,
                                   "error": "schema must be a non-empty string"})
         if "consent" in body and not isinstance(body["consent"], dict):
