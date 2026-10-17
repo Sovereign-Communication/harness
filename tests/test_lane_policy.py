@@ -138,7 +138,7 @@ class PanelLanePolicyTests(unittest.TestCase):
                         max_tokens=600, reasoning_effort="auto")
             rp = fake2.chat_posts()[-1][2]["reasoning"]
             self.assertEqual(rp["effort"], "low")
-            self.assertEqual(rp["max_tokens"], int((8192 + 200) * 0.4))
+            self.assertNotIn("max_tokens", rp)
 
     def test_explicit_reasoning_effort_passes_through(self):
         _result, fake, _preflight = self._run(max_tokens=2048,

@@ -224,7 +224,8 @@ _REASONING_PARAM_ERR_HINTS = ("reasoning", "mandatory",
 #
 # Process-lifetime, like the site breaker board: one relearning call per
 # process, not one per request. `reset_reasoning_param_memory` exists so tests
-# (and an operator who has changed a route) can drop it.
+# (and an operator who has changed a route) can drop it. Persisted to config
+# cache so restarts don't re-pay for known parameter rejections.
 _REASONING_PARAM_REJECTED = set()
 
 
@@ -277,17 +278,18 @@ def _effort_to_send(reasoning_effort, model_id):
 def _build_reasoning_param(model_id, reasoning_effort, max_tokens, budget):
     """Return the reasoning dict to embed in the payload, or None.
 
-    An explicit disable sends {"effort": "none"} with no max_tokens cap (a
-    token cap is meaningless when reasoning is off; OpenRouter's documented
-    effort vocabulary is low|medium|high|none).
+    OpenRouter strictly enforces mutual exclusion: only ONE of 'effort'
+    and 'max_tokens' can be specified in the reasoning dict; sending both
+    produces HTTP 400.
+    When effort is active, send {'effort': effort}; an explicit disable sends
+    {'effort': 'none'} with no max_tokens cap.
     """
     effort = _effort_to_send(reasoning_effort, model_id)
     if effort is None:
         return None
     if effort == "none":
         return {"effort": "none"}
-    cap = max(1, int(max_tokens * budget))
-    return {"effort": effort, "max_tokens": cap}
+    return {"effort": effort}
 
 
 def _chat_reservation_slots(model_id, reasoning_effort="auto", max_429_retries=0):

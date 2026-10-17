@@ -646,6 +646,50 @@ class SimpleRequestEdgeTests(unittest.TestCase):
         self.assertIn("deadline", result["simple_request"]["post_skipped"])
         policy.evaluate_answer.assert_not_called()
 
+    def test_is_simple_answer_request_recognizes_leading_question_mark(self):
+        from harness.simple_request import is_simple_answer_request
+        self.assertTrue(is_simple_answer_request("? simple question - answer please"))
+        self.assertTrue(is_simple_answer_request("? what is ice"))
+
+    def test_strategy_needs_tool_escalates_to_hourglass_when_live_jev_available(self):
+        policy = MagicMock()
+        policy.evaluate_simple_strategy.return_value = _pre(
+            native=True, strategy="needs_tool")
+        with (
+            patch("harness.agent.governor_for", return_value=("key", self.gov)),
+            patch("harness.agent.policy_for", return_value=policy),
+            patch.object(self.agent, "_live_jev_available", return_value=True),
+            patch.object(self.agent, "run_hourglass_request",
+                         return_value={"status": "ok", "response": "world records fact",
+                                       "workflow_tier": "hourglass"}) as hourglass,
+        ):
+            result = self.agent.run_simple_request(
+                "how many attempts at Guinness world records have there been in total?",
+                session_id="guinness")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["response"], "world records fact")
+        hourglass.assert_called_once()
+        self.assertTrue(hourglass.call_args[1].get("web"))
+
+    def test_strategy_needs_tool_escalates_to_handle_conversation_when_live_jev_unavailable(self):
+        policy = MagicMock()
+        policy.evaluate_simple_strategy.return_value = _pre(
+            native=True, strategy="needs_tool")
+        with (
+            patch("harness.agent.governor_for", return_value=("key", self.gov)),
+            patch("harness.agent.policy_for", return_value=policy),
+            patch.object(self.agent, "_live_jev_available", return_value=False),
+            patch.object(self.agent, "_handle_conversation",
+                         return_value={"status": "ok", "response": "direct convo fact"}) as convo,
+        ):
+            result = self.agent.run_simple_request(
+                "how many attempts at Guinness world records have there been in total?",
+                session_id="guinness")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["response"], "direct convo fact")
+        convo.assert_called_once()
+        self.assertTrue(convo.call_args[1].get("web"))
+
 
 if __name__ == "__main__":
     unittest.main()

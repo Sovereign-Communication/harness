@@ -107,7 +107,7 @@ class ReasoningDisableTests(unittest.TestCase):
              [{"role": "user", "content": "hi"}], 8192, reasoning_effort="auto")
         rp = fake.payloads()[0]["reasoning"]
         self.assertEqual(rp["effort"], "low")
-        self.assertEqual(rp["max_tokens"], int(8192 * 0.4))
+        self.assertNotIn("max_tokens", rp)
 
 
 if __name__ == "__main__":

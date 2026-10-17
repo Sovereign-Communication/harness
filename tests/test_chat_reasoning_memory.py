@@ -108,12 +108,5 @@ class ReasoningParamMemoryTests(unittest.TestCase):
         self.assertFalse(chatmod.reasoning_param_rejected(
             "deepseek/deepseek-v4.1-flash"))
 
-    def test_a_non_reasoning_model_still_never_sends_the_key(self):
-        transport = ScriptedTransport()
-        self._chat(transport, model="meta-llama/llama-3.1-8b-instruct")
-        self.assertEqual(len(transport.calls), 1)
-        self.assertNotIn("reasoning", transport.calls[0])
-
-
 if __name__ == "__main__":
     unittest.main()

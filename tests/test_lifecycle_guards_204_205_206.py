@@ -8,7 +8,7 @@ driven with a stubbed conversation lane.
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from harness.agent import AutonomousAgent
 from harness.config import DEFAULT_MAX_COST, DEFAULT_TASK_MAX_COST, load_settings
@@ -656,5 +656,144 @@ class WaistCooldownSkipTests(unittest.TestCase):
         self.assertEqual(plan["status"], "refused")
 
 
+class AgentRateCircuitIntegrationTests(unittest.TestCase):
+    def test_agent_orchestrator_chat_fn_notes_429_and_skips_model(self):
+        from harness.agent import AutonomousAgent
+        from tests._fake import FakeTransport
+        transport = FakeTransport()
+        agent = AutonomousAgent(transport=transport)
+        gov = MagicMock()
+        calls = []
+
+        def fake_governed_text(trans, key, g, model, prompt, tokens, label="orchestrate"):
+            calls.append(model)
+            if model == "m1":
+                raise HarnessError("HTTP 429: rate limited")
+            return "ok response", 0.0001
+
+        with patch("harness.agent.resolve_scout_ladder", return_value=["m1", "m2"]), \
+             patch("harness.agent.resolve_api_key", return_value="k"), \
+             patch("harness.agent.governed_text", side_effect=fake_governed_text):
+            chat_fn = agent._orchestrator_chat_fn(gov)
+            # Call 1: tries m1 (gets 429), then m2 (succeeds)
+            res1 = chat_fn("prompt 1")
+            self.assertEqual(res1, "ok response")
+            self.assertEqual(calls, ["m1", "m2"])
+            self.assertTrue(agent._rate_circuit.should_skip("m1"))
+
+            # Call 2: m1 is skipped because it's in rate circuit cooldown, goes straight to m2
+            res2 = chat_fn("prompt 2")
+            self.assertEqual(res2, "ok response")
+            self.assertEqual(calls, ["m1", "m2", "m2"])
+
+    def test_agent_hourglass_answer_once_skips_rate_limited_model(self):
+        from harness.agent import AutonomousAgent
+        from tests._fake import FakeTransport
+        transport = FakeTransport()
+        agent = AutonomousAgent(transport=transport)
+        agent._rate_circuit.note_rate_limited("m1")
+        gov = MagicMock()
+        gov.preflight = MagicMock()
+        gov.working_remaining = MagicMock(return_value=1.0)
+        gov.record_actual = MagicMock()
+
+        calls = []
+
+        def fake_chat(transport, api_key, model, messages, max_tokens, reasoning_effort, governor):
+            calls.append(model)
+            return 200, {"choices": [{"message": {"content": "answer from " + model}}],
+                         "usage": {"cost": 0.0001}}
+
+        agent.settings = MagicMock()
+        agent.settings.panel_pool = ["m1", "m2"]
+        agent.settings.judge = None
+        agent.settings.convergence_model = None
+        agent.settings.escalation_pool = []
+        with patch("harness.agent.chat", side_effect=fake_chat), \
+             patch("harness.agent.governor_for", return_value=("k", gov)):
+            attempt = agent._hourglass_answer_once("test question", "ctx", governor=gov)
+        self.assertEqual(calls, ["m2"])
+        self.assertEqual(attempt["model"], "m2")
+
+    def test_agent_hourglass_answer_once_handles_429_harness_error(self):
+        from harness.agent import AutonomousAgent
+        from tests._fake import FakeTransport
+        transport = FakeTransport()
+        agent = AutonomousAgent(transport=transport)
+        gov = MagicMock()
+        gov.preflight = MagicMock()
+        gov.working_remaining = MagicMock(return_value=1.0)
+        gov.record_actual = MagicMock()
+
+        calls = []
+
+        def fake_chat(transport, api_key, model, messages, max_tokens, reasoning_effort, governor):
+            calls.append(model)
+            if model == "m1":
+                raise HarnessError("HTTP 429: rate limit exceeded")
+            return 200, {"choices": [{"message": {"content": "answer from " + model}}],
+                         "usage": {"cost": 0.0001}}
+
+        agent.settings = MagicMock()
+        agent.settings.panel_pool = ["m1", "m2"]
+        agent.settings.judge = None
+        agent.settings.convergence_model = None
+        agent.settings.escalation_pool = []
+        with patch("harness.agent.chat", side_effect=fake_chat), \
+             patch("harness.agent.governor_for", return_value=("k", gov)):
+            attempt = agent._hourglass_answer_once("test question", "ctx", governor=gov)
+        self.assertEqual(calls, ["m1", "m2"])
+        self.assertTrue(agent._rate_circuit.should_skip("m1"))
+        self.assertEqual(attempt["model"], "m2")
+
+    def test_all_models_rate_limited_falls_back_to_original_pools(self):
+        from harness.agent import AutonomousAgent
+        from tests._fake import FakeTransport
+        transport = FakeTransport()
+        agent = AutonomousAgent(transport=transport)
+        agent._rate_circuit.note_rate_limited("m1")
+        agent._rate_circuit.note_rate_limited("m2")
+
+        gov = MagicMock()
+        gov.preflight = MagicMock()
+        gov.working_remaining = MagicMock(return_value=1.0)
+        gov.record_actual = MagicMock()
+
+        calls = []
+
+        def fake_chat(transport, api_key, model, messages, max_tokens, reasoning_effort, governor):
+            calls.append(model)
+            return 200, {"choices": [{"message": {"content": "answer from " + model}}],
+                         "usage": {"cost": 0.0001}}
+
+        agent.settings = MagicMock()
+        agent.settings.panel_pool = ["m1", "m2"]
+        agent.settings.judge = None
+        agent.settings.convergence_model = None
+        agent.settings.escalation_pool = []
+        with patch("harness.agent.chat", side_effect=fake_chat), \
+             patch("harness.agent.governor_for", return_value=("k", gov)):
+            attempt = agent._hourglass_answer_once("test question", "ctx", governor=gov)
+        self.assertEqual(calls, ["m1"])
+        self.assertEqual(attempt["model"], "m1")
+
+        # Test orchestrator_chat_fn fallback when all models are rate limited
+        orch_calls = []
+
+        def fake_gov_text(transport, api_key, governor, model, prompt_text, max_tokens, label=None):
+            orch_calls.append(model)
+            return "orchestrator ok", 0.0001
+
+        with patch("harness.agent.resolve_scout_ladder", return_value=["m1", "m2"]), \
+             patch("harness.agent.governor_for", return_value=("k", gov)), \
+             patch("harness.agent.resolve_api_key", return_value="k"), \
+             patch("harness.agent.governed_text", side_effect=fake_gov_text):
+            chat_fn = agent._orchestrator_chat_fn(gov)
+            res = chat_fn("prompt")
+            self.assertEqual(res, "orchestrator ok")
+            self.assertEqual(orch_calls, ["m1"])
+
+
 if __name__ == "__main__":
     unittest.main()
+

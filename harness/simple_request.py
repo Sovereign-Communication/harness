@@ -165,9 +165,12 @@ def is_simple_answer_request(prompt: str, *, intent: str = "conversation") -> bo
         return False
     # Require an answer-shaped request.  Bare fragments remain on the normal
     # conversation lane instead of being guessed into this lifecycle.
+    stripped = lowered.lstrip("?!.,;: \t\r\n")
     return bool(
         lowered.endswith("?")
-        or lowered.startswith(_SIMPLE_OPENERS)
+        or lowered.startswith("?")
+        or stripped.endswith("?")
+        or stripped.startswith(_SIMPLE_OPENERS)
         or is_supplied_text_rewrite(text)
     )
 
