@@ -14,6 +14,7 @@ hold whatever the interleaving:
 """
 import collections
 import random
+import sys
 import threading
 import time
 import unittest
@@ -174,13 +175,15 @@ class ChaosTests(unittest.TestCase):
         started = time.monotonic()
         for seed in (1, 2):
             self.check(seed, 400)
-        self.assertLess(time.monotonic() - started, 20)
+        limit = 60 if getattr(sys, "gettrace", lambda: None)() else 20
+        self.assertLess(time.monotonic() - started, limit)
 
     def test_tight_budget_forces_overruns_and_refusals(self):
         started = time.monotonic()
         for seed in (3, 4):
             self.check(seed, 12)
-        self.assertLess(time.monotonic() - started, 20)
+        limit = 60 if getattr(sys, "gettrace", lambda: None)() else 20
+        self.assertLess(time.monotonic() - started, limit)
 
 
 if __name__ == "__main__":

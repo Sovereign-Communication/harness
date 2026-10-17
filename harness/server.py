@@ -1011,6 +1011,12 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         line = _TOKEN_IN_LOG_RE.sub(r"\1REDACTED", fmt % args)
         sys.stderr.write(f"[ui] {line}\n")
 
+    def log_error(self, fmt, *args):
+        # Benign idle keep-alive socket timeouts on HTTP/1.1 connections should not spam logs
+        if args and any(isinstance(a, TimeoutError) or "timed out" in str(a).lower() for a in args):
+            return
+        super().log_error(fmt, *args)
+
     def _send_json(self, obj, code=200, close=False):
         body = json.dumps(obj, indent=2).encode("utf-8")
         self.send_response(code)

@@ -62,6 +62,17 @@ class DecomposeViaLlmTests(unittest.TestCase):
         with self.assertRaises(HarnessError):
             decompose_via_llm(lambda p: "```json\n{malformed\n```", "g")
 
+    def test_repair_truncated_json_and_candidates(self):
+        from harness.waist import _repair_truncated_json, _parse_json_object, _json_object_candidates
+        self.assertIsNone(_repair_truncated_json("not json"))
+        repaired = _repair_truncated_json('{"escaped": "hello \\"world\\"", "list": [1], "nested": {"a": 2}, "tail": "cut off')
+        self.assertEqual(repaired.get("list"), [1])
+        self.assertEqual(repaired.get("nested"), {"a": 2})
+        parsed = _parse_json_object('{"verdict": "pass", "reason": "all good', "test")
+        self.assertEqual(parsed.get("verdict"), "pass")
+        candidates = list(_json_object_candidates("<think>reasoning</think>```json\n{\"a\": 1}\n```"))
+        self.assertIn('{"a": 1}', candidates)
+
     def test_empty_response_refused(self):
         with self.assertRaises(HarnessError) as ctx:
             decompose_via_llm(lambda p: "", "g")

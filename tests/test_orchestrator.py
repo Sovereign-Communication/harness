@@ -66,6 +66,14 @@ class AssessCompletionTests(unittest.TestCase):
         with self.assertRaises(HarnessError):
             orch.assess_completion("g", "s", chat_fn)
 
+    def test_thinking_tags_and_braces_in_strings(self):
+        def chat_fn(prompt):
+            return '<think>Thinking {draft: false}</think> {"complete": true, "remaining": "", "reason": "handled { braces } cleanly"}'
+        v = orch.assess_completion("the goal", "state", chat_fn)
+        self.assertIsNotNone(v)
+        self.assertTrue(v["complete"])
+        self.assertEqual(v["reason"], "handled { braces } cleanly")
+
 
 class DriveTruthTests(unittest.TestCase):
     def test_failed_node_overrides_complete_judge(self):

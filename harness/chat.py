@@ -10,10 +10,11 @@ and must never be mined for votes, file bodies, or consent decisions.
 """
 import json
 import math
+import os
 import time
 import uuid
 
-from .config import OPENROUTER_CHAT_URL
+from .config import CONFIG_DIR, OPENROUTER_CHAT_URL
 from .errors import HarnessError, ProviderUsageUnknown, ToolCancelled
 from .events import emit, provider_request_context
 from .output import eprint
@@ -226,7 +227,35 @@ _REASONING_PARAM_ERR_HINTS = ("reasoning", "mandatory",
 # process, not one per request. `reset_reasoning_param_memory` exists so tests
 # (and an operator who has changed a route) can drop it. Persisted to config
 # cache so restarts don't re-pay for known parameter rejections.
-_REASONING_PARAM_REJECTED = set()
+REASONING_PARAM_REJECTED_PATH = os.path.join(CONFIG_DIR, "reasoning_param_rejected.json")
+
+_DEFAULT_REJECTED_REASONING_MODELS = set()
+
+
+
+def _load_reasoning_param_rejected():
+    s = set(_DEFAULT_REJECTED_REASONING_MODELS)
+    try:
+        if os.path.exists(REASONING_PARAM_REJECTED_PATH):
+            with open(REASONING_PARAM_REJECTED_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    s.update(strip_variant_suffix(m) for m in data if m)
+    except Exception:
+        pass
+    return s
+
+
+def _save_reasoning_param_rejected():
+    try:
+        os.makedirs(os.path.dirname(REASONING_PARAM_REJECTED_PATH), exist_ok=True)
+        with open(REASONING_PARAM_REJECTED_PATH, "w", encoding="utf-8") as f:
+            json.dump(sorted(_REASONING_PARAM_REJECTED), f, indent=2)
+    except Exception:
+        pass
+
+
+_REASONING_PARAM_REJECTED = _load_reasoning_param_rejected()
 
 
 def note_reasoning_param_rejection(model_id):
@@ -234,6 +263,7 @@ def note_reasoning_param_rejection(model_id):
     canonical = strip_variant_suffix(model_id or "")
     if canonical:
         _REASONING_PARAM_REJECTED.add(canonical)
+        _save_reasoning_param_rejected()
 
 
 def reasoning_param_rejected(model_id):
@@ -241,9 +271,16 @@ def reasoning_param_rejected(model_id):
     return strip_variant_suffix(model_id or "") in _REASONING_PARAM_REJECTED
 
 
-def reset_reasoning_param_memory():
+def reset_reasoning_param_memory(clear_disk=False):
     """Forget every learned rejection (tests; operator route changes)."""
     _REASONING_PARAM_REJECTED.clear()
+    if clear_disk:
+        try:
+            if os.path.exists(REASONING_PARAM_REJECTED_PATH):
+                os.remove(REASONING_PARAM_REJECTED_PATH)
+        except Exception:
+            pass
+
 
 
 def looks_reasoning(model_id):

@@ -445,17 +445,22 @@ class AutonomousAgent:
                 prompt, session_id=sid, cancel_check=cancel_check)
         elif intent == "conversation":
             if is_simple_answer_request(prompt, intent=intent):
-                return self.run_simple_request(
+                res = self.run_simple_request(
                     prompt, session_id=sid, cancel_check=cancel_check,
                     max_tokens=max_tokens, reasoning_effort=reasoning_effort,
                     token_budget=token_budget)
+                if res.get("status") == "ok" or (res.get("status") == "deferred" and res.get("simple_request", {}).get("generation_calls", 0) > 0):
+                    return res
+                # A pre-generation deferred simple-answer request (needs tools/web or ambiguous)
+                # falls through to the conversation / hourglass lane with web enabled so ordinary
+                # queries always receive a real, grounded answer instead of a dead-end deferral.
             if self._live_jev_available():
                 return self.run_hourglass_request(
-                    prompt, session_id=sid, cancel_check=cancel_check, web=web,
+                    prompt, session_id=sid, cancel_check=cancel_check, web=bool(web or is_simple_answer_request(prompt, intent=intent)),
                     max_tokens=max_tokens, reasoning_effort=reasoning_effort,
                     token_budget=token_budget)
             return self._handle_conversation(
-                prompt, sid, cancel_check, web=web,
+                prompt, sid, cancel_check, web=bool(web or is_simple_answer_request(prompt, intent=intent)),
                 max_tokens=max_tokens, reasoning_effort=reasoning_effort,
                 token_budget=token_budget)
         elif intent == "audit":
@@ -1913,8 +1918,10 @@ class AutonomousAgent:
         governed, tier-0 scout head -- the cheapest rung of the same sliding
         scale that classifies nodes. Raises HarnessError on failure; callers
         degrade loudly."""
+        allow_escalation = bool(getattr(self.settings, "allow_escalation", False))
         ladder = resolve_scout_ladder(use_free=self.settings.use_free,
-                                      custom_frontier=self.settings.frontier_model)
+                                      custom_frontier=self.settings.frontier_model,
+                                      allow_escalation=allow_escalation)
         api_key = resolve_api_key()
 
         def chat_fn(prompt_text):

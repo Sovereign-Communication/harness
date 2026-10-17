@@ -435,6 +435,50 @@ def _balanced_object_spans(text: str) -> List[str]:
     return spans
 
 
+def _repair_truncated_json(candidate: str) -> Optional[dict]:
+    """Attempt to repair JSON truncated by token limits (unclosed braces/brackets/strings)."""
+    s = candidate.strip()
+    if not s.startswith("{"):
+        return None
+    # Strip trailing commas or trailing incomplete key/colon
+    s = re.sub(r',\s*$', '', s)
+    s = re.sub(r':\s*$', ': ""', s)
+    in_str = False
+    escaped = False
+    open_brackets = 0
+    open_braces = 0
+    for ch in s:
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == '[':
+            open_brackets += 1
+        elif ch == ']':
+            open_brackets = max(0, open_brackets - 1)
+        elif ch == '{':
+            open_braces += 1
+        elif ch == '}':
+            open_braces = max(0, open_braces - 1)
+    if in_str:
+        s += '"'
+    s += ']' * open_brackets
+    s += '}' * open_braces
+    try:
+        data = json.loads(s)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return None
+
+
 def _json_object_candidates(text: str) -> Iterable[str]:
     """Candidate JSON object texts, most-trusted first.
 
@@ -442,16 +486,28 @@ def _json_object_candidates(text: str) -> Iterable[str]:
     anything found by scanning. After that: the first balanced object, so a
     reasoning trace printed before the answer cannot displace it.
     """
-    clean_text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
+    clean_text = re.sub(r"<(think|thought|reasoning|reflection)>[\s\S]*?</\1>", "", text, flags=re.IGNORECASE).strip()
+    clean_text = re.sub(r"\[harness:reasoning_fallback\][\s\S]*?\n\n", "", clean_text).strip()
     sources = [clean_text] if clean_text and clean_text != text else []
     sources.append(text)
+    seen = set()
     for src in sources:
-        for m in re.finditer(r"```(?:json)?\s*([\s\S]*?)\s*```", src, re.IGNORECASE):
-            body = m.group(1).strip()
-            if body:
+        for m in re.finditer(r"(`{3,})(?:json)?\s*([\s\S]*?)\s*\1", src, re.IGNORECASE):
+            body = m.group(2).strip()
+            if body and body not in seen:
+                seen.add(body)
                 yield body
         for span in _balanced_object_spans(src):
-            yield span
+            if span not in seen:
+                seen.add(span)
+                yield span
+        first_brace = src.find("{")
+        last_brace = src.rfind("}")
+        if first_brace != -1 and last_brace > first_brace:
+            outer = src[first_brace:last_brace + 1]
+            if outer not in seen:
+                seen.add(outer)
+                yield outer
 
 
 def _parse_json_object(response_text: str, what: str) -> Dict[str, Any]:
@@ -471,7 +527,8 @@ def _parse_json_object(response_text: str, what: str) -> Dict[str, Any]:
 
     text = response_text.strip()
     candidates = list(_json_object_candidates(text))
-    candidates.append(text)          # last resort: the whole body is the object
+    if text.startswith("{") or not candidates:
+        candidates.append(text)          # last resort: the whole body is the object
 
     last_error: Exception = HarnessError(
         f"no valid JSON object found in {what}")
@@ -505,6 +562,11 @@ def _parse_json_object(response_text: str, what: str) -> Dict[str, Any]:
                 return val
         except Exception:
             pass
+
+        # 4. Truncated JSON repair (e.g. cut off at max token boundary)
+        repaired = _repair_truncated_json(candidate)
+        if repaired is not None:
+            return repaired
 
     raise HarnessError(
         f"failed to parse JSON from {what}: {last_error}") from last_error

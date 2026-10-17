@@ -2079,6 +2079,19 @@ class MissionsEndpointTests(ServerHarness):
         self.assertEqual(status, 200)
         self.assertEqual(data["total"], 1)
 
+    def test_ui_request_handler_log_error_timeout_suppression(self):
+        from io import StringIO
+        from harness.server import UiRequestHandler
+        handler = UiRequestHandler.__new__(UiRequestHandler)
+        # Suppresses TimeoutError and strings containing timed out
+        handler.log_error("Request timed out: %r", TimeoutError("timed out"))
+        handler.log_error("Request timed out: %s", "connection timed out")
+        # Real errors are forwarded to super().log_error
+        with mock.patch("sys.stderr", new_callable=StringIO) as err:
+            handler.log_error("Real error: %s", "disk failure")
+            self.assertIn("Real error", err.getvalue())
+
+
 
 if __name__ == "__main__":
     unittest.main()
