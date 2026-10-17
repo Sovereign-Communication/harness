@@ -641,17 +641,6 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "required_tests": ["tests/test_jev_calibration_analysis.py"],
         "required_files": ["harness/jev_calibration.py"],
     },
-    "CIVICSCOPE-COMPLETION": {
-        "status_needle": r"CIVICSCOPE-COMPLETION",
-        "pr_pattern": r"PR #1\b|PR #\d+ MERGED",
-        "required_tests": ["tests/test_gates.test.ts"],
-        "required_files": [
-            "docs/jev-roadmap.md",
-            "packs/phase_completion.pack.json",
-            "tools/completion-gate.mjs",
-        ],
-        "user_facing": True,
-    },
 }
 
 

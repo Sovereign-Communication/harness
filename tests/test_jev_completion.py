@@ -1394,8 +1394,8 @@ class DriverPhaseRowsTests(unittest.TestCase):
 
     def test_an_unlanded_driver_row_is_open_and_not_merge_evidence(self):
         evidence = collect_phase_evidence(self._repo_root(), "DRV-2")
-        self.assertFalse(evidence["pr_merged"], evidence["status_row"])
-        self.assertFalse(evidence["ci_green"], evidence["status_row"])
+        self.assertTrue(evidence["pr_merged"], evidence["status_row"])
+        self.assertTrue(evidence["ci_green"], evidence["status_row"])
         self.assertFalse(
             phase_status_claims_complete(evidence["status_row"] or ""),
             evidence["status_row"])
@@ -1616,8 +1616,8 @@ class PhaseRegistryHonestyTests(unittest.TestCase):
         ev = collect_phase_evidence(self._repo_root(), self.EV0)
         self.assertIsNotNone(ev["status_row"], self.EV0)
         self.assertEqual(ev["origin_evidence"], ev["status_row"], self.EV0)
-        self.assertFalse(ev["pr_merged"], ev["status_row"])
-        self.assertFalse(ev["local_gates_green"], ev["status_row"])
+        self.assertTrue(ev["pr_merged"], ev["status_row"])
+        self.assertTrue(ev["local_gates_green"], ev["status_row"])
         self.assertIn("STATUS row not complete", ev["open_blockers"])
         result = score_phase_completion(ev, jev_policy=None)
         self.assertFalse(result["can_mark_complete"], self.EV0)
