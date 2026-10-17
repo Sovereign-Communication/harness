@@ -435,8 +435,11 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
     # A model already known to reject the reasoning parameter is called
     # without it from the first attempt, rather than paying for a doomed
     # request and a retry every single time.
+    gov_supports = (governor is None or not hasattr(governor, "supports_reasoning")
+                    or governor.supports_reasoning(canonical_model))
     want_reasoning = (_effort_to_send(reasoning_effort, model) is not None
-                      and not reasoning_param_rejected(canonical_model))
+                      and not reasoning_param_rejected(canonical_model)
+                      and gov_supports)
 
     def account_unknown_usage(exc, payload, prior_cost=0.0):
         if prior_cost and not getattr(exc, "_chat_prior_cost_added", False):

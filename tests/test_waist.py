@@ -543,6 +543,31 @@ class ComposePlanTests(_WaistFixture):
                             chat_fn=lambda p: (DECOMP_JSON, 0.005))
         self.assertEqual(plan["decomposition"], "llm:m/cheap")
 
+    def test_parse_json_object_candidates_and_fallbacks(self):
+        from harness.waist import _parse_json_object
+        from harness.errors import HarnessError
+        res1 = _parse_json_object("[1, 2, 3]\n{'ok': 1}", "test")
+        self.assertEqual(res1, {"ok": 1})
+        res2 = _parse_json_object('{"a": 1, // comment\n}', "test")
+        self.assertEqual(res2, {"a": 1})
+        res3 = _parse_json_object("{'flag': True, 'val': None}", "test")
+        self.assertEqual(res3, {"flag": True, "val": None})
+        with self.assertRaises(HarnessError):
+            _parse_json_object("[1, 2, 3]", "test_list")
+        with self.assertRaises(HarnessError):
+            _parse_json_object("[1, 2, // comment\n 3]", "test_comment_list")
+
+    def test_compose_plan_governed_chat_caller(self):
+        from tests._fake import FakeTransport, m, comp
+        from harness.spend import SpendGovernor
+        fake = FakeTransport(models=[m("m/cheap")], posts=[comp(DECOMP_JSON)])
+        gov = SpendGovernor(fake, "sk-test", max_cost=1.0)
+        plan = compose_plan(transport=fake, api_key="k", governor=gov,
+                            ledger=self.ledger, opts_goal="Split work",
+                            decompose_llm=True, decompose_model="m/cheap",
+                            allow_escalation=True)
+        self.assertEqual(plan["decomposition"], "llm:m/cheap")
+
     def test_heuristic_default_untouched(self):
         plan = compose_plan(transport=None, api_key=None, governor=None,
                             ledger=None, opts_goal="Fix typo",

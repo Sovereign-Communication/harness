@@ -1731,7 +1731,7 @@ class TestHourglassLane(unittest.TestCase):
     def _lane(self, root):
         (root / "util.py").write_text("x = 1\n", encoding="utf-8")
         agent = AutonomousAgent(settings=self._armed(), root_dir=root,
-                                history_dir=root)
+                                history_dir=root, transport=FakeTransport())
         engine = MagicMock()
         engine.apply_edit.return_value = {"status": "ok", "cost": 0.001}
         return agent, engine

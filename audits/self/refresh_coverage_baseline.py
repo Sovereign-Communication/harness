@@ -32,23 +32,68 @@ ROOT = HERE.parent.parent
 
 def main():
     root = str(ROOT)
+    try:
+        sys.stdout.reconfigure(line_buffering=True, write_through=True)
+        sys.stderr.reconfigure(line_buffering=True, write_through=True)
+    except Exception:
+        pass
+
+    class ProgressStream:
+        def __init__(self, target):
+            self.target = target
+            self.count = 0
+            self.total = None
+
+        def write(self, s):
+            if not s:
+                return
+            self.target.write(s)
+            self.target.flush()
+            dots = s.count(".") + s.count("s") + s.count("F") + s.count("E")
+            if dots:
+                self.count += dots
+                if self.total and (self.count % 50 == 0 or self.count == self.total):
+                    pct = int(self.count * 100 / self.total)
+                    self.target.write(f" [{self.count}/{self.total} - {pct}%]\n")
+                    self.target.flush()
+
+        def flush(self):
+            self.target.flush()
 
     battery_output = []
 
     def run_battery():
-        loader = unittest.defaultTestLoader
-        suite = loader.discover(start_dir=root + chr(47) + "tests",
-                                top_level_dir=root)
-        stream = io.StringIO()
-        runner = unittest.TextTestRunner(verbosity=1, stream=stream)
-        result = runner.run(suite)
-        if not result.wasSuccessful():
-            battery_output.append(stream.getvalue())
-        return result.wasSuccessful()
+        import contextlib
+        import harness.output
+        orig_quiet = harness.output.QUIET
+        harness.output.QUIET = True
+        err_stream = io.StringIO()
+        try:
+            loader = unittest.defaultTestLoader
+            suite = loader.discover(start_dir=root + chr(47) + "tests",
+                                    top_level_dir=root)
+            total = suite.countTestCases()
+            stream = ProgressStream(sys.stdout)
+            stream.total = total
+            print(f"Discovered {total} tests. Starting execution under trace...", flush=True)
+            runner = unittest.TextTestRunner(verbosity=1, stream=stream)
+            with contextlib.redirect_stderr(err_stream):
+                result = runner.run(suite)
+            if not result.wasSuccessful():
+                err_text = []
+                for test, err in result.errors:
+                    err_text.append(f"ERROR: {test}\n{err}")
+                for test, fail in result.failures:
+                    err_text.append(f"FAIL: {test}\n{fail}")
+                battery_output.append("\n".join(err_text) or err_stream.getvalue())
+            return result.wasSuccessful()
+        finally:
+            harness.output.QUIET = orig_quiet
 
-    print("tracing full battery (2-4 min)...")
+    print("tracing full battery (2-4 min)...", flush=True)
+    tests_dir = str(ROOT / "tests")
     tr = trace.Trace(count=1, trace=0,
-                     ignoredirs=[sys.prefix, sys.exec_prefix])
+                     ignoredirs=[sys.prefix, sys.exec_prefix, tests_dir])
     t0 = time.time()
     # trace.runfunc installs only sys.settrace; worker threads (the
     # executor's parallel dispatch) would run untraced and D12 would

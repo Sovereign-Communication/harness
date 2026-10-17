@@ -68,6 +68,21 @@ REPO = 'def add(a, b):\n    """Add two numbers."""\n    return a + b\n'
 DECLARED_OUTCOMES = ("sufficient", "plan", "evidence_request", "defer")
 
 
+class _BlockedTransport:
+    """Refuses every provider call, so the proof cannot spend."""
+
+    def get(self, *a, **k):
+        raise HarnessError("transport blocked (HV-5 default-path test)")
+
+    def post(self, *a, **k):
+        raise HarnessError("transport blocked (HV-5 default-path test)")
+
+    def __getattr__(self, name):
+        def _blocked(*a, **k):
+            raise HarnessError("transport blocked (HV-5 default-path test)")
+        return _blocked
+
+
 class _Repo:
     """A throwaway repo the real edit lane can actually run against."""
 
@@ -86,7 +101,7 @@ class _Repo:
     def agent(self, **overrides):
         return AutonomousAgent(
             settings=_settings(**overrides), root_dir=self.root,
-            transport=FakeTransport(), history_dir=self.root / ".hist")
+            transport=_BlockedTransport(), history_dir=self.root / ".hist")
 
     def run_edit(self, **overrides):
         return self.agent(**overrides).run_hourglass_request(
@@ -286,20 +301,6 @@ class _StubEngine:
         return {"status": "ok", "model_observed": [], "model_requested": None,
                 "diff": "", "node_id": "n1"}
 
-
-class _BlockedTransport:
-    """Refuses every provider call, so the proof cannot spend."""
-
-    def get(self, *a, **k):
-        raise HarnessError("transport blocked (HV-5 default-path test)")
-
-    def post(self, *a, **k):
-        raise HarnessError("transport blocked (HV-5 default-path test)")
-
-    def __getattr__(self, name):
-        def _blocked(*a, **k):
-            raise HarnessError("transport blocked (HV-5 default-path test)")
-        return _blocked
 
 
 class DefaultPathDeliversTheEvidenceTests(_GovernedRun):

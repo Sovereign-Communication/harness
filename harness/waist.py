@@ -15,6 +15,7 @@ terminal verdict is ledgered with its round count and cost.
 Sovereignty: the confirming model can refuse -- and a refusal is evidence,
 ledgered, and stops execution (fail-closed: a refused plan never dispatches).
 """
+import ast
 import hashlib
 import json
 import math
@@ -441,12 +442,16 @@ def _json_object_candidates(text: str) -> Iterable[str]:
     anything found by scanning. After that: the first balanced object, so a
     reasoning trace printed before the answer cannot displace it.
     """
-    for m in re.finditer(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE):
-        body = m.group(1).strip()
-        if body:
-            yield body
-    for span in _balanced_object_spans(text):
-        yield span
+    clean_text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
+    sources = [clean_text] if clean_text and clean_text != text else []
+    sources.append(text)
+    for src in sources:
+        for m in re.finditer(r"```(?:json)?\s*([\s\S]*?)\s*```", src, re.IGNORECASE):
+            body = m.group(1).strip()
+            if body:
+                yield body
+        for span in _balanced_object_spans(src):
+            yield span
 
 
 def _parse_json_object(response_text: str, what: str) -> Dict[str, Any]:
@@ -467,20 +472,40 @@ def _parse_json_object(response_text: str, what: str) -> Dict[str, Any]:
     text = response_text.strip()
     candidates = list(_json_object_candidates(text))
     candidates.append(text)          # last resort: the whole body is the object
-    # `candidates` is never empty (the whole body is always appended) and
-    # every iteration either returns or records why it was rejected, so
-    # `last_error` is always populated by the time we reach the raise.
+
     last_error: Exception = HarnessError(
-        f"no JSON object candidate in {what}")
+        f"no valid JSON object found in {what}")
     for candidate in candidates:
+        # 1. Direct standard JSON
         try:
             data = json.loads(candidate)
-        except json.JSONDecodeError as exc:
-            last_error = exc
+            if isinstance(data, dict):
+                return data
+            last_error = HarnessError(f"{what} must be a JSON object, not {type(data).__name__}")
             continue
-        if isinstance(data, dict):
-            return data
-        last_error = HarnessError(f"{what} must be a JSON object")
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            last_error = exc
+
+        # 2. Tolerant retry: strip JS single-line comments and trailing commas in arrays/objects
+        cleaned = re.sub(r'//[^\n]*', '', candidate)
+        cleaned = re.sub(r',\s*([}\]])', r'\1', cleaned)
+        try:
+            data = json.loads(cleaned)
+            if isinstance(data, dict):
+                return data
+            last_error = HarnessError(f"{what} must be a JSON object, not {type(data).__name__}")
+            continue
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            pass
+
+        # 3. Python-style literal dict (single quotes, True/False/None)
+        try:
+            val = ast.literal_eval(cleaned.strip())
+            if isinstance(val, dict):
+                return val
+        except Exception:
+            pass
+
     raise HarnessError(
         f"failed to parse JSON from {what}: {last_error}") from last_error
 
@@ -1385,7 +1410,9 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                  supplied_plan: bool = False,
                  brief: Optional[Dict[str, Any]] = None,
                  brief_tokens: Optional[int] = None,
-                 reader=None) -> Dict[str, Any]:
+                 reader=None,
+                 context_judgment: Optional[Dict[str, Any]] = None,
+                 **kwargs) -> Dict[str, Any]:
     """ONE owner of the plan-lane flow (CLI and MCP call this).
 
     Order: optional cheap-LLM decomposition (M1, condensed signatures) ->
@@ -1512,14 +1539,26 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         if chat_fn is None:
             if not decompose_model:
                 scout = resolve_scout_ladder(use_free=use_free,
-                                             custom_frontier=frontier_model)
+                                             custom_frontier=frontier_model,
+                                             allow_escalation=allow_escalation)
                 decompose_model = scout[0]
-            def chat_fn(prompt):
-                return governed_text(transport, api_key, governor, decompose_model,
-                                     prompt, DECOMPOSE_MAX_TOKENS, label="decompose")
+            else:
+                scout = [decompose_model]
+
+            def _caller_gov(p, m):
+                return governed_text(transport, api_key, governor, m,
+                                     p, DECOMPOSE_MAX_TOKENS, label="decompose")
+
+            chat_caller = _caller_gov
+        else:
+            scout = [decompose_model] if decompose_model else []
+            def _caller_fn(p, m):
+                return chat_fn(p)
+            chat_caller = _caller_fn
         # DF-HG-3: one strict retry on LLM decomposition failure, then loud heuristic fallback in preview too
         last_exc = None
         for attempt in (1, 2):
+            active_model = scout[min(attempt - 1, len(scout) - 1)] if scout else decompose_model
             try:
                 # chat_fn's contract is (text, cost) -- decomposition consumes
                 # the text only; the cost stays on the governor/caller side.
@@ -1534,11 +1573,11 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                     repo_context = decision_ctx + "\n\n" + str(sig_ctx).strip()
                 else:
                     repo_context = decision_ctx
-                decomposed = decompose_via_llm(lambda p: chat_fn(p)[0], plan_goal,
+                decomposed = decompose_via_llm(lambda p: chat_caller(p, active_model)[0], plan_goal,
                                                candidate_files=candidate_files,
                                                repo_context=repo_context)
-                decomposition = (f"llm:{decompose_model}"
-                                 if decompose_model else "llm:injected")
+                decomposition = (f"llm:{active_model}"
+                                 if active_model else "llm:injected")
                 last_exc = None
                 break
             except HarnessError as exc:
@@ -1900,6 +1939,11 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                     "reason": reason,
                     "cost": 0.0,
                 }
+        ctx_judge = kwargs.get("context_judgment") or context_judgment
+        if ctx_judge:
+            if "stage_judgments" not in plan_result:
+                plan_result["stage_judgments"] = {}
+            plan_result["stage_judgments"]["context"] = ctx_judge
         context_stage = next(
             (entry for entry in composition["stages"]
              if entry["stage"] == STAGE_CONTEXT), None)
@@ -1985,7 +2029,7 @@ def _fit_plan_to_single_pass(plan_result: Dict[str, Any], *, goal,
     return rebuilt
 
 
-def resolve_scout_ladder(use_free=True, custom_frontier=None):
+def resolve_scout_ladder(use_free=True, custom_frontier=None, allow_escalation=False):
     """The tier-0 ladder from the same sliding-scale policy that classifies
     nodes -- the decomposition model is simply the cheapest rung, with no
     new routing policy of its own."""
@@ -1993,7 +2037,8 @@ def resolve_scout_ladder(use_free=True, custom_frontier=None):
     route = resolve_sliding_scale_route(
         instruction="decompose the goal into subtasks",
         target_files=(), dependency_depth=0, is_leaf=True,
-        use_free=use_free, custom_frontier=custom_frontier)
+        use_free=use_free, custom_frontier=custom_frontier,
+        allow_escalation=allow_escalation)
     return list(route.ladder)
 
 
@@ -2178,7 +2223,8 @@ def compose_arguments(settings, *, goal, files, root=None,
                       reader=None, stages=None, brief=None,
                       token_budget=None,
                       max_input_tokens: Optional[int] = None,
-                      max_output_tokens: Optional[int] = None) -> Dict[str, Any]:
+                      max_output_tokens: Optional[int] = None,
+                      jev_policy=None) -> Dict[str, Any]:
     """Everything ``compose_plan`` needs to compose one run (HV-2-use / HV-6).
 
     ONE owner for *how a lane composes*, so the CLI, MCP and agent lanes
@@ -2234,10 +2280,12 @@ def compose_arguments(settings, *, goal, files, root=None,
         arguments["brief_tokens"] = estimate_brief_tokens(brief_pack)
         arguments["supplied_brief"] = True
     elif STAGE_CONTEXT in stages_subset:
-        intake = intake_brief(goal, files, reader=reader)
+        intake = intake_brief(goal, files, reader=reader, jev_policy=jev_policy)
         arguments["brief"] = intake["brief"]
         arguments["brief_tokens"] = intake["tokens"]
         arguments["supplied_brief"] = True
+        if intake.get("judgment"):
+            arguments["context_judgment"] = intake["judgment"]
     return arguments
 
 

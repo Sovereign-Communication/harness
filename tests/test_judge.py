@@ -1,4 +1,5 @@
 """Judge selection and lane demotion policy (regression-pinned model ids)."""
+import os
 import unittest
 
 from harness._http import HttpTransport
@@ -33,7 +34,10 @@ class ShippedModelFreshnessTests(unittest.TestCase):
                    | {DEFAULT_APPLY_MODEL_PAID} | set(SPECIALIST_POOL_PAID))
         self.assertTrue(shipped <= shipped_model_ids())
 
-    @unittest.skipUnless(resolve_api_key(), "live catalog check needs an API key")
+    @unittest.skipUnless(
+        resolve_api_key() and os.environ.get("HARNESS_TEST_ALLOW_NETWORK") == "1",
+        "live catalog check needs an API key and HARNESS_TEST_ALLOW_NETWORK=1",
+    )
     def test_shipped_ids_resolve_in_live_catalog(self):
         """The real freshness gate, auto-run wherever a key exists (this
         includes the dev machine and any keyed CI): a shipped id missing from

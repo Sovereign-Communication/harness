@@ -211,6 +211,7 @@ class SurfaceParityEndToEndTests(unittest.TestCase):
             "--token-budget-output", "8000",
         ])
         cfg = _cfg(use_free=True)
+        cfg.jev_api_key = None
         composed_args = compose_arguments(
             cfg,
             goal=args.goal,

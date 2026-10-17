@@ -351,6 +351,9 @@ class SpendGovernor:
             models = self.fetch_models(refresh=True)
             by_id = {m_["id"]: m_ for m_ in models}
             for mid in missing:
+                if mid in ("openrouter/free", "openrouter/auto"):
+                    self._pricing_cache[mid] = (0.0, 0.0)
+                    continue
                 if mid not in by_id:
                     raise HarnessError(f"model '{mid}' not found in live OpenRouter model list.")
                 p = by_id[mid].get("pricing", {})
@@ -367,6 +370,25 @@ class SpendGovernor:
                     raise HarnessError(f"could not parse pricing for '{mid}': {p}") from None
             self._pricing_fetched_at = time.time()
         return {m_: self._pricing_cache[m_] for m_ in model_ids}
+
+    def supports_reasoning(self, model_id):
+        """Check if a model in the catalog advertises reasoning support."""
+        if not model_id:
+            return True
+        from .routing_table import strip_variant_suffix
+        canonical = strip_variant_suffix(model_id)
+        if canonical in ("openrouter/free", "openrouter/auto"):
+            return False
+        if self._models is None:
+            return True
+        by_id = {m_["id"]: m_ for m_ in self._models}
+        entry = by_id.get(model_id) or by_id.get(canonical)
+        if entry is None:
+            return True
+        supported = entry.get("supported_parameters")
+        if supported is None:
+            return True
+        return "reasoning" in supported
 
     def fetch_models(self, refresh=False):
         """Live GET /models, cached per governor instance. The cache expires
