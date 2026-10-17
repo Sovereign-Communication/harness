@@ -379,5 +379,12 @@ class GatherWebContextTests(unittest.TestCase):
         self.assertIn("offline", sources[0]["note"])
 
 
+class WeatherAllowlistTests(unittest.TestCase):
+    def test_weather_hosts_in_default_fetch_hosts(self):
+        for host in ("api.weather.gov", "weather.gov", "wttr.in"):
+            self.assertIn(host, web.DEFAULT_FETCH_HOSTS)
+
+
 if __name__ == "__main__":
     unittest.main()
+

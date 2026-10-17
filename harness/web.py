@@ -57,6 +57,9 @@ DEFAULT_FETCH_HOSTS = frozenset({
     "arxiv.org",
     "scientificamerican.com",
     "quantamagazine.org",
+    "api.weather.gov",
+    "weather.gov",
+    "wttr.in",
 })
 
 _USER_AGENT = (

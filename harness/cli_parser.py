@@ -41,6 +41,8 @@ def _add_engine_flags(p, *, max_tokens_default, verify_required=False,
                         "on a free-tier-only key. Every rung is preflighted "
                         "against the run's cost ceiling and billed + ledgered "
                         "per attempt, never silently.")
+    p.add_argument("--no-escalation", dest="allow_escalation", action="store_false",
+                   help="prohibit walking the paid escalation ladder.")
     p.add_argument("--reasoning-effort", default=None,
                    choices=["auto", "off", "none", "low", "medium", "high", "on"])
     p.add_argument("--max-rotations", type=int, default=None)

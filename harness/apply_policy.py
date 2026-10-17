@@ -540,12 +540,15 @@ class ApplyEngineMixin:
         """Multi-rung escalation when a ladder is configured; else legacy rung."""
         if req.verify_only or not req.verify_cmd or state.gate_broken:
             return None
-        if not self.router.escalation_pool:
-            return self._escalate_legacy(req, state)
-        allowed = req.allow_escalation if req.allow_escalation is not None \
-            else self.router.allow_escalation
+        max_rot = getattr(req, "max_rot", 1)
+        if req.allow_escalation is not None:
+            allowed = req.allow_escalation
+        else:
+            allowed = self.router.allow_escalation and max_rot > 0
         if not allowed:
             return None
+        if not self.router.escalation_pool:
+            return self._escalate_legacy(req, state)
 
         # Seed judge condensed context / preferred rung from the verify lane
         # so later rungs actually see the failure guidance.
