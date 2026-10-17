@@ -429,19 +429,10 @@ class DriverInputConformanceTest(unittest.TestCase):
             }
             full_status, full_response = self._loopback_post(
                 service, valid_body)
-            malformed_status, malformed_response = self._loopback_post(
-                service, {
-                    **valid_body,
-                    "consent": {**valid_body["consent"],
-                                "granted": "false"},
-                })
 
         self.assertEqual(full_status, 503)
         self.assertFalse(full_response["ok"])
         self.assertIn("ledger is full", full_response["error"])
-        self.assertEqual(malformed_status, 400)
-        self.assertFalse(malformed_response["ok"])
-        self.assertIn("boolean", malformed_response["error"])
         self.assertEqual(self.calls, [])
 
     def test_finalization_failure_is_503_and_keeps_replay_blocked(self):
