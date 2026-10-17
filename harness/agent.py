@@ -358,6 +358,8 @@ class AutonomousAgent:
         self.root_dir = (root_dir or Path.cwd()).resolve()
         self.history_dir = history_dir
         self.transport = transport or HttpTransport()
+        from .lifecycle_guards import RateCircuit
+        self._rate_circuit = RateCircuit()
 
     def run_prompt(
         self,
@@ -689,8 +691,17 @@ class AutonomousAgent:
             pre_cost = float(pre.get("cost") or 0.0)
             strategy = pre.get("strategy") or "direct_answer"
             if bool(pre.get("native")) and strategy != "direct_answer":
-                reason = ("request needs a tool-backed lane" if strategy == "needs_tool"
-                          else "request needs clarification")
+                if strategy == "needs_tool":
+                    if self._live_jev_available():
+                        return self.run_hourglass_request(
+                            prompt, session_id=sid, cancel_check=cancel_check, web=True,
+                            max_tokens=max_tokens, reasoning_effort=reasoning_effort,
+                            token_budget=token_budget)
+                    return self._handle_conversation(
+                        prompt, sid, cancel_check, web=True,
+                        max_tokens=max_tokens, reasoning_effort=reasoning_effort,
+                        token_budget=token_budget)
+                reason = "request needs clarification"
                 result = {
                     "status": "deferred", "intent": "conversation",
                     "workflow_tier": "simple-answer", "prompt": prompt,
@@ -1210,7 +1221,7 @@ class AutonomousAgent:
         best_truncated_content = None
         best_truncated_model = None
         best_truncated_cost = 0.0
-        for model in ordered:
+        for model in (self._rate_circuit.available(ordered) or ordered):
             if cancel_check and cancel_check():
                 raise ToolCancelled("Prompt execution was cancelled by user")
             allocated_tokens = _resolve_lane_max_tokens(
@@ -1226,9 +1237,13 @@ class AutonomousAgent:
                     reasoning_effort=lane_effort, governor=gov)
             except HarnessError as exc:
                 attempts.append(f"{model}: {exc}")
+                if "429" in str(exc) or "rate limit" in str(exc).lower():
+                    self._rate_circuit.note_rate_limited(model)
                 continue
             if status != 200:
                 attempts.append(f"{model}: HTTP {status}")
+                if status == 429:
+                    self._rate_circuit.note_rate_limited(model)
                 emit("rotation", model=model, reason="answer_ladder_advance",
                      note=f"HTTP {status}")
                 continue
@@ -1906,7 +1921,7 @@ class AutonomousAgent:
             # governed_text returns (content, cost); every orchestration
             # consumer (decompose/triage/judge) wants the text alone.
             last = None
-            for model in ladder:
+            for model in (self._rate_circuit.available(ladder) or ladder):
                 try:
                     content, _ = governed_text(self.transport, api_key, gov,
                                                model, prompt_text, 2048,
@@ -1914,6 +1929,8 @@ class AutonomousAgent:
                     return content
                 except HarnessError as e:
                     last = e
+                    if "429" in str(e) or "rate limit" in str(e).lower():
+                        self._rate_circuit.note_rate_limited(model)
             raise last or HarnessError("orchestration ladder empty")
 
         return chat_fn

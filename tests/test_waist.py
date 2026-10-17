@@ -62,6 +62,42 @@ class DecomposeViaLlmTests(unittest.TestCase):
         with self.assertRaises(HarnessError):
             decompose_via_llm(lambda p: "```json\n{malformed\n```", "g")
 
+    def test_empty_response_refused(self):
+        with self.assertRaises(HarnessError) as ctx:
+            decompose_via_llm(lambda p: "", "g")
+        self.assertIn("empty response", str(ctx.exception).lower())
+
+    def test_confirm_plan_with_string_returning_chat_fn_success(self):
+        from harness.waist import compose_plan
+        from tests._fake import FakeTransport
+        from harness.spend import SpendGovernor
+        # chat_fn returning string (like orchestrator chat_fn) must not be sliced on char 0
+        transport = FakeTransport()
+        gov = SpendGovernor(transport, "key", max_cost=0.5)
+        plan = compose_plan(
+            transport=transport, api_key="k", governor=gov, ledger=None,
+            opts_goal="Split the work", candidate_files=["harness/sync.py"],
+            decompose_llm=True, chat_fn=lambda p: DECOMP_JSON)
+        self.assertIn("nodes", plan)
+        self.assertEqual(len(plan["nodes"]), 2)
+
+    def test_confirm_plan_with_tuple_and_dict_returning_chat_fn_success(self):
+        from harness.waist import compose_plan
+        from tests._fake import FakeTransport
+        from harness.spend import SpendGovernor
+        transport = FakeTransport()
+        gov = SpendGovernor(transport, "key", max_cost=0.5)
+        plan1 = compose_plan(
+            transport=transport, api_key="k", governor=gov, ledger=None,
+            opts_goal="Split the work", candidate_files=["harness/sync.py"],
+            decompose_llm=True, chat_fn=lambda p: (DECOMP_JSON, 0.001))
+        self.assertIn("nodes", plan1)
+        plan2 = compose_plan(
+            transport=transport, api_key="k", governor=gov, ledger=None,
+            opts_goal="Split the work", candidate_files=["harness/sync.py"],
+            decompose_llm=True, chat_fn=lambda p: {"content": DECOMP_JSON})
+        self.assertIn("nodes", plan2)
+
     def test_plan_task_uses_decomposed_dag_and_classifies_tiers(self):
         dag = decompose_via_llm(lambda p: DECOMP_JSON, "Split the work")
         plan = plan_task("Split the work", decomposed_dag=dag)

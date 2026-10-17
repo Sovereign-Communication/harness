@@ -611,7 +611,10 @@ def decompose_via_llm(
     """
     prompt = build_decomposition_prompt(
         goal, repo_context=repo_context, candidate_files=candidate_files)
-    dag = parse_decomposition_response(chat_fn(prompt))
+    raw = chat_fn(prompt)
+    if not raw or not str(raw).strip():
+        raise HarnessError("LLM decomposition returned empty response")
+    dag = parse_decomposition_response(raw)
     if not dag.nodes:
         raise HarnessError("LLM decomposition returned no nodes")
     for node in dag.nodes.values():
@@ -1555,6 +1558,14 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             def _caller_fn(p, m):
                 return chat_fn(p)
             chat_caller = _caller_fn
+
+        def _extract_caller_text(res):
+            if isinstance(res, (tuple, list)):
+                return res[0]
+            if isinstance(res, dict):
+                return res.get("content", "")
+            return str(res)
+
         # DF-HG-3: one strict retry on LLM decomposition failure, then loud heuristic fallback in preview too
         last_exc = None
         for attempt in (1, 2):
@@ -1573,7 +1584,7 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                     repo_context = decision_ctx + "\n\n" + str(sig_ctx).strip()
                 else:
                     repo_context = decision_ctx
-                decomposed = decompose_via_llm(lambda p: chat_caller(p, active_model)[0], plan_goal,
+                decomposed = decompose_via_llm(lambda p: _extract_caller_text(chat_caller(p, active_model)), plan_goal,
                                                candidate_files=candidate_files,
                                                repo_context=repo_context)
                 decomposition = (f"llm:{active_model}"
@@ -1759,7 +1770,7 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
                             critique_prompt, candidate_files, root=root,
                             ledger=ledger)
                         re_decomposed = decompose_via_llm(
-                            lambda p: chat_fn(p)[0], critique_prompt,
+                            lambda p: _extract_caller_text(chat_fn(p)), critique_prompt,
                             candidate_files=candidate_files,
                             repo_context=critique_context)
                         re_plan = plan_task(

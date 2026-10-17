@@ -43,7 +43,8 @@ class ReasoningTests(unittest.TestCase):
 
     def test_reasoning_param_caps_tokens(self):
         rp = _build_reasoning_param("x-r1", "low", 300, 0.4)
-        self.assertEqual(rp, {"effort": "low", "max_tokens": 120})
+        self.assertEqual(rp, {"effort": "low"})
+        self.assertNotIn("max_tokens", rp)
         self.assertIsNone(_build_reasoning_param("cohere/x", "auto", 300, 0.4))
         # The explicit disable sends {"effort": "none"} with NO max_tokens
         # cap (a cap is meaningless when reasoning is off).
@@ -58,7 +59,7 @@ class ReasoningTests(unittest.TestCase):
                             reasoning_effort="low")
         payload = fake.payloads()[0]
         self.assertEqual(payload["reasoning"]["effort"], "low")
-        self.assertEqual(payload["reasoning"]["max_tokens"], 120)
+        self.assertNotIn("max_tokens", payload["reasoning"])
 
     def test_chat_auto_omits_for_non_reasoning(self):
         fake = FakeTransport(models=[], posts=[comp("ok")])
