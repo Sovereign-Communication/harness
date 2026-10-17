@@ -418,10 +418,14 @@ class AutonomousAgent:
                 return self._handle_edit(prompt, sid, auto_apply, cancel_check,
                                          use_jev_completion=self._live_jev_available())
             if is_simple_answer_request(prompt, intent=intent):
-                return self.run_simple_request(
+                res = self.run_simple_request(
                     prompt, session_id=sid, cancel_check=cancel_check,
                     max_tokens=max_tokens, reasoning_effort=reasoning_effort,
                     token_budget=token_budget)
+                if res.get("status") == "ok" or (res.get("status") == "deferred" and res.get("simple_request", {}).get("generation_calls", 0) > 0):
+                    return res
+                # Pre-generation deferred simple-answer request falls through
+                # to the conversational lane with session history loaded.
             if intent == "conversation" and self._live_jev_available():
                 return self.run_hourglass_request(
                     prompt, session_id=sid, cancel_check=cancel_check, web=web,
@@ -1609,8 +1613,9 @@ class AutonomousAgent:
         checks still apply on the plan lane itself."""
         lowered = (prompt or "").lower()
         explicit_directive = any(p in lowered for p in EXECUTION_PHRASES)
-        trigger = bool(marker_defer or status == "plan_required"
-                       or explicit_directive)
+        intent = classify_prompt_intent(prompt)
+        plan_trigger = (status == "plan_required" and intent == "edit")
+        trigger = bool(marker_defer or plan_trigger or explicit_directive)
         return bool(trigger and (self._auto_escalation_armed()
                                  or explicit_directive))
 

@@ -49,6 +49,13 @@ _STOP_WORDS = frozenset({
     "in", "is", "it", "me", "of", "on", "please", "the", "this", "to",
     "what", "why", "with", "you",
 })
+_ANAPHORA_WORDS = frozenset({
+    "that", "this", "these", "those", "it", "its", "he", "him", "his",
+    "she", "her", "hers", "they", "them", "their", "theirs", "which",
+    "who", "whom", "whose", "why", "how", "where", "when", "first",
+    "second", "third", "last", "former", "latter", "remember", "context",
+    "again", "earlier", "previous", "same", "another", "more",
+})
 
 
 # A clock question asks what time it is *now* -- answerable from the
@@ -178,15 +185,23 @@ def is_simple_answer_request(prompt: str, *, intent: str = "conversation") -> bo
 
 def relevant_history(prompt: str, turns: Iterable[Dict[str, Any]], *,
                      max_turns: int = 3, max_chars: int = 2400) -> List[Dict[str, str]]:
-    """Keep a small, lexical-overlap slice of prior conversational turns."""
-    prompt_terms = set(_WORD_RE.findall((prompt or "").lower())) - _STOP_WORDS
+    """Keep a small, relevant slice of prior conversational turns."""
+    prompt_words = set(_WORD_RE.findall((prompt or "").lower()))
+    prompt_terms = prompt_words - _STOP_WORDS
+    has_anaphora = bool(prompt_words.intersection(_ANAPHORA_WORDS))
     kept: List[Dict[str, str]] = []
     used = 0
-    for turn in reversed(list(turns)):
+    turns_list = list(turns)
+    for idx, turn in enumerate(reversed(turns_list)):
         prior_prompt = str(turn.get("prompt") or "")
         response = str(turn.get("response") or "")
-        terms = set(_WORD_RE.findall(prior_prompt.lower())) - _STOP_WORDS
-        if prompt_terms and not prompt_terms.intersection(terms):
+        terms = (
+            (set(_WORD_RE.findall(prior_prompt.lower())) | set(_WORD_RE.findall(response.lower())))
+            - _STOP_WORDS
+        )
+        is_immediate_prior = (idx == 0)
+        has_overlap = bool(prompt_terms and prompt_terms.intersection(terms))
+        if not (has_overlap or (is_immediate_prior and has_anaphora)):
             continue
         size = len(prior_prompt) + len(response)
         if not prior_prompt or used + size > max_chars:
