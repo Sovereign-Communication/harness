@@ -833,11 +833,19 @@ def _run_mission_driver(pack, opts):
     (DF-HUL-3: one driver, no second loop). Adds the CLI attempt-seat note
     (DF-HUL-2) to the returned summary."""
     run_settings = load_settings()
-    run_settings.jev_api_key = None
-    try:
-        scope_policy = policy_for(run_settings)
-    except HarnessError:
-        scope_policy = None
+    allow_live_jev = bool(getattr(opts, "live_jev", False))
+    if allow_live_jev and getattr(run_settings, "jev_api_key", None):
+        plan_ceiling = getattr(opts, "max_cost_usd", None) or getattr(opts, "max_cost", None) or 0.10
+        gov = jev_face_governor(run_settings, plan_ceiling)
+        transport = HttpTransport()
+        ledger = _ledger(run_settings) if hasattr(run_settings, "ledger_path") else None
+        scope_policy = policy_for(run_settings, transport=transport, governor=gov, ledger=ledger)
+    else:
+        run_settings.jev_api_key = None
+        try:
+            scope_policy = policy_for(run_settings)
+        except HarnessError:
+            scope_policy = None
     stall_limit = getattr(opts, "stall_limit", None)
     result = _mission_run(
         pack,
@@ -1076,7 +1084,8 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
                             stages=getattr(opts, "stages", None),
                             brief=getattr(opts, "brief", None),
                             max_input_tokens=getattr(opts, "token_budget_input", None),
-                            max_output_tokens=getattr(opts, "token_budget_output", None)))
+                            max_output_tokens=getattr(opts, "token_budget_output", None),
+                            jev_policy=jev_policy))
 
 
 def _resolve_hourglass(opts, settings):
@@ -1113,6 +1122,10 @@ def _cmd_plan(opts, settings):
     elif decompose_llm or confirm or plan_consensus:
         api_key, gov = _governor(settings, plan_ceiling)
         transport = HttpTransport()
+    elif getattr(settings, "jev_api_key", None):
+        gov = jev_face_governor(settings, plan_ceiling)
+        transport = HttpTransport()
+        api_key = settings.jev_api_key
     else:
         gov, transport, api_key = None, None, None
 

@@ -2123,7 +2123,7 @@ class AutonomousAgent:
         return read
 
     def _plan_round(self, goal, candidate_files, gov, confirm=None,
-                    token_budget=None):
+                    token_budget=None, decompose_llm=None):
         """One planning pass through the ONE plan composer
         (harness/waist.py:compose_plan): cheap-LLM decomposition when the
         orchestration ladder answers, tier classification, then (hourglass)
@@ -2141,13 +2141,16 @@ class AutonomousAgent:
             root=self.root_dir)
         if token_budget is not None:
             compose_args["token_budget"] = token_budget
+        decompose_setting = getattr(self.settings, "hourglass_decompose", None)
+        decompose_flag = (bool(decompose_setting) if decompose_setting is not None
+                          else bool(confirm)) if decompose_llm is None else bool(decompose_llm)
         plan = compose_plan(
             transport=self.transport, api_key=resolve_api_key(),
             governor=gov, ledger=ledger_for(self.settings),
             opts_goal=goal, candidate_files=candidate_files,
             frontier_model=self.settings.frontier_model,
             use_free=self.settings.use_free,
-            decompose_llm=True, confirm=bool(confirm),
+            decompose_llm=decompose_flag, confirm=bool(confirm),
             plan_consensus=bool(getattr(self.settings, "hourglass_plan_consensus", False)),
             # The lane's tree: a node's target size is measured against the
             # files this run actually edits, not the server's CWD.

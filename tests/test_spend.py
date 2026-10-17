@@ -37,6 +37,22 @@ class CostMathTests(unittest.TestCase):
             "ceiling": 0.05,
         })
 
+    def test_supports_reasoning_edge_cases(self):
+        gov = _gov(FakeTransport())
+        self.assertTrue(gov.supports_reasoning(""))
+        self.assertTrue(gov.supports_reasoning(None))
+        self.assertFalse(gov.supports_reasoning("openrouter/free"))
+        self.assertFalse(gov.supports_reasoning("openrouter/auto"))
+        gov._models = [
+            {"id": "m/with-reasoning", "supported_parameters": ["reasoning", "tools"]},
+            {"id": "m/no-reasoning", "supported_parameters": ["tools"]},
+            {"id": "m/none-params", "supported_parameters": None},
+        ]
+        self.assertTrue(gov.supports_reasoning("m/with-reasoning"))
+        self.assertFalse(gov.supports_reasoning("m/no-reasoning"))
+        self.assertTrue(gov.supports_reasoning("m/none-params"))
+        self.assertTrue(gov.supports_reasoning("m/unknown"))
+
     def test_pricing_is_per_token_not_per_million(self):
         """Regression: OpenRouter pricing fields are per-token dollars. An
         earlier SCMessenger version divided by 1e6 a second time and

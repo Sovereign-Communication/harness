@@ -465,8 +465,11 @@ def build_vision_assessment_state(repo_root: str) -> Dict[str, Any]:
     start = roadmap.find(start_marker)
     if start < 0:
         raise ValueError("canonical Hourglass realization section is missing")
-    end = roadmap.find("\n## ", start + len(start_marker))
-    roadmap_section = roadmap[start:end if end >= 0 else len(roadmap)]
+    next_h3 = roadmap.find("\n### ", start + len(start_marker))
+    next_h2 = roadmap.find("\n## ", start + len(start_marker))
+    candidates = [pos for pos in (next_h3, next_h2) if pos >= 0]
+    end = min(candidates) if candidates else len(roadmap)
+    roadmap_section = roadmap[start:end]
     sources = []
     for ref, content in (("docs/hourglass-vision.md", vision),
                          ("docs/jev-roadmap.md#hourglass-vision-realization", roadmap_section)):
@@ -484,7 +487,7 @@ def build_vision_assessment_state(repo_root: str) -> Dict[str, Any]:
             "contracts are implemented."),
         "current_status": {
             "canon_next_slice": "HV-0",
-            "hv_0_through_hv_6": "planned; implementation progress is stated in the roadmap source",
+            "hv_0_through_hv_6": "complete on origin/main (HV-0..HV-6 delivered)",
             "source_selection": "complete vision plus the canonical HV realization and progress section",
         },
         "sources": sources,

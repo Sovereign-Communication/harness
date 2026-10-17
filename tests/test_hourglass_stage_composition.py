@@ -598,3 +598,107 @@ class IntakeBriefTests(unittest.TestCase):
         self.assertNotIn(STAGE_CONTEXT, comp["bypassed"])
         self.assertIn(STAGE_CONTEXT,
                       [entry["stage"] for entry in comp["stages"]])
+
+    def test_compose_arguments_with_jev_policy_captures_context_judgment(self):
+        from harness.spend import SpendGovernor
+        from harness.waist import compose_arguments, compose_plan
+        from tests._fake import FakeTransport, m
+
+        class MockJevPolicy:
+            def evaluate_hourglass_stage(self, stage, state, site="hourglass-intake"):
+                return None, {
+                    "context_relevant": 0.85,
+                    "context_coverage_sufficient": 0.92,
+                    "context_conflict_present": 0.05,
+                    "native": True,
+                }
+
+        path = self._write("real.py", "x = 1\n")
+        settings = self._settings()
+        mock_jev = MockJevPolicy()
+        arguments = compose_arguments(settings, goal="update real.py",
+                                      files=[path], jev_policy=mock_jev)
+        self.assertIn("context_judgment", arguments)
+        self.assertEqual(arguments["context_judgment"]["dimension"], "context_intake")
+        self.assertTrue(arguments["context_judgment"]["native"])
+
+        fake = FakeTransport(models=[m("m/cheap")])
+        gov = SpendGovernor(fake, "sk-test", max_cost=1.0)
+        plan = compose_plan(
+            transport=fake, api_key="k", governor=gov, ledger=None,
+            opts_goal="update real.py", candidate_files=[path],
+            root=self.tmp, execute=False, **arguments)
+        self.assertIn("stage_judgments", plan)
+        self.assertIn("context", plan["stage_judgments"])
+        self.assertEqual(plan["stage_judgments"]["context"]["dimension"], "context_intake")
+
+    def test_cli_parser_mission_live_jev_flags(self):
+        from harness.cli_parser import build_parser
+        parser = build_parser()
+        run_args = parser.parse_args(["mission", "run", "--id", "m1", "--live-jev"])
+        self.assertTrue(run_args.live_jev)
+        resume_args = parser.parse_args(["mission", "resume", "--id", "m1", "--live-jev"])
+        self.assertTrue(resume_args.live_jev)
+
+    def test_run_mission_driver_live_jev_composition(self):
+        from unittest.mock import MagicMock, patch
+        from harness.cli import _run_mission_driver
+        from harness.config import load_settings
+
+        opts = MagicMock()
+        opts.live_jev = True
+        opts.max_cost = 0.20
+        opts.max_cost_usd = None
+        mock_settings = load_settings()
+        mock_settings.jev_api_key = "sk-jev-test"
+        with patch("harness.cli.load_settings", return_value=mock_settings), \
+             patch("harness.cli.jev_face_governor") as mock_gov, \
+             patch("harness.cli.policy_for") as mock_policy, \
+             patch("harness.cli._mission_run",
+                   return_value={"summary": "ok", "phase": "terminal"}):
+            res = _run_mission_driver(MagicMock(), opts)
+            self.assertEqual(res["summary"], "ok")
+            mock_gov.assert_called_once()
+            mock_policy.assert_called_once()
+
+    def test_cmd_plan_armed_with_jev_api_key_only(self):
+        from unittest.mock import MagicMock, patch
+        from harness.cli import _cmd_plan
+        from harness.config import load_settings
+
+        opts = MagicMock()
+        opts.execute = False
+        opts.confirm = False
+        opts.parallel = False
+        opts.decompose = False
+        opts.decompose_llm = False
+        opts.plan_consensus = False
+        opts.resume = None
+        opts.files = None
+        opts.frontier = None
+        opts.max_cost = 0.50
+        opts.task_max_cost = None
+        opts.plan_ceiling = None
+        opts.out = None
+        opts.goal = "test plan"
+        settings = load_settings()
+        settings.hourglass_confirm = False
+        settings.hourglass_parallel = False
+        settings.hourglass_decompose = False
+        settings.jev_api_key = "sk-jev-test"
+        mock_plan = {
+            "status": "planned",
+            "goal": "test plan",
+            "composition": {"stages": []},
+            "stage_states": {},
+            "stage_judgments": {},
+            "token_budget": MagicMock(),
+            "brief": {},
+            "planning": {"kind": "sufficient"},
+        }
+        with patch("harness.cli.jev_face_governor") as mock_gov, \
+             patch("harness.cli._plan_compose", return_value=mock_plan), \
+             patch("harness.cli._emit"):
+            _cmd_plan(opts, settings)
+            mock_gov.assert_called_once()
+

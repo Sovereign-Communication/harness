@@ -281,8 +281,8 @@ def build_parser():
              "(JEV-P5; never invents buckets or actions)")
     pis.add_argument("--issue", required=True,
                      help="issue or deferral note text to sort")
-    pis.add_argument("--pack", required=True,
-                     help="path to the operator bucket pack JSON")
+    pis.add_argument("--pack", default="packs/issue_sort.pack.json",
+                     help="path to the operator bucket pack JSON (default: packs/issue_sort.pack.json)")
     pis.add_argument("--max-cost", type=float, default=None,
                      help="jev run ceiling in dollars (default: configured "
                           "max_cost; hard cap applies)")
@@ -355,9 +355,10 @@ def build_parser():
                                            "tier heuristic)")
     proute.add_argument("--goal", required=True,
                         help="the request to route")
-    proute.add_argument("--pack", required=True,
+    proute.add_argument("--pack", default="packs/model_route.pack.json",
                         help="operator route pack: {id, rungs: [{rung_id, tier, model, "
-                             "cost_class, observed_success?, samples?, guidance?, notes?}]}")
+                             "cost_class, observed_success?, samples?, guidance?, notes?}]} "
+                             "(default: packs/model_route.pack.json)")
     proute.add_argument("--max-cost", type=float, default=None,
                         help="jev run ceiling in dollars (default: configured "
                              "max_cost; hard cap applies)")
@@ -660,6 +661,8 @@ def build_parser():
                          help="only with --run")
     presume.add_argument("--max-errors", dest="max_errors", type=int, default=None,
                          help="only with --run")
+    presume.add_argument("--live-jev", action="store_true", default=False,
+                         help="enable live Jev policy evaluation for HUL-C scope determination")
     _add_output_flags(presume)
     prun = pms.add_parser(
         "run",
@@ -671,6 +674,8 @@ def build_parser():
     prun.add_argument("--stall-limit", dest="stall_limit", type=int, default=5)
     prun.add_argument("--max-tokens", dest="max_tokens", type=int, default=None)
     prun.add_argument("--max-errors", dest="max_errors", type=int, default=None)
+    prun.add_argument("--live-jev", action="store_true", default=False,
+                      help="enable live Jev policy evaluation for HUL-C scope determination")
     _add_output_flags(prun)
 
     return ap
