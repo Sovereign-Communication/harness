@@ -89,6 +89,9 @@ class FakeGov:
     def record_byok(self, model):
         pass
 
+    def check_byok(self, model):
+        pass
+
     def is_free(self, model):
         return str(model).endswith(":free")
 
@@ -220,6 +223,52 @@ class EscalationDriverTests(unittest.TestCase):
             lambda s, c: "p",
             lambda m, c, cost: {"status": "ok"})
         self.assertIsNone(result)
+
+    def test_driver_respects_max_rotations_zero(self):
+        from harness.escalation import EscalationDriver
+        from harness.apply_state import RunState
+
+        router = Router(panel=["a"], judge="j", apply_model="a",
+                        allow_escalation=True,
+                        escalation_pool=["free/a:free", "paid/b"])
+        driver = EscalationDriver(router, transport=None, api_key="k",
+                                  governor=FakeGov(), ledger=None, task_id="t")
+        req = SimpleNamespace(allow_escalation=None, max_rot=0)
+        result = driver.run_with_escalation(
+            req, RunState(rounds=[], history=[], current_content="x"),
+            lambda s, c: "p",
+            lambda m, c, cost: {"status": "ok"})
+        self.assertIsNone(result)
+
+    def test_driver_enforces_task_max_cost_actuals(self):
+        from harness.escalation import EscalationDriver
+        from harness.apply_state import RunState
+        from harness.errors import HarnessError
+
+        gov = FakeGov()
+        gov.spent = 0.04
+        router = Router(panel=["a"], judge="j", apply_model="a",
+                        allow_escalation=True,
+                        escalation_pool=["paid/b"])
+
+        class CostTransport:
+            def post(self, url, api_key, payload, timeout=120, cancel_check=None):
+                return 200, {
+                    "choices": [{"message": {"content": "ok"}}],
+                    "usage": {"cost": 0.02}
+                }
+
+        driver = EscalationDriver(
+            router, transport=CostTransport(), api_key="k",
+            governor=gov, ledger=SimpleNamespace(append=lambda *a, **k: None),
+            task_id="t", task_start_spent=0.04, task_max_cost=0.01)
+        req = SimpleNamespace(allow_escalation=True, max_rot=1, max_tokens=100, reasoning=None)
+        with self.assertRaises(HarnessError) as ctx:
+            driver.run_with_escalation(
+                req, RunState(rounds=[], history=[], current_content="x"),
+                lambda s, c: "p",
+                lambda m, c, cost: {"status": "ok"})
+        self.assertIn("actual task cost would exceed --task-max-cost", str(ctx.exception))
 
     def test_driver_saturation_rotates_to_next_rung(self):
         # A 429 on a rung is "busy", not "impossible": the ladder walks on

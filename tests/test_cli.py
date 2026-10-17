@@ -1016,6 +1016,20 @@ class SiteCheckCliTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 3)
         self.assertEqual(json.loads(output.getvalue()), deferred)
 
+    def test_cli_parser_no_escalation_flag(self):
+        from harness.cli_parser import build_parser
+        parser = build_parser()
+        for cmd in (["apply", "--file", "harness/web.py"],
+                    ["continue", "--state", "s.json"],
+                    ["dogfood", "--file", "harness/web.py", "--instruction", "i", "--verify", "v"]):
+            opts = parser.parse_args(cmd + ["--no-escalation"])
+            self.assertIs(opts.allow_escalation, False)
+            opts_allow = parser.parse_args(cmd + ["--allow-escalation"])
+            self.assertIs(opts_allow.allow_escalation, True)
+            opts_default = parser.parse_args(cmd)
+            self.assertIsNone(opts_default.allow_escalation)
+
 
 if __name__ == "__main__":
     unittest.main()
+

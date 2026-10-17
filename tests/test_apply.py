@@ -158,6 +158,30 @@ class ApplyTests(ApplyFixture):
         self.assertEqual(result["status"], "verify_failed")
         self.assertNotIn("escalate", [e["event"] for e in ledger.entries()])
 
+    def test_no_escalation_when_max_rotations_is_zero(self):
+        p = self.make_file()
+        _, _, ledger, engine = self.make_env(
+            posts=[comp(CHANGED)],
+            run=scripted_run([(1, "err")]),
+            router_kw={"escalation_model": ESC, "allow_escalation": True})
+        result = engine.apply_edit(task_id="t1", file_path=p, instruction="fix",
+                                   verify_cmd="check", require_consent=False,
+                                   max_rounds=1, max_rotations=0)
+        self.assertEqual(result["status"], "verify_failed")
+        self.assertNotIn("escalate", [e["event"] for e in ledger.entries()])
+
+    def test_no_escalation_when_allow_escalation_is_false(self):
+        p = self.make_file()
+        _, _, ledger, engine = self.make_env(
+            posts=[comp(CHANGED)],
+            run=scripted_run([(1, "err")]),
+            router_kw={"escalation_model": ESC, "allow_escalation": True})
+        result = engine.apply_edit(task_id="t1", file_path=p, instruction="fix",
+                                   verify_cmd="check", require_consent=False,
+                                   max_rounds=1, allow_escalation=False)
+        self.assertEqual(result["status"], "verify_failed")
+        self.assertNotIn("escalate", [e["event"] for e in ledger.entries()])
+
     # ---- sovereignty gate ----
     def test_consent_decline_blocks_dispatch(self):
         p = self.make_file()

@@ -249,8 +249,11 @@ class EscalationDriver:
         ``base_prompt_fn(state, rung_context) -> prompt``
         ``finish_fn(model, content, cost) -> terminal result | None``
         """
-        allowed = req.allow_escalation if req.allow_escalation is not None \
-            else self.router.allow_escalation
+        max_rot = getattr(req, "max_rot", 1)
+        if req.allow_escalation is not None:
+            allowed = req.allow_escalation
+        else:
+            allowed = self.router.allow_escalation and max_rot > 0
         if not allowed or not self.router.escalation_pool:
             return None
 
@@ -366,6 +369,10 @@ class EscalationDriver:
                 continue
 
             self.governor.record_actual(cost, model)
+            if self.task_max_cost is not None and self.task_start_spent is not None:
+                if (float(getattr(self.governor, "spent", 0.0) or 0.0) - float(self.task_start_spent)) > float(self.task_max_cost):
+                    raise HarnessError(
+                        f"actual task cost would exceed --task-max-cost ${float(self.task_max_cost):.6f}; refusing")
             # A capability deferral is not file content -- hand it to finish_fn
             # (which routes HARNESS_DEFER) instead of treating it as a write.
             usable, unusable = assess_output(content, finish, allow_truncated=False)

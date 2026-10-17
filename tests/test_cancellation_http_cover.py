@@ -484,3 +484,51 @@ class TestHttpPostOnceCover(unittest.TestCase):
                                    urllib.error.URLError("down"))):
             with self.assertRaises(ToolCancelled):
                 wire.post_once("http://127.0.0.1/", "k", {"model": "m"})
+
+
+class TestResolveHttpWorker(unittest.TestCase):
+    def test_resolve_worker_finds_real_worker(self):
+        from harness._http import resolve_http_worker_path
+        path = resolve_http_worker_path()
+        self.assertTrue(path.is_file())
+        self.assertEqual(path.name, "_http_worker.py")
+
+    def test_resolve_worker_fallback_when_dunder_file_missing(self):
+        from harness import _http
+        from pathlib import Path
+
+        real_worker = Path(_http.__file__).resolve().with_name("_http_worker.py")
+        self.assertTrue(real_worker.is_file())
+
+        with mock.patch.object(_http, "__file__", "C:/nonexistent/temp/dir/_http.py"):
+            found = _http.resolve_http_worker_path()
+            self.assertTrue(found.is_file())
+            self.assertEqual(found.name, "_http_worker.py")
+
+    def test_resolve_worker_raises_oserror_when_all_missing(self):
+        from harness import _http
+        from pathlib import Path
+
+        with mock.patch.object(_http, "__file__", "C:/nonexistent/temp/dir/_http.py"), \
+             mock.patch.object(Path, "is_file", return_value=False):
+            with self.assertRaises(OSError) as ctx:
+                _http.resolve_http_worker_path()
+            self.assertIn("HTTP worker not found on disk", str(ctx.exception))
+
+    def test_cancellable_request_safe_cwd_fallback(self):
+        from harness import _http
+        from pathlib import Path
+
+        fake_worker = Path("C:/nonexistent/harness/_http_worker.py")
+        captured_cwd = []
+
+        def fake_spawn(cmd, cwd=None):
+            captured_cwd.append(cwd)
+            return _FakeChild(stdout=b'{"status": 200, "body_b64": ""}')
+
+        with mock.patch.object(_http, "resolve_http_worker_path", return_value=fake_worker), \
+             mock.patch("harness.osal.spawn_piped_process", side_effect=fake_spawn):
+            _http.cancellable_request("GET", "http://127.0.0.1/", cancel_check=lambda: False)
+
+        self.assertEqual(captured_cwd, [str(Path.cwd())])
+

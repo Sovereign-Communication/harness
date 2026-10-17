@@ -33,6 +33,41 @@ def interruptible_sleep(delay, cancel_check):
         time.sleep(min(0.05, remaining))
 
 
+def resolve_http_worker_path() -> Path:
+    """Resolve the absolute path to _http_worker.py resiliently.
+
+    If the process was imported from a checkout/worktree that has since been
+    moved or deleted, probe sys.modules, cwd, and sys.path so running long-lived
+    daemons (e.g. GUI server) can continue operating from the active repo.
+    """
+    candidates = []
+    # 1. Next to __file__
+    candidates.append(Path(__file__).resolve().with_name("_http_worker.py"))
+    # 2. sys.modules["harness"]
+    import sys
+    mod = sys.modules.get("harness")
+    if mod is not None and getattr(mod, "__file__", None):
+        candidates.append(Path(mod.__file__).resolve().parent / "_http_worker.py")
+    # 3. Path.cwd() / "harness"
+    candidates.append(Path.cwd() / "harness" / "_http_worker.py")
+    # 4. sys.path entries
+    for entry in sys.path:
+        if entry:
+            candidates.append(Path(entry) / "harness" / "_http_worker.py")
+            candidates.append(Path(entry) / "_http_worker.py")
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+
+    checked = ", ".join(str(c) for c in candidates[:5])
+    raise OSError(
+        f"HTTP worker not found on disk: checked {checked}. "
+        "Process may have started from a temporary worktree that was removed; "
+        "please restart the process from the canonical repository."
+    )
+
+
 def cancellable_request(method, url, *, headers=None, data=None, timeout=15,
                         cancel_check=None, max_bytes=None, no_redirect=False):
     """Perform one HTTP request in a killable child process.
@@ -53,10 +88,12 @@ def cancellable_request(method, url, *, headers=None, data=None, timeout=15,
     # target repository may contain a top-level ``harness`` package; ``-m``
     # would let that package shadow this worker and read credentials from the
     # request pipe.
-    worker = Path(__file__).resolve().with_name("_http_worker.py")
+    worker = resolve_http_worker_path()
     command = [osal.python_exe(), "-I", str(worker)]
-    child = osal.spawn_piped_process(
-        command, cwd=str(worker.parent.parent))
+    cwd = worker.parent.parent
+    if not cwd.is_dir():
+        cwd = Path.cwd()
+    child = osal.spawn_piped_process(command, cwd=str(cwd))
     completed = {}
     request = {
         "method": method,
