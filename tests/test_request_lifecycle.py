@@ -807,6 +807,26 @@ class EscalationGateTests(unittest.TestCase):
             self.assertFalse(agent._escalation_authorized(
                 "what is the capital of France?", False, "ok"))
 
+    def test_conversational_question_with_plan_required_never_escalates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            with patch.object(AutonomousAgent, "_auto_escalation_armed",
+                              return_value=True):
+                # Conversational questions must never escalate to file edits
+                # even if an advisory plan_required signal was produced
+                self.assertFalse(agent._escalation_authorized(
+                    "how many attempts at Guinness world records have there been in total?",
+                    False, "plan_required"))
+
+    def test_edit_intent_with_plan_required_authorizes_when_armed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            with patch.object(AutonomousAgent, "_auto_escalation_armed",
+                              return_value=True):
+                self.assertTrue(agent._escalation_authorized(
+                    "refactor the authentication handler in auth.py",
+                    False, "plan_required"))
+
 
 class SiteCheckPromptEdgeTests(unittest.TestCase):
     def test_empty_prompt_is_not_a_site_check(self):

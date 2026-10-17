@@ -128,6 +128,27 @@ class RequestKindTests(unittest.TestCase):
         self.assertEqual(
             relevant_history("pasta", turns, max_chars=100), [])
 
+    def test_history_retains_immediate_prior_turn_on_anaphora(self):
+        turns = [
+            {"prompt": "Tell me about bicycles", "response": "old bicycle answer"},
+            {"prompt": "what is the longest road in the world?",
+             "response": "The Pan-American Highway is roughly 19,000 miles long."},
+        ]
+        # Follow-up with pronoun 'that' refers to the immediate prior turn
+        kept = relevant_history("how many nanometers long is that?", turns, max_turns=2)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0]["prompt"], "what is the longest road in the world?")
+
+    def test_history_matches_terms_in_prior_response(self):
+        turns = [
+            {"prompt": "Explain baking science",
+             "response": "Sourdough fermentation relies on lactobacillus cultures."},
+        ]
+        # Term 'lactobacillus' appears only in response, not in prior prompt
+        kept = relevant_history("Tell me more about lactobacillus", turns, max_turns=1)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0]["prompt"], "Explain baking science")
+
 
 class SimpleStrategyPolicyTests(unittest.TestCase):
     def test_missing_key_falls_back_without_dispatch(self):
@@ -379,6 +400,32 @@ class SimpleLifecycleTests(unittest.TestCase):
         self.assertEqual(result["workflow_tier"], "simple-answer")
         simple.assert_called_once()
         hourglass.assert_not_called()
+
+    def test_shared_prompt_entry_falls_through_on_pre_generation_deferral(self):
+        with (
+            patch.object(self.agent, "_live_jev_available", return_value=True),
+            patch.object(self.agent, "run_simple_request",
+                         return_value={"status": "deferred", "simple_request": {"generation_calls": 0}}),
+            patch.object(self.agent, "run_hourglass_request",
+                         return_value={"status": "ok", "response": "grounded answer"}) as hourglass,
+        ):
+            result = self.agent.run_prompt(
+                "Explain the universe?", session_id="fallthrough")
+        self.assertEqual(result["status"], "ok")
+        hourglass.assert_called_once()
+
+    def test_force_conversation_falls_through_on_pre_generation_deferral(self):
+        with (
+            patch.object(self.agent, "_live_jev_available", return_value=True),
+            patch.object(self.agent, "run_simple_request",
+                         return_value={"status": "deferred", "simple_request": {"generation_calls": 0}}),
+            patch.object(self.agent, "run_hourglass_request",
+                         return_value={"status": "ok", "response": "grounded answer"}) as hourglass,
+        ):
+            result = self.agent.run_prompt(
+                "Explain the universe?", session_id="fallthrough-force", force_conversation=True)
+        self.assertEqual(result["status"], "ok")
+        hourglass.assert_called_once()
 
     def test_jev_unavailable_before_and_after_keeps_useful_answer(self):
         result, _, _ = self._run(pre=_pre(native=False),
