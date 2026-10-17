@@ -184,7 +184,7 @@ class InputStepTests(_NoBackend):
 
 class InputCapabilityBoundaryTests(_NoBackend):
 
-    def test_mutating_backend_snapshot_cannot_widen_driver_dispatch(self):
+    def test_backend_capabilities_cannot_widen_out_of_sync(self):
         calls = []
 
         def backend(kind, value=None, target=None):
@@ -195,7 +195,22 @@ class InputCapabilityBoundaryTests(_NoBackend):
         driver = _driver(allow_write=True, action="click",
                          input_backend=backend)
 
-        # Exercise the previous private-snapshot mutation via Driver.step.
+        def broader_backend(kind, value=None, target=None):
+            calls.append(("broader", kind))
+            return True, "sent"
+
+        broader_backend.supported_kinds = ("focus", "click")
+        registry = driver.executor.registry
+        with self.assertRaises(AttributeError):
+            registry.input_backend = broader_backend
+
+        actions = Service(driver, token="t").handle(
+            "vocabulary", {})["body"]["vocabulary"]["actions"]
+        click = next(action for action in actions if action["name"] == "click")
+        self.assertFalse(click["executable"])
+        self.assertIn("does not support 'click'", " ".join(click["needs"]))
+
+        # Mutating the original backend's declared kinds cannot widen dispatch.
         backend._driver_core_supported_kinds_snapshot = frozenset(
             ("focus", "click"))
         result = driver.step(
