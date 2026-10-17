@@ -235,6 +235,36 @@ class GovernedTextTests(unittest.TestCase):
         with self.assertRaises(HarnessError):
             governed_text(self.fake, "k", self.gov, "cheap/x", "p", 64)
 
+    def test_reasoning_param_rejected_persistence(self):
+        import tempfile
+        import os
+        from harness.chat import (note_reasoning_param_rejection,
+                                  reasoning_param_rejected,
+                                  reset_reasoning_param_memory,
+                                  _save_reasoning_param_rejected,
+                                  _load_reasoning_param_rejected)
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "sub", "rejected.json")
+            with mock.patch("harness.chat.REASONING_PARAM_REJECTED_PATH", path):
+                reset_reasoning_param_memory(clear_disk=True)
+                self.assertFalse(reasoning_param_rejected("model/alpha"))
+                note_reasoning_param_rejection("model/alpha")
+                _save_reasoning_param_rejected()
+                self.assertTrue(reasoning_param_rejected("model/alpha"))
+                loaded = _load_reasoning_param_rejected()
+                self.assertIn("model/alpha", loaded)
+                reset_reasoning_param_memory(clear_disk=True)
+                self.assertFalse(reasoning_param_rejected("model/alpha"))
+                self.assertFalse(os.path.exists(path))
+            with mock.patch("builtins.open", side_effect=OSError("disk error")):
+                _save_reasoning_param_rejected()
+                with mock.patch("os.path.exists", return_value=True):
+                    self.assertIsInstance(_load_reasoning_param_rejected(), set)
+            with mock.patch("os.remove", side_effect=OSError("remove error")):
+                with mock.patch("os.path.exists", return_value=True):
+                    reset_reasoning_param_memory(clear_disk=True)
+
+
 
 if __name__ == "__main__":
     unittest.main()

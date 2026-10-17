@@ -6,11 +6,11 @@ Execution mechanics remain injected through ``execute_plan`` so the shared
 PlanExecutor stays the single owner of reservations, workers, isolation, and
 gates.
 """
-import json
 import re
 from pathlib import Path
 from typing import Callable, Dict, List
 
+from .chat import _extract_json
 from .errors import HarnessError, ToolCancelled
 
 MAX_TRIAGE_FILES = 15
@@ -63,21 +63,10 @@ def _extract_json_blob(text):
     """The first balanced {...} block in the response, or None."""
     if not text:
         return None
-    start = text.find("{")
-    if start < 0:
-        return None
-    depth = 0
-    for i in range(start, len(text)):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(text[start:i + 1])
-                except json.JSONDecodeError:
-                    return None
-    return None
+    cleaned = re.sub(
+        r"<(?:think|thought|reasoning|reflection)\b[^>]*>[\s\S]*?</(?:think|thought|reasoning|reflection)>",
+        "", text, flags=re.IGNORECASE).strip()
+    return _extract_json(cleaned) or _extract_json(text)
 
 
 def assess_completion(goal, state_summary, chat_fn):

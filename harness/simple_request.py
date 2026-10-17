@@ -30,11 +30,12 @@ _SUPPLIED_TEXT_MARKERS = (
     "in a friendlier tone", "in a clearer tone", "more concise",
 )
 _SIMPLE_OPENERS = (
-    "what ", "how ", "why ", "explain ", "describe ", "tell me ",
+    "what ", "how ", "why ", "who ", "where ", "when ", "which ",
+    "explain ", "describe ", "define ", "tell me ", "give me ", "list ",
     "can you explain ", "could you explain ", "summarize ", "summarise ",
     "rewrite ", "rephrase ",
     "calculate ", "compute ", "convert ",
-    "please calculate ", "please compute ", "please convert ",
+    "please tell me ", "please calculate ", "please compute ", "please convert ",
     "can you calculate ", "can you compute ", "can you convert ",
     "could you calculate ", "could you compute ", "could you convert ",
 )
