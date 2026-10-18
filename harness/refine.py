@@ -412,7 +412,7 @@ def status_report(ledger=None) -> Dict[str, Any]:
         "pilot_cycles_target": PILOT_CYCLES,
         "pilot_graduated": pilot.get("graduated", False),
         "lessons_count": len(lessons),
-        "seed_lessons": sum(1 for l in lessons if l.task_id.startswith("seed-")),
+        "seed_lessons": sum(1 for les in lessons if les.task_id.startswith("seed-")),
         "families": sorted(load_families().get("families", {}).keys()),
         "tier0_paths": len(TIER_0_PATHS),
         "tier1_paths": len(TIER_1_PATHS),

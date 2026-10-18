@@ -3,7 +3,6 @@
 Hermetic: no network, no Jev calls, no ledger files. Uses in-memory fakes.
 """
 
-import json
 import unittest
 
 from harness import refine
@@ -184,7 +183,7 @@ class TestDataFiles(unittest.TestCase):
     def test_lessons_load(self):
         lessons = refine.load_lessons()
         self.assertGreaterEqual(len(lessons), 5)
-        seeds = [l for l in lessons if l.task_id.startswith("seed-")]
+        seeds = [les for les in lessons if les.task_id.startswith("seed-")]
         self.assertGreaterEqual(len(seeds), 3)
         for les in lessons:
             self.assertTrue(les.lesson_text, f"{les.task_id} missing lesson")

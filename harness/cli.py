@@ -1677,8 +1677,8 @@ def _cmd_refine(opts, settings):
         task_id, family, outcome_s = opts.record_outcome
         try:
             outcome = float(outcome_s)
-        except ValueError:
-            raise HarnessError(f"JEV_OUTCOME must be a number 0-1, got {outcome_s!r}")
+        except ValueError as err:
+            raise HarnessError(f"JEV_OUTCOME must be a number 0-1, got {outcome_s!r}") from err
         rec = _refine.record_task_outcome(ledger, task_id, family, outcome)
         _emit({"recorded": True, "task_id": task_id, "seq": rec.get("seq")},
               getattr(opts, "out", None),
