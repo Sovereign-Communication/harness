@@ -1049,6 +1049,56 @@ class SiteCheckCliTests(unittest.TestCase):
             self.assertIsNone(opts_default.allow_escalation)
 
 
+class JevPhaseCliNoticeTests(unittest.TestCase):
+    def test_jev_phase_all_emits_local_accounting_notice_to_stderr(self):
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+        fake_board = {
+            "phases": {"P1": {"score": 90.0, "bar": {"pass": True}, "improvements": []}},
+            "passing": ["P1"],
+            "failing": [],
+            "false_complete": [],
+        }
+        with mock.patch("harness.cli.score_all_phases", return_value=fake_board), \
+             contextlib.redirect_stderr(stderr), \
+             contextlib.redirect_stdout(stdout):
+            cli.main(["jev-phase", "--all"])
+        self.assertIn("jev-phase --all is a local accounting pass", stderr.getvalue())
+        self.assertNotIn("jev-phase --all is a local accounting pass", stdout.getvalue())
+
+    def test_jev_phase_all_local_only_suppresses_notice(self):
+        stderr = io.StringIO()
+        fake_board = {
+            "phases": {"P1": {"score": 90.0, "bar": {"pass": True}, "improvements": []}},
+            "passing": ["P1"],
+            "failing": [],
+            "false_complete": [],
+        }
+        with mock.patch("harness.cli.score_all_phases", return_value=fake_board), \
+             contextlib.redirect_stderr(stderr), \
+             contextlib.redirect_stdout(io.StringIO()):
+            cli.main(["jev-phase", "--all", "--local-only"])
+        self.assertNotIn("jev-phase --all is a local accounting pass", stderr.getvalue())
+
+    def test_jev_phase_all_json_is_unpolluted_by_notice(self):
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+        fake_board = {
+            "phases": {"P1": {"score": 90.0, "bar": {"pass": True}, "improvements": []}},
+            "passing": ["P1"],
+            "failing": [],
+            "false_complete": [],
+        }
+        with mock.patch("harness.cli.score_all_phases", return_value=fake_board), \
+             contextlib.redirect_stderr(stderr), \
+             contextlib.redirect_stdout(stdout):
+            cli.main(["jev-phase", "--all", "--json"])
+        self.assertIn("jev-phase --all is a local accounting pass", stderr.getvalue())
+        parsed = json.loads(stdout.getvalue())
+        self.assertEqual(parsed, fake_board)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 

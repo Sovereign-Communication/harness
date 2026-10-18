@@ -19,6 +19,7 @@ Covers:
   not_evaluated and never lets bar_95_pass become a false PASS, and a
   transport HarnessError falls back with the reservation settled.
 """
+import ast
 import json
 import os
 import tempfile
@@ -684,5 +685,129 @@ class ShippedFreshnessAuditTests(unittest.TestCase):
         self.assertIn("4 :free pool ids", evidence)
 
 
+class ConvergencePreflightAstCheckTests(unittest.TestCase):
+    def test_a2_accepts_valid_convergence_preflight_ast(self):
+        from audits.self import audit
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    governor.preflight(prompt, calls)
+""")
+        self.assertTrue(audit._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_preflight_hidden_in_dead_branch(self):
+        from audits.self import audit
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    if False:
+        governor.preflight(prompt, calls)
+""")
+        self.assertFalse(audit._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_calls_in_the_wrong_positional_slot(self):
+        from audits.self import audit
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    governor.preflight(prompt, label, calls)
+""")
+        self.assertFalse(audit._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_calls_reset_on_the_preflight_line(self):
+        from audits.self import audit
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    calls = []; governor.preflight(prompt, calls)
+""")
+        self.assertFalse(audit._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_alias_mutation_before_preflight(self):
+        from audits.self import audit
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    alias = calls
+    alias.clear()
+    governor.preflight(prompt, calls)
+""")
+        self.assertFalse(audit._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_requires_the_prompt_as_the_first_argument(self):
+        from audits.self import audit
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    governor.preflight(other_prompt, calls)
+""")
+        self.assertFalse(audit._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_requires_reserved_token_budget_in_each_attempt(self):
+        from audits.self import audit
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, 0, 0))
+    governor.preflight(prompt, calls)
+""")
+        self.assertFalse(audit._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_zero_max_tokens_parameter(self):
+        from audits.self import audit
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=0):
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    governor.preflight(prompt, calls)
+""")
+        self.assertFalse(audit._has_governor_preflight_with_retry_calls(tree))
+
+    def test_a2_rejects_max_tokens_zeroed_locally(self):
+        from audits.self import audit
+        tree = ast.parse("""
+def run_convergence_specialist(max_tokens=8192):
+    max_tokens = 0
+    calls = []
+    for model in candidates:
+        slots = _chat_reservation_slots(model, reasoning_effort)
+        for attempt in range(slots):
+            calls.append(("attempt", model, max_tokens, 0))
+    governor.preflight(prompt, calls)
+""")
+        self.assertFalse(audit._has_governor_preflight_with_retry_calls(tree))
+
+
 if __name__ == "__main__":
     unittest.main()
+
