@@ -17,7 +17,9 @@ from harness.errors import HarnessError, ProviderUsageUnknown, ToolCancelled
 from harness.jev_completion import DEFAULT_COMPLETION_PACK
 from harness.jev_policy import JevPolicy
 from harness.ledger import AutonomyLedger
+from harness.provider_errors import ProviderSpendLimitError
 from tests import test_jev_core_hardening as T
+from tests.test_jev_issue_sort import sample_pack as issue_pack
 from tests.test_jev_log_judgment import sample_log_pack
 from tests.test_jev_repo_judgment import STATE, repo_pack
 
@@ -148,6 +150,21 @@ def _sites():
     }
 
 
+def _all_sites():
+    sites = _sites()
+    sites.update({
+        "answer": lambda p: p.evaluate_answer("prompt", "answer"),
+        "simple_strategy": lambda p: p.evaluate_simple_strategy("prompt"),
+        "candidate": lambda p: p.evaluate_candidate("orig", "cand", "inst", file_path="x.py"),
+        "issue_sort": lambda p: p.evaluate_issue_sort("auth token", issue_pack()),
+        "provision": lambda p: p.evaluate_provision({"state": "s"}, {"q": {"type": "noul"}}),
+        "reachability": lambda p: p.evaluate_site_reachability({"url": "http://x"}),
+        "workflow": lambda p: p.evaluate_request_workflow({"request": "test"}),
+        "typed_pack": lambda p: p.evaluate_typed_pack({"state": "s"}, {"q": {"type": "noul"}}, site="custom"),
+    })
+    return sites
+
+
 class SettleSitesCoverTests(unittest.TestCase):
     def _policy(self, error, governor=None):
         td = tempfile.TemporaryDirectory()
@@ -242,6 +259,28 @@ class SettleSitesCoverTests(unittest.TestCase):
         policy._release(stale)  # nothing reserved: must not reconcile
         self.assertIsNone(getattr(policy._tl, "token", None))
 
+    def test_every_site_releases_after_provider_spend_limit(self):
+        for name, call in _all_sites().items():
+            with self.subTest(site=name):
+                err = ProviderSpendLimitError("limit reached", http_status=429, known_cost=0.002)
+                policy, governor = self._policy(err)
+                with self.assertRaises(ProviderSpendLimitError) as raised:
+                    call(policy)
+                self.assertAlmostEqual(raised.exception.known_cost, 0.002)
+
+    def test_provider_spend_limit_zero_cost_dedupe_and_rescue(self):
+        err = ProviderSpendLimitError("limit reached", http_status=429, known_cost=0.0)
+        policy, governor = self._policy(err)
+        with self.assertRaises(ProviderSpendLimitError):
+            policy.evaluate_answer("p1", "a1", task_id="t1")
+        # Second identical zero-cost call hits dedupe repeat (lines 550, 559)
+        with self.assertRaises(ProviderSpendLimitError):
+            policy.evaluate_answer("p1", "a1", task_id="t1")
+        # Line 531: _release_reservation when thread-local token is set
+        policy._tl.token = {"label": "rescue", "worst": 0.005}
+        policy._release_reservation(error=err)
+
 
 if __name__ == "__main__":
     unittest.main()
+

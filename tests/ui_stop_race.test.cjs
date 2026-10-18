@@ -194,3 +194,57 @@ test("polls never overlap and late run-A callbacks cannot touch run B", async ()
   assert.equal(messageB.stopRequested, false);
   assert.equal(timers.size, 1, "run B keeps its own scheduled poll");
 });
+
+test("renderFinalResult displays provider spend limit notice and billed amount", () => {
+  const elements = new Map([
+    ["#consent-banner", { hidden: false }],
+  ]);
+  const document = {
+    querySelector(selector) {
+      if (!elements.has(selector)) elements.set(selector, { hidden: false, textContent: "", style: {} });
+      return elements.get(selector);
+    },
+    querySelectorAll() { return []; },
+    getElementById(id) { return this.querySelector(`#${id}`); },
+    createElement(tag) {
+      return { tag, className: "", innerHTML: "", style: {}, appendChild() {} };
+    },
+  };
+  const window = { addEventListener() {} };
+  const localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
+  const context = vm.createContext({ window, document, localStorage, console, setInterval() {}, clearInterval() {} });
+  const appPath = path.join(__dirname, "..", "harness", "ui", "app.js");
+  const app = fs.readFileSync(appPath, "utf8");
+  vm.runInContext(app + `
+    window.__test = {
+      renderFinalResult,
+    };
+  `, context);
+
+  const children = [];
+  const agentMsg = {
+    spinner: { hidden: false },
+    stepperTitleText: { textContent: "" },
+    body: {
+      innerHTML: "",
+      appendChild(el) { children.push(el); },
+    },
+  };
+
+  const runRecord = {
+    status: "error",
+    error_kind: "provider_spend_limit",
+    error: "Upstream provider spend limit exhausted (HTTP 402).",
+    known_cost_usd: 0.000015,
+  };
+
+  window.__test.renderFinalResult(runRecord, agentMsg);
+  assert.equal(agentMsg.spinner.hidden, true);
+  assert.equal(agentMsg.stepperTitleText.textContent, "Execution stopped");
+  assert.match(agentMsg.body.innerHTML, /provider_spend_limit/);
+  assert.match(agentMsg.body.innerHTML, /Upstream provider spend limit exhausted/);
+  assert.equal(children.length, 1);
+  assert.equal(children[0].className, "deferred-note");
+  assert.match(children[0].innerHTML, /Stopped: provider spend limit/);
+  assert.match(children[0].innerHTML, /Known billed usage: \$0\.000015/);
+});

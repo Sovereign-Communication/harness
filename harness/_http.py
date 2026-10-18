@@ -274,6 +274,8 @@ class HttpTransport(Transport):
                         parsed = json.loads(body)
                     except json.JSONDecodeError:
                         parsed = {"error": {"message": body}}
+                    from .provider_errors import raise_for_provider_spend_limit
+                    raise_for_provider_spend_limit(status, parsed)
                     if self._transient(status) and attempt < self.MAX_RETRIES:
                         last_err = OSError(f"transient HTTP status {status}")
                         self._retry_wait(self._retry_delay(attempt, retry_after),
@@ -289,6 +291,8 @@ class HttpTransport(Transport):
                     parsed = json.loads(body)
                 except json.JSONDecodeError:
                     parsed = {"error": {"message": body}}
+                from .provider_errors import raise_for_provider_spend_limit
+                raise_for_provider_spend_limit(e.code, parsed)
                 if self._transient(e.code) and attempt < self.MAX_RETRIES:
                     last_err = e
                     self._retry_wait(self._retry_delay(
@@ -398,6 +402,8 @@ class HttpTransport(Transport):
                  **fields)
 
         for attempt in range(self.MAX_RETRIES + 1):
+            from .events import raise_if_provider_spend_limited
+            raise_if_provider_spend_limited(known_cost=dropped)
             if cancel_check and cancel_check():
                 raise ToolCancelled(known_cost=dropped)
             req = urllib.request.Request(
@@ -434,6 +440,10 @@ class HttpTransport(Transport):
                     parsed = {"error": {"message": body}}
                 progress("response", attempt, http_status=status,
                          duration_s=round(time.monotonic() - request_started, 2))
+                from .provider_errors import raise_for_provider_spend_limit
+                raise_for_provider_spend_limit(
+                    status, parsed,
+                    known_cost=dropped + self._retry_cost_of(parsed))
                 if self._transient(status) and attempt < self.MAX_RETRIES:
                     dropped += self._retry_cost_of(parsed)
                     delay = self._retry_delay(attempt, retry_after)
@@ -453,6 +463,10 @@ class HttpTransport(Transport):
                     parsed = {"error": {"message": body}}
                 progress("response", attempt, http_status=e.code,
                          duration_s=round(time.monotonic() - request_started, 2))
+                from .provider_errors import raise_for_provider_spend_limit
+                raise_for_provider_spend_limit(
+                    e.code, parsed,
+                    known_cost=dropped + self._retry_cost_of(parsed))
                 if self._transient(e.code) and attempt < self.MAX_RETRIES:
                     dropped += self._retry_cost_of(parsed)
                     delay = self._retry_delay(
@@ -508,6 +522,8 @@ class HttpTransport(Transport):
                  model_attempt=context.get("attempt"), phase=phase,
                  wire_attempt=1, max_wire_attempts=1, **fields)
 
+        from .events import raise_if_provider_spend_limited
+        raise_if_provider_spend_limited()
         request_started = time.monotonic()
         progress("start")
         try:
@@ -535,6 +551,9 @@ class HttpTransport(Transport):
                 parsed = json.loads(body)
             except json.JSONDecodeError:
                 parsed = {"error": {"message": body}}
+            from .provider_errors import raise_for_provider_spend_limit
+            raise_for_provider_spend_limit(
+                status, parsed, known_cost=self._retry_cost_of(parsed))
         except ToolCancelled as exc:
             progress("cancelled", usage_unknown=exc.usage_unknown,
                      duration_s=round(time.monotonic() - request_started, 2))

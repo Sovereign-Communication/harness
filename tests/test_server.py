@@ -22,6 +22,7 @@ from unittest import mock
 from harness import server as ui_server
 from harness.server import make_server, validate_dispatch
 from harness.errors import HarnessError
+from harness.provider_errors import ProviderSpendLimitError
 
 
 def _request(conn, method, path, body=None, headers=None, host="127.0.0.1"):
@@ -905,6 +906,59 @@ class RoutingMetadataTests(unittest.TestCase):
                 if present:
                     self.assertIsNone(view["mcp_auth_token"])
                     self.assertTrue(view["mcp_auth_token_present"])
+
+
+class ServerSpendLimitTests(unittest.TestCase):
+    def test_gui_run_and_http_error_preserve_provider_spend_limit_kind(self):
+        ui = ui_server.UiState()
+
+        def capped_runner(*_args):
+            raise ProviderSpendLimitError("account balance is too low",
+                                          known_cost=0.000012)
+
+        with mock.patch.dict(ui_server.RUNNERS, {"chat": capped_runner}):
+            record = ui.create_run("chat", {})
+            record["thread"].join(timeout=2)
+        public = ui.run_public(record, with_result=True)
+        self.assertEqual(public["status"], "error")
+        self.assertEqual(public["error_kind"], "provider_spend_limit")
+        self.assertAlmostEqual(public["known_cost_usd"], 0.000012)
+        self.assertIn("operation was stopped", public["error"])
+
+        handler = object.__new__(ui_server.UiRequestHandler)
+        handler._send_json = mock.Mock()
+        handler._error(400, public["error"],
+                       error_kind=public["error_kind"],
+                       known_cost_usd=public["known_cost_usd"])
+        payload = handler._send_json.call_args.args[0]
+        self.assertEqual(payload["error_kind"], "provider_spend_limit")
+        self.assertAlmostEqual(payload["known_cost_usd"], 0.000012)
+
+    def test_synchronous_get_and_post_include_known_spend_limit_cost(self):
+        error = ProviderSpendLimitError("account balance is too low",
+                                        known_cost=0.000012)
+        get_handler = object.__new__(ui_server.UiRequestHandler)
+        get_handler.path = "/api/cost"
+        get_handler._send_json = mock.Mock()
+        with mock.patch.object(get_handler, "_guard", return_value=True), \
+                mock.patch.object(get_handler, "_api_cost", side_effect=error):
+            get_handler.do_GET()
+        get_payload = get_handler._send_json.call_args.args[0]
+        self.assertEqual(get_payload["error_kind"], "provider_spend_limit")
+        self.assertAlmostEqual(get_payload["known_cost_usd"], 0.000012)
+
+        post_handler = object.__new__(ui_server.UiRequestHandler)
+        post_handler.path = "/api/chat"
+        post_handler.headers = {"Content-Length": "2"}
+        post_handler.rfile = io.BytesIO(b"{}")
+        post_handler._send_json = mock.Mock()
+        with mock.patch.object(post_handler, "_guard", return_value=True), \
+                mock.patch.object(post_handler, "_api_dispatch",
+                                  side_effect=error):
+            post_handler.do_POST()
+        post_payload = post_handler._send_json.call_args.args[0]
+        self.assertEqual(post_payload["error_kind"], "provider_spend_limit")
+        self.assertAlmostEqual(post_payload["known_cost_usd"], 0.000012)
 
 
 class TtlCacheTests(unittest.TestCase):

@@ -22,6 +22,7 @@ from harness.config import (
     load_settings,
 )
 from harness.errors import HarnessError, ToolCancelled
+from harness.provider_errors import ProviderSpendLimitError
 from harness.repo_scope import _gate_python
 from tests._fake import FakeTransport, _gov
 
@@ -2432,6 +2433,15 @@ class TestDynamicTokenAllocation(unittest.TestCase):
                 res = agent._handle_conversation("explain code", "test_sess")
                 self.assertEqual(res["status"], "ok")
 
+    def test_provider_spend_limit_propagates_out_of_agent_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_lane_settings(), history_dir=Path(tmp))
+            with patch("harness.agent.chat", side_effect=ProviderSpendLimitError("cap", http_status=429)), \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())):
+                with self.assertRaises(ProviderSpendLimitError):
+                    agent._hourglass_answer_once("explain", "")
+
 
 if __name__ == "__main__":
     unittest.main()
+

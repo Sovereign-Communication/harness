@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ._http import HttpTransport
 from .errors import ProviderUsageUnknown, ToolCancelled
 from .events import current_cancel_check, emit, provider_request_context
+from .provider_errors import ProviderSpendLimitError
 
 # TypeSafe System One Jev pricing: $42 per billion tokens = $0.042 per million input tokens.
 # Output tokens are free ($0.00). Monthly included account credit: $5.00 (~119M input tokens).
@@ -726,6 +727,12 @@ class JevEvaluator:
                 outcome = "neutral"
                 emit("model_request_end", model=self.model, attempt="jev",
                      request_id=request_id, outcome="cancelled",
+                     duration_s=round(time.monotonic() - request_started, 2))
+                raise
+            except ProviderSpendLimitError:
+                outcome = "failure"
+                emit("model_request_end", model=self.model, attempt="jev",
+                     request_id=request_id, outcome="provider_spend_limit",
                      duration_s=round(time.monotonic() - request_started, 2))
                 raise
             except Exception:

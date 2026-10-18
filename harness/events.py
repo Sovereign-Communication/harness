@@ -68,6 +68,7 @@ _warned_sink = None
 _task_id = ContextVar("harness_event_task_id", default=None)
 _cancel_check = ContextVar("harness_event_cancel_check", default=None)
 _provider_request = ContextVar("harness_provider_request", default=None)
+_terminal_spend_limit = ContextVar("harness_terminal_spend_limit", default=None)
 
 
 @contextmanager
@@ -75,9 +76,11 @@ def task_context(task_id, cancel_check=None):
     """Attach run identity and cancellation to one run's execution context."""
     token = _task_id.set(task_id)
     cancel_token = _cancel_check.set(cancel_check)
+    terminal_token = _terminal_spend_limit.set({})
     try:
         yield
     finally:
+        _terminal_spend_limit.reset(terminal_token)
         _cancel_check.reset(cancel_token)
         _task_id.reset(token)
 
@@ -90,6 +93,63 @@ def current_cancel_check():
 def current_task_id():
     """Return the active run identity for durable terminal receipts."""
     return _task_id.get()
+
+
+def mark_provider_spend_limit(error):
+    """Latch terminal provider exhaustion for this operation and its workers."""
+    state = _terminal_spend_limit.get()
+    if state is not None and "error" not in state:
+        state["error"] = {
+            "http_status": getattr(error, "http_status", None),
+        }
+
+
+def raise_if_provider_spend_limited(*, known_cost=0.0):
+    """Prevent queued or retrying worker calls after a sibling hits the cap."""
+    state = _terminal_spend_limit.get()
+    if state is not None and "error" in state:
+        from .provider_errors import ProviderSpendLimitError
+        raise ProviderSpendLimitError(
+            "a sibling request already exhausted the provider spend limit",
+            http_status=state["error"].get("http_status"),
+            known_cost=known_cost,
+        )
+
+
+def reset_provider_spend_limit_latch():
+    """Reset the terminal spend-limit latch for this execution context."""
+    state = _terminal_spend_limit.get()
+    if state is not None:
+        state.clear()
+
+
+def reset_executor_spend_limit(executor):
+    """Reset the executor's terminal spend-limit latch so reuse succeeds."""
+    if hasattr(executor, "_harness_terminal_spend_limit"):
+        executor._harness_terminal_spend_limit = {}
+
+
+def submit_with_context(executor, fn, *args, **kwargs):
+    """Submit one worker with this run's event and cancellation context."""
+    context = copy_context()
+    state = _terminal_spend_limit.get()
+    if state is None:
+        # CLI and library fan-outs may not have a server task context. Give
+        # every worker submitted to this pool one shared terminal-stop latch.
+        state = getattr(executor, "_harness_terminal_spend_limit", None)
+        if state is None:
+            state = {}
+            if hasattr(executor, "__dict__"):
+                executor._harness_terminal_spend_limit = state
+
+    def invoke():
+        token = _terminal_spend_limit.set(state)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _terminal_spend_limit.reset(token)
+
+    return executor.submit(context.run, invoke)
 
 
 @contextmanager
@@ -120,11 +180,6 @@ def cancellation_context(cancel_check):
     finally:
         _cancel_check.reset(token)
 
-
-def submit_with_context(executor, fn, *args, **kwargs):
-    """Submit one worker with this run's event and cancellation context."""
-    context = copy_context()
-    return executor.submit(context.run, fn, *args, **kwargs)
 
 
 def emit(event_type, **fields):

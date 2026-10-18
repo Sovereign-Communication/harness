@@ -7,6 +7,7 @@ from unittest.mock import patch
 from harness.config import load_settings
 from harness.errors import ProviderUsageUnknown, ToolCancelled
 from harness.jev import JevEvaluationResult
+from harness.provider_errors import ProviderSpendLimitError
 from harness.jev_policy import (
     JEV_MAX_INPUT_TOKENS,
     aggregate_structural,
@@ -539,6 +540,37 @@ class JevPolicyTests(unittest.TestCase):
         self.assertEqual(result.verdict, "fail")
         self.assertEqual(transport.calls, [])
 
+    def test_provider_spend_limit_propagates_and_settles_known_usage(self):
+        class _FailingSpendLimitTransport:
+            def post(self, url, key, payload, timeout=45):
+                raise ProviderSpendLimitError(
+                    "spend limit exceeded",
+                    http_status=429,
+                    known_cost=0.0012,
+                )
+
+        governor = SpendGovernor(
+            FakeTransport(models=[m("jev-latest", prompt="0", completion="0")]),
+            "sk-test", max_cost=0.10)
+        ledger = self._ledger()
+        settings = load_settings({"jev_api_key": "jev-key"})
+        policy = policy_for(
+            settings, transport=_FailingSpendLimitTransport(),
+            governor=governor, ledger=ledger)
+        with self.assertRaises(ProviderSpendLimitError) as ctx:
+            policy.evaluate_diff(
+                "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n",
+                "change x", "x.py", site="apply", task_id="task-spend-limit")
+        self.assertEqual(ctx.exception.known_cost, 0.0012)
+        self.assertEqual(governor.spent, 0.0012)
+        self.assertEqual(governor.outstanding, 0.0)
+        entries = ledger.entries()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["result_state"], "provider_spend_limit")
+        self.assertEqual(entries[0]["cost"], 0.0012)
+        self.assertEqual(entries[0]["model"], "jev-latest")
+
 
 if __name__ == "__main__":
     unittest.main()
+
