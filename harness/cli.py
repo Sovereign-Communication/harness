@@ -1604,9 +1604,9 @@ def _cmd_repo_cards(opts, settings):
     repo_filter = getattr(opts, "repo", None)
 
     rationale_dir = cards / _rc.RATIONALE_SUBDIR
-    repos = _rc.discover_repos(root)
+    repos = [(_rc.canonical_repo_name(n, cards), p) for n, p in _rc.discover_repos(root)]
     if repo_filter:
-        repos = [(n, p) for n, p in repos if n == repo_filter]
+        repos = [(n, p) for n, p in repos if n == repo_filter or n.lower() == repo_filter.lower()]
 
     if check:
         stale = []

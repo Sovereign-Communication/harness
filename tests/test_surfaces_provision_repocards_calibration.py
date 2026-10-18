@@ -586,7 +586,7 @@ class TestMcpTools(unittest.TestCase):
     def test_mcp_repo_cards_write_and_stale(self):
         res = self._call("repo_cards", {"check": False, "repo": "Harness"})
         self.assertEqual(res["status"], "written")
-        with mock.patch("pathlib.Path.read_text", return_value="out of date content"):
+        with mock.patch("harness.repo_cards.render_card", return_value="different card content"):
             res_stale = self._call("repo_cards", {"check": True, "repo": "Harness"})
             self.assertEqual(res_stale["status"], "stale")
             self.assertIn("Harness", res_stale["stale"])

@@ -1173,7 +1173,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 root = rc.default_root()
                 cards = Path(__file__).resolve().parent.parent / rc.CARDS_SUBDIR
                 rationale_dir = cards / rc.RATIONALE_SUBDIR
-                repos = rc.discover_repos(root)
+                repos = [(rc.canonical_repo_name(n, cards), p) for n, p in rc.discover_repos(root)]
                 cards_list = []
                 for name, _ in repos:
                     cpath = cards / f"{name}.md"

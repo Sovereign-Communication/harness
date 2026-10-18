@@ -1214,9 +1214,9 @@ class McpServer:
             root = rc.default_root()
             cards = Path(__file__).resolve().parent.parent / rc.CARDS_SUBDIR
             rationale_dir = cards / rc.RATIONALE_SUBDIR
-            repos = rc.discover_repos(root)
+            repos = [(rc.canonical_repo_name(n, cards), p) for n, p in rc.discover_repos(root)]
             if repo_filter:
-                repos = [(n, p) for n, p in repos if n == repo_filter]
+                repos = [(n, p) for n, p in repos if n == repo_filter or n.lower() == repo_filter.lower()]
             if check:
                 stale = []
                 for rname, path in repos:

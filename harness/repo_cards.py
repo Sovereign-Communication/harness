@@ -315,6 +315,15 @@ def write_card(cards_dir: Path, repo_name: str, body: str) -> bool:
     return True
 
 
+def canonical_repo_name(name: str, cards_dir: Path) -> str:
+    """Resolve repo name matching existing card filename case-insensitively, or return name."""
+    if cards_dir.is_dir():
+        for f in cards_dir.glob("*.md"):
+            if f.stem.lower() == name.lower():
+                return f.stem
+    return name
+
+
 def generate(root: Path, cards_dir: Path, repo: Optional[str] = None) -> Tuple[List[str], List[str]]:
     """Generate a card for every canonical repo under ``root``.
 
@@ -323,9 +332,9 @@ def generate(root: Path, cards_dir: Path, repo: Optional[str] = None) -> Tuple[L
     rationale_dir = cards_dir / RATIONALE_SUBDIR
     changed: List[str] = []
     unchanged: List[str] = []
-    repos = discover_repos(root)
+    repos = [(canonical_repo_name(n, cards_dir), p) for n, p in discover_repos(root)]
     if repo:
-        repos = [(n, p) for n, p in repos if n == repo]
+        repos = [(n, p) for n, p in repos if n == repo or n.lower() == repo.lower()]
     for name, path in repos:
         body = render_card(name, scan_repo(path), rationale_for(name, rationale_dir))
         if write_card(cards_dir, name, body):
@@ -355,9 +364,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     root = args.root or default_root()
     cards = args.cards or Path(__file__).resolve().parent.parent / CARDS_SUBDIR
 
-    repos = discover_repos(root)
+    repos = [(canonical_repo_name(n, cards), p) for n, p in discover_repos(root)]
     if args.repo:
-        repos = [(n, p) for n, p in repos if n == args.repo]
+        repos = [(n, p) for n, p in repos if n == args.repo or n.lower() == args.repo.lower()]
 
     if args.check:
         rationale_dir = cards / RATIONALE_SUBDIR
