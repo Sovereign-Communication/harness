@@ -140,7 +140,7 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
     # STATUS edit that no code gated.
     "EV-0": {
         "status_needle": r"\bEV-0\b",
-        "pr_pattern": None,
+        "pr_pattern": r"PR #163|PR #167|c8da12e|998e50f",
         "required_tests": [
             "tests/test_economics_ingest.py",
             "tests/test_economics_discount.py",
