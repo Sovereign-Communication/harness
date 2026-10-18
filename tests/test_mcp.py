@@ -1045,7 +1045,11 @@ class LaneSchedulingTests(unittest.TestCase):
              "driver_health": "observe",
              "driver_vocabulary": "observe",
              "driver_verify": "observe",
-             "jev_phase": "observe"})
+             "jev_phase": "observe",
+             "host_provision_probe": "observe",
+             "host_provision_plan": "spendy",
+             "repo_cards": "observe",
+             "jev_calibration": "observe"})
 
     def test_unknown_and_missing_names_ride_observe(self):
         self.assertEqual(lane_for("not_a_tool"), "observe")

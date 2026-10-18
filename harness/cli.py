@@ -26,6 +26,10 @@ import json
 import os
 import tempfile
 import time
+from pathlib import Path
+from . import jev_calibration as _jcal
+from . import provision as _pv
+from . import repo_cards as _rc
 from .agent import AutonomousAgent, is_site_check_prompt
 from .consent import probe_consent
 from .config import (
@@ -1488,6 +1492,10 @@ def _cmd_jev_vision_assessment(opts, settings):
         raise HarnessError("vision assessment is unassessed; see the emitted reason")
 
 
+def _extract_judgment_records(entries):
+    return _jcal.extract_judgment_records(entries)
+
+
 def _cmd_jev_freeze(opts, settings):
     """Operator face over ``config.freeze_jev_settings`` (GAP-freeze-face).
 
@@ -1499,10 +1507,22 @@ def _cmd_jev_freeze(opts, settings):
     ``effective`` block is read back with ``load_settings()``, i.e. what the
     NEXT run will actually use rather than what this call hoped it wrote.
     """
+    min_confidence = getattr(opts, "min_confidence", None)
+    if getattr(opts, "calibrate", False) and min_confidence is None:
+        ledger = _ledger(settings)
+        entries = ledger.tail(2000)
+        records = _extract_judgment_records(entries)
+        if records:
+            report = _jcal.analyze_judgments(records)
+            rec = report.get("recommendation")
+            if rec and rec.get("discriminating_band"):
+                min_confidence = rec["discriminating_band"][0]
+                eprint(f"[jev-freeze] calibration recommended min_confidence: {min_confidence:.3f}")
+
     frozen = freeze_jev_settings(
         settings,
         jev_model=getattr(opts, "model", None),
-        min_confidence=getattr(opts, "min_confidence", None),
+        min_confidence=min_confidence,
         persist=bool(getattr(opts, "persist", False)))
     result = {
         "status": "frozen" if frozen["persisted"] else "preview",
@@ -1516,6 +1536,135 @@ def _cmd_jev_freeze(opts, settings):
     _emit(result, opts.out, force_json=getattr(opts, "json", False))
     if not frozen["persisted"]:
         eprint("[jev-freeze] preview only (no write); pass --persist to pin")
+
+
+def _cmd_provision(opts, settings):
+    """Host provisioning (PROVISION-CORE): probe, plan, or execute with approval."""
+    cmd = getattr(opts, "provision_cmd", None)
+    if cmd == "probe":
+        probe = _pv.probe_host()
+        res = probe.to_dict()
+        if not getattr(opts, "json", False) and not getattr(opts, "quiet", False):
+            print(f"OS: {probe.os_name} ({probe.arch})")
+            print(f"Python: {probe.python_version} ({probe.python_executable})")
+            print(f"GPU: {probe.gpu_present} (free disk: {(probe.free_disk_bytes or 0) / (1024**3):.1f} GB)")
+            print(f"Package managers: {', '.join(sorted(probe.usable_managers())) or 'none'}")
+        _emit(res, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
+    elif cmd == "plan":
+        root = os.path.abspath(getattr(opts, "root", "."))
+        probe = _pv.probe_host()
+        policy = _pv.policy_for_probe(probe, [root])
+        plan = _pv.plan_provision(opts.goal, probe, policy=policy)
+        rendered = _pv.render_plan(plan)
+        res = plan.to_dict()
+        res["rendered"] = rendered
+        if not getattr(opts, "json", False) and not getattr(opts, "quiet", False):
+            print(rendered)
+        _emit(res, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
+    elif cmd == "apply":
+        plan_file = getattr(opts, "plan_file", None)
+        if not plan_file or not os.path.isfile(plan_file):
+            raise HarnessError(f"plan file not found: {plan_file}")
+        try:
+            with open(plan_file, encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception as exc:
+            raise HarnessError(f"failed to read plan JSON: {exc}") from exc
+        try:
+            plan = _pv.plan_from_dict(raw)
+        except Exception as exc:
+            raise HarnessError(f"malformed plan JSON: {exc}") from exc
+        probe = _pv.probe_host()
+        policy = _pv.policy_for_probe(probe, [plan.root])
+        _pv.validate_plan(plan, policy)
+        dry_run = bool(getattr(opts, "dry_run", True))
+        gate = _pv.ApprovalGate()
+        if getattr(opts, "approve_all", False):
+            gate.record(
+                plan,
+                _pv.APPROVE,
+                approver="operator-cli",
+                reason="CLI --approve-all flag",
+            )
+        ledger = _ledger(settings)
+        report = _pv.execute_plan(plan, gate, policy=policy, ledger=ledger, dry_run=dry_run)
+        res = report.to_dict()
+        if not getattr(opts, "json", False) and not getattr(opts, "quiet", False):
+            print(f"Provision run: {report.outcome} (dry_run={dry_run})")
+            for sr in report.results:
+                print(f"  [{sr.status}] step {sr.step_id}: {sr.note or sr.status}")
+        _emit(res, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
+
+
+def _cmd_repo_cards(opts, settings):
+    """Repo philosophy cards (REPO-CARDS): deterministic scan of committed config."""
+    root = Path(opts.root) if getattr(opts, "root", None) else _rc.default_root()
+    cards = Path(opts.cards) if getattr(opts, "cards", None) else (Path(__file__).resolve().parent.parent / _rc.CARDS_SUBDIR)
+    check = bool(getattr(opts, "check", False))
+    repo_filter = getattr(opts, "repo", None)
+
+    rationale_dir = cards / _rc.RATIONALE_SUBDIR
+    repos = [(_rc.canonical_repo_name(n, cards), p) for n, p in _rc.discover_repos(root)]
+    if repo_filter:
+        repos = [(n, p) for n, p in repos if n == repo_filter or n.lower() == repo_filter.lower()]
+
+    if check:
+        stale = []
+        for name, path in repos:
+            body = _rc.render_card(name, _rc.scan_repo(path), _rc.rationale_for(name, rationale_dir))
+            target = cards / f"{name}.md"
+            if not target.is_file() or target.read_text(encoding="utf-8") != body:
+                stale.append(name)
+        res = {
+            "status": "stale" if stale else "ok",
+            "checked": len(repos),
+            "stale": stale,
+            "up_to_date": len(repos) - len(stale),
+        }
+        _emit(res, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
+        if stale:
+            for s in stale:
+                eprint(f"[repo-cards] stale: {s}")
+            raise HarnessError(f"{len(stale)} card(s) would change")
+        if not getattr(opts, "quiet", False) and not getattr(opts, "json", False):
+            print("cards up to date")
+    else:
+        changed, unchanged = _rc.generate(root, cards, repo=repo_filter)
+        res = {
+            "status": "written",
+            "changed": changed,
+            "unchanged": unchanged,
+        }
+        _emit(res, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
+        if not getattr(opts, "quiet", False) and not getattr(opts, "json", False):
+            for c in changed:
+                print(f"wrote {c}")
+            for u in unchanged:
+                print(f"unchanged {u}")
+
+
+def _cmd_jev_calibration(opts, settings):
+    """Jev calibration analysis (JEV-P3-calibration-analysis): confidence distribution & threshold band."""
+    records = []
+    file_path = getattr(opts, "file", None)
+    if file_path:
+        if not os.path.isfile(file_path):
+            raise HarnessError(f"file not found: {file_path}")
+        with open(file_path, encoding="utf-8") as f:
+            raw = json.load(f)
+            if isinstance(raw, list):
+                records = raw
+            elif isinstance(raw, dict) and "records" in raw:
+                records = raw["records"]
+    else:
+        ledger = _ledger(settings)
+        entries = ledger.tail(2000)
+        records = _extract_judgment_records(entries)
+
+    report = _jcal.analyze_judgments(records)
+    if not getattr(opts, "json", False) and not getattr(opts, "quiet", False):
+        print(_jcal.format_report(report))
+    _emit(report, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
 
 
 # Command -> handler. `required=True` subparsers make an unknown command
@@ -1552,6 +1701,9 @@ _DISPATCH = {
     "jev-vision-assessment": _cmd_jev_vision_assessment,
     "jev-freeze": _cmd_jev_freeze,
     "mission": _cmd_mission,
+    "provision": _cmd_provision,
+    "repo-cards": _cmd_repo_cards,
+    "jev-calibration": _cmd_jev_calibration,
 }
 
 

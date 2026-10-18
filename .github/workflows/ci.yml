@@ -72,6 +72,8 @@ jobs:
         run: python -m ruff check harness tests examples/oc_handoff
       - name: Compile
         run: python -m compileall -q harness tests examples/oc_handoff
+      - name: Check repo philosophy cards (drift check)
+        run: python -m harness.repo_cards --check
       - name: Run tests (hermetic, no network, warnings clean)
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
 

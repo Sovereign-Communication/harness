@@ -1163,6 +1163,32 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_driver_schemas()
             if path == "/api/driver/verify":
                 return self._api_driver_verify()
+            if path == "/api/provision/probe":
+                from . import provision as pv
+                probe = pv.probe_host()
+                return self._send_json(probe.to_dict())
+            if path == "/api/cards":
+                from pathlib import Path
+                from . import repo_cards as rc
+                root = rc.default_root()
+                cards = Path(__file__).resolve().parent.parent / rc.CARDS_SUBDIR
+                rationale_dir = cards / rc.RATIONALE_SUBDIR
+                repos = [(rc.canonical_repo_name(n, cards), p) for n, p in rc.discover_repos(root)]
+                cards_list = []
+                for name, _ in repos:
+                    cpath = cards / f"{name}.md"
+                    cards_list.append({
+                        "name": name,
+                        "exists": cpath.is_file(),
+                        "has_rationale": (rationale_dir / f"{name}.md").is_file(),
+                    })
+                return self._send_json({"cards": cards_list})
+            if path == "/api/jev-calibration":
+                from . import jev_calibration as jcal
+                ledger = ledger_for(load_settings())
+                entries = ledger.tail(1000)
+                records = jcal.extract_judgment_records(entries)
+                return self._send_json(jcal.analyze_judgments(records))
             m = MISSION_ID_PATH_RE.match(path)
             if m:
                 return self._api_mission_detail(m.group(1), q)
@@ -1198,6 +1224,18 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_driver_start(body)
             if parsed.path == "/api/driver/drive":
                 return self._api_driver_drive(body)
+            if parsed.path == "/api/provision/plan":
+                from . import provision as pv
+                goal = str(body.get("goal") or "").strip()
+                if not goal:
+                    raise HarnessError("provision goal is required")
+                root = os.path.abspath(body.get("root") or os.getcwd())
+                probe = pv.probe_host()
+                policy = pv.policy_for_probe(probe, [root])
+                plan = pv.plan_provision(goal, probe, policy=policy)
+                res = plan.to_dict()
+                res["rendered"] = pv.render_plan(plan)
+                return self._send_json(res)
             if parsed.path == "/api/route":
                 # SITE local mode: same policy owner as `harness route`.
                 return self._api_site_route(body)

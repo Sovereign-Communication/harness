@@ -4,6 +4,7 @@
 
 | Axis | Norm | Origin |
 |---|---|---|
+| Agent context | `AGENTS.md` is the agent-facing context | `AGENTS.md` |
 | Tests | `npm test` is the test command | `package.json:scripts.test` |
 | CI | workflow `ci.yml` runs on push/pull request | `.github/workflows/ci.yml` |
 | Build | Node package `civicscope` | `package.json` |

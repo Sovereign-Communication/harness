@@ -437,4 +437,40 @@ TOOL_SCHEMAS = [
             "task_id": {"type": "string"},
         }},
     },
+    {
+        "name": "host_provision_probe",
+        "title": "Probe host system facts for provisioning",
+        "description": "Probe host hardware, operating system, interpreter, GPU, and package managers (read-only facts).",
+        "inputSchema": {"type": "object", "properties": {}},
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+    },
+    {
+        "name": "host_provision_plan",
+        "title": "Plan host provisioning for a goal",
+        "description": "Generate an ordered, typed host-provisioning Plan for a goal (dry-run/advisory only; consent required before execution).",
+        "inputSchema": {"type": "object", "properties": {
+            "goal": {"type": "string", "description": "Provisioning goal text (e.g. 'install ruff')"},
+            "root": {"type": "string", "description": "Optional approved root directory (defaults to current working directory)"},
+        }, "required": ["goal"]},
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+    },
+    {
+        "name": "repo_cards",
+        "title": "Repo philosophy cards generator/checker",
+        "description": "Generate or check deterministic repo philosophy cards from committed repository config.",
+        "inputSchema": {"type": "object", "properties": {
+            "check": {"type": "boolean", "description": "True to verify cards match without writing"},
+            "repo": {"type": "string", "description": "Optional specific repository name"},
+        }},
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+    },
+    {
+        "name": "jev_calibration",
+        "title": "Jev judgment calibration analysis",
+        "description": "Analyze Jev judgment confidence distribution and recommend calibration threshold bands from ledger history (read-only).",
+        "inputSchema": {"type": "object", "properties": {
+            "window": {"type": "integer", "default": 1000, "description": "Number of recent ledger entries to inspect"},
+        }},
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+    },
 ]

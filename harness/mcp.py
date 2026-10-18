@@ -7,6 +7,7 @@ harness/mcp_schemas.py as pure data, and the lane-scheduling policy
 """
 import json
 import math
+import os
 import sys
 import threading
 import time
@@ -1190,6 +1191,48 @@ class McpServer:
         if name == "driver_verify":
             adapter = PerceptionAdapter()
             return adapter.verify()
+        if name == "host_provision_probe":
+            from . import provision as pv
+            probe = pv.probe_host()
+            return probe.to_dict()
+        if name == "host_provision_plan":
+            from . import provision as pv
+            goal = validate_text(args.get("goal"), "goal", pv.MAX_GOAL_CHARS, required=True)
+            root_arg = args.get("root")
+            root = os.path.abspath(root_arg) if root_arg else os.getcwd()
+            probe = pv.probe_host()
+            policy = pv.policy_for_probe(probe, [root])
+            plan = pv.plan_provision(goal, probe, policy=policy)
+            res = plan.to_dict()
+            res["rendered"] = pv.render_plan(plan)
+            return res
+        if name == "repo_cards":
+            from pathlib import Path
+            from . import repo_cards as rc
+            check = bool(args.get("check", False))
+            repo_filter = args.get("repo")
+            root = rc.default_root()
+            cards = Path(__file__).resolve().parent.parent / rc.CARDS_SUBDIR
+            rationale_dir = cards / rc.RATIONALE_SUBDIR
+            repos = [(rc.canonical_repo_name(n, cards), p) for n, p in rc.discover_repos(root)]
+            if repo_filter:
+                repos = [(n, p) for n, p in repos if n == repo_filter or n.lower() == repo_filter.lower()]
+            if check:
+                stale = []
+                for rname, path in repos:
+                    body = rc.render_card(rname, rc.scan_repo(path), rc.rationale_for(rname, rationale_dir))
+                    target = cards / f"{rname}.md"
+                    if not target.is_file() or target.read_text(encoding="utf-8") != body:
+                        stale.append(rname)
+                return {"status": "stale" if stale else "ok", "checked": len(repos), "stale": stale}
+            changed, unchanged = rc.generate(root, cards, repo=repo_filter)
+            return {"status": "written", "changed": changed, "unchanged": unchanged}
+        if name == "jev_calibration":
+            from . import jev_calibration as jcal
+            window = bounded_int(args.get("window", 1000), "window", 1, 10000)
+            entries = self.ledger.tail(window)
+            records = jcal.extract_judgment_records(entries)
+            return jcal.analyze_judgments(records)
         raise ValueError(f"unknown tool: {name}")
 
     # ---------------- notifications/progress streaming ----------------
