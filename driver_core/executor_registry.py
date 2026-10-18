@@ -211,7 +211,11 @@ class ExecutorRegistry:
         self.policy_note = policy_note
         #: A driver-local backend, or the process registration seam when the
         #: sentinel is left in place. Explicit None means no backend.
-        self.input_backend = osal.freeze_input_backend(input_backend)
+        self._input_backend = osal.freeze_input_backend(input_backend)
+
+    @property
+    def input_backend(self):
+        return self._input_backend
 
     def input_backend_for(self, platform):
         if self.input_backend is osal.USE_REGISTERED_INPUT_BACKEND:
@@ -274,7 +278,8 @@ def _observe(action, params, state=None):
     }
 
 
-def build_read_only_registry(state_provider=None):
+def build_read_only_registry(state_provider=None, *,
+                             input_backend=osal.USE_REGISTERED_INPUT_BACKEND):
     """The registry containing only the safe built-ins.
 
     ``state_provider`` is a zero-argument callable returning the current
@@ -288,7 +293,7 @@ def build_read_only_registry(state_provider=None):
         "no_action": _noop,
         "read_value": lambda a, p: _read_value(a, p, _state()),
         "observe": lambda a, p: _observe(a, p, _state()),
-    })
+    }, input_backend=input_backend)
     return registry
 
 
@@ -303,9 +308,9 @@ def build_driver_registry(state_provider=None, *, allow_write=False,
     library: building a ``Driver`` should not silently confer the ability to
     delete files.
     """
-    registry = build_read_only_registry(state_provider)
-    input_backend = osal.freeze_input_backend(input_backend)
-    registry.input_backend = input_backend
+    registry = build_read_only_registry(state_provider,
+                                        input_backend=input_backend)
+    input_backend = registry.input_backend
     if allow_write:
         for name, handler in WRITE_EXECUTORS.items():
             if name in INPUT_BACKED and input_backend is not \
