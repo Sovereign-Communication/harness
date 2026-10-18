@@ -171,6 +171,27 @@ class TestPilot(unittest.TestCase):
         self.assertEqual(refine.PILOT_CYCLES, 20)
         self.assertIn("min_completed", refine.PILOT_GRADUATION)
 
+    def test_pilot_save_and_auto_merge(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "pilot.json"
+            with patch.object(refine, "_PILOT_STATE_PATH", p):
+                self.assertTrue(refine.pilot_active())
+                self.assertFalse(refine.pilot_allows_auto_merge())
+                refine.save_pilot_state({
+                    "cycles_completed": 20,
+                    "cycles": [],
+                    "graduated": True,
+                    "started": "2026-10-18T00:00:00Z",
+                })
+                loaded = refine.load_pilot_state()
+                self.assertTrue(loaded["graduated"])
+                self.assertFalse(refine.pilot_active())
+                self.assertTrue(refine.pilot_allows_auto_merge())
+
 
 class TestDataFiles(unittest.TestCase):
     def test_families_valid(self):
@@ -194,6 +215,26 @@ class TestDataFiles(unittest.TestCase):
         # pr-review lessons should rank first
         self.assertIn("pr-review", got[0].family + str(got[0].tags))
 
+    def test_append_lesson_temp(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            exp = Path(tmp) / "experience.md"
+            exp.write_text("# Lessons\n", encoding="utf-8")
+            with patch.object(refine, "_EXPERIENCE_PATH", exp):
+                refine.append_lesson(
+                    "## t-99 | 2026-10-18T12:00:00Z | code-fix\n"
+                    "- tags: [code-fix]\n"
+                    "- lesson: Always check boundaries.\n"
+                )
+                loaded = refine.load_lessons()
+                self.assertEqual(len(loaded), 1)
+                self.assertEqual(loaded[0].task_id, "t-99")
+                got = refine.retrieve_lessons("code-fix", limit=2)
+                self.assertEqual(len(got), 1)
+
     def test_propose_prompt_exists(self):
         p = refine._PROPOSE_PROMPT_PATH
         self.assertTrue(p.exists(), f"missing {p}")
@@ -206,6 +247,56 @@ class TestDataFiles(unittest.TestCase):
         self.assertIn("pilot_active", rep)
         self.assertIn("lessons_count", rep)
         self.assertGreaterEqual(rep["lessons_count"], 5)
+
+
+class TestRefineCli(unittest.TestCase):
+    def test_cli_status_and_record_and_validate(self):
+        import io
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        from harness import cli
+        from harness.errors import HarnessError
+
+        ledger = FakeLedger()
+        with patch.object(cli, "_ledger", return_value=ledger):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                cli.main(["refine", "--status", "--json"])
+            self.assertIn("pilot_active", buf.getvalue())
+
+            buf_pretty = io.StringIO()
+            with redirect_stdout(buf_pretty):
+                cli.main(["refine", "--status"])
+            self.assertIn("refine pilot:", buf_pretty.getvalue())
+
+            buf_rec = io.StringIO()
+            with redirect_stdout(buf_rec):
+                cli.main(["refine", "--record-outcome", "task-1", "code-fix", "0.85", "--json"])
+            self.assertIn("task-1", buf_rec.getvalue())
+
+            buf_task = io.StringIO()
+            with redirect_stdout(buf_task):
+                cli.main(["refine", "--task", "task-1", "--json"])
+            self.assertIn("validated", buf_task.getvalue())
+
+            buf_fam = io.StringIO()
+            with redirect_stdout(buf_fam):
+                cli.main(["refine", "--family", "code-fix", "--json"])
+            self.assertIn("validated", buf_fam.getvalue())
+
+            with self.assertRaises(HarnessError):
+                cli._cmd_refine(type("O", (), {"record_outcome": ["t", "code-fix", "bad"]})(), None)
+            with self.assertRaises(HarnessError):
+                cli._cmd_refine(type("O", (), {"task": None, "family": None, "status": False, "record_outcome": None})(), None)
+            with self.assertRaises(HarnessError):
+                cli._cmd_refine(type("O", (), {"task": "missing-id", "family": None, "status": False, "record_outcome": None})(), None)
+            with self.assertRaises(HarnessError):
+                cli._cmd_refine(type("O", (), {"task": None, "family": "bad-fam", "status": False, "record_outcome": None})(), None)
+
+            with patch.object(refine, "pilot_active", return_value=False), \
+                 patch.object(refine, "load_pilot_state", return_value={"graduated": False}):
+                with self.assertRaises(HarnessError):
+                    cli._cmd_refine(type("O", (), {"task": "task-1", "family": None, "status": False, "record_outcome": None})(), None)
 
 
 if __name__ == "__main__":
