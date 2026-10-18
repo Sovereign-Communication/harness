@@ -24,7 +24,7 @@ absent so unclassified records still count toward the distribution.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 # Matches the draft spec composition rule: is_destructive.supported >= 0.5
 # always escalates, at any confidence.
@@ -213,3 +213,30 @@ def format_report(report: Mapping[str, Any]) -> str:
         lines.append(f"warning: {rec['warning']}")
     lines.extend(f"note: {n}" for n in report.get("notes", []))
     return "\n".join(lines)
+
+
+def extract_judgment_records(entries: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """Extract validated calibration records from ledger entries."""
+    records = []
+    for e in entries:
+        ev = e.get("ev") or e.get("event")
+        if ev in ("jev_eval", "judgment", "jev_decision"):
+            conf = e.get("confidence")
+            if conf is None:
+                conf = e.get("supported")
+            if conf is None:
+                continue
+            try:
+                conf = float(conf)
+            except (TypeError, ValueError):
+                continue
+            dest = float(e.get("destructive", 0.0) or 0.0)
+            disp = str(e.get("disposition") or e.get("verdict") or "unknown")
+            records.append({
+                "verdict": str(e.get("verdict") or ""),
+                "confidence": conf,
+                "destructive": dest,
+                "disposition": disp,
+            })
+    return records
+

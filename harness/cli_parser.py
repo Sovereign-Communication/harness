@@ -611,6 +611,8 @@ def build_parser():
                          help="write the named keys into config.json (refused "
                               "fail-closed when the environment pins the same "
                               "key, since the pin would not take effect)")
+    pfreeze.add_argument("--calibrate", action="store_true",
+                         help="derive recommended min_confidence from ledger calibration before freezing")
     pfreeze.add_argument("--json", action="store_true", help="emit raw JSON only")
     _add_output_flags(pfreeze)
 
@@ -679,5 +681,53 @@ def build_parser():
     prun.add_argument("--live-jev", action="store_true", default=False,
                       help="enable live Jev policy evaluation for HUL-C scope determination")
     _add_output_flags(prun)
+
+    # Host provisioning (PROVISION-CORE): probe machine facts, plan setup, or dry-run/apply.
+    pprov = sub.add_parser(
+        "provision",
+        help="Host-aware provisioning: probe host facts, plan setup, or execute with approval")
+    pprov_sub = pprov.add_subparsers(dest="provision_cmd", required=True)
+
+    pp_probe = pprov_sub.add_parser("probe", help="Probe host OS, arch, interpreter, GPU, disk, package managers")
+    pp_probe.add_argument("--json", action="store_true", help="emit raw JSON only")
+    _add_output_flags(pp_probe)
+
+    pp_plan = pprov_sub.add_parser("plan", help="Generate an ordered, typed provisioning plan for a goal")
+    pp_plan.add_argument("--goal", required=True, help="provisioning goal text (e.g. 'install ruff')")
+    pp_plan.add_argument("--root", default=".", help="approved root directory (default: current directory)")
+    pp_plan.add_argument("--json", action="store_true", help="emit raw JSON plan only")
+    _add_output_flags(pp_plan)
+
+    pp_apply = pprov_sub.add_parser("apply", help="Execute a provisioning plan with safety gates (dry-run by default)")
+    pp_apply.add_argument("--plan-file", required=True, help="path to plan JSON file")
+    pp_apply.add_argument("--dry-run", dest="dry_run", action="store_true", default=True,
+                          help="dry-run only; execute nothing (default)")
+    pp_apply.add_argument("--execute", dest="dry_run", action="store_false",
+                          help="explicit operator confirmation to execute plan mutating steps")
+    pp_apply.add_argument("--approve-all", action="store_true", default=False,
+                          help="pre-approve non-irreversible steps for convenience")
+    pp_apply.add_argument("--json", action="store_true", help="emit raw JSON report only")
+    _add_output_flags(pp_apply)
+
+    # Repo philosophy cards (REPO-CARDS): deterministic scan of committed config.
+    prc = sub.add_parser(
+        "repo-cards",
+        help="Generate or check deterministic repo philosophy cards from committed repository config")
+    prc.add_argument("--root", default=None, help="directory containing sibling repositories (default: parent)")
+    prc.add_argument("--cards", default=None, help="output directory for generated cards (default: .harness/cards)")
+    prc.add_argument("--check", action="store_true", help="report cards that would change; write nothing")
+    prc.add_argument("--repo", default=None, help="optional specific repository name to generate/check")
+    prc.add_argument("--json", action="store_true", help="emit raw JSON report only")
+    _add_output_flags(prc)
+
+    # Jev calibration analysis (JEV-P3-calibration-analysis): confidence distribution & threshold band.
+    pcal = sub.add_parser(
+        "jev-calibration",
+        help="Analyze Jev judgment confidence distribution and recommend calibration threshold bands")
+    pcal.add_argument("--ledger", default=None, help="ledger file path to scan for judgment records")
+    pcal.add_argument("--file", default=None, help="optional JSON file containing judgment records")
+    pcal.add_argument("--recommend", action="store_true", help="output threshold recommendation band")
+    pcal.add_argument("--json", action="store_true", help="emit raw JSON report only")
+    _add_output_flags(pcal)
 
     return ap

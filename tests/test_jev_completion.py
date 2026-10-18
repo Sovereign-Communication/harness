@@ -1423,9 +1423,16 @@ class ShippedCanonRowsAreRegisteredTests(unittest.TestCase):
     """
 
     #: canon row says **complete** with no open clause -> must report merged.
-    COMPLETE = ("JEV-CORE-HARDENING", "DYN-ROT", "CHAT-LANE")
+    COMPLETE = (
+        "JEV-CORE-HARDENING",
+        "DYN-ROT",
+        "CHAT-LANE",
+        "REPO-CARDS",
+        "PROVISION-CORE",
+        "JEV-P3-CALIBRATION-ANALYSIS",
+    )
     #: canon row keeps an open clause -> must still report open.
-    OPEN = ("REPO-CARDS", "PROVISION-CORE", "JEV-P3-CALIBRATION-ANALYSIS")
+    OPEN: tuple[str, ...] = ()
     ALL = COMPLETE + OPEN
 
     def _repo_root(self):
@@ -1491,12 +1498,12 @@ class ShippedCanonRowsAreRegisteredTests(unittest.TestCase):
             self.assertFalse(result["can_mark_complete"], (phase, result["bar"]))
 
     def test_a_genuinely_open_row_does_not_claim_completion(self):
-        """PROVISION-CORE's PR really did merge; its WORK is open. This pins
+        """DRV-1's PR really did merge; its WORK is open. This pins
         the distinction that makes the registration honest: a visible merge is
         not a completion. Registering the row must not turn the fallback's
         uniform 35.0/False into a false pass just because the merge is now
         readable."""
-        ev = collect_phase_evidence(self._repo_root(), "PROVISION-CORE")
+        ev = collect_phase_evidence(self._repo_root(), "DRV-1")
         self.assertTrue(ev["pr_merged"], ev["status_row"])
         self.assertFalse(
             phase_status_claims_complete(ev["status_row"]), ev["status_row"])
@@ -1645,13 +1652,13 @@ class PhaseRegistryHonestyTests(unittest.TestCase):
         self.assertIn("no STATUS row found for JEV-P0", printed)
 
     def test_an_honest_open_row_is_not_told_to_rewrite_its_wording(self):
-        """`PROVISION-CORE`'s `**open**` cell is correct: its PR merged, its
+        """`DRV-1`'s `**open**` cell is correct: its PR merged, its
         work did not finish. Nothing needs correcting, so the bucket that
         says otherwise must not appear and the advice must not be printed."""
         for label, (evidence, result) in (
                 ("fixture", self._score(self.HONEST_OPEN)),
                 ("live", (lambda ev: (ev, score_phase_completion(ev, jev_policy=None)))(
-                    collect_phase_evidence(self._repo_root(), "PROVISION-CORE")))):
+                    collect_phase_evidence(self._repo_root(), "DRV-1")))):
             with self.subTest(label=label):
                 self.assertIn("STATUS row not complete", evidence["open_blockers"],
                               evidence["status_row"])

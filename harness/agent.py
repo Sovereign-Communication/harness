@@ -309,6 +309,9 @@ def classify_prompt_intent(prompt: str) -> str:
     if any(w in cleaned for w in ("driver task", "drive request", "run driver", "machine drive", "perceive dom", "perceive cli", "driver perception", "perception step")):
         return "driver"
 
+    if any(w in cleaned for w in ("provision host", "probe host", "plan provision", "setup host", "provision environment", "host provisioning")):
+        return "provision"
+
     # Execution directives: commands to execute/test a plan, code, or tests on local hardware
     if any(p in cleaned for p in EXECUTION_PHRASES) or any(
         re.search(rf"\b{action}\b.*?\b(?:plan|code|test|tests|implementation|script)\b", cleaned)
@@ -409,6 +412,8 @@ class AutonomousAgent:
                 return self._handle_driver_task(prompt, sid, cancel_check=cancel_check)
             if intent == "audit":
                 return self._handle_audit(prompt, sid, cancel_check=cancel_check)
+            if intent == "provision":
+                return self._handle_provision(prompt, sid, cancel_check=cancel_check)
             if intent == "simple-action":
                 return self._run_simple_action_lifecycle(
                     prompt, session_id=sid, cancel_check=cancel_check)
@@ -447,6 +452,8 @@ class AutonomousAgent:
         elif intent == "simple-action":
             return self._run_simple_action_lifecycle(
                 prompt, session_id=sid, cancel_check=cancel_check)
+        elif intent == "provision":
+            return self._handle_provision(prompt, sid, cancel_check=cancel_check)
         elif intent == "conversation":
             if is_simple_answer_request(prompt, intent=intent):
                 res = self.run_simple_request(
@@ -1871,6 +1878,31 @@ class AutonomousAgent:
 
         save_chat_turn(session_id, result, self.history_dir)
         emit("chat_response", intent="audit", verified=ok)
+        return result
+
+    def _handle_provision(
+        self,
+        prompt: str,
+        session_id: str,
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> Dict[str, Any]:
+        """Plan host provisioning setup safely without automatic execution."""
+        from . import provision as pv
+        probe = pv.probe_host()
+        root = str(self.root_dir)
+        policy = pv.policy_for_probe(probe, [root])
+        plan = pv.plan_provision(prompt, probe, policy=policy)
+        rendered = pv.render_plan(plan)
+        result = {
+            "status": "planned",
+            "intent": "provision",
+            "prompt": prompt,
+            "response": rendered,
+            "plan": plan.to_dict(),
+            "cost": 0.0,
+        }
+        save_chat_turn(session_id, result, self.history_dir)
+        emit("chat_response", intent="provision", planned=True)
         return result
 
     def _handle_driver_task(
