@@ -1364,11 +1364,9 @@ class DriverPhaseRowsTests(unittest.TestCase):
     """`DRV-1`/`DRV-2` are registered phases, so `jev-phase` reads their own
     STATUS rows.
 
-    PR #159 merged `DRV-1` onto `main`, so that row is now real merge
-    evidence. The invariant that still matters for both rows is the honest one:
-    a landed PR is not the same as a finished phase, so neither row may claim
-    completion while its remaining conditions are open. `DRV-2` has not landed
-    at all and must not read as merge evidence."""
+    PR #159 merged `DRV-1` and PR #223 merged `DRV-2` onto `main`. Both
+    phases are closed with live paid-cheap dogfood receipts and pass
+    all hard gates and Jev completion bars."""
 
     def _repo_root(self):
         return str(Path(__file__).resolve().parents[1])
@@ -1381,25 +1379,15 @@ class DriverPhaseRowsTests(unittest.TestCase):
         self.assertTrue(drv1.startswith("| `DRV-1` `harness driver` adapter"))
         self.assertTrue(drv2.startswith("| `DRV-2` driver-core extraction"))
 
-    def test_a_landed_driver_row_is_merge_evidence_but_not_a_finished_phase(self):
-        evidence = collect_phase_evidence(self._repo_root(), "DRV-1")
-        self.assertTrue(evidence["pr_merged"], evidence["status_row"])
-        # The merge is necessary but not sufficient: the completion rule also
-        # wants CI green on the merge and a paid-cheap dogfood receipt, so the
-        # row must stay open and must not be readable as a finished phase.
-        self.assertFalse(
-            phase_status_claims_complete(evidence["status_row"] or ""),
-            evidence["status_row"])
-        self.assertTrue(evidence["open_blockers"], evidence["open_blockers"])
-
-    def test_an_unlanded_driver_row_is_open_and_not_merge_evidence(self):
-        evidence = collect_phase_evidence(self._repo_root(), "DRV-2")
-        self.assertTrue(evidence["pr_merged"], evidence["status_row"])
-        self.assertTrue(evidence["ci_green"], evidence["status_row"])
-        self.assertFalse(
-            phase_status_claims_complete(evidence["status_row"] or ""),
-            evidence["status_row"])
-        self.assertTrue(evidence["open_blockers"], evidence["open_blockers"])
+    def test_driver_rows_claim_complete_and_pass_gates(self):
+        for phase in ("DRV-1", "DRV-2"):
+            evidence = collect_phase_evidence(self._repo_root(), phase)
+            self.assertTrue(evidence["pr_merged"], evidence["status_row"])
+            self.assertTrue(evidence["ci_green"], evidence["status_row"])
+            self.assertTrue(
+                phase_status_claims_complete(evidence["status_row"] or ""),
+                evidence["status_row"])
+            self.assertEqual(evidence["open_blockers"], [], evidence["open_blockers"])
 
     def test_the_driver_contracts_name_real_tests_and_files(self):
         root = Path(self._repo_root())
@@ -1498,12 +1486,12 @@ class ShippedCanonRowsAreRegisteredTests(unittest.TestCase):
             self.assertFalse(result["can_mark_complete"], (phase, result["bar"]))
 
     def test_a_genuinely_open_row_does_not_claim_completion(self):
-        """DRV-1's PR really did merge; its WORK is open. This pins
+        """EV-0's PR really did merge; its WORK is open. This pins
         the distinction that makes the registration honest: a visible merge is
         not a completion. Registering the row must not turn the fallback's
         uniform 35.0/False into a false pass just because the merge is now
         readable."""
-        ev = collect_phase_evidence(self._repo_root(), "DRV-1")
+        ev = collect_phase_evidence(self._repo_root(), "EV-0")
         self.assertTrue(ev["pr_merged"], ev["status_row"])
         self.assertFalse(
             phase_status_claims_complete(ev["status_row"]), ev["status_row"])
@@ -1652,13 +1640,13 @@ class PhaseRegistryHonestyTests(unittest.TestCase):
         self.assertIn("no STATUS row found for JEV-P0", printed)
 
     def test_an_honest_open_row_is_not_told_to_rewrite_its_wording(self):
-        """`DRV-1`'s `**open**` cell is correct: its PR merged, its
+        """`EV-0`'s `**in progress**` cell is correct: its PR merged, its
         work did not finish. Nothing needs correcting, so the bucket that
         says otherwise must not appear and the advice must not be printed."""
         for label, (evidence, result) in (
                 ("fixture", self._score(self.HONEST_OPEN)),
                 ("live", (lambda ev: (ev, score_phase_completion(ev, jev_policy=None)))(
-                    collect_phase_evidence(self._repo_root(), "DRV-1")))):
+                    collect_phase_evidence(self._repo_root(), "EV-0")))):
             with self.subTest(label=label):
                 self.assertIn("STATUS row not complete", evidence["open_blockers"],
                               evidence["status_row"])
