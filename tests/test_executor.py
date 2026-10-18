@@ -144,6 +144,34 @@ class ConcurrentExecutorTests(unittest.TestCase):
         with self.assertRaises(ProviderSpendLimitError):
             executor2.execute_dag(dag, worker, keep_going=True)
 
+    def test_provider_spend_limit_aborts_serial_shared_nodes(self):
+        class Isolation:
+            def create(self, node_id):
+                return {"node_id": node_id, "path": node_id}
+
+            def discard(self, handle):
+                pass
+
+            def audit(self, handle, declared):
+                return []
+
+            def merge(self, handle, paths=None):
+                return None
+
+        dag = TaskDAG(nodes={
+            "A": DAGNode(node_id="A", instruction="a", target_files=("a.py",)),
+            "B": DAGNode(node_id="B", instruction="b", target_files=("a.py",)),
+        })
+
+        def worker(node):
+            if node.node_id == "B":
+                raise ProviderSpendLimitError("cap")
+            return {"status": "ok", "cost": 0.0}
+
+        executor = ConcurrentExecutor(max_workers=2)
+        with self.assertRaises(ProviderSpendLimitError):
+            executor.execute_dag(dag, worker, keep_going=True, isolator=Isolation())
+
     def test_isolation_creation_failure_cleans_prior_handles(self):
         class FailingIsolation:
             def __init__(self):

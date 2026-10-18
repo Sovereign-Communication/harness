@@ -219,5 +219,74 @@ class SpendLimitLatchTests(unittest.TestCase):
         self.assertEqual(executor._harness_terminal_spend_limit, {})
 
 
+class ProviderErrorsEdgeCasesTests(unittest.TestCase):
+    def test_redact_secrets_empty_returns_empty(self):
+        self.assertEqual(redact_secrets(""), "")
+        self.assertEqual(redact_secrets(None), "")
+
+    def test_provider_spend_limit_invalid_known_cost(self):
+        err = ProviderSpendLimitError("cap", known_cost="invalid")
+        self.assertEqual(err.known_cost, 0.0)
+
+    def test_provider_spend_limit_nested_depth_and_lists(self):
+        err = provider_spend_limit_error(
+            429,
+            {"error": ["item1", {"detail": "insufficient credits"}]},
+            known_cost=0.00001,
+        )
+        self.assertIsNotNone(err)
+        self.assertEqual(err.http_status, 429)
+
+        deep = {"error": {"a": {"b": {"c": {"d": {"e": "insufficient credits"}}}}}}
+        err_deep = provider_spend_limit_error(429, deep)
+        self.assertIsNone(err_deep)
+
+        err_bad_status = provider_spend_limit_error("not_an_int", {"error": "out of credits"})
+        self.assertIsNone(err_bad_status)
+
+    def test_account_provider_spend_limit_with_task_id(self):
+        gov = SpendGovernor(FakeTransport(), "sk-test", max_cost=0.10)
+        with tempfile.TemporaryDirectory() as td:
+            ledger_path = os.path.join(td, "ledger.jsonl")
+            settings = SimpleNamespace(ledger_path=ledger_path)
+            err = ProviderSpendLimitError("out of credits", http_status=402, known_cost=0.000042)
+
+            with events.task_context("task-xyz"), \
+                 mock.patch("harness.config.load_settings", return_value=settings):
+                account_provider_spend_limit(err, gov, "deepseek/deepseek-v4.1-flash")
+
+            ledger = AutonomyLedger(ledger_path)
+            receipts = [r for r in ledger.entries() if r.get("event_note") == "provider_spend_limit"]
+            self.assertEqual(len(receipts), 1)
+            self.assertEqual(receipts[0].get("task_id"), "task-xyz")
+
+    def test_account_provider_spend_limit_ledger_write_failure_is_swallowed(self):
+        gov = SpendGovernor(FakeTransport(), "sk-test", max_cost=0.10)
+        with tempfile.TemporaryDirectory() as td:
+            ledger_path = os.path.join(td, "ledger.jsonl")
+            settings = SimpleNamespace(ledger_path=ledger_path)
+            err = ProviderSpendLimitError("out of credits", http_status=402, known_cost=0.000042)
+
+            with mock.patch("harness.config.load_settings", return_value=settings), \
+                 mock.patch("harness.ledger.AutonomyLedger.append", side_effect=RuntimeError("disk full")), \
+                 mock.patch("harness.output.eprint") as mock_eprint:
+                account_provider_spend_limit(err, gov, "deepseek/deepseek-v4.1-flash")
+                mock_eprint.assert_called_once()
+                self.assertIn("provider spend receipt was not written", mock_eprint.call_args[0][0])
+            self.assertTrue(err.cost_accounted)
+            self.assertFalse(err.ledger_recorded)
+
+    def test_account_provider_spend_limit_overrun_recording(self):
+        gov = mock.MagicMock()
+        from harness.errors import HarnessError
+        gov.record_actual.side_effect = HarnessError("limit exceeded")
+        err = ProviderSpendLimitError("out of credits", http_status=402, known_cost=0.000042)
+        err.ledger_recorded = True
+        account_provider_spend_limit(err, gov, "deepseek/deepseek-v4.1-flash")
+        gov.record_overrun.assert_called_once_with(0.000042, "deepseek/deepseek-v4.1-flash")
+        self.assertTrue(err.cost_accounted)
+
+
 if __name__ == "__main__":
     unittest.main()
+

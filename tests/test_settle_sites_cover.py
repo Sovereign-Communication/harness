@@ -48,6 +48,9 @@ class _RaisingEvaluator:
 
     def _raise(self):
         self.calls += 1
+        if isinstance(self.error, ProviderSpendLimitError):
+            raise ProviderSpendLimitError(self.error.detail, http_status=self.error.http_status,
+                                          known_cost=self.error.known_cost)
         raise self.error
 
     def evaluate(self, state, questions=None):
@@ -271,11 +274,10 @@ class SettleSitesCoverTests(unittest.TestCase):
     def test_provider_spend_limit_zero_cost_dedupe_and_rescue(self):
         err = ProviderSpendLimitError("limit reached", http_status=429, known_cost=0.0)
         policy, governor = self._policy(err)
-        with self.assertRaises(ProviderSpendLimitError):
-            policy.evaluate_answer("p1", "a1", task_id="t1")
-        # Second identical zero-cost call hits dedupe repeat (lines 550, 559)
-        with self.assertRaises(ProviderSpendLimitError):
-            policy.evaluate_answer("p1", "a1", task_id="t1")
+        # Calls 1-4: hits dedupe repeat (lines 550, 559)
+        for _ in range(4):
+            with self.assertRaises(ProviderSpendLimitError):
+                policy.evaluate_answer("p1", "a1", task_id="t1")
         # Line 531: _release_reservation when thread-local token is set
         policy._tl.token = {"label": "rescue", "worst": 0.005}
         policy._release_reservation(error=err)
