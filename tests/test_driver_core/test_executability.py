@@ -211,8 +211,7 @@ class InputCapabilityBoundaryTests(_NoBackend):
         self.assertIn("does not support 'click'", " ".join(click["needs"]))
 
         # Mutating the original backend's declared kinds cannot widen dispatch.
-        backend._driver_core_supported_kinds_snapshot = frozenset(
-            ("focus", "click"))
+        backend.supported_kinds = ("focus", "click")
         result = driver.step(
             "test", consent=Consent(True, "click", {"target": "OK"}),
             params={"target": "OK"})
