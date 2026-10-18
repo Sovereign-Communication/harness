@@ -1418,6 +1418,7 @@ class ShippedCanonRowsAreRegisteredTests(unittest.TestCase):
         "REPO-CARDS",
         "PROVISION-CORE",
         "JEV-P3-CALIBRATION-ANALYSIS",
+        "EV-0",
     )
     #: canon row keeps an open clause -> must still report open.
     OPEN: tuple[str, ...] = ()
@@ -1486,13 +1487,9 @@ class ShippedCanonRowsAreRegisteredTests(unittest.TestCase):
             self.assertFalse(result["can_mark_complete"], (phase, result["bar"]))
 
     def test_a_genuinely_open_row_does_not_claim_completion(self):
-        """EV-0's PR really did merge; its WORK is open. This pins
-        the distinction that makes the registration honest: a visible merge is
-        not a completion. Registering the row must not turn the fallback's
-        uniform 35.0/False into a false pass just because the merge is now
-        readable."""
-        ev = collect_phase_evidence(self._repo_root(), "EV-0")
-        self.assertTrue(ev["pr_merged"], ev["status_row"])
+        """A genuinely open row does not claim completion. Registering the row
+        must not turn the fallback's uniform 35.0/False into a false pass."""
+        ev = collect_phase_evidence(self._repo_root(), "OC-HANDOFF")
         self.assertFalse(
             phase_status_claims_complete(ev["status_row"]), ev["status_row"])
         self.assertIn("STATUS row not complete", ev["open_blockers"])
@@ -1604,23 +1601,19 @@ class PhaseRegistryHonestyTests(unittest.TestCase):
         self.assertIsNotNone(row, self.EV0)
         self.assertIn("`" + self.EV0.lower() + "`", row.split("|")[1].lower())
 
-    def test_ev0_reports_its_real_open_work_not_an_unlanded_phase(self):
-        """Visible now, still incomplete: the `EV-0a` probe receipt really is
-        missing, so this must NOT pass -- but it must fail on what is
-        actually open, with `origin_evidence` pointing at its own row."""
+    def test_ev0_completes_with_verified_receipt_and_pinned_pr(self):
+        """The probe receipt has landed in audits/self/dogfood/EV0A_DISCOUNT_SEMANTICS.json;
+        EV-0 now passes its hard gates and scores above the bar with pr_pattern pinned."""
         ev = collect_phase_evidence(self._repo_root(), self.EV0)
         self.assertIsNotNone(ev["status_row"], self.EV0)
         self.assertEqual(ev["origin_evidence"], ev["status_row"], self.EV0)
         self.assertTrue(ev["pr_merged"], ev["status_row"])
         self.assertTrue(ev["local_gates_green"], ev["status_row"])
-        self.assertIn("STATUS row not complete", ev["open_blockers"])
+        self.assertEqual(ev["open_blockers"], [], self.EV0)
+        self.assertIsNotNone(PHASE_CONTRACTS[self.EV0]["pr_pattern"], self.EV0)
         result = score_phase_completion(ev, jev_policy=None)
-        self.assertFalse(result["can_mark_complete"], self.EV0)
-
-    def test_ev0_keeps_its_unpinned_pr_until_the_probe_receipt_lands(self):
-        """The needle is the fix; `pr_pattern: None` is deliberate and stays,
-        so no PR can be read as merged evidence before EV-0a has one."""
-        self.assertIsNone(PHASE_CONTRACTS[self.EV0]["pr_pattern"], self.EV0)
+        self.assertTrue(result["can_mark_complete"], self.EV0)
+        self.assertTrue(result["bar"]["pass"], self.EV0)
 
     def test_an_unresolvable_phase_states_its_cause_where_the_operator_reads_it(self):
         """The cause used to land in `notes`, which `jev-phase` never prints.
@@ -1640,13 +1633,13 @@ class PhaseRegistryHonestyTests(unittest.TestCase):
         self.assertIn("no STATUS row found for JEV-P0", printed)
 
     def test_an_honest_open_row_is_not_told_to_rewrite_its_wording(self):
-        """`EV-0`'s `**in progress**` cell is correct: its PR merged, its
-        work did not finish. Nothing needs correcting, so the bucket that
-        says otherwise must not appear and the advice must not be printed."""
+        """An honest open row's open cell is correct: its work did not
+        finish. Nothing needs correcting, so the bucket that says otherwise
+        must not appear and the advice must not be printed."""
         for label, (evidence, result) in (
                 ("fixture", self._score(self.HONEST_OPEN)),
                 ("live", (lambda ev: (ev, score_phase_completion(ev, jev_policy=None)))(
-                    collect_phase_evidence(self._repo_root(), "EV-0")))):
+                    collect_phase_evidence(self._repo_root(), "OC-HANDOFF")))):
             with self.subTest(label=label):
                 self.assertIn("STATUS row not complete", evidence["open_blockers"],
                               evidence["status_row"])

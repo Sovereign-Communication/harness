@@ -1502,10 +1502,12 @@ class ChatSessionSurfaceTests(ServerHarness):
 
     def test_chat_accepts_valid_root_dir_and_reaches_the_agent(self):
         seen = {}
+        invoked = threading.Event()
 
         def fake(task_id, args, cancel_check):
             seen["root_dir"] = args.get("root_dir")
             seen["web"] = args.get("web")
+            invoked.set()
             return {"status": "ok", "task_id": task_id, "cost": 0.0}
 
         with mock.patch.dict(ui_server.RUNNERS, {"chat": fake}):
@@ -1519,6 +1521,7 @@ class ChatSessionSurfaceTests(ServerHarness):
                                                       "root_dir": workdir,
                                                       "web": True}})
                 self.assertEqual(status, 201)
+                self.assertTrue(invoked.wait(5), "chat runner was not dispatched")
                 self.assertTrue(seen["root_dir"].endswith("harness_workdir_")
                                 or Path(seen["root_dir"]).is_dir())
                 self.assertTrue(seen["web"])
