@@ -273,6 +273,7 @@ statement covers the CI matrix by direct execution.
 | `harness/token_budget.py` | the ONE owner of token allowances: per-call input/output maxima, composable stage/run reservations (a stage may only narrow its parent), honest `actual`/`estimated`/`unavailable` usage labels, and `snapshot()` for envelopes. Independent of spend.py's dollars -- neither can raise the other. |
 | `harness/mission_record.py` | HUL-A/B mission pack: mission.yaml schema, pack layout under missions/<id>/, STATUS generator, append-only receipts/jev_evals, dual-budget budget.json (delegates formula to spend.py) + resume.json, terminal findings helper |
 | `harness/convergence.py` | deterministic tally over panel votes + the rotating specialist lane |
+| `harness/provider_errors.py` | typed classification for terminal upstream provider account/spend-limit exhaustion (`ProviderSpendLimitError`), secret-redacting diagnostics, and latch helpers |
 | `harness/errors.py` | shared exception types (`HarnessError`) |
 | `harness/filesafety.py` | file-safety primitives: every mutation of a real file goes through these |
 | `harness/output.py` | the ONE stderr owner for progress chatter and --quiet |

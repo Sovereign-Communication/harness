@@ -8,6 +8,7 @@ from harness.batch import BatchOptions, run_batch
 from harness.dag import DAGNode, TaskDAG
 from harness.errors import HarnessError
 from harness.executor import ConcurrentExecutor, FileLockManager, PlanExecutor
+from harness.provider_errors import ProviderSpendLimitError
 
 
 class FileLockManagerTests(unittest.TestCase):
@@ -119,6 +120,57 @@ class ConcurrentExecutorTests(unittest.TestCase):
         self.assertEqual(len(results), 2)
         self.assertEqual(results[0]["status"], "fatal")
         self.assertIn("crash", results[0]["error"])
+
+    def test_provider_spend_limit_aborts_keep_going_execution(self):
+        executor = ConcurrentExecutor(max_workers=1)
+
+        def worker(_idx, _path):
+            raise ProviderSpendLimitError("cap")
+
+        with self.assertRaises(ProviderSpendLimitError):
+            executor.execute_files(["f1.py"], worker, keep_going=True)
+
+    def test_provider_spend_limit_aborts_dag_execution(self):
+        dag = TaskDAG(nodes={"n1": DAGNode("n1", "task 1", target_files=("a.py",))})
+
+        def worker(_node):
+            raise ProviderSpendLimitError("cap")
+
+        executor1 = ConcurrentExecutor(max_workers=1)
+        with self.assertRaises(ProviderSpendLimitError):
+            executor1.execute_dag(dag, worker, keep_going=True)
+
+        executor2 = ConcurrentExecutor(max_workers=2)
+        with self.assertRaises(ProviderSpendLimitError):
+            executor2.execute_dag(dag, worker, keep_going=True)
+
+    def test_provider_spend_limit_aborts_serial_shared_nodes(self):
+        class Isolation:
+            def create(self, node_id):
+                return {"node_id": node_id, "path": node_id}
+
+            def discard(self, handle):
+                pass
+
+            def audit(self, handle, declared):
+                return []
+
+            def merge(self, handle, paths=None):
+                return None
+
+        dag = TaskDAG(nodes={
+            "A": DAGNode(node_id="A", instruction="a", target_files=("a.py",)),
+            "B": DAGNode(node_id="B", instruction="b", target_files=("a.py",)),
+        })
+
+        def worker(node):
+            if node.node_id == "B":
+                raise ProviderSpendLimitError("cap")
+            return {"status": "ok", "cost": 0.0}
+
+        executor = ConcurrentExecutor(max_workers=2)
+        with self.assertRaises(ProviderSpendLimitError):
+            executor.execute_dag(dag, worker, keep_going=True, isolator=Isolation())
 
     def test_isolation_creation_failure_cleans_prior_handles(self):
         class FailingIsolation:

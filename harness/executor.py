@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Set
 from .dag import DAGNode, TaskDAG
 from .errors import HarnessError, ToolCancelled
 from .events import submit_with_context
+from .provider_errors import ProviderSpendLimitError
 from .filesafety import VERIFY_TIMEOUT, default_run_verify
 from .output import eprint
 from .repo_scope import _rebase_path, discover_verification_gate, rebase_gate
@@ -156,6 +157,8 @@ class ConcurrentExecutor:
                     res = future.result()
                 except ToolCancelled:
                     raise
+                except ProviderSpendLimitError:
+                    raise
                 except Exception as exc:
                     res = {"status": "fatal", "error": str(exc), "file": indexed_files[idx][1]}
 
@@ -243,6 +246,8 @@ class ConcurrentExecutor:
                 for node in executable_nodes:
                     try:
                         res = self._run_node_with_locks(node, worker_fn)
+                    except (ToolCancelled, ProviderSpendLimitError):
+                        raise
                     except Exception as exc:
                         res = {"status": "fatal", "error": str(exc), "node_id": node.node_id}
 
@@ -286,7 +291,7 @@ class ConcurrentExecutor:
                                 node = future_to_node[future]
                                 try:
                                     stage_results[node] = future.result()
-                                except ToolCancelled:
+                                except (ToolCancelled, ProviderSpendLimitError):
                                     raise
                                 except Exception as exc:
                                     stage_results[node] = {
@@ -313,6 +318,8 @@ class ConcurrentExecutor:
                         try:
                             stage_results[node] = self._run_node_reserved(
                                 node, worker_fn, reserver, None)
+                        except (ToolCancelled, ProviderSpendLimitError):
+                            raise
                         except Exception as exc:
                             stage_results[node] = {
                                 "status": "fatal", "error": str(exc),

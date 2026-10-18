@@ -18,6 +18,11 @@ from .config import CONFIG_DIR, OPENROUTER_CHAT_URL
 from .errors import HarnessError, ProviderUsageUnknown, ToolCancelled
 from .events import emit, provider_request_context
 from .output import eprint
+from .provider_errors import (
+    ProviderSpendLimitError,
+    account_provider_spend_limit,
+    raise_for_provider_spend_limit,
+)
 from .routing_table import floor_model, strip_variant_suffix
 from .tokens import estimate_prompt_tokens
 
@@ -528,9 +533,19 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
         emit("model_request_start", model=model, attempt=attempt,
              request_id=request_id)
         try:
+            from .events import raise_if_provider_spend_limited
+            raise_if_provider_spend_limited(known_cost=prior_cost)
             with provider_request_context(request_id, model, attempt):
                 status, resp = transport.post(
                     OPENROUTER_CHAT_URL, api_key, payload)
+            raise_for_provider_spend_limit(
+                status, resp, known_cost=_reported_cost(resp) + prior_cost)
+        except ProviderSpendLimitError:
+            emit("model_request_end", model=model, attempt=attempt,
+                 request_id=request_id, outcome="error",
+                 error_kind="provider_spend_limit",
+                 duration_s=round(time.monotonic() - started, 2))
+            raise
         except (ToolCancelled, ProviderUsageUnknown) as exc:
             if getattr(exc, "usage_unknown", False):
                 account_unknown_usage(exc, payload, prior_cost)
@@ -579,8 +594,19 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
                 governor.record_overrun(exc.known_cost, canonical_model)
             exc.cost_accounted = True
 
+    def account_spend_limit(exc, additional_cost=0.0):
+        exc.known_cost = max(0.0, float(exc.known_cost or 0.0)) + max(
+            0.0, float(additional_cost or 0.0))
+        account_provider_spend_limit(exc, governor, canonical_model)
+        emit("provider_spend_limit", model=canonical_model,
+             http_status=exc.http_status,
+             known_cost_usd=exc.known_cost)
+
     try:
         status, resp = request(build(want_reasoning), "primary")
+    except ProviderSpendLimitError as exc:
+        account_spend_limit(exc)
+        raise
     except ToolCancelled as exc:
         account_cancelled(exc)
         raise
@@ -597,6 +623,9 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
             try:
                 retry_status, retry_resp = request(
                     build(False), "reasoning_retry", prior_cost=prior_cost)
+            except ProviderSpendLimitError as exc:
+                account_spend_limit(exc)
+                raise
             except ToolCancelled as exc:
                 account_cancelled(exc, prior_cost)
                 raise

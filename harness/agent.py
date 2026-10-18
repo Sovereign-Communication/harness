@@ -21,6 +21,7 @@ from .dag import TaskDAG, DAGNode, node_apply_kwargs
 from .prompts import MAX_FILE_LINES
 from .errors import HarnessError, ToolCancelled
 from .events import cancellation_context, emit
+from .provider_errors import ProviderSpendLimitError
 from .orchestrator import assess_completion, drive, keyword_fallback, triage_files
 from .prompts import CAPABILITY_MARKER
 from .escalation import escalation_evidence, escalation_evidence_fields
@@ -1147,7 +1148,7 @@ class AutonomousAgent:
         if web:
             try:
                 web_sources = self._gather_web_context(prompt)
-            except ToolCancelled:
+            except (ToolCancelled, ProviderSpendLimitError):
                 raise
             except Exception as exc:  # context failure must not kill the lane
                 web_sources = [{"kind": "web", "ok": False,
@@ -1251,6 +1252,8 @@ class AutonomousAgent:
                     transport=self.transport, api_key=api_key, model=model,
                     messages=messages, max_tokens=allocated_tokens,
                     reasoning_effort=lane_effort, governor=gov)
+            except ProviderSpendLimitError:
+                raise
             except HarnessError as exc:
                 attempts.append(f"{model}: {exc}")
                 if "429" in str(exc) or "rate limit" in str(exc).lower():

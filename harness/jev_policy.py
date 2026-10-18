@@ -20,6 +20,7 @@ from typing import (Any, Callable, Dict, Iterable, List, Optional, Sequence,
 
 from .errors import HarnessError, ProviderUsageUnknown, ToolCancelled
 from .events import submit_with_context
+from .provider_errors import ProviderSpendLimitError
 from .config import HARD_MAX_COST
 from .jev import (ACTIVE_GUARD, ACTIVE_RESERVER, ACTIVE_SITE, BREAKER_COOLDOWN_SECONDS,
                   BREAKER_FAILURE_THRESHOLD, CircuitBreakers,
@@ -526,10 +527,43 @@ class JevPolicy:
         if handle is not None:
             if isinstance(error, ToolCancelled) or getattr(error, "usage_unknown", False):
                 self._settle_cancelled(handle, error)
+            elif isinstance(error, ProviderSpendLimitError):
+                self._release_after_provider_limit(handle, error)
             else:
                 self._release(handle)
         else:
             self._clear_dispatch_state()
+
+    def _release_after_provider_limit(self, reservation, error, *,
+                                      task_id=None) -> None:
+        """Release liability and preserve a terminal provider failure receipt."""
+        site = ACTIVE_SITE.get() or "jev"
+        cost = max(0.0, float(getattr(error, "known_cost", 0.0) or 0.0))
+        model = getattr(self.evaluator, "model", None) or "jev"
+        self._release(reservation)
+        from .provider_errors import account_provider_spend_limit
+        account_provider_spend_limit(error, self.governor, model)
+        if self.ledger is not None and not getattr(error, "ledger_recorded", False):
+            should_write = cost > 0.0
+            repeat = 1
+            if not should_write:
+                should_write, repeat = self._dedupe(
+                    site, "provider_spend_limit",
+                    _digest(task_id, getattr(error, "http_status", None)))
+            if should_write:
+                metadata = {"result_state": "provider_spend_limit",
+                            "error_kind": error.kind,
+                            "http_status": getattr(error, "http_status", None),
+                            "reason": str(error)}
+                if repeat > 1:
+                    metadata["repeat_count"] = repeat
+                self.ledger.append(
+                    "jev_eval", task_id=task_id, site=site, model=model,
+                    verdict="fail", supported=0.0, confidence=0.0,
+                    answers={}, input_tokens=0, output_tokens=0,
+                    cost=cost, is_fallback=False, discarded=cost > 0.0,
+                    known_cost_usd=cost, **metadata)
+                error.ledger_recorded = True
 
     def _preflight(self, *, site: str, max_input_tokens: int,
                    eager: bool = False):
@@ -887,6 +921,9 @@ class JevPolicy:
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
             raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             return self._record_refusal(
@@ -1108,6 +1145,9 @@ class JevPolicy:
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
             raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             values = {key: None for key in signals}
@@ -1188,6 +1228,9 @@ class JevPolicy:
             raise
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
+            raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
             raise
         except HarnessError as exc:
             self._release(reservation)
@@ -1317,6 +1360,9 @@ class JevPolicy:
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
             raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             # Only a settlement failure happens AFTER a request was billed; a
@@ -1389,6 +1435,9 @@ class JevPolicy:
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
             raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             # Honest local triage is heuristic only; it never pretends to be live.
@@ -1441,6 +1490,9 @@ class JevPolicy:
             raise
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
+            raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
             raise
         except HarnessError as exc:
             self._release(reservation)
@@ -1518,6 +1570,9 @@ class JevPolicy:
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
             raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             result, structural = self._record_refusal(
@@ -1549,6 +1604,9 @@ class JevPolicy:
             raise
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
+            raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
             raise
         except HarnessError as exc:
             self._release(reservation)
@@ -1617,6 +1675,9 @@ class JevPolicy:
             raise
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
+            raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
             raise
         except HarnessError as exc:
             self._release(reservation)
@@ -1694,6 +1755,9 @@ class JevPolicy:
             raise
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
+            raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
             raise
         except HarnessError as exc:
             self._release(reservation)
@@ -1787,6 +1851,9 @@ class JevPolicy:
             raise
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
+            raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
             raise
         except HarnessError as exc:
             self._release(reservation)
@@ -1910,6 +1977,9 @@ class JevPolicy:
             raise
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
+            raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
             raise
         except HarnessError as exc:
             self._release(reservation)
@@ -2210,6 +2280,9 @@ class JevPolicy:
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
             raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
+            raise
         except HarnessError as exc:
             self._release(reservation)
             determination = self._scope_determination(
@@ -2375,6 +2448,9 @@ class JevPolicy:
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
             raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
+            raise
         except HarnessError as exc:
             return keyword_sort([str(exc)], reservation=reservation,
                                 reason=_refusal_reason(exc))
@@ -2531,6 +2607,9 @@ class JevPolicy:
             raise
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
+            raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
             raise
         except HarnessError as exc:
             return keyword_judgment([str(exc)], reservation=reservation,
@@ -2713,6 +2792,9 @@ class JevPolicy:
             raise
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
+            raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
             raise
         except HarnessError as exc:
             return fallback_judgment([str(exc)], reservation=reservation,
@@ -2900,6 +2982,9 @@ class JevPolicy:
             raise
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
+            raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
             raise
         except HarnessError as exc:
             return heuristic_route(
@@ -3108,6 +3193,9 @@ class JevPolicy:
             raise
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
+            raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
             raise
         except HarnessError as exc:
             return fallback_judgment([str(exc)], reservation=reservation,
@@ -3319,6 +3407,9 @@ class JevPolicy:
             raise
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
+            raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
             raise
         except HarnessError as exc:
             return fallback_judgment(
@@ -3578,6 +3669,9 @@ class JevPolicy:
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
             raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
+            raise
         except Exception as exc:
             # An injected evaluator should not turn an exception into an
             # implicit fallback score; record the dispatched attempt once.
@@ -3691,6 +3785,9 @@ class JevPolicy:
             raise
         except ToolCancelled as exc:
             self._settle_cancelled(reservation, exc)
+            raise
+        except ProviderSpendLimitError as exc:
+            self._release_after_provider_limit(reservation, exc, task_id=task_id)
             raise
         except HarnessError as exc:
             self._release(reservation)

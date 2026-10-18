@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 import unittest
 
 from harness import events, render
+from harness.provider_errors import ProviderSpendLimitError
 
 
 def _collect():
@@ -75,6 +76,59 @@ class EventsBusTests(unittest.TestCase):
                     pool, lambda: events.current_cancel_check()())
                 self.assertTrue(cancelled.result(timeout=2))
         self.assertEqual(got[0]["task_id"], "ui/run-worker")
+
+    def test_spend_limit_latch_stops_queued_worker_before_provider_call(self):
+        # Without latch, raise_if_provider_spend_limited does not raise
+        events.raise_if_provider_spend_limited()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            with events.task_context("task-latch", lambda: False):
+                def worker_one():
+                    events.raise_if_provider_spend_limited()
+                    ProviderSpendLimitError("insufficient balance", http_status=429)
+                    return True
+
+                def worker_two():
+                    events.raise_if_provider_spend_limited()
+                    return True
+
+                f1 = events.submit_with_context(pool, worker_one)
+                self.assertTrue(f1.result(timeout=2))
+
+                f2 = events.submit_with_context(pool, worker_two)
+                with self.assertRaises(ProviderSpendLimitError) as ctx:
+                    f2.result(timeout=2)
+                self.assertEqual(ctx.exception.http_status, 429)
+                self.assertIn("Upstream provider spend limit exhausted", str(ctx.exception))
+                self.assertIn("sibling request already exhausted", ctx.exception.detail)
+
+            # Outside task context, latch reset works
+            events.reset_provider_spend_limit_latch()
+            events.raise_if_provider_spend_limited()
+
+        # Executor-level fallback latch when no task_context is active
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            def pool_worker_one():
+                events.raise_if_provider_spend_limited()
+                events.mark_provider_spend_limit(
+                    ProviderSpendLimitError("limit reached", http_status=402))
+                return True
+
+            def pool_worker_two():
+                events.raise_if_provider_spend_limited()
+                return True
+
+            f1 = events.submit_with_context(pool, pool_worker_one)
+            self.assertTrue(f1.result(timeout=2))
+
+            f2 = events.submit_with_context(pool, pool_worker_two)
+            with self.assertRaises(ProviderSpendLimitError) as ctx:
+                f2.result(timeout=2)
+            self.assertEqual(ctx.exception.http_status, 402)
+
+            events.reset_executor_spend_limit(pool)
+            f3 = events.submit_with_context(pool, pool_worker_two)
+            self.assertTrue(f3.result(timeout=2))
 
     def test_seq_increases_across_events(self):
         got, sink = _collect()

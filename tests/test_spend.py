@@ -1,7 +1,10 @@
 """Spend-governor policy: per-token math, ceilings, key trust, payload guards."""
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 from harness.errors import HarnessError, ToolCancelled
+from harness.provider_errors import ProviderSpendLimitError
 from harness.panel import panel_judge
 from harness.tokens import estimate_prompt_tokens
 from tests._fake import FakeTransport, m, comp, _gov, P1, P2, JUDGE
@@ -87,6 +90,44 @@ class CostMathTests(unittest.TestCase):
         gov = _gov(fake)
         with self.assertRaises(HarnessError):
             gov.verify_key()
+
+    def test_session_preflight_stops_on_exhausted_provider_allowance(self):
+        from harness import session
+
+        fake = FakeTransport(key={"label": "sk-test", "limit": 1.0,
+                                  "limit_remaining": 0.0})
+        settings = SimpleNamespace(max_cost=0.05, expect_key_label=None)
+        with mock.patch.object(session, "HttpTransport", return_value=fake), \
+             mock.patch.object(session, "resolve_api_key", return_value="sk-test"), \
+             self.assertRaises(ProviderSpendLimitError) as ctx:
+            session.governor_for(settings)
+        self.assertEqual(ctx.exception.kind, "provider_spend_limit")
+        self.assertIn("operation was stopped", str(ctx.exception))
+        self.assertEqual(fake.chat_posts(), [])
+
+    def test_key_with_unknown_remaining_is_not_called_exhausted(self):
+        fake = FakeTransport(key={"label": "sk-test", "limit": 1.0,
+                                  "limit_remaining": None})
+        info = _gov(fake).verify_key()
+        self.assertIsNone(info["remaining"])
+
+    def test_verify_key_propagates_provider_spend_limit(self):
+        fake = FakeTransport()
+        err = ProviderSpendLimitError("key check 402")
+        with mock.patch.object(fake, "get", side_effect=err):
+            gov = _gov(fake)
+            with self.assertRaises(ProviderSpendLimitError) as ctx:
+                gov.verify_key()
+            self.assertEqual(ctx.exception, err)
+
+    def test_fetch_models_propagates_provider_spend_limit(self):
+        fake = FakeTransport()
+        err = ProviderSpendLimitError("catalog check 402")
+        with mock.patch.object(fake, "get", side_effect=err):
+            gov = _gov(fake)
+            with self.assertRaises(ProviderSpendLimitError) as ctx:
+                gov.fetch_models(refresh=True)
+            self.assertEqual(ctx.exception, err)
 
     def test_expect_key_label_mismatch(self):
         fake = FakeTransport(key={"label": "sk-or-v1-aaaa", "limit": 1.0})

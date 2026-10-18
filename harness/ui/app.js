@@ -1021,7 +1021,8 @@ function hideConsentBanner() {
 function renderFinalResult(runRecord, agentMsg) {
   hideConsentBanner();
   agentMsg.spinner.hidden = true;
-  agentMsg.stepperTitleText.textContent = "Execution complete";
+  agentMsg.stepperTitleText.textContent = runRecord.status === "error"
+    ? "Execution stopped" : "Execution complete";
 
   if (runRecord.status === "cancelled") {
     const notice = runRecord.error || "Execution cancelled by user.";
@@ -1031,6 +1032,21 @@ function renderFinalResult(runRecord, agentMsg) {
 
   const res = runRecord.result || {};
   const responseText = res.response || runRecord.error || "Completed.";
+
+  if (runRecord.status === "error") {
+    const kind = String(runRecord.error_kind || "harness_error");
+    agentMsg.body.innerHTML = `<p style="color:var(--red);"><strong>${esc(kind)}</strong>: ${esc(responseText)}</p>`;
+    if (kind === "provider_spend_limit") {
+      const billed = Number(runRecord.known_cost_usd || 0);
+      const stopNote = document.createElement("div");
+      stopNote.className = "deferred-note";
+      stopNote.innerHTML = `<p style="color:var(--yellow); margin:8px 0 0;">
+        <strong>Stopped: provider spend limit</strong>${billed > 0 ? `<br><span>Known billed usage: $${billed.toFixed(6)}</span>` : ""}
+      </p>`;
+      agentMsg.body.appendChild(stopNote);
+    }
+    return;
+  }
 
   // Render Markdown Body
   agentMsg.body.innerHTML = renderSimpleMarkdown(responseText);
