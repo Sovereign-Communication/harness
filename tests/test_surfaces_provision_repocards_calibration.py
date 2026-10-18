@@ -6,6 +6,7 @@
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -69,8 +70,10 @@ class TestCliParserSurfaces(unittest.TestCase):
 
 class TestProvisionCliExecution(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.tmp_dir = os.path.realpath(tempfile.mkdtemp(prefix="provision_test_"))
+        self.addCleanup(shutil.rmtree, self.tmp_dir, ignore_errors=True)
+        self.root = os.path.join(self.tmp_dir, "approved")
+        os.makedirs(self.root, exist_ok=True)
 
     def test_provision_probe_cli(self):
         opts = SimpleNamespace(
@@ -90,7 +93,7 @@ class TestProvisionCliExecution(unittest.TestCase):
         self.assertIn("python_version", data)
 
     def test_provision_plan_cli(self):
-        root = os.path.abspath(self.tmp.name)
+        root = self.root
         opts = SimpleNamespace(
             command="provision",
             provision_cmd="plan",
@@ -111,11 +114,11 @@ class TestProvisionCliExecution(unittest.TestCase):
 
     def test_provision_apply_dry_run_cli(self):
         from harness import provision as pv
-        root = os.path.abspath(self.tmp.name)
+        root = self.root
         probe = pv.probe_host()
         policy = pv.policy_for_probe(probe, [root])
         plan = pv.plan_provision("provision ruff", probe, policy=policy)
-        plan_path = os.path.join(self.tmp.name, "plan.json")
+        plan_path = os.path.join(self.root, "plan.json")
         with open(plan_path, "w", encoding="utf-8") as f:
             json.dump(plan.to_dict(), f)
 
@@ -169,11 +172,11 @@ class TestProvisionCliExecution(unittest.TestCase):
 
     def test_provision_apply_approve_all(self):
         from harness import provision as pv
-        root = os.path.abspath(self.tmp.name)
+        root = self.root
         probe = pv.probe_host()
         policy = pv.policy_for_probe(probe, [root])
         plan = pv.plan_provision("provision ruff", probe, policy=policy)
-        plan_path = os.path.join(self.tmp.name, "plan.json")
+        plan_path = os.path.join(self.root, "plan.json")
         with open(plan_path, "w", encoding="utf-8") as f:
             json.dump(plan.to_dict(), f)
 
@@ -196,7 +199,7 @@ class TestProvisionCliExecution(unittest.TestCase):
         self.assertEqual(data["outcome"], "dry_run")
 
     def test_provision_apply_invalid_json_raises(self):
-        bad_path = os.path.join(self.tmp.name, "bad.json")
+        bad_path = os.path.join(self.root, "bad.json")
         with open(bad_path, "w", encoding="utf-8") as f:
             f.write("{not json")
         opts = SimpleNamespace(
@@ -213,7 +216,7 @@ class TestProvisionCliExecution(unittest.TestCase):
             cli._cmd_provision(opts, SimpleNamespace())
 
     def test_provision_apply_malformed_plan_raises(self):
-        bad_path = os.path.join(self.tmp.name, "malformed.json")
+        bad_path = os.path.join(self.root, "malformed.json")
         with open(bad_path, "w", encoding="utf-8") as f:
             json.dump({"not": "a plan"}, f)
         opts = SimpleNamespace(
@@ -249,7 +252,7 @@ class TestProvisionCliExecution(unittest.TestCase):
             command="provision",
             provision_cmd="plan",
             goal="install ruff",
-            root=self.tmp.name,
+            root=self.root,
             json=False,
             out=None,
             quiet=False,
@@ -262,11 +265,11 @@ class TestProvisionCliExecution(unittest.TestCase):
 
     def test_provision_apply_cli_human_output(self):
         from harness import provision as pv
-        root = os.path.abspath(self.tmp.name)
+        root = self.root
         probe = pv.probe_host()
         policy = pv.policy_for_probe(probe, [root])
         plan = pv.plan_provision("install ruff", probe, policy=policy)
-        plan_path = os.path.join(self.tmp.name, "plan_human.json")
+        plan_path = os.path.join(self.root, "plan_human.json")
         with open(plan_path, "w", encoding="utf-8") as f:
             json.dump(plan.to_dict(), f)
         opts = SimpleNamespace(
