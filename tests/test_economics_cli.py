@@ -89,33 +89,44 @@ class ParserSurfaceTests(unittest.TestCase):
         self.assertTrue(opts.confirm_single_paid_call)
         self.assertEqual(opts.max_cost, 0.005)
 
-    def test_canonical_paid_fireworks_path_dispatches_from_cli_entrypoint(self):
-        """Exercise parse -> dispatch -> probe without making a paid request."""
+    def test_paid_fireworks_cli_exit_code_matches_probe_result(self):
         import harness.cli as cli
-
+        import harness.fireworks_probe as fireworks_probe
+        from contextlib import ExitStack
         model = "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b"
-        output = io.StringIO()
-        governor = mock.Mock()
-        with mock.patch.object(cli, "load_settings",
-                               return_value=mock.Mock(fireworks_enabled=True)), \
-             mock.patch.object(cli, "_governor",
-                               return_value=("test-key", governor)), \
-             mock.patch.object(cli, "resolve_fireworks_key",
-                               return_value="test-fireworks-key"), \
-             mock.patch.object(cli, "_ledger", return_value=mock.Mock()), \
-             mock.patch.object(cli, "run_fireworks_probe",
-                               return_value={"status": "ok"}) as probe, \
-             redirect_stdout(output):
-            cli.main([
-                "economics", "--provider", "fireworks",
-                "--confirm-single-paid-call", "--model", model,
-                "--max-cost", "0.005", "--json",
-            ])
-
-        self.assertEqual(json.loads(output.getvalue())["status"], "ok")
-        self.assertEqual(probe.call_args.kwargs["model"], model)
-        self.assertEqual(probe.call_args.kwargs["max_cost"], 0.005)
-        self.assertTrue(probe.call_args.kwargs["fireworks_enabled"])
+        for content, expected_code in (("ok", 0), ("unexpected output", 2),
+                                       ("not ok", 2)):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:
+                output = io.StringIO()
+                response = {"choices": [{"message": {"content": content}}],
+                            "usage": {"cost": 0.0001}}
+                with ExitStack() as stack:
+                    stack.enter_context(mock.patch.object(
+                        cli, "load_settings", return_value=mock.Mock(fireworks_enabled=True)))
+                    stack.enter_context(mock.patch.object(
+                        cli, "_governor", return_value=("test-key", mock.Mock())))
+                    stack.enter_context(mock.patch.object(
+                        cli, "resolve_fireworks_key", return_value="test-fireworks-key"))
+                    stack.enter_context(mock.patch.object(cli, "_ledger", return_value=None))
+                    stack.enter_context(mock.patch.object(fireworks_probe, "CONFIG_DIR", tmp))
+                    stack.enter_context(mock.patch.object(fireworks_probe, "REPO_ROOT", tmp))
+                    send = stack.enter_context(mock.patch.object(
+                        fireworks_probe, "chat_for_route", return_value=(200, response)))
+                    try:
+                        with redirect_stdout(output):
+                            cli.main([
+                                "economics", "--provider", "fireworks",
+                                "--confirm-single-paid-call", "--model", model,
+                                "--max-cost", "0.005", "--json",
+                            ])
+                    except SystemExit as exc:
+                        exit_code = exc.code
+                    else:
+                        exit_code = 0
+                self.assertEqual(exit_code, expected_code)
+                self.assertEqual(json.loads(output.getvalue())["contains_ok"],
+                                 content == "ok")
+                self.assertEqual(send.call_count, 1)
 
 
 class ProbeFaceTests(unittest.TestCase):
@@ -308,11 +319,12 @@ class EconomicsSurfaceBranchCoverageTests(unittest.TestCase):
         out_buf = io.StringIO()
         with mock.patch("harness.cli._governor", return_value=("fw-key", gov)), \
              mock.patch("harness.cli._ledger", return_value=mock.Mock()), \
-             mock.patch("harness.cli.run_fireworks_probe", return_value={"status": "ok"}) as probe_fn, \
+             mock.patch("harness.cli.run_fireworks_probe",
+                        return_value={"status": 200, "contains_ok": True}) as probe_fn, \
              redirect_stdout(out_buf):
             _cmd_economics(opts_ok, mock.Mock())
         self.assertTrue(probe_fn.called)
-        self.assertEqual(json.loads(out_buf.getvalue())["status"], "ok")
+        self.assertEqual(json.loads(out_buf.getvalue())["status"], 200)
 
     def test_cli_check_fresh_stale_and_apply_pool_rotation(self):
         from harness.cli import _cmd_economics

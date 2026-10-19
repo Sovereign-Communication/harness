@@ -1844,6 +1844,8 @@ def _cmd_fireworks_verify(opts, settings):
         fireworks_enabled=getattr(settings, "fireworks_enabled", False),
         receipt_path=getattr(opts, "receipt", None))
     _emit(report, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
+    if not report.get("contains_ok"):
+        raise SystemExit(2)
 
 
 # Command -> handler. `required=True` subparsers make an unknown command
