@@ -196,6 +196,34 @@ class MediaCliTests(unittest.TestCase):
         self.assertEqual(code, 4)
         self.assertIn("[defer] media:", err.getvalue())
 
+    def test_cli_invalid_job_ids_are_argparse_errors(self):
+        for job_id in ("", ".", ".."):
+            with self.subTest(job_id=job_id):
+                err = io.StringIO()
+                with mock.patch.object(MediaAdapter, "_request") as request:
+                    with redirect_stderr(err):
+                        with self.assertRaises(SystemExit) as raised:
+                            run_cli(["job", job_id])
+
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("non-empty path segment", err.getvalue())
+                self.assertNotIn("Traceback", err.getvalue())
+                request.assert_not_called()
+
+    def test_cli_job_lookup_still_succeeds(self):
+        done = {
+            "id": "job-1", "status": "succeeded", "kind": "image",
+            "provider": "acme", "model": "gen-1", "project": "demo",
+        }
+        out = io.StringIO()
+        with mock.patch.object(MediaAdapter, "_request", return_value=done) as request:
+            with redirect_stdout(out):
+                code = run_cli(["job", "job-1"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("job job-1  [succeeded]", out.getvalue())
+        request.assert_called_once_with("GET", "/v1/jobs/job-1")
+
     def test_cli_budget_refused_exits_nonzero_and_shows_math(self):
         e = _http_error(402, {
             "error": "budget_refused", "message": "over ceiling",
