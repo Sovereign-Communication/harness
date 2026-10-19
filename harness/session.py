@@ -18,7 +18,7 @@ from .ledger import AutonomyLedger
 from .router import Router
 from .saturation import pre_run_warning
 from .spend import SpendGovernor
-from .config import HARD_MAX_COST, resolve_api_key
+from .config import HARD_MAX_COST, resolve_api_key, resolve_fireworks_key
 from .errors import HarnessError
 from .validation import finite_number
 
@@ -27,6 +27,23 @@ def governor_for(settings, max_cost_override=None):
     """Resolve the API key and verify it against OpenRouter, returning
     ``(api_key, governor)``. The key is threaded to every engine-routed
     chat call by engine_for -- regression-pinned (the round-1 401 failure)."""
+    if getattr(settings, "use_fireworks", False):
+        fw_key = getattr(settings, "fireworks_key", "") or resolve_fireworks_key()
+        if not fw_key:
+            raise HarnessError(
+                "no Fireworks API key found (FIREWORKS_API_KEY env or "
+                "~/.config/harness/fireworks.env).")
+        if max_cost_override is None:
+            max_cost = settings.max_cost
+        else:
+            max_cost = finite_number(max_cost_override, "max_cost", 0.0,
+                                     HARD_MAX_COST)
+        gov = SpendGovernor(HttpTransport(), fw_key, settings.expect_key_label,
+                            max_cost,
+                            fireworks_budget_usd=getattr(
+                                settings, "fireworks_budget_usd", 0.0))
+        gov.key_info = {"label": "fireworks", "limit": max_cost, "remaining": max_cost}
+        return fw_key, gov
     api_key = resolve_api_key()
     if not api_key:
         raise HarnessError(
@@ -41,7 +58,9 @@ def governor_for(settings, max_cost_override=None):
         max_cost = finite_number(max_cost_override, "max_cost", 0.0,
                                  HARD_MAX_COST)
     gov = SpendGovernor(HttpTransport(), api_key, settings.expect_key_label,
-                        max_cost)
+                        max_cost,
+                        fireworks_budget_usd=getattr(
+                            settings, "fireworks_budget_usd", 0.0))
     gov.verify_key()
     return api_key, gov
 
@@ -70,7 +89,9 @@ def jev_face_governor(settings, max_cost_override=None):
         max_cost = finite_number(max_cost_override, "max_cost", 0.0,
                                  HARD_MAX_COST)
     return SpendGovernor(HttpTransport(), resolve_api_key(),
-                         settings.expect_key_label, max_cost)
+                         settings.expect_key_label, max_cost,
+                         fireworks_budget_usd=getattr(
+                             settings, "fireworks_budget_usd", 0.0))
 
 
 def ledger_for(settings, caller="cli"):

@@ -779,3 +779,316 @@ def ordered_pool(pool, *, governor, ledger, task, free_tier, profiles=None,
     except Exception as e:
         eprint(f"[capability] unavailable ({e}); routing on the given order.")
         return list(pool or []), None
+
+
+# ------------------------- EV-1: cost-per-capability index --------------------
+
+#: Maximum capability adjustment an external benchmark prior can contribute.
+#: Observed ledger evidence always dominates once samples accumulate (DF-EV-1).
+MAX_BENCHMARK_PRIOR_MARGIN = 0.10
+
+
+def benchmark_prior(benchmark_rows, lane="apply"):
+    """Compute a bounded prior margin in ``[-0.10, +0.10]`` from external rows.
+
+    Accepts a single :class:`~harness.benchmark_ingest.BenchmarkRow` (or dict)
+    or an iterable of rows. Coding/apply lanes weight ``terminal_bench_hard``,
+    ``swe_bench_verified``, and ``livecodebench``; general/plan/judge lanes
+    include ``intelligence_index``. Returns ``0.0`` when no benchmark scores
+    are present.
+    """
+    if not benchmark_rows:
+        return 0.0
+    if isinstance(benchmark_rows, dict) or hasattr(benchmark_rows, "to_dict"):
+        rows = [benchmark_rows]
+    else:
+        rows = list(benchmark_rows)
+
+    coding_lane = str(lane or "apply").lower() in (
+        "apply", "implement", "specialist", "code")
+    normalized_scores = []
+    for row in rows:
+        d = row.to_dict() if hasattr(row, "to_dict") else (
+            row if isinstance(row, dict) else {})
+        for key, scale in (
+            ("terminal_bench_hard", 1.0),
+            ("swe_bench_verified", 1.0),
+            ("livecodebench", 1.0),
+            ("intelligence_index", 100.0),
+        ):
+            if coding_lane and key == "intelligence_index" and any(
+                d.get(k) is not None for k in (
+                    "terminal_bench_hard", "swe_bench_verified", "livecodebench")
+            ):
+                continue
+            val = d.get(key)
+            if val is None:
+                continue
+            try:
+                fval = float(val)
+            except (TypeError, ValueError):
+                continue
+            if scale == 1.0 and fval > 1.0:
+                fval = fval / 100.0
+            elif scale == 100.0 and fval > 1.0:
+                fval = fval / 100.0
+            normalized_scores.append(_clamp01(fval))
+
+    if not normalized_scores:
+        return 0.0
+    mean_score = sum(normalized_scores) / len(normalized_scores)
+    # Center at 0.5 so a 0.0..1.0 benchmark maps linearly into [-0.10, +0.10].
+    raw_margin = (mean_score - 0.5) * (2.0 * MAX_BENCHMARK_PRIOR_MARGIN)
+    return max(-MAX_BENCHMARK_PRIOR_MARGIN,
+               min(MAX_BENCHMARK_PRIOR_MARGIN, raw_margin))
+
+
+def cost_per_capability(profile, endpoints=None, *, benchmark_rows=None,
+                        ledger=None, report=None, lane="apply",
+                        verdict_path=None, repo_root=None,
+                        min_uptime=0.0, cache_eligible=False):
+    """Unified EV-1 cost-per-capability index for one model on one lane.
+
+    Combines:
+    * task-specific declared capability + observed ledger reliability,
+    * bounded external benchmark prior (capped at ``+/- 0.10`` and shrunk as
+      observed samples grow so benchmarks never outrank observed ledger data),
+    * per-endpoint effective price (via :func:`~harness.endpoint_pricing.effective_price`,
+      which enforces the EV-0 discount gate and never mixes providers).
+    """
+    from .endpoint_pricing import LANE_WORKLOAD_SHAPES, effective_price
+
+    lane_key = str(lane or "apply").lower()
+    if lane_key in ("judge", "vote", "structured"):
+        task = "structured"
+    elif lane_key in ("apply", "implement", "specialist", "code"):
+        task = "code"
+    else:
+        task = "default"
+
+    model_id = profile.model_id if profile is not None else "unknown"
+    info = model_reliability(model_id, profile, report, ledger=ledger, task=task)
+    samples = info["samples"] or 0
+    shrink = _shrink_weight(samples)
+    bench_margin = benchmark_prior(benchmark_rows, lane=lane_key)
+    # Shrink benchmark prior margin as observed samples accumulate.
+    effective_margin = bench_margin * (1.0 - shrink)
+    effective_cap = _clamp01(info["reliability"] + effective_margin)
+
+    ep_choice = None
+    if endpoints is not None:
+        ep_choice = effective_price(
+            endpoints, lane=lane_key, path=verdict_path, repo_root=repo_root,
+            cache_eligible=cache_eligible, min_uptime=min_uptime)
+        eff_usd = ep_choice.usd
+    else:
+        in_tok, out_tok = LANE_WORKLOAD_SHAPES.get(
+            lane_key, LANE_WORKLOAD_SHAPES["apply"])
+        p_in = profile.prompt_price if profile is not None else 0.0
+        p_out = profile.completion_price if profile is not None else 0.0
+        eff_usd = (in_tok * p_in) + (out_tok * p_out)
+
+    if eff_usd <= 0.0:
+        usd_per_cap = 0.0
+        value_ratio = float("inf") if effective_cap > 0 else 0.0
+    else:
+        usd_per_cap = eff_usd / max(effective_cap, 1e-6)
+        value_ratio = effective_cap / eff_usd
+
+    return {
+        "model_id": model_id,
+        "lane": lane_key,
+        "task": task,
+        "capability": round(info["capability"], 4),
+        "reliability": round(info["reliability"], 4),
+        "benchmark_margin": round(bench_margin, 4),
+        "effective_capability": round(effective_cap, 4),
+        "effective_usd": eff_usd,
+        "usd_per_capability": usd_per_cap,
+        "value_ratio": value_ratio,
+        "samples": samples,
+        "endpoint": ep_choice.to_dict() if ep_choice is not None else None,
+    }
+
+
+# ------------------------- EV-4: bounded pool rotation & streak diversity -----
+
+def evaluate_pool_rotation(pool=None, candidates=None, *, lane="apply",
+                           current_pool=None, candidate_metrics=None,
+                           ledger_entries=None,
+                           allow_cost_increase=False, cooldown_history=None,
+                           now=None, min_value_ratio=1.15, max_moves=1,
+                           min_samples=5, cooldown_days=14, min_uptime=0.90):
+    """Propose bounded pool rotations under EV-4 safety invariants."""
+    effective_pool = list(pool if pool is not None else (current_pool or []))
+    effective_candidates = candidates if candidates is not None else (candidate_metrics or [])
+    if not effective_pool:
+        return {
+            "lane": lane, "current_pool": [], "proposed_pool": [],
+            "changed": False, "moves": [], "rejected": [], "auto_apply": False,
+        }
+
+    now_ts = float(now if now is not None else time.time())
+    cooldown_sec = float(cooldown_days) * 86400.0
+    history = dict(cooldown_history or {})
+
+    by_id = {}
+    for item in effective_candidates:
+        if not isinstance(item, dict):
+            continue
+        mid = item.get("model_id") or item.get("id")
+        if mid:
+            norm = dict(item)
+            norm.setdefault("model_id", mid)
+            if "effective_usd" not in norm and "cost_usd" in norm:
+                norm["effective_usd"] = norm["cost_usd"]
+            if "value_ratio" not in norm and "value_score" in norm:
+                norm["value_ratio"] = norm["value_score"]
+            by_id[mid] = norm
+
+    head_id = effective_pool[0]
+    head = by_id.get(head_id)
+    moves = []
+    rejected = []
+    proposed = list(effective_pool)
+
+    if head is None:
+        return {
+            "lane": lane, "current_pool": effective_pool,
+            "proposed_pool": proposed, "changed": False, "moves": moves,
+            "rejected": [{"model_id": head_id, "reason": "incumbent_unscored"}],
+            "auto_apply": False,
+        }
+
+    head_usd = float(head.get("effective_usd", 0.0) or 0.0)
+    head_val = float(head.get("value_ratio", 0.0) or 0.0)
+    head_samples = int(head.get("samples", 0) or 0)
+
+    for cand_id, cand in by_id.items():
+        if cand_id == head_id:
+            continue
+        if len(moves) >= max_moves:
+            rejected.append({"model_id": cand_id, "reason": "max_moves_reached"})
+            continue
+
+        # Cooldown check
+        last_ts = history.get(cand_id)
+        if last_ts is not None and (now_ts - float(last_ts)) < cooldown_sec:
+            rejected.append({"model_id": cand_id, "reason": "cooldown_active"})
+            continue
+
+        # Endpoint health check
+        ep = cand.get("endpoint") or {}
+        if isinstance(ep, dict):
+            inner_ep = ep.get("endpoint") if isinstance(ep.get("endpoint"), dict) else ep
+            u1d = inner_ep.get("uptime_1d")
+            if u1d is not None:
+                norm_u = float(u1d) / 100.0 if float(u1d) > 1.0 else float(u1d)
+                if norm_u < min_uptime:
+                    rejected.append({"model_id": cand_id, "reason": "low_uptime"})
+                    continue
+
+        # Minimum sample guard when demoting an incumbent on observed failure
+        if cand.get("demote_incumbent") and head_samples < min_samples:
+            rejected.append({"model_id": cand_id, "reason": "insufficient_incumbent_samples"})
+            continue
+
+        cand_usd = float(cand.get("effective_usd", 0.0) or 0.0)
+        cand_val = float(cand.get("value_ratio", 0.0) or 0.0)
+
+        if not allow_cost_increase and cand_usd > head_usd + 1e-12:
+            rejected.append({"model_id": cand_id, "reason": "cost_increase_disallowed"})
+            continue
+
+        if head_val > 0 and math.isfinite(head_val):
+            ratio = cand_val / head_val if math.isfinite(cand_val) else float("inf")
+        else:
+            ratio = (cand.get("effective_capability", 0.0) /
+                     max(head.get("effective_capability", 1e-6), 1e-6))
+
+        if ratio < min_value_ratio - 1e-9:
+            rejected.append({
+                "model_id": cand_id,
+                "reason": f"value_ratio_below_threshold ({ratio:.3f} < {min_value_ratio:.2f})",
+            })
+            continue
+
+        moves.append({
+            "action": "promote_to_head",
+            "from_head": head_id,
+            "to_head": cand_id,
+            "value_improvement": round(ratio, 4) if math.isfinite(ratio) else "inf",
+            "incumbent_usd": head_usd,
+            "challenger_usd": cand_usd,
+        })
+        proposed = [cand_id] + [m for m in effective_pool if m != cand_id]
+
+    return {
+        "lane": lane,
+        "current_pool": effective_pool,
+        "proposed_pool": proposed,
+        "changed": proposed != effective_pool,
+        "moves": moves,
+        "rejected": rejected,
+        "auto_apply": False,
+    }
+
+
+def rotate_pool_by_streak(pool, scores_by_model=None, *, head_streak=0,
+                          max_streak=3, parity_band=0.10):
+    """Bounded exploration (DF-EV-7): rotate head after ``max_streak`` clean runs.
+
+    When the head model has been selected ``>= max_streak`` consecutive times
+    and another pool member has a capability/value score within ``parity_band``
+    (default 10%) of the head, promote that peer to head for the next run so
+    non-head models accumulate ledger observations.
+    """
+    ordered = list(pool or [])
+    if len(ordered) < 2 or int(head_streak or 0) < int(max_streak):
+        return ordered
+    scores = dict(scores_by_model or {})
+    head = ordered[0]
+    head_score = float(scores.get(head, 1.0) or 0.0)
+    if head_score <= 0.0:
+        return [ordered[1], head] + ordered[2:]
+    floor = head_score * (1.0 - float(parity_band))
+    for idx, peer in enumerate(ordered[1:], start=1):
+        peer_score = float(scores.get(peer, 0.0) or 0.0)
+        if peer_score >= floor - 1e-9:
+            return [peer] + ordered[:idx] + ordered[idx + 1:]
+    return ordered
+
+
+def seat_share_report(ledger_or_entries, *, pool=None, window=50):
+    """Compute per-model seat share over the last ``window`` task runs (EV-4)."""
+    if hasattr(ledger_or_entries, "entries"):
+        entries = list(ledger_or_entries.entries())
+    else:
+        entries = list(ledger_or_entries or [])
+
+    selections = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        ev = e.get("event")
+        if ev in ("apply_attempt", "panel_claim", "model_result") and e.get("model"):
+            selections.append(e["model"])
+
+    recent = selections[-int(window):] if window else selections
+    total = len(recent)
+    counts = {}
+    for m in recent:
+        counts[m] = counts.get(m, 0) + 1
+    for m in (pool or []):
+        counts.setdefault(m, 0)
+
+    shares = {m: round(c / total, 4) if total else 0.0 for m, c in counts.items()}
+    starved = [m for m in (pool or []) if counts.get(m, 0) == 0] if total >= int(window) else []
+    return {
+        "window": int(window),
+        "total_selections": total,
+        "counts": counts,
+        "shares": shares,
+        "starved": starved,
+    }
+

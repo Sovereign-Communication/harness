@@ -482,8 +482,43 @@ def _serialize_under_cap(bundle):
     return payload, bundle.get("truncated", False)
 
 
+def _build_economics_summary(entries):
+    """Build a sanitized economics summary block for site-bundle-v1 (EV-5)."""
+    from .ledger_analytics import LedgerAnalytics
+    from .routing_table import (
+        SNAPSHOT_PRICE_TABLE,
+        TIER_MODELS,
+        check_tier_snapshot_freshness,
+    )
+    freshness = check_tier_snapshot_freshness()
+    cost_rep = LedgerAnalytics(entries).cost_report(
+        by_tier=True, by_lane=True, savings=True,
+        price_table=SNAPSHOT_PRICE_TABLE,
+    )
+    return {
+        "tiers_freshness": {
+            "ok": bool(freshness.get("ok")),
+            "generated_at": str(freshness.get("generated_at") or ""),
+            "age_days": _finite_number(freshness.get("age_days")),
+        },
+        "tier_counts": {t: len(models) for t, models in sorted(TIER_MODELS.items())},
+        "cost_summary": {
+            "total_cost": cost_rep.get("total_cost", 0.0),
+            "billable_calls": cost_rep.get("billable_calls", 0),
+            "free_calls": cost_rep.get("free_calls", 0),
+            "cost_estimated_calls": cost_rep.get("cost_estimated_calls", 0),
+            "unpriced_calls": cost_rep.get("unpriced_calls", 0),
+            "tokens": cost_rep.get("tokens", {}),
+            "by_tier": cost_rep.get("by_tier", {}),
+            "by_lane": cost_rep.get("by_lane", {}),
+            "savings": cost_rep.get("savings", {}),
+            "rolling": cost_rep.get("rolling", {}),
+        },
+    }
+
+
 def export_bundle(ledger_path, consent_path, pricing_path=None,
-                  harness_version=None):
+                  harness_version=None, include_economics=False):
     """Build the sanitized bundle dict from a verified, consented ledger."""
     consent = load_consent(consent_path)
     pricing = load_pricing(pricing_path) if pricing_path else None
@@ -521,6 +556,8 @@ def export_bundle(ledger_path, consent_path, pricing_path=None,
         "bench": build_bench_rows(runs),
         "capabilities": build_capabilities(allowed),
     }
+    if include_economics:
+        bundle["economics"] = _build_economics_summary(allowed)
     # Identity = content, not wall clock: generated_at is excluded from the
     # canonical core so re-exporting an unchanged ledger yields the same
     # bundle_id (the site's dedupe key must be stable across re-runs).
@@ -528,6 +565,7 @@ def export_bundle(ledger_path, consent_path, pricing_path=None,
             if k not in ("bundle_id", "generated_at")}
     bundle["bundle_id"] = _sha16(_canon(core))
     return bundle
+
 
 
 def write_bundle(bundle, out_path):

@@ -415,7 +415,9 @@ Tools (`tools/list` order): `site_check`, `panel_verify`, `apply_edit`, `offer_w
 `ledger_status`, `participation_report`, `spend_status`, `trust_status`, `plan_and_execute`,
 `issue_sort`, `route_query`, `mission_status`, `continue_work`, `log_judgment`, `jev_phase`,
 `jev_freeze`, `dogfood`, `generate_brief`, `driver_step`, `driver_health`, `driver_vocabulary`,
-`driver_verify`, `host_provision_probe`, `host_provision_plan`, `repo_cards`, `jev_calibration`.
+`driver_verify`, `host_provision_probe`, `host_provision_plan`, `repo_cards`, `jev_calibration`,
+`economics_report`.
+`economics_report` reports tier snapshot freshness, seat-share diversity, per-lane/per-tier cost metering, and bounded pool-rotation proposals (EV-1..EV-5).
 `host_provision_probe` and `host_provision_plan` expose host system facts and ordered provisioning plans (PROVISION-CORE).
 `repo_cards` runs deterministic repo philosophy card generation and drift checking (REPO-CARDS).
 `jev_calibration` analyzes Jev judgment confidence distributions and recommends threshold bands (JEV-P3).

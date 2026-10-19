@@ -473,4 +473,14 @@ TOOL_SCHEMAS = [
         }},
         "annotations": {"readOnlyHint": True, "openWorldHint": True},
     },
+    {
+        "name": "economics_report",
+        "title": "Economics & value routing report",
+        "description": "Report tier snapshot freshness, seat-share diversity, per-lane/per-tier cost metering, and bounded pool-rotation proposals (read-only).",
+        "inputSchema": {"type": "object", "properties": {
+            "allow_cost_increase": {"type": "boolean", "default": False, "description": "Allow proposing a candidate with higher expected cost"},
+        }},
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+    },
 ]
+

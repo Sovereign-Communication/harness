@@ -155,6 +155,120 @@ PHASE_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "harness/discount_gate.py",
         ],
     },
+    "EV-1": {
+        "status_needle": r"\bEV-1\b",
+        "pr_pattern": r"PR #241",
+        "required_tests": [
+            "tests/test_economics_index.py",
+        ],
+        "required_files": [
+            "harness/endpoint_pricing.py",
+            "harness/capability.py",
+            "harness/discount_gate.py",
+        ],
+    },
+    "EV-2": {
+        "status_needle": r"\bEV-2\b",
+        "pr_pattern": r"PR #241",
+        "required_tests": [
+            "tests/test_routing_table.py",
+        ],
+        "required_files": [
+            "harness/routing_table.py",
+            "packs/tiers.snapshot.json",
+        ],
+    },
+    "EV-3": {
+        "status_needle": r"\bEV-3\b",
+        "pr_pattern": r"PR #241",
+        "required_tests": [
+            "tests/test_economics_route_policy.py",
+        ],
+        "required_files": [
+            "harness/jev_policy.py",
+            "packs/economics_route.pack.json",
+        ],
+    },
+    "EV-4": {
+        "status_needle": r"\bEV-4\b",
+        "pr_pattern": r"PR #241",
+        "required_tests": [
+            "tests/test_economics_auto_rotation.py",
+            "tests/test_model_slates.py",
+        ],
+        "required_files": [
+            "harness/config.py",
+            "harness/capability.py",
+            "harness/panel.py",
+        ],
+    },
+    "EV-5": {
+        "status_needle": r"\bEV-5\b",
+        "pr_pattern": r"PR #241",
+        "required_tests": [
+            "tests/test_economics_cli.py",
+            "tests/test_rankings_cli.py",
+            "tests/test_cost_cli.py",
+        ],
+        "required_files": [
+            "harness/cli.py",
+            "harness/mcp.py",
+            "harness/mcp_schemas.py",
+            "harness/server.py",
+            "harness/site_export.py",
+        ],
+        "user_facing": True,
+    },
+    "EV-6": {
+        "status_needle": r"\bEV-6\b",
+        "pr_pattern": r"PR #208|PR #241",
+        "required_tests": [
+            "tests/test_economics_fireworks_source.py",
+        ],
+        "required_files": [
+            "harness/endpoint_pricing.py",
+            "packs/fireworks.endpoints.json",
+        ],
+    },
+    "EV-7": {
+        "status_needle": r"\bEV-7\b",
+        "pr_pattern": r"PR #212|PR #241",
+        "required_tests": [
+            "tests/test_economics_fireworks_route.py",
+        ],
+        "required_files": [
+            "harness/fireworks.py",
+            "harness/config.py",
+            "harness/spend.py",
+            "harness/chat.py",
+        ],
+    },
+    "EV-8": {
+        "status_needle": r"\bEV-8\b",
+        "pr_pattern": r"PR #241",
+        "required_tests": [
+            "tests/test_economics_fireworks_verify.py",
+        ],
+        "required_files": [
+            "harness/fireworks_probe.py",
+            "harness/cli.py",
+        ],
+        "user_facing": True,
+    },
+    "REFINE-LOOP": {
+        "status_needle": r"\bREFINE-LOOP\b",
+        "pr_pattern": r"PR #240|a7daf42",
+        "required_tests": [
+            "tests/test_refine_loop.py",
+        ],
+        "required_files": [
+            "harness/refine.py",
+            "harness/data/task_families.json",
+            "harness/data/experience.md",
+            "harness/data/refine_propose_prompt.md",
+        ],
+        "user_facing": True,
+    },
     "JEV-P0": {
         "status_needle": r"JEV-P0|0 Contract|contract truth",
         "pr_pattern": r"PR #34|d042d70",

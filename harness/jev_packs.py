@@ -37,6 +37,49 @@ MAX_CONTEXT_PACK_CHARS = 1200
 
 SITE_REACHABILITY_SITE = "site_reachability"
 REQUEST_WORKFLOW_SITE = "request_workflow"
+ECONOMICS_ROUTE_SITE = "economics_route"
+
+
+def economics_route_question_pack() -> Dict[str, Dict[str, Any]]:
+    """Load or build the EV-3 advisory economics tier-routing question pack."""
+    pack_path = Path(__file__).resolve().parent.parent / "packs" / "economics_route.pack.json"
+    try:
+        raw = json.loads(pack_path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and isinstance(raw.get("questions"), dict):
+            return dict(raw["questions"])
+    except (OSError, ValueError):
+        pass
+    return {
+        "tier": {
+            "type": "choice",
+            "instructions": (
+                "Select the minimum capability tier (T0, T1, T2, T3) required "
+                "to complete this task reliably. Never name a provider or model brand."),
+            "criteria": {
+                "T0": "Trivial formatting, docstring, typo, or single-line comment change with zero behavioral impact.",
+                "T1": "Standard localized implementation, unit test addition, or routine single-file code edit.",
+                "T2": "Multi-file refactor, DAG planning, structured judgment, or complex debugging.",
+                "T3": "High-stakes concurrency, cryptographic invariant, distributed protocol, or security architecture.",
+            },
+        },
+        "reasoning_required": {
+            "type": "noul",
+            "instructions": "Does this task require explicit chain-of-thought reasoning to avoid structural failure?",
+            "criteria": {
+                "true": "Multi-step causal analysis, invariant verification, or architectural synthesis is needed.",
+                "false": "Direct structured emission or straightforward code application is sufficient.",
+            },
+        },
+        "context_band": {
+            "type": "choice",
+            "instructions": "Select the expected input context band required to ground this task.",
+            "criteria": {
+                "short": "The task is a compact single-snippet or localized edit (<4k input tokens).",
+                "medium": "The task inspects one or two modules of moderate size (4k-32k input tokens).",
+                "long": "The task spans multiple modules or large files (>32k input tokens).",
+            },
+        },
+    }
 
 
 def request_workflow_question_pack() -> Dict[str, Dict[str, Any]]:

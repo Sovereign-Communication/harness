@@ -34,14 +34,35 @@ Part 1 of 4 in EV-0's evidence layer: ``endpoint_pricing`` (this module),
 ``docs/jev-roadmap.md`` (``EV-*``).
 """
 from dataclasses import dataclass, field
+import json
+import os
+from pathlib import Path
 
-from .config import (DISCOUNT_IS_MULTIPLIER, MAX_ENDPOINT_FETCHES_PER_RUN,
-                     OPENROUTER_ENDPOINTS_URL)
+from .config import (DISCOUNT_IS_MULTIPLIER, FIREWORKS_PROVIDER,
+                     MAX_ENDPOINT_FETCHES_PER_RUN, OPENROUTER_ENDPOINTS_URL)
+from .discount_gate import resolve_discount_semantics
 from .errors import HarnessError
 from .events import emit
 from .output import eprint
 from .routing_table import strip_variant_suffix
 from .validation import finite_number, optional_float
+
+PACKS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "packs")
+FIREWORKS_ENDPOINTS_PACK = os.path.join(PACKS_DIR, "fireworks.endpoints.json")
+FIREWORKS_PACK = Path(__file__).resolve().parent.parent / "packs" / "fireworks.endpoints.json"
+_PER_MILLION = 1_000_000.0
+
+#: Representative (input_tokens, output_tokens) workload shapes per lane (EV-1).
+LANE_WORKLOAD_SHAPES = {
+    "apply": (4000, 1500),
+    "implement": (4000, 1500),
+    "judge": (3000, 300),
+    "plan": (2500, 1200),
+    "fast": (1000, 300),
+    "vote": (1500, 200),
+    "specialist": (3500, 1200),
+    "frontier": (6000, 2000),
+}
 
 
 @dataclass(frozen=True)
@@ -57,9 +78,8 @@ class EndpointPrice:
     tag: object = None
     discount: float = 0.0
     overrides: tuple = ()
-    # Published and parsed, deliberately not priced here: whether a given
-    # call may use the cached-input rate is a routing decision that belongs
-    # to EV-1's selection policy, not to ingest.
+    # Published and parsed; used by EV-1 only when cache_eligible=True is
+    # explicitly asserted by the caller.
     input_cache_read: object = None
     context_length: int = 0
     max_completion_tokens: int = 0
@@ -90,13 +110,15 @@ class EndpointPrice:
         set_(self, "mandatory_reasoning", bool(self.mandatory_reasoning))
 
     # -- price arithmetic -------------------------------------------------
-    def rates_for(self, input_tokens, apply_discount, semantics):
+    def rates_for(self, input_tokens, apply_discount, semantics, *,
+                  cache_eligible=False):
         """(prompt, completion) per-token rates for a call of this size.
 
         ``overrides`` are a published price *step* keyed on prompt volume:
         the deepest override whose ``min_prompt_tokens`` the call reaches
         wins.  ``apply_discount`` is decided by the caller from the recorded
-        semantics verdict, never guessed here.
+        semantics verdict, never guessed here.  ``cache_eligible`` uses
+        ``input_cache_read`` when published and explicitly requested.
         """
         rate_in, rate_out = self.prompt, self.completion
         for override in sorted(self.overrides,
@@ -108,16 +130,31 @@ class EndpointPrice:
             rate_in = self.prompt
         if rate_out is None:
             rate_out = self.completion
+        if cache_eligible and self.input_cache_read is not None:
+            rate_in = self.input_cache_read
         if apply_discount and semantics == DISCOUNT_IS_MULTIPLIER and self.discount:
             keep = 1.0 - self.discount
             rate_in *= keep
             rate_out *= keep
         return rate_in, rate_out
 
-    def blended_usd(self, input_tokens, output_tokens, *, semantics):
+    def blended_usd(self, input_tokens, output_tokens, *, semantics,
+                    cache_eligible=False):
         """Dollar cost of one call at this endpoint. Never mixes endpoints."""
-        rate_in, rate_out = self.rates_for(input_tokens, True, semantics)
+        rate_in, rate_out = self.rates_for(
+            input_tokens, True, semantics, cache_eligible=cache_eligible)
         return (input_tokens * rate_in) + (output_tokens * rate_out)
+
+    def is_eligible(self, *, min_uptime=0.0):
+        """True when published uptime meets ``min_uptime`` (or is unpublished)."""
+        if not min_uptime or min_uptime <= 0.0:
+            return True
+        for u in (self.uptime_1d, self.uptime_30m):
+            if u is not None:
+                norm = u / 100.0 if u > 1.0 else u
+                if norm < min_uptime:
+                    return False
+        return True
 
     @property
     def name(self):
@@ -285,3 +322,156 @@ def fetch_endpoints_for(transport, api_key, model_ids, *,
             # a clean stderr and a plausible artifact.
             eprint(f"[warn] economics: endpoint feed failed for {model_id}: {exc}")
     return {"priced": priced, "errors": errors}
+
+
+@dataclass(frozen=True)
+class EffectivePrice:
+    """Winning per-endpoint offer for one workload shape (EV-1).
+
+    Never blends prompt from one provider with completion from another.
+    Supports both attribute access (``price.usd``) and mapping access
+    (``price["usd"]``) so callers and JSON serializers share one shape.
+    """
+
+    model_id: str
+    usd: float
+    endpoint: EndpointPrice
+    semantics: str
+    input_tokens: int
+    output_tokens: int
+    lane: str = "apply"
+    cache_eligible: bool = False
+
+    def to_dict(self):
+        return {
+            "model_id": self.model_id,
+            "usd": self.usd,
+            "provider": self.endpoint.provider_name,
+            "endpoint_name": self.endpoint.name,
+            "endpoint": self.endpoint.to_dict(),
+            "semantics": self.semantics,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "lane": self.lane,
+            "cache_eligible": self.cache_eligible,
+        }
+
+    def __getitem__(self, key):
+        return self.to_dict()[key]
+
+    def get(self, key, default=None):
+        return self.to_dict().get(key, default)
+
+
+def effective_price(endpoints, input_tokens=None, output_tokens=None, *,
+                    lane="apply", path=None, repo_root=None,
+                    cache_eligible=False, min_uptime=0.0):
+    """Select the single cheapest eligible endpoint for a workload shape (EV-1).
+
+    * Never mixes prompt from one provider with completion from another:
+      each :class:`EndpointPrice` is evaluated as a whole via
+      :meth:`EndpointPrice.blended_usd`.
+    * Honors long-context ``overrides`` when ``input_tokens`` crosses a
+      published ``min_prompt_tokens`` threshold.
+    * Uses ``input_cache_read`` ONLY when ``cache_eligible=True``.
+    * Filters out endpoints below ``min_uptime`` (fail-closed if none survive).
+    * Refuses discounted models unless :func:`resolve_discount_semantics`
+      returns a committed, fingerprint-matching verdict.
+    """
+    if not isinstance(endpoints, ModelEndpoints) or not endpoints.endpoints:
+        raise HarnessError("effective_price requires a non-empty ModelEndpoints")
+    shape_in, shape_out = LANE_WORKLOAD_SHAPES.get(
+        str(lane or "apply").lower(), LANE_WORKLOAD_SHAPES["apply"])
+    in_tok = shape_in if input_tokens is None else int(input_tokens)
+    out_tok = shape_out if output_tokens is None else int(output_tokens)
+    if in_tok < 0 or out_tok < 0:
+        raise HarnessError("effective_price token counts must be non-negative")
+
+    semantics = resolve_discount_semantics(endpoints, path=path, repo_root=repo_root)
+    eligible = [ep for ep in endpoints.endpoints
+                if ep.is_eligible(min_uptime=min_uptime)]
+    if not eligible:
+        raise HarnessError(
+            f"no endpoint for {endpoints.model_id} meets min_uptime={min_uptime:g}")
+
+    best_ep = min(
+        eligible,
+        key=lambda ep: (
+            ep.blended_usd(in_tok, out_tok, semantics=semantics,
+                           cache_eligible=cache_eligible),
+            ep.name,
+        ),
+    )
+    best_usd = best_ep.blended_usd(
+        in_tok, out_tok, semantics=semantics, cache_eligible=cache_eligible)
+    return EffectivePrice(
+        model_id=endpoints.model_id,
+        usd=best_usd,
+        endpoint=best_ep,
+        semantics=semantics,
+        input_tokens=in_tok,
+        output_tokens=out_tok,
+        lane=str(lane or "apply"),
+        cache_eligible=bool(cache_eligible),
+    )
+
+
+@dataclass(frozen=True)
+class FireworksOffer:
+    """One live-confirmed Fireworks Standard offer for one model."""
+
+    model: str
+    path: object  # accounts/... when the model path is confirmed, else None
+    price: EndpointPrice
+
+    @property
+    def routable(self):
+        return self.path is not None
+
+
+def fireworks_offers(pack_path=FIREWORKS_PACK):
+    """Every Fireworks offer in the committed pack, as per-endpoint prices.
+
+    A missing or malformed pack raises rather than returning an empty list:
+    an empty answer would read as "Fireworks has no offers" when the
+    evidence is actually missing.
+    """
+    try:
+        text = Path(pack_path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise HarnessError(f"Fireworks price pack missing: {pack_path}") from None
+    doc = json.loads(text)
+    models = doc.get("models") if isinstance(doc, dict) else None
+    if not isinstance(models, list):
+        raise HarnessError(f"Fireworks price pack has no model list: {pack_path}")
+    offers = []
+    for row in models:
+        price = EndpointPrice(
+            FIREWORKS_PROVIDER,
+            prompt=float(row["input"]) / _PER_MILLION,
+            completion=float(row["output"]) / _PER_MILLION,
+            input_cache_read=float(row["cached_input"]) / _PER_MILLION,
+        )
+        offers.append(FireworksOffer(row["name"], row.get("path"), price))
+    return offers
+
+
+def load_fireworks_endpoints(pack_path=None):
+    """Load the committed Fireworks pricing pack into EndpointPrice objects."""
+    path = pack_path or FIREWORKS_PACK
+    offers = fireworks_offers(pack_path=path)
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    by_fw = {}
+    for offer in offers:
+        key = offer.path or offer.model
+        by_fw[key] = offer.price
+    return {
+        "schema": raw.get("schema", 1),
+        "source": raw.get("source", "fireworks"),
+        "captured": raw.get("captured", ""),
+        "endpoints": by_fw,
+        "offers": offers,
+        "models": raw.get("models", []),
+    }
+
+

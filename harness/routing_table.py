@@ -3,7 +3,20 @@
 Provides explicit deterministic mapping from task classification to a curated
 shortlist of cost-efficient models, gateway-level max_price caps, and the
 canonical :floor provider selector.
+
+EV-2 / #195 / #197:
+* Loads ``packs/tiers.snapshot.json`` at import time with a bootstrap fallback
+  so tier shortlists and price tables are data-driven rather than hardcoded to
+  stale model generations (DF-EV-4).
+* Exposes ``resolve_task_class`` for task-aware model class routing
+  (``fast``, ``vote``, ``specialist``, ``implement``, ``cheap-capable``,
+  ``judge``, ``plan``, ``frontier``).
+* Supports reversible per-run ``trial_model`` overrides on ``get_tier_route``
+  and ``resolve_task_class`` without mutating persistent config.
 """
+from datetime import datetime, timezone
+import json
+import os
 from typing import Any, Dict, List, Optional, Sequence
 
 # Canonical tier identifiers
@@ -14,26 +27,194 @@ TIER_3 = "T3"  # Frontier specialist ($2.00-$10.00/M)
 
 TIER_ORDER: Sequence[str] = (TIER_0, TIER_1, TIER_2, TIER_3)
 
-# Curated model shortlists per tier
-TIER_MODELS: Dict[str, List[str]] = {
+PACKS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "packs")
+TIERS_SNAPSHOT_PATH = os.path.join(PACKS_DIR, "tiers.snapshot.json")
+DEFAULT_SNAPSHOT_MAX_AGE_DAYS = 14
+
+_BOOTSTRAP_TIER_MODELS: Dict[str, List[str]] = {
     TIER_0: [
-        "deepseek/deepseek-chat:free",
-        "google/gemini-2.0-flash-exp:free",
-        "meta-llama/llama-3.3-70b-instruct:free",
+        "google/gemma-4-31b-it:free",
+        "google/gemma-4-26b-a4b-it:free",
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "cohere/north-mini-code:free",
     ],
     TIER_1: [
-        "deepseek/deepseek-chat",
-        "qwen/qwen-2.5-coder-32b-instruct",
+        "deepseek/deepseek-v4.1-flash",
+        "deepseek/deepseek-v4-flash",
+        "inclusionai/ling-3.0-flash",
+        "openai/gpt-4o-mini",
     ],
     TIER_2: [
-        "google/gemini-2.5-flash",
-        "deepseek/deepseek-reasoner",
+        "z-ai/glm-5.3-flash",
+        "openai/gpt-5-mini",
+        "openai/gpt-5.6-luna",
+        "google/gemini-3.8-flash",
+        "deepseek/deepseek-v4-pro",
     ],
     TIER_3: [
         "qwen/qwen3.8-max-0902",
-        "openai/o3-mini",
+        "openai/gpt-4.1",
+        "openai/gpt-5.6-sol",
     ],
 }
+
+_BOOTSTRAP_TASK_CLASSES: Dict[str, str] = {
+    "fast": TIER_1,
+    "vote": TIER_1,
+    "cheap-capable": TIER_1,
+    "implement": TIER_1,
+    "specialist": TIER_2,
+    "judge": TIER_2,
+    "plan": TIER_2,
+    "frontier": TIER_3,
+}
+
+
+def load_tier_snapshot(path: Optional[str] = None) -> Dict[str, Any]:
+    """Load ``packs/tiers.snapshot.json`` with a safe bootstrap fallback."""
+    target = path or TIERS_SNAPSHOT_PATH
+    try:
+        with open(target, encoding="utf-8") as fh:
+            raw = json.load(fh)
+        if not isinstance(raw, dict):
+            raise ValueError("snapshot root must be a JSON object")
+        tiers_raw = raw.get("tiers") or {}
+        tiers = {
+            t: list(tiers_raw.get(t) or _BOOTSTRAP_TIER_MODELS[t])
+            for t in TIER_ORDER
+        }
+        task_classes = dict(_BOOTSTRAP_TASK_CLASSES)
+        if isinstance(raw.get("task_classes"), dict):
+            for k, v in raw["task_classes"].items():
+                if v in TIER_ORDER:
+                    task_classes[str(k)] = str(v)
+        price_table = raw.get("price_table")
+        price_table = dict(price_table) if isinstance(price_table, dict) else {}
+        return {
+            "schema": int(raw.get("schema") or 1),
+            "captured_at": str(raw.get("captured_at") or ""),
+            "max_age_days": int(raw.get("max_age_days") or DEFAULT_SNAPSHOT_MAX_AGE_DAYS),
+            "tiers": tiers,
+            "task_classes": task_classes,
+            "price_table": price_table,
+            "source": "snapshot",
+        }
+    except (OSError, ValueError, TypeError):
+        return {
+            "schema": 1,
+            "captured_at": "",
+            "max_age_days": DEFAULT_SNAPSHOT_MAX_AGE_DAYS,
+            "tiers": {t: list(v) for t, v in _BOOTSTRAP_TIER_MODELS.items()},
+            "task_classes": dict(_BOOTSTRAP_TASK_CLASSES),
+            "price_table": {},
+            "source": "bootstrap",
+        }
+
+
+def check_tier_snapshot_freshness(
+    path: Optional[str] = None,
+    *,
+    now: Optional[datetime] = None,
+    max_age_days: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Check whether ``packs/tiers.snapshot.json`` is within its freshness window."""
+    snap = load_tier_snapshot(path)
+    limit_days = float(
+        max_age_days if max_age_days is not None
+        else (snap.get("max_age_days") or DEFAULT_SNAPSHOT_MAX_AGE_DAYS)
+    )
+    captured_raw = snap.get("captured_at") or ""
+    if not captured_raw:
+        return {
+            "ok": False,
+            "fresh": False,
+            "captured_at": "",
+            "age_days": None,
+            "max_age_days": limit_days,
+            "warning": "tiers snapshot has no captured_at timestamp (using bootstrap)",
+        }
+    try:
+        ts_text = captured_raw[:-1] + "+00:00" if captured_raw.endswith("Z") else captured_raw
+        captured_dt = datetime.fromisoformat(ts_text)
+        if captured_dt.tzinfo is None:
+            captured_dt = captured_dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return {
+            "ok": False,
+            "fresh": False,
+            "captured_at": captured_raw,
+            "age_days": None,
+            "max_age_days": limit_days,
+            "warning": f"tiers snapshot captured_at {captured_raw!r} is not valid ISO-8601",
+        }
+
+    ref_now = now or datetime.now(timezone.utc)
+    if ref_now.tzinfo is None:
+        ref_now = ref_now.replace(tzinfo=timezone.utc)
+    age_days = max(0.0, (ref_now - captured_dt).total_seconds() / 86400.0)
+    fresh = age_days <= limit_days
+    warning = None
+    if not fresh:
+        warning = (
+            f"tiers.snapshot.json is {age_days:.1f} days old "
+            f"(exceeds max_age_days={limit_days:g}); refresh via `harness economics --report`."
+        )
+    return {
+        "ok": fresh,
+        "fresh": fresh,
+        "captured_at": captured_raw,
+        "age_days": round(age_days, 3),
+        "max_age_days": limit_days,
+        "warning": warning,
+    }
+
+
+def generate_tier_snapshot(
+    models_by_tier: Optional[Dict[str, Sequence[str]]] = None,
+    *,
+    captured_at: Optional[str] = None,
+    max_age_days: int = DEFAULT_SNAPSHOT_MAX_AGE_DAYS,
+    price_table: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build a serializable ``tiers.snapshot.json`` payload (EV-2)."""
+    base = load_tier_snapshot()
+    tiers_in = models_by_tier or base["tiers"]
+    tiers_out = {
+        t: list(tiers_in.get(t) or _BOOTSTRAP_TIER_MODELS[t])
+        for t in TIER_ORDER
+    }
+    ts = captured_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "schema": 1,
+        "captured_at": ts,
+        "max_age_days": int(max_age_days),
+        "tiers": tiers_out,
+        "task_classes": dict(base["task_classes"]),
+        "price_table": dict(price_table if price_table is not None else base["price_table"]),
+    }
+
+
+_INITIAL_SNAPSHOT = load_tier_snapshot()
+
+# Curated model shortlists per tier (loaded from packs/tiers.snapshot.json)
+TIER_MODELS: Dict[str, List[str]] = _INITIAL_SNAPSHOT["tiers"]
+TASK_CLASS_TIERS: Dict[str, str] = _INITIAL_SNAPSHOT["task_classes"]
+SNAPSHOT_PRICE_TABLE: Dict[str, Dict[str, Any]] = _INITIAL_SNAPSHOT["price_table"]
+
+# Counter tracking models that required substring-heuristic tier classification
+_UNLISTED_TIER_FALLBACKS: Dict[str, int] = {}
+
+
+def unlisted_tier_fallbacks() -> Dict[str, int]:
+    """Return a copy of the heuristic-fallback counter map (EV-2)."""
+    return dict(_UNLISTED_TIER_FALLBACKS)
+
+
+def reset_unlisted_tier_fallbacks() -> None:
+    """Clear the heuristic-fallback counter map (for hermetic tests)."""
+    _UNLISTED_TIER_FALLBACKS.clear()
+
 
 # Gateway-level price ceilings (USD per 1M tokens) for OpenRouter provider.max_price
 TIER_MAX_PRICE: Dict[str, Dict[str, float]] = {
@@ -142,31 +323,96 @@ def next_tier(current_tier: str) -> Optional[str]:
     return None
 
 
-def get_tier_route(tier: str, enable_floor: bool = True) -> Dict[str, Any]:
-    """Return complete routing metadata for a given tier."""
+def get_tier_route(
+    tier: str,
+    enable_floor: bool = True,
+    *,
+    trial_model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Return complete routing metadata for a given tier.
+
+    When ``trial_model`` (#197) is supplied, it is placed at the head of the
+    run's candidate list while preserving the rest of the tier's fallback
+    ladder and without mutating ``TIER_MODELS``.
+    """
     t = tier if tier in TIER_MODELS else TIER_1
-    models = [floor_model(m, enable_floor) for m in TIER_MODELS[t]]
-    return {
+    canonical = list(TIER_MODELS[t])
+    trial_active = False
+    if trial_model and str(trial_model).strip():
+        tm_clean = strip_variant_suffix(str(trial_model).strip())
+        canonical = [tm_clean] + [m for m in canonical if strip_variant_suffix(m) != tm_clean]
+        trial_active = True
+    models = [floor_model(m, enable_floor) for m in canonical]
+    if trial_active and str(trial_model).strip().endswith(_NON_FLOOR_SUFFIXES):
+        models[0] = str(trial_model).strip()
+    out = {
         "tier": t,
         "models": models,
-        "canonical_models": list(TIER_MODELS[t]),
+        "canonical_models": canonical,
         "max_price": dict(TIER_MAX_PRICE[t]),
         "cost_band": TIER_COST_BANDS[t],
         "escalation_trigger": TIER_ESCALATION_TRIGGERS[t],
     }
+    if trial_active:
+        out["trial_model"] = str(trial_model).strip()
+        out["reversible_trial"] = True
+    return out
 
 
-def classify_model_tier(model_id: str) -> str:
-    """Classify an OpenRouter model ID into its cost tier (T0, T1, T2, T3)."""
+def resolve_task_class(
+    task_class: str,
+    *,
+    enable_floor: bool = True,
+    trial_model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve a named task class (#195) into its tier route and candidate ladder.
+
+    Supported task classes: ``fast``, ``vote``, ``cheap-capable``, ``implement``,
+    ``specialist``, ``judge``, ``plan``, ``frontier`` (plus direct tier names
+    ``T0``..``T3``). Unknown classes default safely to ``T1``.
+    """
+    key = str(task_class or "implement").strip().lower()
+    if key.upper() in TIER_MODELS:
+        tier = key.upper()
+    else:
+        tier = TASK_CLASS_TIERS.get(key, TIER_1)
+    route = get_tier_route(tier, enable_floor=enable_floor, trial_model=trial_model)
+    route["task_class"] = key
+    return route
+
+
+def classify_model_tier(model_id: str, *, profile: Any = None) -> str:
+    """Classify an OpenRouter model ID into its cost tier (T0, T1, T2, T3).
+
+    Resolution order (EV-2):
+    1. Free variant tag (``:free``) -> ``T0``.
+    2. Snapshot ``TIER_MODELS`` membership.
+    3. ``SNAPSHOT_PRICE_TABLE`` or supplied ``profile`` per-token pricing.
+    4. Substring heuristics (increments ``unlisted_tier_fallbacks`` counter).
+    """
     if not model_id:
         return TIER_0
     m = str(model_id).lower()
     if m.endswith(":free") or ":free" in m:
         return TIER_0
     clean = strip_variant_suffix(m)
-    for tier in (TIER_1, TIER_2, TIER_3):
+    for tier in (TIER_0, TIER_1, TIER_2, TIER_3):
         if any(clean == strip_variant_suffix(x.lower()) for x in TIER_MODELS[tier]):
             return tier
+    pt_entry = SNAPSHOT_PRICE_TABLE.get(clean)
+    if isinstance(pt_entry, dict) and pt_entry.get("tier") in TIER_ORDER:
+        return str(pt_entry["tier"])
+    if profile is not None:
+        if getattr(profile, "free", False):
+            return TIER_0
+        cp = float(getattr(profile, "completion_price", 0.0) or 0.0)
+        if cp > 0.0:
+            if cp <= 1.0e-6:
+                return TIER_1
+            if cp <= 4.5e-6:
+                return TIER_2
+            return TIER_3
+    _UNLISTED_TIER_FALLBACKS[clean] = _UNLISTED_TIER_FALLBACKS.get(clean, 0) + 1
     # Heuristics for models outside the default curated list
     if any(k in clean for k in ("max", "o3", "o1", "gpt-4", "gpt-5", "sol", "r1")):
         return TIER_3
@@ -175,5 +421,6 @@ def classify_model_tier(model_id: str) -> str:
     if any(k in clean for k in ("coder", "small", "lite", "8b", "7b", "chat")):
         return TIER_1
     return TIER_2
+
 
 

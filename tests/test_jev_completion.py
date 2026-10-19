@@ -1419,9 +1419,17 @@ class ShippedCanonRowsAreRegisteredTests(unittest.TestCase):
         "PROVISION-CORE",
         "JEV-P3-CALIBRATION-ANALYSIS",
         "EV-0",
+        "EV-1",
+        "EV-2",
+        "EV-3",
+        "EV-4",
+        "EV-5",
+        "EV-6",
+        "EV-7",
+        "REFINE-LOOP",
     )
     #: canon row keeps an open clause -> must still report open.
-    OPEN: tuple[str, ...] = ()
+    OPEN: tuple[str, ...] = ("EV-8",)
     ALL = COMPLETE + OPEN
 
     def _repo_root(self):

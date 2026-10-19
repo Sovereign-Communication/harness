@@ -103,6 +103,68 @@ class RoutingTableTests(unittest.TestCase):
         self.assertEqual(payload["provider"]["sort"], "price")
         self.assertEqual(payload["provider"]["max_price"], {"prompt": 0.50, "completion": 2.00})
 
+    def test_ev2_snapshot_freshness_and_unlisted_fallbacks(self):
+        from datetime import datetime, timezone
+        from harness.routing_table import (
+            TIER_MODELS,
+            check_tier_snapshot_freshness,
+            classify_model_tier,
+            generate_tier_snapshot,
+            load_tier_snapshot,
+            reset_unlisted_tier_fallbacks,
+            unlisted_tier_fallbacks,
+        )
+
+        snap = load_tier_snapshot()
+        self.assertEqual(snap["source"], "snapshot")
+        # DF-EV-4: no retired/stale generation slugs in snapshot TIER_MODELS
+        all_ids = [m for models in TIER_MODELS.values() for m in models]
+        for stale in ("gemini-2.0-flash-exp", "llama-3.3-70b", "qwen-2.5-coder", "o3-mini"):
+            self.assertFalse(any(stale in m for m in all_ids), f"stale {stale} in TIER_MODELS")
+
+        fresh = check_tier_snapshot_freshness(
+            now=datetime(2026, 10, 20, tzinfo=timezone.utc))
+        self.assertTrue(fresh["fresh"])
+        stale_check = check_tier_snapshot_freshness(
+            now=datetime(2026, 12, 1, tzinfo=timezone.utc))
+        self.assertFalse(stale_check["fresh"])
+        self.assertIn("tiers.snapshot.json", stale_check["warning"])
+
+        gen = generate_tier_snapshot(captured_at="2026-10-18T12:00:00Z")
+        self.assertEqual(gen["schema"], 1)
+        self.assertIn("T1", gen["tiers"])
+
+        reset_unlisted_tier_fallbacks()
+        self.assertEqual(classify_model_tier("deepseek/deepseek-v4.1-flash"), TIER_1)
+        self.assertEqual(unlisted_tier_fallbacks(), {})
+        self.assertEqual(classify_model_tier("unknown-vendor/mystery-coder-7b"), TIER_1)
+        self.assertIn("unknown-vendor/mystery-coder-7b", unlisted_tier_fallbacks())
+
+    def test_task_class_routing_and_reversible_trial_mode(self):
+        from harness.routing_table import TIER_MODELS, resolve_task_class
+
+        before_t1 = list(TIER_MODELS[TIER_1])
+        fast_route = resolve_task_class("fast")
+        self.assertEqual(fast_route["tier"], TIER_1)
+        self.assertEqual(fast_route["task_class"], "fast")
+
+        spec_route = resolve_task_class("specialist")
+        self.assertEqual(spec_route["tier"], TIER_2)
+
+        frontier_route = resolve_task_class("frontier")
+        self.assertEqual(frontier_route["tier"], TIER_3)
+
+        # #197: reversible per-run model trial mode
+        trial_route = resolve_task_class(
+            "implement", trial_model="inclusionai/ling-3.0-flash")
+        self.assertTrue(trial_route["reversible_trial"])
+        self.assertEqual(trial_route["trial_model"], "inclusionai/ling-3.0-flash")
+        self.assertEqual(
+            trial_route["canonical_models"][0], "inclusionai/ling-3.0-flash")
+        # Persistent TIER_MODELS is untouched after trial run
+        self.assertEqual(TIER_MODELS[TIER_1], before_t1)
+
 
 if __name__ == "__main__":
     unittest.main()
+

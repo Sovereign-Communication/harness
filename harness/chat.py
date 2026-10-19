@@ -14,9 +14,16 @@ import os
 import time
 import uuid
 
-from .config import CONFIG_DIR, OPENROUTER_CHAT_URL
+from .config import (
+    CONFIG_DIR,
+    FIREWORKS_CHAT_URL,
+    FIREWORKS_PROVIDER,
+    OPENROUTER_CHAT_URL,
+    is_fireworks_model_path,
+)
 from .errors import HarnessError, ProviderUsageUnknown, ToolCancelled
 from .events import emit, provider_request_context
+from .fireworks import cost_estimate, resolve_offer
 from .output import eprint
 from .provider_errors import (
     ProviderSpendLimitError,
@@ -392,6 +399,9 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
     accounting: a missing usage.cost is resolved here, once, so no lane can
     bill a paid call as $0.
     """
+    if is_fireworks_model_path(model):
+        return _chat_fireworks(transport, api_key, model, messages, max_tokens,
+                               governor=governor)
     canonical_model = strip_variant_suffix(model)
     if governor:
         governor.check_byok(canonical_model)
@@ -689,6 +699,76 @@ def governed_text(transport, api_key, governor, model, prompt, max_tokens,
         label=label, reasoning_effort=reasoning_effort,
         reasoning_token_budget=reasoning_token_budget)
     return completion["content"], completion["cost"]
+
+
+def _usage_counts(usage):
+    """(prompt, completion) token counts; non-numeric counts read as zero."""
+    try:
+        return (int(usage.get("prompt_tokens") or 0),
+                int(usage.get("completion_tokens") or 0))
+    except (TypeError, ValueError):
+        return 0, 0
+
+
+def _ensure_fireworks_accounted(offer, usage):
+    """Estimate a missing Fireworks usage.cost from the pack's Standard rates.
+
+    The same fail-closed rule as the OpenRouter path: with neither a cost nor
+    token counts the call is refused rather than booked as free.
+    """
+    prompt_tokens, completion_tokens = _usage_counts(usage)
+    if not prompt_tokens and not completion_tokens:
+        raise HarnessError(
+            f"Fireworks omitted usage accounting (no cost, no token counts) for "
+            f"'{offer.model}'; refusing to bill blind")
+    usage["cost"] = cost_estimate(offer, prompt_tokens, completion_tokens)
+    usage["cost_estimated"] = True
+
+
+def _chat_fireworks(transport, api_key, model, messages, max_tokens,
+                    governor=None):
+    """One Fireworks chat completion.
+
+    The payload is plain: no OpenRouter provider object, no floor, and no
+    reasoning parameter, because how Fireworks treats reasoning is canon
+    confirmation item 4 and is unconfirmed. The worst case is checked against
+    the local budget before anything is sent.
+    """
+    offer = resolve_offer(model)
+    payload = {"model": model, "messages": messages, "max_tokens": max_tokens}
+    if governor is not None:
+        governor.check_byok(model)
+        governor.assert_no_tools(payload, model)
+        prompt_text = "\n".join(str(m.get("content", "")) for m in messages)
+        worst = cost_estimate(offer, estimate_prompt_tokens(prompt_text), max_tokens)
+        governor.assert_fireworks_budget(worst, model)
+    status, resp = transport.post(FIREWORKS_CHAT_URL, api_key, payload)
+    if governor is not None and status == 200 and isinstance(resp, dict):
+        usage = resp.get("usage")
+        if isinstance(usage, dict) and "cost" not in usage:
+            _ensure_fireworks_accounted(offer, usage)
+    return status, resp
+
+
+def chat_for_route(route, transport, openrouter_key, fireworks_key, messages,
+                   max_tokens, governor=None):
+    """Dispatch one call to the provider a Route names.
+
+    OpenRouter routes go through the unchanged chat() path with its defaults.
+    Fireworks routes use the plain Fireworks payload and never reach
+    OpenRouter. No per-call options: the only caller sends the fixed
+    verification shape, and EV-1 will own selection policy when it lands.
+    """
+    if route.provider == FIREWORKS_PROVIDER:
+        if not fireworks_key:
+            raise HarnessError(
+                "Fireworks key missing: set ~/.config/scmorc/fireworks.env, "
+                "~/.config/harness/fireworks.env, or FIREWORKS_API_KEY")
+        return _chat_fireworks(transport, fireworks_key, route.wire_model,
+                               messages, max_tokens, governor)
+    return chat(transport, openrouter_key, route.wire_model, messages, max_tokens,
+                governor=governor)
+
 
 def chat_ladder(settings) -> list:
     """Single-owner chat lane ladder: tier-1 head + free panel + paid escalation when allowed.

@@ -1050,7 +1050,8 @@ class LaneSchedulingTests(unittest.TestCase):
              "host_provision_probe": "observe",
              "host_provision_plan": "spendy",
              "repo_cards": "observe",
-             "jev_calibration": "observe"})
+             "jev_calibration": "observe",
+             "economics_report": "observe"})
 
     def test_unknown_and_missing_names_ride_observe(self):
         self.assertEqual(lane_for("not_a_tool"), "observe")
