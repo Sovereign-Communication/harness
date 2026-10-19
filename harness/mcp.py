@@ -37,7 +37,7 @@ from .jev_policy import aggregate_structural, policy_for
 from .jev_packs import validate_log_pack, validate_operator_pack
 from .route_pack import validate_route_pack
 from .log_analysis import analyze_log
-from .perception_client import PerceptionAdapter
+from .perception_client import PerceptionAdapter, PerceptionUnavailable
 from .service import run_verify as _service_run_verify
 from .jev import jev_credit_status
 from .service import run_dogfood as _service_run_dogfood
@@ -78,6 +78,19 @@ SERVER_VERSION = __version__
 # same cancel_check as notifications/cancelled. Configurable via
 # HARNESS_MCP_TOOL_TIMEOUT (60..7200).
 MCP_TOOL_TIMEOUT_DEFAULT = 1800
+
+
+class DriverToolError(HarnessError):
+    """A driver-core request failed before producing a decision envelope."""
+    kind = "driver_tool_error"
+
+
+def _driver_tool(method, *args, **kwargs):
+    """Keep expected driver transport/contract failures inside the MCP tool boundary."""
+    try:
+        return getattr(PerceptionAdapter(), method)(*args, **kwargs)
+    except PerceptionUnavailable as exc:
+        raise DriverToolError(f"driver-core request failed: {exc}") from exc
 
 
 def _valid_rpc_id(value):
@@ -1161,7 +1174,7 @@ class McpServer:
             return result
         if name == "driver_step":
             target = validate_text(args.get("target"), "target", 1000, required=True)
-            schema = args.get("schema")
+            schema = args.get("schema", "cli")
             action = args.get("action")
             params = args.get("params")
             # The grantor label is evidence in the driver audit, so it must
@@ -1190,18 +1203,14 @@ class McpServer:
                 consent = {"granted": True, "action": action, "params": params or {}, "by": by}
             prefer = tuple(args.get("prefer") or ())
             require_stable = bool(args.get("require_stable", True))
-            adapter = PerceptionAdapter()
-            return adapter.step(target, schema=schema, consent=consent, prefer=prefer,
-                                require_stable=require_stable)
+            return _driver_tool("step", target, schema=schema, consent=consent,
+                                prefer=prefer, require_stable=require_stable)
         if name == "driver_health":
-            adapter = PerceptionAdapter()
-            return adapter.health()
+            return _driver_tool("health")
         if name == "driver_vocabulary":
-            adapter = PerceptionAdapter()
-            return adapter.vocabulary()
+            return _driver_tool("vocabulary")
         if name == "driver_verify":
-            adapter = PerceptionAdapter()
-            return adapter.verify()
+            return _driver_tool("verify")
         if name == "host_provision_probe":
             from . import provision as pv
             probe = pv.probe_host()
