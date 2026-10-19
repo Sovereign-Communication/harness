@@ -9,6 +9,7 @@ import os
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from harness.errors import HarnessError
@@ -54,7 +55,8 @@ class TestPlanDispatchValidation(unittest.TestCase):
                 stream.write("pass\n")
             args = validate_dispatch("plan", {
                 "root_dir": root, "goal": "review", "files": "candidate.py"})
-        self.assertEqual(args["files"], [candidate])
+            self.assertEqual(Path(args["files"][0]).resolve(),
+                             Path(candidate).resolve())
 
 
 class TestPlanTaskRunner(unittest.TestCase):

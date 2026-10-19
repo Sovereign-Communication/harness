@@ -71,7 +71,27 @@ def resolve_workspace_path(root, raw, *, must_exist=False,
     try:
         relative = lexical.relative_to(workspace)
     except ValueError as exc:
-        raise HarnessError("File path is outside the selected workspace") from exc
+        # Some systems expose the same directory through a symlinked parent
+        # (macOS commonly spells temporary paths as /var while strict resolve
+        # returns /private/var). Accept an absolute spelling only when one of
+        # its existing prefixes is the selected workspace on disk;
+        # the remaining components are still checked below for symlinks.
+        prefix = Path(lexical.anchor)
+        relative = None
+        parts = lexical.parts
+        for index, part in enumerate(parts[1:], start=1):
+            prefix /= part
+            try:
+                is_workspace_prefix = os.path.samefile(prefix, workspace)
+            except (OSError, RuntimeError):
+                continue
+            if is_workspace_prefix:
+                relative = Path(*parts[index + 1:])
+                break
+        if relative is None:
+            raise HarnessError(
+                "File path is outside the selected workspace") from exc
+        lexical = workspace / relative
     current = workspace
     for part in relative.parts:
         if part in ("", "."):

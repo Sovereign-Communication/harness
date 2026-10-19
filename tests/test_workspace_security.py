@@ -12,11 +12,13 @@ from harness.agent import AutonomousAgent
 from harness.apply import ApplyEngine
 from harness.errors import HarnessError
 from harness.repo_scope import (_rebase_path, discover_target_files,
-                                enumerate_repo_files)
+                                discover_verification_gate, enumerate_repo_files,
+                                gate_for_targets)
 from harness.server import (_dispatch_file, _dispatch_file_list,
                             validate_dispatch)
-from harness.workspace import (choose_allowed_workspace, require_workspace,
-                               resolve_allowed_path, resolve_workspace_path)
+from harness.workspace import (choose_allowed_workspace, is_sensitive_path,
+                               require_workspace, resolve_allowed_path,
+                               resolve_workspace_path)
 
 
 class WorkspaceFixture(unittest.TestCase):
@@ -40,6 +42,28 @@ class WorkspacePathTests(WorkspaceFixture):
         with self.assertRaises(HarnessError):
             require_workspace("relative/path")
         self.assertEqual(require_workspace(str(self.root)), self.root.resolve())
+
+    def test_workspace_path_reports_missing_inputs_and_can_check_safe_templates(self):
+        with self.assertRaisesRegex(HarnessError, "not a directory"):
+            require_workspace(self.sample)
+        with self.assertRaisesRegex(HarnessError, "File path is required"):
+            resolve_workspace_path(self.root, " ")
+        with self.assertRaisesRegex(HarnessError, "unavailable"):
+            resolve_workspace_path(self.root, "missing.txt", must_exist=True)
+        self.assertEqual(resolve_workspace_path(
+            self.root, str(self.sample), must_exist=True), self.sample.resolve())
+        self.assertEqual(resolve_workspace_path(
+            self.root, ".env.example", reject_sensitive=False),
+            (self.root / ".env.example").resolve())
+
+    def test_sensitive_name_suffix_and_stem_rules_are_case_insensitive(self):
+        for raw in ("id_ed25519", "private.pem", "token-secret.json",
+                    "db.CREDENTIALS.yaml", ".env.production", "SECRETS/config"):
+            with self.subTest(path=raw):
+                self.assertTrue(is_sensitive_path(raw))
+        for raw in (".env.example", "README.md", "settings.py"):
+            with self.subTest(path=raw):
+                self.assertFalse(is_sensitive_path(raw))
 
     def test_workspace_path_refuses_traversal_outside_and_credentials(self):
         for raw in ("../outside.txt", str(self.outside), ".env",
@@ -69,6 +93,27 @@ class WorkspacePathTests(WorkspaceFixture):
                     HarnessError, "symlink targets are excluded"):
                 resolve_workspace_path(self.root, raw, must_exist=True)
 
+    def test_absolute_workspace_alias_does_not_break_containment(self):
+        alias = Path(self.temp.name) / "workspace-alias"
+        try:
+            alias.symlink_to(self.root, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("directory symlinks unavailable")
+        self.assertEqual(resolve_workspace_path(
+            self.root, alias / self.sample.name, must_exist=True),
+            self.sample.resolve())
+
+    def test_absolute_workspace_alias_uses_filesystem_identity(self):
+        alias = Path(self.temp.name) / "workspace-alias"
+
+        def same_workspace(candidate, workspace):
+            return Path(candidate) == alias and Path(workspace) == self.root.resolve()
+
+        with patch("harness.workspace.os.path.samefile", side_effect=same_workspace):
+            self.assertEqual(resolve_workspace_path(
+                self.root, alias / self.sample.name, must_exist=True),
+                self.sample.resolve())
+
     def test_mcp_paths_need_and_stay_inside_configured_roots(self):
         with self.assertRaises(HarnessError):
             choose_allowed_workspace(None, [])
@@ -81,6 +126,22 @@ class WorkspacePathTests(WorkspaceFixture):
         with self.assertRaises(HarnessError):
             resolve_allowed_path(str(self.outside), [self.root])
 
+    def test_multiple_allowed_roots_require_an_unambiguous_selection(self):
+        second = Path(self.temp.name) / "second"
+        second.mkdir()
+        (second / "sample.txt").write_text("second", encoding="utf-8")
+        roots = [self.root, second]
+        with self.assertRaisesRegex(HarnessError, "more than one"):
+            choose_allowed_workspace(None, roots)
+        with self.assertRaisesRegex(HarnessError, "absolute root"):
+            choose_allowed_workspace("child", roots)
+        with self.assertRaisesRegex(HarnessError, "matches more than one"):
+            resolve_allowed_path("sample.txt", roots)
+        self.assertEqual(resolve_allowed_path(
+            "sample.txt", roots, workspace=self.root), self.sample.resolve())
+        with self.assertRaisesRegex(HarnessError, "outside every configured"):
+            resolve_allowed_path(str(self.outside), roots)
+
     def test_discovery_never_defaults_to_process_directory_or_reads_secrets(self):
         (self.root / ".env.local").write_text("secret", encoding="utf-8")
         self.assertEqual(enumerate_repo_files(None), [])
@@ -88,6 +149,48 @@ class WorkspacePathTests(WorkspaceFixture):
         found = enumerate_repo_files(self.root)
         self.assertIn("sample.txt", found)
         self.assertNotIn(".env.local", found)
+
+    def test_discovery_supports_explicit_and_heuristic_targets_safely(self):
+        source = self.root / "harness"
+        source.mkdir()
+        (source / "agent.py").write_text("pass", encoding="utf-8")
+        target = self.root / "sample.py"
+        target.write_text("pass", encoding="utf-8")
+        self.assertEqual(discover_target_files("read sample.py", self.root),
+                         ["sample.py"])
+        self.assertEqual(discover_target_files("please inspect agent", self.root),
+                         ["harness/agent.py"])
+
+    def test_inventory_filters_sensitive_and_soft_skipped_paths_and_caps_results(self):
+        nested = self.root / "src"
+        nested.mkdir()
+        (nested / "safe.py").write_text("pass", encoding="utf-8")
+        (nested / "access.KEY").write_text("secret", encoding="utf-8")
+        secret_dir = self.root / "credentials"
+        secret_dir.mkdir()
+        (secret_dir / "token.txt").write_text("secret", encoding="utf-8")
+        audit_dir = self.root / "audits"
+        audit_dir.mkdir()
+        (audit_dir / "history.log").write_text("log", encoding="utf-8")
+        (self.root / "cache.PYC").write_text("cache", encoding="utf-8")
+        normal = enumerate_repo_files(self.root)
+        self.assertIn("src/safe.py", normal)
+        self.assertNotIn("src/access.KEY", normal)
+        self.assertNotIn("credentials/token.txt", normal)
+        self.assertNotIn("audits/history.log", normal)
+        self.assertIn("audits/history.log", enumerate_repo_files(
+            self.root, include_soft_skipped=True))
+        self.assertEqual(len(enumerate_repo_files(self.root, limit=1)), 1)
+
+    def test_verification_gate_helpers_do_not_reintroduce_cwd(self):
+        self.assertIsNone(discover_verification_gate(["sample.py"]))
+        self.assertIsNone(discover_verification_gate([], self.root))
+        self.assertEqual(gate_for_targets(["sample.py"]), None)
+        self.assertEqual(gate_for_targets([], declared="  custom gate  "),
+                         "custom gate")
+        self.assertEqual(_rebase_path("sample.py", None, None), "sample.py")
+        self.assertEqual(_rebase_path(str(self.outside), self.root, self.root),
+                         str(self.outside))
 
     def test_discovery_does_not_follow_windows_junctions(self):
         if os.name != "nt":

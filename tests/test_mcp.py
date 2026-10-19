@@ -85,6 +85,19 @@ class WorkspaceMcpBoundaryTests(unittest.TestCase):
                 "verify_only": True,
             })
 
+    def test_apply_continuation_symlink_is_refused_before_dispatch(self):
+        link = self.root / "linked.txt"
+        try:
+            link.symlink_to(self.file)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        with self.assertRaisesRegex(HarnessError, "symlink targets"):
+            self.server._invoke("apply_edit", {
+                "continuation": {"file_path": str(link), "verify_only": True},
+                "verify_only": True,
+            })
+        self.assertEqual(self._transport.chat_posts(), [])
+
     def test_plan_brief_json_must_be_an_object(self):
         with self.assertRaisesRegex(HarnessError, "brief JSON must be an object"):
             self.server._invoke("plan_and_execute", {
@@ -114,6 +127,27 @@ class WorkspaceMcpBoundaryTests(unittest.TestCase):
                 self.server._invoke("plan_and_execute", {
                     "goal": "plan", "execute": True, "allow_write": True})
 
+    def test_plan_execution_rebases_dag_targets_to_selected_workspace(self):
+        plan = {
+            "status": "ok", "goal": "plan safely",
+            "dag": {"nodes": [{
+                "node_id": "n1", "instruction": "inspect the sample",
+                "target_files": ["sample.txt"],
+            }]},
+            "nodes": [{"node_id": "n1", "local_gate": None}],
+        }
+        with (mock.patch("harness.mcp.compose_plan", return_value=plan),
+              mock.patch("harness.mcp.PlanExecutor.execute", return_value={
+                  "n1": {"status": "ok", "cost": 0.0}}) as execute):
+            result = self.server._invoke("plan_and_execute", {
+                "goal": "plan safely", "execute": True,
+                "root": str(self.root), "allow_write": True,
+            })
+        self.assertEqual(result["status"], "ok")
+        dag = execute.call_args.args[0]
+        self.assertEqual(dag.nodes["n1"].target_files,
+                         (str(self.file.resolve()),))
+
     def test_dogfood_rejects_directory_target(self):
         directory = self.root / "not-a-file"
         directory.mkdir()
@@ -132,6 +166,19 @@ class WorkspaceMcpBoundaryTests(unittest.TestCase):
         result = self.server._invoke("generate_brief", {
             "goal": "summarize", "files": []})
         self.assertEqual(result["status"], "ok")
+
+    def test_generate_brief_scopes_sources_and_optional_rendering(self):
+        result = self.server._invoke("generate_brief", {
+            "goal": "summarize sample", "files": ["sample.txt"],
+            "root": str(self.root), "freshness": True, "render": True,
+        })
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("freshness_report", result)
+        self.assertIn("rendered", result)
+
+    def test_repo_cards_read_check_uses_only_selected_root(self):
+        result = self.server._invoke("repo_cards", {"root": str(self.root)})
+        self.assertEqual(result, {"status": "ok", "checked": 0, "stale": []})
 
     def test_repo_cards_write_requires_explicit_enablement(self):
         _transport, server = make_server(
