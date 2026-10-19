@@ -1132,6 +1132,21 @@ class PlannerTests(TempRootCase):
                          ["python-version", "pip-version", "npm-version"])
         self.assertTrue(plan.is_fallback)
 
+    def test_inventory_requires_review_for_interpreter_inside_approved_root(self):
+        interpreter = os.path.join(self.root, "Scripts", "python.exe")
+        probe = self.probe(facts=dict(LINUX, python_executable=interpreter),
+                           managers=())
+        policy = pv.policy_for_probe(probe, (self.root,))
+
+        plan = pv.plan_provision("plan provision", probe, policy=policy)
+
+        interpreter_step = next(s for s in plan.steps
+                                if s.id == "python-version")
+        self.assertEqual(interpreter_step.classification, pv.MUTATING)
+        self.assertIn("no rollback", interpreter_step.rollback_hint.lower())
+        self.assertIn("require review", " ".join(plan.notes).lower())
+        pv.validate_plan(plan, policy)
+
     def test_inventory_when_no_recipe_fits_this_host(self):
         policy = pv.ProvisionPolicy(approved_roots=(self.root,),
                                     allow_system_install=False)
