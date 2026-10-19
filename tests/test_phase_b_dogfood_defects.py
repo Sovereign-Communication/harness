@@ -19,6 +19,39 @@ def ui_source():
     return UI.read_text(encoding="utf-8")
 
 
+class DogfoodGuiResultTests(unittest.TestCase):
+    """Dogfood's empty-source and rejected-run states must stay honest."""
+
+    def _dogfood_block(self):
+        src = ui_source()
+        match = re.search(
+            r"async function renderDogfood\(root\) \{[\s\S]*?\n\}\n\n// ---- Legacy API pane",
+            src,
+        )
+        self.assertIsNotNone(match)
+        return match.group(0)
+
+    def test_both_grounding_inputs_are_required_before_a_run_is_created(self):
+        block = self._dogfood_block()
+        self.assertIn("Claims File (required)", block)
+        self.assertIn("Source File (required)", block)
+        guard = block.index("if (!claimsFile || !sourceFile)")
+        post = block.index('postJson("/api/runs", { kind: "dogfood", args })')
+        self.assertLess(guard, post)
+        self.assertIn("Dogfood requires both a claims JSON file and a source code file.", block)
+
+    def test_terminal_errors_and_ungrounded_results_do_not_look_verified(self):
+        block = self._dogfood_block()
+        self.assertIn("const summary = final.error || res.error || res.summary", block)
+        self.assertIn('status === "ungrounded"', block)
+        self.assertIn('"Claims Confirmed: "', block)
+        self.assertIn("res.verify?.confirmed_claims", block)
+        self.assertIn('res.apply?.status || "Not run"', block)
+        self.assertNotIn('"Grounding check complete."', block)
+        self.assertNotIn("res.claims_count || 1", block)
+        self.assertNotIn('res.gate_passed ? "Yes (RC 0)" : "Checked"', block)
+
+
 class DriverPaneFormAssemblyTests(unittest.TestCase):
     """The request form rendered blank: every field was constructed and then
     never attached, so the pane appended an empty <form>."""

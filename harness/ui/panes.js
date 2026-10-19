@@ -721,8 +721,8 @@ async function renderDogfood(root) {
   const fileInput = $("input", { class: "pane-input", value: "harness/route_pack.py", placeholder: "Target file path" });
   const instInput = $("textarea", { class: "pane-input", rows: "2", placeholder: "Grounding instruction..." },
     "Verify that route packs validate correctly and enforce closed-set rungs.");
-  const claimsInput = $("input", { class: "pane-input", placeholder: "Optional claims JSON file path" });
-  const sourceInput = $("input", { class: "pane-input", placeholder: "Optional source code file path" });
+  const claimsInput = $("input", { class: "pane-input", placeholder: "Claims JSON file path (required)" });
+  const sourceInput = $("input", { class: "pane-input", placeholder: "Source code file path (required)" });
   const verifyInput = $("input", { class: "pane-input", value: "python -m unittest tests/test_driver_conformance.py", placeholder: "Verification command" });
   const costInput = $("input", { class: "pane-input", type: "number", step: "0.01", value: "0.05" });
 
@@ -731,8 +731,8 @@ async function renderDogfood(root) {
     $("label", { class: "pane-field" }, $("span", {}, "Target File Path"), fileInput),
     $("label", { class: "pane-field" }, $("span", {}, "Instruction"), instInput),
     $("div", { style: "display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; margin-bottom: 0.6rem;" },
-      $("label", { class: "pane-field" }, $("span", {}, "Claims File (optional)"), claimsInput),
-      $("label", { class: "pane-field" }, $("span", {}, "Source File (optional)"), sourceInput)
+      $("label", { class: "pane-field" }, $("span", {}, "Claims File (required)"), claimsInput),
+      $("label", { class: "pane-field" }, $("span", {}, "Source File (required)"), sourceInput)
     ),
     $("div", { style: "display: grid; grid-template-columns: 2fr 1fr; gap: 0.8rem; margin-bottom: 0.6rem;" },
       $("label", { class: "pane-field" }, $("span", {}, "Verification Command"), verifyInput),
@@ -749,6 +749,13 @@ async function renderDogfood(root) {
 
   form.onsubmit = async (ev) => {
     ev.preventDefault();
+    const claimsFile = claimsInput.value.trim();
+    const sourceFile = sourceInput.value.trim();
+    if (!claimsFile || !sourceFile) {
+      resultsArea.replaceChildren($("p", { class: "small", style: "color: var(--bad);" },
+        "Dogfood requires both a claims JSON file and a source code file."));
+      return;
+    }
     dogfoodBtn.disabled = true;
     resultsArea.replaceChildren($("p", { class: "muted small" }, "Executing dogfood grounding verification..."));
 
@@ -759,26 +766,41 @@ async function renderDogfood(root) {
         verify: verifyInput.value.trim() || undefined,
         max_cost: Number(costInput.value) || 0.05,
       };
-      if (claimsInput.value.trim()) args.claims_file = claimsInput.value.trim();
-      if (sourceInput.value.trim()) args.source_file = sourceInput.value.trim();
+      args.claims_file = claimsFile;
+      args.source_file = sourceFile;
 
       const run = await postJson("/api/runs", { kind: "dogfood", args });
       const final = await pollRunWithEvents(run.id);
-      const res = final.result || final;
-      const isOk = final.status === "done";
+      const res = final.result || {};
+      const status = res.status || final.status || "unknown";
+      const isOk = status === "ok" || status === "success";
+      const statusClass = final.error || status === "ungrounded"
+        ? "pill-bad"
+        : isOk ? "pill-good" : "pill-warn";
+      const summary = final.error || res.error || res.summary || (
+        status === "ungrounded"
+          ? "Claims were not grounded in the supplied source. Verification and apply were skipped."
+          : `Dogfood finished with status: ${status}.`
+      );
+      const reportedCost = res.cost ?? final.cost;
+      const costText = reportedCost == null || !Number.isFinite(Number(reportedCost))
+        ? "N/A" : money(Number(reportedCost));
+      const confirmedClaims = res.verify?.confirmed_claims;
+      const confirmedText = Array.isArray(confirmedClaims) ? confirmedClaims.length : "N/A";
+      const applyStatus = res.apply?.status || "Not run";
 
       resultsArea.replaceChildren(
         $("div", { class: "driver-step-card" },
           $("div", { class: "driver-step-card-header" },
-            $("span", {}, `Dogfood Status: ${final.status}`),
-            $("span", { class: isOk ? "pill-good" : "pill-warn" }, isOk ? "✓ Grounded & Verified" : "▲ Issues Detected")
+            $("span", {}, `Dogfood Status: ${status}`),
+            $("span", { class: statusClass }, isOk ? "✓ Grounded & Verified" : "▲ Issues Detected")
           ),
           $("div", { class: "driver-step-card-body" },
-            $("p", {}, res.summary || "Grounding check complete."),
+            $("p", {}, summary),
             $("div", { class: "driver-meta-grid", style: "margin-top: 0.6rem;" },
-              $("div", {}, $("span", { class: "muted small" }, "Cost: "), $("code", {}, money(res.cost || final.cost || 0.0))),
-              $("div", {}, $("span", { class: "muted small" }, "Claims Verified: "), $("b", {}, res.claims_count || 1)),
-              $("div", {}, $("span", { class: "muted small" }, "Gate Pass: "), $("b", {}, res.gate_passed ? "Yes (RC 0)" : "Checked"))
+              $("div", {}, $("span", { class: "muted small" }, "Cost: "), $("code", {}, costText)),
+              $("div", {}, $("span", { class: "muted small" }, "Claims Confirmed: "), $("b", {}, confirmedText)),
+              $("div", {}, $("span", { class: "muted small" }, "Apply Phase: "), $("b", {}, applyStatus))
             )
           )
         )
