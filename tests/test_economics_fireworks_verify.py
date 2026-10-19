@@ -82,6 +82,17 @@ class ProbeTests(unittest.TestCase):
                           "cost_estimated", "model", "offer_model"})
         self.assertNotIn("fw-key", json.dumps(report))
 
+    def test_negated_ok_response_is_not_verified(self):
+        t = RecordingTransport((
+            200,
+            {"choices": [{"message": {"content": "not ok"}}],
+             "usage": {"cost": 0.0001}},
+        ))
+
+        report = self._run(t)
+
+        self.assertFalse(report["contains_ok"])
+
     def test_success_writes_one_ledger_row_with_the_route_fields(self):
         t = RecordingTransport(_ok_resp({"cost": 0.0001}))
         self._run(t)

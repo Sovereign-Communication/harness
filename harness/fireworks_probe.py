@@ -11,7 +11,7 @@ model is a confirmed Fireworks path, ``--max-cost`` is at most $0.01, and a
 Fireworks key resolves. The request is ``Reply with the single word: ok``
 with ``max_tokens = 8``, Fireworks forced, failover off (one POST, no retry).
 
-Output discipline: only the HTTP status, whether the reply contains ``ok``,
+Output discipline: only the HTTP status, whether the reply is exactly ``ok``,
 token counts, and estimated cost are printed. One ledger row is written with
 ``route_reason = verify``. The receipt is committed under
 ``audits/self/dogfood/`` as the DoD's paid-cheap live receipt. On failure the
@@ -115,7 +115,8 @@ def run_fireworks_probe(transport, openrouter_key, fireworks_key, governor,
         content = resp["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
         content = ""
-    contains_ok = isinstance(content, str) and "ok" in content.lower()
+    contains_ok = (isinstance(content, str)
+                   and content.strip().casefold() == "ok")
     cost = usage.get("cost", 0.0)
     report = {
         "status": status,

@@ -94,7 +94,8 @@ class ParserSurfaceTests(unittest.TestCase):
         import harness.fireworks_probe as fireworks_probe
         from contextlib import ExitStack
         model = "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b"
-        for content, expected_code in (("ok", 0), ("unexpected output", 2)):
+        for content, expected_code in (("ok", 0), ("unexpected output", 2),
+                                       ("not ok", 2)):
             with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:
                 output = io.StringIO()
                 response = {"choices": [{"message": {"content": content}}],
