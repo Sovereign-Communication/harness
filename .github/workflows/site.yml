@@ -46,6 +46,11 @@ jobs:
           assert bundle["totals"]["runs"] > 0
           assert bundle["chain"]["verified_claim"] is True
           PY
+      - name: Publish and test demo snapshot asset
+        run: |
+          mkdir -p site/public/data/demo
+          cp site/data/demo/snapshot.json site/public/data/demo/snapshot.json
+          python -m unittest tests.test_site_server.SitePageServingTests.test_public_demo_snapshot_asset_is_served_and_in_sync -v
       - name: Validate bundle schema shape (smoke)
         run: |
           python - <<'PY'
