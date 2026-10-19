@@ -830,6 +830,20 @@ header {
   to { transform: rotate(360deg); }
 }
 
+/* The inspector controls need more room than the main panel has on many
+   laptop and tablet widths. Wrap them with the header so the spend meter
+   remains reachable without clipping the row off the left edge. */
+@media (max-width: 1200px) {
+  header {
+    height: auto;
+    min-height: 52px;
+    padding: 6px 20px;
+  }
+  .header-controls {
+    flex-wrap: wrap;
+  }
+}
+
 /* Responsive: collapse sidebar on small screens */
 @media (max-width: 800px) {
   #sidebar {
