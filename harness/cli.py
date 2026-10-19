@@ -935,7 +935,7 @@ def _cmd_mission(opts, settings):
         mr.write_status(pack)
         out = mr.pack_summary(pack)
         out["resume"] = validated
-        resumable = validated["status"] not in ("terminal", "complete", "failed")
+        resumable = not mr.is_terminal(pack)
         out["resumable"] = resumable
         out["resumed"] = False
         out["how_to_continue"] = (
