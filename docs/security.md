@@ -22,8 +22,31 @@ is unchanged and still no sandbox.
 
 ## UI server and driver routes
 
-- **Authentication.** With a UI token configured, every `/api` route requires
-  it in `X-Harness-Auth` or `Authorization: Bearer`, compared in constant time
+- **Workspace defaults.** A new GUI session has no selected workspace, so
+  chat has no repository file context and file or provisioning requests are
+  refused until the user enters an absolute folder. A selected folder is kept
+  per conversation in the current browser tab; it is canonicalized on the
+  server, and file reads and writes must resolve inside it. Parent traversal,
+  symlink escapes, and obvious credential/private-key paths (including
+  `.env` files other than sample templates) are refused or omitted from
+  automatic context. A new page and a new chat start blank. Auto Apply is off
+  by default in the GUI, HTTP dispatch, and agent APIs; switching it on is a
+  deliberate review-mode choice, and the existing consent, verification, and
+  diff-authorization gates still apply.
+- **MCP roots.** File-bearing MCP tools resolve against operator-configured
+  allowed roots only. When exactly one root is configured it may be selected
+  implicitly; with multiple roots the caller must name one. No MCP file path
+  falls back to the server's process directory. Writes continue to require
+  the configured or request-level `allow_write` authorization.
+- **Scope limit.** These checks constrain Harness file paths; they are not an
+  operating-system sandbox. In particular, an explicitly approved verification
+  command still runs as the Harness process user, as described below.
+
+- **Authentication.** The `harness serve` and `harness desktop` entrypoints
+  require a per-user UI token by default. `harness serve --open` and the desktop
+  shell pass it through the URL fragment, which browsers do not send to the
+  server; API calls then send `X-Harness-Auth`. Every `/api` route checks that
+  token (or `Authorization: Bearer`) in constant time
   (`hmac.compare_digest`). A token in a URL query string is not accepted, and
   any `token=` value that reaches the request log is redacted. A refused
   request (401/403) drains a bounded request body and closes the connection, so
@@ -39,9 +62,13 @@ is unchanged and still no sandbox.
   process's privileges (see the limitation above). There is no server-side
   allowlist of permitted executables today: the gate is tokenized without a
   shell, preflighted where the run kind calls `validate_gate`, and bounded by a
-  timeout, but a caller who can reach an authenticated `/api` route can run any
-  program the server user can. Keep the UI token secret and the server on
-  loopback. A server-side allowlist is an open hardening item.
+  timeout. Driver verification also requires an explicitly selected workspace
+  and starts there, so a blank workspace never uses the server's process
+  directory as its working directory. This is still not a sandbox: the command
+  can access other files, the network, environment variables, and child
+  processes available to the server user. Keep the UI token secret and the
+  server on loopback. A server-side allowlist or OS sandbox is an open
+  hardening item.
 
 ## Platform-specific protections (and their limits)
 

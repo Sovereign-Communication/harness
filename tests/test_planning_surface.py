@@ -231,6 +231,7 @@ class TestPlanningSurface(unittest.TestCase):
             engine=mock_engine,
             allow_write=True,
             allow_verify=True,
+            allowed_roots=[os.getcwd()],
             settings=settings_without_planning(composed_settings()),
         )
 
@@ -847,6 +848,7 @@ class TestPlanningSurface(unittest.TestCase):
             engine=mock_engine,
             allow_write=True,
             allow_verify=True,
+            allowed_roots=[os.getcwd()],
             settings=composed_settings(),
         )
         canned = {
@@ -886,7 +888,8 @@ class TestPlanningSurface(unittest.TestCase):
         server = McpServer(
             transport=MagicMock(), api_key="key", governor=MagicMock(),
             ledger=MagicMock(), router=MagicMock(), engine=engine,
-            allow_write=True, allow_verify=True, settings=composed_settings())
+            allow_write=True, allow_verify=True, allowed_roots=[os.getcwd()],
+            settings=composed_settings())
         refused = {"status": "refused", "planning": {
             "kind": "evidence_request", "reason": "need source",
             "evidence_request": [{"source": "module.py"}]}}
@@ -913,6 +916,7 @@ class TestPlanningSurface(unittest.TestCase):
             governor=MagicMock(), ledger=MagicMock(),
             router=MagicMock(), engine=mock_engine,
             allow_write=True, allow_verify=True,
+            allowed_roots=[os.getcwd()],
             settings=composed_settings(),
         )
         canned = {
@@ -959,18 +963,19 @@ class TestPlanningSurface(unittest.TestCase):
         mock_engine.reasoning_effort = "auto"
         mock_engine.apply_edit.side_effect = fake_apply
 
-        server = McpServer(
-            transport=MagicMock(),
-            api_key="key",
-            governor=mock_gov,
-            ledger=mock_ledger,
-            router=mock_router,
-            engine=mock_engine,
-            allow_write=True,
-            allow_verify=True,
-            settings=settings_without_planning(composed_settings()),
-        )
-        with _temporary_git_cwd():
+        with _temporary_git_cwd() as repo:
+            server = McpServer(
+                transport=MagicMock(),
+                api_key="key",
+                governor=mock_gov,
+                ledger=mock_ledger,
+                router=mock_router,
+                engine=mock_engine,
+                allow_write=True,
+                allow_verify=True,
+                allowed_roots=[repo],
+                settings=settings_without_planning(composed_settings()),
+            )
             exec_res = server._invoke("plan_and_execute", {
                 "goal": "Update the modules",
                 "file": ["iso_c.py", "iso_d.py"],

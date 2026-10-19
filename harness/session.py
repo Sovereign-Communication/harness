@@ -156,7 +156,8 @@ def router_for(settings, *, jev_policy=None):
                   jev_policy=jev_policy)
 
 
-def engine_for(settings, api_key, gov, ledger, router, transport=None):
+def engine_for(settings, api_key, gov, ledger, router, transport=None,
+               allowed_roots=None):
     """The ApplyEngine with every settings-level policy applied. Only
     per-request knobs (instruction, ceilings for THIS task) are passed at
     the engine call site -- construction-level policy lives here."""
@@ -177,11 +178,12 @@ def engine_for(settings, api_key, gov, ledger, router, transport=None):
         default_max_rotations=settings.max_rotations,
         default_task_max_cost=settings.task_max_cost,
         use_free=settings.use_free,
-        allowed_roots=settings.mcp_allowed_roots,
+        allowed_roots=(settings.mcp_allowed_roots if allowed_roots is None
+                       else allowed_roots),
         min_confidence=settings.min_confidence)
 
 
-def apply_session(settings, max_cost=None, transport=None):
+def apply_session(settings, max_cost=None, transport=None, allowed_roots=None):
     """ONE assembly step for engine-running commands (apply, continue,
     dogfood's apply phase, bench): key+governor, ledger, the pre-spend
     saturation look-ahead (advice only, never a gate), router, engine.
@@ -193,7 +195,7 @@ def apply_session(settings, max_cost=None, transport=None):
     ledger = ledger_for(settings)
     pre_run_warning(governor=gov, ledger=ledger, use_free=settings.use_free)
     return engine_for(settings, api_key, gov, ledger, router_for(settings),
-                      transport=transport)
+                      transport=transport, allowed_roots=allowed_roots)
 
 
 def run_meta(settings, governor, *, panel=None, judge=None,

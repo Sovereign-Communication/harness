@@ -311,7 +311,7 @@ class DeferStatsServerTests(unittest.TestCase):
         ledger.defer_stats.return_value = {"panel_runs": 3, "defer_total": 1}
         with mock.patch.object(ui_server, "load_settings"), \
              mock.patch.object(ui_server, "ledger_for", return_value=ledger):
-            httpd = ui_server.make_server("127.0.0.1", 0)
+            httpd = ui_server.make_server("127.0.0.1", 0, auth_token=None)
             port = httpd.server_address[1]
             import threading
             import http.client

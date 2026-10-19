@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from harness.apply import ApplyEngine
+from harness.errors import HarnessError
 from harness.spend import SpendGovernor
 from harness.ledger import AutonomyLedger
 from harness.mcp import McpServer
@@ -35,7 +36,7 @@ _TMP = tempfile.TemporaryDirectory()
 atexit.register(_TMP.cleanup)
 
 
-def make_server(posts=None, allow_write=True):
+def make_server(posts=None, allow_write=True, allowed_roots=None):
     transport = FakeTransport(models=[m(JUDGE), m(P1), m(P2), m(APPLY)], posts=posts)
     governor = SpendGovernor(transport, "sk-test")
     ledger = AutonomyLedger(os.path.join(_TMP.name, f"ledger-{os.urandom(4).hex()}.jsonl"))
@@ -44,7 +45,100 @@ def make_server(posts=None, allow_write=True):
                          default_require_consent=True)
     return transport, McpServer(transport=transport, api_key="sk-test", governor=governor,
                                 ledger=ledger, router=router, engine=engine,
-                                allow_write=allow_write, allowed_roots=[_TMP.name])
+                                allow_write=allow_write,
+                                allowed_roots=([_TMP.name] if allowed_roots is None
+                                               else allowed_roots))
+
+
+class WorkspaceMcpBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name) / "workspace"
+        self.root.mkdir()
+        self.file = self.root / "sample.txt"
+        self.file.write_text("safe", encoding="utf-8")
+        self.outside = Path(self.temp.name) / "outside.txt"
+        self.outside.write_text("outside", encoding="utf-8")
+        self._transport, self.server = make_server(
+            allowed_roots=[self.root])
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_apply_continuation_is_canonicalized_and_confined(self):
+        with mock.patch.object(self.server.engine, "apply_batch",
+                               return_value={"status": "ok"}) as apply_batch:
+            result = self.server._invoke("apply_edit", {
+                "continuation": {"file_path": str(self.file),
+                                 "verify_only": True},
+                "verify_only": True,
+            })
+        self.assertEqual(result["status"], "ok")
+        continued = apply_batch.call_args.kwargs["options"].continuation
+        self.assertEqual(continued["file_path"], str(self.file.resolve()))
+
+    def test_apply_continuation_outside_configured_roots_is_refused(self):
+        with self.assertRaisesRegex(HarnessError, "outside every allowed root"):
+            self.server._invoke("apply_edit", {
+                "continuation": {"file_path": str(self.outside),
+                                 "verify_only": True},
+                "verify_only": True,
+            })
+
+    def test_plan_brief_json_must_be_an_object(self):
+        with self.assertRaisesRegex(HarnessError, "brief JSON must be an object"):
+            self.server._invoke("plan_and_execute", {
+                "goal": "plan safely", "brief": "[]"})
+
+    def test_plan_brief_file_must_be_a_regular_file(self):
+        directory = self.root / "brief-dir"
+        directory.mkdir()
+        with self.assertRaisesRegex(HarnessError, "brief must be a JSON file"):
+            self.server._invoke("plan_and_execute", {
+                "goal": "plan safely", "brief": "brief-dir",
+                "root": str(self.root)})
+
+    def test_plan_brief_object_is_passed_to_composer(self):
+        with mock.patch("harness.mcp.compose_plan", return_value={
+                "status": "ok", "goal": "plan safely", "dag": {"nodes": []}}) as compose:
+            result = self.server._invoke("plan_and_execute", {
+                "goal": "plan safely", "brief": '{"summary":"source"}'})
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNone(compose.call_args.kwargs["root"])
+
+    def test_plan_execution_defensively_requires_workspace(self):
+        with (mock.patch.object(self.server, "_workspace_for", return_value=None),
+              mock.patch("harness.mcp.compose_plan", return_value={
+                  "status": "ok", "goal": "plan", "dag": {"nodes": []}})):
+            with self.assertRaisesRegex(HarnessError, "selected workspace"):
+                self.server._invoke("plan_and_execute", {
+                    "goal": "plan", "execute": True, "allow_write": True})
+
+    def test_dogfood_rejects_directory_target(self):
+        directory = self.root / "not-a-file"
+        directory.mkdir()
+        with self.assertRaisesRegex(HarnessError, "dogfood target must be a file"):
+            self.server._invoke("dogfood", {
+                "file": "not-a-file", "instruction": "inspect",
+                "root": str(self.root)})
+
+    def test_generate_brief_rejects_directory_but_accepts_empty_sources(self):
+        directory = self.root / "source-dir"
+        directory.mkdir()
+        with self.assertRaisesRegex(HarnessError, "source paths must be files"):
+            self.server._invoke("generate_brief", {
+                "goal": "summarize", "files": ["source-dir"],
+                "root": str(self.root)})
+        result = self.server._invoke("generate_brief", {
+            "goal": "summarize", "files": []})
+        self.assertEqual(result["status"], "ok")
+
+    def test_repo_cards_write_requires_explicit_enablement(self):
+        _transport, server = make_server(
+            allow_write=False, allowed_roots=[self.root])
+        with self.assertRaisesRegex(HarnessError, "repo_cards writes are disabled"):
+            server._invoke("repo_cards", {"check": False,
+                                            "root": str(self.root)})
 
 
 def consent_json(decision, reason="ok"):
@@ -1463,7 +1557,7 @@ class JevPhaseToolTests(unittest.TestCase):
         self.assertEqual(set(properties),
                          {"repo_root", "phase", "all", "min_score"})
         self.assertEqual(properties["repo_root"]["type"], "string")
-        self.assertEqual(properties["repo_root"]["default"], ".")
+        self.assertNotIn("default", properties["repo_root"])
         self.assertEqual(properties["phase"]["type"], "string")
         self.assertIn("required unless 'all' is set",
                       properties["phase"]["description"])
@@ -1477,7 +1571,7 @@ class JevPhaseToolTests(unittest.TestCase):
         _write_jev_repo(
             self.tmp.name,
             "| 2 Pillars `JEV-P2-*` | **in progress / repair** | PR OPEN |")
-        _, server = make_server()
+        _, server = make_server(allowed_roots=[self.tmp.name])
         # A live Jev call would need a settings object; jev_phase never
         # builds one (settings=None, use_live_jev=False), so this must
         # succeed even though nothing here can reach the network.
@@ -1491,7 +1585,7 @@ class JevPhaseToolTests(unittest.TestCase):
         _write_jev_repo(
             self.tmp.name,
             "| 2 Pillars `JEV-P2-*` | **in progress / repair** | PR OPEN |")
-        _, server = make_server()
+        _, server = make_server(allowed_roots=[self.tmp.name])
         board = server._invoke("jev_phase", {"repo_root": self.tmp.name, "all": True})
         self.assertIn("phases", board)
         self.assertIn("false_complete", board)
@@ -1499,7 +1593,7 @@ class JevPhaseToolTests(unittest.TestCase):
     def test_jev_phase_requires_phase_unless_all(self):
         from harness.errors import HarnessError
 
-        _, server = make_server()
+        _, server = make_server(allowed_roots=[self.tmp.name])
         with self.assertRaises(HarnessError):
             server._invoke("jev_phase", {"repo_root": self.tmp.name})
 
@@ -1686,7 +1780,7 @@ class ContinueWorkToolTests(unittest.TestCase):
             continuation = {"file_path": target, "verify_only": False,
                             "verification_required": False,
                             "remaining_scope": "add zero"}
-            with self.assertRaisesRegex(Exception, "outside every allowed root"):
+            with self.assertRaisesRegex(Exception, "outside every configured allowed root"):
                 server._invoke("continue_work", {
                     "continuation": continuation, "allow_write": True,
                 })

@@ -486,11 +486,17 @@ async function renderContinue(root) {
 
   form.onsubmit = async (ev) => {
     ev.preventDefault();
+    const workspace = window.getHarnessWorkspace ? window.getHarnessWorkspace() : "";
+    if (!workspace) {
+      resultsArea.replaceChildren($("p", { class: "small", style: "color: var(--bad);" },
+        "Select a workspace folder before resuming file work."));
+      return;
+    }
     continueBtn.disabled = true;
     resultsArea.replaceChildren($("p", { class: "muted small" }, "Resuming state and consulting Jev stage-runner..."));
 
     try {
-      const args = { state: stateInput.value.trim() };
+      const args = { state: stateInput.value.trim(), root_dir: workspace };
       if (instInput.value.trim()) args.instruction = instInput.value.trim();
       if (verifyInput.value.trim()) args.verify = verifyInput.value.trim();
       if (roundsInput.value) args.max_rounds = Number(roundsInput.value);
@@ -603,6 +609,12 @@ async function renderApply(root) {
 
   form.onsubmit = async (ev) => {
     ev.preventDefault();
+    const workspace = window.getHarnessWorkspace ? window.getHarnessWorkspace() : "";
+    if (!workspace) {
+      resultsArea.replaceChildren($("p", { class: "small", style: "color: var(--bad);" },
+        "Select a workspace folder before applying file changes."));
+      return;
+    }
     applyBtn.disabled = true;
     resultsArea.replaceChildren($("p", { class: "muted small" }, "Dispatching governed edit task to Jev driver engine..."));
     setApplyPipeline("intake");
@@ -612,6 +624,7 @@ async function renderApply(root) {
 
     try {
       const args = {
+        root_dir: workspace,
         file: fileInput.value.trim(),
         instruction: instInput.value.trim(),
         verify: verifyInput.value.trim() || undefined,
@@ -749,6 +762,12 @@ async function renderDogfood(root) {
 
   form.onsubmit = async (ev) => {
     ev.preventDefault();
+    const workspace = window.getHarnessWorkspace ? window.getHarnessWorkspace() : "";
+    if (!workspace) {
+      resultsArea.replaceChildren($("p", { class: "small", style: "color: var(--bad);" },
+        "Select a workspace folder before running dogfood file checks."));
+      return;
+    }
     const claimsFile = claimsInput.value.trim();
     const sourceFile = sourceInput.value.trim();
     if (!claimsFile || !sourceFile) {
@@ -761,6 +780,7 @@ async function renderDogfood(root) {
 
     try {
       const args = {
+        root_dir: workspace,
         file: fileInput.value.trim(),
         instruction: instInput.value.trim(),
         verify: verifyInput.value.trim() || undefined,

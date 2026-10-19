@@ -47,6 +47,7 @@ from .prompts import (
 from . import osal
 from .filesafety import (_line_count, default_run_verify, validate_target_file,
                           validate_verify_command, VERIFY_TIMEOUT)
+from .workspace import is_sensitive_path
 
 from . import trust as trust_policy
 from .capability import ordered_pool
@@ -119,6 +120,9 @@ class ApplyEngine(ApplyEngineMixin):
         """
         if not self.allowed_roots:
             return
+        if is_sensitive_path(file_path):
+            raise HarnessError(
+                "credential and private-key paths are excluded from scoped apply")
         for root in self.allowed_roots:
             if osal.is_within(file_path, root):
                 return

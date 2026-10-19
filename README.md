@@ -379,8 +379,8 @@ Exit codes: `0` ok, `1` fatal, `2` verify/lint failure (or unconfirmed run),
 ## Web & desktop UI (Phase 2)
 
 ```bash
-harness serve            # loopback web UI + JSON API (default 127.0.0.1:8765)
-harness serve --auth-token <secret>   # require X-Harness-Auth on /api routes
+harness serve --open     # token-protected loopback UI (default 127.0.0.1:8765)
+harness serve --auth-token <secret> --open  # use an explicit UI token
 harness-desktop          # pywebview native window over the same UI (browser fallback)
 ```
 

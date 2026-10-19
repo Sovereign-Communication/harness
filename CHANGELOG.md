@@ -27,6 +27,13 @@ break APIs between minor versions).
 
 ### Fixed
 
+- **Secure workspace defaults** — GUI sessions no longer inherit the server's
+  working directory, Auto Apply starts off, and file-bearing UI, agent, and MCP
+  paths are resolved inside an explicit workspace or configured MCP root.
+  Parent traversal, symlink escapes, and obvious credential paths are refused
+  or omitted from automatic context. This limits Harness-managed paths; it does
+  not sandbox approved host verification commands.
+
 - **Test isolation for subset test suites (#211)** — moved `test_agent` global patches into `setUpModule()` so importing `test_agent` does not pollute preceding test modules with disabled Jev keys or mocked governors during subset runs.
 - **CLI escalation governance and HTTP worker resilience (#215, #219)** — added `--no-escalation` CLI flag and ensured `--max-rotations 0` prevents secondary model escalation; enforced `--task-max-cost` ceiling against actual spend in the escalation loop. Resiliently resolve `_http_worker.py` across temporary and moved checkout paths with safe cwd fallback, and allow weather query retrieval from `api.weather.gov`, `weather.gov`, and `wttr.in`.
 - **Driver token and auth** — the in-process driver no longer uses a fixed fallback token: it uses `DRIVER_TOKEN` when declared and otherwise a random per-start token that is never placed in the environment or returned by an endpoint. A UI server started with a generated token no longer hands that token to whichever caller presents one first. A driver run's summary no longer reports success it did not observe: it reports `ok_steps`, says the goal was met only when the `verify` command passed, and reports `cancelled` runs as such. The UI server now accepts its token only from headers (never the URL), compares it in constant time, redacts `token=` from its log, closes the connection after a refused POST, and creates the desktop token file owner-only. `/api/driver/drive` no longer auto-grants consent by default (opt-in `auto_approve` grants only the read-only `observe` action, not labelled as a person), a passing `verify` with zero successful driver steps reports `verified_without_driver`, and `max_cost` is enforced. The test suite refuses any non-loopback network connection (`tests/__init__.py`), and the audit's R13 failure output now leads with the failing lines.

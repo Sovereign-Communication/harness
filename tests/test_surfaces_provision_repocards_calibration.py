@@ -19,7 +19,7 @@ from harness.cli_parser import build_parser
 from harness.errors import HarnessError
 from harness.mcp_lanes import lane_for
 from harness.mcp_schemas import TOOL_SCHEMAS
-from tests.test_mcp import make_server as make_mcp_server
+from tests.test_mcp import _TMP as MCP_TMP, make_server as make_mcp_server
 from tests.test_server import ServerHarness, _request
 
 
@@ -587,12 +587,23 @@ class TestMcpTools(unittest.TestCase):
         self.assertIn(res["status"], ("ok", "stale"))
 
     def test_mcp_repo_cards_write_and_stale(self):
-        res = self._call("repo_cards", {"check": False, "repo": "Harness"})
-        self.assertEqual(res["status"], "written")
-        with mock.patch("harness.repo_cards.render_card", return_value="different card content"):
-            res_stale = self._call("repo_cards", {"check": True, "repo": "Harness"})
-            self.assertEqual(res_stale["status"], "stale")
-            self.assertIn("Harness", res_stale["stale"])
+        with tempfile.TemporaryDirectory(dir=MCP_TMP.name) as root:
+            repo_name = Path(root).name
+            (Path(root) / ".git").mkdir()
+            (Path(root) / "pyproject.toml").write_text(
+                "[tool.ruff]\nline-length = 88\n", encoding="utf-8")
+            res = self._call("repo_cards", {
+                "root": root, "check": False, "repo": repo_name,
+                "allow_write": True,
+            })
+            self.assertEqual(res["status"], "written")
+            with mock.patch("harness.repo_cards.render_card",
+                            return_value="different card content"):
+                res_stale = self._call("repo_cards", {
+                    "root": root, "check": True, "repo": repo_name,
+                })
+                self.assertEqual(res_stale["status"], "stale")
+                self.assertIn(repo_name, res_stale["stale"])
 
     def test_jev_calibration_mcp(self):
         res = self._call("jev_calibration", {"window": 50})
@@ -613,23 +624,26 @@ class TestServerEndpoints(ServerHarness):
 
     def test_server_provision_plan(self):
         conn = self._conn()
-        try:
-            status, data = _request(conn, "POST", "/api/provision/plan", {"goal": "install ruff"})
-            self.assertEqual(status, 200)
-            self.assertEqual(data["goal"], "install ruff")
-            self.assertIn("rendered", data)
-        finally:
-            conn.close()
+        with tempfile.TemporaryDirectory() as root:
+            try:
+                status, data = _request(conn, "POST", "/api/provision/plan", {"goal": "install ruff", "root": root})
+                self.assertEqual(status, 200)
+                self.assertEqual(data["goal"], "install ruff")
+                self.assertIn("rendered", data)
+            finally:
+                conn.close()
 
     def test_server_cards(self):
         conn = self._conn()
-        try:
-            status, data = _request(conn, "GET", "/api/cards")
-            self.assertEqual(status, 200)
-            self.assertIn("cards", data)
-            self.assertTrue(isinstance(data["cards"], list))
-        finally:
-            conn.close()
+        with tempfile.TemporaryDirectory() as root:
+            from urllib.parse import quote
+            try:
+                status, data = _request(conn, "GET", "/api/cards?repo_root=" + quote(root, safe=""))
+                self.assertEqual(status, 200)
+                self.assertIn("cards", data)
+                self.assertTrue(isinstance(data["cards"], list))
+            finally:
+                conn.close()
 
     def test_server_jev_calibration(self):
         conn = self._conn()
@@ -688,8 +702,9 @@ class TestAgentProvisionIntent(unittest.TestCase):
         self.assertIn("no rollback", python_step["rollback_hint"].lower())
 
     def test_agent_run_prompt_provision_force_conversation(self):
-        agent = AutonomousAgent()
-        res = agent.run_prompt("provision host probe", force_conversation=True)
+        with tempfile.TemporaryDirectory() as root:
+            agent = AutonomousAgent(root_dir=root)
+            res = agent.run_prompt("provision host probe", force_conversation=True)
         self.assertEqual(res["status"], "planned")
         self.assertEqual(res["intent"], "provision")
         self.assertIn("plan", res)

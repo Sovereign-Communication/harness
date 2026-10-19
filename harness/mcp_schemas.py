@@ -155,6 +155,7 @@ TOOL_SCHEMAS = [
                        "and optionally execute independent subtasks concurrently with file mutual exclusion.",
         "inputSchema": {"type": "object", "properties": {
             "goal": {"type": "string", "description": "High-level goal or instruction to plan and accomplish"},
+            "root": {"type": "string", "description": "Selected workspace inside configured MCP allowed roots; required for execution or file access"},
             "execute": {"type": "boolean", "default": False, "description": "Execute the DAG if true; preview/plan only if false"},
             "parallel": {"type": "boolean", "default": True, "description": "Execute independent subtasks concurrently in parallel (default: on; isolation per the session's hourglass_isolate setting)"},
             "max_workers": {"type": "integer", "default": 4, "minimum": 1, "maximum": 16},
@@ -177,7 +178,7 @@ TOOL_SCHEMAS = [
                          {"type": "string"},
                          {"type": "array", "items": {"type": "string"}, "minItems": 1},
                      ],
-                     "description": "Optional allowed file paths"},
+                     "description": "Optional source or target paths, all confined to root"},
             "stages": {
                 "anyOf": [
                     {"type": "string"},
@@ -190,7 +191,7 @@ TOOL_SCHEMAS = [
                     {"type": "object"},
                     {"type": "string"},
                 ],
-                "description": "Supplied context brief artifact or path to JSON pack file",
+                "description": "Supplied context brief artifact or JSON pack file path inside root",
             },
             "token_budget_input": {
                 "type": "integer",
@@ -308,8 +309,8 @@ TOOL_SCHEMAS = [
                        "Always local-only -- never calls a live Jev judge and "
                        "never mutates STATUS or the repo.",
         "inputSchema": {"type": "object", "properties": {
-            "repo_root": {"type": "string", "default": ".",
-                          "description": "Repo root to read STATUS/evidence from"},
+            "repo_root": {"type": "string",
+                          "description": "Workspace inside configured MCP allowed roots; defaults only when exactly one root is configured"},
             "phase": {"type": "string", "description": "Phase id, e.g. DF-UI-2 "
                      "(required unless 'all' is set)"},
             "all": {"type": "boolean", "default": False,
@@ -355,6 +356,8 @@ TOOL_SCHEMAS = [
         "description": "DF-UI-2 / HV-6: Run the self-hosting dogfood loop "
                        "(ground -> verify -> apply) over claims and source window.",
         "inputSchema": {"type": "object", "properties": {
+            "root": {"type": "string",
+                     "description": "Selected workspace inside configured MCP allowed roots"},
             "file": {"type": "string",
                      "description": "Target file to repair under apply gate"},
             "instruction": {"type": "string",
@@ -384,6 +387,8 @@ TOOL_SCHEMAS = [
                        "Hermetic: no network, no model call.",
         "inputSchema": {"type": "object", "properties": {
             "goal": {"type": "string", "description": "High-level goal or instruction to brief"},
+            "root": {"type": "string",
+                     "description": "Selected workspace inside configured MCP allowed roots when source files are supplied"},
             "files": {"type": "array", "items": {"type": "string"},
                       "description": "Source file paths to inspect and cite"},
             "budget": {"type": "integer", "default": 48000,
@@ -450,7 +455,7 @@ TOOL_SCHEMAS = [
         "description": "Generate an ordered, typed host-provisioning Plan for a goal (dry-run/advisory only; consent required before execution).",
         "inputSchema": {"type": "object", "properties": {
             "goal": {"type": "string", "description": "Provisioning goal text (e.g. 'install ruff')"},
-            "root": {"type": "string", "description": "Optional approved root directory (defaults to current working directory)"},
+            "root": {"type": "string", "description": "Workspace inside configured MCP allowed roots; defaults only when exactly one root is configured"},
         }, "required": ["goal"]},
         "annotations": {"readOnlyHint": True, "openWorldHint": True},
     },
@@ -459,10 +464,12 @@ TOOL_SCHEMAS = [
         "title": "Repo philosophy cards generator/checker",
         "description": "Generate or check deterministic repo philosophy cards from committed repository config.",
         "inputSchema": {"type": "object", "properties": {
-            "check": {"type": "boolean", "description": "True to verify cards match without writing"},
+            "root": {"type": "string", "description": "Selected repo or parent workspace inside configured MCP allowed roots"},
+            "check": {"type": "boolean", "default": True, "description": "True to verify cards match without writing (default)"},
             "repo": {"type": "string", "description": "Optional specific repository name"},
+            "allow_write": {"type": "boolean", "description": "Explicit permission to write generated cards when check=false"},
         }},
-        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+        "annotations": {"openWorldHint": True},
     },
     {
         "name": "jev_calibration",

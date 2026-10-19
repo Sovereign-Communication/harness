@@ -508,12 +508,13 @@ class AgentAnswerLoopTests(unittest.TestCase):
             self.assertIn("HTTP 401", result["remaining_scope"])
             completion.assert_not_called()
 
-    def test_default_entrypoints_route_apply_edits_to_jev_completion(self):
+    def test_default_entrypoints_require_opt_in_before_jev_apply(self):
         agent = AutonomousAgent(settings=load_settings(), root_dir=Path("."))
         with patch.object(agent, "_live_jev_available", return_value=True), \
              patch.object(agent, "_handle_edit", return_value={"status": "ok"}) as edit:
             agent.run_prompt("Update widget.py")
-        self.assertTrue(edit.call_args.kwargs["use_jev_completion"])
+        self.assertFalse(edit.call_args.args[2])
+        self.assertFalse(edit.call_args.kwargs["use_jev_completion"])
         with patch.object(agent, "_live_jev_available", return_value=True), \
              patch.object(agent, "_handle_edit", return_value={"status": "ok"}) as edit:
             agent.run_prompt("Update widget.py", force_conversation=True,
@@ -773,7 +774,7 @@ class HandleEditJevCompletionTests(unittest.TestCase):
                  patch.object(AutonomousAgent, "_orchestrator_chat_fn",
                               side_effect=HarnessError("hermetic test")):
                 result = agent.run_hourglass_request(
-                    "Update calc.py with type annotations")
+                    "Update calc.py with type annotations", auto_apply=True)
 
         self.assertEqual(result["status"], "ok")
         self.assertIn("completion_jev", result["hourglass"]["stages"])

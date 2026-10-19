@@ -249,13 +249,18 @@ def scan_repo(repo: Path) -> List[Row]:
 
 
 def discover_repos(root: Path) -> List[Tuple[str, Path]]:
-    """Return ``(name, path)`` for canonical sibling repos, sorted by name.
+    """Return ``(name, path)`` for a selected repo or canonical siblings.
 
-    A directory qualifies when it is a git checkout and is not a worktree of
-    another repository. The test-repo and scratch directories are skipped.
+    A selected git checkout is returned by itself. Otherwise, a directory
+    qualifies when a child is a git checkout and is not a worktree of another
+    repository. The test-repo and scratch directories are skipped.
     """
+    root = Path(root)
+    if (root / ".git").exists():
+        return [(root.name, root)]
     try:
-        entries = sorted(p for p in root.iterdir() if p.is_dir())
+        entries = sorted(p for p in root.iterdir()
+                         if p.is_dir() and not p.is_symlink())
     except OSError:
         return []
     found = []

@@ -157,7 +157,7 @@ class LaneParityTests(unittest.TestCase):
             transport=MagicMock(), api_key=None,
             governor=MagicMock(), ledger=self.ledger,
             router=MagicMock(judge=JUDGE, panel_pool=[]), engine=engine,
-            settings=self.settings,
+            settings=self.settings, allowed_roots=[self.tmp.name],
         )
         result = server._invoke("plan_and_execute", {
             "goal": "Update x.py", "file": [self.target],

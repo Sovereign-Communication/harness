@@ -9,9 +9,9 @@ Design rules, inherited from the MCP server:
   trust gates all stay exactly where they are -- the UI adds a human approval
   step (the dispatch form) on top, never instead.
 - **Loopback only.** The server binds 127.0.0.1 and rejects non-loopback
-  Host headers (DNS-rebinding guard). An optional shared token
-  (``--auth-token`` / ``HARNESS_UI_AUTH_TOKEN``) gates every /api route --
-  the HARNESS_MCP_AUTH_TOKEN precedent.
+  Host headers (DNS-rebinding guard). A shared token (``--auth-token`` /
+  ``HARNESS_UI_AUTH_TOKEN`` or a persisted per-user token) gates every /api
+  route by default.
 - **Events, not scraping.** Run progress is the Phase-1 typed event stream
   (harness/events.py): the server registers one sink into a bounded ring
   buffer; the browser polls ``/api/events`` / ``/api/runs/{id}/events``.
@@ -24,6 +24,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import sys
 import threading
 import time
@@ -44,6 +45,8 @@ from .jev_policy import flush_all_fallbacks
 from . import osal
 from .history import delete_chat_session, list_chat_sessions, load_chat_history as _history_load_chat_history
 from .session import (apply_session, governor_for, ledger_for, run_meta)
+from .workspace import require_workspace, resolve_workspace_path
+from .ui_auth import load_or_create_ui_token
 
 # Single-owner delegation with patch-propagation: tests patch server.get_default_history_dir,
 # so wrappers temporarily install that patched function into harness.history before delegating.
@@ -168,6 +171,43 @@ def _opt_bool(args, key):
     return bool(v) if isinstance(v, bool) else str(v).lower() in ("1", "true", "yes") if v else False
 
 
+def _dispatch_workspace(args, *, required):
+    raw = _opt_str(args, "root_dir")
+    if raw is None and required:
+        raise HarnessError("Select an absolute workspace folder before this file operation")
+    if raw is None:
+        return None
+    try:
+        root = require_workspace(raw)
+    except HarnessError as exc:
+        raise HarnessError(f"Invalid root_dir workspace: {exc}") from None
+    args["root_dir"] = str(root)
+    return root
+
+
+def _dispatch_file(root, raw, label, *, required=True):
+    if raw is None or not str(raw).strip():
+        if required:
+            raise HarnessError(f"{label} is required")
+        return None
+    if root is None:
+        raise HarnessError(f"Select a workspace folder before using {label}")
+    path = resolve_workspace_path(root, raw, must_exist=True)
+    if not path.is_file():
+        raise HarnessError(f"{label} must be a file: {raw}")
+    return str(path)
+
+
+def _dispatch_file_list(root, raw, label):
+    if raw is None:
+        return None
+    values = [raw] if isinstance(raw, str) else raw
+    if not isinstance(values, list) or not values or any(
+            not isinstance(value, str) for value in values):
+        raise HarnessError(f"{label} must be a file path or a non-empty list of paths")
+    return [_dispatch_file(root, value, label) for value in values]
+
+
 def validate_dispatch(kind, args):
     """CLI-boundary validation for UI dispatch. Same discipline as the CLI
     parsers: untrusted input is range-checked before anything runs."""
@@ -178,7 +218,9 @@ def validate_dispatch(kind, args):
         _opt_str(args, "goal", required=True)
         _opt_str(args, "target")
         _opt_str(args, "schema")
-        _opt_str(args, "verify")
+        verify = _opt_str(args, "verify")
+        if verify:
+            _dispatch_workspace(args, required=True)
         _opt_int(args, "max_steps", 1, 20, 5)
         args["auto_approve"] = _opt_bool(args, "auto_approve") if "auto_approve" in args else False
         args["require_stable"] = _opt_bool(args, "require_stable") if "require_stable" in args else True
@@ -187,6 +229,10 @@ def validate_dispatch(kind, args):
     elif kind == "plan":
         _opt_str(args, "goal", required=True)
         args["execute"] = _opt_bool(args, "execute")
+        root = _dispatch_workspace(args, required=True)
+        candidates = args.get("files", args.get("file"))
+        if candidates is not None:
+            args["files"] = _dispatch_file_list(root, candidates, "plan candidate")
         _opt_str(args, "frontier_model")
         _opt_int(args, "max_workers", 1, 16, 4)
         if args.get("task_max_cost") is not None:
@@ -195,38 +241,42 @@ def validate_dispatch(kind, args):
             args["max_cost"] = _finite_float(args["max_cost"], "max_cost", 0.0, HARD_MAX_COST)
     elif kind == "chat":
         _opt_str(args, "prompt", required=True)
-        args["auto_apply"] = _opt_bool(args, "auto_apply") if "auto_apply" in args else True
+        args["auto_apply"] = _opt_bool(args, "auto_apply") if "auto_apply" in args else False
         _opt_str(args, "session_id")
-        rd = _opt_str(args, "root_dir")
-        if rd and not os.path.isdir(rd):
-            raise HarnessError(f"root_dir does not exist or is not a directory: {rd}")
+        root = _dispatch_workspace(args, required=False)
+        intent = classify_prompt_intent(args["prompt"])
+        needs_workspace = (intent == "provision"
+                           or (intent == "edit" and args["auto_apply"]))
+        if needs_workspace and root is None:
+            raise HarnessError(
+                "Select a workspace folder before requesting file or provisioning work")
         _opt_bool(args, "web")
         _opt_bool(args, "allow_paid")
         _opt_bool(args, "allow_escalation")
     elif kind == "dogfood":
+        root = _dispatch_workspace(args, required=True)
         f = _opt_str(args, "file", required=True)
-        if not os.path.isfile(f):
-            raise HarnessError(f"--file target does not exist: {f}")
+        args["file"] = _dispatch_file(root, f, "--file target")
         _opt_str(args, "instruction", required=True)
         _opt_str(args, "verify")
         cf = _opt_str(args, "claims_file")
-        if cf and not os.path.isfile(cf):
-            raise HarnessError(f"claims_file does not exist: {cf}")
+        if cf:
+            args["claims_file"] = _dispatch_file(root, cf, "claims_file")
         sf = _opt_str(args, "source_file")
-        if sf and not os.path.isfile(sf):
-            raise HarnessError(f"source_file does not exist: {sf}")
+        if sf:
+            args["source_file"] = _dispatch_file(root, sf, "source_file")
         df = _opt_str(args, "definitions_file")
-        if df and not os.path.isfile(df):
-            raise HarnessError(f"definitions_file does not exist: {df}")
+        if df:
+            args["definitions_file"] = _dispatch_file(root, df, "definitions_file")
         _opt_str(args, "claim_context")
         _opt_int(args, "max_rounds", 1, 8, 3)
         if args.get("max_cost") is not None:
             args["max_cost"] = _finite_float(args["max_cost"], "max_cost",
                                              0.0, HARD_MAX_COST)
     elif kind == "apply":
+        root = _dispatch_workspace(args, required=True)
         f = _opt_str(args, "file", required=True)
-        if not os.path.isfile(f):
-            raise HarnessError(f"--file target does not exist: {f}")
+        args["file"] = _dispatch_file(root, f, "--file target")
         _opt_str(args, "instruction", required=True)
         _opt_str(args, "verify")
         _opt_int(args, "max_rounds", 1, 8, 3)
@@ -240,20 +290,21 @@ def validate_dispatch(kind, args):
         args["require_consent"] = _opt_bool(args, "require_consent")
     elif kind == "verify":
         has_prompt = bool(_opt_str(args, "prompt"))
+        root = _dispatch_workspace(args, required=False)
         pf = _opt_str(args, "prompt_file")
         cf = _opt_str(args, "claims_file")
         if not has_prompt and not pf and not cf:
             raise HarnessError("verify requires 'prompt', 'prompt_file', "
                                "or 'claims_file'")
-        if pf and not os.path.isfile(pf):
-            raise HarnessError(f"prompt_file does not exist: {pf}")
+        if pf:
+            args["prompt_file"] = _dispatch_file(root, pf, "prompt_file")
         if cf:
             sf = _opt_str(args, "source_file", required=True)
-            if not os.path.isfile(sf):
-                raise HarnessError(f"source_file does not exist: {sf}")
+            args["claims_file"] = _dispatch_file(root, cf, "claims_file")
+            args["source_file"] = _dispatch_file(root, sf, "source_file")
             df = _opt_str(args, "definitions_file")
-            if df and not os.path.isfile(df):
-                raise HarnessError(f"definitions_file does not exist: {df}")
+            if df:
+                args["definitions_file"] = _dispatch_file(root, df, "definitions_file")
         _opt_str(args, "claim_context")
         _opt_str(args, "judge")
         _opt_str(args, "panel")
@@ -261,16 +312,16 @@ def validate_dispatch(kind, args):
             args["max_cost"] = _finite_float(args["max_cost"], "max_cost",
                                              0.0, HARD_MAX_COST)
     elif kind == "continue":
+        root = _dispatch_workspace(args, required=True)
         s = _opt_str(args, "state", required=True)
-        if not os.path.isfile(s):
-            raise HarnessError(f"state file does not exist: {s}")
+        args["state"] = _dispatch_file(root, s, "state file")
         _opt_str(args, "instruction")
         _opt_str(args, "verify")
         _opt_int(args, "max_rounds", 1, 8, None)
     else:  # bench
+        root = _dispatch_workspace(args, required=True)
         m = _opt_str(args, "manifest", required=True)
-        if not os.path.exists(m):
-            raise HarnessError(f"manifest does not exist: {m}")
+        args["manifest"] = _dispatch_file(root, m, "manifest")
         _opt_int(args, "max_rounds", 1, 8, None)
     return args
 
@@ -285,7 +336,8 @@ def _split_list(value):
 
 def run_apply_task(task_id, args, cancel_check):
     settings = load_settings()
-    engine = apply_session(settings)
+    root = require_workspace(args.get("root_dir"))
+    engine = apply_session(settings, allowed_roots=[str(root)])
     result = engine.apply_batch(
         [args["file"]], task_id=task_id, cancel_check=cancel_check,
         options=BatchOptions(
@@ -334,9 +386,13 @@ def run_verify_task(task_id, args, cancel_check):
 def run_continue_task(task_id, args, cancel_check):
     from .apply import validate_continuation
     settings = load_settings()
+    root = require_workspace(args.get("root_dir"))
     with open(args["state"], encoding="utf-8") as f:
         continuation = validate_continuation(json.load(f))
-    engine = apply_session(settings)
+    continuation = dict(continuation)
+    continuation["file_path"] = str(resolve_workspace_path(
+        root, continuation.get("file_path"), must_exist=True))
+    engine = apply_session(settings, allowed_roots=[str(root)])
     return engine.apply_batch(
         [None], task_id=task_id, cancel_check=cancel_check,
         options=BatchOptions(
@@ -352,7 +408,8 @@ def run_bench_task(task_id, args, cancel_check):
     simply unused here -- cancel takes effect between tasks at worst."""
     from .bench import load_manifest, run_bench
     settings = load_settings()
-    engine = apply_session(settings)
+    root = require_workspace(args.get("root_dir"))
+    engine = apply_session(settings, allowed_roots=[str(root)])
     tasks = load_manifest(args["manifest"])
     if args.get("max_rounds"):
         for t in tasks:
@@ -386,7 +443,7 @@ def run_chat_task(task_id, args, cancel_check):
         agent.transport = agent.transport.with_cancel(cancel_check)
     return agent.run_prompt(
         prompt=prompt,
-        auto_apply=args.get("auto_apply", True),
+        auto_apply=args.get("auto_apply", False),
         web=bool(args.get("web", False)),
         session_id=args.get("session_id"),
         cancel_check=cancel_check,
@@ -399,6 +456,7 @@ def run_chat_task(task_id, args, cancel_check):
 def run_dogfood_task(task_id, args, cancel_check):
     from .service import run_dogfood
     settings = load_settings()
+    root = require_workspace(args.get("root_dir"))
     return run_dogfood(
         settings,
         file=args["file"],
@@ -411,7 +469,9 @@ def run_dogfood_task(task_id, args, cancel_check):
         task_id=task_id,
         max_cost=args.get("max_cost"),
         max_rounds=args.get("max_rounds") or 3,
-        cancel_check=cancel_check)
+        cancel_check=cancel_check,
+        apply_session_fn=lambda current_settings: apply_session(
+            current_settings, allowed_roots=[str(root)]))
 
 
 def run_plan_task(task_id, args, cancel_check):
@@ -425,13 +485,20 @@ def run_plan_task(task_id, args, cancel_check):
 
     settings = load_settings()
     goal = args["goal"]
+    root = require_workspace(args.get("root_dir"))
     execute = bool(args.get("execute", False))
     candidate_files = args.get("files") or args.get("file")
+    if isinstance(candidate_files, str):
+        candidate_files = [candidate_files]
+    if candidate_files:
+        candidate_files = [str(Path(path).relative_to(root))
+                           for path in candidate_files]
     frontier_model = args.get("frontier_model") or getattr(settings, "frontier_model", None)
     plan_ceiling = args.get("task_max_cost") or args.get("max_cost")
 
     if execute:
-        engine = apply_session(settings, max_cost=plan_ceiling)
+        engine = apply_session(settings, max_cost=plan_ceiling,
+                               allowed_roots=[str(root)])
         gov, transport, api_key = engine.governor, engine.transport, engine.api_key
     else:
         api_key, gov = governor_for(settings, plan_ceiling)
@@ -451,6 +518,7 @@ def run_plan_task(task_id, args, cancel_check):
         settings,
         goal=goal,
         files=candidate_files or [],
+        root=str(root),
         stages=stages,
         brief=brief,
         max_input_tokens=token_budget_input,
@@ -472,6 +540,7 @@ def run_plan_task(task_id, args, cancel_check):
         confirm=confirm,
         plan_consensus=plan_consensus,
         jev_policy=jev_policy,
+        root=str(root),
         cancel_check=cancel_check,
         **composition,
     )
@@ -483,6 +552,11 @@ def run_plan_task(task_id, args, cancel_check):
     if not dag_dict or not dag_dict.get("nodes"):
         return plan_result
 
+    dag_dict = dict(dag_dict)
+    dag_dict["nodes"] = [dict(node) for node in dag_dict.get("nodes", [])]
+    for node in dag_dict["nodes"]:
+        node["target_files"] = [str(resolve_workspace_path(root, target))
+                                 for target in node.get("target_files", [])]
     dag = TaskDAG.from_dict(dag_dict)
     executor = PlanExecutor(
         engine=engine,
@@ -497,6 +571,7 @@ def run_plan_task(task_id, args, cancel_check):
         keep_going=bool(args.get("keep_going", False)),
         task_id=task_id,
         cancel_check=cancel_check,
+        repo=str(root),
     )
     exec_result = executor.execute()
     return {"plan": plan_result, "execution": exec_result, "status": exec_result.get("status", "ok")}
@@ -597,6 +672,8 @@ def run_driver_task(task_id, args, cancel_check):
     default_schema = args.get("schema") or "cli"
     max_steps = int(args.get("max_steps") or 5)
     verify_cmd = args.get("verify")
+    verify_cwd = (str(require_workspace(args.get("root_dir")))
+                  if verify_cmd else None)
     require_stable = bool(args.get("require_stable", True))
     auto_approve = bool(args.get("auto_approve", False))
     max_cost = args.get("max_cost")
@@ -666,7 +743,8 @@ def run_driver_task(task_id, args, cancel_check):
         if verify_cmd:
             from .gate_runner import run_gate
             try:
-                retcode, output = run_gate(verify_cmd, timeout=30)
+                retcode, output = run_gate(verify_cmd, timeout=30,
+                                           cwd=verify_cwd)
                 verify_result = {
                     "ok": retcode == 0,
                     "returncode": retcode,
@@ -1180,10 +1258,11 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 probe = pv.probe_host()
                 return self._send_json(probe.to_dict())
             if path == "/api/cards":
-                from pathlib import Path
                 from . import repo_cards as rc
-                root = rc.default_root()
-                cards = Path(__file__).resolve().parent.parent / rc.CARDS_SUBDIR
+                raw_root = (q.get("repo_root") or [None])[0]
+                root = require_workspace(raw_root)
+                cards = resolve_workspace_path(
+                    root, str(rc.CARDS_SUBDIR), must_exist=False)
                 rationale_dir = cards / rc.RATIONALE_SUBDIR
                 repos = [(rc.canonical_repo_name(n, cards), p) for n, p in rc.discover_repos(root)]
                 cards_list = []
@@ -1245,7 +1324,10 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 goal = str(body.get("goal") or "").strip()
                 if not goal:
                     raise HarnessError("provision goal is required")
-                root = os.path.abspath(body.get("root") or os.getcwd())
+                if not body.get("root"):
+                    raise HarnessError(
+                        "An explicit workspace root is required for provisioning plans")
+                root = str(require_workspace(body.get("root")))
                 probe = pv.probe_host()
                 policy = pv.policy_for_probe(probe, [root])
                 plan = pv.plan_provision(goal, probe, policy=policy)
@@ -1585,7 +1667,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         phase = (q.get("phase") or [None])[0]
         min_score = _finite_float((q.get("min_score") or ["85.0"])[0],
                                   "min_score", 0.0, 100.0)
-        repo_root = (q.get("repo_root") or ["."])[0]
+        raw_root = (q.get("repo_root") or [None])[0]
+        repo_root = str(require_workspace(raw_root))
         return self._send_json(_api_jev_phase_payload(repo_root, phase, min_score))
 
     def _api_cost(self, q):
@@ -1789,8 +1872,14 @@ class UiServer(ThreadingHTTPServer):
         flush_all_fallbacks()
 
 
-def make_server(host="127.0.0.1", port=8765, auth_token=None):
+_DEFAULT_AUTH_TOKEN = object()
+
+
+def make_server(host="127.0.0.1", port=8765,
+                auth_token=_DEFAULT_AUTH_TOKEN):
     """Build the UI server with its UiState attached."""
+    if auth_token is _DEFAULT_AUTH_TOKEN:
+        auth_token = secrets.token_urlsafe(24)
     ui = UiState(auth_token=auth_token)
     httpd = UiServer((host, port), UiRequestHandler)
     httpd.daemon_threads = True
@@ -1807,24 +1896,25 @@ def main(argv=None):
                     help="bind address (default and recommended: 127.0.0.1)")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--auth-token", default=os.environ.get("HARNESS_UI_AUTH_TOKEN"),
-                    help="require X-Harness-Auth: <token> on /api routes "
-                         "(default: HARNESS_UI_AUTH_TOKEN or none)")
+                    help="override the default persisted token protecting /api routes")
     ap.add_argument("--open", action="store_true",
-                    help="open the UI in the default browser")
+                    help="open the tokenized UI in the default browser")
     opts = ap.parse_args(argv)
     if opts.host not in ("127.0.0.1", "localhost", "::1"):
         print("[FATAL] the UI server binds loopback only; pass 127.0.0.1, "
               "localhost, or ::1", file=sys.stderr)
         sys.exit(1)
-    httpd = make_server(opts.host, opts.port, auth_token=opts.auth_token)
+    auth_token = opts.auth_token or load_or_create_ui_token()
+    httpd = make_server(opts.host, opts.port, auth_token=auth_token)
     host, port = httpd.server_address[:2]
     url = f"http://{host}:{port}/"
-    print(f"[OK] harness UI serving at {url} (Ctrl-C to stop)", file=sys.stderr)
-    if httpd.ui.auth_token:
-        print("[OK] /api routes require header X-Harness-Auth: <your token>",
-              file=sys.stderr)
+    print(f"[OK] harness UI serving at {url} (token-protected; Ctrl-C to stop)",
+          file=sys.stderr)
     if opts.open:
-        osal.open_url(url)
+        osal.open_url(url + "#" + auth_token)
+    else:
+        print("[OK] use `harness serve --open` or `harness desktop` to open an authenticated UI",
+              file=sys.stderr)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

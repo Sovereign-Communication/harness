@@ -75,6 +75,18 @@ class ServerHarness(unittest.TestCase):
         return http.client.HTTPConnection("127.0.0.1", self.port, timeout=120)
 
 
+class ServeMainTests(unittest.TestCase):
+    def test_non_open_serve_prints_authenticated_browser_hint(self):
+        fake_server = mock.Mock()
+        fake_server.server_address = ("127.0.0.1", 8765)
+        fake_server.serve_forever.side_effect = KeyboardInterrupt
+        stderr = io.StringIO()
+        with (mock.patch.object(ui_server, "make_server", return_value=fake_server),
+              mock.patch("sys.stderr", stderr)):
+            ui_server.main(["--auth-token", "test-token"])
+        self.assertIn("harness serve --open", stderr.getvalue())
+        fake_server.serve_forever.assert_called_once()
+
 class SecurityGuardTests(ServerHarness):
     def test_loopback_host_required(self):
         """DNS-rebinding guard: an attacker-chosen Host header is refused."""
@@ -148,6 +160,31 @@ class TokenAuthTests(ServerHarness):
         # (raw branch: index.html is not JSON; just assert it came back 200)
 
 
+class DefaultServerAuthTests(unittest.TestCase):
+    def test_server_factory_protects_api_when_token_is_not_overridden(self):
+        httpd = make_server("127.0.0.1", 0)
+        token = httpd.ui.auth_token
+        self.assertGreaterEqual(len(token), 32)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            conn = http.client.HTTPConnection(
+                "127.0.0.1", httpd.server_address[1], timeout=5)
+            try:
+                status, _ = _request(conn, "GET", "/api/status")
+                self.assertEqual(status, 401)
+                status, _ = _request(
+                    conn, "GET", "/api/status",
+                    headers={"X-Harness-Auth": token})
+                self.assertEqual(status, 200)
+            finally:
+                conn.close()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+
 class StaticUiTests(ServerHarness):
     def test_index_served(self):
         conn = self._conn()
@@ -162,14 +199,22 @@ class StaticUiTests(ServerHarness):
 
 
 class DispatchValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        (self.root / "sample.py").write_text("pass\n", encoding="utf-8")
+
     def test_apply_requires_existing_file(self):
         with self.assertRaises(HarnessError):
-            validate_dispatch("apply", {"file": "no/such/file.py",
+            validate_dispatch("apply", {"root_dir": str(self.root),
+                                        "file": "no/such/file.py",
                                         "instruction": "x"})
 
     def test_apply_requires_instruction(self):
         with self.assertRaises(HarnessError):
-            validate_dispatch("apply", {"file": __file__})
+            validate_dispatch("apply", {"root_dir": str(self.root),
+                                        "file": "sample.py"})
 
     def test_unknown_kind_refused(self):
         with self.assertRaises(HarnessError):
@@ -177,26 +222,36 @@ class DispatchValidationTests(unittest.TestCase):
 
     def test_task_max_cost_capped_at_hard(self):
         with self.assertRaises(HarnessError):
-            validate_dispatch("apply", {"file": __file__,
+            validate_dispatch("apply", {"root_dir": str(self.root),
+                                        "file": "sample.py",
                                         "instruction": "x",
                                         "task_max_cost": 99})
 
     def test_backend_whitelisted(self):
         with self.assertRaises(HarnessError):
-            validate_dispatch("apply", {"file": __file__, "instruction": "x",
+            validate_dispatch("apply", {"root_dir": str(self.root),
+                                        "file": "sample.py", "instruction": "x",
                                         "backend": "sudo"})
 
     def test_verify_requires_prompt(self):
         with self.assertRaises(HarnessError):
             validate_dispatch("verify", {})
 
+    def test_driver_verify_requires_explicit_workspace(self):
+        with self.assertRaisesRegex(HarnessError, "workspace"):
+            validate_dispatch("driver_task", {
+                "goal": "check", "verify": "python -m pytest"
+            })
+
     def test_continue_requires_existing_state(self):
         with self.assertRaises(HarnessError):
-            validate_dispatch("continue", {"state": "no/such/state.json"})
+            validate_dispatch("continue", {"root_dir": str(self.root),
+                                           "state": "no/such/state.json"})
 
     def test_bench_requires_existing_manifest(self):
         with self.assertRaises(HarnessError):
-            validate_dispatch("bench", {"manifest": "no/such/dir"})
+            validate_dispatch("bench", {"root_dir": str(self.root),
+                                        "manifest": "no/such/dir"})
 
 
 class RunLifecycleTests(ServerHarness):
@@ -822,7 +877,8 @@ class ClaimsLaneTests(ServerHarness):
         cf, sf = self._files(grounded=False)
         with mock.patch("harness.service.panel_judge", must_not_run):
             status, run = self._dispatch({"claims_file": cf,
-                                          "source_file": sf})
+                                          "source_file": sf,
+                                          "root_dir": os.path.dirname(cf)})
             self.assertEqual(status, 201)
             full = self._await_settled(run["id"])
         self.assertFalse(reached.is_set(), "engine must not run on lint reject")
@@ -841,7 +897,8 @@ class ClaimsLaneTests(ServerHarness):
         patches = self._engine_patches(fake_panel_judge)
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             status, run = self._dispatch({"claims_file": cf,
-                                          "source_file": sf})
+                                          "source_file": sf,
+                                          "root_dir": os.path.dirname(cf)})
             self.assertEqual(status, 201)
             full = self._await_settled(run["id"])
         self.assertEqual(full["result"]["status"], "ok")
@@ -1140,29 +1197,29 @@ class ApplyDiffPreviewTests(ServerHarness):
             seen["task_id"] = task_id
             seen["args"] = args
             return dict(self.ENVELOPE, task_id=task_id)
-        target = os.path.join(tempfile.gettempdir(), "harness-diff-preview.py")
-        with open(target, "w", encoding="utf-8") as f:
-            f.write("a\n")
-        self.addCleanup(lambda: os.path.exists(target)
-                        and os.remove(target))
-        with mock.patch.dict(ui_server.RUNNERS, {"apply": fake}):
-            conn = self._conn()
-            try:
-                status, run = _request(conn, "POST", "/api/runs",
-                                       body={"kind": "apply", "args": {
-                                           "file": target,
-                                           "instruction": "change a to b",
-                                           "verify_only": True}})
-                self.assertEqual(status, 201)
-                for _ in range(100):
-                    _, full = _request(conn, "GET", f"/api/runs/{run['id']}/result")
-                    if full["status"] != "running":
-                        break
-                    time.sleep(0.05)
-                else:
-                    self.fail("apply run never settled")
-            finally:
-                conn.close()
+        with tempfile.TemporaryDirectory() as root:
+            target = os.path.join(root, "harness-diff-preview.py")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("a\n")
+            with mock.patch.dict(ui_server.RUNNERS, {"apply": fake}):
+                conn = self._conn()
+                try:
+                    status, run = _request(conn, "POST", "/api/runs",
+                                           body={"kind": "apply", "args": {
+                                               "root_dir": root,
+                                               "file": target,
+                                               "instruction": "change a to b",
+                                               "verify_only": True}})
+                    self.assertEqual(status, 201)
+                    for _ in range(100):
+                        _, full = _request(conn, "GET", f"/api/runs/{run['id']}/result")
+                        if full["status"] != "running":
+                            break
+                        time.sleep(0.05)
+                    else:
+                        self.fail("apply run never settled")
+                finally:
+                    conn.close()
         self.assertEqual(full["status"], "preview")
         result = full["result"]
         # run_public passes the envelope verbatim; the stub's own `file`
@@ -1193,6 +1250,9 @@ class DesktopTokenTests(unittest.TestCase):
     reused."""
 
     def setUp(self):
+        import harness.ui_auth as ui_auth_mod
+
+        self.ui_auth = ui_auth_mod
         self.cfg = tempfile.mkdtemp(prefix="harness-desktop-")
         self.addCleanup(shutil.rmtree, self.cfg, True)
         env = {k: v for k, v in os.environ.items()
@@ -1253,12 +1313,11 @@ class DesktopTokenTests(unittest.TestCase):
         self.assertTrue(mk.call_args.kwargs["auth_token"])
 
     def test_an_existing_token_file_is_replaced_not_written_in_place(self):
-        import harness.ui as ui_mod
         with open(self.token_file, "w", encoding="utf-8") as f:
             f.write("old-token")
         os.chmod(self.token_file, 0o666)
         before = os.stat(self.token_file)
-        ui_mod._write_token_file(self.token_file, "new-token")
+        self.ui_auth.write_ui_token(self.token_file, "new-token")
         with open(self.token_file, encoding="utf-8") as f:
             self.assertEqual(f.read(), "new-token")
         self.assertEqual(os.listdir(self.cfg), ["desktop_token"])
@@ -1270,7 +1329,6 @@ class DesktopTokenTests(unittest.TestCase):
             self.assertEqual(after.st_mode & 0o777, 0o600)
 
     def test_a_symlinked_token_file_is_refused_and_not_followed(self):
-        import harness.ui as ui_mod
         target = os.path.join(self.cfg, "victim")
         with open(target, "w", encoding="utf-8") as f:
             f.write("keep")
@@ -1278,11 +1336,11 @@ class DesktopTokenTests(unittest.TestCase):
             os.symlink(target, self.token_file)
         except (OSError, NotImplementedError):
             self.skipTest("platform: symlinks unavailable")
-        ui_mod._write_token_file(self.token_file, "new-token")
+        self.ui_auth.write_ui_token(self.token_file, "new-token")
         self.assertTrue(os.path.islink(self.token_file))
         with open(target, encoding="utf-8") as f:
             self.assertEqual(f.read(), "keep")
-        self.assertEqual(ui_mod._read_token_file(self.token_file), "")
+        self.assertEqual(self.ui_auth.read_ui_token(self.token_file), "")
         self.assertEqual(sorted(os.listdir(self.cfg)),
                          ["desktop_token", "victim"])
 
@@ -1293,8 +1351,8 @@ class DesktopTokenTests(unittest.TestCase):
         with open(self.token_file, "w", encoding="utf-8") as f:
             f.write("keep")
         with mock.patch.object(ui_mod.os.path, "islink", return_value=True):
-            ui_mod._write_token_file(self.token_file, "new-token")
-            self.assertEqual(ui_mod._read_token_file(self.token_file), "")
+            self.ui_auth.write_ui_token(self.token_file, "new-token")
+            self.assertEqual(self.ui_auth.read_ui_token(self.token_file), "")
         with open(self.token_file, encoding="utf-8") as f:
             self.assertEqual(f.read(), "keep")
         self.assertEqual(os.listdir(self.cfg), ["desktop_token"])
@@ -1302,13 +1360,13 @@ class DesktopTokenTests(unittest.TestCase):
     def test_a_failed_write_survives_a_failed_cleanup(self):
         import harness.ui as ui_mod
         with mock.patch.object(ui_mod.os, "replace", side_effect=OSError("no")),                 mock.patch.object(ui_mod.os, "unlink", side_effect=OSError("no")):
-            ui_mod._write_token_file(self.token_file, "t")  # must not raise
+            self.ui_auth.write_ui_token(self.token_file, "t")  # must not raise
         self.assertFalse(os.path.exists(self.token_file))
 
     def test_a_failed_write_leaves_no_temp_file(self):
         import harness.ui as ui_mod
         with mock.patch.object(ui_mod.os, "replace", side_effect=OSError("no")):
-            ui_mod._write_token_file(self.token_file, "t")
+            self.ui_auth.write_ui_token(self.token_file, "t")
         self.assertEqual(os.listdir(self.cfg), [])
 
     @unittest.skipUnless(os.name == "posix",
@@ -1335,6 +1393,19 @@ class DesktopTokenTests(unittest.TestCase):
     def test_environment_token_is_used_as_given(self):
         mk, _, _ = self._main([], HARNESS_UI_AUTH_TOKEN="from-env")
         self.assertEqual(mk.call_args.kwargs["auth_token"], "from-env")
+
+    def test_serve_defaults_to_persisted_token_and_opens_fragment(self):
+        import harness.server as server_mod
+        httpd = mock.Mock()
+        httpd.server_address = ("127.0.0.1", 4242)
+        with mock.patch.object(server_mod, "make_server", return_value=httpd) as mk, \
+                mock.patch.object(server_mod.osal, "open_url") as opener:
+            server_mod.main(["--open"])
+        token = mk.call_args.kwargs["auth_token"]
+        self.assertGreaterEqual(len(token), 32)
+        with open(self.token_file, encoding="utf-8") as f:
+            self.assertEqual(f.read(), token)
+        opener.assert_called_once_with("http://127.0.0.1:4242/#" + token)
 
     def test_non_loopback_host_is_refused(self):
         import harness.ui as ui_mod
@@ -1409,9 +1480,10 @@ class ChatEndpointTests(ServerHarness):
         # for stdlib trace coverage.
         args1 = ui_server.validate_dispatch("chat", {"prompt": "Hello"})
         self.assertEqual(args1["prompt"], "Hello")
-        self.assertTrue(args1["auto_apply"])
+        self.assertFalse(args1["auto_apply"])
 
-        args2 = ui_server.validate_dispatch("chat", {"prompt": "Fix", "auto_apply": False, "session_id": "s123", "allow_paid": True})
+        with tempfile.TemporaryDirectory() as root:
+            args2 = ui_server.validate_dispatch("chat", {"prompt": "Fix", "auto_apply": False, "session_id": "s123", "allow_paid": True, "root_dir": root})
         self.assertEqual(args2["prompt"], "Fix")
         self.assertFalse(args2["auto_apply"])
         self.assertEqual(args2["session_id"], "s123")

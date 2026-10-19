@@ -14,12 +14,12 @@ no endpoints and no policy.
 """
 import argparse
 import os
-import secrets
 import sys
 import threading
 
 from . import osal
 from .server import make_server
+from .ui_auth import load_or_create_ui_token
 
 
 def _open_window(url, token):
@@ -34,54 +34,6 @@ def _open_window(url, token):
     webview.create_window("Harness", url + "#" + token, width=1280, height=860)
     webview.start()
     return "webview"
-
-
-def _read_token_file(path):
-    """The persisted desktop token, or "" when absent, blank or unreadable."""
-    if os.path.islink(path):
-        return ""
-    try:
-        with open(path, encoding="utf-8") as f:
-            token = f.read().strip()
-    except OSError:
-        return ""
-    try:
-        os.chmod(path, 0o600)  # tighten a file an older build left open
-    except OSError:
-        pass
-    return token
-
-
-def _write_token_file(path, token):
-    """Persist the desktop token readable by its owner only (best effort).
-
-    The token is written to a fresh sibling file created ``O_EXCL`` with mode
-    0600 (POSIX; Windows ignores the mode bits) and then moved over ``path``
-    with ``os.replace``. A pre-existing, wider-open file (or one an attacker
-    pre-created) is therefore never written to: it is replaced, not opened.
-    A symlink at ``path`` is refused rather than followed or replaced. Failure
-    to persist is not fatal: the token just will not survive a restart.
-    """
-    tmp = None
-    try:
-        if os.path.islink(path):
-            return
-        directory = os.path.dirname(path)
-        os.makedirs(directory, exist_ok=True)
-        tmp = os.path.join(directory, f".desktop_token.{secrets.token_hex(8)}.tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(token)
-        os.replace(tmp, path)
-        tmp = None
-    except OSError:
-        pass
-    finally:
-        if tmp is not None:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
 
 
 def main(argv=None):
@@ -100,12 +52,7 @@ def main(argv=None):
         sys.exit(1)
     token = opts.auth_token or os.environ.get("HARNESS_UI_AUTH_TOKEN")
     if not token:
-        from .config import CONFIG_DIR
-        token_file = os.path.join(CONFIG_DIR, "desktop_token")
-        token = _read_token_file(token_file)
-        if not token:
-            token = secrets.token_urlsafe(24)
-            _write_token_file(token_file, token)
+        token = load_or_create_ui_token()
     httpd = make_server(opts.host, opts.port, auth_token=token)
     host, port = httpd.server_address[:2]
     url = f"http://{host}:{port}/"

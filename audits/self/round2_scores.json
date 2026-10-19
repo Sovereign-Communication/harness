@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.99,
+        "confidence": 0.97,
         "evaluated": true
       }
     },
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 4616 tests in 280.835s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 4685 tests in 445.594s\n\nOK (env scrubbed: HARNESS_USE_FREE; empty home)"
       },
       {
         "id": "R14",
@@ -268,7 +268,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "91/91 modules imported by tests"
+        "evidence": "93/93 modules imported by tests"
       },
       {
         "id": "S7",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 796/824 = 97% (bar 95%) vs baseline a7daf42520; untested: benchmark_ingest.py:64,67; capability.py:801,830,832,834,926,938,956,993...; chat.py:403,710; cli.py:1795,1846; cli_parser.py:794; endpoint_pricing.py:388; fireworks_probe.py:70,117; jev_packs.py:51,52; jev_policy.py:3849,3863; routing_table.py:81,104,376; server.py:1205; spend.py:402)"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 272/273 = 100% (bar 95%) vs baseline df4a7f1c60; untested: repo_scope.py:149)"
       }
     ]
   }
