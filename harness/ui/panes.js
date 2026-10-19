@@ -658,7 +658,7 @@ async function renderApply(root) {
 
       setApplyPipeline("verdict");
       const res = final.result || final;
-      const isOk = final.status === "done" || res.status === "applied" || res.status === "verified";
+      const isOk = final.status === "done" || final.status === "ok" || res.status === "applied" || res.status === "verified";
 
       const summaryCard = $("div", { class: "driver-step-card", style: `border-color: var(${isOk ? "--good" : "--warn"});` },
         $("div", { class: "driver-step-card-header" },
