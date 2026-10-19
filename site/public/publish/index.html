@@ -23,8 +23,8 @@
   <h2>Publish your evidence</h2>
   <ol>
     <li>Run <code>harness site-export --ledger &lt;ledger.jsonl&gt; --consent &lt;consent.json&gt; --yes --out bundle.json</code> on your machine.</li>
-    <li>Paste or load the bundle below. The page renders <strong>exactly what will be sent</strong> — the same sanitized fields anyone will see.</li>
-    <li>Confirm the consent checkbox and submit. The server re-validates the schema, the consent block, and the bundle hash before accepting.</li>
+    <li>Paste the bundle JSON below. There is no file picker or pre-submission preview; after consent, the browser sends the parsed JSON to <code>/api/submit</code>.</li>
+    <li>Submit on the deployed Proof Bench. Its Worker checks the bundle schema, consent block, and exported hash-chain claim before accepting. <code>harness site-export</code> verified the actual ledger chain locally; <code>harness serve</code> does not provide <code>/api/submit</code>.</li>
   </ol>
   <form id="publish-form">
     <p><label for="bundle-text">Bundle JSON (from site-export)</label></p>
