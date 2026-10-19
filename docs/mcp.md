@@ -62,13 +62,16 @@ directory is on `PATH`.
 
 ## Tools
 
-The server supports panel verification, scoped apply, consent, deferral,
-ledger status, participation reporting, spend status, trust status, and a
-read-only `site_check` tool for one bounded HTTPS availability probe reviewed
-by Jev. `site_check` accepts a natural-language request and runs the shared
+The current tool names and their `tools/list` order are maintained in the
+[README MCP inventory](../README.md). A regression test compares that list
+with the server's `tools/list` response. Tool-specific contracts are described
+there and in this guide.
+
+`site_check` is a read-only tool for one bounded HTTPS availability probe
+reviewed by Jev. It accepts a natural-language request and runs the shared
 simple-action lifecycle; it does not escalate to the general model router.
-Results include machine-readable structured content and an `isError` flag
-for tool failures.
+Results include machine-readable structured content and an `isError` flag for
+tool failures.
 Response frames correlate by request id, never by position: lanes run
 concurrently, so a later request may answer first.
 

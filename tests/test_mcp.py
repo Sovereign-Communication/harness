@@ -259,6 +259,21 @@ class McpProtocolTests(unittest.TestCase):
         self.assertEqual(lines[2]["id"], 3)
         self.assertEqual(lines[2]["result"], {})
 
+    def test_readme_mcp_inventory_matches_tools_list(self):
+        import re
+        _, lines = run('{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n')
+        names = [tool["name"] for tool in lines[0]["result"]["tools"]]
+        root = Path(__file__).resolve().parents[1]
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        marker = "Tools (`tools/list` order):"
+        inventory = readme.split(marker, 1)[1].split(
+            "\n`economics_report` reports", 1)[0]
+        documented = re.findall(r"`([a-z_]+)`", inventory)
+        self.assertEqual(documented, names)
+
+        mcp_doc = (root / "docs" / "mcp.md").read_text(encoding="utf-8")
+        self.assertIn("[README MCP inventory](../README.md)", mcp_doc)
+
     def test_site_check_delegates_to_shared_agent_lifecycle(self):
         import harness.mcp as mcp_module
         expected = {
