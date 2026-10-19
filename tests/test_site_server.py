@@ -89,6 +89,13 @@ class SitePageServingTests(ServerHarness):
         finally:
             conn.close()
 
+    def test_home_footer_does_not_claim_metrics_link_to_evidence(self):
+        path = Path("site/public/index.html")
+        page = path.read_text(encoding="utf-8")
+        footer = page.split("<footer", 1)[1].split("</footer>", 1)[0]
+        self.assertIn("Metrics summarize sanitized, consented site-export bundles", footer)
+        self.assertNotIn("Every number on this site links", footer)
+
     def test_public_demo_snapshot_asset_is_served_and_in_sync(self):
         root = Path(__file__).resolve().parents[1]
         source = root / "site" / "data" / "demo" / "snapshot.json"
