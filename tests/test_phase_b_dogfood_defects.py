@@ -240,5 +240,20 @@ class PanelVerifyCapIsEnforcedTests(unittest.TestCase):
         self.assertIn("gov.task_scope(task_max_cost", src)
 
 
+class ApplyGuiResultTests(unittest.TestCase):
+    """A successful, gated Apply run must not be labeled as refused."""
+
+    def test_ok_terminal_status_is_styled_as_success(self):
+        src = ui_source()
+        match = re.search(
+            r"async function renderApply\(root\) \{[\s\S]*?\n\}\n\nasync function renderDogfood",
+            src,
+        )
+        self.assertIsNotNone(match)
+        success_check = re.search(r"const isOk = ([^;]+);", match.group(0))
+        self.assertIsNotNone(success_check)
+        self.assertRegex(success_check.group(1), r'\bfinal\.status\s*===\s*"ok"')
+
+
 if __name__ == "__main__":
     unittest.main()
