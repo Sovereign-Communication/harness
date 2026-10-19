@@ -1667,6 +1667,62 @@ def _cmd_jev_calibration(opts, settings):
     _emit(report, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
 
 
+def _cmd_refine(opts, settings):
+    """Propose-Probe-Compose refinement loop (issue #239, Phase 0 pilot)."""
+    from . import refine as _refine
+    ledger = _ledger(settings)
+
+    # --record-outcome TASK_ID FAMILY JEV_OUTCOME : P0 task outcome tracking.
+    if getattr(opts, "record_outcome", None):
+        task_id, family, outcome_s = opts.record_outcome
+        try:
+            outcome = float(outcome_s)
+        except ValueError as err:
+            raise HarnessError(f"JEV_OUTCOME must be a number 0-1, got {outcome_s!r}") from err
+        rec = _refine.record_task_outcome(ledger, task_id, family, outcome)
+        _emit({"recorded": True, "task_id": task_id, "seq": rec.get("seq")},
+              getattr(opts, "out", None),
+              force_json=getattr(opts, "json", False))
+        return
+
+    # --status : pilot status, lessons, tiers.
+    if getattr(opts, "status", False):
+        report = _refine.status_report(ledger)
+        if not getattr(opts, "json", False) and not getattr(opts, "quiet", False):
+            print(f"refine pilot: {'ACTIVE' if report['pilot_active'] else 'inactive'} "
+                  f"({report['pilot_cycles_completed']}/{report['pilot_cycles_target']} cycles)")
+            print(f"lessons: {report['lessons_count']} ({report['seed_lessons']} seed)")
+            print(f"families: {', '.join(report['families'])}")
+        _emit(report, getattr(opts, "out", None),
+              force_json=getattr(opts, "json", False))
+        return
+
+    # --task / --family : run a refinement cycle (Phase 0 pilot-gated).
+    task_id = getattr(opts, "task", None)
+    family = getattr(opts, "family", None)
+    if not task_id and not family:
+        raise HarnessError("harness refine needs --task, --family, --status, or --record-outcome")
+    if not _refine.pilot_active() and not _refine.load_pilot_state().get("graduated"):
+        raise HarnessError("refine pilot complete and not graduated: operator review required "
+                           "(see issue #239 Phase 0)")
+    # Full cycle execution lands in Phase 2; the scaffold validates inputs now.
+    if task_id:
+        rec = _refine.get_task_outcome(ledger, task_id)
+        if rec is None:
+            raise HarnessError(f"no task_outcome recorded for {task_id!r} "
+                               f"(record with: harness refine --record-outcome {task_id} <family> <0-1>)")
+        _emit({"task_id": task_id, "outcome": rec.get("jev_outcome"),
+               "pilot_cycle": "validated (Phase 2 executes the loop)"},
+              getattr(opts, "out", None),
+              force_json=getattr(opts, "json", False))
+        return
+    if not _refine.valid_family(family):
+        raise HarnessError(f"unknown task family: {family!r}")
+    _emit({"family": family, "pilot_cycle": "validated (Phase 2 executes the loop)"},
+          getattr(opts, "out", None),
+          force_json=getattr(opts, "json", False))
+
+
 # Command -> handler. `required=True` subparsers make an unknown command
 # unreachable here, so the table has no default arm; every handler takes
 # (opts, settings), so a signature drift fails loudly at dispatch instead of
@@ -1704,6 +1760,7 @@ _DISPATCH = {
     "provision": _cmd_provision,
     "repo-cards": _cmd_repo_cards,
     "jev-calibration": _cmd_jev_calibration,
+    "refine": _cmd_refine,
 }
 
 
