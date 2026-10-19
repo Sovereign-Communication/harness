@@ -123,7 +123,7 @@ class MediaAdapter:
         if job.get("status") == "refused":
             return job  # budget refusal envelope with math
         if not wait:
-            return job
+            return self._envelope(job)
         return self.wait(job["id"], timeout=timeout)
 
     def wait(self, job_id, timeout=600.0, interval=2.0):
@@ -230,6 +230,13 @@ def run_cli(args, settings=None):
         if env.get("math"):
             print("  math:     {}".format(json.dumps(env["math"], sort_keys=True)))
 
+    def exit_code(env):
+        status = env.get("status")
+        if (status == "succeeded"
+                or (opts.no_wait and status in ("queued", "running"))):
+            return 0
+        return 1
+
     try:
         if opts.media_cmd == "image":
             params = {k: v for k, v in (("size", opts.size), ("quality", opts.quality)) if v}
@@ -237,14 +244,14 @@ def run_cli(args, settings=None):
                                 timeout=opts.timeout, provider=opts.provider,
                                 model=opts.model, **params)
             show(env)
-            return 0 if env.get("status") == "succeeded" else 1
+            return exit_code(env)
         if opts.media_cmd == "video":
             params = {"seconds": opts.seconds} if opts.seconds else {}
             env = adapter.video(opts.prompt, project=opts.project, wait=not opts.no_wait,
                                 timeout=opts.timeout, provider=opts.provider,
                                 model=opts.model, **params)
             show(env)
-            return 0 if env.get("status") == "succeeded" else 1
+            return exit_code(env)
         if opts.media_cmd == "job":
             show(adapter.job(opts.job_id))
             return 0
