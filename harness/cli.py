@@ -483,6 +483,8 @@ def _cmd_continue(opts, settings):
 
 
 def _cmd_offer(opts, settings):
+    if not isinstance(opts.task, str) or not opts.task.strip():
+        raise HarnessError("offer requires a non-empty --task.")
     api_key, gov = _governor(settings)
     ledger = _ledger(settings)
     result = probe_consent(

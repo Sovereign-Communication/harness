@@ -31,6 +31,46 @@ class CliSpendLimitTests(unittest.TestCase):
         self.assertIn("known billed usage: $0.000012", stderr.getvalue())
 
 
+class OfferInputValidationTests(unittest.TestCase):
+    def test_valid_task_still_reaches_the_consent_probe(self):
+        from types import SimpleNamespace
+
+        settings = SimpleNamespace(
+            judge="judge-model", panel_pool=["panel-model"],
+            min_confidence=0.7)
+        output = io.StringIO()
+        with mock.patch.object(cli, "load_settings", return_value=settings), \
+             mock.patch.object(cli, "_governor", return_value=("key", object())), \
+             mock.patch.object(cli, "_ledger", return_value=object()), \
+             mock.patch.object(
+                 cli, "probe_consent",
+                 return_value={"decision": "accept"}) as probe, \
+             contextlib.redirect_stdout(output):
+            cli.main(["offer", "--task", "Rewrite the parser"])
+
+        self.assertEqual(json.loads(output.getvalue()), {"decision": "accept"})
+        self.assertEqual(probe.call_args.kwargs["task"], "Rewrite the parser")
+
+    def test_empty_task_is_rejected_before_provider_or_ledger_setup(self):
+        for task in ("", "   "):
+            with self.subTest(task=repr(task)):
+                stderr = io.StringIO()
+                with mock.patch.object(cli, "load_settings", return_value=object()), \
+                     mock.patch.object(cli, "_governor") as governor, \
+                     mock.patch.object(cli, "_ledger") as ledger, \
+                     mock.patch.object(cli, "probe_consent") as probe, \
+                     contextlib.redirect_stderr(stderr), \
+                     self.assertRaises(SystemExit) as ctx:
+                    cli.main(["offer", "--task", task])
+
+                self.assertEqual(ctx.exception.code, 1)
+                self.assertIn("offer requires a non-empty --task",
+                              stderr.getvalue())
+                governor.assert_not_called()
+                ledger.assert_not_called()
+                probe.assert_not_called()
+
+
 class PanelWiringTests(unittest.TestCase):
     def test_verify_panel_flag_reaches_run_verify(self):
         """DF-CLI-2: ``harness verify --panel`` was declared in cli_parser.py
