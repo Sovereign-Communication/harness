@@ -311,9 +311,9 @@ class SiteAppJsBehaviorTests(unittest.TestCase):
         uri = Path("site/public/assets/app.js").resolve().as_uri()
         script = (
             "globalThis.location = { search: " + json.dumps(location_search) + " };\n"
-            "const mk = (tag) => ({ tag, kids: [],\n"
+            "const mk = (tag) => ({ tag, kids: [], attrs: {},\n"
             "  append(...xs) { this.kids.push(...xs); },\n"
-            "  setAttribute() {}, addEventListener() {} });\n"
+            "  setAttribute(k, v) { this.attrs[k] = v; }, addEventListener() {} });\n"
             "globalThis.document = { createElement: mk, getElementById: () => null };\n"
             "const app = await import('" + uri + "');\n"
             "const { el } = app;\n" + body)
@@ -358,6 +358,23 @@ class SiteAppJsBehaviorTests(unittest.TestCase):
             "const ul = el('ul', {}, [null, a, undefined]);\n"
             "process.stdout.write(JSON.stringify({ n: ul.kids.length }));\n")
         self.assertEqual(json.loads(out)["n"], 1)
+
+    def test_hourglass_discloses_unknown_run_depth(self):
+        import json
+        out = self._run_app(
+            "const nodeText = (node) => typeof node === 'string' ? node :\n"
+            "  (node.kids || []).map(nodeText).join('');\n"
+            "const chart = app.hourglass({ run_depth_distribution: {\n"
+            "  T0: { runs: 4, share: 0.4 }, T1: { runs: 3, share: 0.3 },\n"
+            "  T2: { runs: 2, share: 0.2 }, T3: { runs: 0, share: 0 },\n"
+            "  unknown: { runs: 1, share: 0.1 } } });\n"
+            "process.stdout.write(JSON.stringify({\n"
+            "  text: nodeText(chart), label: chart.attrs['aria-label']\n"
+            "}));\n")
+        data = json.loads(out)
+        self.assertIn("Unknown1 runs", data["text"])
+        self.assertIn("10%", data["text"])
+        self.assertIn("unknown depth: 1 run (10%)", data["label"])
 
     def test_public_demo_snapshot_url_is_relative_to_the_shared_app_asset(self):
         out = self._run_app(
