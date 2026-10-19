@@ -1087,7 +1087,12 @@ async function renderDriver(root) {
           await postJson("/api/driver/start", {});
           await loadHealthSubtab();
         } catch (e) {
-          alert("Error: " + e.message);
+          aspectHost.querySelector(".driver-start-error")?.remove();
+          aspectHost.append($("p", {
+            class: "small driver-start-error",
+            role: "alert",
+            style: "color: var(--bad);"
+          }, `Driver restart failed: ${e.message}`));
         } finally {
           startBtn.disabled = false;
         }
