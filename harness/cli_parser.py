@@ -764,14 +764,18 @@ def build_parser():
     prf = sub.add_parser(
         "refine",
         help="Propose-Probe-Compose harness refinement loop (issue #239; Phase 0 pilot)")
-    prf.add_argument("--task", default=None,
-                     help="run one refinement cycle for a failed task ID")
-    prf.add_argument("--family", default=None,
-                     help="run a refinement pass over a task family")
-    prf.add_argument("--status", action="store_true",
-                     help="show pilot status, lessons count, and tier summary")
-    prf.add_argument("--record-outcome", nargs=3, metavar=("TASK_ID", "FAMILY", "JEV_OUTCOME"),
-                     help="record a task outcome: TASK_ID FAMILY JEV_OUTCOME (0-1)")
+    refine_action = prf.add_mutually_exclusive_group()
+    refine_action.add_argument(
+        "--task", default=None,
+        help="validate a recorded task outcome (cycle execution is not implemented yet)")
+    refine_action.add_argument(
+        "--family", default=None,
+        help="validate a task family (refinement pass execution is not implemented yet)")
+    refine_action.add_argument("--status", action="store_true",
+                               help="show pilot status, lessons count, and tier summary")
+    refine_action.add_argument(
+        "--record-outcome", nargs=3, metavar=("TASK_ID", "FAMILY", "JEV_OUTCOME"),
+        help="record a task outcome: TASK_ID FAMILY JEV_OUTCOME (0-1)")
     prf.add_argument("--json", action="store_true", help="emit raw JSON output only")
     _add_output_flags(prf)
 

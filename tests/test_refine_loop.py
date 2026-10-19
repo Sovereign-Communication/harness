@@ -97,6 +97,18 @@ class TestTaskOutcome(unittest.TestCase):
         with self.assertRaises(ValueError):
             refine.record_task_outcome(FakeLedger(), "t-1", "pr-review", 1.5)
 
+    def test_empty_task_id_rejected(self):
+        for task_id in ("", "  "):
+            with self.subTest(task_id=task_id):
+                with self.assertRaisesRegex(ValueError, "non-empty"):
+                    refine.record_task_outcome(FakeLedger(), task_id, "pr-review", 0.5)
+
+    def test_outcome_boundaries_are_valid(self):
+        for outcome in (0.0, 1.0):
+            with self.subTest(outcome=outcome):
+                rec = refine.record_task_outcome(FakeLedger(), "t-1", "pr-review", outcome)
+                self.assertEqual(rec["jev_outcome"], outcome)
+
     def test_recent_outcomes_filters(self):
         ledger = FakeLedger()
         refine.record_task_outcome(ledger, "t-1", "pr-review", 0.8)
@@ -297,6 +309,53 @@ class TestRefineCli(unittest.TestCase):
                  patch.object(refine, "load_pilot_state", return_value={"graduated": False}):
                 with self.assertRaises(HarnessError):
                     cli._cmd_refine(type("O", (), {"task": "task-1", "family": None, "status": False, "record_outcome": None})(), None)
+
+    def test_cli_reports_invalid_outcomes_and_blank_task_ids(self):
+        import io
+        from contextlib import redirect_stderr
+        from unittest.mock import patch
+        from harness import cli
+
+        ledger = FakeLedger()
+        cases = (
+            (["refine", "--record-outcome", "t-1", "unknown-family", "0.5"],
+             "unknown task family"),
+            (["refine", "--record-outcome", "t-1", "code-fix", "1.1"],
+             "jev_outcome must be 0-1"),
+            (["refine", "--record-outcome", "t-1", "code-fix", "-0.01"],
+             "jev_outcome must be 0-1"),
+            (["refine", "--record-outcome", "t-1", "code-fix", "nan"],
+             "jev_outcome must be 0-1"),
+            (["refine", "--record-outcome", "t-1", "code-fix", "inf"],
+             "jev_outcome must be 0-1"),
+            (["refine", "--record-outcome", " ", "code-fix", "0.5"],
+             "task_id must be a non-empty string"),
+            (["refine", "--task", "   "], "--task requires a non-empty task ID"),
+        )
+        for argv, expected in cases:
+            with self.subTest(argv=argv):
+                stderr = io.StringIO()
+                with patch.object(cli, "_ledger", return_value=ledger), \
+                     patch.object(cli, "load_settings", return_value=object()), \
+                     patch.object(refine, "pilot_active", return_value=True), \
+                     redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit) as raised:
+                        cli.main(argv)
+                self.assertEqual(raised.exception.code, 1)
+                self.assertIn(expected, stderr.getvalue())
+                self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_refine_actions_cannot_silently_override_each_other(self):
+        import io
+        from contextlib import redirect_stderr
+        from harness import cli
+
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as raised:
+                cli.build_parser().parse_args(["refine", "--status", "--task", "t-1"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("not allowed with argument", stderr.getvalue())
 
 
 if __name__ == "__main__":

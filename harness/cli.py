@@ -1767,7 +1767,10 @@ def _cmd_refine(opts, settings):
             outcome = float(outcome_s)
         except ValueError as err:
             raise HarnessError(f"JEV_OUTCOME must be a number 0-1, got {outcome_s!r}") from err
-        rec = _refine.record_task_outcome(ledger, task_id, family, outcome)
+        try:
+            rec = _refine.record_task_outcome(ledger, task_id, family, outcome)
+        except ValueError as err:
+            raise HarnessError(str(err)) from err
         _emit({"recorded": True, "task_id": task_id, "seq": rec.get("seq")},
               getattr(opts, "out", None),
               force_json=getattr(opts, "json", False))
@@ -1785,9 +1788,11 @@ def _cmd_refine(opts, settings):
               force_json=getattr(opts, "json", False))
         return
 
-    # --task / --family : run a refinement cycle (Phase 0 pilot-gated).
+    # --task / --family : validate the inputs for the not-yet-implemented Phase 2 cycle.
     task_id = getattr(opts, "task", None)
     family = getattr(opts, "family", None)
+    if task_id is not None and not task_id.strip():
+        raise HarnessError("--task requires a non-empty task ID")
     if not task_id and not family:
         raise HarnessError("harness refine needs --task, --family, --status, or --record-outcome")
     if not _refine.pilot_active() and not _refine.load_pilot_state().get("graduated"):
