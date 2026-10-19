@@ -212,6 +212,12 @@ def run_cli(args, settings=None):
     p.add_argument("--project", default=None)
 
     opts = ap.parse_args(args)
+    if opts.media_cmd == "job":
+        try:
+            MediaAdapter._quote_job_id(opts.job_id)
+        except ValueError as e:
+            ap.error(str(e))
+
     adapter = MediaAdapter()
 
     def show(env):
