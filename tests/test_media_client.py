@@ -210,6 +210,20 @@ class MediaCliTests(unittest.TestCase):
                 self.assertNotIn("Traceback", err.getvalue())
                 request.assert_not_called()
 
+    def test_cli_job_lookup_still_succeeds(self):
+        done = {
+            "id": "job-1", "status": "succeeded", "kind": "image",
+            "provider": "acme", "model": "gen-1", "project": "demo",
+        }
+        out = io.StringIO()
+        with mock.patch.object(MediaAdapter, "_request", return_value=done) as request:
+            with redirect_stdout(out):
+                code = run_cli(["job", "job-1"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("job job-1  [succeeded]", out.getvalue())
+        request.assert_called_once_with("GET", "/v1/jobs/job-1")
+
     def test_cli_budget_refused_exits_nonzero_and_shows_math(self):
         e = _http_error(402, {
             "error": "budget_refused", "message": "over ceiling",
