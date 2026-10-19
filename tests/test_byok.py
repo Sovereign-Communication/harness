@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -66,6 +67,23 @@ class ByokLearnTests(unittest.TestCase):
         result = panel_judge(transport=fake2, api_key="k", governor=gov2, prompt="Q?",
                              panel=[PAID, P2], judge=JUDGE)
         self.assertEqual([r["model"] for r in result["panel_results"]], [P2])
+
+    def test_learned_paid_prefix_does_not_block_free_model_from_same_org(self):
+        free = "vendor/gemma-free:free"
+        with open(self.prefix_path, "w", encoding="utf-8") as f:
+            json.dump(["vendor/"], f)
+        fake = FakeTransport(
+            models=[m(free, "0", "0"), m(JUDGE)],
+            posts=[comp("free vote"), comp("verdict")])
+        gov = SpendGovernor(fake, "sk-test", byok_prefixes_path=self.prefix_path)
+        cached_free = "vendor/zero-price-model"
+        gov._pricing_cache[cached_free] = (0.0, 0.0)
+        self.assertFalse(gov.learned_blocked(cached_free))
+
+        result = panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",
+                             panel=[free], judge=JUDGE)
+
+        self.assertEqual([r["model"] for r in result["panel_results"]], [free])
 
 
 if __name__ == "__main__":

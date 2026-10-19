@@ -31,6 +31,8 @@ from .output import eprint
 from .tokens import estimate_prompt_tokens
 from .validation import finite_number
 
+FREE_ROUTER_MODEL_IDS = frozenset(("openrouter/free", "openrouter/auto"))
+
 # Dual-budget phases. Attempts are the default and never eat the reserve.
 PHASE_ATTEMPT = "attempt"
 PHASE_TERMINAL = "terminal"
@@ -338,7 +340,16 @@ class SpendGovernor:
                     f"model '{model_id}' matches BYOK denylist prefix '{prefix}'. Refusing.")
 
     def learned_blocked(self, model_id):
-        """True if this org-prefix was observed routing via BYOK on this account."""
+        """True if this paid org-prefix was observed routing via BYOK.
+
+        A learned paid-provider prefix must not suppress an explicitly free
+        model from that same provider: those variants have no tracked spend
+        to leak. Pricing already cached from a preflight is treated the same
+        way.
+        """
+        if (model_id.endswith(":free") or model_id in FREE_ROUTER_MODEL_IDS
+                or self._pricing_cache.get(model_id) == (0.0, 0.0)):
+            return False
         return any(model_id.startswith(p) for p in self._learned_byok)
 
     def record_byok(self, model_id):
@@ -383,7 +394,7 @@ class SpendGovernor:
                 models = self.fetch_models(refresh=True)
                 by_id = {m_["id"]: m_ for m_ in models}
                 for mid in or_missing:
-                    if mid in ("openrouter/free", "openrouter/auto"):
+                    if mid in FREE_ROUTER_MODEL_IDS:
                         self._pricing_cache[mid] = (0.0, 0.0)
                         continue
                     if mid not in by_id:
