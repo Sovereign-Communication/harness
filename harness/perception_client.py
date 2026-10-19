@@ -149,14 +149,18 @@ class PerceptionAdapter:
             # error means the request never became a decision.
             try:
                 try:
-                    err = json.loads(e.read().decode("utf-8"))
+                    decoded_error = json.loads(e.read().decode("utf-8"))
                 except Exception:
-                    err = {"error": "HTTP {}".format(e.code)}
+                    decoded_error = {"error": "HTTP {}".format(e.code)}
             finally:
                 e.close()
+            if isinstance(decoded_error, dict):
+                detail = decoded_error.get("error") or decoded_error
+            else:
+                detail = decoded_error
             raise PerceptionUnavailable(
                 "driver service returned HTTP {}: {}".format(
-                    e.code, err.get("error") or err)
+                    e.code, detail)
             ) from e
         except (urllib.error.URLError, OSError) as e:
             raise PerceptionUnavailable(

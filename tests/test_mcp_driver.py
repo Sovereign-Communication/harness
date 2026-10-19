@@ -1,12 +1,20 @@
 """Tests for driver tools on harness.mcp (driver_step, driver_health, etc.)."""
+import json
+import tempfile
+import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
+from driver_core.audit import MemoryAuditLog
+from driver_core.config import load_settings
+from driver_core.driver import Driver
+from driver_core.server import Service, serve
 from harness import server as ui_server
 from harness.errors import HarnessError
 from harness.mcp_lanes import MUTATION_LANE
 from harness.mcp_schemas import TOOL_SCHEMAS
-from tests.test_mcp import make_server
+from tests.test_mcp import _serve, make_server
 
 
 class McpDriverToolsTest(unittest.TestCase):
@@ -136,6 +144,78 @@ class McpDriverToolsTest(unittest.TestCase):
         res = self.server._invoke("driver_verify", {})
         self.assertTrue(res["ok"])
         self.assertEqual(res["audit"]["records"], 10)
+
+    def test_driver_tools_round_trip_through_authenticated_driver_core(self):
+        from harness.perception_client import PerceptionAdapter
+
+        token = "isolated-mcp-driver-test-token"
+        settings = load_settings(env={"DRIVER_TOKEN": token})
+        driver = Driver(settings=settings, audit=MemoryAuditLog(), sources=[])
+
+        with tempfile.TemporaryDirectory() as state_dir:
+            with patch("driver_core.server.default_consent_ledger_path",
+                       return_value=Path(state_dir) / "consent.json"):
+                service = Service(driver, token=token)
+            httpd, _ = serve(host="127.0.0.1", port=0,
+                             service=service, block=False)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = "http://127.0.0.1:{}".format(
+                    httpd.server_address[1])
+                cases = (
+                    (1, "driver_step", {"target": "probe"}),
+                    (2, "driver_health", {}),
+                    (3, "driver_vocabulary", {}),
+                    (4, "driver_verify", {}),
+                )
+
+                def call_tools(tool_cases, client):
+                    _, mcp_server = make_server()
+                    feed = "".join(json.dumps({
+                        "jsonrpc": "2.0", "id": request_id,
+                        "method": "tools/call",
+                        "params": {"name": name, "arguments": arguments},
+                    }) + "\n" for request_id, name, arguments in tool_cases)
+                    with patch("harness.mcp.PerceptionAdapter",
+                               return_value=client):
+                        responses = _serve(mcp_server, feed)
+                    return {response["id"]: response for response in responses}
+
+                client = PerceptionAdapter(base_url=base_url, token=token)
+                replies = call_tools(cases, client)
+
+                results = {
+                    request_id: reply["result"]["structuredContent"]
+                    for request_id, reply in replies.items()
+                }
+                self.assertEqual(set(results), {1, 2, 3, 4})
+                self.assertEqual(results[1]["reason"], "no_capture")
+                self.assertEqual(results[1]["stopped_at"], "capture")
+                self.assertTrue(results[2]["ok"])
+                self.assertEqual(results[2]["status"], "up")
+                self.assertTrue(results[3]["ok"])
+                self.assertTrue(results[4]["audit"]["ok"])
+
+                wrong_client = PerceptionAdapter(
+                    base_url=base_url, token="wrong-isolated-token")
+                denied_cases = tuple(
+                    (request_id + 10, name, arguments)
+                    for request_id, name, arguments in cases)
+                denied = call_tools(denied_cases, wrong_client)
+                self.assertEqual(set(denied), {11, 12, 13, 14})
+                for response in denied.values():
+                    self.assertNotIn("error", response)
+                    self.assertTrue(response["result"]["isError"])
+                    self.assertEqual(response["result"]["errorKind"],
+                                     "driver_tool_error")
+                    message = response["result"]["content"][0]["text"]
+                    self.assertIn("driver-core request failed", message)
+                    self.assertIn("HTTP 401: unauthorized", message)
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+                thread.join(timeout=2)
 
 
 if __name__ == "__main__":

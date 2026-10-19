@@ -712,6 +712,34 @@ class McpProtocolTests(unittest.TestCase):
         self.assertNotIn("error", lines[0])
         self.assertTrue(lines[0]["result"]["isError"])
 
+    def test_non_object_driver_http_error_body_stays_a_typed_tool_error(self):
+        import urllib.error
+        from harness.perception_client import PerceptionAdapter
+
+        feed = json.dumps({
+            "jsonrpc": "2.0", "id": 35, "method": "tools/call",
+            "params": {"name": "driver_health", "arguments": {}},
+        }) + "\n"
+
+        def malformed_error(request, timeout):
+            raise urllib.error.HTTPError(
+                request.full_url, 502, "bad gateway", {}, io.BytesIO(b"[]"))
+
+        def make_adapter():
+            return PerceptionAdapter(
+                base_url="http://driver.test", token="test-token",
+                opener=malformed_error)
+
+        with mock.patch("harness.mcp.PerceptionAdapter", side_effect=make_adapter):
+            _, lines = run(feed)
+
+        self.assertNotIn("error", lines[0])
+        self.assertTrue(lines[0]["result"]["isError"])
+        self.assertEqual(lines[0]["result"]["errorKind"], "driver_tool_error")
+        message = lines[0]["result"]["content"][0]["text"]
+        self.assertIn("driver-core request failed", message)
+        self.assertIn("driver service returned HTTP 502: []", message)
+
     def test_apply_rejects_ungated_continuation_before_capability_lookup(self):
         """MCP must share the CLI/library authority boundary. Validation now
         runs structurally before any governor/capability access, so the guard
