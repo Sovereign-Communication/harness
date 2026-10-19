@@ -198,14 +198,14 @@ def _cmd_verify(opts, settings):
     # derivation all live in service.prepare_verify. The CLI keeps only
     # presentation -- lint printing, the rejected exit, and the reassurance
     # banner. Error wording is preserved verbatim at the CLI boundary.
+    if opts.prompt is not None and not opts.prompt.strip():
+        raise HarnessError("prompt is empty.")
     if not (opts.claims_file or opts.prompt_file or opts.prompt):
         raise HarnessError(
             "verify requires --prompt-file/--prompt or --claims-file.")
     if opts.claims_file and not opts.source_file:
         raise HarnessError("verify --claims-file requires --source-file "
                            "(the verbatim code window the panel will review).")
-    if opts.prompt is not None and not opts.prompt.strip():
-        raise HarnessError("prompt is empty.")
     prepared = _prepare_verify(
         prompt=opts.prompt, prompt_file=opts.prompt_file,
         claims_file=opts.claims_file, source_file=opts.source_file,
