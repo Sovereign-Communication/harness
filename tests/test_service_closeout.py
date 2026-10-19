@@ -113,7 +113,9 @@ class ServiceParityTests(unittest.TestCase):
         from harness import service
         from harness.errors import ToolCancelled
 
+        captured = {}
         def cancelled(**kwargs):
+            captured.update(kwargs)
             raise ToolCancelled()
         gov = type("G", (), {"spent": 0.0007, "max_cost": 0.02,
                              "cost_by_model": lambda self: {"m/a": 0.0007}})()
@@ -125,10 +127,16 @@ class ServiceParityTests(unittest.TestCase):
              unittest.mock.patch.object(service, "panel_judge",
                                         side_effect=cancelled):
             result = service.run_verify(self._settings(), prompt="hi",
-                                        task_id="t/1")
+                                        task_id="t/1", panel=["m/selected"],
+                                        judge="m/selected-judge",
+                                        reasoning_effort="off")
         self.assertEqual(result["status"], "cancelled")
         self.assertAlmostEqual(result["actual_cost"], 0.0007, places=9)
         self.assertIn("meta", result)
+        self.assertEqual(result["meta"]["panel"], ["m/selected"])
+        self.assertEqual(result["meta"]["judge"], "m/selected-judge")
+        self.assertEqual(result["meta"]["reasoning_effort"], "off")
+        self.assertEqual(result["meta"]["use_free"], captured["free_tier"])
 
     def test_run_verify_attaches_cost_and_meta(self):
         import unittest.mock
@@ -151,6 +159,40 @@ class ServiceParityTests(unittest.TestCase):
                                         task_id="t/1")
         self.assertAlmostEqual(result["actual_cost"], 0.001, places=9)
         self.assertEqual(result["meta"]["judge"], "m/j")
+
+    def test_run_verify_meta_uses_effective_lane_overrides(self):
+        import unittest.mock
+        from harness import service
+
+        captured = {}
+
+        def fake_panel_judge(**kwargs):
+            captured.update(kwargs)
+            return {"status": "ok", "actual_cost": 0.0,
+                    "max_cost_ceiling": 0.02}
+        gov = type("G", (), {"spent": 0.0, "max_cost": 0.02,
+                             "cost_by_model": lambda self: {}})()
+        with unittest.mock.patch.object(service, "governor_for",
+                                        return_value=("k", gov)), \
+             unittest.mock.patch.object(service, "ledger_for",
+                                        return_value=unittest.mock.Mock()), \
+             unittest.mock.patch.object(service, "pre_run_warning"), \
+             unittest.mock.patch.object(service, "panel_judge",
+                                        side_effect=fake_panel_judge):
+            panel = ["m/free-a", "m/free-b"]
+            judge = "m/selected-judge"
+            effort = "off"
+            result = service.run_verify(
+                self._settings(), prompt="hi", task_id="t/override",
+                panel=panel, judge=judge, reasoning_effort=effort)
+
+        self.assertEqual(captured["panel"], panel)
+        self.assertEqual(captured["judge"], judge)
+        self.assertEqual(captured["reasoning_effort"], effort)
+        self.assertEqual(result["meta"]["panel"], panel)
+        self.assertEqual(result["meta"]["judge"], judge)
+        self.assertEqual(result["meta"]["reasoning_effort"], effort)
+        self.assertEqual(result["meta"]["use_free"], captured["free_tier"])
 
     def test_cancelled_envelope_shape_matches_terminal_envelopes(self):
         from harness.service import cancelled_envelope

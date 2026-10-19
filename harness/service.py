@@ -41,7 +41,8 @@ def read_text_file(path, what="input file"):
             f"{what} not readable: {path} ({e.strerror or e})") from e
 
 
-def cancelled_envelope(gov, settings, *, include_meta=True):
+def cancelled_envelope(gov, settings, *, include_meta=True,
+                       meta_overrides=None):
     """The honest spend envelope for a cooperatively cancelled run.
 
     In-flight calls that billed before the cancel landed are real spend and
@@ -55,7 +56,7 @@ def cancelled_envelope(gov, settings, *, include_meta=True):
                 "actual_cost": gov.spent, "max_cost_ceiling": gov.max_cost,
                 "cost_by_model": gov.cost_by_model()}
     if include_meta and settings is not None:
-        envelope["meta"] = run_meta(settings, gov)
+        envelope["meta"] = run_meta(settings, gov, **(meta_overrides or {}))
     return envelope
 
 
@@ -254,6 +255,12 @@ def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
         reasoning_effort=reasoning_effort,
         reasoning_token_budget=reasoning_token_budget,
         max_panelists=max_panelists, free_tier=free_tier)
+    meta_overrides = {
+        "panel": resolved.panel,
+        "judge": resolved.judge,
+        "reasoning_effort": resolved.reasoning_effort,
+        "use_free": resolved.use_free,
+    }
     pre_run_warning(governor=gov, ledger=ledger, use_free=resolved.use_free)
     if task_id is None and generate_task_id:
         task_id = uuid.uuid4().hex[:8]
@@ -274,11 +281,12 @@ def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
                                 if cid.strip()},
                 free_tier=resolved.use_free, cancel_check=cancel_check)
     except ToolCancelled:
-        return cancelled_envelope(gov, settings, include_meta=attach_meta)
+        return cancelled_envelope(gov, settings, include_meta=attach_meta,
+                                  meta_overrides=meta_overrides)
     if attach_meta:
         result["cost_by_model"] = gov.cost_by_model()
         if settings is not None:
-            result["meta"] = run_meta(settings, gov)
+            result["meta"] = run_meta(settings, gov, **meta_overrides)
     return result
 
 
