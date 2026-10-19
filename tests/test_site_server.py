@@ -96,6 +96,13 @@ class SitePageServingTests(ServerHarness):
         self.assertIn("Metrics summarize sanitized, consented site-export bundles", footer)
         self.assertNotIn("Every number on this site links", footer)
 
+    def test_traces_footer_describes_confidence_badges(self):
+        path = Path("site/public/traces/index.html")
+        page = path.read_text(encoding="utf-8")
+        footer = page.split("<footer", 1)[1].split("</footer>", 1)[0]
+        self.assertIn("Jev confidence appears on Jev-directed climb badges", footer)
+        self.assertNotIn("confidence columns", footer)
+
     def test_public_demo_snapshot_asset_is_served_and_in_sync(self):
         root = Path(__file__).resolve().parents[1]
         source = root / "site" / "data" / "demo" / "snapshot.json"
