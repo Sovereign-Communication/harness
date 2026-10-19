@@ -1876,7 +1876,6 @@ _DISPATCH = {
     "trust": _cmd_trust,
     "rankings": _cmd_rankings,
     "economics": _cmd_economics,
-    "fireworks-verify": _cmd_fireworks_verify,
     "jev-phase": _cmd_jev_phase,
     "jev-vision-assessment": _cmd_jev_vision_assessment,
     "jev-freeze": _cmd_jev_freeze,

@@ -779,19 +779,5 @@ def build_parser():
     prf.add_argument("--json", action="store_true", help="emit raw JSON output only")
     _add_output_flags(prf)
 
-    pfw = sub.add_parser(
-        "fireworks-verify",
-        help="EV-8 live Fireworks verification probe (one bounded call per pool model)")
-    pfw.add_argument("--models", default=None,
-                     help="comma-separated Fireworks model paths to probe "
-                          "(default: DEFAULT_FIREWORKS_APPLY_POOL)")
-    pfw.add_argument("--max-cost", type=float, default=0.01,
-                     help="probe cost ceiling in USD (default: 0.01)")
-    pfw.add_argument("--receipt", default=None,
-                     help="write verification receipt JSON to this path")
-    pfw.add_argument("--json", action="store_true",
-                     help="emit raw JSON output only")
-    _add_output_flags(pfw)
-
     return ap
 
