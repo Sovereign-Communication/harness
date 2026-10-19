@@ -314,7 +314,7 @@ class SiteAppJsBehaviorTests(unittest.TestCase):
             "const mk = (tag) => ({ tag, kids: [],\n"
             "  append(...xs) { this.kids.push(...xs); },\n"
             "  setAttribute() {}, addEventListener() {} });\n"
-            "globalThis.document = { createElement: mk };\n"
+            "globalThis.document = { createElement: mk, getElementById: () => null };\n"
             "const app = await import('" + uri + "');\n"
             "const { el } = app;\n" + body)
         with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as f:
@@ -386,3 +386,21 @@ class SiteAppJsBehaviorTests(unittest.TestCase):
         self.assertIn("No snapshot is available", text)
         self.assertIn("cannot be classified", text)
         self.assertNotIn("claims to be live evidence", text)
+
+    def test_router_copy_describes_distinct_demo_cli_and_mcp_packs(self):
+        import json
+        out = self._run_app(
+            "const root = { kids: [], append(...xs) { this.kids.push(...xs); } };\n"
+            "const textOf = (node) => typeof node === 'string' ? node :\n"
+            "  (node.kids || []).map(textOf).join('');\n"
+            "await app.renderRouter(root, null);\n"
+            "process.stdout.write(JSON.stringify(textOf(root)));\n")
+        text = json.loads(out)
+        self.assertIn("fixed ladder", text)
+        self.assertIn("Worker-side Jev proxy", text)
+        self.assertIn("CLI defaults to packs/model_route.pack.json", text)
+        self.assertIn("MCP requires callers to supply a pack", text)
+        self.assertNotIn("same pack the harness CLI/MCP route command uses", text)
+        router_html = Path("site/public/router/index.html").read_text(encoding="utf-8")
+        self.assertIn("fixed demo pack", router_html)
+        self.assertNotIn("does not re-implement routing", router_html)
