@@ -138,6 +138,8 @@ def record_task_outcome(ledger, task_id: str, family: str,
     Every harness task should call this on completion. The refine loop's
     trigger reads these records.
     """
+    if not task_id or not task_id.strip():
+        raise ValueError("task_id must be a non-empty string")
     if not valid_family(family):
         raise ValueError(f"unknown task family: {family!r}")
     if not 0.0 <= jev_outcome <= 1.0:
