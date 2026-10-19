@@ -1958,5 +1958,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    # Match the installed console-script entry point: adapter status codes
+    # (notably media/driver deferrals) must reach the calling shell.
+    sys.exit(main())
 

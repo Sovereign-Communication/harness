@@ -931,6 +931,68 @@ class CliParserSurfaceTests(unittest.TestCase):
         driver_run.assert_called_once()
 
 
+class CliEarlyInterceptExitStatusTests(unittest.TestCase):
+    def test_module_entrypoint_propagates_media_and_driver_defer_status(self):
+        """The documented ``python -m harness.cli`` path must preserve the
+        adapters' nonzero status when a local service refuses a request."""
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import subprocess
+        import sys
+        import threading
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                status = 404 if self.path.startswith("/v1/balance") else 401
+                error = "no such endpoint" if status == 404 else "unauthorized"
+                body = json.dumps({"error": error}).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                home = os.path.join(temp, "home")
+                env = os.environ.copy()
+                env.update({
+                    "USERPROFILE": home,
+                    "HOME": home,
+                    "APPDATA": os.path.join(home, "AppData", "Roaming"),
+                    "LOCALAPPDATA": os.path.join(home, "AppData", "Local"),
+                    "HARNESS_LEDGER": os.path.join(temp, "ledger.jsonl"),
+                    "MEDIA_CONFIG_PATH": os.path.join(temp, "missing-media.json"),
+                    "DRIVER_CONFIG_PATH": os.path.join(temp, "missing-driver.json"),
+                    "MEDIA_BASE_URL": "http://127.0.0.1:{}".format(server.server_port),
+                    "DRIVER_BASE_URL": "http://127.0.0.1:{}".format(server.server_port),
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                })
+                for name in ("OPENROUTER_API_KEY", "JEV_API_KEY",
+                             "HARNESS_JEV_API_KEY", "FIREWORKS_API_KEY",
+                             "MEDIA_TOKEN", "DRIVER_TOKEN"):
+                    env.pop(name, None)
+
+                for args in (("media", "balance"), ("driver", "health")):
+                    with self.subTest(command=args[0]):
+                        result = subprocess.run(
+                            [sys.executable, "-m", "harness.cli", *args],
+                            cwd=os.path.dirname(os.path.dirname(__file__)),
+                            env=env, capture_output=True, text=True, timeout=10)
+                        self.assertEqual(result.returncode, 4, result.stderr)
+                        self.assertIn("[defer]", result.stderr)
+                        self.assertEqual(result.stdout, "")
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            server.server_close()
+
+
 class CliPresentationOwnerTests(unittest.TestCase):
     """S6 mirror pin: presentation lives in cli_report (the ONE owner of
     the report/exit-code rendering contract); cli.py re-exports the seams
