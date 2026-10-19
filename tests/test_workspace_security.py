@@ -56,6 +56,19 @@ class WorkspacePathTests(WorkspaceFixture):
         with self.assertRaises(HarnessError):
             resolve_workspace_path(self.root, "linked.txt", must_exist=True)
 
+    def test_workspace_path_refuses_in_root_symlink_components(self):
+        file_link = self.root / "linked-file.txt"
+        directory_link = self.root / "linked-directory"
+        try:
+            file_link.symlink_to(self.sample)
+            directory_link.symlink_to(self.root, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlink creation is unavailable")
+        for raw in ("linked-file.txt", "linked-directory/sample.txt"):
+            with self.subTest(path=raw), self.assertRaisesRegex(
+                    HarnessError, "symlink targets are excluded"):
+                resolve_workspace_path(self.root, raw, must_exist=True)
+
     def test_mcp_paths_need_and_stay_inside_configured_roots(self):
         with self.assertRaises(HarnessError):
             choose_allowed_workspace(None, [])

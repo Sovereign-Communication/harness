@@ -670,10 +670,13 @@ class McpServer:
             try:
                 files = [str(self._file_for(path, must_exist=True))
                          for path in files]
-            except HarnessError:
+            except HarnessError as exc:
+                message = ("symlink targets are excluded from MCP file access"
+                           if "symlink targets are excluded" in str(exc).casefold()
+                           else "file is outside every allowed root or excluded by workspace policy")
                 self._refuse(
                     "mcp file outside allowed roots",
-                    "file is outside every allowed root or excluded by workspace policy",
+                    message,
                     task_id=args.get("task_id"), model=args.get("model"),
                     severity="hostile")
             target_files = list(files)
@@ -682,10 +685,13 @@ class McpServer:
                 try:
                     continuation["file_path"] = str(self._file_for(
                         continuation["file_path"], must_exist=True))
-                except HarnessError:
+                except HarnessError as exc:
+                    message = ("symlink targets are excluded from MCP file access"
+                               if "symlink targets are excluded" in str(exc).casefold()
+                               else "file is outside every allowed root or excluded by workspace policy")
                     self._refuse(
                         "mcp file outside allowed roots",
-                        "file is outside every allowed root or excluded by workspace policy",
+                        message,
                         task_id=args.get("task_id"), model=args.get("model"),
                         severity="hostile")
                 target_files.append(continuation["file_path"])

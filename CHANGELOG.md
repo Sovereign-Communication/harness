@@ -30,7 +30,7 @@ break APIs between minor versions).
 - **Secure workspace defaults** — GUI sessions no longer inherit the server's
   working directory, Auto Apply starts off, and file-bearing UI, agent, and MCP
   paths are resolved inside an explicit workspace or configured MCP root.
-  Parent traversal, symlink escapes, and obvious credential paths are refused
+  Parent traversal, symlink path components, escapes, and obvious credential paths are refused
   or omitted from automatic context. This limits Harness-managed paths; it does
   not sandbox approved host verification commands.
 

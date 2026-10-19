@@ -27,7 +27,8 @@ is unchanged and still no sandbox.
   refused until the user enters an absolute folder. A selected folder is kept
   per conversation in the current browser tab; it is canonicalized on the
   server, and file reads and writes must resolve inside it. Parent traversal,
-  symlink escapes, and obvious credential/private-key paths (including
+  symlink path components (including links that stay inside the workspace),
+  escapes, and obvious credential/private-key paths (including
   `.env` files other than sample templates) are refused or omitted from
   automatic context. A new page and a new chat start blank. Auto Apply is off
   by default in the GUI, HTTP dispatch, and agent APIs; switching it on is a

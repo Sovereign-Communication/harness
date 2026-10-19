@@ -23,7 +23,7 @@ authority, so MCP write/exec surfaces are gated one step stricter than CLI.
 | Risk | Control | Where |
 |---|---|---|
 | Model-invented verification command | `verify_cmd` is parsed with `shlex`, executed `shell=False`, hard timeout, gate id bound into continuation state; MCP requires explicit `allow_verify` per call | `harness/apply.py`, `harness/mcp.py` |
-| Path escape via edit targets | Targets must resolve inside the explicitly selected workspace; absolute escapes, `..` traversal, and symlink swaps are refused; original file mode is preserved | `harness/workspace.py`, `harness/apply.py` |
+| Path escape via edit targets | Targets must resolve inside the explicitly selected workspace; absolute escapes, `..` traversal, and any symlink path component are refused before dispatch; original file mode is preserved | `harness/workspace.py`, `harness/apply.py` |
 | GUI defaults to server directory | New GUI sessions have no workspace; file and provisioning operations require an explicit absolute workspace, with canonical containment and obvious credential paths excluded | `harness/server.py`, `harness/workspace.py`, `harness/ui/app.js` |
 | Unauthenticated or rebound GUI API | UI server binds loopback, requires a per-user token by default, and rejects non-loopback Host headers | `harness/server.py`, `harness/ui_auth.py` |
 | Driver verification inherits server CWD | Driver verification requires a selected workspace and sets it as the subprocess CWD; the command still has host-user privileges | `harness/server.py`, `harness/gate_runner.py` |

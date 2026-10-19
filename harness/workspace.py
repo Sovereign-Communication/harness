@@ -58,7 +58,7 @@ def require_workspace(raw) -> Path:
 
 def resolve_workspace_path(root, raw, *, must_exist=False,
                            reject_sensitive=True) -> Path:
-    """Resolve a file path inside ``root``, refusing traversal and symlink escapes."""
+    """Resolve a file path inside ``root``, refusing traversal and symlink targets."""
     workspace = require_workspace(root)
     if raw is None or not str(raw).strip():
         raise HarnessError("File path is required")
@@ -67,8 +67,20 @@ def resolve_workspace_path(root, raw, *, must_exist=False,
         if ".." in candidate.parts:
             raise HarnessError("File path may not traverse outside the workspace")
         candidate = workspace / candidate
+    lexical = Path(os.path.abspath(os.fspath(candidate)))
     try:
-        resolved = candidate.resolve(strict=must_exist)
+        relative = lexical.relative_to(workspace)
+    except ValueError as exc:
+        raise HarnessError("File path is outside the selected workspace") from exc
+    current = workspace
+    for part in relative.parts:
+        if part in ("", "."):
+            continue
+        current /= part
+        if current.is_symlink():
+            raise HarnessError("symlink targets are excluded from workspace file access")
+    try:
+        resolved = lexical.resolve(strict=must_exist)
     except (OSError, RuntimeError) as exc:
         raise HarnessError(f"File path is unavailable: {raw}") from exc
     if not osal.is_within(str(resolved), str(workspace)):
@@ -117,14 +129,19 @@ def resolve_allowed_path(raw, allowed_roots, *, workspace=None, must_exist=False
 
     supplied = Path(os.fspath(raw)).expanduser()
     matches = []
+    symlink_rejected = False
     for root in roots:
         try:
             resolved = resolve_workspace_path(root, supplied, must_exist=must_exist,
                                               reject_sensitive=reject_sensitive)
-        except HarnessError:
+        except HarnessError as exc:
+            if "symlink targets are excluded" in str(exc).casefold():
+                symlink_rejected = True
             continue
         if resolved not in matches:
             matches.append(resolved)
+    if symlink_rejected:
+        raise HarnessError("symlink targets are excluded from workspace file access")
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
