@@ -138,6 +138,22 @@ class PanelWiringTests(unittest.TestCase):
         self.assertNotEqual(captured["panel"], [])
 
 
+class VerifyEmptyPromptTests(unittest.TestCase):
+    def test_explicit_empty_prompt_gets_empty_input_error(self):
+        for argv in (["verify", "--prompt", ""], ["verify", "--prompt="]):
+            with self.subTest(argv=argv):
+                stderr = io.StringIO()
+                with mock.patch.object(cli, "_prepare_verify") as prepare, \
+                     contextlib.redirect_stderr(stderr), \
+                     self.assertRaises(SystemExit) as ctx:
+                    cli.main(argv)
+
+                self.assertEqual(ctx.exception.code, 1)
+                self.assertIn("prompt is empty.", stderr.getvalue())
+                self.assertNotIn("verify requires --prompt-file", stderr.getvalue())
+                prepare.assert_not_called()
+
+
 class VerifyTerminalExitTests(unittest.TestCase):
     def test_truncated_judge_writes_report_and_cost_then_exits_deferred(self):
         """DF-CLI-3: an inconclusive truncated judge result is still written
