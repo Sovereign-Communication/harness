@@ -23,7 +23,7 @@ As established during the October 2026 conclusive-findings update:
 
 ## 2. Analysis of the Concurrency Queue (Issue #191)
 
-The top of the concurrency queue (Batch A, Issue #190) was previously tested with a **0/5 confirmation rate (100% false-positive rate)** in [`docs/jev-completion/conclusive_findings.csv`](docs/jev-completion/conclusive_findings.csv):
+The top of the concurrency queue (Batch A, Issue #190) was previously tested with a **0/5 confirmation rate (100% false-positive rate)** in [`conclusive_findings.csv`](conclusive_findings.csv):
 - `bench/manifests/efficiency/race-guard/counters.py`: Intentional benchmark task fixture designed for the agent to fix.
 - `harness/executor.py::execute_dag`: Rigorously isolated via git-worktree handles for parallel nodes and shared-tree per-path mutexes for overlapping targets.
 - `harness/jev.py::evaluate`: Single-flight leader election is lock-atomic under `JevCache._lock`.
