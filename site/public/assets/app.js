@@ -12,11 +12,13 @@ export const state = {
   snapshot: null,
 };
 
+const demoSnapshotUrl = new URL("../data/demo/snapshot.json", import.meta.url).href;
+
 export async function loadSnapshot() {
   if (state.snapshot) return state.snapshot;
   const sources = state.mode === "local"
-    ? ["/api/snapshot", "./data/demo/snapshot.json"]
-    : ["./data/demo/snapshot.json"];
+    ? ["/api/snapshot", demoSnapshotUrl]
+    : [demoSnapshotUrl];
   for (const url of sources) {
     try {
       const res = await fetch(url, { headers: { accept: "application/json" } });
@@ -348,7 +350,9 @@ export function renderMethodology(root, snapshot) {
     el("h3", {}, "Demo data"),
     el("p", {}, snapshot?.demo
       ? snapshot.demo_note || "This snapshot is labeled demo data."
-      : "No demo flag on this snapshot: it claims to be live evidence."),
+      : snapshot
+        ? "No demo flag on this snapshot: it claims to be live evidence."
+        : "No snapshot is available, so its evidence status cannot be classified."),
     el("h3", {}, "Failures are data"),
     el("p", {}, m ? "Abort rates, gate-waste and fail outcomes ride alongside "
       + `the wins: gated pass rate overall ${pct(m.gated_pass_rate?.overall?.pass_rate)}.`

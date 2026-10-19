@@ -1,0 +1,233 @@
+{
+  "schema": "site-snapshot-v1",
+  "generated_from_bundles": [
+    "61705039a98265a6"
+  ],
+  "harness_version": "demo",
+  "contributors": 1,
+  "influence_cap": 0.1,
+  "anomalies": [],
+  "sessions": [
+    {
+      "bundle_id": "61705039a98265a6",
+      "runs": 26,
+      "metrics": {
+        "runs": 26,
+        "gated_runs": 26,
+        "cost_per_gated_task": {
+          "T0": {
+            "median_cost": 0.0001,
+            "samples": 11
+          },
+          "T1": {
+            "median_cost": 0.00115,
+            "samples": 10
+          },
+          "T2": {
+            "median_cost": 0.0091,
+            "samples": 3
+          },
+          "T3": {
+            "median_cost": 1.93455,
+            "samples": 2
+          }
+        },
+        "gated_pass_rate": {
+          "T0": {
+            "pass_rate": 1.0,
+            "samples": 11
+          },
+          "T1": {
+            "pass_rate": 1.0,
+            "samples": 10
+          },
+          "T2": {
+            "pass_rate": 1.0,
+            "samples": 3
+          },
+          "T3": {
+            "pass_rate": 1.0,
+            "samples": 2
+          },
+          "overall": {
+            "pass_rate": 1.0,
+            "samples": 26
+          }
+        },
+        "escalation_escape_rate": {
+          "T0": {
+            "escape_rate": 0.0833,
+            "samples": 12
+          },
+          "T1": {
+            "escape_rate": 0.0,
+            "samples": 9
+          },
+          "T2": {
+            "escape_rate": 0.25,
+            "samples": 4
+          },
+          "T3": {
+            "escape_rate": 0.0,
+            "samples": 1
+          }
+        },
+        "run_depth_distribution": {
+          "T0": {
+            "runs": 11,
+            "share": 0.4231
+          },
+          "T1": {
+            "runs": 10,
+            "share": 0.3846
+          },
+          "T2": {
+            "runs": 3,
+            "share": 0.1154
+          },
+          "T3": {
+            "runs": 2,
+            "share": 0.0769
+          }
+        },
+        "frontier_warrant_rate": {
+          "frontier_runs": 2,
+          "warranted": 1,
+          "warrant_rate": 0.5,
+          "unwarranted_flagged": 1
+        },
+        "hourglass_savings": {
+          "actual_cost": 3.9285108,
+          "modeled_frontier_cost": 7.20035,
+          "savings": 3.2718392,
+          "savings_multiple": 1.8328,
+          "priced_runs": 15,
+          "frontier_model": "demo/frontier-max",
+          "modeled": true,
+          "basis": "per-run cost scaled by frontier/model price blend from pricing_snapshot; token counts are not ledgered"
+        },
+        "jev_leverage": {
+          "jev_cost": 1.08e-05,
+          "jev_evals": 3,
+          "modeled_generative_floor": 0.0003,
+          "ratio": 27.78,
+          "floor_model": "demo/helper-lite",
+          "basis": "one eval \u2248 1000 input tokens at the cheapest priced model's input rate \u2014 a floor, not a peak"
+        },
+        "cohorts": {
+          "2026-09|unknown": {
+            "runs": 26,
+            "gated_pass_rate": 1.0,
+            "median_gated_cost": {
+              "T0": {
+                "median_cost": 0.0001,
+                "samples": 11
+              },
+              "T1": {
+                "median_cost": 0.00115,
+                "samples": 10
+              },
+              "T2": {
+                "median_cost": 0.0091,
+                "samples": 3
+              },
+              "T3": {
+                "median_cost": 1.93455,
+                "samples": 2
+              }
+            },
+            "run_depth": {
+              "T0": {
+                "runs": 11,
+                "share": 0.4231
+              },
+              "T1": {
+                "runs": 10,
+                "share": 0.3846
+              },
+              "T2": {
+                "runs": 3,
+                "share": 0.1154
+              },
+              "T3": {
+                "runs": 2,
+                "share": 0.0769
+              }
+            }
+          }
+        }
+      },
+      "traces": [
+        {
+          "run_id": "e8f500e4e9708a4d",
+          "lane": "bench",
+          "outcome": "pass",
+          "gated": true,
+          "entry_tier": "T0",
+          "deepest_tier_reached": "T1",
+          "rounds": 1,
+          "cost": 0.0045,
+          "escalation": {
+            "directed_by": "verify_lane",
+            "jev_confidence": null,
+            "target_rung": null,
+            "condensed_context_chars": null,
+            "rungs": null
+          },
+          "jev_evals": {
+            "count": 1,
+            "cost": 3.6e-06,
+            "fallback": 0
+          }
+        },
+        {
+          "run_id": "a7fc92fa65c5403f",
+          "lane": "bench",
+          "outcome": "pass",
+          "gated": true,
+          "entry_tier": "T1",
+          "deepest_tier_reached": "T1",
+          "rounds": 1,
+          "cost": 0.017,
+          "escalation": {
+            "directed_by": "verify_lane",
+            "jev_confidence": null,
+            "target_rung": null,
+            "condensed_context_chars": null,
+            "rungs": null
+          },
+          "jev_evals": {
+            "count": 1,
+            "cost": 3.6e-06,
+            "fallback": 0
+          }
+        },
+        {
+          "run_id": "56fe4ed6fe4f5dcc",
+          "lane": "bench",
+          "outcome": "pass",
+          "gated": true,
+          "entry_tier": "T2",
+          "deepest_tier_reached": "T3",
+          "rounds": 1,
+          "cost": 3.782,
+          "escalation": {
+            "directed_by": "jev",
+            "jev_confidence": 0.32,
+            "target_rung": 3,
+            "condensed_context_chars": 1840,
+            "rungs": null
+          },
+          "jev_evals": {
+            "count": 1,
+            "cost": 3.6e-06,
+            "fallback": 0
+          }
+        }
+      ],
+      "weight": 2.6
+    }
+  ],
+  "demo": true,
+  "demo_note": "Synthetic evidence generated through the real export + aggregate pipeline; labeled demo, never blended silently with live data."
+}
