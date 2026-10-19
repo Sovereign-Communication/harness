@@ -96,7 +96,9 @@ class MediaAdapterSuccessTests(unittest.TestCase):
         opener = _fake_opener([job])
         adapter = MediaAdapter(base_url="http://media.local", opener=opener)
         result = adapter.video("ocean waves", project="demo", wait=False)
-        self.assertEqual(result, job)
+        self.assertEqual(result["job_id"], "job-2")
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(result["kind"], "video")
         self.assertEqual(len(opener.calls), 1)
 
     def test_balance(self):
@@ -167,6 +169,22 @@ class MediaCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("succeeded", out.getvalue())
         self.assertIn("/tmp/out.png", out.getvalue())
+
+    def test_cli_no_wait_reports_accepted_job_and_exits_zero(self):
+        for kind, status in (("image", "queued"), ("video", "running")):
+            with self.subTest(kind=kind, status=status):
+                job_id = f"{kind}-accepted"
+                job = {"id": job_id, "status": status, "kind": kind}
+                opener = _fake_opener([job])
+                out = io.StringIO()
+                with mock.patch("harness.media_client.MediaAdapter",
+                                lambda *a, **k: MediaAdapter(opener=opener)):
+                    with redirect_stdout(out):
+                        code = run_cli([kind, "test prompt", "--no-wait"])
+
+                self.assertEqual(code, 0)
+                self.assertIn(f"job {job_id}  [{status}]", out.getvalue())
+                self.assertEqual(len(opener.calls), 1)
 
     def test_cli_service_unavailable_exits_four_and_defers(self):
         opener = _fake_opener([urllib.error.URLError("refused")])
