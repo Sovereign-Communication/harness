@@ -2059,15 +2059,24 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:32] or "pkg"
 
 
-def _inventory_steps(probe: HostProbe) -> List[Step]:
+def _inventory_steps(probe: HostProbe,
+                     policy: ProvisionPolicy) -> List[Step]:
+    python_argv = (probe.python_executable, "--version")
+    python_class = classify_argv(python_argv, policy).minimum_class
+    python_rollback = ""
+    if python_class in (MUTATING, IRREVERSIBLE):
+        python_rollback = (
+            "No rollback applies to a version query; the executable is "
+            "inside the approved root, so execution requires review")
     steps = [Step("python-version", "Report the interpreter version",
-                  (probe.python_executable, "--version"), READ,
-                  "prints the interpreter version")]
+                  python_argv, python_class,
+                  "prints the interpreter version", python_rollback)]
     for pm in probe.package_managers:
         if pm.usable:
-            steps.append(Step(f"{pm.name}-version", f"Report the {pm.name} version",
-                              (pm.name, "--version"), READ,
-                              f"prints the {pm.name} version"))
+            steps.append(Step(
+                f"{pm.name}-version", f"Report the {pm.name} version",
+                (pm.name, "--version"), READ,
+                f"prints the {pm.name} version"))
     return steps
 
 
@@ -2184,11 +2193,13 @@ def plan_provision(goal: str, probe: HostProbe, *, policy: ProvisionPolicy,
     recipe, is_fallback, source = RECIPE_INVENTORY, True, "deterministic"
     if not requests:
         notes.append("no installable package was identified in the goal; "
-                     "emitting a read-only inventory. Name a package (for "
+                     "emitting a host inventory; checks using executables "
+                     "inside an approved root require review. Name a package (for "
                      "example name==1.2.3) to get an install plan.")
     elif not candidates:
         notes.append("no setup recipe fits this host and policy; emitting a "
-                     "read-only inventory.")
+                     "host inventory; executable trust determines which "
+                     "checks require review.")
     else:
         recipe = candidates[0]
         if len(candidates) > 1 and jev is not None:
@@ -2204,7 +2215,7 @@ def plan_provision(goal: str, probe: HostProbe, *, policy: ProvisionPolicy,
         else:
             notes.append(f"only one recipe fits this host: {recipe}")
     if recipe == RECIPE_INVENTORY:
-        steps = _inventory_steps(probe)
+        steps = _inventory_steps(probe, policy)
     else:
         steps = _BUILDERS[recipe](requests, probe, work_root)
     plan = Plan(goal.strip(), tuple(steps), work_root, recipe, source,

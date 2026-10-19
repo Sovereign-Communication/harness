@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from harness import cli
+from harness import cli, provision as pv
 from harness.agent import AutonomousAgent, classify_prompt_intent
 from harness.cli_parser import build_parser
 from harness.errors import HarnessError
@@ -660,12 +660,32 @@ class TestAgentProvisionIntent(unittest.TestCase):
         self.assertEqual(classify_prompt_intent("setup host environment"), "provision")
 
     def test_agent_run_prompt_provision(self):
-        agent = AutonomousAgent()
-        res = agent.run_prompt("plan provision for ruff")
+        # Windows may expose the system temp parent as an 8.3 path such as
+        # RUNNER~1, which the provision path validator intentionally rejects.
+        # Place this synthetic in-root interpreter below the checkout instead.
+        with tempfile.TemporaryDirectory(
+                dir=Path(__file__).resolve().parents[1]) as root:
+            root_path = Path(root)
+            probe = pv.HostProbe(
+                os_name="Windows", arch="x86_64", python_version="3.9.25",
+                python_executable=str(
+                    root_path / ".venv" / "Scripts" / "python.exe"),
+                gpu_present=False, gpus=(), free_disk_bytes=None,
+                package_managers=(), probed_path=str(root_path))
+            history_dir = root_path / "history"
+            history_dir.mkdir()
+            agent = AutonomousAgent(root_dir=root_path,
+                                    history_dir=history_dir)
+            with mock.patch("harness.provision.probe_host", return_value=probe):
+                res = agent.run_prompt("plan provision for ruff")
         self.assertEqual(res["status"], "planned")
         self.assertEqual(res["intent"], "provision")
         self.assertIn("Goal: plan provision for ruff", res["response"])
         self.assertIn("plan", res)
+        python_step = next(step for step in res["plan"]["steps"]
+                           if step["id"] == "python-version")
+        self.assertEqual(python_step["classification"], pv.MUTATING)
+        self.assertIn("no rollback", python_step["rollback_hint"].lower())
 
     def test_agent_run_prompt_provision_force_conversation(self):
         agent = AutonomousAgent()
