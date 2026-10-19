@@ -68,6 +68,55 @@ class ParserSurfaceTests(unittest.TestCase):
         from harness.cli import _DISPATCH
         self.assertIn("economics", _DISPATCH)
 
+    def test_paid_fireworks_probe_has_only_the_economics_cli_face(self):
+        """The removed alias advertised flags its handler cannot accept."""
+        from harness.cli import _DISPATCH
+
+        self.assertNotIn("fireworks-verify", _DISPATCH)
+        error = io.StringIO()
+        with redirect_stderr(error), self.assertRaises(SystemExit) as raised:
+            self.parser.parse_args(["fireworks-verify", "--help"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("invalid choice", error.getvalue())
+
+        opts = self.parser.parse_args([
+            "economics", "--provider", "fireworks",
+            "--confirm-single-paid-call", "--model",
+            "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
+            "--max-cost", "0.005",
+        ])
+        self.assertEqual(opts.provider, "fireworks")
+        self.assertTrue(opts.confirm_single_paid_call)
+        self.assertEqual(opts.max_cost, 0.005)
+
+    def test_canonical_paid_fireworks_path_dispatches_from_cli_entrypoint(self):
+        """Exercise parse -> dispatch -> probe without making a paid request."""
+        import harness.cli as cli
+
+        model = "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b"
+        output = io.StringIO()
+        governor = mock.Mock()
+        with mock.patch.object(cli, "load_settings",
+                               return_value=mock.Mock(fireworks_enabled=True)), \
+             mock.patch.object(cli, "_governor",
+                               return_value=("test-key", governor)), \
+             mock.patch.object(cli, "resolve_fireworks_key",
+                               return_value="test-fireworks-key"), \
+             mock.patch.object(cli, "_ledger", return_value=mock.Mock()), \
+             mock.patch.object(cli, "run_fireworks_probe",
+                               return_value={"status": "ok"}) as probe, \
+             redirect_stdout(output):
+            cli.main([
+                "economics", "--provider", "fireworks",
+                "--confirm-single-paid-call", "--model", model,
+                "--max-cost", "0.005", "--json",
+            ])
+
+        self.assertEqual(json.loads(output.getvalue())["status"], "ok")
+        self.assertEqual(probe.call_args.kwargs["model"], model)
+        self.assertEqual(probe.call_args.kwargs["max_cost"], 0.005)
+        self.assertTrue(probe.call_args.kwargs["fireworks_enabled"])
+
 
 class ProbeFaceTests(unittest.TestCase):
     """`--record` persists only a conclusive verdict, as committed evidence."""
