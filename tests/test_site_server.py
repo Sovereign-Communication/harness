@@ -103,6 +103,18 @@ class SitePageServingTests(ServerHarness):
         self.assertIn("Jev confidence appears on Jev-directed climb badges", footer)
         self.assertNotIn("confidence columns", footer)
 
+    def test_publish_instructions_match_worker_submission_contract(self):
+        path = Path("site/public/publish/index.html")
+        page = path.read_text(encoding="utf-8")
+        self.assertNotIn('type="file"', page)
+        self.assertIn("There is no file picker or pre-submission preview", page)
+        self.assertIn("Submit on the deployed Proof Bench", page)
+        self.assertIn("checks the bundle schema, consent block, and exported hash-chain claim", page)
+        self.assertIn("verified the actual ledger chain locally", page)
+        self.assertIn("harness serve</code> does not provide <code>/api/submit", page)
+        self.assertNotIn("exactly what will be sent", page)
+        self.assertNotIn("re-validates the schema", page)
+
     def test_public_demo_snapshot_asset_is_served_and_in_sync(self):
         root = Path(__file__).resolve().parents[1]
         source = root / "site" / "data" / "demo" / "snapshot.json"
