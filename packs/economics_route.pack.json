@@ -1,0 +1,34 @@
+{
+  "id": "harness-economics-route-v1",
+  "questions": {
+    "context_band": {
+      "criteria": {
+        "long": "The task spans multiple modules or large files (>32k input tokens).",
+        "medium": "The task inspects one or two modules of moderate size (4k-32k input tokens).",
+        "short": "The task is a compact single-snippet or localized edit (<4k input tokens)."
+      },
+      "instructions": "Select the expected input context band required to ground this task.",
+      "type": "choice"
+    },
+    "reasoning_required": {
+      "criteria": {
+        "false": "Direct structured emission or straightforward code application is sufficient.",
+        "true": "Multi-step causal analysis, invariant verification, or architectural synthesis is needed."
+      },
+      "instructions": "Does this task require explicit chain-of-thought reasoning to avoid structural failure?",
+      "type": "noul"
+    },
+    "tier": {
+      "criteria": {
+        "T0": "Trivial formatting, docstring, typo, or single-line comment change with zero behavioral impact.",
+        "T1": "Standard localized implementation, unit test addition, or routine single-file code edit.",
+        "T2": "Multi-file refactor, DAG planning, structured judgment, or complex debugging.",
+        "T3": "High-stakes concurrency, cryptographic invariant, distributed protocol, or security architecture."
+      },
+      "instructions": "Select the minimum capability tier (T0, T1, T2, T3) required to complete this task reliably. Never name a provider or model brand.",
+      "type": "choice"
+    }
+  },
+  "site": "economics_route",
+  "version": "1.0.0"
+}

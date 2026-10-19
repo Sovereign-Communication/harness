@@ -42,6 +42,7 @@ from .jev_packs import (
     PROVISION_SITE,
     REQUEST_WORKFLOW_SITE,
     SITE_REACHABILITY_SITE,
+    ECONOMICS_ROUTE_SITE,
     REPO_SUMMARY_SITE,
     HOURGLASS_STAGE_DIMENSIONS,
     HOURGLASS_STAGE_PACK_ID,
@@ -75,6 +76,7 @@ from .jev_packs import (
     issue_sort_question_pack,
     request_workflow_question_pack,
     site_reachability_question_pack,
+    economics_route_question_pack,
     log_factor_question_pack,
     match_completion_keywords,
     match_keywords,
@@ -3821,6 +3823,67 @@ class JevPolicy:
             state, questions, site=site, task_id=task_id, node_id=node_id,
             max_input_tokens=max_input_tokens,
             fallback_reason="unkeyed: provisioning falls back to the deterministic plan")
+
+    def evaluate_economics_route(self, state, *, task_id: Optional[str] = None,
+                                 max_input_tokens: int = 512) -> Dict[str, Any]:
+        """Advisory EV-3 Jev tier-routing judgment (DF-EV-6).
+
+        Dispatches ``packs/economics_route.pack.json`` through the shared
+        budget and ledger owner when keyed, and always computes the
+        deterministic :func:`~harness.routing_table.classify_task_tier`
+        baseline. Because EV-3 is advisory until 30 real tasks prove >=10%
+        better accuracy, ``effective_tier`` stays deterministic unless
+        explicitly promoted, while ``advisory_tier`` and ``agreement``
+        record Jev's typed judgment.
+        """
+        from .routing_table import TIER_ORDER, classify_task_tier, get_tier_route
+
+        prompt = ""
+        target_files: List[str] = []
+        if isinstance(state, dict):
+            prompt = str(state.get("prompt") or state.get("instruction") or "")
+            raw_files = state.get("target_files") or state.get("files") or []
+            if isinstance(raw_files, (list, tuple)):
+                target_files = [str(f) for f in raw_files]
+        else:
+            prompt = str(state or "")
+
+        deterministic_tier = classify_task_tier(prompt, target_files=target_files)
+        result, structural = self.evaluate_typed_pack(
+            {"prompt": prompt[:1200], "target_files": target_files[:15]},
+            economics_route_question_pack(),
+            site=ECONOMICS_ROUTE_SITE,
+            task_id=task_id,
+            max_input_tokens=max_input_tokens,
+            fallback_reason="unkeyed: economics_route uses deterministic classify_task_tier",
+        )
+        answers = result.answers if isinstance(result.answers, dict) else {}
+        raw_tier = answers.get("tier")
+        if isinstance(raw_tier, dict):
+            raw_tier = raw_tier.get("choice") or raw_tier.get("value")
+        advisory_tier = (
+            str(raw_tier) if str(raw_tier) in TIER_ORDER else deterministic_tier
+        )
+        confident = (
+            not result.is_fallback
+            and float(result.confidence or 0.0) >= float(getattr(self, "min_confidence", 0.70) or 0.70)
+            and str(raw_tier) in TIER_ORDER
+        )
+        route = get_tier_route(deterministic_tier)
+        return {
+            "site": ECONOMICS_ROUTE_SITE,
+            "mode": "advisory",
+            "effective_tier": deterministic_tier,
+            "deterministic_tier": deterministic_tier,
+            "advisory_tier": advisory_tier,
+            "agreement": advisory_tier == deterministic_tier,
+            "confident": confident,
+            "confidence": float(result.confidence or 0.0),
+            "is_fallback": bool(result.is_fallback),
+            "answers": dict(answers),
+            "route": route,
+            "structural": structural,
+        }
 
     @staticmethod
     def attach(envelope: Dict[str, Any], structural: Optional[Dict[str, Any]]):

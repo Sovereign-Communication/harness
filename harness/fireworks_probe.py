@@ -1,0 +1,138 @@
+"""EV-8: the single paid Fireworks verification call, and its receipt.
+
+Runs through the existing ``harness economics`` probe face with
+``--provider fireworks --confirm-single-paid-call``; there is no new command.
+Exactly one paid call is ever sent: a one-shot marker is written before any
+network call and the probe refuses while the marker exists, including after a
+failed call.
+
+Preconditions (all refused fail-closed): Fireworks enabled in settings, the
+model is a confirmed Fireworks path, ``--max-cost`` is at most $0.01, and a
+Fireworks key resolves. The request is ``Reply with the single word: ok``
+with ``max_tokens = 8``, Fireworks forced, failover off (one POST, no retry).
+
+Output discipline: only the HTTP status, whether the reply contains ``ok``,
+token counts, and estimated cost are printed. One ledger row is written with
+``route_reason = verify``. The receipt is committed under
+``audits/self/dogfood/`` as the DoD's paid-cheap live receipt. On failure the
+status and a sanitized body (key redacted, truncated) are reported, then stop.
+"""
+import json
+import os
+
+from .chat import chat_for_route
+from .config import CONFIG_DIR, FIREWORKS_PROVIDER
+from .discount_gate import REPO_ROOT
+from .errors import HarnessError
+from .fireworks import resolve_route
+
+VERIFY_MESSAGE = "Reply with the single word: ok"
+VERIFY_MAX_TOKENS = 8
+VERIFY_MAX_COST_USD = 0.01
+VERIFY_RECEIPT_REL = os.path.join(
+    "audits", "self", "dogfood", "FIREWORKS_VERIFY_RECEIPT.json")
+
+
+def _sanitize_body(body, secrets):
+    """A failure body safe to print: secrets redacted, truncated."""
+    text = body if isinstance(body, str) else json.dumps(body, default=str)
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "[redacted]")
+    if len(text) > 500:
+        text = text[:500] + "…[truncated]"
+    return text
+
+
+def run_fireworks_probe(transport, openrouter_key, fireworks_key, governor,
+                        ledger, *, model, max_cost,
+                        fireworks_enabled=False,
+                        marker_path=None, receipt_path=None):
+    """Send the one paid Fireworks verification call. Returns the report dict.
+
+    ``max_cost`` is the operator's ``--max-cost`` for this call and must be at
+    most $0.01. ``marker_path``/``receipt_path`` default to the machine-local
+    marker and the committed receipt; tests override both with temp paths.
+    """
+    marker = marker_path or os.path.join(CONFIG_DIR, "fireworks_verify.marker")
+    receipt = receipt_path or os.path.join(REPO_ROOT, VERIFY_RECEIPT_REL)
+    if os.path.exists(marker):
+        raise HarnessError(
+            "the Fireworks verification call already ran (marker exists); "
+            "this probe sends exactly one paid call, ever -- refusing.")
+    if not fireworks_enabled:
+        raise HarnessError(
+            "Fireworks is disabled (HARNESS_FIREWORKS_ENABLED); refusing the "
+            "paid verification call.")
+    try:
+        spend = float(max_cost)
+    except (TypeError, ValueError):
+        raise HarnessError(
+            f"--max-cost must be a number at most ${VERIFY_MAX_COST_USD:.2f} "
+            "for the verification call.") from None
+    if not 0 < spend <= VERIFY_MAX_COST_USD:
+        raise HarnessError(
+            f"--max-cost ${spend} is outside (0, ${VERIFY_MAX_COST_USD:.2f}] "
+            "for the single paid verification call; refusing.")
+    # Confirmed path only: resolve_route raises for unconfirmed paths, and
+    # a non-Fireworks route refuses here with the governed HarnessError.
+    route = resolve_route(model, openrouter_enabled=True,
+                          fireworks_enabled=True)
+    offer = route.offer
+    if route.provider != FIREWORKS_PROVIDER:
+        raise HarnessError(
+            "--model must be a confirmed Fireworks path "
+            "(accounts/fireworks/models/<slug>); refusing.")
+    if not fireworks_key:
+        raise HarnessError(
+            "Fireworks key missing: set ~/.config/scmorc/fireworks.env, "
+            "~/.config/harness/fireworks.env, or FIREWORKS_API_KEY")
+    # The marker goes down before any network call, so even a failed call
+    # cannot be retried into a second paid call.
+    parent = os.path.dirname(os.path.abspath(marker))
+    os.makedirs(parent, exist_ok=True)
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"model": model, "max_cost": spend}) + "\n")
+    messages = [{"role": "user", "content": VERIFY_MESSAGE}]
+    status, resp = chat_for_route(route, transport, openrouter_key,
+                                  fireworks_key, messages, VERIFY_MAX_TOKENS,
+                                  governor=governor)
+    usage = resp.get("usage") if isinstance(resp, dict) else None
+    usage = usage if isinstance(usage, dict) else {}
+    if status == 200 and "cost" not in usage:
+        # _chat_fireworks fills cost whenever usage is a dict; reaching
+        # here without one means the provider sent no accounting at all.
+        # A paid call booked as $0 is the silent free-ride this probe
+        # exists to prevent, so it fails loudly instead.
+        raise HarnessError(
+            "Fireworks omitted usage accounting (no cost, no token counts) "
+            "for the verification call; refusing to bill blind")
+    if status != 200:
+        raise HarnessError(
+            f"Fireworks verification failed with HTTP {status}: "
+            f"{_sanitize_body(resp, (fireworks_key, openrouter_key))}")
+    try:
+        content = resp["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        content = ""
+    contains_ok = isinstance(content, str) and "ok" in content.lower()
+    cost = usage.get("cost", 0.0)
+    report = {
+        "status": status,
+        "contains_ok": contains_ok,
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "estimated_cost": cost,
+        "cost_estimated": bool(usage.get("cost_estimated", False)),
+        "model": model,
+        "offer_model": offer.model,
+    }
+    if ledger is not None:
+        ledger.append("fireworks_verify", model=model, provider=FIREWORKS_PROVIDER,
+                      wire_model=model, route_reason="verify",
+                      cost=cost, cost_estimated=report["cost_estimated"])
+    rparent = os.path.dirname(os.path.abspath(receipt))
+    os.makedirs(rparent, exist_ok=True)
+    with open(receipt, "w", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(report, indent=2) + "\n")
+    return report

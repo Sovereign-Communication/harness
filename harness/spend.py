@@ -23,7 +23,7 @@ import time
 from .config import (
     OPENROUTER_KEY_URL, OPENROUTER_MODELS_URL,
     BYOK_DENYLIST_PREFIXES, BYOK_PREFIXES_PATH, load_byok_prefixes,
-    save_byok_prefixes, DEFAULT_MAX_COST,
+    save_byok_prefixes, DEFAULT_MAX_COST, is_fireworks_model_path,
 )
 from .errors import HarnessError, ToolCancelled
 from .provider_errors import ProviderSpendLimitError
@@ -138,11 +138,13 @@ class SpendGovernor:
 
     def __init__(self, transport, api_key, expect_key_label=None,
                  max_cost=DEFAULT_MAX_COST, byok_prefixes_path=BYOK_PREFIXES_PATH,
-                 terminal_reserve=0.0):
+                 terminal_reserve=0.0, fireworks_budget_usd=0.0):
         self.transport = transport
         self.api_key = api_key
         self.expect_key_label = expect_key_label
         self.max_cost = finite_number(max_cost, "max_cost", 0.0)
+        self.fireworks_budget_usd = finite_number(
+            fireworks_budget_usd, "fireworks_budget_usd", 0.0)
         self.terminal_reserve = finite_number(
             terminal_reserve, "terminal_reserve", 0.0)
         if self.terminal_reserve > self.max_cost:
@@ -157,6 +159,7 @@ class SpendGovernor:
         self._unknown_liability = 0.0
         self._reservations = []
         self._cost_by_model = {}
+        self._cost_by_lane = {}
         # Fan-out safety (#10): spend mutations happen from panel threads.
         self._spend_lock = threading.RLock()
         self.key_info = None
@@ -322,6 +325,10 @@ class SpendGovernor:
         """Actual session spend per model label, for per-run cost reports."""
         return dict(sorted(self._cost_by_model.items(), key=lambda kv: -kv[1]))
 
+    def cost_by_lane(self):
+        """Actual session spend per lane (#196), sorted descending by spend."""
+        return dict(sorted(self._cost_by_lane.items(), key=lambda kv: -kv[1]))
+
     # 3
     def check_byok(self, model_id):
         """Hard block: raises for prefixes that must NEVER run (P0)."""
@@ -359,32 +366,49 @@ class SpendGovernor:
         missing = [m_ for m_ in model_ids if m_ not in self._pricing_cache
                    or time.time() - self._pricing_fetched_at > self._CATALOG_TTL]
         if missing:
-            models = self.fetch_models(refresh=True)
-            by_id = {m_["id"]: m_ for m_ in models}
-            for mid in missing:
-                if mid in ("openrouter/free", "openrouter/auto"):
-                    self._pricing_cache[mid] = (0.0, 0.0)
-                    continue
-                if mid not in by_id:
-                    raise HarnessError(f"model '{mid}' not found in live OpenRouter model list.")
-                p = by_id[mid].get("pricing", {})
-                try:
-                    # OpenRouter pricing fields are already PER-TOKEN dollar prices
-                    # (e.g. "0.00000001" = $0.01/M). Do NOT divide by 1e6 again —
-                    # an earlier version did and undercounted cost ~1,000,000x.
-                    prompt_price = finite_number(p.get("prompt", "0"),
-                                                   f"pricing.prompt for '{mid}'", 0.0)
-                    completion_price = finite_number(p.get("completion", "0"),
-                                                      f"pricing.completion for '{mid}'", 0.0)
-                    self._pricing_cache[mid] = (prompt_price, completion_price)
-                except (TypeError, ValueError):
-                    raise HarnessError(f"could not parse pricing for '{mid}': {p}") from None
+            from .fireworks import is_fireworks_model_path
+            fw_missing = [m_ for m_ in missing if is_fireworks_model_path(m_)]
+            or_missing = [m_ for m_ in missing if not is_fireworks_model_path(m_)]
+            if fw_missing:
+                from .endpoint_pricing import load_fireworks_endpoints
+                fw_pack = load_fireworks_endpoints()
+                fw_eps = fw_pack["endpoints"]
+                for mid in fw_missing:
+                    if mid not in fw_eps:
+                        raise HarnessError(
+                            f"model '{mid}' not found in fireworks endpoints pack.")
+                    ep = fw_eps[mid]
+                    self._pricing_cache[mid] = (ep.prompt, ep.completion)
+            if or_missing:
+                models = self.fetch_models(refresh=True)
+                by_id = {m_["id"]: m_ for m_ in models}
+                for mid in or_missing:
+                    if mid in ("openrouter/free", "openrouter/auto"):
+                        self._pricing_cache[mid] = (0.0, 0.0)
+                        continue
+                    if mid not in by_id:
+                        raise HarnessError(f"model '{mid}' not found in live OpenRouter model list.")
+                    p = by_id[mid].get("pricing", {})
+                    try:
+                        # OpenRouter pricing fields are already PER-TOKEN dollar prices
+                        # (e.g. "0.00000001" = $0.01/M). Do NOT divide by 1e6 again —
+                        # an earlier version did and undercounted cost ~1,000,000x.
+                        prompt_price = finite_number(p.get("prompt", "0"),
+                                                       f"pricing.prompt for '{mid}'", 0.0)
+                        completion_price = finite_number(p.get("completion", "0"),
+                                                          f"pricing.completion for '{mid}'", 0.0)
+                        self._pricing_cache[mid] = (prompt_price, completion_price)
+                    except (TypeError, ValueError):
+                        raise HarnessError(f"could not parse pricing for '{mid}': {p}") from None
             self._pricing_fetched_at = time.time()
         return {m_: self._pricing_cache[m_] for m_ in model_ids}
 
     def supports_reasoning(self, model_id):
         """Check if a model in the catalog advertises reasoning support."""
         if not model_id:
+            return True
+        from .fireworks import is_fireworks_model_path
+        if is_fireworks_model_path(model_id):
             return True
         from .routing_table import strip_variant_suffix
         canonical = strip_variant_suffix(model_id)
@@ -551,7 +575,7 @@ class SpendGovernor:
             self._unknown_liability += amount
             return amount
 
-    def reconcile(self, token, actual):
+    def reconcile(self, token, actual, lane="apply"):
         """Settle a reservation: release the worst-case liability, record
         the billed actual. The reservation is released even when ``actual``
         would fail the ceiling check (the liability was already counted)."""
@@ -583,8 +607,11 @@ class SpendGovernor:
                     f"${ceiling:.6f} (after '{label}'; phase={self._phase}). Aborting.")
             self.spent += actual_f
             self._cost_by_model[label] = (self._cost_by_model.get(label, 0.0) + actual_f)
+            lane_key = str(lane or "apply")
+            self._cost_by_lane[lane_key] = (
+                self._cost_by_lane.get(lane_key, 0.0) + actual_f)
 
-    def record_overrun(self, cost, label):
+    def record_overrun(self, cost, label, lane="apply"):
         """Book a billed amount that no longer fits the ceiling.
 
         The provider already charged it, so ``spent`` must reflect it even
@@ -598,6 +625,9 @@ class SpendGovernor:
             self.overruns += 1
             self._cost_by_model[label] = (
                 self._cost_by_model.get(label, 0.0) + actual)
+            lane_key = str(lane or "apply")
+            self._cost_by_lane[lane_key] = (
+                self._cost_by_lane.get(lane_key, 0.0) + actual)
 
     @property
     def outstanding(self):
@@ -619,8 +649,27 @@ class SpendGovernor:
             ceiling = self._phase_ceiling()
             return max(0.0, ceiling - (self.spent + self._outstanding))
 
+    def fireworks_spent(self):
+        """Recorded spend on Fireworks labels (see is_fireworks_model_path)."""
+        with self._spend_lock:
+            return sum(v for k, v in self._cost_by_model.items()
+                       if is_fireworks_model_path(k))
+
+    def assert_fireworks_budget(self, amount, label):
+        """Refuse a Fireworks call whose worst case would pass the local cap.
+
+        Called before dispatch with the worst-case estimate, so a call that
+        cannot fit is never sent. A cap of zero refuses every Fireworks call.
+        """
+        projected = self.fireworks_spent() + float(amount)
+        if projected > self.fireworks_budget_usd:
+            raise HarnessError(
+                f"Fireworks spend ${projected:.6f} would exceed the local budget "
+                f"${self.fireworks_budget_usd:.6f} (HARNESS_FIREWORKS_BUDGET_USD) "
+                f"for '{label}'; refusing to send.")
+
     # 5
-    def record_actual(self, cost, label):
+    def record_actual(self, cost, label, lane="apply"):
         """Record a billable response without ever moving ``spent`` over the
         phase ceiling (attempt ceiling excludes terminal_reserve)."""
         try:
@@ -629,6 +678,13 @@ class SpendGovernor:
             raise HarnessError(f"invalid reported cost {cost!r} (after '{label}').") from None
         with self._spend_lock:
             ceiling = self._phase_ceiling()
+            if is_fireworks_model_path(label) and actual > 0.0:
+                projected = self.fireworks_spent() + actual
+                if projected > self.fireworks_budget_usd:
+                    raise HarnessError(
+                        f"Fireworks spend ${projected:.6f} would exceed the local "
+                        f"budget ${self.fireworks_budget_usd:.6f} after '{label}'. "
+                        "Aborting.")
             if actual > 0.0 and self.spent + self._outstanding + actual > ceiling:
                 if (self._phase == PHASE_ATTEMPT
                         and self.terminal_reserve > 0.0):
@@ -643,6 +699,9 @@ class SpendGovernor:
                     f"after '{label}'; phase={self._phase}). Aborting.")
             self.spent += actual
             self._cost_by_model[label] = (self._cost_by_model.get(label, 0.0) + actual)
+            lane_key = str(lane or "apply")
+            self._cost_by_lane[lane_key] = (
+                self._cost_by_lane.get(lane_key, 0.0) + actual)
 
 
 # ------------------------- live discovery -------------------------

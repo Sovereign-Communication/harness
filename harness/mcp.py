@@ -42,6 +42,13 @@ from .service import run_verify as _service_run_verify
 from .jev import jev_credit_status
 from .service import run_dogfood as _service_run_dogfood
 from .brief import build_brief, freshness_report, render_brief
+from .capability import evaluate_pool_rotation, seat_share_report
+from .routing_table import (
+    SNAPSHOT_PRICE_TABLE,
+    TIER_MODELS,
+    check_tier_snapshot_freshness,
+    unlisted_tier_fallbacks,
+)
 from .validation import (
     MAX_LINES,
     MAX_ROUNDS,
@@ -1237,6 +1244,44 @@ class McpServer:
             entries = self.ledger.tail(window)
             records = jcal.extract_judgment_records(entries)
             return jcal.analyze_judgments(records)
+        if name == "economics_report":
+            allow_inc = validate_mcp_bool(args.get("allow_cost_increase", False),
+                                          "allow_cost_increase")
+            entries = self.ledger.entries()
+            freshness = check_tier_snapshot_freshness()
+            seat_share = seat_share_report(entries)
+            cost_rep = self.ledger.cost_report(
+                by_tier=True, by_model=True, by_lane=True, savings=True,
+                price_table=SNAPSHOT_PRICE_TABLE,
+            )
+            current_pool = list(getattr(self.router, "apply_pool", None) or ())
+            candidates = []
+            for m in current_pool:
+                price = SNAPSHOT_PRICE_TABLE.get(m, {})
+                in_rate = float(price.get("input_per_mtok") or 0.5)
+                out_rate = float(price.get("output_per_mtok") or 1.5)
+                est_cost = max(1e-6, (in_rate * 2.0 + out_rate * 0.8) / 1000.0)
+                candidates.append({
+                    "id": m,
+                    "value_score": round(1.0 / est_cost, 4),
+                    "cost_usd": round(est_cost, 6),
+                    "samples": 5,
+                })
+            proposal = evaluate_pool_rotation(
+                current_pool=current_pool,
+                candidate_metrics=candidates,
+                ledger_entries=entries,
+                allow_cost_increase=allow_inc,
+            )
+            return {
+                "status": "ok",
+                "freshness": freshness,
+                "tiers": TIER_MODELS,
+                "unlisted_tier_fallbacks": unlisted_tier_fallbacks(),
+                "seat_share": seat_share,
+                "rotation_proposal": proposal,
+                "cost_summary": cost_rep,
+            }
         raise ValueError(f"unknown tool: {name}")
 
     # ---------------- notifications/progress streaming ----------------

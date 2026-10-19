@@ -51,6 +51,10 @@ def _jev_row_cost(entry, in_tok):
 class LedgerAnalytics:
     """Mixin: read-only ledger analytics (see module docstring)."""
 
+    def __init__(self, entries=None):
+        if entries is not None:
+            self._tail = list(entries)
+
     def participation_report(self):
         events = self._tail
         counts = dict.fromkeys([
@@ -479,7 +483,7 @@ class LedgerAnalytics:
         seen = set()
         try:
             paths = self._ledger_paths()
-        except OSError:
+        except (OSError, AttributeError):
             paths = []
         for source_path in paths:
             try:
@@ -507,8 +511,8 @@ class LedgerAnalytics:
         return entries
 
     def cost_report(self, window=None, by_tier=False, by_model=False, savings=False,
-                    now=None):
-        """Aggregate spend analytics by tier, model, and calculate savings vs frontier baseline.
+                    by_lane=False, price_table=None, now=None):
+        """Aggregate spend analytics by tier, model, lane, and calculate savings vs frontier baseline.
 
         The ``jev`` block is the TypeSafe account view, not a window view: it
         reads the full ledger (rotated segments included) and counts only the
@@ -558,6 +562,12 @@ class LedgerAnalytics:
         events_count = len(events)
         billable_calls = 0
         free_calls = 0
+        cost_estimated_calls = 0
+        unpriced_calls = 0
+        total_input_tokens = 0
+        total_output_tokens = 0
+        verified_tasks = set()
+        verified_completions = 0
         tier_stats = {
             "T0": {"cost": 0.0, "calls": 0},
             "T1": {"cost": 0.0, "calls": 0},
@@ -565,6 +575,7 @@ class LedgerAnalytics:
             "T3": {"cost": 0.0, "calls": 0},
         }
         model_stats = {}
+        lane_stats = {}
         baseline_cost = 0.0
         jev_calls = 0
         jev_input_tokens = 0
@@ -602,10 +613,21 @@ class LedgerAnalytics:
 
         for e in events:
             ev_name = e.get("event")
+            if ev_name == "complete":
+                verified_completions += 1
+                if e.get("task_id"):
+                    verified_tasks.add(e.get("task_id"))
+            elif ev_name == "verify_round" and e.get("passed"):
+                if e.get("task_id"):
+                    verified_tasks.add(e.get("task_id"))
+
             model = e.get("model")
             is_jev = ev_name == "jev_eval" or (model and str(model).startswith("jev-"))
+            in_tok = _as_tokens(e.get("input_tokens") or e.get("prompt_tokens"))
+            out_tok = _as_tokens(e.get("output_tokens") or e.get("completion_tokens"))
 
             weight = 1
+            estimated = False
             if is_jev:
                 if e.get("cache_hit"):
                     continue  # a replayed answer is not a call
@@ -613,7 +635,6 @@ class LedgerAnalytics:
                     weight = max(1, int(e.get("repeat_count") or 1))
                 except (TypeError, ValueError):
                     weight = 1
-                in_tok = _as_tokens(e.get("input_tokens"))
                 cost_val, _billable = _jev_row_cost(e, in_tok)
                 has_cost = True
             else:
@@ -628,19 +649,63 @@ class LedgerAnalytics:
                 continue
 
             tier = classify_model_tier(model or "")
+            canonical = strip_variant_suffix(model) if model else ""
+            if (not is_jev and cost_val <= 0.0 and model
+                    and not (str(model).endswith(":free") or model == "openrouter/free")):
+                pt = None
+                if isinstance(price_table, dict):
+                    pt = price_table.get(canonical) or price_table.get(model)
+                if isinstance(pt, dict) and (in_tok > 0 or out_tok > 0):
+                    p_in = float(pt.get("prompt_per_token", pt.get("prompt", 0.0)) or 0.0)
+                    p_out = float(pt.get("completion_per_token", pt.get("completion", 0.0)) or 0.0)
+                    est = (in_tok * p_in) + (out_tok * p_out)
+                    if est > 0.0:
+                        cost_val = est
+                        estimated = True
+                        cost_estimated_calls += weight
+                elif not has_cost and tier != "T0":
+                    unpriced_calls += weight
+
             if cost_val > 0.0:
                 billable_calls += 1
             elif model:
                 free_calls += weight
 
             total_cost += cost_val
+            total_input_tokens += in_tok
+            total_output_tokens += out_tok
             tier_stats[tier]["cost"] = round(tier_stats[tier]["cost"] + cost_val, 6)
             tier_stats[tier]["calls"] += weight
 
             baseline_cost += weight * max(cost_val, 0.015)
 
+            lane_name = e.get("lane")
+            if not lane_name:
+                if is_jev:
+                    lane_name = "jev"
+                elif ev_name in ("consent_accept", "consent_decline", "consent_defer",
+                                 "consent_redirect", "consent_renew_accept",
+                                 "consent_renew_defer", "offer"):
+                    lane_name = "consent"
+                elif e.get("event_note") == "probe":
+                    lane_name = "probe"
+                elif e.get("task_type") == "structured" or "panel" in str(e.get("event_note") or ""):
+                    lane_name = "panel"
+                else:
+                    lane_name = "apply"
+            ls = lane_stats.setdefault(str(lane_name), {
+                "cost": 0.0, "calls": 0,
+                "input_tokens": 0, "output_tokens": 0,
+                "estimated_calls": 0,
+            })
+            ls["cost"] = round(ls["cost"] + cost_val, 6)
+            ls["calls"] += weight
+            ls["input_tokens"] += in_tok
+            ls["output_tokens"] += out_tok
+            if estimated:
+                ls["estimated_calls"] += weight
+
             if model:
-                canonical = strip_variant_suffix(model)
                 ms = model_stats.setdefault(canonical, {"cost": 0.0, "calls": 0, "tier": tier})
                 ms["cost"] = round(ms["cost"] + cost_val, 6)
                 ms["calls"] += weight
@@ -649,6 +714,7 @@ class LedgerAnalytics:
         baseline_cost = round(baseline_cost, 6)
         net_savings = round(max(0.0, baseline_cost - total_cost), 6)
         savings_percent = round((net_savings / baseline_cost * 100.0), 2) if baseline_cost > 0 else 0.0
+        verified_count = max(len(verified_tasks), verified_completions)
 
         report = {
             "total_cost": total_cost,
@@ -669,11 +735,26 @@ class LedgerAnalytics:
             },
         }
 
-        include_all = not (by_tier or by_model or savings)
+        include_all = not (by_tier or by_model or savings or by_lane)
         if by_tier or include_all:
             report["by_tier"] = tier_stats
         if by_model or include_all:
             report["by_model"] = model_stats
+        if by_lane or include_all:
+            report["by_lane"] = lane_stats
+            report["tokens"] = {
+                "input_tokens": total_input_tokens,
+                "output_tokens": total_output_tokens,
+                "total_tokens": total_input_tokens + total_output_tokens,
+            }
+            report["rolling"] = {
+                "verified_lanes": verified_count,
+                "cost_per_verified_lane": (
+                    round(total_cost / verified_count, 6) if verified_count else None
+                ),
+            }
+            report["cost_estimated_calls"] = cost_estimated_calls
+            report["unpriced_calls"] = unpriced_calls
         if savings or include_all:
             report["savings"] = {
                 "actual_cost": total_cost,
@@ -684,4 +765,5 @@ class LedgerAnalytics:
             }
 
         return report
+
 

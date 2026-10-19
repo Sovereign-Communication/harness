@@ -1201,6 +1201,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 entries = ledger.tail(1000)
                 records = jcal.extract_judgment_records(entries)
                 return self._send_json(jcal.analyze_judgments(records))
+            if path == "/api/economics":
+                return self._api_economics()
             m = MISSION_ID_PATH_RE.match(path)
             if m:
                 return self._api_mission_detail(m.group(1), q)
@@ -1590,14 +1592,68 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         """GET /api/cost: the ONE cost-observability owner
         (AutonomyLedger.cost_report -- the same call `harness cost` makes),
         with the same window/breakdown flags."""
+        from .routing_table import SNAPSHOT_PRICE_TABLE
         def _flag(name):
             return str((q.get(name) or ["0"])[0]).lower() in ("1", "true", "yes")
         ledger = ledger_for(load_settings())
-        report = ledger.cost_report(
-            window=(q.get("last") or [None])[0],
-            by_tier=_flag("by_tier"), by_model=_flag("by_model"),
-            savings=_flag("savings"))
+        kwargs = {
+            "window": (q.get("last") or [None])[0],
+            "by_tier": _flag("by_tier"),
+            "by_model": _flag("by_model"),
+            "savings": _flag("savings"),
+        }
+        if _flag("by_lane"):
+            kwargs["by_lane"] = True
+            kwargs["price_table"] = SNAPSHOT_PRICE_TABLE
+        report = ledger.cost_report(**kwargs)
         return self._send_json(report)
+
+    def _api_economics(self):
+        """GET /api/economics: EV-1..EV-5 read-only economics report."""
+        from .capability import evaluate_pool_rotation, seat_share_report
+        from .routing_table import (
+            SNAPSHOT_PRICE_TABLE,
+            TIER_MODELS,
+            check_tier_snapshot_freshness,
+            unlisted_tier_fallbacks,
+        )
+        settings = load_settings()
+        ledger = ledger_for(settings)
+        entries = ledger.entries()
+        freshness = check_tier_snapshot_freshness()
+        seat_share = seat_share_report(entries)
+        cost_rep = ledger.cost_report(
+            by_tier=True, by_model=True, by_lane=True, savings=True,
+            price_table=SNAPSHOT_PRICE_TABLE,
+        )
+        current_pool = list(getattr(settings, "apply_pool", None) or ())
+        candidates = []
+        for m in current_pool:
+            price = SNAPSHOT_PRICE_TABLE.get(m, {})
+            in_rate = float(price.get("input_per_mtok") or 0.5)
+            out_rate = float(price.get("output_per_mtok") or 1.5)
+            est_cost = max(1e-6, (in_rate * 2.0 + out_rate * 0.8) / 1000.0)
+            candidates.append({
+                "id": m,
+                "value_score": round(1.0 / est_cost, 4),
+                "cost_usd": round(est_cost, 6),
+                "samples": 5,
+            })
+        proposal = evaluate_pool_rotation(
+            current_pool=current_pool,
+            candidate_metrics=candidates,
+            ledger_entries=entries,
+            allow_cost_increase=False,
+        )
+        return self._send_json({
+            "status": "ok",
+            "freshness": freshness,
+            "tiers": TIER_MODELS,
+            "unlisted_tier_fallbacks": unlisted_tier_fallbacks(),
+            "seat_share": seat_share,
+            "rotation_proposal": proposal,
+            "cost_summary": cost_rep,
+        })
 
     def _api_missions_list(self, q):
         """GET /api/missions: compact summaries with bounded pagination."""

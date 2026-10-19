@@ -53,6 +53,8 @@ def _add_engine_flags(p, *, max_tokens_default, verify_required=False,
                    help="return the proposed content without writing or running the verification gate")
     p.add_argument("--max-lines", type=int, default=500,
                    help="per-file line ceiling (1-500)")
+    p.add_argument("--trial-model", default=None,
+                   help="per-run reversible model trial override (#197); never persisted to config")
     # --keep-going deliberately diverges from this helper: it is defined on
     # the apply parser only, because the multi-file batch is the only
     # multi-file surface (continue is one file by construction, dogfood runs
@@ -373,6 +375,8 @@ def build_parser():
     psite.add_argument("--consent", required=True)
     psite.add_argument("--pricing", default=None,
                        help="optional pricing snapshot JSON (USD per Mtok, from models --all)")
+    psite.add_argument("--economics", action="store_true",
+                       help="include sanitized model economics summary in the exported site bundle (EV-5)")
     psite.add_argument("--yes", action="store_true",
                        help="affirm public release of the sanitized bundle (required)")
     _add_output_flags(psite)
@@ -474,13 +478,15 @@ def build_parser():
     sub.add_parser("spend", help="Key identity & spend status")
     _add_output_flags(sub.choices["spend"])
 
-    pcost = sub.add_parser("cost", help="Track spend by tier, model, and calculate savings vs. naive frontier baseline")
+    pcost = sub.add_parser("cost", help="Track spend by tier, model, lane, and calculate savings vs. naive frontier baseline")
     pcost.add_argument("--last", default=None,
                        help="filter by time window (e.g. '24h', '7d', '30m') or entry count limit")
     pcost.add_argument("--by-tier", action="store_true",
                        help="break down spend by tier (T0..T3)")
     pcost.add_argument("--by-model", action="store_true",
                        help="break down spend by model")
+    pcost.add_argument("--by-lane", action="store_true",
+                       help="break down spend and token totals by lane (#196)")
     pcost.add_argument("--savings", action="store_true",
                        help="calculate savings vs. naive frontier-only baseline")
     pcost.add_argument("--json", action="store_true",
@@ -502,9 +508,8 @@ def build_parser():
 
     pec = sub.add_parser(
         "economics",
-        help="EV-0a discount-truth probe: measure whether a published "
-             "endpoint discount is already in the listed rate (billable, one "
-             "governed call; writes nothing without --record)")
+        help="Model economics: EV-0a discount-truth probe, EV-1..EV-5 report / "
+             "rotation proposals / freshness check, and EV-6 Fireworks comparison")
     pec.add_argument("--probe-model", default=None,
                      help="measure one tiny call on this model to settle "
                           "whether published endpoint prices already include "
@@ -517,6 +522,30 @@ def build_parser():
                           "(default: audits/self/dogfood/"
                           "EV0A_DISCOUNT_SEMANTICS.json in this checkout; "
                           "repo evidence, and the price gate reads only it)")
+    pec.add_argument("--report", action="store_true",
+                     help="build the EV-1..EV-5 cost-per-capability & rotation report")
+    pec.add_argument("--propose", action="store_true",
+                     help="evaluate bounded EV-4 pool rotation proposals (propose-only)")
+    pec.add_argument("--apply", action="store_true",
+                     help="apply an approved EV-4 pool rotation proposal")
+    pec.add_argument("--allow-cost-increase", action="store_true",
+                     help="permit EV-4 rotation proposals that increase expected per-call cost")
+    pec.add_argument("--check-fresh", action="store_true",
+                     help="verify tiers.snapshot.json freshness (no API key required)")
+    pec.add_argument("--provider", choices=["openrouter", "fireworks"], default="openrouter",
+                     help="pricing source for economics view (default: openrouter; "
+                          "with --provider fireworks and --confirm-single-paid-call, "
+                          "send the single paid Fireworks verification call)")
+    pec.add_argument("--confirm-single-paid-call", action="store_true",
+                     help="confirm the one paid Fireworks verification call "
+                          "(required with --provider fireworks verification)")
+    pec.add_argument("--model", default=None,
+                     help="confirmed Fireworks model path for the single paid "
+                          "verification call (with --provider fireworks)")
+    pec.add_argument("--pack", default=None,
+                     help="optional path override for packs/fireworks.endpoints.json")
+    pec.add_argument("--json", action="store_true",
+                     help="emit raw JSON output only")
     pec.add_argument("--max-cost", type=float, default=None,
                      help="session cost ceiling in dollars (default: configured max_cost)")
     _add_output_flags(pec)
@@ -746,4 +775,19 @@ def build_parser():
     prf.add_argument("--json", action="store_true", help="emit raw JSON output only")
     _add_output_flags(prf)
 
+    pfw = sub.add_parser(
+        "fireworks-verify",
+        help="EV-8 live Fireworks verification probe (one bounded call per pool model)")
+    pfw.add_argument("--models", default=None,
+                     help="comma-separated Fireworks model paths to probe "
+                          "(default: DEFAULT_FIREWORKS_APPLY_POOL)")
+    pfw.add_argument("--max-cost", type=float, default=0.01,
+                     help="probe cost ceiling in USD (default: 0.01)")
+    pfw.add_argument("--receipt", default=None,
+                     help="write verification receipt JSON to this path")
+    pfw.add_argument("--json", action="store_true",
+                     help="emit raw JSON output only")
+    _add_output_flags(pfw)
+
     return ap
+

@@ -21,10 +21,50 @@ Part 2 of 4 in EV-0's evidence layer: ``endpoint_pricing``,
 ``benchmark_ingest`` (this module), ``discount_probe``, ``discount_gate``.
 Canon lives in ``docs/jev-roadmap.md`` (``EV-*``).
 """
+from dataclasses import dataclass, field
+
 from .config import BENCHMARK_SOURCES, OPENROUTER_BENCHMARKS_URL
 from .errors import HarnessError
 from .events import emit
 from .validation import optional_float
+
+
+@dataclass(frozen=True)
+class BenchmarkRow:
+    """Normalized external benchmark evidence for a model (EV-0/EV-1)."""
+
+    model_permaslug: str
+    source: str
+    terminal_bench_hard: float = None
+    swe_bench_verified: float = None
+    livecodebench: float = None
+    coding_index: float = None
+    agentic_index: float = None
+    intelligence_index: float = None
+    accuracy: float = None
+    avg_cost_per_task: float = None
+    raw: dict = field(default_factory=dict)
+
+    def to_dict(self):
+        return {
+            "model_permaslug": self.model_permaslug,
+            "source": self.source,
+            "terminal_bench_hard": self.terminal_bench_hard,
+            "swe_bench_verified": self.swe_bench_verified,
+            "livecodebench": self.livecodebench,
+            "coding_index": self.coding_index,
+            "agentic_index": self.agentic_index,
+            "intelligence_index": self.intelligence_index,
+            "accuracy": self.accuracy,
+            "avg_cost_per_task": self.avg_cost_per_task,
+            "raw": dict(self.raw or {}),
+        }
+
+    def get(self, key, default=None):
+        return self.to_dict().get(key, default)
+
+    def __getitem__(self, key):
+        return self.to_dict()[key]
 
 
 def fetch_benchmarks(transport, api_key, *, source=None, task_type=None,

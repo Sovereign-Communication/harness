@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 from . import jev_calibration as _jcal
 from . import provision as _pv
+from . import refine as _refine
 from . import repo_cards as _rc
 from .agent import AutonomousAgent, is_site_check_prompt
 from .consent import probe_consent
@@ -37,11 +38,22 @@ from .config import (
     DISCOUNT_IS_MULTIPLIER,
     DISCOUNT_LISTED_IS_EFFECTIVE,
     HARD_MAX_COST,
+    apply_pool_rotation,
     freeze_jev_settings,
     load_vision_preflight_settings,
+    resolve_fireworks_key,
     resolve_hourglass,
 )
+from .endpoint_pricing import load_fireworks_endpoints
 from .errors import HarnessError
+from .fireworks import compare_fireworks_vs_openrouter
+from .fireworks_probe import run_fireworks_probe
+from .routing_table import (
+    SNAPSHOT_PRICE_TABLE,
+    TIER_MODELS,
+    check_tier_snapshot_freshness,
+    unlisted_tier_fallbacks,
+)
 from .spend import discover_free_models
 from .filesafety import VERIFY_TIMEOUT, validate_target_file, validate_verify_command
 from .gate_runner import (GATES, GATE_ORDER, STAGE_GATE_TIMEOUT, gate_help,
@@ -84,7 +96,11 @@ from .repo_summary import write_map as _repo_write_map
 from .log_analysis import analyze_log as _log_analyze, load_log_text as _log_load_text, write_analysis as _log_write_analysis
 from .mission_driver import pack_probe_attempt as _mission_pack_probe
 from .mission_driver import run_mission as _mission_run
-from .capability import capabilities_payload as _capability_payload_owner
+from .capability import (
+    capabilities_payload as _capability_payload_owner,
+    evaluate_pool_rotation,
+    seat_share_report,
+)
 from .brief import build_brief, freshness_report, render_brief, validate_brief
 from .dag import TaskDAG, node_apply_kwargs
 from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
@@ -411,10 +427,11 @@ def _batch_options(opts, continuation=None):
     if continuation and instruction:
         continuation = dict(continuation)
         continuation["remaining_scope"] = instruction
+    model = opts.model or getattr(opts, "trial_model", None)
     return BatchOptions(
         instruction=instruction, edit_snippet=opts.edit_snippet,
         verify_cmd=opts.verify, max_rounds=opts.max_rounds,
-        require_consent=opts.require_consent, model=opts.model,
+        require_consent=opts.require_consent, model=model,
         max_tokens=opts.max_tokens, task_max_cost=opts.task_max_cost,
         allow_escalation=opts.allow_escalation,
         reasoning_effort=opts.reasoning_effort, renew_consent=opts.renew_consent,
@@ -423,6 +440,7 @@ def _batch_options(opts, continuation=None):
         max_rotations=opts.max_rotations, backend=opts.backend,
         verify_only=opts.verify_only, max_lines=opts.max_lines,
         continuation=continuation)
+
 
 
 def _cmd_apply(opts, settings):
@@ -676,7 +694,8 @@ def _cmd_site_export(opts, settings):
     import harness as _harness_pkg
     bundle = _site_export_bundle(
         opts.ledger, opts.consent, pricing_path=opts.pricing,
-        harness_version=_harness_pkg.__version__)
+        harness_version=_harness_pkg.__version__,
+        include_economics=bool(getattr(opts, "economics", False)))
     size = _site_export_write(bundle, opts.out)
     eprint(f"[site-export] bundle {bundle['bundle_id']} written: {opts.out} "
            f"({size} bytes, {bundle['totals']['runs']} runs, "
@@ -799,13 +818,15 @@ def _cmd_spend(opts, settings):
 
 
 def _cmd_cost(opts, settings):
-    """Cost observability snapshot: track spend by tier, model, and calculate savings."""
+    """Cost observability snapshot: track spend by tier, model, lane, and calculate savings."""
     ledger = _ledger(settings)
     report = ledger.cost_report(
         window=getattr(opts, "last", None),
         by_tier=bool(getattr(opts, "by_tier", False)),
         by_model=bool(getattr(opts, "by_model", False)),
+        by_lane=bool(getattr(opts, "by_lane", False)),
         savings=bool(getattr(opts, "savings", False)),
+        price_table=SNAPSHOT_PRICE_TABLE,
     )
     if not getattr(opts, "json", False):
         _print_cost_table(report)
@@ -964,21 +985,88 @@ def _cmd_rankings(opts, settings):
 
 
 def _cmd_economics(opts, settings):
-    """EV-0's only shipped surface: the EV-0a discount-truth probe.
-
-    A CLI exists because a probe nobody can run is not shipped -- not because
-    this face reports anything. The shortlist-pricing report that used to
-    live here (`--models`/`--max-fetches`/`--receipt-dir`, plus its receipt
-    writer) was unrequested scope and is gone with its canon rows (DF-EV-12);
-    endpoint pricing, the cost index and cheapest-endpoint selection are
-    EV-1..EV-4's work, and this module owes them evidence plus a gate.
-
-    Read-only with respect to configuration: the only write is `--record`,
-    which stores the discount-semantics verdict the price gate refuses to
-    proceed without. That verdict is repo evidence, not machine state: it
-    lands in the committed receipt and has to be committed like any other
-    artifact the gate depends on.
+    """Economics & value surfaces: EV-0a discount probe, EV-1..EV-5 report /
+    freshness / bounded pool-rotation proposals, and EV-6 Fireworks comparison.
     """
+    if getattr(opts, "provider", None) == "fireworks":
+        if getattr(opts, "confirm_single_paid_call", False) or getattr(opts, "model", None):
+            return _cmd_fireworks_verify(opts, settings)
+        endpoints = load_fireworks_endpoints(pack_path=getattr(opts, "pack", None))
+        comparisons = compare_fireworks_vs_openrouter(endpoints=endpoints)
+        if not getattr(opts, "json", False):
+            hdr = f"{'Family':<22} {'Fireworks ($/M)':<18} {'OpenRouter ($/M)':<18} {'Cheaper'}"
+            print(hdr)
+            print("-" * len(hdr))
+            for row in comparisons:
+                fw_in = row.get("fireworks_input_per_mtok", 0.0)
+                fw_out = row.get("fireworks_output_per_mtok", 0.0)
+                or_in = row.get("openrouter_input_per_mtok", 0.0)
+                or_out = row.get("openrouter_output_per_mtok", 0.0)
+                print(f"{row.get('family', ''):<22} {fw_in:.2f}/{fw_out:.2f}{'':<8} "
+                      f"{or_in:.2f}/{or_out:.2f}{'':<8} {row.get('cheaper_provider', '')}")
+        _emit({
+            "provider": "fireworks",
+            "endpoints": len(endpoints),
+            "comparisons": comparisons,
+        }, opts.out, force_json=getattr(opts, "json", False))
+        return
+
+    if getattr(opts, "check_fresh", False):
+        freshness = check_tier_snapshot_freshness()
+        _emit(freshness, opts.out, force_json=getattr(opts, "json", False))
+        if not freshness.get("ok"):
+            sys.exit(2)
+        return
+
+    if (getattr(opts, "report", False)
+            or getattr(opts, "propose", False)
+            or getattr(opts, "apply", False)):
+        ledger = _ledger(settings)
+        entries = ledger.entries()
+        freshness = check_tier_snapshot_freshness()
+        seat_share = seat_share_report(entries)
+        cost_rep = ledger.cost_report(
+            by_tier=True, by_model=True, by_lane=True, savings=True,
+            price_table=SNAPSHOT_PRICE_TABLE,
+        )
+        current_pool = list(getattr(settings, "apply_pool", None) or ())
+        candidates = []
+        for m in current_pool:
+            price = SNAPSHOT_PRICE_TABLE.get(m, {})
+            in_rate = float(price.get("input_per_mtok") or 0.5)
+            out_rate = float(price.get("output_per_mtok") or 1.5)
+            est_cost = max(1e-6, (in_rate * 2.0 + out_rate * 0.8) / 1000.0)
+            candidates.append({
+                "id": m,
+                "value_score": round(1.0 / est_cost, 4),
+                "cost_usd": round(est_cost, 6),
+                "samples": 5,
+            })
+        proposal = evaluate_pool_rotation(
+            current_pool=current_pool,
+            candidate_metrics=candidates,
+            ledger_entries=entries,
+            allow_cost_increase=bool(getattr(opts, "allow_cost_increase", False)),
+        )
+        applied = False
+        if (getattr(opts, "apply", False)
+                and proposal.get("changed")
+                and proposal.get("proposed_pool")):
+            apply_pool_rotation(proposal["proposed_pool"])
+            applied = True
+        payload = {
+            "status": "ok",
+            "freshness": freshness,
+            "tiers": TIER_MODELS,
+            "unlisted_tier_fallbacks": unlisted_tier_fallbacks(),
+            "seat_share": seat_share,
+            "rotation_proposal": proposal,
+            "applied": applied,
+            "cost_summary": cost_rep,
+        }
+        _emit(payload, opts.out, force_json=getattr(opts, "json", False))
+        return
+
     if not opts.probe_model:
         raise HarnessError(
             "`harness economics` runs the EV-0a discount probe; pass "
@@ -1000,6 +1088,7 @@ def _cmd_economics(opts, settings):
                    f"({record['semantics']}: {record.get('reason')}); "
                    "nothing recorded, the price gate keeps refusing.")
     _emit(report, opts.out)
+
 
 
 def _cmd_capabilities(opts, settings):
@@ -1669,7 +1758,6 @@ def _cmd_jev_calibration(opts, settings):
 
 def _cmd_refine(opts, settings):
     """Propose-Probe-Compose refinement loop (issue #239, Phase 0 pilot)."""
-    from . import refine as _refine
     ledger = _ledger(settings)
 
     # --record-outcome TASK_ID FAMILY JEV_OUTCOME : P0 task outcome tracking.
@@ -1723,6 +1811,36 @@ def _cmd_refine(opts, settings):
           force_json=getattr(opts, "json", False))
 
 
+def _cmd_fireworks_verify(opts, settings):
+    """EV-8's only shipped surface: the single paid Fireworks call.
+
+    No new command: ``harness economics --provider fireworks
+    --confirm-single-paid-call --model <confirmed-path> --max-cost <= 0.01``.
+    Every refusal lives in ``run_fireworks_probe`` (the ONE owner of the
+    one-shot rule); this face only resolves keys, builds the session, and
+    emits the report.
+    """
+    if not getattr(opts, "confirm_single_paid_call", False):
+        raise HarnessError(
+            "the paid Fireworks verification sends real money; pass "
+            "--confirm-single-paid-call to confirm this one call.")
+    if not getattr(opts, "model", None):
+        raise HarnessError(
+            "pass --model accounts/fireworks/models/<slug> with a confirmed "
+            "model path for the verification call.")
+    if getattr(opts, "max_cost", None) is None:
+        raise HarnessError(
+            "pass an explicit --max-cost (at most $0.01) for the single paid "
+            "verification call.")
+    api_key, gov = _governor(settings, getattr(opts, "max_cost", None))
+    report = run_fireworks_probe(
+        HttpTransport(), api_key, resolve_fireworks_key(), gov,
+        _ledger(settings), model=opts.model, max_cost=opts.max_cost,
+        fireworks_enabled=getattr(settings, "fireworks_enabled", False),
+        receipt_path=getattr(opts, "receipt", None))
+    _emit(report, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
+
+
 # Command -> handler. `required=True` subparsers make an unknown command
 # unreachable here, so the table has no default arm; every handler takes
 # (opts, settings), so a signature drift fails loudly at dispatch instead of
@@ -1753,6 +1871,7 @@ _DISPATCH = {
     "trust": _cmd_trust,
     "rankings": _cmd_rankings,
     "economics": _cmd_economics,
+    "fireworks-verify": _cmd_fireworks_verify,
     "jev-phase": _cmd_jev_phase,
     "jev-vision-assessment": _cmd_jev_vision_assessment,
     "jev-freeze": _cmd_jev_freeze,
@@ -1819,6 +1938,8 @@ def main(argv=None):
                 max_cost_override=getattr(opts, "max_cost", None))
         else:
             settings = load_settings()
+        if getattr(opts, "trial_model", None):
+            settings.trial_model = opts.trial_model
         _DISPATCH[opts.command](opts, settings)
     except HarnessError as e:
         kind = getattr(e, "kind", "harness_error")
@@ -1833,3 +1954,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
+

@@ -116,3 +116,14 @@ def _print_cost_table(report):
         eprint("-" * len(hdr))
         for m, d in sorted(by_model.items(), key=lambda item: item[1].get("cost", 0.0), reverse=True):
             eprint(f"{m:<40} {d.get('tier', 'T2'):<6} {d.get('calls', 0):>8} {d.get('cost', 0.0):>12.6f}")
+
+    by_lane = report.get("by_lane")
+    if by_lane:
+        eprint("\nSpend by Lane:")
+        hdr = f"{'Lane':<16} {'Calls':>8} {'Cost ($)':>12} {'Tokens':>12} {'Cost %':>8}"
+        eprint(hdr)
+        eprint("-" * len(hdr))
+        for lane_name, d in sorted(by_lane.items(), key=lambda item: item[1].get("cost", 0.0), reverse=True):
+            eprint(f"{lane_name:<16} {d.get('calls', 0):>8} {d.get('cost', 0.0):>12.6f} "
+                   f"{d.get('total_tokens', 0):>12} {d.get('cost_share_pct', 0.0):>7.1f}%")
+

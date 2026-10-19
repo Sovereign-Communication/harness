@@ -56,6 +56,12 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           mkdir -p rankings
+          harness economics --check-fresh --out rankings/tier-snapshot-freshness.json
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::warning::OPENROUTER_API_KEY not set; writing tier snapshot freshness report as fallback"
+            cp rankings/tier-snapshot-freshness.json "rankings/rankings-$(date -u +%Y-%m-%d).json"
+            exit 0
+          fi
           harness rankings --top 15 --out "rankings/rankings-$(date -u +%Y-%m-%d).json"
       - name: Rankings candidate report (with one-vote probes)
         if: ${{ inputs.probe }}

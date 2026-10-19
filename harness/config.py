@@ -33,11 +33,32 @@ CONFIG_DIR = os.path.expanduser("~/.config/harness")
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+
+# Fireworks direct provider lane (EV-7)
+FIREWORKS_CHAT_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
+FIREWORKS_MODEL_PREFIX = "accounts/fireworks/models/"
+FIREWORKS_PROVIDER = "fireworks"
+FIREWORKS_KEY_ENV = "FIREWORKS_API_KEY"
+FIREWORKS_KEY_FILE = os.path.join(CONFIG_DIR, "fireworks.env")
+
+
+def is_fireworks_model_path(label):
+    """True when a model id or spend label names a Fireworks serverless path."""
+    return isinstance(label, str) and label.startswith(FIREWORKS_MODEL_PREFIX)
 # Daily usage rankings (model_permaslug + total_tokens per day). The
 # evidence source for pool-candidate refresh (see harness/rankings.py).
 OPENROUTER_RANKINGS_URL = "https://openrouter.ai/api/v1/datasets/rankings-daily"
 
-# ---- EV-0 model economics evidence (see docs/jev-roadmap.md, EV-0) -------
+# ---- EV-0..EV-5 model economics constants (see docs/jev-roadmap.md) --------
+# EV-4 automatic pool rotation safety bounds:
+EV_MIN_VALUE_RATIO = 1.15
+EV_MAX_COST_INCREASE_AUTO = 0.0
+EV_MAX_MOVES_PER_RUN = 1
+EV_COOLDOWN_DAYS = 14
+EV_MIN_OBSERVED_SAMPLES = 5
+EV_MAX_HEAD_STREAK = 3
+EV_MIN_UPTIME_1D = 0.90
+EV_AUTO_APPLY = False
 # Unified benchmark feed: Artificial Analysis (coding_index / agentic_index /
 # intelligence_index), Design Arena, and OpenRouter's own tau-bench / GPQA /
 # web-search evals (accuracy, avg_cost_per_task). Requires a key.
@@ -408,6 +429,19 @@ ESCALATION_RUNG_CAPS = {
     "paid": [0.03, 0.06, 0.15, 0.20, 0.25],
 }
 
+# ---- Fireworks direct lanes (EV-7: use_fireworks=True) ----
+DEFAULT_FIREWORKS_APPLY_POOL = [
+    "accounts/fireworks/models/deepseek-v3p2",
+    "accounts/fireworks/models/qwen3-coder-480b-a35b-instruct",
+    "accounts/fireworks/models/kimi-k2p5",
+]
+DEFAULT_FIREWORKS_PANEL_POOL = [
+    "accounts/fireworks/models/gpt-oss-120b",
+    "accounts/fireworks/models/deepseek-v3p2",
+    "accounts/fireworks/models/glm-5",
+]
+DEFAULT_FIREWORKS_JUDGE_MODEL = "accounts/fireworks/models/glm-5"
+
 
 def shipped_model_ids():
     """Every default lane model id this install ships with, across both tier
@@ -425,6 +459,9 @@ def shipped_model_ids():
 
 _ENV_NAMES = {
     "use_free": "HARNESS_USE_FREE",
+    "use_fireworks": "HARNESS_USE_FIREWORKS",
+    "fireworks_key": "FIREWORKS_API_KEY",
+    "trial_model": "HARNESS_TRIAL_MODEL",
     "panel": "HARNESS_PANEL",
     "panel_pool": "HARNESS_PANEL_POOL",
     "judge": "HARNESS_JUDGE",
@@ -469,18 +506,21 @@ _ENV_NAMES = {
     "jev_endpoint": "HARNESS_JEV_ENDPOINT",
     "jev_model": "HARNESS_JEV_MODEL",
     "min_confidence": "HARNESS_MIN_CONFIDENCE",
+    "openrouter_enabled": "HARNESS_OPENROUTER_ENABLED",
+    "fireworks_enabled": "HARNESS_FIREWORKS_ENABLED",
+    "fireworks_budget_usd": "HARNESS_FIREWORKS_BUDGET_USD",
 }
 
 
-def _read_key_file(path):
-    """Parse an `OPENROUTER_API_KEY=...` line out of an env file."""
+def _read_key_file(path, name="OPENROUTER_API_KEY"):
+    """Parse a `NAME=...` line (default OPENROUTER_API_KEY) out of an env file."""
     try:
         with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if "=" in line and not line.startswith("#"):
                     k, v = line.split("=", 1)
-                    if k.strip() == "OPENROUTER_API_KEY" and v.strip():
+                    if k.strip() == name and v.strip():
                         return v.strip().strip('"').strip("'")
     except OSError:
         return None
@@ -558,6 +598,29 @@ def resolve_jev_key():
             or os.environ.get("JEV_API_KEY"))
 
 
+def resolve_fireworks_key(key_file=None):
+    """Resolve the Fireworks key: scmorc file, harness file, then the env var.
+
+    Only presence is ever logged; the value is returned to the caller and
+    never echoed. Windows ACL hardening is a setup-time concern and is not
+    performed here.
+    """
+    candidates = ([key_file] if key_file else [
+        os.path.join(os.path.expanduser("~/.config/scmorc"), "fireworks.env"),
+        os.path.join(CONFIG_DIR, "fireworks.env"),
+    ])
+    for p in candidates:
+        k = _read_key_file(p, "FIREWORKS_API_KEY") or _read_key_file(p, "HARNESS_FIREWORKS_KEY")
+        if k:
+            _warn_insecure_keyfile(p)
+            return k
+    key = os.environ.get("FIREWORKS_API_KEY") or os.environ.get("HARNESS_FIREWORKS_KEY")
+    if key:
+        eprint("[warn] using FIREWORKS_API_KEY from the process environment; "
+               "prefer a 0600 key file for interactive use.")
+    return key or None
+
+
 def _as_bool(value):
     if isinstance(value, bool):
         return value
@@ -594,8 +657,22 @@ class Settings:
                   jev_endpoint="https://api.typesafe.ai/v1/systemone",
                   jev_model="jev-latest", min_confidence=0.70,
                   token_budget_input=DEFAULT_TOKEN_BUDGET_INPUT,
-                  token_budget_output=DEFAULT_TOKEN_BUDGET_OUTPUT):
+                  token_budget_output=DEFAULT_TOKEN_BUDGET_OUTPUT,
+                  openrouter_enabled=True, fireworks_enabled=False,
+                  fireworks_budget_usd=0.0,
+                  use_fireworks=False, fireworks_key="", trial_model=""):
         self.use_free = use_free
+        self.openrouter_enabled = bool(openrouter_enabled)
+        self.fireworks_enabled = bool(fireworks_enabled or use_fireworks)
+        self.fireworks_budget_usd = float(fireworks_budget_usd)
+        if not self.openrouter_enabled and not self.fireworks_enabled:
+            raise HarnessError(
+                "at least one provider must be enabled: set openrouter_enabled "
+                "or fireworks_enabled (both off leaves no route for any model)")
+        self.use_fireworks = self.fireworks_enabled
+        self.fireworks_key = str(fireworks_key or "")
+        # Per-run reversible model trial override (#197) -- never persisted by update_config.
+        self.trial_model = str(trial_model or "")
         self.panel = list(panel)
         self.panel_pool = list(panel_pool)
         self.judge = judge
@@ -663,7 +740,8 @@ class Settings:
 
     def to_dict(self):
         return {k: getattr(self, k) for k in (
-            "use_free", "panel", "panel_pool", "judge", "judge_top", "convergence_model",
+            "use_free", "trial_model",
+            "panel", "panel_pool", "judge", "judge_top", "convergence_model",
             "specialist_pool",
             "apply_model", "apply_pool", "escalation_pool", "escalation_model", "max_cost",
             "task_max_cost", "max_tokens", "apply_max_tokens",
@@ -678,7 +756,8 @@ class Settings:
             "max_price_prompt", "max_price_completion", "jev_api_key", "jev_disabled",
             "jev_endpoint", "jev_model", "min_confidence",
             "token_budget_input", "token_budget_output",
-            "hourglass_stages")}
+            "hourglass_stages", "openrouter_enabled", "fireworks_enabled",
+            "fireworks_budget_usd")}
 
 
 # JEV-P4 freeze: the two settings an operator pins after first calibration,
@@ -717,7 +796,8 @@ def update_config(values):
         raise HarnessError(
             "unknown setting(s): " + ", ".join(sorted(unknown)))
     allowed = {"use_free", "allow_escalation", "max_cost", "task_max_cost",
-               "hourglass_stages", "token_budget_input", "token_budget_output"}
+               "hourglass_stages", "token_budget_input", "token_budget_output",
+               "openrouter_enabled", "fireworks_enabled", "fireworks_budget_usd"}
     allowed |= set(JEV_FREEZE_KEYS)
     disallowed = set(values) - allowed
     if disallowed:
@@ -786,6 +866,13 @@ def load_settings(overrides=None):
         return cfg.get(key, default)
 
     use_free = _as_bool(get("use_free", True))
+    use_fireworks = _as_bool(get("use_fireworks", False))
+    fireworks_key = str(get("fireworks_key", "") or "").strip() or resolve_fireworks_key()
+    trial_model = str(get("trial_model", "") or "").strip()
+    if use_fireworks and not fireworks_key:
+        raise HarnessError(
+            "HARNESS_USE_FIREWORKS=true requires a Fireworks API key "
+            f"(set ${FIREWORKS_KEY_ENV} or write {FIREWORKS_KEY_FILE}).")
     # Auto-escalation defaults ON when a paid key is connected: when the
     # cheap tier saturates (429 across the pool) or exhausts its verify
     # budget, the judge walks the escalation ladder into the lowest paid
@@ -797,7 +884,14 @@ def load_settings(overrides=None):
         or (overrides or {}).get("api_key")
         or resolve_api_key()
     )
-    if use_free:
+    if use_fireworks:
+        default_panel = list(DEFAULT_FIREWORKS_PANEL_POOL)
+        default_judge = DEFAULT_FIREWORKS_JUDGE_MODEL
+        default_judge_top = DEFAULT_FIREWORKS_JUDGE_MODEL
+        default_apply_pool = list(DEFAULT_FIREWORKS_APPLY_POOL)
+        default_specialist_pool = list(DEFAULT_FIREWORKS_APPLY_POOL[:1])
+        default_escalation_pool = list(DEFAULT_FIREWORKS_APPLY_POOL)
+    elif use_free:
         default_panel = list(FREE_PANEL_POOL)
         default_judge = FREE_JUDGE
         default_judge_top = FREE_JUDGE
@@ -827,6 +921,9 @@ def load_settings(overrides=None):
     apply_model = str(get("apply_model", default_apply_pool[0]))
     apply_pool = _split_list(str(get("apply_pool", ",".join(
         _dedup([apply_model] + default_apply_pool))))) or [apply_model]
+    if trial_model:
+        apply_model = trial_model
+        apply_pool = _dedup([trial_model] + apply_pool)
     judge_top = str(get("judge_top", default_judge_top))
     escalation_pool = _split_list(str(get("escalation_pool", ",".join(default_escalation_pool)))) or default_escalation_pool
 
@@ -867,6 +964,9 @@ def load_settings(overrides=None):
 
     return Settings(
         use_free=use_free,
+        use_fireworks=use_fireworks,
+        fireworks_key=fireworks_key,
+        trial_model=trial_model,
         panel=panel,
         panel_pool=panel_pool,
         judge=str(get("judge", default_judge)),
@@ -919,6 +1019,9 @@ def load_settings(overrides=None):
         jev_endpoint=str(get("jev_endpoint", "https://api.typesafe.ai/v1/systemone")),
         jev_model=str(get("jev_model", "jev-latest")),
         min_confidence=_num("min_confidence", float, 0.0, 1.0, 0.70),
+        openrouter_enabled=_as_bool(get("openrouter_enabled", True)),
+        fireworks_enabled=_as_bool(get("fireworks_enabled", use_fireworks)),
+        fireworks_budget_usd=_num("fireworks_budget_usd", float, 0.0, 1_000_000.0, 0.0),
     )
 
 
@@ -1062,3 +1165,9 @@ def resolve_hourglass(settings, opts=None):
         "require_diff_authorization": require_diff_authorization,
         "decompose": bool(decompose_value),
     }
+
+
+def apply_pool_rotation(proposed_pool):
+    """Persist a bounded apply_pool rotation proposal via update_config."""
+    return update_config({"apply_pool": list(proposed_pool)})
+
