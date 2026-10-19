@@ -594,6 +594,18 @@ class CliMissionResumeRunTests(unittest.TestCase):
         self.assertFalse(out["resumable"])
         self.assertIn("will not continue", out["how_to_continue"])
 
+    def test_plain_resume_on_stalled_pack_says_it_will_not_continue(self):
+        pack = mr.load_mission_pack(self.root, "m-resume-run")
+        mr.mark_terminal(pack, outcome="stalled", findings="# FINDINGS\n\nStalled.\n")
+        self.cli.main([
+            "mission", "resume", "--id", "m-resume-run",
+            "--root", self.root, "--out", self.out, "--quiet",
+        ])
+        out = self._read_out()
+        self.assertIs(out["resumed"], False)
+        self.assertFalse(out["resumable"])
+        self.assertIn("already terminal", out["how_to_continue"])
+
     def test_run_command_also_carries_attempt_seat_note(self):
         self.cli.main([
             "mission", "run", "--id", "m-resume-run",
