@@ -844,6 +844,7 @@ async function renderDriver(root) {
   const goalInput = $("textarea", {
     class: "pane-input",
     rows: "2",
+    "aria-required": "true",
     placeholder: "What request should the Jev Driver plan and execute? (e.g. Inspect repository state, verify audit chain, and confirm test isolation)..."
   });
   const goalField = $("label", { class: "pane-field" }, $("span", {}, "Task Request / Goal"), goalInput);
@@ -973,13 +974,22 @@ async function renderDriver(root) {
   // Handle Drive Request (Multi-Step Iteration)
   driveForm.onsubmit = async (ev) => {
     ev.preventDefault();
+    const goal = goalInput.value.trim();
+    if (!goal) {
+      driveTimeline.replaceChildren($("p", {
+        class: "muted small",
+        role: "alert"
+      }, "Enter a task request before starting the driver."));
+      goalInput.focus();
+      return;
+    }
     driveBtn.disabled = true;
     stepOnceBtn.disabled = true;
     driveTimeline.replaceChildren($("p", { class: "muted small" }, "Jev Driver planning request into steps and initiating iterative perception..."));
     setPipelineAspect("perception");
     try {
       const payload = {
-        goal: goalInput.value.trim() || "Inspect repository and verify system aspects",
+        goal,
         target: targetInput.value.trim() || "cli",
         schema: schemaSelect.value,
         max_steps: parseInt(stepsInput.value, 10) || 5,
