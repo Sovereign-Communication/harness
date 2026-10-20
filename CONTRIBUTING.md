@@ -297,19 +297,36 @@ git after every local run); _runs/ is untracked scratch.
 
 ## Coverage baseline
 
-The battery's reach is measured, not just counted. D12 compares harness
-lines changed since the coverage baseline's commit against
-audits/self/coverage_baseline.json (the line numbers the full battery
-executed under stdlib trace): changed executable lines that the traced
-suite never ran fail the audit below a 95% bar. Regenerate the baseline
-with the traced battery run and commit it with the code change it
-reflects:
+The battery's reach is measured, not just counted. D12 requires a successful
+provider-free full trace whose measured source hashes match the checkout.
+Old numeric-only or content-mismatched hits fail closed: the same line number
+in a different revision is not execution evidence. The evidence separates
+measured HEAD/tree/content from `commit`, the independently pinned diff base;
+changed executable harness lines must meet the unchanged 95% bar.
 
-  python audits/self/refresh_coverage_baseline.py
+First prove isolation, including descendants, before starting a trace:
 
-A traced run costs roughly a minute; do it when landing substantive
-harness changes, not per commit. Missing data is a visible SKIP, never
-a silent pass.
+```bash
+python audits/self/refresh_coverage_baseline.py --check-isolation
+python audits/self/refresh_coverage_baseline.py --diff-base <merge-base-sha> --output tmp/coverage-review.json
+```
+
+The runner allowlists OS environment essentials, redirects home/config/state/
+temp/ledger roots before discovery, disables inherited live opt-ins, permits
+loopback integration tests, and refuses external egress and unsupported child
+execution. Python descendants carry the guard even with `-I`/`-S`; JavaScript
+parity children use a coverage-only preload. This boundary contains trusted
+repository tests; it is not a hostile-code/native-extension OS sandbox.
+Test failures, leaks, egress or source drift never write trace evidence. Focused
+`--tests` checks do not qualify to replace the full-battery baseline.
+
+Review the scratch trace and actual gaps before regenerating the default
+`audits/self/coverage_baseline.json` through this same generator. Never hand-edit
+hits, repoint the diff base to hide changes, or change the threshold. The trace
+records discovered/executed tests, skips, counts, imported module paths, source
+hashes, child participation, and main/worker-thread hits; descendant hits are
+not credited as in-process coverage. Baseline publication remains a reviewed
+change, not a workaround for red gates.
 
 ## Version bump
 

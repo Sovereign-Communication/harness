@@ -1153,16 +1153,16 @@ def d12_unreachable(ref, *, in_ci):
     return 1.0, f"SKIP (fail-open): {reason}"
 
 
-def sd_coverage_changed():
-    """Changed harness lines must be executed by the traced suite:
-    since the coverage baseline's own commit, added lines in
-    harness/ that the traced battery never ran fail this check
-    below a 95% executed bar. The baseline is generated only by
-    refresh_coverage_baseline.py (a traced full battery run) and
-    committed with the code change it reflects. A missing or unusable
-    baseline is reported visibly -- never a silent pass -- and an
-    unreachable reference fails closed in CI."""
-    mf = HERE / "coverage_baseline.json"
+def sd_coverage_changed(trace_path=None):
+    """Require source-bound execution evidence for changed harness lines.
+
+    `commit` is the independent diff base, never the measured HEAD. Legacy
+    numeric-only or content-mismatched traces fail closed rather than crediting
+    different statements at old line numbers. A trace path permits scratch
+    verification without rewriting the committed baseline. Unreachable refs
+    keep their existing visible shallow-checkout policy.
+    """
+    mf = Path(trace_path) if trace_path is not None else HERE / "coverage_baseline.json"
     if not mf.exists():
         _audible("[warn] D12: coverage_baseline.json missing -- "
                  "SKIP (fail-open); run refresh_coverage_baseline.py")
@@ -1178,10 +1178,21 @@ def sd_coverage_changed():
                  "SKIP (fail-open)")
         return 1.0, "SKIP (fail-open): baseline lacks a commit reference"
     d = subprocess.run(
-        ["git", "diff", "--unified=0", ref, "--", "harness/"],
+        ["git", "diff", "--no-ext-diff", "--no-textconv", "--unified=0", ref, "--", "harness/"],
         cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8", errors="replace")
     if d.returncode != 0:
         return d12_unreachable(ref, in_ci=_IN_CI)
+    # Numeric hits from a different source revision cannot credit current lines.
+    # Imports are local audit helpers, not an installed package/another worktree.
+    sys.path.insert(0, str(HERE))
+    from coverage_evidence import validate_trace
+    try:
+        validate_trace(doc, ROOT)
+    except ValueError as exc:
+        reason = ("changed-line coverage unverified: " + str(exc)
+                  + "; regenerate via refresh_coverage_baseline.py")
+        _audible("[FATAL] D12: " + reason)
+        return 0.0, "FAIL: " + reason
     added = {}
     rel = None
     new_ln = 0
@@ -1241,7 +1252,8 @@ def sd_coverage_changed():
     ratio = executed / checked
     ok = ratio >= 0.95
     detail = (f"changed-line coverage {executed}/{checked} = "
-              f"{ratio:.0%} (bar 95%) vs baseline {ref[:10]}")
+              f"{ratio:.0%} (bar 95%) vs diff base {ref[:10]}; "
+              f"measured source {doc['execution']['head'][:10]} + content hashes")
     if gaps:
         items = "; ".join(
             r.split("harness/")[-1] + ":"

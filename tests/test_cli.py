@@ -128,6 +128,62 @@ class VerifyTerminalExitTests(unittest.TestCase):
             cli.main(["verify", "--prompt", "Review this."])
         self.assertEqual(result["status"], "ok")
 
+    def test_missing_or_non_object_consensus_persists_evidence_then_fails(self):
+        """A report without an authoritative consensus is never a completed review."""
+        for fields in ({}, {"consensus": None}, {"consensus": []},
+                       {"consensus": "ok"}):
+            with self.subTest(fields=fields), tempfile.TemporaryDirectory() as td:
+                result = dict(fields, actual_cost=0.0012,
+                              estimated_worst_case_cost=0.002,
+                              judge_synthesis_status="parseable")
+                report_path = os.path.join(td, "verify.json")
+                stderr = io.StringIO()
+                with mock.patch.object(cli, "load_settings", return_value=object()), \
+                     mock.patch.object(cli, "_run_claims_verify", return_value=result), \
+                     contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit) as ctx:
+                        cli.main(["verify", "--prompt", "Review this.",
+                                  "--out", report_path])
+                self.assertEqual(ctx.exception.code, 2)
+                with open(report_path, encoding="utf-8") as stream:
+                    report = json.load(stream)
+                self.assertEqual(report["status"], "failed")
+                self.assertEqual(report["actual_cost"], 0.0012)
+                self.assertEqual(report["estimated_worst_case_cost"], 0.002)
+                self.assertEqual(report["judge_synthesis_status"], "parseable")
+                if "consensus" in fields:
+                    self.assertEqual(report["consensus"], fields["consensus"])
+                else:
+                    self.assertNotIn("consensus", report)
+                self.assertIn("[OK] result written", stderr.getvalue())
+                self.assertNotIn("[verify] review deferred", stderr.getvalue())
+                self.assertNotIn("harness continue --state", stderr.getvalue())
+
+    def test_unknown_verdict_status_cannot_claim_success_or_defer(self):
+        """Future/malformed status values fail closed even with a boolean defer."""
+        for defer in (False, True):
+            with self.subTest(defer=defer), tempfile.TemporaryDirectory() as td:
+                result = {"consensus": {"defer": defer, "verdict_status": "unknown"},
+                          "actual_cost": 0.0012, "estimated_worst_case_cost": 0.002}
+                report_path = os.path.join(td, "verify.json")
+                stderr = io.StringIO()
+                with mock.patch.object(cli, "load_settings", return_value=object()), \
+                     mock.patch.object(cli, "_run_claims_verify", return_value=result), \
+                     contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit) as ctx:
+                        cli.main(["verify", "--prompt", "Review this.",
+                                  "--out", report_path])
+                self.assertEqual(ctx.exception.code, 2)
+                with open(report_path, encoding="utf-8") as stream:
+                    report = json.load(stream)
+                self.assertEqual(report["status"], "failed")
+                self.assertEqual(report["consensus"], result["consensus"])
+                self.assertEqual(report["actual_cost"], 0.0012)
+                self.assertEqual(report["estimated_worst_case_cost"], 0.002)
+                self.assertIn("[OK] result written", stderr.getvalue())
+                self.assertNotIn("[verify] review deferred", stderr.getvalue())
+                self.assertNotIn("harness continue --state", stderr.getvalue())
+
     def test_malformed_consensus_exits_failed(self):
         result = {"consensus": {}, "actual_cost": 0.0}
         with mock.patch.object(cli, "load_settings", return_value=object()), \

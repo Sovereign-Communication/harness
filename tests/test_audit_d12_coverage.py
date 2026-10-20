@@ -81,6 +81,22 @@ class D12BaselinePinTests(unittest.TestCase):
             or "no executable harness changes" in evidence,
             f"D12 returned a verdict without saying what it measured: {evidence}")
 
+    def test_legacy_numeric_trace_is_explicitly_unverified(self):
+        from unittest import mock
+        import json
+        import tempfile
+
+        legacy = {"commit": "a" * 40, "modules": {"harness/cli.py": [225]}}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.json"
+            path.write_text(json.dumps(legacy), encoding="utf-8")
+            with mock.patch.object(self.audit.subprocess, "run",
+                                   return_value=mock.Mock(returncode=0, stdout="")):
+                score, evidence = self.audit.sd_coverage_changed(path)
+        self.assertEqual(score, 0.0)
+        self.assertIn("changed-line coverage unverified", evidence)
+        self.assertIn("source-content provenance", evidence)
+
     def test_unreachable_reference_fails_closed_in_ci(self):
         score, evidence = self.audit.d12_unreachable("f" * 40, in_ci=True)
         self.assertEqual(score, 0.0, evidence)

@@ -23,7 +23,10 @@ their old “open,” “next,” and “in progress” language is not current 
 repeated here or in a live tracker row. This is the only operational plan.
 Reconcile it against remote state before each merge.
 
-### Verified remote and review state
+### Historical remote and review snapshot (2026-10-05)
+
+The snapshot below is retained evidence, not current head/CI status. The dated
+2026-10-06 reconciliation below supersedes its present-tense claims.
 
 - Canonical repository: `Sovereign-Communication/harness`. The old
   `Treystu/Harness` identity is a moved pointer and is not a reliable source.
@@ -59,6 +62,121 @@ Reconcile it against remote state before each merge.
   Its substantive conversation comment is tracked above. Re-read PR checks,
   comments, and base SHA immediately before merge.
 
+### Reconciliation — new audit evidence, 2026-10-06
+
+- Fresh fetch: `origin/main` is `71b203bd9c412f81e7b1fcb2c9a680e6255d4e8e`
+  (PR #193, audit data only). Its PR-tip checks were all green; post-merge
+  [main CI](https://github.com/Sovereign-Communication/harness/actions/runs/37456596082)
+  was still running at this read, so post-merge green is not yet claimed.
+  The merged roadmap itself is unchanged by #193. Its dated STATUS and
+  acceptance contracts remain authority; this #180 reconciliation is proposed,
+  not a landed replacement. The audit data under
+  [jev-completion/](jev-completion/PRESCRIPTIONS.md) is mirrored unchanged from
+  that merged revision into this working checkout for local review.
+- PR #180 remains the sole open PR at `5a68229bbe38aa614deab1d7b5f7f983f0d8ba72`.
+  Its merge base with current main remains `0676d6423d15b8f71c26c61099fbb8ccefcef715`.
+  Latest published checks: all five suite jobs and audit failed; packaging,
+  installed-wheel smoke and hygiene passed. Linux and Windows logs confirm the
+  same three missing Hourglass realization source errors. No newer substantive
+  review or inline review was found. Local restoration below fixes that source
+  contract, but no remote delivery/green CI for the repair is claimed.
+- Local provider-free coverage now uses fresh environment/config roots,
+  guarded descendant execution and source-content provenance. The successful
+  3,976-test trace exposed the real #180 gaps: `results.py:56,62`; meaningful
+  merge-base coverage was **14/16 = 87.5%**, not the stale 43/46 ratio. The old
+  three apparent gaps all executed. Named CLI regressions now exercise missing/
+  non-object consensus and unknown verdict statuses, preserving report/cost
+  evidence before exit 2; rerun the full trace before claiming the bar passes.
+  The committed old numeric baseline is unchanged and unproven for current
+  content. Never repoint its comparison base to hide changes.
+- [Master audit #181](https://github.com/Sovereign-Communication/harness/issues/181)
+  and children #182–#192 are **review queues**, not blanket implementation orders.
+  The merged `conclusive_findings.csv` has 138 workstream records for **109
+  distinct functions: 105 FALSE-POSITIVE, 4 NEEDS-HUMAN, 0 CONFIRMED**. Counts
+  across workstreams overlap; do not add them as distinct defects. Claims are
+  revision-bound to audited `0676d642`, not proof about subsequent edits.
+- Latest #182/#183/#189 comments supersede stale issue bodies and the historical
+  “execution-ready” heading in `PRESCRIPTIONS.md`: expanded-context re-review is
+  recorded; all nine >=0.95 prescriptions and all six dead-code candidates
+  were exonerated. **Zero prescriptions are execution-ready.** Do not apply
+  patterns mechanically or delete reachable/benchmark code. The remaining
+  >=0.80 list still needs source/caller/test review and recorded dispositions.
+- Security #184/#185 reports four owner decisions: media `job`/`wait` interpolate
+  job IDs into the configured service path; mission list/detail accept `root`
+  behind loopback/auth. These are **NEEDS-HUMAN**, not confirmed vulnerabilities
+  or permission to change the threat model. Preserve existing interfaces until
+  the operator chooses job-ID encoding/validation and mission-root scope.
+- Test security #186, test gaps #187/#188 (562 candidates), concurrency
+  #190/#191 (238 candidates; only the top five exonerated), and completeness
+  #192 (17 candidates) remain unverified ranked queues. A low confirm rate in
+  other queues does not exonerate them. Sample by current-source evidence and
+  actual trace reach, protect intentional fixtures/abstract interfaces, then
+  record per-item rationale and named tests. All remain open; no STATUS flips.
+
+### Reconciliation — evening recheck, 2026-10-06 (no remote delivery)
+
+- Fresh fetch: `origin/main` is still
+  `71b203bd9c412f81e7b1fcb2c9a680e6255d4e8e` (PR #193, audit data only).
+  Two PRs are now open: #180 at `5a68229` (audit fail + 5 suite fails;
+  packaging/smoke/hygiene pass; 0 reviews) and #194 at `15566fe`
+  (`fix/jev-audit-followups`, MERGEABLE, 0 reviews, **12/12 checks green**
+  including audit + 5-suite matrix + packaging + installed-wheel smoke).
+  The "sole open PR" line above is superseded; one-phase-PR rule is
+  violated remotely until one lands.
+- Issues #181–#192 remain OPEN (plus #144/#177/#179). #184/#185 each carry
+  2 comments claiming ADDRESSED by unmerged PR #194 `02a7143`; an unmerged
+  comment is not proof. The #194 lane keeps approved policies only
+  (**media IDs opaque encoded segments**, **HTTP mission reads explicit
+  startup-owned roots with symlink containment**) with provider-free
+  boundary regressions (209 tests OK, 6 skips in media/mcp/server).
+- Canonical board recheck on the exact `71b203bd` snapshot (fixed
+  `recheck_canonical_board.py` child `sys.path`; guard from this checkout):
+  CLI exit 0, **39 passing / 8 failing / 0 false-complete**. Failing:
+  CIVICSCOPE-COMPLETION, DRV-1 (84.99, only `dogfood_missing`), DRV-2,
+  EV-0, JEV-P3-CALIBRATION-ANALYSIS, OC-HANDOFF, PROVISION-CORE,
+  REPO-CARDS — matching the backlog below. Evidence:
+  `tmp/freebuff/roadmap-audit/oct06/canonical-board-summary.json`.
+- First unblocked provenance gap closed locally (not delivered): the
+  source-bound runner hashed parent stdout (`hash(output.encode())`)
+  instead of the published `.log` bytes, so saved `log_sha256`
+  (`0d0f6a…`) never matched the file (`d7f1e6…`). Fixed in
+  `audits/self/refresh_coverage_baseline.py` and
+  `tmp/freebuff/pr194-review/audits/self/coverage_review_runner.py` to
+  `write_bytes(output.encode())` + hash `read_bytes()`. Compile + ruff
+  clean; focused media/mcp/server 209 OK. Fresh full trace then ran
+  with the fixed runner (head `5a68229`, diff-base `0676d64`,
+  `RUNNER_EXIT=0`, 3978 tests OK / 58 skipped, `violations: []`):
+  **changed-line coverage 16/16 = 100%, `bar_met: true`, `gaps: {}`**,
+  `LOG_IDENTITY True`. This **supersedes the stale 43/46 = 93% ratio**
+  (pre-fix runner artifact, not merge-base reality). Evidence:
+  `tmp/freebuff/roadmap-audit/oct06/pruned-full-trace.json` (+ `.log`,
+  `.guard.json`, `.runner.log`) and `pruned-full-trace-summary.json`
+  (the pre-prune `fresh-` set was removed after the EQUIVALENT verdict;
+  its hash is pinned in `trace-equivalence.json`).
+  No baseline was edited or repointed; local evidence only, no STATUS
+  flip or merge claim follows while #180 remote CI stays red.
+  Canonical trace: cite `pruned-full-trace.json` (post-prune runner)
+  downstream — `trace-equivalence.json` records the computed EQUIVALENT
+  verdict over the pre-prune `fresh-` trace, which is superseded.
+- Follow-up recheck (same heads: `origin/main` `71b203bd`, #180 `5a68229`
+  red audit+suites / 0 reviews, #194 `15566fe` 12/12 green / 0 reviews,
+  issues #181–#192 plus #144/#177/#179 still open): runner hygiene
+  parity-applied to the PR194-review copy
+  (`tmp/freebuff/pr194-review/audits/self/coverage_review_runner.py` —
+  direct `hashlib`, explicit named-option forwarding; regions now
+  byte-identical to the parent runner), compile + ruff clean, and its
+  `--check-isolation` passes exit 0 with the committed baseline
+  untouched. Remaining gates, all operator-side: independent review +
+  merge of #180 or #194 (one-phase-PR rule still violated remotely),
+  paid-cheap live dogfood receipts (DRV-1), signed OC candidate, and
+  the ranked #182–#192 queues (zero prescriptions execution-ready).
+- Hourglass repair on #180 (`### Hourglass vision realization (HV-*)`
+  restored verbatim) and the dirty legacy worktree
+  (`86ac1455…`, exactly 2 untracked files) are preserved. No commits,
+  pushes, merges, PR/issue mutations, live providers, or external config
+  were used. Blockers unchanged: #180 red CI, #194 green but unreviewed/
+  unmerged, live dogfood + signed OC remain operator gates.
+
 ### Current backlog and dependency order
 
 Only one phase PR may be active. Keep all work in the existing #180 PR until
@@ -68,7 +186,8 @@ required local gates are present.
 
 | Order | Canonical ID / source | Remaining work and acceptance evidence |
 |---|---|---|
-| 1 | **#180 / DF-CLI-3** | Resolve the D12 trace discrepancy on the actual merge base; make the coverage runner safe and its test execution/trace lineage auditable; obtain required changed-line coverage without falsifying or editing the baseline; local gates and all required PR checks green. Then merge #180 and confirm green post-merge `main`. |
+| 1 | **#180 / DF-CLI-3** | Preserve the restored canonical Hourglass input and provider-free source-bound runner; verify the two genuine failure-branch regressions with a new full trace against `0676d642`; require ≥95% meaningful changed-line coverage without editing/repointing the old baseline. Review trace publication and independent local gates, then required current-head CI and later authorized merge/post-merge green. No merge while red. |
+| 1a (after #180) | **#181–#192 / audit integration** | Use the dated reconciliation above, not stale execution-ready headings. Obtain the four operator threat-model decisions; review remaining ranked prescription/security/test/concurrency/stub queues against current source/callers/trace, one bounded owning-module phase at a time. Record exonerations with evidence; fix only confirmed residuals with named tests and unchanged safety gates. Do not claim all queues complete from 109 overlapping reviews. |
 | 2 | **#179 / DF-CLI-4** | Recover only the CLI stderr notice and regression tests from `6269636c9b`; rebase on current `main` and fix its current `max_cost` ceiling failure. Do not carry unrelated patchsets. |
 | 3 | **#179 / DF-AUDIT-6 candidate** | Isolate and review the AST preflight strengthening from current branch evidence; establish a named phase contract and regression tests before implementation. An issue comment alone is not acceptance. |
 | 4 | **#179 / pack limits and JEV-P6 prose** | Reconcile the claimed 1,900-character seed cap / 1,886-character measurement with `tests/test_jev_repo_pack.py` setting `SEED_MAX_QUESTION_CHARS = 3400`. Decide and test one actual bound, then align the pack and roadmap prose. |
@@ -566,6 +685,67 @@ The authoritative priority order and acceptance conditions are in
 above. This historical list is retired because it mixed completed rows with
 active work and contained stale dispositions. Keep one phase PR active and
 start only the first unblocked item from that current table.
+
+### Hourglass vision realization (`HV-*`)
+
+**Retained assessment source — acceptance contract, not an active work queue.**
+The shipped `build_vision_assessment_state` consumer reads this exact heading
+and section as canonical input. The rollout dependencies, limits, and PR #88
+progress snapshot below are historical; they do not reopen shipped work or
+replace current settings. `HV-0` through `HV-6` and their brief/budget consumers
+are complete per Canonical STATUS. The active backlog remains
+[Canonical current status — comprehensive sweep 2026-10-05](#canonical-current-status--comprehensive-sweep-2026-10-05).
+
+Purpose: realize [hourglass-vision.md](hourglass-vision.md) as a modular, token-budget-shaped workflow: broad context intake, constrained planning waist, then expanded-token execution, with JEV available as a composed set of typed decision integrations. This section retains the design and acceptance contract for assessment; the linked document is the product definition. Existing HG, MS-context, JEV-P6, consent, and spend work is foundation/evidence, not presumed completion of these contracts.
+
+**Shared completion rule:** every slice has named hermetic tests; actual and estimated token usage are labeled honestly; token limits and dollar ceilings are tested independently; malformed, missing, unkeyed, or unavailable JEV results cannot become live approval; the ledger/envelope records stage, integration/site, model, fallback, budget, and outcome; CLI/MCP/agent surfaces use the shared owner. No slice is complete from prose or an aggregate score alone.
+
+**Historical priority and parallelization rule:** finish `JEV-AUDIT-GATE` and the HUL-D follow-ups before `HV-0`. HV-0 builds the reusable JEV assessment contract and pilots it when the bounded call is feasible; its hermetic implementation may still be reviewed if the live call is blocked, but the pilot cannot be called complete. Review declared categories and address substantiated gaps. After HV-0's contract is merged, `HV-1`, `HV-2`, and `HV-3` may be developed concurrently in disjoint worktrees. `AGENTS.md` still permits only one active phase PR: open, gate, and merge those PRs serially, rebasing each remaining lane onto current `origin/main` before its PR. Integrators must not edit another lane's owned files; propose interface changes back to the owner. `HV-4` depends on those merged contracts; `HV-5` depends on `HV-4`; `HV-6` closes parity and measured acceptance.
+
+**Contract freeze for parallel kickoff (historical; answers could be refined before implementation):**
+
+- Stage identity is one of context, planning, execution, verification; partial runs declare selected stages and supplied artifacts.
+- Each call carries `max_input_tokens` and `max_output_tokens`; optional run/stage aggregate token ceilings compose by reservations. Unknown provider usage remains estimated/unknown and is never reported as measured actual.
+- Token ceilings never substitute for the existing composed monetary ceiling. Both are preflighted before a call; concurrent reservations cannot overcommit either.
+- A brief is versioned and carries goal, grounded claims/evidence references, included/excluded scope, coverage, freshness/source identity, uncertainty, and estimated token count.
+- A JEV integration has a stable capability/site name, typed input/output schema, operator-declared criteria/buckets where categorical, authority/fallback/confidence rules, budget/preflight, ledger evidence, and hermetic contract tests. No arbitrary plugin code or model-created category can bypass owners.
+- Consent is tied to the assignment, relevant context/brief identity, selected model/pool, and limits; defer stops that assignment and creates a resumable handoff.
+- Completion alignment receives the original request and retained relevant source context directly, without a new generative condensation pass. JEV may select only a declared restart target (context, planning, or execution); code validates the target, preserves completed work/evidence, reapplies limits, and renews consent when the assignment changed.
+
+**HV-0 design-assessment contract:** ten operator-declared Score questions share one structured state and one network request. The categories are modularity, hourglass token shape, grounding, planning, execution boundary, JEV coverage, sovereignty, observability, verification/alignment, and cost/resource bounds. JEV returns typed scores and distributions, not prose rationales. Code associates each category with source references and exactly one declared improvement bucket for each below-top level. Select the highest-probability level, breaking ties toward the lower ordinal; flag review below a pack-declared assessment confidence threshold. “Perfect” requires all ten top levels, all confidences at or above that threshold, and no improvement or review bucket. It conveys no `can_mark_complete`, readiness, or phase status.
+
+Validate exactly the declared ten answer IDs and legends, with no missing or extra IDs; finite scores within declared ordinal bounds; finite 0–1 probabilities whose keys match the declared levels and sum to one; finite 0–1 confidence; and an observed model identity. Reject the entire assessment if any field is partial or malformed. Unkeyed, transport-failed, invalid, or budget-refused results are **unassessed** with every category score `None`; structural fallback is not a vision score. Return only typed result fields and code-owned evidence references, never fabricated model explanations.
+
+Before the live pilot, assemble and sanitize the complete context. Record its section outline, UTF-8 serialized byte count, and estimated input tokens using `harness.tokens.estimate_prompt_tokens` on the same JSON serialization used for dispatch. [TypeSafe's Jev 1.13 model page](https://docs.typesafe.ai/models) lists 64k **tokens** for the complete request and 32k tokens for `state` plus the longest question; require positive estimated margins under both. No silent truncation, category reduction, or split call. The operator verified this account's applicable rate in the TypeSafe billing console as **$0.042 per million input tokens** ($42/Btok, output tokens free); no further price evidence is required for this assignment. HV-0 updates the shared `harness.jev.jev_cost` owner and all shared preflight/settlement paths to that rate, with regression tests. At the verified rate, even 64k input tokens reserve only $0.002688, far below the normal $0.10 `HARD_MAX_COST` at the historical pilot; the account's included $5.00 monthly credit covers ~119M input tokens. Compute the reserve from the shared price and full request estimate. Do not raise the ceiling implicitly.
+
+The logical preflight is a local governor reservation, with no network request. The HV-0 policy method owns one reservation, one no-retry transport attempt, validation, settlement, and one metadata-only event for a dispatched call. A pre-dispatch refusal records the refusal, not a settled `jev_eval`. The settled event identifies site/capability, pack ID/version, observed model, result state, fallback state, measured/estimated/unavailable usage source, cost source, token counts where observed, and cost; it contains no payload, key, IP address, or personal context. A failed or malformed response still settles any reported input usage; if input usage is unavailable, settle the preflight estimate and label it estimated. Every failure remains unassessed. No caller manually reserves and then invokes a method that reserves again.
+
+| ID | Goal and definition of done | Primary ownership / tests | Dependencies and parallel boundary |
+|---|---|---|---|
+| `HV-0` JEV integration foundation + vision-assessment pilot | Deliver the narrow versioned assessment pack, one `JevPolicy` method, an all-or-nothing typed/unassessed envelope, shared strict validation and accounting helpers, and one thin supported entry point if needed. Meet the detailed HV-0 contract above. Hermetic tests cover keyed success; unkeyed, retryable HTTP/transport, malformed, missing/extra, and budget-refused paths; exact category and legend validation; one reservation/settlement/event; and absence of phase-completion fields. Run one live assessment only after source, payload-limit, price, key, and budget gates pass; otherwise report the exact blocker and leave all categories unassessed. JEV's score is advisory and never marks the phase complete. | `harness/jev_policy.py`, `harness/jev_packs.py`, design assessment pack and `tests/test_jev_vision_assessment.py`; one CLI/artifact entry point only if a current surface can own it cleanly. | After JEV-AUDIT-GATE and HUL-D follow-ups. Owns the shared JEV assessment contract; no arbitrary executable plugin loader. |
+| `HV-1` stage-specific JEV integration coverage | Apply the HV-0 contract to the distinct Hourglass judgment points. Provide selectable typed integrations for context relevance/coverage/conflicts, plan sufficiency/soundness/evidence requests, execution suitability/checkpoints, consent freshness/defer/escalation signals, final completeness/alignment against the original request plus relevant uncondensed source context, and a declared restart-target choice among context, planning, and execution. For every dimension, name code-owned facts versus JEV semantic judgment, pack/version, abstention/fallback, and evidence; avoid redundant calls when no decision is needed. JEV recommends a target; code enforces allowed transitions, provenance, preserved completed work, current limits, and any renewed consent. | `harness/jev_policy.py`, `harness/jev_packs.py`, JEV integration matrix and `tests/test_hourglass_jev_integrations.py`. Do not edit `condenser.py`, spend/config budget owner, waist composition, CLI/MCP surfaces; publish APIs. | One of three parallel lanes after HV-0. Extends the new integration protocol; no second Jev client/policy. |
+| `HV-2` evidence-bearing context brief | Extend the existing condenser/brief path to produce a reusable, bounded artifact with source identity/freshness, scope coverage, grounded references, uncertainties/conflicts, and token estimate. Preserve useful evidence under pruning; make truncation/omission visible. Provide independent create/validate/render behavior so callers can supply a brief without running intake. | `harness/condenser.py` and a focused brief module only if needed; `tests/test_hourglass_brief.py`. Do not edit JEV policy/packs, config/spend, waist, or surfaces; publish schema/helpers. | One of three parallel lanes after HV-0. Existing `MicroBrief` is starting point, not assumed schema-complete. |
+| `HV-3` token allowance and accounting owner | Implement one policy owner for per-call input/output maxima and composable stage/run reservations, reconcile reported usage, label estimates and unavailable usage, and expose remaining/used allowances. Enforce token budgets independently from `SpendGovernor` dollar reservations, including concurrent calls and failures. | Prefer `harness/spend.py` or a dedicated narrowly owned token-budget module after kickoff; `config.py` settings; `tests/test_hourglass_token_budget.py`. Do not edit Jev pack/policy, condenser/brief, waist, or CLI/MCP surfaces; publish API. | One of three parallel lanes after HV-0. Must compose with—not weaken—existing cost preflight. |
+| `HV-4` stage composition and planning waist | Compose optional context/planning/execution/verification stages from shared contracts. Planning consumes successively curated briefs with decreasing explicit token allowances, stops on a sufficient answer, or emits a validated bounded plan / bounded evidence request / honest defer. It cannot raise its own limits. Supplied brief and plan paths bypass omitted stages. Preserve Hourglass defaults only where existing compatibility requires them. | `harness/waist.py`, `harness/config.py` stage resolution, DAG/plan contract and `tests/test_hourglass_stage_composition.py`, `tests/test_hourglass_planning_budget.py`. | After HV-1..3 merged. Owns composition and waist; do not reimplement JEV validation, brief schema, token reservations, or spend. Kickoff input: `GAP-recondense` (re-condense/plan-drift trigger) was decided in this lane: the trigger, its reasons and its precedence (gate > pin > overlap) are owned by `waist.recondense_decision` and consulted by `resolve_stages`/`compose_stages`, so `HV-5` inherits a trigger instead of inventing one; the decision landed in PR #132 (`c62410c7`). |
+| `HV-5` expanded-token execution and sovereign handoffs | Dispatch validated work packages to the least-cost capable workers with execution token allowances wider than the planning waist, bounded by composed token and monetary budgets. Consent applies to exact package/context/limits; declines and deferrals stop dispatch; mid-task defer persists completed evidence and resumable handoff. At completion, the final JEV alignment check sees the original request plus relevant retained source context without generative condensation; it checks requirements and evidence and may request a declared restart target. Code validates the target, preserves completed work and provenance, reapplies limits, and renews consent for changed assignments. Material plan changes return through a bounded planning amendment. Independent verification remains completion authority. | `harness/agent.py`, `harness/apply*.py`, `harness/consent.py`, executor/continuation integration; `tests/test_hourglass_execution_budget.py`, `tests/test_hourglass_consent_handoff.py`. Do not edit shared owners from HV-1..4; call their APIs. | After HV-4. Keep each package isolated or locked by existing safety policy; no silent plan rewrite. Kickoff inputs: `GAP-consent-stale` (consent-staleness event enum consumed by renewal) and the `GAP-recondense` trigger if `HV-4` defers it. |
+| `HV-6` surface parity, observability, and acceptance | Expose stage selection and budgets through CLI, MCP, and agent/API surfaces using shared policy; report selected/skipped stages, requested/actual/estimated tokens, spend, JEV judgments/fallbacks, consent, handoffs, and verification. Demonstrate partial-stage use and full flow with hermetic fakes; run a small operator-authorized paid-cheap dogfood comparison for cost, token profile, fallbacks, defer/resume, and verified outcomes. Document limitations and defaults. | Thin adapters in `cli_parser.py`/`cli.py`, `mcp_schemas.py`/`mcp.py`, envelopes/ledger analytics as identified; `tests/test_hourglass_surface_parity.py`, `tests/test_hourglass_end_to_end.py`; update vision only for approved product changes. | After HV-4 and HV-5. One integration owner coordinates surface changes; keep CLI and MCP adapters thin. |
+
+**Historical `HV-1` progress (PR #88, integrated from its source branch):** delivered one slice of `HV-1`'s "final completeness/alignment" and "plan sufficiency" judgment points as a bounded answer/reiterate loop, folded into the existing `JevPolicy`/`jev_packs` owner (no second contract, no second Jev client):
+- `harness/jev_packs.py` adds `answer_question_pack`/`ANSWER_PACK_VERSION` (`answer-sufficiency-v1`): typed `answer_sufficient` / `iteration_required` / `plan_required` nouls.
+- `harness/jev_policy.py` adds `JevPolicy.evaluate_answer(prompt, answer, context, ...)`: one reservation/settlement/ledger event per call, honest `native`/fallback/malformed distinction, never promotes a fallback to a passing signal.
+- `harness/orchestrator.py`'s `drive()` gains an opt-in `jev_completion_threshold` that reads the existing completion-nouls `goal_achieved` signal (via a new `_result_probability` helper) and requires another round before the generative judge spends when the live Jev support is below the caller's threshold; existing callers that omit the threshold are unaffected.
+- `harness/agent.py` adds `AutonomousAgent.run_hourglass_request(...)`: for a direct-answer request it runs bounded local context intake, the existing panel/judge/escalation ladder, and `evaluate_answer` in a capped reiterate loop (`ok` / `deferred` / `plan_required` / `needs_iteration`); a `plan_required` Jev signal is advisory only and never crosses the write boundary — only `_handle_edit` (now with `use_jev_completion=True`, wiring the same threshold into `drive()`) can write. `tests/test_jev_answer_lifecycle.py` covers both paths hermetically (keyed/unkeyed/malformed/transport-failure `evaluate_answer`; ladder rotation/failure/truncation; the reiterate loop including budget-deferred and plan-required exits; the edit lane's `use_jev_completion` wiring).
+- Not yet delivered at PR #88: context-intake relevance/coverage/conflict judgments, execution-checkpoint and consent-freshness signals, and the declared context/planning/execution **restart-target enum** (that slice only distinguished `deferred`/`plan_required`/`needs_iteration`/`ok`, without selecting a stage to restart). These historical gaps subsequently closed through PR #98 (landed with #101) and calling-lane wiring in PR #153; see the complete `HV-1` STATUS row.
+- **Left out of PR #88:** the source branch also carried (a) the shared Jev price correction, which belongs to HV-0 and is implemented in the HV-0 slice, and (b) a dogfood coordinator module without a canon row. That module remains excluded unless an operational canon row authorizes it; it is not part of HV-1 answer lifecycle.
+
+**Acceptance for the full vision:** tests prove each stage can run alone and any supported subset composes without activating omitted stages; test traces prove input/output token allowances narrow into planning and expand at execution; both token and dollar ceilings reject over-budget calls before network and remain sound under concurrency; briefs retain provenance/uncertainty; JEV integrations are selectable, typed, declared, ledgered, and fail closed; every dispatch has valid consent or is stopped; defer/resume does not repeat completed work or misreport completion; final completion requires independent verification. The dogfood report compares these measures against a baseline and calls out provider usage fields that are only estimates.
+
+**Out of scope unless separately ruled:** arbitrary third-party executable plugins; automatic unlimited browsing or repo reads; a frontier call on every green stage; letting JEV override code-owned gates, model availability, consent mechanics, or budgets; guaranteeing model capability from price alone; claiming provider-reported token categories that the provider does not expose.
+
+Each `HV-*` slice must be added to the completion pack only with its actual independent gates and must receive a named `jev-phase` contract before it can be marked complete. If the phase bar cannot score product/design quality separately from implementation completion, track that as a JEV integration gap rather than misusing the completion bar.
+
+**Do not mark any row complete without:** named tests green + audit BAR MET on PR tip + Jev bar pass (`jev-phase`) + honest STATUS + merge CI green + live dogfood where the lane is user-facing.
+
 ## Retired playbooks (history)
 
 - **P2 repair playbook** (Freebuff lane, 2026-09-21): executed and closed — PR #36 `405bbc1` merged with hermetic lane parity, D12 coverage, audit BAR MET. Full text in git history of this file.
