@@ -1677,7 +1677,18 @@ class AutonomousAgent:
         expected_root = str(checkpoint.get("workspace_root") or "")
         actual_root = str(self.root_dir or "")
         if expected_root != actual_root:
-            return False
+            # Temporary directories on macOS are commonly exposed through
+            # /var while Path.resolve() stores /private/var. Treat those as
+            # the same selected workspace, but fail closed for missing or
+            # malformed checkpoint paths.
+            if not expected_root or self.root_dir is None:
+                return False
+            try:
+                if Path(expected_root).resolve(strict=True) != \
+                        self.root_dir.resolve(strict=True):
+                    return False
+            except (OSError, RuntimeError, ValueError):
+                return False
         if (self.root_dir is not None
                 and bool(checkpoint.get("workspace_context_used"))):
             prompt = checkpoint.get("prompt")
