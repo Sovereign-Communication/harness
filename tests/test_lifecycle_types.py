@@ -40,6 +40,19 @@ class LifecycleTypesTests(unittest.TestCase):
         invalid["status"], invalid["stage"] = "interrupted", "terminal"
         self.assert_invalid(invalid)
 
+    def test_resumable_terminal_shape_is_lane_valid_and_deferred_only(self):
+        state = self.state("audit")
+        state["status"], state["stage"] = "deferred", "terminal"
+        state["data"].update({"resumable": True, "resume_stage": "inspect"})
+        self.assertIs(validate_lifecycle_state(state), state)
+
+        invalid = deepcopy(state)
+        invalid["data"]["resume_stage"] = "answer_review"
+        self.assert_invalid(invalid)
+        invalid = deepcopy(state)
+        invalid["status"], invalid["stage"] = "complete", "terminal"
+        self.assert_invalid(invalid)
+
     def test_followup_and_review_history_are_bounded_and_consistent(self):
         state = self.state()
         invalid = deepcopy(state)
@@ -59,6 +72,22 @@ class LifecycleTypesTests(unittest.TestCase):
             }],
         })
         self.assertIs(validate_lifecycle_state(invalid), invalid)
+
+        for field, value in (("native", False), ("supported", None),
+                             ("iteration_required", True)):
+            bad = deepcopy(invalid)
+            bad["review"]["history"][0][field] = value
+            self.assert_invalid(bad)
+
+        bad = deepcopy(invalid)
+        bad["review"]["history"][0]["decision"] = "needs_iteration"
+        bad["review"]["decision"] = "needs_iteration"
+        bad["review"]["history"][0]["iteration_required"] = False
+        self.assert_invalid(bad)
+
+        bad = deepcopy(invalid)
+        bad["review"]["decision"] = "abstain"
+        self.assert_invalid(bad)
 
         for field, value in (("confidence", 1.1), ("supported", -0.1),
                              ("cost", float("nan"))):

@@ -457,11 +457,42 @@ class HourglassLifecycleMixin:
                 "workspace_context_used": False,
                 "known_cost": round(initial_cost, 8),
                 "unknown_liability": 0.0,
+                "max_review_rounds": rounds,
+                "confidence_threshold": threshold,
                 "usage_unknown": False, "next_round": 1, "rounds": [],
             }
             if isinstance(request_preflight, dict):
                 checkpoint["route_preflight"] = request_preflight
+            try:
+                existing = self.lifecycle.load(sid)
+            except HarnessError:
+                # A new request supersedes a stale pre-contract checkpoint.
+                self.lifecycle.clear(sid)
+                existing = None
+            if (request_preflight is not None and existing is not None
+                    and existing["lane"] == "chat"
+                    and existing["status"] in ("running", "interrupted")
+                    and existing["original_request"] == prompt):
+                lifecycle_state = existing
+                if lifecycle_state["review"]["rounds"] == 0:
+                    lifecycle_state["review"]["max_rounds"] = rounds
+            else:
+                lifecycle_state = self.lifecycle.begin(
+                    "chat", sid, prompt, stage="route",
+                    max_review_rounds=rounds,
+                    data={"route": "hourglass"})
             self._persist_chat_checkpoint(sid, checkpoint)
+        try:
+            lifecycle_state = self.lifecycle.load(sid)
+        except HarnessError:
+            if not resuming:
+                raise
+            self.lifecycle.clear(sid)
+            lifecycle_state = None
+        if resuming and lifecycle_state is None:
+            lifecycle_state = self.lifecycle.adopt_chat_payload(sid, checkpoint)
+        if lifecycle_state is None or lifecycle_state["lane"] != "chat":
+            raise HarnessError("chat request lifecycle could not be restored")
         api_key, gov = governor_for(self.settings)
         policy = policy_for(
             self.settings, transport=self.transport, governor=gov,
@@ -490,40 +521,66 @@ class HourglassLifecycleMixin:
                 "source": "request-workflow-unavailable",
                 "choice": None, "native": False, "cost": 0.0,
             }
+        route_unknown_reason = None
         if not isinstance(route_preflight, dict):
             try:
-                route_evaluation = policy.evaluate_request_workflow(
-                    {"request": prompt}, task_id=sid, max_input_tokens=512)
+                def evaluate_route_once():
+                    route_evaluation = policy.evaluate_request_workflow(
+                        {"request": prompt}, task_id=sid,
+                        max_input_tokens=512)
+                    if (not isinstance(route_evaluation, (tuple, list))
+                            or len(route_evaluation) != 2
+                            or not isinstance(route_evaluation[1], dict)
+                            or not hasattr(route_evaluation[0], "answers")):
+                        return {
+                            "source": "jev_request_workflow_unusable",
+                            "choice": None, "native": False, "cost": 0.0,
+                        }
+                    route_result, route_structural = route_evaluation
+                    route_answer = (route_result.answers.get("workflow_tier")
+                                    if isinstance(route_result.answers, dict)
+                                    else None)
+                    route_cost = route_structural.get("cost")
+                    return {
+                        "source": "jev_request_workflow",
+                        "choice": (route_answer.get("choice")
+                                   if isinstance(route_answer, dict) else None),
+                        "native": not bool(getattr(
+                            route_result, "is_fallback", True)),
+                        "is_fallback": bool(getattr(
+                            route_result, "is_fallback", True)),
+                        "cost": (float(route_cost) if isinstance(
+                            route_cost, (int, float)) else 0.0),
+                    }
+
+                route_preflight = self.lifecycle.provider_call(
+                    lifecycle_state,
+                    lifecycle_state["request_id"] + ":chat-route-review",
+                    evaluate_route_once,
+                    cost=lambda value: float(value.get("cost") or 0.0),
+                    retry_unknown=True)
             except (ToolCancelled, ProviderUsageUnknown) as exc:
                 self._checkpoint_interruption(checkpoint, exc, total_cost)
                 self._persist_chat_checkpoint(sid, checkpoint)
                 raise
-            if (not isinstance(route_evaluation, (tuple, list))
-                    or len(route_evaluation) != 2
-                    or not isinstance(route_evaluation[1], dict)
-                    or not hasattr(route_evaluation[0], "answers")):
+            except HarnessError as exc:
+                if "unknown completion" not in str(exc):
+                    raise
                 route_preflight = {
-                    "source": "jev_request_workflow_unusable",
+                    "source": "jev_request_workflow_unknown",
                     "choice": None, "native": False, "cost": 0.0,
                 }
+                route_unknown_reason = str(exc)
+                checkpoint["unknown_liability"] = lifecycle_state["usage"][
+                    "unknown_liability"]
+                checkpoint["usage_unknown"] = bool(
+                    checkpoint["unknown_liability"] or any(
+                        call.get("status") == "unknown"
+                        for call in lifecycle_state["usage"][
+                            "provider_calls"].values()))
+            if route_preflight.get("source") == "jev_request_workflow_unusable":
                 emit("request_route_unusable",
                      reason_code="invalid_judgment_shape")
-            else:
-                route_result, route_structural = route_evaluation
-                route_answer = (route_result.answers.get("workflow_tier")
-                                if isinstance(route_result.answers, dict) else None)
-                route_cost = route_structural.get("cost")
-                route_preflight = {
-                    "source": "jev_request_workflow",
-                    "choice": (route_answer.get("choice")
-                               if isinstance(route_answer, dict) else None),
-                    "native": not bool(getattr(
-                        route_result, "is_fallback", True)),
-                    "is_fallback": bool(getattr(
-                        route_result, "is_fallback", True)),
-                    "cost": (float(route_cost) if isinstance(
-                        route_cost, (int, float)) else 0.0),
-                }
             total_cost += float(route_preflight.get("cost") or 0.0)
         checkpoint["route_preflight"] = route_preflight
         checkpoint["known_cost"] = round(total_cost, 8)
@@ -575,7 +632,7 @@ class HourglassLifecycleMixin:
                         "native": True},
             }
             save_chat_turn(sid, result, self.history_dir)
-            self._clear_chat_checkpoint(sid)
+            self._finish_chat_request(sid, result)
             return result
 
         saved_context = checkpoint.get("context")
@@ -649,7 +706,6 @@ class HourglassLifecycleMixin:
                               and checkpoint.get("stage") == "jev_review")
         first_round = max(1, int(checkpoint.get("next_round") or 1)) \
             if resuming else 1
-        jev_result = None
         jev_structural = None
         previous_envelopes = [
             entry.get("jev") for entry in history
@@ -659,7 +715,7 @@ class HourglassLifecycleMixin:
             (item for item in previous_envelopes if item.get("native")),
             key=lambda item: (item.get("confidence") or {}).get("observed") or 0.0,
             default=None)
-        stop_reason = None
+        stop_reason = route_unknown_reason
         status = "needs_iteration"
         attempt = ({"answer": answer, "model": model,
                     "cost": float(checkpoint.get("answer_cost") or 0.0),
@@ -699,16 +755,38 @@ class HourglassLifecycleMixin:
                 })
                 self._persist_chat_checkpoint(sid, checkpoint)
                 try:
-                    attempt = self._hourglass_answer_once(
-                        prompt, context, prior=prior, model_offset=round_no - 1,
-                        cancel_check=cancel_check, governor=gov, api_key=api_key,
-                        past_turns=past_turns, web=web, web_sources=web_sources,
-                        max_tokens=max_tokens, reasoning_effort=reasoning_effort,
-                        token_budget=token_budget)
+                    attempt = self.lifecycle.provider_call(
+                        lifecycle_state,
+                        lifecycle_state["request_id"] +
+                        f":chat-answer:{round_no}",
+                        lambda: self._hourglass_answer_once(
+                            prompt, context, prior=prior,
+                            model_offset=round_no - 1,
+                            cancel_check=cancel_check, governor=gov,
+                            api_key=api_key, past_turns=past_turns,
+                            web=web, web_sources=web_sources,
+                            max_tokens=max_tokens,
+                            reasoning_effort=reasoning_effort,
+                            token_budget=token_budget),
+                        cost=lambda value: float(value.get("cost") or 0.0),
+                        retry_unknown=True)
                 except (ToolCancelled, ProviderUsageUnknown) as exc:
                     self._checkpoint_interruption(checkpoint, exc, total_cost)
                     self._persist_chat_checkpoint(sid, checkpoint)
                     raise
+                except HarnessError as exc:
+                    if "unknown completion" not in str(exc):
+                        raise
+                    checkpoint["unknown_liability"] = lifecycle_state["usage"][
+                        "unknown_liability"]
+                    checkpoint["usage_unknown"] = bool(
+                        checkpoint["unknown_liability"] or any(
+                            call.get("status") == "unknown"
+                            for call in lifecycle_state["usage"][
+                                "provider_calls"].values()))
+                    status = "deferred"
+                    stop_reason = str(exc)
+                    break
                 answer = attempt["answer"]
                 model = attempt["model"]
                 answer_cost = float(attempt.get("cost") or 0.0)
@@ -723,15 +801,42 @@ class HourglassLifecycleMixin:
                 self._persist_chat_checkpoint(sid, checkpoint)
                 pending_review = False
             try:
-                jev_result, jev_structural = policy.evaluate_answer(
-                    prompt, answer, context, site="answer", task_id=sid)
+                jev_call_id = (lifecycle_state["request_id"] +
+                               f":chat-review:{round_no}")
+
+                def evaluate_answer_once():
+                    result, structural = policy.evaluate_answer(
+                        prompt, answer, context, site="answer", task_id=sid)
+                    envelope = self._jev_answer_envelope(
+                        result, structural, threshold)
+                    return {"envelope": envelope,
+                            "structural": dict(structural or {})}
+
+                reviewed = self.lifecycle.provider_call(
+                    lifecycle_state, jev_call_id, evaluate_answer_once,
+                    cost=lambda value: float(
+                        value.get("structural", {}).get("cost") or 0.0),
+                    retry_unknown=True)
+                envelope = reviewed["envelope"]
+                jev_structural = reviewed["structural"]
             except (ToolCancelled, ProviderUsageUnknown) as exc:
                 self._checkpoint_interruption(checkpoint, exc, total_cost)
                 self._persist_chat_checkpoint(sid, checkpoint)
                 raise
+            except HarnessError as exc:
+                if "unknown completion" not in str(exc):
+                    raise
+                checkpoint["unknown_liability"] = lifecycle_state["usage"][
+                    "unknown_liability"]
+                checkpoint["usage_unknown"] = bool(
+                    checkpoint["unknown_liability"] or any(
+                        call.get("status") == "unknown"
+                        for call in lifecycle_state["usage"][
+                            "provider_calls"].values()))
+                status = "deferred"
+                stop_reason = str(exc)
+                break
             total_cost += float(jev_structural.get("cost") or 0.0)
-            envelope = self._jev_answer_envelope(
-                jev_result, jev_structural, threshold)
             last_envelope = envelope
             observed = envelope["confidence"].get("observed")
             if (envelope["native"]
@@ -742,16 +847,6 @@ class HourglassLifecycleMixin:
                 best_envelope = envelope
             history.append({"round": round_no, "model": model,
                             "jev": envelope})
-            emit("answer_judged", round=round_no, model=model,
-                 native=envelope["native"],
-                 confidence=envelope["confidence"]["observed"],
-                 confidence_threshold=threshold,
-                 iteration_required=bool(jev_structural.get("iteration_required")),
-                 status=("pass" if envelope["confidence"]["passed"] else
-                         "unverified" if envelope["is_fallback"] else
-                         "needs_iteration" if bool(
-                             jev_structural.get("iteration_required"))
-                         else "stopped"))
             checkpoint["known_cost"] = round(total_cost, 8)
             checkpoint["rounds"] = history
             checkpoint["last_jev"] = envelope
@@ -760,7 +855,29 @@ class HourglassLifecycleMixin:
             checkpoint["answer_cost"] = float(attempt.get("cost") or 0.0)
             checkpoint["next_round"] = round_no
             checkpoint["stage"] = "jev_review"
+            transition = self.lifecycle.review(
+                lifecycle_state, jev_call_id, {
+                    "verdict": ("pass" if envelope["native"]
+                                and isinstance(observed, (int, float))
+                                and float(observed) >= threshold
+                                and not jev_structural.get("iteration_required")
+                                and not jev_structural.get("plan_required")
+                                else envelope.get("verdict", "fail")),
+                    "native": bool(envelope.get("native")),
+                    "supported": (envelope.get("confidence") or {}).get("observed"),
+                    "confidence": envelope.get("supported"),
+                    "iteration_required": bool(
+                        jev_structural.get("iteration_required")),
+                    "plan_required": bool(jev_structural.get("plan_required")),
+                    "cost": jev_structural.get("cost", 0.0),
+                }, confidence_threshold=threshold, final=True)
             self._persist_chat_checkpoint(sid, checkpoint)
+            emit("answer_judged", round=round_no, model=model,
+                 native=envelope["native"],
+                 confidence=envelope["confidence"]["observed"],
+                 confidence_threshold=threshold,
+                 iteration_required=bool(jev_structural.get("iteration_required")),
+                 status=transition.decision)
             if jev_structural.get("plan_required"):
                 # A direct-answer request must not turn an advisory Jev signal
                 # into a write.  The edit lane owns plan/execute; callers can
@@ -782,14 +899,13 @@ class HourglassLifecycleMixin:
                 stop_reason = (
                     "Jev unavailable; response returned without semantic review")
                 break
-            if envelope["confidence"]["passed"]:
+            if transition.terminal_pass:
                 status = "ok"
                 break
-            if not bool(jev_structural.get("iteration_required")):
+            if not transition.should_continue:
                 status = "needs_iteration"
                 stop_reason = (
-                    "Jev did not meet the configured sufficiency threshold and "
-                    "did not request another answer attempt")
+                    "Jev review did not authorize another bounded answer attempt")
                 break
             prior = {
                 "answer": answer,
@@ -797,18 +913,12 @@ class HourglassLifecycleMixin:
                             + ("; ".join(envelope["reasons"])
                                or "improve sufficiency against the retained context"),
             }
-            if round_no == rounds:
-                status = "needs_iteration"
-                stop_reason = (
-                    f"Jev requested another answer attempt; the bounded limit "
-                    f"of {rounds} rounds was reached")
-            else:
-                checkpoint.update({
-                    "stage": "answer", "next_round": round_no + 1,
-                    "prior": prior, "answer": None,
-                    "answer_model": None, "answer_cost": 0.0,
-                })
-                self._persist_chat_checkpoint(sid, checkpoint)
+            checkpoint.update({
+                "stage": "answer", "next_round": round_no + 1,
+                "prior": prior, "answer": None,
+                "answer_model": None, "answer_cost": 0.0,
+            })
+            self._persist_chat_checkpoint(sid, checkpoint)
 
         is_truncated = bool(attempt.get("truncated"))
         result = {
@@ -816,7 +926,7 @@ class HourglassLifecycleMixin:
             "intent": intent,
             "workflow_tier": effective_route,
             "prompt": prompt,
-            "response": answer,
+            "response": (answer or "The answer provider did not return a recoverable response."),
             "model": model,
             "cost": round(total_cost, 6),
             "request_workflow": {
@@ -895,7 +1005,6 @@ class HourglassLifecycleMixin:
                         "source": "hourglass_auto_escalation",
                     })
                     save_chat_turn(sid, escalated, self.history_dir)
-                    self._clear_chat_checkpoint(sid)
                     return escalated
             except ToolCancelled:
                 raise
@@ -909,7 +1018,7 @@ class HourglassLifecycleMixin:
         elif stop_reason:
             result["remaining_scope"] = stop_reason
         save_chat_turn(sid, result, self.history_dir)
-        self._clear_chat_checkpoint(sid)
+        self._finish_chat_request(sid, result, candidate=answer)
         emit("hourglass_complete", status=status,
              confidence=result["confidence"].get("observed"))
         return result

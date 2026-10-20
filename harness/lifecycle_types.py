@@ -238,6 +238,15 @@ def validate_lifecycle_state(value: Any) -> LifecycleState:
         raise HarnessError("request lifecycle follow-ups are invalid")
     if not all(isinstance(value.get(key), dict) for key in ("context", "review", "usage", "execution", "data")):
         raise HarnessError("request lifecycle state contains an invalid section")
+    resumable = value["data"].get("resumable")
+    if resumable is not None and not isinstance(resumable, bool):
+        raise HarnessError("request lifecycle resumable state is invalid")
+    if resumable and status != "deferred":
+        raise HarnessError("only a deferred lifecycle can be resumable")
+    if resumable:
+        resume_stage = value["data"].get("resume_stage")
+        if resume_stage not in _STAGES[lane] - {"terminal"}:
+            raise HarnessError("request lifecycle resume stage is invalid")
 
     def finite_number(value, *, maximum=None):
         return (not isinstance(value, bool)
@@ -274,6 +283,14 @@ def validate_lifecycle_state(value: Any) -> LifecycleState:
             number = item.get(key)
             if number is not None and not finite_number(number, maximum=1):
                 raise HarnessError("request lifecycle review probability is invalid")
+        decision = item["decision"]
+        if decision == "pass" and (
+                not item["native"] or item["supported"] is None
+                or item["iteration_required"] or item["plan_required"]):
+            raise HarnessError("request lifecycle pass decision is inconsistent")
+        if decision in {"revise", "needs_iteration"} \
+                and not item["iteration_required"]:
+            raise HarnessError("request lifecycle iteration decision is inconsistent")
     confidence = review.get("confidence")
     if confidence is not None and not finite_number(confidence, maximum=1):
         raise HarnessError("request lifecycle review confidence is invalid")

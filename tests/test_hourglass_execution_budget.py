@@ -45,8 +45,8 @@ class _GovernedRun(unittest.TestCase):
     """
 
     def setUp(self):
-        for target in ("harness.agent.governor_for",
-                       "harness.chat_lifecycle.governor_for",
+        for target in ("harness.hourglass_lifecycle.governor_for",
+                       "harness.conversation_lifecycle.governor_for",
                        "harness.hourglass_lifecycle.governor_for",
                        "harness.edit_lifecycle.governor_for"):
             patcher = patch(target, return_value=(None, _TEST_GOVERNOR))

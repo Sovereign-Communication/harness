@@ -168,3 +168,23 @@ The workspace-route, early-stop, and resumable-chat contracts are covered by
 and `tests/test_chat_checkpoint.py`. These are a targeted #207 follow-up; they
 do not replace the outstanding full small-task matrix or establish GUI/CLI/MCP
 surface parity by themselves.
+
+## Shared lifecycle ownership (#297)
+
+`harness.lifecycle.LifecycleCoordinator` is the sole owner of checkpoint
+transitions, review history, provider-call receipts, effect receipts, and
+terminal state. `harness.lifecycle_types` defines the lane-discriminated
+contract and rejects invalid lane, status, stage, resume, and review-state
+combinations before they are saved or resumed. Completed provider calls are
+reused by id; unknown provider usage remains reserved, and unknown side
+effects require reconciliation before continuation.
+
+`harness.agent.AutonomousAgent` now only composes route adapters and initializes
+shared dependencies. `request_router` owns dispatch and continuation routing;
+`chat_lifecycle` composes chat adapters, with simple-answer, hourglass, and
+conversational generation in their route modules; `edit_lifecycle` owns
+auto-edit; `task_lifecycle` adapts audit, driver, and provisioning; and
+`execution_stages` owns planning and execution-stage composition. The route
+adapters store lane-specific data in the shared state while all review and
+terminal transitions go through the coordinator. Behavior tests cover resume,
+review, terminal results, and side-effect replay boundaries for each lane.

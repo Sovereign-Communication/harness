@@ -121,8 +121,8 @@ class RestartGuardIsReachedTests(unittest.TestCase):
         self.ledger = AutonomyLedger(str(Path(self.tmp.name) / "ledger.jsonl"))
         self.governor = _RecordingGovernor()
         governor = _gov(FakeTransport(), max_cost=0.05)
-        for target in ("harness.agent.governor_for",
-                       "harness.chat_lifecycle.governor_for",
+        for target in ("harness.hourglass_lifecycle.governor_for",
+                       "harness.conversation_lifecycle.governor_for",
                        "harness.hourglass_lifecycle.governor_for",
                        "harness.edit_lifecycle.governor_for"):
             gov_patch = patch(target, return_value=(None, governor))
@@ -162,7 +162,7 @@ class RestartGuardIsReachedTests(unittest.TestCase):
             policy_patch.start()
             self.addCleanup(policy_patch.stop)
             agent_policy_patch = patch(
-                "harness.agent.policy_for",
+                "harness.execution_stages.policy_for",
                 side_effect=lambda *a, **k: self._real_policy(
                     _ScriptedEvaluator(answers)))
             agent_policy_patch.start()
@@ -290,7 +290,7 @@ class RestartGuardIsReachedTests(unittest.TestCase):
             policy_patch.start()
             self.addCleanup(policy_patch.stop)
             agent_policy_patch = patch(
-                "harness.agent.policy_for",
+                "harness.execution_stages.policy_for",
                 side_effect=lambda *a, **k: self._real_policy(evaluator))
             agent_policy_patch.start()
             self.addCleanup(agent_policy_patch.stop)
@@ -344,7 +344,7 @@ class RestartGuardIsReachedTests(unittest.TestCase):
         self.assertIsNone(decision["target"])
 
     def test_declared_walk_back_returns_none_if_execution_not_in_targets(self):
-        with patch("harness.agent.declared_restart_targets", return_value=["context", "planning"]):
+        with patch("harness.execution_stages.declared_restart_targets", return_value=["context", "planning"]):
             self.assertIsNone(AutonomousAgent._declared_walk_back())
 
     def test_the_stage_is_judged_not_dispatched(self):

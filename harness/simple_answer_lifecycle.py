@@ -10,6 +10,7 @@ from .config import effective_lane_policy
 from .errors import HarnessError, ToolCancelled
 from .events import cancellation_context, emit
 from .history import ChatResumePayload, load_chat_history, save_chat_turn
+from .lifecycle import review_probability
 from .jev_policy import policy_for
 from .session import governor_for, ledger_for
 from .simple_request import (
@@ -124,13 +125,32 @@ class SimpleAnswerLifecycleMixin:
                      cost=0.0)
                 return result
             if not resuming:
+                review_threshold = float(getattr(
+                    self.settings, "min_confidence", 0.70) or 0.70)
+                self.lifecycle.begin(
+                    "chat", sid, prompt, stage="strategy",
+                    max_review_rounds=1,
+                    data={"route": "simple-answer"})
                 checkpoint = {
                     "route": "simple-answer", "status": "running",
                     "stage": "strategy", "prompt": prompt,
+                    "max_review_rounds": 1,
+                    "confidence_threshold": review_threshold,
                     "known_cost": 0.0, "unknown_liability": 0.0,
                     "usage_unknown": False,
                 }
                 self._persist_chat_checkpoint(sid, checkpoint)
+            try:
+                lifecycle_state = self.lifecycle.load(sid)
+            except HarnessError:
+                if not resuming:
+                    raise
+                self.lifecycle.clear(sid)
+                lifecycle_state = None
+            if resuming and lifecycle_state is None:
+                lifecycle_state = self.lifecycle.adopt_chat_payload(sid, checkpoint)
+            if lifecycle_state is None or lifecycle_state["lane"] != "chat":
+                raise HarnessError("chat request lifecycle could not be restored")
             cancelled_or_late("governor setup")
             with cancellation_context(combined_cancel):
                 api_key, gov = governor_for(self.settings)
@@ -163,8 +183,17 @@ class SimpleAnswerLifecycleMixin:
                 self._persist_chat_checkpoint(sid, checkpoint)
                 cancelled_or_late("Jev strategy")
                 with cancellation_context(combined_cancel):
-                    _pre_result, pre = policy.evaluate_simple_strategy(
-                        prompt, context_text, task_id=sid)
+                    def evaluate_strategy_once():
+                        _result, structural = policy.evaluate_simple_strategy(
+                            prompt, context_text, task_id=sid)
+                        return dict(structural or {})
+
+                    pre = self.lifecycle.provider_call(
+                        lifecycle_state,
+                        lifecycle_state["request_id"] + ":simple-strategy",
+                        evaluate_strategy_once,
+                        cost=lambda value: float(value.get("cost") or 0.0),
+                        retry_unknown=True)
                 pre_cost = float(pre.get("cost") or 0.0)
                 known_cost_total += pre_cost
                 checkpoint.update({
@@ -215,7 +244,10 @@ class SimpleAnswerLifecycleMixin:
                 receipt("deferred", reason=reason, cost=round(pre_cost, 6),
                         generation_calls=0, input_tokens=0, output_tokens=0)
                 save_chat_turn(sid, result, self.history_dir)
-                self._clear_chat_checkpoint(sid)
+                # The caller may hand this pre-answer route judgment to the
+                # hourglass lane; retain the same lifecycle for that handoff.
+                checkpoint.update({"stage": "route", "status": "running"})
+                self._persist_chat_checkpoint(sid, checkpoint)
                 return result
 
             pending_review = bool(resuming and answer
@@ -244,10 +276,16 @@ class SimpleAnswerLifecycleMixin:
                     raise HarnessError("shared budget leaves no answer tokens")
                 generation_attempts = max(1, generation_attempts + 1)
                 with cancellation_context(combined_cancel):
-                    completion = governed_completion(
-                        self.transport, api_key, gov, model, generation_prompt,
-                        allocated, label="simple-answer",
-                        reasoning_effort=lane_effort)
+                    completion = self.lifecycle.provider_call(
+                        lifecycle_state,
+                        lifecycle_state["request_id"] + ":simple-answer",
+                        lambda: governed_completion(
+                            self.transport, api_key, gov, model,
+                            generation_prompt, allocated,
+                            label="simple-answer",
+                            reasoning_effort=lane_effort),
+                        cost=lambda value: float(value.get("cost") or 0.0),
+                        retry_unknown=True)
                 answer = str(completion["content"]).strip()
                 generation_cost = float(completion.get("cost") or 0.0)
                 known_cost_total += generation_cost
@@ -266,9 +304,33 @@ class SimpleAnswerLifecycleMixin:
             post_skipped = None
             if time.monotonic() < deadline:
                 with cancellation_context(combined_cancel):
-                    _post_result, post = policy.evaluate_answer(
-                        prompt, answer, context_text,
-                        site="simple-answer-post", task_id=sid)
+                    def evaluate_post_once():
+                        post_result, structural = policy.evaluate_answer(
+                            prompt, answer, context_text,
+                            site="simple-answer-post", task_id=sid)
+                        saved = dict(structural or {})
+                        verdict = saved.get(
+                            "verdict", getattr(post_result, "verdict", "fail"))
+                        saved.update({
+                            "verdict": (verdict if verdict in ("pass", "fail")
+                                        else "fail"),
+                            "native": bool(saved.get(
+                                "native", not bool(getattr(
+                                    post_result, "is_fallback", True)))),
+                            "answer_sufficient": review_probability(saved.get(
+                                "answer_sufficient", getattr(
+                                    post_result, "supported", None))),
+                            "confidence": review_probability(getattr(
+                                post_result, "confidence", None)),
+                        })
+                        return saved
+
+                    post = self.lifecycle.provider_call(
+                        lifecycle_state,
+                        lifecycle_state["request_id"] + ":simple-review",
+                        evaluate_post_once,
+                        cost=lambda value: float(value.get("cost") or 0.0),
+                        retry_unknown=True)
                 post_cost = float(post.get("cost") or 0.0)
                 known_cost_total += post_cost
             else:
@@ -278,14 +340,23 @@ class SimpleAnswerLifecycleMixin:
             status = "deferred" if refusal else "ok"
             total_cost = known_cost_total
             review_available = bool(post and post.get("native"))
-            review_passed = bool(
-                review_available
-                and post.get("verdict") == "pass"
-                and isinstance(post.get("answer_sufficient"), (int, float))
-                and float(post["answer_sufficient"]) >= float(
-                    getattr(self.settings, "min_confidence", 0.70))
-                and not bool(post.get("plan_required"))
-                and not bool(post.get("iteration_required")))
+            transition = None
+            if post is not None:
+                transition = self.lifecycle.review(
+                    lifecycle_state,
+                    lifecycle_state["request_id"] + ":simple-review", {
+                        "verdict": post.get("verdict", "fail"),
+                        "native": bool(post.get("native")),
+                        "supported": post.get("answer_sufficient"),
+                        "confidence": post.get("confidence"),
+                        "iteration_required": bool(
+                            post.get("iteration_required")),
+                        "plan_required": bool(post.get("plan_required")),
+                        "cost": post.get("cost", 0.0),
+                    }, confidence_threshold=float(getattr(
+                        self.settings, "min_confidence", 0.70) or 0.70),
+                    final=True)
+            review_passed = bool(transition and transition.terminal_pass)
             result = {
                 "status": status, "intent": "conversation",
                 "workflow_tier": "simple-answer", "prompt": prompt,
@@ -323,7 +394,7 @@ class SimpleAnswerLifecycleMixin:
                 checkpoint["known_cost"] = round(known_cost_total, 8)
                 self._persist_chat_checkpoint(sid, checkpoint)
             else:
-                self._clear_chat_checkpoint(sid)
+                self._finish_chat_request(sid, result, candidate=answer)
             emit("simple_request_complete", status=status, model=model,
                  cost=total_cost)
             return result
@@ -367,7 +438,7 @@ class SimpleAnswerLifecycleMixin:
                 if usage_unknown:
                     self._persist_chat_checkpoint(sid, checkpoint)
                 else:
-                    self._clear_chat_checkpoint(sid)
+                    self._finish_chat_request(sid, result, candidate=answer)
                 return result
             total_cost = known_cost_total + known_cost
             receipt("deferred", reason=reason,
@@ -393,13 +464,19 @@ class SimpleAnswerLifecycleMixin:
             if usage_unknown:
                 self._persist_chat_checkpoint(sid, checkpoint)
             else:
-                self._clear_chat_checkpoint(sid)
+                self._finish_chat_request(sid, result)
             return result
         except HarnessError as exc:
             reason = str(exc)
             known_cost = float(getattr(exc, "known_cost", 0.0) or 0.0)
             self._checkpoint_interruption(checkpoint, exc, known_cost_total)
             checkpoint["generation_calls"] = generation_attempts
+            usage_unknown = bool(
+                getattr(exc, "usage_unknown", False)
+                or checkpoint.get("usage_unknown"))
+            unknown_reserve = max(
+                float(getattr(exc, "reserved_cost", 0.0) or 0.0),
+                float(checkpoint.get("unknown_liability") or 0.0))
             self._persist_chat_checkpoint(sid, checkpoint)
             receipt(
                 "deferred", reason=reason,
@@ -418,9 +495,15 @@ class SimpleAnswerLifecycleMixin:
                 "next_step": "retry the ordinary answer when the model service is available",
                 "simple_request": {"generation_calls": generation_attempts},
                 **({"usage_unknown": True,
-                    "unknown_cost_reserve": round(float(
-                        getattr(exc, "reserved_cost", 0.0) or 0.0), 6)}
-                   if bool(getattr(exc, "usage_unknown", False)) else {}),
+                    "unknown_cost_reserve": round(unknown_reserve, 6)}
+                   if usage_unknown else {}),
             }
+            if "unknown completion" in reason:
+                result["response"] = (
+                    "The saved provider call has no recoverable result, so I did "
+                    "not replay it. Restate the request to start a new attempt.")
+                result["next_step"] = "restate the request as a new task"
             save_chat_turn(sid, result, self.history_dir)
+            if "unknown completion" in reason:
+                self._finish_chat_request(sid, result)
             return result

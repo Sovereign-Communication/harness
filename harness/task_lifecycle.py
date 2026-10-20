@@ -45,31 +45,52 @@ class TaskLaneLifecycleMixin:
         adapter.advance(state, "review", context=context, candidate=msg)
         if self._live_jev_available():
             call_id = state["request_id"] + ":audit-review"
-            if self.lifecycle.provider_started(state, call_id):
-                try:
-                    policy = policy_for(
-                        self.settings, transport=self.transport,
-                        governor=jev_face_governor(self.settings),
-                        ledger=ledger_for(self.settings, caller="agent"))
+            try:
+                policy = policy_for(
+                    self.settings, transport=self.transport,
+                    governor=jev_face_governor(self.settings),
+                    ledger=ledger_for(self.settings, caller="agent"))
+
+                def evaluate_audit_once():
                     jev_result, structural = policy.evaluate_answer(
                         prompt, msg, json.dumps(context, ensure_ascii=False),
                         site="audit-summary", task_id=state["request_id"])
-                    supported = structural.get("answer_sufficient")
-                    native = not bool(getattr(jev_result, "is_fallback", True))
-                    self.lifecycle.provider_completed(
-                        state, call_id, structural,
-                        float(structural.get("cost") or 0.0))
-                    self.lifecycle.review(state, call_id, {
-                        "verdict": getattr(jev_result, "verdict", "fail"),
-                        "native": native, "supported": supported,
-                        "confidence": getattr(jev_result, "confidence", None),
-                        "cost": structural.get("cost", 0.0),
-                    }, confidence_threshold=0.8)
-                except (ToolCancelled, ProviderUsageUnknown) as exc:
-                    self.lifecycle.interrupt(state, exc, call_id=call_id)
-                except Exception as exc:
-                    emit("lifecycle_review_unavailable", lane="audit",
-                         error_type=type(exc).__name__)
+                    structural = dict(structural or {})
+                    return {
+                        "judgment": {
+                            "verdict": getattr(jev_result, "verdict", "fail"),
+                            "native": not bool(getattr(
+                                jev_result, "is_fallback", True)),
+                            "supported": structural.get("answer_sufficient"),
+                            "confidence": getattr(
+                                jev_result, "confidence", None),
+                            "iteration_required": bool(
+                                structural.get("iteration_required")),
+                            "plan_required": bool(
+                                structural.get("plan_required")),
+                            "cost": structural.get("cost", 0.0),
+                        },
+                        "structural": structural,
+                    }
+
+                reviewed = self.lifecycle.provider_call(
+                    state, call_id, evaluate_audit_once,
+                    cost=lambda value: float(
+                        value.get("structural", {}).get("cost") or 0.0),
+                    retry_unknown=True)
+                self.lifecycle.review(
+                    state, call_id, reviewed["judgment"],
+                    confidence_threshold=0.8)
+            except ToolCancelled:
+                raise
+            except ProviderUsageUnknown:
+                # The local audit result remains useful. The coordinator keeps
+                # Jev's unknown usage liability and will not replay it here.
+                emit("lifecycle_review_unavailable", lane="audit",
+                     reason_code="usage_unknown")
+            except Exception as exc:
+                emit("lifecycle_review_unavailable", lane="audit",
+                     error_type=type(exc).__name__)
         result = {
             "status": "ok" if ok else "audit_failed",
             "intent": "audit", "prompt": prompt, "response": msg,
@@ -135,16 +156,15 @@ class TaskLaneLifecycleMixin:
         if review and not review.get("is_fallback", True):
             satisfies = review.get("satisfies_goal")
             exceeds = review.get("exceeds_goal")
+            confidence = (None if exceeds is None else
+                         max(0.0, min(1.0, 1.0 - float(exceeds))))
             self.lifecycle.review(state, "provision-plan:" + plan.digest, {
                 "verdict": "fail" if plan.review_required else "pass",
                 "native": True, "supported": satisfies,
-                "confidence": None,
+                "confidence": confidence,
                 "iteration_required": bool(plan.review_required),
                 "cost": 0.0,
             }, confidence_threshold=0.5)
-            state["review"]["history"][-1]["confidence"] = (
-                None if exceeds is None else max(0.0, min(1.0, 1.0 - float(exceeds))))
-            state["review"]["confidence"] = state["review"]["history"][-1]["confidence"]
         self.lifecycle.finish(state, "complete", candidate=rendered, result=result)
         save_chat_turn(session_id, result, self.history_dir)
         emit("chat_response", intent="provision", planned=True)

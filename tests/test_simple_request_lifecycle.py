@@ -384,12 +384,20 @@ class SimpleLifecycleTests(unittest.TestCase):
 
     def test_normal_path_is_pre_generation_post_once(self):
         result, policy, generate = self._run()
+        state = self.agent.lifecycle.load("simple-test")
         self.assertEqual(result["status"], "ok")
         self.assertEqual(generate.call_count, 1)
         self.assertEqual(policy.evaluate_simple_strategy.call_count, 1)
         self.assertEqual(policy.evaluate_answer.call_count, 1)
         self.assertEqual(result["simple_request"]["generation_calls"], 1)
         self.assertTrue(result["simple_request"]["post_review_passed"])
+        self.assertEqual(state["status"], "complete")
+        self.assertEqual(state["review"]["rounds"], 1)
+        self.assertEqual(state["review"]["decision"], "pass")
+        self.assertEqual(len(state["usage"]["provider_calls"]), 3)
+        self.assertTrue(all(
+            call["status"] == "completed"
+            for call in state["usage"]["provider_calls"].values()))
 
     def test_failed_review_and_plan_signal_are_not_reported_as_passed(self):
         failed_judgment = SimpleNamespace(verdict="fail")

@@ -99,6 +99,60 @@ class TypedLifecycleContractTests(unittest.TestCase):
             self.assertEqual(saved["usage"]["provider_calls"][
                 "review-call"]["status"], "unknown")
 
+    def test_provider_call_reuses_receipts_and_retries_unknown_on_resume(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            coordinator = LifecycleCoordinator(history_dir=Path(tmp))
+            state = adapter_for(coordinator, "chat").begin(
+                "provider-receipt", "answer the question")
+            calls = []
+            result = coordinator.provider_call(
+                state, "jev-review", lambda: calls.append("first") or
+                {"verdict": "pass"}, cost=lambda _value: 0.002)
+            replay = coordinator.provider_call(
+                state, "jev-review",
+                lambda: calls.append("replayed") or {"verdict": "fail"})
+            self.assertEqual(result, replay)
+            self.assertEqual(calls, ["first"])
+
+            self.assertTrue(coordinator.provider_started(
+                state, "answer", 0.004))
+            coordinator.interrupt(
+                state, ProviderUsageUnknown(
+                    "usage response lost", reserved_cost=0.004),
+                call_id="answer")
+            resumed = coordinator.resume("provider-receipt")
+            retry_calls = []
+            retried = coordinator.provider_call(
+                resumed, "answer", lambda: retry_calls.append("retry") or
+                {"answer": "recovered"}, cost=lambda _value: 0.003,
+                retry_unknown=True)
+            saved_retry = coordinator.provider_call(
+                resumed, "answer",
+                lambda: retry_calls.append("replayed") or {},
+                retry_unknown=True)
+            saved = coordinator.load("provider-receipt")
+            self.assertEqual(retried, saved_retry)
+            self.assertEqual(retry_calls, ["retry"])
+            self.assertEqual(saved["usage"]["unknown_liability"], 0.004)
+            self.assertEqual(saved["usage"]["known_cost"], 0.005)
+            self.assertEqual(saved["usage"]["provider_calls"][
+                "answer"]["status"], "unknown")
+            self.assertEqual(saved["usage"]["provider_calls"][
+                "answer:retry:1"]["status"], "completed")
+
+    def test_malformed_provider_probabilities_abstain_without_invalid_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            coordinator = LifecycleCoordinator(history_dir=Path(tmp))
+            state = adapter_for(coordinator, "audit").begin(
+                "malformed-jev", "review the result")
+            transition = coordinator.review(state, "bad-probability", {
+                "verdict": "pass", "native": True,
+                "supported": True, "confidence": float("nan"),
+            })
+            saved = coordinator.load("malformed-jev")
+            self.assertEqual(transition.decision, "abstain")
+            self.assertIsNone(saved["review"]["history"][0]["supported"])
+            self.assertIsNone(saved["review"]["history"][0]["confidence"])
 
 class SharedLaneBehaviorTests(unittest.TestCase):
     def test_chat_checkpoint_merges_partial_updates_and_followup_once(self):
@@ -145,6 +199,50 @@ class SharedLaneBehaviorTests(unittest.TestCase):
             self.assertEqual(state["data"]["result"], result)
             ledger.verify.assert_called_once_with()
 
+    def test_audit_continuation_reuses_completed_jev_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = _settings()
+            settings.jev_disabled = False
+            settings.jev_api_key = "jev-test-key"
+            agent = AutonomousAgent(settings=settings, history_dir=root)
+            ledger = MagicMock()
+            ledger.verify.return_value = (True, None)
+            ledger.chain_status.return_value = {"latest_seq": 2, "quarantined": 0}
+            policy = MagicMock()
+            policy.evaluate_answer.return_value = (
+                SimpleNamespace(verdict="pass", is_fallback=False,
+                                 confidence=0.94),
+                {"answer_sufficient": 0.94, "cost": 0.001,
+                 "iteration_required": False, "plan_required": False},
+            )
+            with patch.object(agent, "_live_jev_available", return_value=True), \
+                 patch("harness.task_lifecycle.ledger_for", return_value=ledger), \
+                 patch("harness.task_lifecycle.policy_for", return_value=policy), \
+                 patch("harness.task_lifecycle.save_chat_turn",
+                       side_effect=RuntimeError("simulated process stop")), \
+                 patch.object(agent.lifecycle, "finish",
+                              side_effect=RuntimeError("simulated process stop")):
+                with self.assertRaises(RuntimeError):
+                    agent._handle_audit("audit this ledger", "audit-resume")
+
+            interrupted_window = agent.lifecycle.load("audit-resume")
+            self.assertEqual(interrupted_window["status"], "running")
+            self.assertEqual(interrupted_window["review"]["decision"], "pass")
+            with patch.object(agent, "_live_jev_available", return_value=True), \
+                 patch("harness.task_lifecycle.ledger_for", return_value=ledger), \
+                 patch("harness.task_lifecycle.policy_for", return_value=policy), \
+                 patch("harness.task_lifecycle.save_chat_turn"):
+                result = agent.run_prompt("continue", session_id="audit-resume")
+            saved = agent.lifecycle.load("audit-resume")
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(policy.evaluate_answer.call_count, 1)
+            self.assertEqual(saved["status"], "complete")
+            self.assertEqual(saved["review"]["rounds"], 1)
+            self.assertEqual(saved["review"]["decision"], "pass")
+            self.assertEqual(saved["usage"]["provider_calls"][
+                saved["request_id"] + ":audit-review"]["status"], "completed")
+
     def test_auto_edit_continue_restores_the_preview_without_replanning(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -161,7 +259,10 @@ class SharedLaneBehaviorTests(unittest.TestCase):
                 "planning": {}, "stage_judgments": {},
             }
             policy = SimpleNamespace(evaluate_plan=lambda *a, **k: (
-                SimpleNamespace(answers={}), {"cost": 0.0}))
+                SimpleNamespace(answers={"requires_iteration": False},
+                                verdict="pass", is_fallback=False,
+                                supported=0.95, confidence=0.92),
+                {"cost": 0.0}))
             with patch.object(agent, "_triage_scope", return_value=["app.py"]), \
                  patch.object(agent, "_plan_round", return_value=plan) as planning, \
                  patch("harness.edit_lifecycle.governor_for", return_value=(None, MagicMock())), \
@@ -173,6 +274,8 @@ class SharedLaneBehaviorTests(unittest.TestCase):
                 self.assertEqual(preview["status"], "preview_ready")
                 self.assertEqual(state["lane"], "auto_edit")
                 self.assertEqual(state["status"], "deferred")
+                self.assertEqual(state["review"]["rounds"], 1)
+                self.assertEqual(state["review"]["decision"], "pass")
                 self.assertTrue(state["data"]["resumable"])
                 continued = agent.run_prompt("continue", session_id="edit-1")
             self.assertEqual(continued, preview)
@@ -295,6 +398,8 @@ class SharedLaneBehaviorTests(unittest.TestCase):
             self.assertEqual(second["steps"], first["steps"])
             self.assertEqual(driver.step.call_count, 1)
             self.assertIsNone(driver.step.call_args.kwargs["consent"])
+            self.assertEqual(state["review"]["rounds"], 1)
+            self.assertEqual(state["review"]["decision"], "pass")
 
     def test_unknown_edit_effect_stops_continue_for_reconciliation(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -352,6 +457,43 @@ class SharedLaneBehaviorTests(unittest.TestCase):
             self.assertTrue(all(
                 item["status"] == "completed"
                 for item in state["execution"]["effects"].values()))
+
+    def test_provision_lane_records_jev_plan_review_without_auto_execute(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "approved"
+            root.mkdir()
+            settings = _settings()
+            settings.jev_disabled = False
+            settings.jev_api_key = "jev-test-key"
+            agent = AutonomousAgent(settings=settings, root_dir=root,
+                                    history_dir=root)
+            probe = pv.HostProbe(
+                "Linux", "x86_64", "3.12.1", "python", False, (), 10**9,
+                (pv.PackageManager("pip", "/usr/bin/pip", "24.0", True),),
+                str(root))
+            policy = SimpleNamespace(evaluate_provision=lambda *a, **k: (
+                SimpleNamespace(
+                    answers={
+                        "satisfies_goal": {"noul": 0.95},
+                        "exceeds_goal": {"noul": 0.10},
+                    },
+                    is_fallback=False,
+                ), {"cost": 0.002}))
+            with patch.object(agent, "_live_jev_available", return_value=True), \
+                 patch("harness.provision.probe_host", return_value=probe), \
+                 patch("harness.task_lifecycle.policy_for", return_value=policy), \
+                 patch("harness.task_lifecycle.ledger_for", return_value=MagicMock()), \
+                 patch("harness.task_lifecycle.save_chat_turn"):
+                result = agent._handle_provision(
+                    "provision ruff==0.6.1", "provision-jev")
+
+            state = agent.lifecycle.load("provision-jev")
+            self.assertEqual(result["status"], "planned")
+            self.assertEqual(state["status"], "complete")
+            self.assertEqual(state["review"]["rounds"], 1)
+            self.assertEqual(state["review"]["decision"], "pass")
+            self.assertAlmostEqual(state["review"]["confidence"], 0.90)
+            self.assertEqual(state["execution"]["effects"], {})
 
 
 if __name__ == "__main__":

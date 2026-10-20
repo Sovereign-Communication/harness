@@ -21,7 +21,7 @@ from .events import emit
 from .executor import PlanExecutor
 from .history import load_chat_history, save_chat_turn
 from .jev_policy import JevPolicy, aggregate_structural, policy_for
-from .lifecycle import adapter_for
+from .lifecycle import adapter_for, review_probability
 from .orchestrator import drive
 from .prompts import MAX_FILE_LINES
 from .repo_scope import discover_verification_gate, enumerate_repo_files
@@ -220,9 +220,20 @@ class AutoEditLifecycleMixin:
                 evaluation, structural = plan_policy.evaluate_plan(
                     prompt, target_files, site="agent-plan",
                     task_id=state["request_id"])
+                answers = getattr(evaluation, "answers", None)
+                verdict = getattr(evaluation, "verdict", "fail")
                 return {
-                    "requires_iteration": bool(
-                        evaluation.answers.get("requires_iteration")),
+                    "requires_iteration": bool(answers.get(
+                        "requires_iteration")) if isinstance(answers, dict)
+                        else False,
+                    "verdict": (verdict if verdict in ("pass", "fail")
+                                else "fail"),
+                    "native": not bool(getattr(
+                        evaluation, "is_fallback", True)),
+                    "supported": review_probability(getattr(
+                        evaluation, "supported", None)),
+                    "confidence": review_probability(getattr(
+                        evaluation, "confidence", None)),
                     "structural": dict(structural or {}),
                 }
 
@@ -237,7 +248,24 @@ class AutoEditLifecycleMixin:
                 if not isinstance(plan_review, dict):
                     raise HarnessError("saved Jev plan review is invalid")
                 plan_structural = plan_review.get("structural")
-                if plan_review.get("requires_iteration"):
+                review_transition = self.lifecycle.review(
+                    state, state["request_id"] + ":edit-plan-review", {
+                        "verdict": plan_review.get("verdict", "fail"),
+                        "native": bool(plan_review.get(
+                            "native", (plan_structural or {}).get("native"))),
+                        "supported": plan_review.get("supported"),
+                        "confidence": plan_review.get("confidence"),
+                        "iteration_required": bool(
+                            plan_review.get("requires_iteration")),
+                        "cost": (plan_structural or {}).get("cost", 0.0),
+                    }, confidence_threshold=float(getattr(
+                        self.settings, "min_confidence", 0.70) or 0.70),
+                    final=True)
+                emit("lifecycle_review", lane="auto_edit",
+                     request_id=state["request_id"],
+                     decision=review_transition.decision,
+                     rounds=review_transition.rounds)
+                if review_transition.should_continue:
                     emit("orchestration_note",
                          note="Jev structural analysis detected algorithmic iteration; injecting DAG loop directive")
                     plan_prompt = (

@@ -9,7 +9,7 @@ import uuid
 from functools import wraps
 from typing import Any, Dict, Literal, Optional
 
-from .errors import HarnessError
+from .errors import HarnessError, ProviderUsageUnknown, ToolCancelled
 from .events import emit
 from .osal import atomic_write_text
 from .lifecycle_types import (
@@ -25,6 +25,14 @@ def _serialized_transition(method):
         with self._lock:
             return method(self, *args, **kwargs)
     return serialized
+
+
+def review_probability(value):
+    """Return a finite Jev probability, treating malformed claims as absent."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and 0.0 <= number <= 1.0 else None
 
 
 class LifecycleCoordinator:
@@ -153,34 +161,64 @@ class LifecycleCoordinator:
         }
         usage = state["usage"]
         if "known_cost" in payload:
-            usage["known_cost"] = max(0.0, float(payload.get("known_cost") or 0.0))
+            usage["known_cost"] = max(
+                usage["known_cost"],
+                max(0.0, float(payload.get("known_cost") or 0.0)))
         if "unknown_liability" in payload:
             usage["unknown_liability"] = max(
-                0.0, float(payload.get("unknown_liability") or 0.0))
+                usage["unknown_liability"],
+                max(0.0, float(payload.get("unknown_liability") or 0.0)))
         prior_review = payload.get("rounds")
-        if isinstance(prior_review, list):
-            history = []
+        if isinstance(prior_review, list) and state["review"]["rounds"] == 0:
+            max_rounds = payload.get("max_review_rounds")
+            if (isinstance(max_rounds, int) and not isinstance(max_rounds, bool)
+                    and 1 <= max_rounds <= 8):
+                state["review"]["max_rounds"] = max_rounds
+            request_id = state["request_id"]
+            threshold = payload.get("confidence_threshold", 0.8)
+            if (isinstance(threshold, bool)
+                    or not isinstance(threshold, (int, float))
+                    or not math.isfinite(float(threshold))
+                    or not 0 <= threshold <= 1):
+                threshold = 0.8
             for index, item in enumerate(prior_review[:8], 1):
                 if not isinstance(item, dict):
                     continue
-                decision = str(item.get("decision") or item.get("verdict") or "abstain")
-                if decision not in {"pass", "revise", "needs_iteration", "abstain"}:
-                    decision = "abstain"
-                history.append({
-                    "review_id": str(item.get("review_id") or f"chat-{index}"),
-                    "decision": decision,
-                    "native": bool(item.get("native")),
-                    "confidence": item.get("confidence"),
-                    "supported": item.get("answer_sufficient"),
-                    "iteration_required": bool(item.get("iteration_required")),
-                    "plan_required": bool(item.get("plan_required")),
-                    "cost": float(item.get("cost") or 0.0),
-                })
-            state["review"].update({
-                "rounds": len(history), "history": history,
-                "decision": history[-1]["decision"] if history else "pending",
-                "confidence": history[-1]["confidence"] if history else None,
-            })
+                envelope = item.get("jev") if isinstance(item.get("jev"), dict) else item
+                confidence_data = envelope.get("confidence")
+                answers = envelope.get("answers")
+                supported = (confidence_data.get("observed")
+                             if isinstance(confidence_data, dict) else None)
+                confidence = envelope.get("supported")
+                if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+                    confidence = None
+                if isinstance(supported, bool) or not isinstance(supported, (int, float)):
+                    supported = None
+                if isinstance(answers, dict):
+                    iteration = bool(answers.get("iteration_required"))
+                    plan_required = bool(answers.get("plan_required"))
+                else:
+                    iteration = bool(item.get("iteration_required"))
+                    plan_required = bool(item.get("plan_required"))
+                native = bool(envelope.get("native"))
+                verdict = envelope.get("verdict", "fail")
+                if (native and isinstance(supported, (int, float))
+                        and float(supported) >= float(threshold)
+                        and not iteration and not plan_required):
+                    verdict = "pass"
+                self.review(
+                    state,
+                    f"{request_id}:chat-review:{item.get('round', index)}",
+                    {
+                        "verdict": verdict,
+                        "native": native,
+                        "confidence": confidence,
+                        "supported": supported,
+                        "iteration_required": iteration,
+                        "plan_required": plan_required,
+                        "cost": envelope.get("cost", 0.0),
+                    },
+                    confidence_threshold=float(threshold))
         merged["prompt"] = prompt
         merged.setdefault("schema", "harness-chat-checkpoint-v1")
         merged["session_id"] = session_id
@@ -269,6 +307,11 @@ class LifecycleCoordinator:
                *, confidence_threshold: float = 0.8, final: bool = True):
         if not isinstance(review_id, str) or not review_id:
             raise HarnessError("review id is required")
+        if (isinstance(confidence_threshold, bool)
+                or not isinstance(confidence_threshold, (int, float))
+                or not math.isfinite(float(confidence_threshold))
+                or not 0 <= confidence_threshold <= 1):
+            raise HarnessError("review confidence threshold is invalid")
         review = state["review"]
         old = next((r for r in review["history"] if r["review_id"] == review_id), None)
         if old is not None:
@@ -278,13 +321,8 @@ class LifecycleCoordinator:
         if review["rounds"] >= review["max_rounds"]:
             return ReviewTransition("limit", False, False, review["rounds"])
         native = bool(judgment.get("native"))
-        supported = judgment.get("supported")
-        confidence = judgment.get("confidence")
-        for name, number in (("supported", supported), ("confidence", confidence)):
-            if number is not None and (isinstance(number, bool)
-                    or not isinstance(number, (int, float))
-                    or not math.isfinite(float(number)) or not 0 <= number <= 1):
-                raise HarnessError(f"Jev review {name} is invalid")
+        supported = review_probability(judgment.get("supported"))
+        confidence = review_probability(judgment.get("confidence"))
         iteration = bool(judgment.get("iteration_required"))
         plan_required = bool(judgment.get("plan_required"))
         decisive = (native and final and supported is not None
@@ -333,6 +371,49 @@ class LifecycleCoordinator:
                      "result": result})
         state["usage"]["known_cost"] += cost
         self.save(state)
+
+    def provider_call(self, state: LifecycleState, call_id: str, invoke,
+                      *, cost=lambda _result: 0.0,
+                      retry_unknown: bool = False):
+        """Reuse a completion receipt or explicitly retry an unknown call."""
+        calls = state["usage"]["provider_calls"]
+        retry_prefix = call_id + ":retry:"
+        retry_ids = [
+            key for key in calls if key.startswith(retry_prefix)
+            and key[len(retry_prefix):].isdigit()]
+        latest_retry = max(
+            retry_ids, key=lambda key: int(key[len(retry_prefix):]),
+            default=None)
+        completed_ids = sorted(
+            retry_ids, key=lambda key: int(key[len(retry_prefix):]),
+            reverse=True) + [call_id]
+        completed_id = next((key for key in completed_ids
+                             if calls.get(key, {}).get("status") == "completed"),
+                            None)
+        if completed_id is not None:
+            return calls[completed_id].get("result")
+        previous = calls.get(latest_retry or call_id)
+        if previous is not None and previous.get("status") != "unknown":
+            raise HarnessError(
+                "a prior provider call has unknown completion; it was not replayed")
+        if previous is not None:
+            if not retry_unknown:
+                raise HarnessError(
+                    "a prior provider call has unknown completion; it was not replayed")
+            call_id = f"{retry_prefix}{1 if latest_retry is None else int(latest_retry[len(retry_prefix):]) + 1}"
+        if not self.provider_started(state, call_id):
+            previous = calls.get(call_id)
+            if previous is not None and previous.get("status") == "completed":
+                return previous.get("result")
+            raise HarnessError(
+                "a prior provider call has unknown completion; it was not replayed")
+        try:
+            result = invoke()
+        except (ToolCancelled, ProviderUsageUnknown) as exc:
+            self.interrupt(state, exc, call_id=call_id)
+            raise
+        self.provider_completed(state, call_id, result, float(cost(result) or 0.0))
+        return result
 
     @_serialized_transition
     def interrupt(self, state: LifecycleState, exc: Exception, *,
@@ -468,6 +549,13 @@ class LaneLifecycleAdapter:
 
     def advance(self, state, stage, **changes):
         return self.coordinator.advance(state, stage, **changes)
+
+    def review(self, state, review_id, judgment, **kwargs):
+        return self.coordinator.review(state, review_id, judgment, **kwargs)
+
+    def provider_call(self, state, call_id, invoke, **kwargs):
+        return self.coordinator.provider_call(
+            state, call_id, invoke, **kwargs)
 
     def finish(self, state, status, **kwargs):
         return self.coordinator.finish(state, status, **kwargs)

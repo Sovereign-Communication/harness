@@ -459,7 +459,7 @@ class HourglassRequestContextTests(unittest.TestCase):
 class AgentAnswerLoopTests(unittest.TestCase):
     def test_invalid_continue_checkpoint_fails_locally_without_provider_work(self):
         agent = AutonomousAgent(settings=load_settings(), root_dir=None)
-        with patch("harness.agent.load_chat_checkpoint",
+        with patch("harness.request_router.load_chat_checkpoint",
                    side_effect=HarnessError("corrupt")), \
              patch("harness.simple_answer_lifecycle.policy_for",
                    side_effect=AssertionError("resume failure is local")), \
@@ -472,7 +472,7 @@ class AgentAnswerLoopTests(unittest.TestCase):
     def test_continue_dispatches_saved_simple_answer_route(self):
         agent = AutonomousAgent(settings=load_settings(), root_dir=None)
         checkpoint = {"route": "simple-answer", "prompt": "Explain photosynthesis"}
-        with patch("harness.agent.load_chat_checkpoint", return_value=checkpoint), \
+        with patch("harness.request_router.load_chat_checkpoint", return_value=checkpoint), \
              patch.object(agent, "run_simple_request",
                           return_value={"status": "ok"}) as run:
             result = agent.run_prompt("continue", session_id="resume-simple")
@@ -693,24 +693,29 @@ class AgentAnswerLoopTests(unittest.TestCase):
                 self.assertTrue(context.call_args.kwargs["web"])
 
     def test_native_clarify_route_returns_local_question_without_generation(self):
-        agent = AutonomousAgent(settings=load_settings(), root_dir=None)
-        route = {"source": "jev_request_workflow", "choice": "clarify",
-                 "native": True, "cost": 0.0}
-        with patch("harness.hourglass_lifecycle.governor_for", return_value=(None, MagicMock())), \
-             patch("harness.hourglass_lifecycle.policy_for", return_value=MagicMock()), \
-             patch("harness.hourglass_lifecycle.ledger_for", return_value=MagicMock()), \
-             patch("harness.hourglass_lifecycle.save_chat_turn") as save_turn, \
-             patch.object(agent, "_clear_chat_checkpoint") as clear, \
-             patch.object(agent, "_hourglass_request_context",
-                          side_effect=AssertionError("clarification is local")), \
-             patch.object(agent, "_hourglass_answer_once",
-                          side_effect=AssertionError("clarification is local")):
-            result = agent.run_hourglass_request(
-                "Explain this", session_id="clarify",
-                request_preflight=route)
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(
+                settings=load_settings(), root_dir=None, history_dir=Path(tmp))
+            route = {"source": "jev_request_workflow", "choice": "clarify",
+                     "native": True, "cost": 0.0}
+            with patch("harness.hourglass_lifecycle.governor_for", return_value=(None, MagicMock())), \
+                 patch("harness.hourglass_lifecycle.policy_for", return_value=MagicMock()), \
+                 patch("harness.hourglass_lifecycle.ledger_for", return_value=MagicMock()), \
+                 patch("harness.hourglass_lifecycle.save_chat_turn") as save_turn, \
+                 patch.object(agent, "_clear_chat_checkpoint") as clear, \
+                 patch.object(agent, "_hourglass_request_context",
+                              side_effect=AssertionError("clarification is local")), \
+                 patch.object(agent, "_hourglass_answer_once",
+                              side_effect=AssertionError("clarification is local")):
+                result = agent.run_hourglass_request(
+                    "Explain this", session_id="clarify",
+                    request_preflight=route)
+            state = agent.lifecycle.load("clarify")
         self.assertEqual(result["workflow_tier"], "clarification")
         save_turn.assert_called_once()
-        clear.assert_called_once_with("clarify")
+        clear.assert_not_called()
+        self.assertEqual(state["status"], "deferred")
+        self.assertEqual(state["stage"], "terminal")
 
     def test_native_workspace_route_without_root_is_deferred(self):
         agent = AutonomousAgent(settings=load_settings(), root_dir=None)
@@ -995,6 +1000,13 @@ class AgentAnswerLoopTests(unittest.TestCase):
             self.assertEqual(result["verification"]["status"], "jev_verified")
             self.assertEqual(policy.route_calls, 1)
             self.assertEqual(len(policy.calls), 1)
+            state = agent.lifecycle.load("default")
+            self.assertEqual(state["status"], "complete")
+            self.assertEqual(state["review"]["decision"], "pass")
+            self.assertEqual(state["review"]["rounds"], 1)
+            self.assertTrue(all(
+                call["status"] == "completed"
+                for call in state["usage"]["provider_calls"].values()))
 
     def test_low_score_without_iteration_request_stops_without_extra_generation(self):
         with tempfile.TemporaryDirectory() as tmp:

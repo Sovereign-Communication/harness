@@ -83,9 +83,9 @@ class _RunCase(unittest.TestCase):
         (self.root / ".hist").mkdir(exist_ok=True)
         self.addCleanup(self._tmp.cleanup)
         patchers = [
-            patch("harness.agent.governor_for",
+            patch("harness.request_router.governor_for",
                   return_value=(None, _TEST_GOVERNOR)),
-            patch("harness.chat_lifecycle.governor_for",
+            patch("harness.conversation_lifecycle.governor_for",
                   return_value=(None, _TEST_GOVERNOR)),
             patch("harness.simple_answer_lifecycle.governor_for",
                   return_value=(None, _TEST_GOVERNOR)),

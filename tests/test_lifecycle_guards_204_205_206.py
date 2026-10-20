@@ -548,7 +548,7 @@ class SimpleActionEntrySeamTests(unittest.TestCase):
             return (200, "", host)
         with tempfile.TemporaryDirectory() as tmp:
             agent = _agent(tmp)
-            with patch("harness.agent.ledger_for",
+            with patch("harness.simple_action_lifecycle.ledger_for",
                        side_effect=RuntimeError("ledger down")):
                 res = agent.run_simple_action("Is https://example.com up?",
                                               probe_fn=probe,
@@ -561,7 +561,7 @@ class SimpleActionEntrySeamTests(unittest.TestCase):
             raise HarnessError("denied")
         with tempfile.TemporaryDirectory() as tmp:
             agent = _agent(tmp)
-            with patch("harness.agent.ledger_for",
+            with patch("harness.simple_action_lifecycle.ledger_for",
                        side_effect=RuntimeError("ledger down")):
                 res = agent.run_simple_action("Is https://example.com up?",
                                               probe_fn=boom,
@@ -671,9 +671,9 @@ class AgentRateCircuitIntegrationTests(unittest.TestCase):
                 raise HarnessError("HTTP 429: rate limited")
             return "ok response", 0.0001
 
-        with patch("harness.agent.resolve_scout_ladder", return_value=["m1", "m2"]), \
-             patch("harness.agent.resolve_api_key", return_value="k"), \
-             patch("harness.agent.governed_text", side_effect=fake_governed_text):
+        with patch("harness.execution_stages.resolve_scout_ladder", return_value=["m1", "m2"]), \
+             patch("harness.execution_stages.resolve_api_key", return_value="k"), \
+             patch("harness.execution_stages.governed_text", side_effect=fake_governed_text):
             chat_fn = agent._orchestrator_chat_fn(gov)
             # Call 1: tries m1 (gets 429), then m2 (succeeds)
             res1 = chat_fn("prompt 1")
@@ -784,10 +784,9 @@ class AgentRateCircuitIntegrationTests(unittest.TestCase):
             orch_calls.append(model)
             return "orchestrator ok", 0.0001
 
-        with patch("harness.agent.resolve_scout_ladder", return_value=["m1", "m2"]), \
-             patch("harness.agent.governor_for", return_value=("k", gov)), \
-             patch("harness.agent.resolve_api_key", return_value="k"), \
-             patch("harness.agent.governed_text", side_effect=fake_gov_text):
+        with patch("harness.execution_stages.resolve_scout_ladder", return_value=["m1", "m2"]), \
+             patch("harness.execution_stages.resolve_api_key", return_value="k"), \
+             patch("harness.execution_stages.governed_text", side_effect=fake_gov_text):
             chat_fn = agent._orchestrator_chat_fn(gov)
             res = chat_fn("prompt")
             self.assertEqual(res, "orchestrator ok")
