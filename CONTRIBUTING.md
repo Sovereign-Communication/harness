@@ -236,6 +236,14 @@ statement covers the CI matrix by direct execution.
 | `harness/mission_driver.py` | HUL-D until-limits driver: attempts until cost/token/error limits, honest HUL-C success, or stall; FINDINGS.md + interrupt-safe resume |
 | `harness/providers.py` | modular provider adapter interface and registry for external execution backends |
 | `harness/agent.py` | autonomous agent orchestration: natural language prompt intent classification, file/gate discovery, sliding-scale DAG execution, self-healing retry |
+| `harness/lifecycle_types.py` | discriminated chat/audit/auto-edit/driver/provisioning states and their cross-field invariants |
+| `harness/lifecycle.py` | the single persisted request-state owner: Jev rounds, continuation, usage liability, side-effect receipts, and terminal transitions; lane adapters do not own duplicate state |
+| `harness/chat_policy.py` | chat intent and route policy shared by the answer lanes |
+| `harness/chat_lifecycle.py` | chat checkpoints, workspace hand-off, and continuation restoration |
+| `harness/hourglass_lifecycle.py` | multi-round chat answer generation and advisory Jev review |
+| `harness/simple_answer_lifecycle.py` | bounded no-tool answer lane with candidate reuse and usage accounting |
+| `harness/edit_lifecycle.py` | auto-edit planning, preview/approval, execution receipts, and verification adapter |
+| `harness/task_lifecycle.py` | audit, driver, and provisioning adapters for shared Jev review and resumable task state |
 | `harness/apply_gate.py` | one candidate-to-gate transaction: write, verify, preview, rewind, and terminal gate results |
 | `harness/apply_state.py` | apply request data and mutable per-run state |
 | `harness/results.py` | the apply result vocabulary (round entries, terminal/deferred results, HTTP error rendering) -- one def site per result shape, plus the status-meaning policy: `SUCCESS_STATUSES` and `terminal_exit_code` (interfaces never re-derive what a status means) |

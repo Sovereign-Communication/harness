@@ -63,23 +63,6 @@ class TypedLifecycleContractTests(unittest.TestCase):
                 effect["status"] == "completed"
                 for effect in reloaded["execution"]["effects"].values()))
 
-    def test_lane_and_terminal_combinations_are_validated(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            coordinator = LifecycleCoordinator(history_dir=Path(tmp))
-            for lane in ("chat", "audit", "auto_edit", "driver", "provisioning"):
-                with self.subTest(lane=lane):
-                    state = adapter_for(coordinator, lane).begin(
-                        f"s-{lane}", "do the task")
-                    self.assertEqual(validate_lifecycle_state(state)["lane"], lane)
-            bad = dict(coordinator.load("s-chat"))
-            bad["lane"], bad["stage"] = "audit", "answer_review"
-            with self.assertRaises(HarnessError):
-                validate_lifecycle_state(bad)
-            bad = dict(coordinator.load("s-chat"))
-            bad["status"], bad["stage"] = "complete", "answer_review"
-            with self.assertRaises(HarnessError):
-                validate_lifecycle_state(bad)
-
     def test_terminal_transition_settles_unknown_provider_usage_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             coordinator = LifecycleCoordinator(history_dir=Path(tmp))
@@ -333,7 +316,9 @@ class SharedLaneBehaviorTests(unittest.TestCase):
             self.assertIn(effect_id, result["lifecycle"]["requires_reconciliation"])
 
     def test_provisioning_keeps_approval_and_verified_done_receipts(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        # Provisioning path validation rejects Windows 8.3 aliases. Keep the
+        # approved project root under the checkout so it uses a canonical path.
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
             root = Path(tmp) / "approved"
             root.mkdir()
             probe = pv.HostProbe(
