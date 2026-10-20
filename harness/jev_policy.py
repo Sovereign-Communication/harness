@@ -1170,7 +1170,10 @@ class JevPolicy:
         Unavailable Jev yields an honest ``direct_answer`` fallback because
         deterministic request-kind checks already excluded tool/current work.
         """
-        options = {"direct_answer", "needs_tool", "ambiguous"}
+        options = {
+            "direct_answer", "web_research", "workspace_inspection",
+            "simple_action", "needs_tool", "plan", "ambiguous",
+        }
 
         def fallback(reason: str, *, result=None):
             raw_result = result

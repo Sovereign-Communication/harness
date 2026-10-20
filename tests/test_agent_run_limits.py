@@ -100,8 +100,9 @@ class _RunCase(unittest.TestCase):
         agent = agent or self._agent()
         seen = {}
 
-        def fake_context(p, web=False):
+        def fake_context(p, web=False, workspace=False):
             seen["web"] = web
+            seen["workspace"] = workspace
             return ("ctx", [], SimpleNamespace(estimated_tokens=0), [])
 
         calls = []
@@ -111,9 +112,7 @@ class _RunCase(unittest.TestCase):
             return {"answer": "4", "model": "double", "cost": 0.0}
 
         with patch.object(agent, "_hourglass_request_context", fake_context), \
-             patch.object(agent, "_hourglass_answer_once", fake_answer), \
-             patch("harness.agent.assess_completion",
-                   return_value={"complete": True}):
+             patch.object(agent, "_hourglass_answer_once", fake_answer):
             result = agent.run_hourglass_request(prompt, **kwargs)
         return result, seen, calls
 

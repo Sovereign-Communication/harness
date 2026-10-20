@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 4685 tests in 445.594s\n\nOK (env scrubbed: HARNESS_USE_FREE; empty home)"
+        "evidence": "unittest: Ran 4737 tests in 331.045s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 272/273 = 100% (bar 95%) vs baseline df4a7f1c60; untested: repo_scope.py:149)"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 504/511 = 99% (bar 95%) vs baseline 6b17c0bf98; untested: agent.py:480,1701,1796; history.py:38,100,142; simple_request.py:181)"
       }
     ]
   }

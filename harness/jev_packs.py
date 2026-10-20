@@ -83,7 +83,7 @@ def economics_route_question_pack() -> Dict[str, Dict[str, Any]]:
 
 
 def request_workflow_question_pack() -> Dict[str, Dict[str, Any]]:
-    """Select the smallest lifecycle for a candidate freeform request."""
+    """Select the smallest capability lane for a freeform request."""
     return {
         "workflow_tier": {
             "type": "choice",
@@ -92,7 +92,10 @@ def request_workflow_question_pack() -> Dict[str, Dict[str, Any]]:
                 "request. Use `simple-action` only for one clear, read-only "
                 "check of current public-site availability that can be "
                 "answered with one bounded HTTPS probe and an evidence "
-                "judgment."),
+                "judgment. Use `workspace-inspection` when the answer depends "
+                "on reading the selected local repository, and `web-research` "
+                "when it depends on fresh external sources. These choices do "
+                "not grant permission to mutate files or execute actions."),
             "criteria": {
                 "answer": (
                     "The request asks for an explanation or ordinary answer "
@@ -101,10 +104,20 @@ def request_workflow_question_pack() -> Dict[str, Dict[str, Any]]:
                     "The request asks whether one named public website is "
                     "currently reachable or up; one bounded HTTPS probe is "
                     "sufficient, with no page-content research or mutation."),
+                "workspace-inspection": (
+                    "The request asks for an answer, audit, or review grounded "
+                    "in files from the selected local workspace, with no file "
+                    "changes or execution."),
+                "web-research": (
+                    "The answer needs fresh information from external sources "
+                    "beyond a single public-site availability probe."),
                 "plan": (
                     "The request requires code changes, multiple dependent "
                     "actions, broad research, or other work that cannot be "
                     "completed by one read-only HTTPS probe."),
+                "clarify": (
+                    "The request lacks an essential detail or does not provide "
+                    "enough information to select a safe useful workflow."),
             },
         },
     }
@@ -710,7 +723,7 @@ ANSWER_PACK_VERSION = "answer-sufficiency-v1"
 # A Choice reports which strategy best fits and how concentrated its
 # distribution is.  Its confidence is not calibrated correctness or
 # permission; callers inspect the selected vocabulary value only.
-SIMPLE_STRATEGY_PACK_VERSION = "simple-answer-strategy-v1"
+SIMPLE_STRATEGY_PACK_VERSION = "simple-answer-strategy-v2"
 
 
 def simple_strategy_question_pack() -> Dict[str, Dict[str, Any]]:
@@ -719,18 +732,36 @@ def simple_strategy_question_pack() -> Dict[str, Dict[str, Any]]:
         "strategy": {
             "type": "choice",
             "instructions": (
-                "Choose the strategy that best fits this request. The request "
-                "has already passed deterministic no-file and no-current-data "
-                "checks; do not infer permission to use tools or write files."
+                "Choose the smallest capability lane that can answer this "
+                "request. Deterministic checks found no explicit file target, "
+                "current-data requirement, or write directive. A selected "
+                "lane is routing evidence only: it does not grant permission "
+                "to mutate files, execute actions, or bypass policy."
             ),
             "criteria": {
                 "direct_answer": (
                     "Answer once from stable general knowledge or transform "
                     "the supplied prose without tools or side effects."
                 ),
+                "web_research": (
+                    "The answer needs specific external facts or sources that "
+                    "are not reliably available from stable general knowledge."
+                ),
+                "workspace_inspection": (
+                    "The answer depends on reading files from the selected "
+                    "local repository, without changing or executing them."
+                ),
+                "simple_action": (
+                    "The request asks for one bounded read-only check of a "
+                    "named public website's current availability."
+                ),
                 "needs_tool": (
-                    "A trustworthy answer requires current retrieval, local "
-                    "files, execution, calculation evidence, or another tool."
+                    "A trustworthy answer requires a tool, but none of the "
+                    "more specific tool lanes clearly fits."
+                ),
+                "plan": (
+                    "The request requires code changes or multiple dependent "
+                    "actions rather than a direct answer."
                 ),
                 "ambiguous": (
                     "The request lacks enough information to answer directly; "

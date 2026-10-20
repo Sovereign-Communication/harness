@@ -159,6 +159,96 @@ def enumerate_repo_files(root_dir: Optional[Path] = None, limit: int = 300,
     return files if limit is None else files[:limit]
 
 
+def workspace_review_candidates(prompt: str, files: Sequence[str], *,
+                                max_files: int = 20,
+                                preferred: Sequence[str] = ()) -> List[str]:
+    """Choose a balanced, bounded file sample for a repository-wide review.
+
+    Stable project instructions, overview/design documents, build manifests,
+    implementation entry points, and tests provide complementary evidence.
+    Prompt/path overlap and explicit file references rank ahead of defaults.
+    """
+    if max_files <= 0:
+        return []
+    available = {str(path).replace("\\", "/") for path in files}
+    selected: List[str] = []
+    for path in preferred:
+        normalized = str(path).replace("\\", "/")
+        if normalized in available and normalized not in selected:
+            selected.append(normalized)
+    if len(selected) >= max_files:
+        return selected[:max_files]
+
+    prompt_words = set(re.findall(r"[a-z0-9]+", (prompt or "").casefold()))
+    anchors = {
+        "agents.md": 110, "readme.md": 100, "contributing.md": 90,
+        "pyproject.toml": 80, "package.json": 80, "cargo.toml": 80,
+        "go.mod": 80, "pom.xml": 80, "build.gradle": 80,
+        "requirements.txt": 70, "makefile": 65,
+    }
+    doc_markers = {
+        "roadmap": 78, "architecture": 72, "lifecycle": 70,
+        "design": 64, "security": 60, "overview": 58,
+        "status": 54, "audit": 50,
+    }
+    entrypoints = {
+        "agent", "app", "api", "cli", "core", "index", "main",
+        "mod", "router", "server", "service", "worker",
+    }
+    source_suffixes = {
+        ".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go",
+        ".java", ".kt", ".swift", ".c", ".cpp", ".h", ".cs",
+        ".php", ".rb", ".ex",
+    }
+    buckets = {"docs": [], "source": [], "tests": [], "other": []}
+    for rel in available:
+        if rel in selected:
+            continue
+        path = rel.casefold()
+        name = path.rsplit("/", 1)[-1]
+        stem = name.rsplit(".", 1)[0]
+        stem_words = set(re.findall(r"[a-z0-9]+", stem))
+        score = anchors.get(name, 0)
+        if path.startswith("docs/") and name.endswith(".md"):
+            score = max(score, max((value for marker, value in doc_markers.items()
+                                    if marker in stem), default=30))
+        if stem in entrypoints:
+            score = max(score, 46)
+        if Path(name).suffix.casefold() in source_suffixes:
+            score = max(score, 24)
+        is_test = (name.startswith("test_") or path.startswith("tests/")
+                   or "/tests/" in path)
+        is_doc = (name in anchors or
+                  (path.startswith("docs/") and name.endswith(".md")))
+        if is_test:
+            score = max(score, 22)
+        if stem_words.intersection(prompt_words):
+            score += 35
+        if not score:
+            continue
+        category = ("tests" if is_test else "docs" if is_doc else
+                    "source" if Path(name).suffix.casefold() in source_suffixes
+                    else "other")
+        buckets[category].append((-score, path, rel))
+    for bucket in buckets.values():
+        bucket.sort()
+    remaining = max_files - len(selected)
+    quotas = {
+        "docs": max(3, int(max_files * 0.30)),
+        "source": max(4, int(max_files * 0.45)),
+        "tests": max(2, int(max_files * 0.20)),
+    }
+    for category in ("docs", "source", "tests"):
+        take = min(remaining, quotas[category], len(buckets[category]))
+        selected.extend(rel for _, _, rel in buckets[category][:take])
+        remaining -= take
+    leftovers = sorted(
+        item for bucket in buckets.values() for item in bucket
+        if item[2] not in selected)
+    selected.extend(rel for _, _, rel in leftovers[:remaining])
+    return selected
+
+
 def discover_verification_gate(target_files: Sequence[str], root_dir=None) -> Optional[str]:
     # Autonomously resolve a verification gate command for targeted files.
     # ``root_dir`` arrives as a Path from callers that hold one and as a str

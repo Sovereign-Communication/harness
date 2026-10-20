@@ -451,8 +451,11 @@ class JevPolicyTests(unittest.TestCase):
             "model": "jev-test",
             "answers": {"workflow_tier": {
                 "type": "choice", "choice": "simple-action",
-                "probabilities": {"simple-action": 0.999,
-                                  "answer": 0.0005, "plan": 0.0005},
+                "probabilities": {"simple-action": 0.994,
+                                  "answer": 0.0012,
+                                  "workspace-inspection": 0.0012,
+                                  "web-research": 0.0012, "plan": 0.0012,
+                                  "clarify": 0.0012},
                 "confidence": 0.999}},
             "usage": {"input_tokens": 70, "output_tokens": 2},
         })
@@ -473,7 +476,8 @@ class JevPolicyTests(unittest.TestCase):
         question = transport.calls[0]["questions"]["workflow_tier"]
         self.assertEqual(question["type"], "choice")
         self.assertEqual(set(question["criteria"]),
-                         {"answer", "simple-action", "plan"})
+                         {"answer", "simple-action", "workspace-inspection",
+                          "web-research", "plan", "clarify"})
         self.assertEqual(structural["site"], "request_workflow")
         self.assertEqual(len(transport.calls), 1)
 

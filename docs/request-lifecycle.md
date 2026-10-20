@@ -16,6 +16,7 @@ User-workflow tiers are separate from model-routing tiers:
 |---|---|---|
 | `answer` | ordinary questions, Q&A, stable small requests | bounded simple-answer lifecycle; deterministic current clock questions use the machine clock directly |
 | `simple-action` | read-only single-step check with a URL/host target (e.g. site up?) | public-target preflight, Jev Choice, one bounded probe, one typed Jev Noul; zero OpenRouter calls |
+| `workspace-inspection` | an answer or review grounded in the selected local repository | bounded local file/AST context and answer review; no web retrieval or writes |
 | `plan` | repo work, multi-step execution | hourglass plan lane (existing) |
 
 ## Literal greeting shortcut
@@ -33,6 +34,38 @@ generation call, then asks Jev to review the answer when time permits. Jev
 outage degrades to a direct answer with fallback provenance; it does not
 trigger repo intake, search, or planning. Requests that require current data,
 tools, file access, or execution stay on their specialized lane.
+
+A native Jev answer-sufficiency score at or above the configured threshold,
+with no plan or iteration signal, is the terminal review for that answer.
+The hourglass does not call a second generative completion judge after a Jev
+pass. It makes another answer attempt only when Jev explicitly requests one,
+and the round limit stays bounded. A low score without an iteration request
+returns the candidate with an honest `needs_iteration` result instead of
+spending another answer call speculatively. A useful answer returned during a
+Jev outage is labeled unverified.
+
+Questions such as “audit this repo” route to `workspace-inspection` before the
+ordinary-answer lane. That route reads only the selected workspace and builds
+the bounded local brief; it does not search the web. The explicit local-workspace
+signal overrides an advisory web route from Jev, while Jev still reviews the
+generated answer against the retained brief. A file-specific question gets a
+targeted brief (up to 8 files / 1,800 estimated tokens); a repository-wide
+review gets a balanced sample of up to 20 guidance, design, manifest, source,
+and test files (up to 4,800 estimated tokens). Its prompt context includes a
+bounded repository inventory and tells the model to state which areas were not
+inspected. Neither profile sends the full repository to a model or claims an
+exhaustive audit.
+
+If chat execution is cancelled or interrupted, Harness writes a bounded,
+atomic checkpoint under the session's `chat_checkpoints` directory. It retains
+the original prompt, selected route, completed stage, bounded context and
+provenance, any generated candidate, known spend, and unknown-usage reserve.
+An exact “continue” resumes the interrupted stage; a cancelled review reuses
+the saved answer rather than generating it again. Repository context is
+revalidated against the selected root, relevant file set and file hashes;
+retained web evidence expires after five minutes. A new prompt supersedes that
+session's checkpoint. “Continue” with no saved interruption returns locally
+without a provider call and asks for the task to be restated.
 Answer-shaped imperative arithmetic and unit conversions (such as “calculate,”
 “compute,” and “convert”) use this same bounded answer lane. The structured
 `post_review_passed` flag is true only for a native Jev pass with sufficient
@@ -112,3 +145,9 @@ Jev, probe status/timeout/redirect/SSRF/cancel verdicts, detached-probe
 honest failure with zero model calls, GUI (`force_conversation`) path
 selecting `simple-action`, and gate clauses (`auto_apply` alone never
 authorizes). `tests/test_jev.py` pins the one-shot timeout behavior.
+
+The workspace-route, early-stop, and resumable-chat contracts are covered by
+`tests/test_jev_answer_lifecycle.py`, `tests/test_simple_request_lifecycle.py`,
+and `tests/test_chat_checkpoint.py`. These are a targeted #207 follow-up; they
+do not replace the outstanding full small-task matrix or establish GUI/CLI/MCP
+surface parity by themselves.
