@@ -40,6 +40,7 @@ from .repo_scope import (
     discover_verification_gate,
     enumerate_repo_files,
 )
+from .workspace import require_workspace, resolve_workspace_path
 from .results import SUCCESS_STATUSES, _http_error, model_envelope
 from .session import (
     apply_session, attest_model_for, governor_for, jev_face_governor,
@@ -359,7 +360,7 @@ class AutonomousAgent:
         transport: Optional[HttpTransport] = None,
     ):
         self.settings = settings or load_settings()
-        self.root_dir = (root_dir or Path.cwd()).resolve()
+        self.root_dir = Path(root_dir).resolve() if root_dir is not None else None
         self.history_dir = history_dir
         self.transport = transport or HttpTransport()
         from .lifecycle_guards import RateCircuit
@@ -368,7 +369,7 @@ class AutonomousAgent:
     def run_prompt(
         self,
         prompt: str,
-        auto_apply: bool = True,
+        auto_apply: bool = False,
         session_id: Optional[str] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
         force_conversation: bool = False,
@@ -407,6 +408,11 @@ class AutonomousAgent:
             # stay here too -- the classifier sees the same text.
             intent = classify_prompt_intent(prompt)
             emit("intent_classified", intent=intent, prompt=prompt)
+            needs_workspace = (intent == "provision"
+                               or (intent == "edit" and auto_apply))
+            if needs_workspace and self.root_dir is None:
+                raise HarnessError(
+                    "Select a workspace folder before requesting file or provisioning work")
             if cancel_check and cancel_check():
                 raise ToolCancelled("Prompt execution was cancelled by user")
             if intent == "driver":
@@ -444,6 +450,9 @@ class AutonomousAgent:
 
         intent = classify_prompt_intent(prompt)
         emit("intent_classified", intent=intent, prompt=prompt)
+        if intent in ("edit", "provision") and self.root_dir is None:
+            raise HarnessError(
+                "Select a workspace folder before requesting file or provisioning work")
 
         if cancel_check and cancel_check():
             raise ToolCancelled("Prompt execution was cancelled by user")
@@ -1123,19 +1132,21 @@ class AutonomousAgent:
         model.  Web evidence is added only when the caller explicitly enables
         the existing bounded web lane.
         """
-        candidates = discover_target_files(prompt, self.root_dir)
-        if not candidates:
-            candidates = keyword_fallback(
-                prompt, enumerate_repo_files(self.root_dir),
-                max_files=_MAX_HOURGLASS_CONTEXT_FILES)
         files = {}
-        for rel in candidates[:_MAX_HOURGLASS_CONTEXT_FILES]:
-            path = self.root_dir / rel
-            try:
-                if path.is_file():
-                    files[rel] = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
+        if self.root_dir is not None:
+            candidates = discover_target_files(prompt, self.root_dir)
+            if not candidates:
+                candidates = keyword_fallback(
+                    prompt, enumerate_repo_files(self.root_dir),
+                    max_files=_MAX_HOURGLASS_CONTEXT_FILES)
+            for rel in candidates[:_MAX_HOURGLASS_CONTEXT_FILES]:
+                try:
+                    path = resolve_workspace_path(
+                        self.root_dir, rel, must_exist=True)
+                    if path.is_file():
+                        files[rel] = path.read_text(encoding="utf-8", errors="replace")
+                except (OSError, HarnessError):
+                    continue
         brief = distill_context(
             files=files, summary=prompt, max_tokens=1800)
         # HV-2 evidence: the condensation is a ledger event, not a private
@@ -1332,7 +1343,7 @@ class AutonomousAgent:
             cancel_check=None, web: bool = False,
             confidence_threshold: float = _DEFAULT_HOURGLASS_CONFIDENCE,
             max_rounds: int = _MAX_HOURGLASS_ANSWER_ROUNDS,
-            auto_apply: bool = True,
+            auto_apply: bool = False,
             max_tokens: Optional[int] = None,
             reasoning_effort: Optional[str] = None,
             token_budget: Optional[Any] = None,
@@ -1892,7 +1903,7 @@ class AutonomousAgent:
         """Plan host provisioning setup safely without automatic execution."""
         from . import provision as pv
         probe = pv.probe_host()
-        root = str(self.root_dir)
+        root = str(require_workspace(self.root_dir))
         policy = pv.policy_for_probe(probe, [root])
         plan = pv.plan_provision(prompt, probe, policy=policy)
         rendered = pv.render_plan(plan)
@@ -2371,6 +2382,7 @@ class AutonomousAgent:
         # workers, per-node cost reservations, worktree isolation, diff
         # attestation), then a completion judge round that re-plans remaining
         # scope until the goal is met or the round budget is spent.
+        root_dir = require_workspace(self.root_dir)
         hourglass = resolve_hourglass(self.settings)
         target_files = []
 
@@ -2762,7 +2774,7 @@ class AutonomousAgent:
                     route,
                     allow_escalation=self.settings.allow_escalation,
                     attest_model=attest_model_for(self.settings)),
-                repo=str(self.root_dir), run_ceiling=gov.max_cost,
+                repo=str(root_dir), run_ceiling=gov.max_cost,
                 apply=apply_node,
                 # HG-final-gate: default ON when a verify command was
                 # discovered/declared; shared with CLI/MCP via PlanExecutor.
@@ -2772,7 +2784,7 @@ class AutonomousAgent:
 
         drive_kwargs = dict(
             goal=prompt, target_files=target_files, initial_plan=plan,
-            root_dir=self.root_dir, plan_round=lambda next_goal: self._plan_round(
+            root_dir=root_dir, plan_round=lambda next_goal: self._plan_round(
                 next_goal, target_files, gov, confirm=hourglass["confirm"],
                 token_budget=run_token_budget),
             execute_plan=execute_plan,
@@ -2905,7 +2917,7 @@ class AutonomousAgent:
             "cost": round(total_cost, 6),
             # HV-5: the composed stages, the planning outcome and the
             # execution-stage judgment are the same evidence the review-first
-            # envelope already carried, and `auto_apply` DEFAULTS TO TRUE --
+            # envelope already carried, and `auto_apply` defaults to false --
             # so leaving them on the preview branch only would have made the
             # whole slice invisible on an ordinary autonomous run. They ride
             # the final plan, next to the `hourglass` block that already

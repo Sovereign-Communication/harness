@@ -7,10 +7,14 @@ module location changed.
 """
 import os
 import re
+import stat
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+from . import osal
 from .osal import python_exe
+from .errors import HarnessError
+from .workspace import is_sensitive_path, resolve_workspace_path
 
 
 def _gate_python() -> str:
@@ -27,16 +31,24 @@ def _gate_python() -> str:
 
 def discover_target_files(prompt: str, root_dir: Optional[Path] = None) -> List[str]:
     # Autonomously identify candidate target files from prompt or repository
-    root = root_dir or Path.cwd()
+    if root_dir is None:
+        return []
+    root = Path(root_dir).resolve()
     candidates: List[str] = []
 
     # 1. Regex search for explicit filenames in prompt
     matches = re.findall(r"\b[a-zA-Z0-9_./-]+\.(?:py|rs|go|ts|js|md|json|toml|yaml|yml|c|cpp|h)\b", prompt)
     for m in matches:
         clean_path = m.strip("`'\" \t\r\n")
-        full_path = root / clean_path
-        if full_path.exists() and clean_path not in candidates:
-            candidates.append(clean_path.replace("\\", "/"))
+        try:
+            full_path = resolve_workspace_path(root, clean_path, must_exist=True)
+            if not full_path.is_file():
+                continue
+            rel_path = full_path.relative_to(root).as_posix()
+        except (HarnessError, OSError, ValueError):
+            continue
+        if rel_path not in candidates:
+            candidates.append(rel_path)
 
     if candidates:
         return candidates
@@ -48,7 +60,12 @@ def discover_target_files(prompt: str, root_dir: Optional[Path] = None) -> List[
         for p in sorted(harness_dir.glob("*.py")):
             stem = p.stem.lower()
             if stem in words and stem != "__init__":
-                rel = p.relative_to(root).as_posix()
+                try:
+                    safe_path = resolve_workspace_path(
+                        root, p, must_exist=True)
+                    rel = safe_path.relative_to(root).as_posix()
+                except (HarnessError, OSError, ValueError):
+                    continue
                 if rel not in candidates:
                     candidates.append(rel)
 
@@ -75,22 +92,71 @@ def enumerate_repo_files(root_dir: Optional[Path] = None, limit: int = 300,
     that must cover the whole tree; the default keeps the historical
     relevance-pass behavior byte-for-byte identical. ``limit=None`` caps nothing.
     """
-    root = (root_dir or Path.cwd()).resolve()
+    if root_dir is None:
+        return []
+    root = Path(root_dir).resolve()
     hard_dirs = _REPO_SKIP_DIRS - (_REPO_SOFT_DIRS if include_soft_skipped else set())
     hard_suffixes = _REPO_SKIP_SUFFIXES - (
         _REPO_SOFT_SUFFIXES if include_soft_skipped else set())
+    hard_dirs = {name.casefold() for name in hard_dirs}
+    hard_suffixes = {suffix.casefold() for suffix in hard_suffixes}
+    if limit is not None and limit <= 0:
+        return []
+    root_path = str(root)
+    def is_reparse(entry, info):
+        # Windows junctions are not always reported as symbolic links. Treat
+        # every reparse point as a link so inventory never walks into it.
+        reparse = bool(getattr(info, "st_file_attributes", 0) & 0x400)
+        return reparse or entry.is_symlink()
+
     files: List[str] = []
-    for p in sorted(root.rglob("*")):
-        if not p.is_file():
+    pending = [root]
+    visited = set()
+    while pending:
+        directory = pending.pop()
+        try:
+            canonical_dir = directory.resolve(strict=True)
+            if (not osal.is_within(str(canonical_dir), root_path)
+                    or str(canonical_dir) in visited):
+                continue
+            visited.add(str(canonical_dir))
+            with os.scandir(directory) as scan:
+                entries = sorted(scan, key=lambda entry: (entry.name.casefold(),
+                                                          entry.name))
+        except (OSError, RuntimeError):
             continue
-        if any(part in hard_dirs for part in p.parts):
-            continue
-        if p.suffix in hard_suffixes:
-            continue
-        files.append(p.relative_to(root).as_posix())
-        if limit is not None and len(files) >= limit:
-            break
-    return files
+
+        subdirs = []
+        for entry in entries:
+            path = Path(entry.path)
+            try:
+                info = entry.stat(follow_symlinks=False)
+                if is_reparse(entry, info):
+                    continue
+                if stat.S_ISDIR(info.st_mode):
+                    if (entry.name.casefold() not in hard_dirs
+                            and not is_sensitive_path(path)):
+                        subdirs.append(path)
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                safe_path = resolve_workspace_path(
+                    root, path, must_exist=True)
+                rel = safe_path.relative_to(root).as_posix()
+            except (HarnessError, OSError, RuntimeError, ValueError):
+                continue
+            if any(part.casefold() in hard_dirs for part in Path(rel).parts):
+                continue
+            if (Path(rel).suffix.casefold() in hard_suffixes
+                    or is_sensitive_path(safe_path)):
+                continue
+            files.append(rel)
+
+        # LIFO: reverse here so directories are walked in ascending order.
+        pending.extend(reversed(subdirs))
+
+    files.sort()
+    return files if limit is None else files[:limit]
 
 
 def discover_verification_gate(target_files: Sequence[str], root_dir=None) -> Optional[str]:
@@ -98,7 +164,9 @@ def discover_verification_gate(target_files: Sequence[str], root_dir=None) -> Op
     # ``root_dir`` arrives as a Path from callers that hold one and as a str
     # from lanes whose plan carries its root verbatim, so it is coerced here
     # (the owner) instead of at every call site.
-    root = Path(root_dir) if root_dir else Path.cwd()
+    if root_dir is None:
+        return None
+    root = Path(root_dir)
     if not target_files:
         return None
 
@@ -137,7 +205,7 @@ def gate_for_targets(target_files: Sequence[str],
     gateless write is refused at mutation time at unknown trust, so losing
     this rule costs the write -- it never silently writes unverified.
     """
-    root = Path(root_dir) if root_dir else Path.cwd()
+    root = Path(root_dir) if root_dir else None
     targets = [str(t) for t in (target_files or []) if t]
     gate = str(declared).strip() if declared else None
     if not gate:
@@ -146,22 +214,25 @@ def gate_for_targets(target_files: Sequence[str],
     if not gate:
         primary = targets[0] if targets else None
         if primary and primary.endswith(".py"):
-            gate = f'{_gate_python()} -m py_compile "{root / primary}"'
+            if root is not None:
+                gate = f'{_gate_python()} -m py_compile "{root / primary}"'
     return gate
 
 
 def _rebase_path(path, from_root, to_root) -> str:
     """Map a planned absolute/relative target into the execution checkout."""
     raw = str(path)
-    source = Path(from_root).resolve() if from_root else Path.cwd().resolve()
+    source = Path(from_root).resolve() if from_root else None
     destination = Path(to_root).resolve() if to_root else source
     candidate = Path(raw)
     if candidate.is_absolute():
+        if source is None:
+            return raw
         try:
             return str(destination / candidate.relative_to(source))
         except ValueError:
             return raw
-    return str(destination / candidate)
+    return str(destination / candidate) if destination is not None else raw
 
 
 def rebase_gate(gate: Optional[str], from_root, to_root) -> Optional[str]:

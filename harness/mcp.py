@@ -7,12 +7,12 @@ harness/mcp_schemas.py as pure data, and the lane-scheduling policy
 """
 import json
 import math
-import os
 import sys
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from . import __version__
 from . import events as _events
@@ -42,6 +42,9 @@ from .service import run_verify as _service_run_verify
 from .jev import jev_credit_status
 from .service import run_dogfood as _service_run_dogfood
 from .brief import build_brief, freshness_report, render_brief
+from .session import apply_session
+from .workspace import (choose_allowed_workspace, resolve_allowed_path,
+                        resolve_workspace_path)
 from .capability import evaluate_pool_rotation, seat_share_report
 from .routing_table import (
     SNAPSHOT_PRICE_TABLE,
@@ -189,6 +192,16 @@ class McpServer:
         self.allow_verify = bool(allow_verify)
         self.allow_write = bool(allow_write)
         self.allowed_roots = osal.normalize_roots(allowed_roots or [])
+
+    def _workspace_for(self, raw=None):
+        """Resolve a request root only from the operator-configured roots."""
+        return choose_allowed_workspace(raw, self.allowed_roots)
+
+    def _file_for(self, raw, *, workspace=None, must_exist=True):
+        """Resolve a file argument without ever anchoring it at server CWD."""
+        return resolve_allowed_path(
+            raw, self.allowed_roots, workspace=workspace,
+            must_exist=must_exist)
 
     # ---------------- deadlines + cancellation ----------------
     def _note_start(self, request_id):
@@ -654,6 +667,34 @@ class McpServer:
                     "mcp apply with no allowed roots configured",
                     "MCP apply requires at least one configured allowed root",
                     task_id=args.get("task_id"), model=args.get("model"))
+            try:
+                files = [str(self._file_for(path, must_exist=True))
+                         for path in files]
+            except HarnessError as exc:
+                message = ("symlink targets are excluded from MCP file access"
+                           if "symlink targets are excluded" in str(exc).casefold()
+                           else "file is outside every allowed root or excluded by workspace policy")
+                self._refuse(
+                    "mcp file outside allowed roots",
+                    message,
+                    task_id=args.get("task_id"), model=args.get("model"),
+                    severity="hostile")
+            target_files = list(files)
+            if continuation.get("file_path"):
+                continuation = dict(continuation)
+                try:
+                    continuation["file_path"] = str(self._file_for(
+                        continuation["file_path"], must_exist=True))
+                except HarnessError as exc:
+                    message = ("symlink targets are excluded from MCP file access"
+                               if "symlink targets are excluded" in str(exc).casefold()
+                               else "file is outside every allowed root or excluded by workspace policy")
+                    self._refuse(
+                        "mcp file outside allowed roots",
+                        message,
+                        task_id=args.get("task_id"), model=args.get("model"),
+                        severity="hostile")
+                target_files.append(continuation["file_path"])
             for target_file in target_files:
                 if not any(osal.is_within(target_file, root)
                            for root in self.allowed_roots):
@@ -740,6 +781,9 @@ class McpServer:
                     "mcp continue with no allowed roots configured",
                     "MCP continue_work requires at least one configured allowed root",
                     task_id=args.get("task_id"))
+            continuation = dict(continuation)
+            continuation["file_path"] = str(self._file_for(
+                continuation["file_path"], must_exist=True))
             if not any(osal.is_within(continuation["file_path"], root)
                        for root in self.allowed_roots):
                 self._refuse(
@@ -899,15 +943,16 @@ class McpServer:
             # Thin face over harness.jev_completion (the same engine
             # `harness jev-phase --local-only` runs). Always local-only:
             # never builds a live Jev policy, never mutates STATUS/the repo.
-            repo_root = validate_text(args.get("repo_root"), "repo_root", 4096) or "."
+            repo_root = self._workspace_for(
+                validate_text(args.get("repo_root"), "repo_root", 4096))
             all_phases = validate_mcp_bool(args.get("all", False), "all")
             min_score = finite_number(args.get("min_score", 85.0), "min_score",
                                       0.0, 100.0)
             if all_phases:
-                return score_all_phases(repo_root, jev_policy=None,
+                return score_all_phases(str(repo_root), jev_policy=None,
                                         min_score=min_score)
             phase = validate_text(args.get("phase"), "phase", 256, required=True)
-            return dogfood_phase(repo_root, phase, settings=None,
+            return dogfood_phase(str(repo_root), phase, settings=None,
                                  use_live_jev=False, min_score=min_score)
         if name == "jev_freeze":
             # Thin face over config.freeze_jev_settings (GAP-freeze-face): the
@@ -1009,6 +1054,29 @@ class McpServer:
             frontier_model = validate_mcp_model(args.get("frontier_model"), "frontier_model")
             raw_files = args.get("file")
             candidate_files = validate_mcp_files(raw_files) if raw_files is not None else []
+            raw_root = validate_text(args.get("root"), "root", 4096)
+            brief = args.get("brief")
+            brief_path = None
+            if isinstance(brief, str):
+                try:
+                    decoded_brief = json.loads(brief)
+                except (TypeError, ValueError):
+                    decoded_brief = None
+                if decoded_brief is None:
+                    brief_path = brief
+                elif not isinstance(decoded_brief, dict):
+                    raise HarnessError("brief JSON must be an object")
+            needs_workspace = bool(execute or candidate_files or brief_path)
+            root = (self._workspace_for(raw_root) if raw_root or needs_workspace
+                    else None)
+            if candidate_files:
+                candidate_files = [str(resolve_workspace_path(
+                    root, path, must_exist=False)) for path in candidate_files]
+            if brief_path:
+                brief = str(resolve_workspace_path(
+                    root, brief_path, must_exist=True))
+                if not Path(brief).is_file():
+                    raise HarnessError("brief must be a JSON file")
 
             if execute and not (self.allow_write or allow_write):
                 self._refuse(
@@ -1037,12 +1105,12 @@ class McpServer:
             # supplied the lane behaves exactly as before rather than
             # inventing an allowance, which composition refuses to do.
             stages = args.get("stages")
-            brief = args.get("brief")
             token_budget_input = args.get("token_budget_input")
             token_budget_output = args.get("token_budget_output")
             composition = (
                 compose_arguments(
                     self.settings, goal=goal, files=candidate_files,
+                    root=str(root) if root else None,
                     stages=stages, brief=brief,
                     max_input_tokens=token_budget_input,
                     max_output_tokens=token_budget_output)
@@ -1053,6 +1121,7 @@ class McpServer:
                 candidate_files=candidate_files, frontier_model=frontier_model,
                 use_free=self.use_free, decompose_llm=decompose_llm,
                 confirm=confirm, execute=execute,
+                root=str(root) if root else None,
                 allow_escalation=allow_escalation,
                 plan_consensus=plan_consensus,
                 jev_policy=jev_policy, **composition)
@@ -1066,7 +1135,19 @@ class McpServer:
                     plan_result["structural"]["site"] = "mcp"
                 return plan_result
 
-            dag = TaskDAG.from_dict(plan_result["dag"])
+            if root is None:
+                raise HarnessError("plan execution requires a selected workspace")
+            dag_data = dict(plan_result["dag"])
+            scoped_nodes = []
+            for raw_node in dag_data.get("nodes", []):
+                node = dict(raw_node)
+                node["target_files"] = [str(resolve_workspace_path(
+                    root, target, must_exist=False))
+                    for target in node.get("target_files", [])]
+                scoped_nodes.append(node)
+            dag_data["nodes"] = scoped_nodes
+            dag = TaskDAG.from_dict(dag_data)
+            plan_result["dag"] = dag.to_dict()
             node_routes = {n.get("node_id"): n for n in plan_result["nodes"]}
             run_gate = None
             for n in plan_result.get("nodes") or ():
@@ -1092,7 +1173,8 @@ class McpServer:
                 # be bounded by an unrelated nominal default instead.
                 run_ceiling=self.governor.max_cost,
                 final_gate=final_gate,
-                run_gate=run_gate)
+                run_gate=run_gate,
+                repo=str(root))
             all_results = plan_exec.execute(dag)
             summary = PlanExecutor.summarize(all_results)
             output = {
@@ -1132,12 +1214,26 @@ class McpServer:
                     "mcp file write without allow_write",
                     "dogfood file writes are disabled for this session; "
                     "re-send with allow_write=true or configure allow_write=True explicitly")
+            root = self._workspace_for(args.get("root"))
+            raw_file = str(resolve_workspace_path(root, raw_file,
+                                                  must_exist=True))
+            if not Path(raw_file).is_file():
+                raise HarnessError("dogfood target must be a file")
             verify_cmd = args.get("verify")
             if verify_cmd is not None:
                 verify_cmd = validate_text(verify_cmd, "verify", 10000, required=True)
             claims_file = args.get("claims_file")
             source_file = args.get("source_file")
             definitions_file = args.get("definitions_file")
+            claims_file = (str(resolve_workspace_path(root, claims_file,
+                                                      must_exist=True))
+                           if claims_file else None)
+            source_file = (str(resolve_workspace_path(root, source_file,
+                                                      must_exist=True))
+                           if source_file else None)
+            definitions_file = (str(resolve_workspace_path(
+                root, definitions_file, must_exist=True))
+                if definitions_file else None)
             claim_context = args.get("claim_context")
             max_cost = args.get("max_cost")
             if max_cost is not None:
@@ -1155,7 +1251,9 @@ class McpServer:
                 claim_context=claim_context,
                 task_id=task_id,
                 max_cost=max_cost,
-                max_rounds=max_rounds)
+                max_rounds=max_rounds,
+                apply_session_fn=lambda current_settings: apply_session(
+                    current_settings, allowed_roots=[str(root)]))
         if name == "generate_brief":
             goal = validate_text(args.get("goal"), "goal", 20000, required=True)
             raw_files = args.get("files") or []
@@ -1163,7 +1261,15 @@ class McpServer:
                 raw_files = [raw_files]
             if not isinstance(raw_files, list):
                 raise HarnessError("files must be a list of strings")
-            files = [str(f) for f in raw_files]
+            if raw_files:
+                root = self._workspace_for(args.get("root"))
+                files = [str(resolve_workspace_path(root, f,
+                                                    must_exist=True))
+                         for f in raw_files]
+                if any(not Path(f).is_file() for f in files):
+                    raise HarnessError("brief source paths must be files")
+            else:
+                files = []
             budget = bounded_int(args.get("budget", 48000), "budget", 100, 500000)
             pack = build_brief(goal, files, max_total_chars=budget)
             result = {"brief": pack, "status": "ok"}
@@ -1218,21 +1324,27 @@ class McpServer:
         if name == "host_provision_plan":
             from . import provision as pv
             goal = validate_text(args.get("goal"), "goal", pv.MAX_GOAL_CHARS, required=True)
-            root_arg = args.get("root")
-            root = os.path.abspath(root_arg) if root_arg else os.getcwd()
+            root = self._workspace_for(args.get("root"))
             probe = pv.probe_host()
-            policy = pv.policy_for_probe(probe, [root])
+            policy = pv.policy_for_probe(probe, [str(root)])
             plan = pv.plan_provision(goal, probe, policy=policy)
             res = plan.to_dict()
             res["rendered"] = pv.render_plan(plan)
             return res
         if name == "repo_cards":
-            from pathlib import Path
             from . import repo_cards as rc
-            check = bool(args.get("check", False))
+            check = validate_mcp_bool(args.get("check", True), "check")
+            allow_write = validate_mcp_bool(args.get("allow_write", False),
+                                            "allow_write")
+            if not check and not (self.allow_write or allow_write):
+                self._refuse(
+                    "mcp repo cards write without allow_write",
+                    "repo_cards writes are disabled; re-send with allow_write=true "
+                    "or configure allow_write=True explicitly")
             repo_filter = args.get("repo")
-            root = rc.default_root()
-            cards = Path(__file__).resolve().parent.parent / rc.CARDS_SUBDIR
+            root = self._workspace_for(args.get("root"))
+            cards = resolve_workspace_path(root, str(rc.CARDS_SUBDIR),
+                                           must_exist=False)
             rationale_dir = cards / rc.RATIONALE_SUBDIR
             repos = [(rc.canonical_repo_name(n, cards), p) for n, p in rc.discover_repos(root)]
             if repo_filter:

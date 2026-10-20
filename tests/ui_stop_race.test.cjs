@@ -30,6 +30,11 @@ test("Stop clicked before /api/chat returns is sent once the run ID arrives", as
     setItem(key, value) { storage.set(key, String(value)); },
     removeItem(key) { storage.delete(key); },
   };
+  const sessionStorage = {
+    getItem(key) { return storage.get(key) ?? null; },
+    setItem(key, value) { storage.set(key, String(value)); },
+    removeItem(key) { storage.delete(key); },
+  };
   const window = { addEventListener(type, fn) { handlers.set(type, fn); } };
   const document = {
     querySelector(selector) {
@@ -40,7 +45,7 @@ test("Stop clicked before /api/chat returns is sent once the run ID arrives", as
     getElementById(id) { return this.querySelector(`#${id}`); },
     createElement() { return makeElement(); },
   };
-  const context = vm.createContext({ window, document, localStorage, console,
+  const context = vm.createContext({ window, document, localStorage, sessionStorage, console,
     setInterval() { return 1; }, clearInterval() {} });
   const appPath = path.join(__dirname, "..", "harness", "ui", "app.js");
   const app = fs.readFileSync(appPath, "utf8");
@@ -119,7 +124,9 @@ test("polls never overlap and late run-A callbacks cannot touch run B", async ()
   const intervals = [];
   const window = { addEventListener() {} };
   const context = vm.createContext({
-    window, document, localStorage: { getItem() { return null; }, setItem() {} },
+    window, document,
+    localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+    sessionStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
     console,
     setTimeout(fn) { const id = `timer-${++nextTimer}`; timers.set(id, fn); return id; },
     clearTimeout(id) { timers.delete(id); },
@@ -212,7 +219,11 @@ test("renderFinalResult displays provider spend limit notice and billed amount",
   };
   const window = { addEventListener() {} };
   const localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
-  const context = vm.createContext({ window, document, localStorage, console, setInterval() {}, clearInterval() {} });
+  const context = vm.createContext({
+    window, document, localStorage,
+    sessionStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+    console, setInterval() {}, clearInterval() {},
+  });
   const appPath = path.join(__dirname, "..", "harness", "ui", "app.js");
   const app = fs.readFileSync(appPath, "utf8");
   vm.runInContext(app + `

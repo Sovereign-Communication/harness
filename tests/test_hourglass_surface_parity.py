@@ -11,6 +11,7 @@ import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from harness.cli_parser import build_parser
@@ -183,6 +184,10 @@ class BriefIntakeSurfaceParityTests(unittest.TestCase):
 class DogfoodSurfaceParityTests(unittest.TestCase):
     """Dogfood loop canonical service layer and surface interfaces."""
 
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
     def test_schema_registers_dogfood_tool(self):
         schema = next((s for s in TOOL_SCHEMAS if s["name"] == "dogfood"), None)
         self.assertIsNotNone(schema)
@@ -191,30 +196,28 @@ class DogfoodSurfaceParityTests(unittest.TestCase):
         self.assertIn("file", schema["inputSchema"]["required"])
 
     def test_server_validate_dispatch_and_runner_registered(self):
-        with tempfile.NamedTemporaryFile(delete=False) as f:
-            f.write(b"content")
-            target_path = f.name
-        try:
+        with tempfile.TemporaryDirectory() as root:
+            target_path = os.path.join(root, "target.py")
+            with open(target_path, "wb") as f:
+                f.write(b"content")
             # validate_dispatch accepts dogfood
             validated = validate_dispatch("dogfood", {
+                "root_dir": root,
                 "file": target_path,
                 "instruction": "fix bug",
                 "verify": "python -m unittest",
                 "max_rounds": 2,
             })
-            self.assertEqual(validated["file"], target_path)
+            self.assertTrue(os.path.samefile(validated["file"], target_path))
             self.assertEqual(validated["instruction"], "fix bug")
             self.assertEqual(validated["max_rounds"], 2)
 
             # Nonexistent file fails closed
             with self.assertRaises(HarnessError):
-                validate_dispatch("dogfood", {"file": "nonexistent_file_xyz.py", "instruction": "fix"})
+                validate_dispatch("dogfood", {"root_dir": root, "file": "nonexistent_file_xyz.py", "instruction": "fix"})
 
             # RUNNERS contains dogfood
             self.assertIn("dogfood", RUNNERS)
-        finally:
-            if os.path.exists(target_path):
-                os.unlink(target_path)
 
     def test_run_dogfood_ground_phase_rejection(self):
         # When lint fails (e.g. ungrounded claim), dogfood fails closed on ground phase
@@ -286,6 +289,7 @@ class DogfoodSurfaceParityTests(unittest.TestCase):
             router=MagicMock(),
             engine=MagicMock(),
             allow_write=True,
+            allowed_roots=[self.tmp.name],
             settings=_cfg(use_free=True),
         )
         with self.assertRaises(HarnessError):
@@ -293,9 +297,14 @@ class DogfoodSurfaceParityTests(unittest.TestCase):
         with self.assertRaises(HarnessError):
             server._invoke("dogfood", {"file": "a.py"})
 
+        (Path(self.tmp.name) / "a.py").write_text("pass\n", encoding="utf-8")
+        (Path(self.tmp.name) / "c.json").write_text("{}", encoding="utf-8")
+        (Path(self.tmp.name) / "s.txt").write_text("source", encoding="utf-8")
+        (Path(self.tmp.name) / "d.json").write_text("{}", encoding="utf-8")
         mock_ret = {"status": "ok"}
         with patch("harness.mcp._service_run_dogfood", return_value=mock_ret) as mock_run:
             res = server._invoke("dogfood", {
+                "root": self.tmp.name,
                 "file": "a.py",
                 "instruction": "fix bug",
                 "verify": "pytest",
@@ -309,33 +318,35 @@ class DogfoodSurfaceParityTests(unittest.TestCase):
             self.assertEqual(res, mock_ret)
             self.assertTrue(mock_run.called)
             kwargs = mock_run.call_args[1]
-            self.assertEqual(kwargs["file"], "a.py")
+            self.assertTrue(kwargs["file"].endswith("a.py"))
             self.assertEqual(kwargs["verify_cmd"], "pytest")
             self.assertEqual(kwargs["max_cost"], 0.05)
             self.assertEqual(kwargs["max_rounds"], 4)
 
     def test_server_dogfood_validation_and_runner(self):
         from harness.server import run_dogfood_task
-        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as tf:
-            target_file = tf.name
-        try:
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "a.py").write_text("pass\n", encoding="utf-8")
+            (Path(root) / "c.json").write_text("{}", encoding="utf-8")
+            (Path(root) / "s.txt").write_text("source", encoding="utf-8")
+            (Path(root) / "d.json").write_text("{}", encoding="utf-8")
+            target_path = Path(root) / "target.py"
+            target_path.write_text("pass\n", encoding="utf-8")
+            target_file = str(target_path)
             with self.assertRaises(HarnessError):
-                validate_dispatch("dogfood", {"file": target_file, "instruction": "fix", "claims_file": "nonexistent.json"})
+                validate_dispatch("dogfood", {"root_dir": root, "file": "target.py", "instruction": "fix", "claims_file": "nonexistent.json"})
             with self.assertRaises(HarnessError):
-                validate_dispatch("dogfood", {"file": target_file, "instruction": "fix", "source_file": "nonexistent.txt"})
+                validate_dispatch("dogfood", {"root_dir": root, "file": "target.py", "instruction": "fix", "source_file": "nonexistent.txt"})
             with self.assertRaises(HarnessError):
-                validate_dispatch("dogfood", {"file": target_file, "instruction": "fix", "definitions_file": "nonexistent.json"})
-            validated = validate_dispatch("dogfood", {"file": target_file, "instruction": "fix", "max_cost": 0.05})
+                validate_dispatch("dogfood", {"root_dir": root, "file": "target.py", "instruction": "fix", "definitions_file": "nonexistent.json"})
+            validated = validate_dispatch("dogfood", {"root_dir": root, "file": "target.py", "instruction": "fix", "max_cost": 0.05})
             self.assertEqual(validated["max_cost"], 0.05)
 
             mock_ret = {"status": "ok"}
             with patch("harness.service.run_dogfood", return_value=mock_ret) as mock_svc:
-                task_res = run_dogfood_task("task1", {"file": target_file, "instruction": "fix"}, lambda: False)
+                task_res = run_dogfood_task("task1", {"root_dir": root, "file": target_file, "instruction": "fix"}, lambda: False)
                 self.assertEqual(task_res, mock_ret)
                 self.assertTrue(mock_svc.called)
-        finally:
-            if os.path.exists(target_file):
-                os.unlink(target_file)
 
     def test_config_save_settings_stages(self):
         with tempfile.TemporaryDirectory() as tmpdir:

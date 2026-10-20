@@ -151,13 +151,19 @@ const fmtCost = (v) => (typeof v === "number") ? `$${v.toFixed(4)}` : "$0.0000";
 let sessionId = localStorage.getItem("harness_session_id") || "sess_" + Math.random().toString(36).slice(2, 10);
 localStorage.setItem("harness_session_id", sessionId);
 
-let autoApply = localStorage.getItem("harness_auto_apply") !== "false";
+// A fresh page starts review-first. Auto Apply is a deliberate page-local choice.
+localStorage.removeItem("harness_auto_apply");
+let autoApply = false;
 // Mirror of the server-side ``allow_escalation`` setting (single source of
 // truth: /api/settings). The old localStorage flag is gone -- it desynced
 // from the server and clicking the route badge changed nothing real.
 let paidEnabled = true;
 let webEnabled = localStorage.getItem("harness_web_enabled") === "true";
-let workDir = localStorage.getItem("harness_workdir") || "";
+// Retire the old profile-global workspace: blank now means chat-only.
+localStorage.removeItem("harness_workdir");
+const workspaceKey = (id) => `harness_workspace:${id}`;
+let workDir = sessionStorage.getItem(workspaceKey(sessionId)) || "";
+window.getHarnessWorkspace = () => workDir.trim();
 let currentRunId = null;
 let activeAgentMessage = null;
 let pollTimer = null;
@@ -185,7 +191,8 @@ function setupSidebar() {
     workdirInput.value = workDir;
     workdirInput.addEventListener("change", () => {
       workDir = workdirInput.value.trim();
-      localStorage.setItem("harness_workdir", workDir);
+      if (workDir) sessionStorage.setItem(workspaceKey(sessionId), workDir);
+      else sessionStorage.removeItem(workspaceKey(sessionId));
     });
   }
   refreshSessionList();
@@ -227,6 +234,11 @@ async function switchSession(id) {
   if (id === sessionId) return;
   sessionId = id;
   localStorage.setItem("harness_session_id", sessionId);
+  workDir = sessionStorage.getItem(workspaceKey(sessionId)) || "";
+  const workdirInput = $("#workdir-input");
+  if (workdirInput) workdirInput.value = workDir;
+  autoApply = false;
+  updateModeDisplay();
   $("#chat-feed").innerHTML = "";
   $("#welcome-hero").hidden = false;
   await loadHistory();
@@ -240,6 +252,11 @@ async function deleteSession(id) {
     if (id === sessionId) {
       sessionId = "sess_" + Math.random().toString(36).slice(2, 10);
       localStorage.setItem("harness_session_id", sessionId);
+      workDir = "";
+      autoApply = false;
+      const workdirInput = $("#workdir-input");
+      if (workdirInput) workdirInput.value = "";
+      updateModeDisplay();
       $("#chat-feed").innerHTML = "";
       $("#welcome-hero").hidden = false;
     }
@@ -267,7 +284,6 @@ function setupHeaderControls() {
 
   modeBtn.addEventListener("click", () => {
     autoApply = !autoApply;
-    localStorage.setItem("harness_auto_apply", autoApply ? "true" : "false");
     updateModeDisplay();
   });
 
@@ -343,6 +359,11 @@ function setupHeaderControls() {
   $("#btn-new-chat").addEventListener("click", () => {
     sessionId = "sess_" + Math.random().toString(36).slice(2, 10);
     localStorage.setItem("harness_session_id", sessionId);
+    workDir = "";
+    autoApply = false;
+    const workdirInput = $("#workdir-input");
+    if (workdirInput) workdirInput.value = "";
+    updateModeDisplay();
     $("#chat-feed").innerHTML = "";
     $("#welcome-hero").hidden = false;
     $("#prompt-input").value = "";

@@ -23,7 +23,10 @@ authority, so MCP write/exec surfaces are gated one step stricter than CLI.
 | Risk | Control | Where |
 |---|---|---|
 | Model-invented verification command | `verify_cmd` is parsed with `shlex`, executed `shell=False`, hard timeout, gate id bound into continuation state; MCP requires explicit `allow_verify` per call | `harness/apply.py`, `harness/mcp.py` |
-| Path escape via edit targets | Targets must resolve inside the sandbox root; absolute escapes, `..` traversal, and symlink swaps are refused; original file mode is preserved | `harness/apply.py` (`_AtomicWrite`, bench sandbox) |
+| Path escape via edit targets | Targets must resolve inside the explicitly selected workspace; absolute escapes, `..` traversal, and any symlink path component are refused before dispatch; original file mode is preserved | `harness/workspace.py`, `harness/apply.py` |
+| GUI defaults to server directory | New GUI sessions have no workspace; file and provisioning operations require an explicit absolute workspace, with canonical containment and obvious credential paths excluded | `harness/server.py`, `harness/workspace.py`, `harness/ui/app.js` |
+| Unauthenticated or rebound GUI API | UI server binds loopback, requires a per-user token by default, and rejects non-loopback Host headers | `harness/server.py`, `harness/ui_auth.py` |
+| Driver verification inherits server CWD | Driver verification requires a selected workspace and sets it as the subprocess CWD; the command still has host-user privileges | `harness/server.py`, `harness/gate_runner.py` |
 | Arbitrary overwrite via MCP apply | Root containment check + backup written outside the tree; write refused (never best-effort) when containment fails | `harness/apply.py`, `harness/mcp.py` |
 | Prompt marker smuggling | `HARNESS_READY`/`HARNESS_DEFER` protocol markers are stripped from file content anywhere in the body, so a model cannot smuggle protocol text into user files | `harness/apply.py` |
 | Spend runaway (model or bug) | Worst-case preflight against the ceiling before every network call; per-actual enforcement; consent, rotation, and probe calls all preflighted; per-invocation `--max-cost` on verify/bench/capabilities | `harness/spend.py` (SpendGovernor) |
@@ -40,8 +43,9 @@ authority, so MCP write/exec surfaces are gated one step stricter than CLI.
 interpretation, but the approved executable still runs on the host with the
 harness process's privileges. Harness does not currently impose memory limits,
 network isolation, or a complete child-process sandbox around verification.
-Use disposable checkouts and review every `verify_cmd` when the caller is not
-fully trusted.
+The workspace restricts Harness-managed file paths; it does not constrain
+what an approved executable can open. Use disposable checkouts and review every
+`verify_cmd` when the caller is not fully trusted.
 
 - **Verification commands still run on your host.** The gate executes with
   `shell=False` under a timeout, but whatever command string is approved

@@ -51,7 +51,7 @@ class DriverEnvMixin:
 
 class ServerDriverEndpointsTest(unittest.TestCase):
     def setUp(self):
-        self.httpd = make_server("127.0.0.1", 0)
+        self.httpd = make_server("127.0.0.1", 0, auth_token=None)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -264,8 +264,37 @@ class RunDriverTaskSummaryTest(unittest.TestCase):
     def _run(self, adapter, args=None, cancel=None):
         a = {"goal": "g", "max_steps": 2, "target": "cli"}
         a.update(args or {})
+        if a.get("verify") and not a.get("root_dir"):
+            with tempfile.TemporaryDirectory(prefix="driver-verify-workspace-") as root:
+                a["root_dir"] = root
+                with patch.object(ui_server, "_driver_adapter", return_value=adapter):
+                    return run_driver_task("t-1", a, cancel)
         with patch.object(ui_server, "_driver_adapter", return_value=adapter):
             return run_driver_task("t-1", a, cancel)
+
+    def test_direct_verify_without_workspace_refuses_before_driver_or_command(self):
+        adapter = _FakeAdapter([_OK])
+        with patch.object(ui_server, "_driver_adapter", return_value=adapter), \
+             patch("harness.gate_runner.run_gate") as run_gate:
+            with self.assertRaisesRegex(Exception, "workspace"):
+                run_driver_task("t-1", {"goal": "g", "verify": "true"}, None)
+        self.assertEqual(adapter.calls, [])
+        run_gate.assert_not_called()
+
+    def test_verify_runs_from_selected_workspace(self):
+        adapter = _FakeAdapter([_OK], audit={"ok": True})
+        with tempfile.TemporaryDirectory(prefix="driver-verify-workspace-") as root, \
+             patch.object(ui_server, "_driver_adapter", return_value=adapter), \
+             patch("harness.gate_runner.run_gate", return_value=(0, "fine")) as run_gate:
+            run_driver_task("t-1", {
+                "goal": "g", "max_steps": 1, "verify": "true",
+                "root_dir": root,
+            }, None)
+            run_gate.assert_called_once()
+            args, kwargs = run_gate.call_args
+            self.assertEqual(args, ("true",))
+            self.assertEqual(kwargs["timeout"], 30)
+            self.assertTrue(os.path.samefile(kwargs["cwd"], root))
 
     def test_all_refused_is_not_reported_as_verified(self):
         adapter = _FakeAdapter([_REFUSED, _REFUSED], audit={"ok": True})
