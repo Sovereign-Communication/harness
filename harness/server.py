@@ -20,6 +20,7 @@ Design rules, inherited from the MCP server:
 """
 import argparse
 import atexit
+import hashlib
 import hmac
 import json
 import os
@@ -658,7 +659,8 @@ def _driver_adapter(autostart=True):
         return adapter
 
 
-def run_driver_task(task_id, args, cancel_check):
+def run_driver_task(task_id, args, cancel_check, *, lifecycle=None,
+                    lifecycle_state=None):
     """Executes a multi-step request driven iteratively by Jev and driver_core.
 
     Breaks the request into steps, iterates using the driver's perception,
@@ -685,6 +687,7 @@ def run_driver_task(task_id, args, cancel_check):
     completed = False
     cancelled = False
     cost_capped = False
+    reconciliation_needed = False
     current_target = target
     current_schema = default_schema
     total_cost = 0.0
@@ -699,7 +702,13 @@ def run_driver_task(task_id, args, cancel_check):
             cost_capped = True
             break
 
-        step_id = f"drv-{uuid.uuid4().hex[:8]}"
+        if lifecycle is not None:
+            lifecycle.advance(lifecycle_state, "observe")
+            request_id = str(args.get("request_id") or task_id)
+            step_id = "drv-" + hashlib.sha256(
+                f"{request_id}:{step_num}".encode("utf-8")).hexdigest()[:12]
+        else:
+            step_id = f"drv-{uuid.uuid4().hex[:8]}"
         _events.emit(
             "driver_step_start",
             task_id=task_id,
@@ -718,23 +727,39 @@ def run_driver_task(task_id, args, cancel_check):
         if auto_approve:
             consent = dict(_AUTO_APPROVE_CONSENT)
 
-        try:
-            env = adapter.step(
-                current_target,
-                schema=current_schema,
-                consent=consent,
-                require_stable=require_stable,
-                step_id=step_id,
-            )
-        except PerceptionUnavailable as e:
-            env = {
-                "step_id": step_id,
-                "ok": False,
-                "stopped_at": "capture",
-                "reason": "no_capture",
-                "detail": str(e),
-                "cost_usd": 0.0,
-            }
+        effect_id = f"driver-step-{step_num}"
+        effect_action, saved_env = ("run", None)
+        if lifecycle is not None:
+            effect_action, saved_env = lifecycle.begin_effect(
+                lifecycle_state, effect_id, "perception-adapter.step",
+                approval_state={"auto_approve": bool(auto_approve)})
+            if effect_action == "blocked":
+                reconciliation_needed = True
+                break
+        if effect_action == "completed":
+            env = dict(saved_env or {})
+        else:
+            if lifecycle is not None:
+                lifecycle.advance(lifecycle_state, "execute")
+            try:
+                env = adapter.step(
+                    current_target,
+                    schema=current_schema,
+                    consent=consent,
+                    require_stable=require_stable,
+                    step_id=step_id,
+                )
+            except PerceptionUnavailable as e:
+                env = {
+                    "step_id": step_id,
+                    "ok": False,
+                    "stopped_at": "capture",
+                    "reason": "no_capture",
+                    "detail": str(e),
+                    "cost_usd": 0.0,
+                }
+            if lifecycle is not None:
+                lifecycle.complete_effect(lifecycle_state, effect_id, env)
 
         cost = float(env.get("cost_usd") or 0.0)
         total_cost += cost
@@ -742,17 +767,32 @@ def run_driver_task(task_id, args, cancel_check):
         # Verification Aspect
         verify_result = None
         if verify_cmd:
-            from .gate_runner import run_gate
-            try:
-                retcode, output = run_gate(verify_cmd, timeout=30,
-                                           cwd=verify_cwd)
-                verify_result = {
-                    "ok": retcode == 0,
-                    "returncode": retcode,
-                    "output": output[:2000],
-                }
-            except Exception as ex:
-                verify_result = {"ok": False, "error": str(ex)}
+            verify_effect = f"driver-verify-{step_num}"
+            verify_action, saved_verify = ("run", None)
+            if lifecycle is not None:
+                lifecycle.advance(lifecycle_state, "verify")
+                verify_action, saved_verify = lifecycle.begin_effect(
+                    lifecycle_state, verify_effect, "driver.verify-command")
+                if verify_action == "blocked":
+                    reconciliation_needed = True
+                    break
+            if verify_action == "completed":
+                verify_result = dict(saved_verify or {})
+            else:
+                from .gate_runner import run_gate
+                try:
+                    retcode, output = run_gate(verify_cmd, timeout=30,
+                                               cwd=verify_cwd)
+                    verify_result = {
+                        "ok": retcode == 0,
+                        "returncode": retcode,
+                        "output": output[:2000],
+                    }
+                except Exception as ex:
+                    verify_result = {"ok": False, "error": str(ex)}
+                if lifecycle is not None:
+                    lifecycle.complete_effect(lifecycle_state, verify_effect,
+                                              verify_result)
 
         step_record = {
             "step_number": step_num,
@@ -764,6 +804,18 @@ def run_driver_task(task_id, args, cancel_check):
             "cost_usd": cost,
         }
         steps.append(step_record)
+        if lifecycle is not None:
+            decision = env.get("decision")
+            if isinstance(decision, dict):
+                lifecycle.review(lifecycle_state, f"driver-review-{step_num}", {
+                    "verdict": "pass" if decision.get("usable") else "fail",
+                    "native": bool(decision.get("native")),
+                    "supported": decision.get("confidence"),
+                    "confidence": decision.get("confidence"),
+                    "cost": decision.get("cost", 0.0),
+                }, confidence_threshold=0.0, final=True)
+            lifecycle_state["execution"]["completed_steps"][str(step_num)] = step_record
+            lifecycle.save(lifecycle_state)
         _events.emit(
             "driver_step_complete",
             task_id=task_id,
@@ -815,6 +867,11 @@ def run_driver_task(task_id, args, cancel_check):
         status = "done"
         summary = (f"Driver completed {len(steps)} step(s) with {ok_steps} ok; "
                    f"no verify command confirmed the result.")
+    elif reconciliation_needed:
+        status = "needs_reconciliation"
+        summary = (f"Driver stopped before replaying an operation with unknown "
+                   f"completion after {len(steps)} saved step(s). Reconcile the "
+                   "recorded step before continuing.")
     elif cancelled:
         status = "cancelled"
         summary = (f"Driver cancelled after {len(steps)} step(s); "

@@ -1,66 +1,43 @@
 # Autonomous agent orchestrator (#PR-Chat-1)
 # Drives natural language prompts to conclusion automatically with zero UI clutter.
-import difflib
-import hashlib
-import json
 import re
-import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 
 from ._http import HttpTransport
-from .chat import (assess_output, chat, extract_content_and_cost,
-                   governed_completion, governed_text, looks_truncated)
-from .condenser import distill_context, condense_error_log
+from .chat import (governed_text)
 from .config import (
-    Settings, effective_lane_policy, load_settings, resolve_api_key,
-    resolve_hourglass,
+    Settings, load_settings, resolve_api_key,
 )
-from .tokens import estimate_prompt_tokens
-from .dag import TaskDAG, DAGNode, node_apply_kwargs
-from .prompts import MAX_FILE_LINES
-from .errors import HarnessError, ProviderUsageUnknown, ToolCancelled
-from .events import cancellation_context, emit
-from .provider_errors import ProviderSpendLimitError
-from .orchestrator import drive, keyword_fallback, triage_files
-from .prompts import CAPABILITY_MARKER
-from .escalation import escalation_evidence, escalation_evidence_fields
-from .executor import PlanExecutor
+from .errors import HarnessError, ToolCancelled
+from .events import emit
+from .orchestrator import keyword_fallback, triage_files
 from .history import (
-    clear_chat_checkpoint, load_chat_checkpoint, load_chat_history,
-    save_chat_checkpoint, save_chat_turn,
+    load_chat_checkpoint,
+    save_chat_turn,
 )
+from .lifecycle import LifecycleCoordinator
 from .simple_request import (
-    answer_clock as simple_clock_answer,
-    answer_prompt as simple_answer_prompt,
-    is_comprehensive_workspace_inspection_request,
-    is_current_information_request,
     is_simple_answer_request,
     is_supplied_text_rewrite,
     is_workspace_inspection_request,
-    relevant_history as simple_relevant_history,
 )
 from .repo_scope import (
     discover_target_files,
-    discover_verification_gate,
     enumerate_repo_files,
-    workspace_review_candidates,
 )
-from .workspace import require_workspace, resolve_workspace_path
-from .results import SUCCESS_STATUSES, _http_error, model_envelope
 from .session import (
-    apply_session, attest_model_for, governor_for, jev_face_governor,
+    governor_for, jev_face_governor,
     jev_for, ledger_for,
 )
 from .jev_policy import (
-    JevPolicy, aggregate_structural, jev_cost_ceiling, policy_for,
+    policy_for,
 )
 from .jev_packs import (
     HOURGLASS_STAGE_SITE,
     declared_restart_targets,
     validate_restart_request,
 )
-from .token_budget import budget_from_settings
 from .waist import (
     STAGE_CONTEXT,
     STAGE_EXECUTION,
@@ -70,126 +47,31 @@ from .waist import (
     compose_plan,
     resolve_scout_ladder,
 )
-from .web import DEFAULT_FETCH_HOSTS, gather_web_context
+from .edit_lifecycle import AutoEditLifecycleMixin, EXECUTION_PHRASES
+from .chat_lifecycle import ChatLifecycleMixin
+from .task_lifecycle import TaskLaneLifecycleMixin
 
 # Consumers import history/repo_scope/web helpers from their owners
 # (harness.history, harness.repo_scope, harness.web), not from this module.
 __all__ = [
     "AutonomousAgent",
     "CONVERSATION_STARTERS",
-    "DEFAULT_CHAT_SYSTEM_PROMPT",
-    "EXECUTION_PHRASES",
     "MUTATION_KEYWORDS",
     "classify_prompt_intent",
-    "discover_target_files",
-    "discover_verification_gate",
-    "enumerate_repo_files",
-    "load_chat_history",
-    "save_chat_turn",
 ]
 
-TRUNCATION_NOTICE = (
-    "\n\n[Note: This response reached the maximum output token limit and was truncated.]"
-)
 
 
-def _resolve_lane_max_tokens(
-    gov: Optional[Any],
-    model: str,
-    prompt_text: str,
-    target_tokens: int,
-    *,
-    token_budget: Optional[Any] = None,
-) -> int:
-    """Dynamically allocate output tokens for a turn or stage.
-
-    Starts with `target_tokens` (from :func:`effective_lane_policy`), then
-    narrows:
-    1. If `token_budget` is provided and has `remaining_output()`, bounds by
-       available output tokens.
-    2. If `gov` is provided and has pricing with a non-zero completion price,
-       bounds by remaining dollar budget under current phase:
-       max_output_tokens = max(0, int((rem_dollar - prompt_cost) / completion_price)).
-    3. Never inflates above `target_tokens`.
-    """
-    allocated = int(target_tokens)
-    if token_budget is not None and callable(getattr(token_budget, "remaining_output", None)):
-        rem_out = token_budget.remaining_output()
-        if isinstance(rem_out, (int, float)):
-            allocated = min(allocated, int(rem_out))
-    if gov is not None and callable(getattr(gov, "fetch_pricing", None)):
-        try:
-            pricing = gov.fetch_pricing([model])
-            if isinstance(pricing, dict) and model in pricing:
-                pp, cp = pricing[model]
-                if isinstance(cp, (int, float)) and cp > 0.0 and callable(getattr(gov, "remaining", None)):
-                    rem_dollars = gov.remaining()
-                    if isinstance(rem_dollars, (int, float)):
-                        prompt_tok = estimate_prompt_tokens(prompt_text)
-                        pp_val = float(pp) if isinstance(pp, (int, float)) else 0.0
-                        avail_dollar = max(0.0, float(rem_dollars) - prompt_tok * pp_val)
-                        dollar_tokens = int(avail_dollar / float(cp))
-                        allocated = min(allocated, dollar_tokens)
-        except Exception:
-            pass
-    return max(0, allocated)
 
 
-DEFAULT_CHAT_SYSTEM_PROMPT = (
-    "You are Sovereign Harness, an autonomous, cost-bounded agentic software engineering AI "
-    "running directly on the local host hardware. You ARE the agent on this machine with direct "
-    "access to local compute, the repository workspace, execution engines, git worktrees, and safe verification gates. "
-    "Be concise, clear, and direct. When answering technical questions, explain precisely "
-    "and provide code snippets when helpful. Focus on correctness, zero bloat, and safety. "
-    "Your exact capability for this run is stated in the capability note below, if any. "
-    "Never claim you searched, checked a source, or verified current information unless "
-    "web tool results for this turn are attached -- say plainly when you cannot know "
-    "something. When asked to execute a plan, run tests, or see if something works, remember you "
-    "are on the hardware: explain how to execute or verify it safely, or let Harness's plan/apply "
-    "engine execute the verified changes. Never falsely claim 'I have no compute or shell' — you are "
-    "the agent on the hardware. Deferral is a first-class outcome in this system: when a request exceeds "
-    "what you can honestly do in this conversation lane (large or multi-step repository "
-    "work, long autonomous tasks, anything needing tools this lane does not have), do "
-    "NOT pretend, guess, or merely say 'I can't' -- end with a single line beginning "
-    "exactly 'HARNESS_DEFER: ' followed by a short reason. Handing the decision back "
-    "with a reason is the correct, respected move; overpromising is not. You have no "
-    "tool-call syntax in this lane: never emit <tool_call>, <tool>, or function-call "
-    "markup -- web evidence is pre-gathered into this prompt by the runtime; if you "
-    "need a tool you do not have, defer."
-)
 
 # Appended to the system prompt when a run did NOT opt into web tools, so the
 # model cannot roleplay a lookup it never performed (the Riemann failure mode).
-_NO_WEB_DISCLOSURE = (
-    "[Capability note] This run has NO web tools: no search and no fetch are "
-    "attached, and you have NO internet access. If the user asks you to search "
-    "or verify online, say you cannot in this run and answer from training "
-    "knowledge, labeled as such."
-)
 
 # Replaces the no-web note when a run DID opt in: the model must know what is
 # actually attached (and what fetch will refuse) so it answers "can you access
 # X?" truthfully instead of denying the capability or inventing a lookup.
-_WEB_CAPABILITY_NOTE = (
-    "[Capability note] Web tools ARE attached this run: one web search, plus "
-    "page fetch restricted to exactly these hosts: {hosts}. Every other host "
-    "is refused by policy -- say so when asked about it rather than claiming "
-    "no internet access. Results for this turn follow the marker below; cite "
-    "only those, never invent others, and when a source FAILED, tell the user "
-    "exactly what failed. These sources were gathered by the runtime before "
-    "this turn -- do not narrate tool calls or describe fetching as your own "
-    "action."
-)
 
-_MAX_WEB_SOURCES = 3
-_MAX_WEB_CONTEXT_CHARS = 6000
-_MAX_HOURGLASS_CONTEXT_FILES = 8
-_MAX_HOURGLASS_CONTEXT_CHARS = 6000
-_MAX_WORKSPACE_REVIEW_FILES = 20
-_MAX_WORKSPACE_REVIEW_TOKENS = 4800
-_MAX_WORKSPACE_REVIEW_CHARS = 18000
-_DEFAULT_HOURGLASS_CONFIDENCE = 0.70
-_MAX_HOURGLASS_ANSWER_ROUNDS = 3
 
 MUTATION_KEYWORDS = frozenset({
     "fix", "implement", "add", "refactor", "update", "change", "write",
@@ -237,17 +119,6 @@ def is_site_check_prompt(prompt: str) -> bool:
         r"\b(is|are|does|did|has)\b.*\b(up|down|loading|loads|reachable|resolves|online|responding|working)\b",
         cleaned))
 
-EXECUTION_PHRASES = frozenset({
-    "execute the plan", "execute plan", "run the plan", "run plan",
-    "apply the plan", "apply plan", "test the plan", "test plan",
-    "see if it works", "test if it works", "check if it works",
-    "run the test", "run the tests", "run tests", "run test",
-    "execute tests", "execute test", "execute it", "run it", "apply it",
-    "proceed with plan", "proceed with the plan", "execute this", "run this",
-    "test this", "verify the plan", "test the implementation",
-    "execute implementation", "run the implementation",
-    "execute the code", "run the code", "test the code",
-})
 
 CONVERSATION_STARTERS = frozenset({
     "what", "how", "why", "explain", "describe", "tell", "can", "is", "are",
@@ -259,21 +130,11 @@ CONVERSATION_STARTERS = frozenset({
 # wall time as well as rounds. The dogfood ran a single "find news" prompt for
 # about six minutes with no answer: every round was individually legal, and
 # nothing stopped the sequence. This is the ceiling that ends it.
-DEFAULT_RUN_WALL_SECONDS = 120.0
 
 # Asking what the world currently says is a research question, not an edit.
 # The dogfood prompt ("can you find news about ...") was routed to the
 # conversation lane but never gathered sources, so the run iterated on a
 # question it had no evidence for.
-_RESEARCH_SUBJECTS = ("news", "research", "recent", "latest", "today",
-                      "papers", "paper", "article", "articles", "study",
-                      "studies", "release", "releases", "update", "updates")
-_RESEARCH_VERBS = ("find", "search", "look up", "lookup", "google",
-                   "what's new", "whats new", "tell me about", "catch me up",
-                   "summary of", "summarize", "summarise")
-_QUESTION_OPENERS = ("what", "who", "when", "where", "which", "why", "how",
-                     "is ", "are ", "does ", "do ", "did ", "can you",
-                     "could you", "any news", "has there")
 _LITERAL_GREETING_RE = re.compile(
     r"^(?:test\s*[-:,]\s*)?(?:please\s+)?(?:just\s+)?"
     r"(?:say|reply(?:\s+with)?|respond(?:\s+with)?)\s+"
@@ -287,25 +148,6 @@ def is_literal_greeting_request(prompt: str) -> bool:
     return bool(_LITERAL_GREETING_RE.fullmatch(cleaned))
 
 
-def is_research_question(prompt: str) -> bool:
-    """True when a prompt is asking what is currently true in the world.
-
-    A research *subject* is required, and that is what keeps edits out:
-    "find the bug in auth.py" has a verb but no subject, so it stays an edit.
-    On top of that the prompt must read as a lookup -- an explicit research
-    verb, or an interrogative opening -- so "update the README" mentions a
-    subject but asks for nothing.
-    """
-    cleaned = (prompt or "").strip().lower()
-    if not cleaned:
-        return False
-    if not any(subj in cleaned for subj in _RESEARCH_SUBJECTS):
-        return False
-    if any(v in cleaned for v in _RESEARCH_VERBS):
-        return True
-    if cleaned.endswith("?"):
-        return True
-    return cleaned.startswith(_QUESTION_OPENERS)
 
 
 def classify_prompt_intent(prompt: str) -> str:
@@ -359,7 +201,9 @@ def classify_prompt_intent(prompt: str) -> str:
 
 
 
-class AutonomousAgent:
+class AutonomousAgent(
+    ChatLifecycleMixin, AutoEditLifecycleMixin, TaskLaneLifecycleMixin,
+):
     # Self-orchestrating agent driving natural language prompts to conclusion
     def __init__(
         self,
@@ -372,6 +216,7 @@ class AutonomousAgent:
         self.root_dir = Path(root_dir).resolve() if root_dir is not None else None
         self.history_dir = history_dir
         self.transport = transport or HttpTransport()
+        self.lifecycle = LifecycleCoordinator(history_dir=history_dir)
         from .lifecycle_guards import RateCircuit
         self._rate_circuit = RateCircuit()
 
@@ -395,12 +240,20 @@ class AutonomousAgent:
             raise HarnessError("Prompt cannot be empty")
 
         sid = session_id or "default"
-        resume_state = None
-        if self._is_continue_command(prompt):
+        followup = self._continuation_suffix(prompt)
+        if followup is not None:
             try:
-                resume_state = load_chat_checkpoint(sid, self.history_dir)
+                current = self.lifecycle.load(sid)
+                if current is None:
+                    # Migrate pre-contract chat checkpoints through their
+                    # compatibility view before the coordinator resumes them.
+                    legacy = load_chat_checkpoint(sid, self.history_dir)
+                    if legacy is not None:
+                        self.lifecycle.adopt_chat_payload(sid, legacy)
+                resumed = self.lifecycle.resume(
+                    sid, followup=followup or None)
             except HarnessError:
-                emit("chat_resume_unavailable", session_id=sid,
+                emit("lifecycle_resume_unavailable", session_id=sid,
                      reason_code="checkpoint_invalid")
                 return {
                     "status": "deferred", "intent": "conversation",
@@ -411,26 +264,68 @@ class AutonomousAgent:
                     "defer_reason": "invalid chat checkpoint",
                     "next_step": "restate the original task",
                 }
-            if resume_state is not None:
-                prompt = resume_state["prompt"]
-                emit("chat_resume", session_id=sid,
-                     route=resume_state.get("route"),
-                     stage=resume_state.get("stage"))
-                if resume_state.get("route") == "hourglass":
-                    return self.run_hourglass_request(
-                        prompt, session_id=sid, cancel_check=cancel_check,
-                        web=bool(resume_state.get("web_requested")),
-                        max_tokens=max_tokens,
-                        reasoning_effort=reasoning_effort,
-                        token_budget=token_budget,
-                        resume_state=resume_state)
-                if resume_state.get("route") == "simple-answer":
-                    return self.run_simple_request(
-                        prompt, session_id=sid, cancel_check=cancel_check,
-                        max_tokens=max_tokens,
-                        reasoning_effort=reasoning_effort,
-                        token_budget=token_budget,
-                        resume_state=resume_state)
+            if resumed is not None:
+                emit("chat_resume", session_id=sid, lane=resumed["lane"],
+                     route=resumed["data"].get("route"),
+                     stage=resumed["stage"])
+                if resumed["status"] == "deferred":
+                    reason = resumed["data"].get(
+                        "defer_reason", "an interrupted side effect needs reconciliation")
+                    return {
+                        "status": "deferred", "intent": resumed["lane"],
+                        "workflow_tier": "continuation",
+                        "prompt": self.lifecycle.active_request(resumed),
+                        "response": ("I restored the request state, but will not "
+                                     "replay an operation whose completion is unknown. "
+                                     "Reconcile the saved operation before continuing."),
+                        "model": None,
+                        "cost": resumed["usage"]["known_cost"],
+                        "defer_reason": reason,
+                        "lifecycle": {
+                            "request_id": resumed["request_id"],
+                            "lane": resumed["lane"],
+                            "stage": resumed["stage"],
+                            "unknown_liability": resumed["usage"]["unknown_liability"],
+                            "requires_reconciliation": list(
+                                resumed["execution"]["requires_reconciliation"]),
+                        },
+                    }
+                prompt = self.lifecycle.active_request(resumed)
+                lane = resumed["lane"]
+                if lane == "chat":
+                    resume_state = self.lifecycle.chat_payload(sid) or {}
+                    if resume_state.get("route") == "hourglass":
+                        return self.run_hourglass_request(
+                            prompt, session_id=sid, cancel_check=cancel_check,
+                            web=bool(resume_state.get("web_requested")),
+                            max_tokens=max_tokens,
+                            reasoning_effort=reasoning_effort,
+                            token_budget=token_budget,
+                            resume_state=resume_state)
+                    if resume_state.get("route") == "simple-answer":
+                        return self.run_simple_request(
+                            prompt, session_id=sid, cancel_check=cancel_check,
+                            max_tokens=max_tokens,
+                            reasoning_effort=reasoning_effort,
+                            token_budget=token_budget,
+                            resume_state=resume_state)
+                elif lane == "audit":
+                    return self._handle_audit(
+                        prompt, sid, cancel_check=cancel_check,
+                        lifecycle_state=resumed)
+                elif lane == "provisioning":
+                    return self._handle_provision(
+                        prompt, sid, cancel_check=cancel_check,
+                        lifecycle_state=resumed)
+                elif lane == "driver":
+                    return self._handle_driver_task(
+                        prompt, sid, cancel_check=cancel_check,
+                        lifecycle_state=resumed)
+                elif lane == "auto_edit":
+                    return self._handle_edit(
+                        prompt, sid, bool(resumed["data"].get("auto_apply")),
+                        cancel_check, use_jev_completion=self._live_jev_available(),
+                        lifecycle_state=resumed)
             emit("chat_resume_unavailable", session_id=sid)
             return {
                 "status": "deferred", "intent": "conversation",
@@ -442,8 +337,8 @@ class AutonomousAgent:
                 "next_step": "restate the original task",
             }
         else:
-            # A new request supersedes the single pending conversational
-            # checkpoint for this session; only an explicit continue resumes it.
+            # A new request supersedes the session lifecycle; only an explicit
+            # continuation carries request state forward.
             self._clear_chat_checkpoint(sid)
         emit("chat_turn_start", prompt=prompt, session_id=sid)
 
@@ -589,46 +484,8 @@ class AutonomousAgent:
                                      use_jev_completion=(auto_apply
                                                          and self._live_jev_available()))
 
-    @staticmethod
-    def _is_continue_command(prompt: str) -> bool:
-        return bool(re.fullmatch(
-            r"\s*(?:continue|resume|pick\s+up|keep\s+going|carry\s+on)[.!]?\s*",
-            str(prompt or ""), flags=re.IGNORECASE))
 
-    def _workspace_context_deferred(self, prompt: str, session_id: str):
-        checkpoint = None
-        try:
-            checkpoint = load_chat_checkpoint(session_id, self.history_dir)
-        except HarnessError:
-            pass
-        if checkpoint is None:
-            checkpoint = {
-                "route": "hourglass", "status": "interrupted",
-                "stage": "workspace_selection", "prompt": prompt,
-                "intent": "conversation", "web_requested": False,
-                "workspace_root": "", "workspace_context_used": True,
-                "known_cost": 0.0, "unknown_liability": 0.0,
-                "usage_unknown": False, "next_round": 1, "rounds": [],
-            }
-        else:
-            checkpoint["status"] = "interrupted"
-            checkpoint.setdefault("stage", "workspace_selection")
-        self._persist_chat_checkpoint(session_id, checkpoint)
-        result = {
-            "status": "deferred", "intent": "conversation",
-            "workflow_tier": "workspace-inspection", "prompt": prompt,
-            "response": ("Select a workspace folder so I can inspect the "
-                         "repository you mean."),
-            "model": None, "cost": 0.0,
-            "defer_reason": "workspace context is not selected",
-            "next_step": "select the repository folder and continue",
-        }
-        save_chat_turn(session_id, result, self.history_dir)
-        return result
 
-    def _live_jev_available(self) -> bool:
-        return bool(getattr(self.settings, "jev_api_key", None)
-                    and not getattr(self.settings, "jev_disabled", False))
 
     def _run_simple_action_lifecycle(self, prompt: str,
                                      session_id: Optional[str] = None,
@@ -753,405 +610,6 @@ class AutonomousAgent:
              reason_code="preflight_refused")
         return result
 
-    def run_simple_request(
-            self, prompt: str, *, session_id: Optional[str] = None,
-            cancel_check=None, max_tokens: Optional[int] = None,
-            reasoning_effort: Optional[str] = None,
-            token_budget: Optional[Any] = None,
-            max_wall_seconds: float = 60.0,
-            resume_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Answer one stable no-tool request with one governed completion.
-
-        Deterministic request-kind checks own the boundary.  Jev supplies one
-        pre-answer Choice and one post-answer sufficiency assessment when
-        available; either Jev outage degrades honestly without adding a model
-        judge or turning the request into repo work.
-        """
-        sid = session_id or "default"
-        started = time.monotonic()
-        deadline = started + max(0.0, float(max_wall_seconds))
-        ledger = ledger_for(self.settings, caller="agent")
-        generation_attempts = 0
-        pre_cost = 0.0
-        generation_cost = 0.0
-        post_cost = 0.0
-        answer = None
-        model = None
-        completion = None
-        checkpoint = dict(resume_state or {})
-        resuming = bool(resume_state)
-        known_cost_total = max(
-            0.0, float(checkpoint.get("known_cost") or 0.0)) if resuming else 0.0
-        if resuming:
-            pre = checkpoint.get("pre")
-            pre_cost = max(0.0, float((pre or {}).get("cost") or 0.0))
-            answer = checkpoint.get("answer")
-            model = checkpoint.get("answer_model")
-            generation_cost = max(
-                0.0, float(checkpoint.get("answer_cost") or 0.0))
-            generation_attempts = int(checkpoint.get("generation_calls") or 0)
-        else:
-            pre = None
-
-        def combined_cancel():
-            return bool((cancel_check and cancel_check())
-                        or time.monotonic() >= deadline)
-
-        def cancelled_or_late(stage: str):
-            if cancel_check and cancel_check():
-                raise ToolCancelled("Prompt execution was cancelled by user")
-            if time.monotonic() >= deadline:
-                raise HarnessError(
-                    f"simple request deadline exhausted before {stage}")
-
-        def receipt(status: str, **fields):
-            return ledger.append(
-                "simple_request_result", task_id=sid, status=status,
-                workflow_tier="simple-answer", elapsed_ms=round(
-                    (time.monotonic() - started) * 1000), **fields)
-
-        emit("simple_request_start", prompt=prompt, session_id=sid)
-        try:
-            # Public callers cannot bypass the deterministic boundary by
-            # invoking this method directly.  Jev Choice is advisory routing
-            # evidence; it never grants file, tool, execution, or write scope.
-            intent = classify_prompt_intent(prompt)
-            if not is_simple_answer_request(prompt, intent=intent):
-                reason = "request is outside the stable no-tool answer lane"
-                result = {
-                    "status": "deferred", "intent": intent,
-                    "workflow_tier": "simple-answer", "prompt": prompt,
-                    "response": reason.capitalize() + ".",
-                    "model": None, "cost": 0.0,
-                    "defer_reason": reason,
-                    "next_step": "use the existing specialized or clarification lane",
-                    "simple_request": {"generation_calls": 0},
-                }
-                receipt("deferred", reason=reason, generation_calls=0,
-                        input_tokens=0, output_tokens=0)
-                save_chat_turn(sid, result, self.history_dir)
-                return result
-            # Clock questions are answered from the machine clock with zero
-            # model or Jev calls -- no lookup exists to run.  The answer
-            # names its source so it never poses as verified world time.
-            clock_answer = simple_clock_answer(prompt)
-            if clock_answer is not None:
-                result = {
-                    "status": "ok", "intent": intent,
-                    "workflow_tier": "simple-answer", "prompt": prompt,
-                    "response": clock_answer, "model": None,
-                    "cost": 0.0,
-                    "simple_request": {"generation_calls": 0,
-                                       "clock": True},
-                }
-                receipt("ok", reason="machine-clock answer",
-                        generation_calls=0, input_tokens=0, output_tokens=0,
-                        cost=0.0)
-                save_chat_turn(sid, result, self.history_dir)
-                emit("simple_request_complete", status="ok", model=None,
-                     cost=0.0)
-                return result
-            if not resuming:
-                checkpoint = {
-                    "route": "simple-answer", "status": "running",
-                    "stage": "strategy", "prompt": prompt,
-                    "known_cost": 0.0, "unknown_liability": 0.0,
-                    "usage_unknown": False,
-                }
-                self._persist_chat_checkpoint(sid, checkpoint)
-            cancelled_or_late("governor setup")
-            with cancellation_context(combined_cancel):
-                api_key, gov = governor_for(self.settings)
-            if resuming:
-                if known_cost_total:
-                    gov.record_actual(known_cost_total,
-                                      "chat-continuation", lane="answer")
-                unknown = max(
-                    0.0, float(checkpoint.get("unknown_liability") or 0.0))
-                if unknown:
-                    gov.retain_unknown(unknown,
-                                       "cancelled-chat-provider-call")
-            policy = policy_for(
-                self.settings, transport=self.transport, governor=gov,
-                ledger=ledger)
-            turns = simple_relevant_history(
-                prompt, load_chat_history(sid, self.history_dir))
-            if resuming:
-                turns = [turn for turn in turns
-                         if turn.get("prompt") != prompt]
-            context_text = "\n".join(
-                f"User: {turn['prompt']}\nAssistant: {turn['response']}"
-                for turn in turns)
-
-            if not isinstance(pre, dict):
-                checkpoint.update({
-                    "stage": "strategy", "known_cost": round(
-                        known_cost_total, 8),
-                })
-                self._persist_chat_checkpoint(sid, checkpoint)
-                cancelled_or_late("Jev strategy")
-                with cancellation_context(combined_cancel):
-                    _pre_result, pre = policy.evaluate_simple_strategy(
-                        prompt, context_text, task_id=sid)
-                pre_cost = float(pre.get("cost") or 0.0)
-                known_cost_total += pre_cost
-                checkpoint.update({
-                    "pre": pre, "stage": "answer_generation",
-                    "known_cost": round(known_cost_total, 8),
-                })
-                self._persist_chat_checkpoint(sid, checkpoint)
-            strategy = pre.get("strategy") or "direct_answer"
-            if bool(pre.get("native")) and strategy != "direct_answer":
-                if strategy in {
-                        "needs_tool", "web_research",
-                        "workspace_inspection"}:
-                    if (strategy == "workspace_inspection"
-                            and self.root_dir is None):
-                        return self._workspace_context_deferred(prompt, sid)
-                    needs_web = bool(
-                        strategy in {"needs_tool", "web_research"}
-                        or is_research_question(prompt)
-                        or is_current_information_request(prompt))
-                    if self._live_jev_available():
-                        return self.run_hourglass_request(
-                            prompt, session_id=sid, cancel_check=cancel_check,
-                            web=needs_web,
-                            request_preflight={
-                                "source": "simple_strategy",
-                                "choice": strategy,
-                                "native": bool(pre.get("native")),
-                                "cost": pre_cost,
-                            },
-                            max_tokens=max_tokens, reasoning_effort=reasoning_effort,
-                            token_budget=token_budget)
-                    return self._handle_conversation(
-                        prompt, sid, cancel_check,
-                        web=needs_web,
-                        max_tokens=max_tokens, reasoning_effort=reasoning_effort,
-                        token_budget=token_budget)
-                reason = "request needs clarification"
-                result = {
-                    "status": "deferred", "intent": "conversation",
-                    "workflow_tier": "simple-answer", "prompt": prompt,
-                    "response": reason.capitalize() + ".",
-                    "model": None, "cost": round(pre_cost, 6),
-                    "defer_reason": reason,
-                    "next_step": "clarify the request or use the appropriate tool lane",
-                    "simple_request": {"pre": pre, "post": None,
-                                       "generation_calls": 0},
-                }
-                receipt("deferred", reason=reason, cost=round(pre_cost, 6),
-                        generation_calls=0, input_tokens=0, output_tokens=0)
-                save_chat_turn(sid, result, self.history_dir)
-                self._clear_chat_checkpoint(sid)
-                return result
-
-            pending_review = bool(resuming and answer
-                                  and checkpoint.get("stage") == "answer_review")
-            if not pending_review:
-                checkpoint.update({
-                    "stage": "answer_generation",
-                    "known_cost": round(known_cost_total, 8),
-                })
-                self._persist_chat_checkpoint(sid, checkpoint)
-                cancelled_or_late("answer generation")
-                ladder = list(getattr(self.settings, "panel_pool", ()) or [])
-                if not ladder:
-                    ladder = self._chat_ladder(self.settings)
-                if not ladder:
-                    raise HarnessError("simple answer model pool is empty")
-                model = ladder[0]
-                target_tokens, lane_effort = effective_lane_policy(
-                    "answer", max_tokens=max_tokens,
-                    reasoning_effort=reasoning_effort)
-                generation_prompt = simple_answer_prompt(prompt, turns)
-                allocated = _resolve_lane_max_tokens(
-                    gov, model, generation_prompt, target_tokens,
-                    token_budget=token_budget)
-                if allocated < 1:
-                    raise HarnessError("shared budget leaves no answer tokens")
-                generation_attempts = max(1, generation_attempts + 1)
-                with cancellation_context(combined_cancel):
-                    completion = governed_completion(
-                        self.transport, api_key, gov, model, generation_prompt,
-                        allocated, label="simple-answer",
-                        reasoning_effort=lane_effort)
-                answer = str(completion["content"]).strip()
-                generation_cost = float(completion.get("cost") or 0.0)
-                known_cost_total += generation_cost
-                checkpoint.update({
-                    "stage": "answer_review", "answer": answer,
-                    "answer_model": model, "answer_cost": generation_cost,
-                    "generation_calls": generation_attempts,
-                    "known_cost": round(known_cost_total, 8),
-                })
-                self._persist_chat_checkpoint(sid, checkpoint)
-            else:
-                completion = None
-
-            post = None
-            post_cost = 0.0
-            post_skipped = None
-            if time.monotonic() < deadline:
-                with cancellation_context(combined_cancel):
-                    _post_result, post = policy.evaluate_answer(
-                        prompt, answer, context_text,
-                        site="simple-answer-post", task_id=sid)
-                post_cost = float(post.get("cost") or 0.0)
-                known_cost_total += post_cost
-            else:
-                post_skipped = "deadline exhausted after answer generation"
-
-            refusal = self._refusal_reason(answer)
-            status = "deferred" if refusal else "ok"
-            total_cost = known_cost_total
-            review_available = bool(post and post.get("native"))
-            review_passed = bool(
-                review_available
-                and post.get("verdict") == "pass"
-                and isinstance(post.get("answer_sufficient"), (int, float))
-                and float(post["answer_sufficient"]) >= float(
-                    getattr(self.settings, "min_confidence", 0.70))
-                and not bool(post.get("plan_required"))
-                and not bool(post.get("iteration_required")))
-            result = {
-                "status": status, "intent": "conversation",
-                "workflow_tier": "simple-answer", "prompt": prompt,
-                "response": answer, "model": model,
-                "cost": round(total_cost, 6),
-                "simple_request": {
-                    "pre": pre, "post": post,
-                    "post_skipped": post_skipped,
-                    "post_review_available": review_available,
-                    "post_review_passed": review_passed,
-                    "generation_calls": 1,
-                    "history_turns": len(turns),
-                    "deadline_seconds": float(max_wall_seconds),
-                },
-                **({"defer_reason": refusal,
-                    "next_step": "review the refusal or clarify the request"}
-                   if refusal else {}),
-            }
-            receipt(
-                status, model=model, cost=round(total_cost, 6),
-                generation_cost=round(generation_cost, 6),
-                generation_calls=1,
-                input_tokens=(completion or {}).get("input_tokens"),
-                output_tokens=(completion or {}).get("output_tokens"),
-                usage_source=("estimated" if (completion or {}).get("cost_estimated")
-                              else "provider"),
-                jev_pre_native=bool(pre.get("native")),
-                jev_post_native=review_available,
-                jev_post_passed=review_passed,
-                refusal=bool(refusal), deadline_exhausted=bool(post_skipped))
-            save_chat_turn(sid, result, self.history_dir)
-            if post_skipped:
-                checkpoint["stage"] = "answer_review"
-                checkpoint["status"] = "interrupted"
-                checkpoint["known_cost"] = round(known_cost_total, 8)
-                self._persist_chat_checkpoint(sid, checkpoint)
-            else:
-                self._clear_chat_checkpoint(sid)
-            emit("simple_request_complete", status=status, model=model,
-                 cost=total_cost)
-            return result
-        except ToolCancelled as exc:
-            self._checkpoint_interruption(checkpoint, exc, known_cost_total)
-            checkpoint["generation_calls"] = generation_attempts
-            self._persist_chat_checkpoint(sid, checkpoint)
-            if time.monotonic() < deadline:
-                receipt("cancelled", generation_calls=generation_attempts)
-                raise
-            reason = "simple request deadline exhausted during provider call"
-            known_cost = float(getattr(exc, "known_cost", 0.0) or 0.0)
-            usage_unknown = bool(getattr(exc, "usage_unknown", False))
-            unknown_reserve = max(
-                float(getattr(exc, "reserved_cost", 0.0) or 0.0),
-                float(checkpoint.get("unknown_liability") or 0.0))
-            if answer:
-                total_cost = known_cost_total + known_cost
-                receipt(
-                    "ok", reason=reason, model=model,
-                    generation_calls=generation_attempts,
-                    cost=round(total_cost, 6),
-                    input_tokens=(completion or {}).get("input_tokens"),
-                    output_tokens=(completion or {}).get("output_tokens"),
-                    deadline_exhausted=True, jev_post_native=False)
-                result = {
-                    "status": "ok", "intent": "conversation",
-                    "workflow_tier": "simple-answer", "prompt": prompt,
-                    "response": answer, "model": model,
-                    "cost": round(total_cost, 6),
-                    "simple_request": {
-                        "generation_calls": generation_attempts,
-                        "post": None, "post_review_available": False,
-                        "post_skipped": reason,
-                    },
-                    **({"usage_unknown": True,
-                        "unknown_cost_reserve": round(unknown_reserve, 6)}
-                       if usage_unknown else {}),
-                }
-                save_chat_turn(sid, result, self.history_dir)
-                if usage_unknown:
-                    self._persist_chat_checkpoint(sid, checkpoint)
-                else:
-                    self._clear_chat_checkpoint(sid)
-                return result
-            total_cost = known_cost_total + known_cost
-            receipt("deferred", reason=reason,
-                    generation_calls=generation_attempts,
-                    known_cost=total_cost,
-                    usage_unknown=usage_unknown,
-                    reserved_cost=unknown_reserve)
-            result = {
-                "status": "deferred", "intent": "conversation",
-                "workflow_tier": "simple-answer", "prompt": prompt,
-                "response": ("The bounded answer deadline expired. No "
-                             "repository or write action was attempted."),
-                "model": None,
-                "cost": round(total_cost, 6),
-                "defer_reason": reason,
-                "next_step": "retry the ordinary answer",
-                "simple_request": {"generation_calls": generation_attempts},
-                **({"usage_unknown": True,
-                    "unknown_cost_reserve": round(unknown_reserve, 6)}
-                   if usage_unknown else {}),
-            }
-            save_chat_turn(sid, result, self.history_dir)
-            if usage_unknown:
-                self._persist_chat_checkpoint(sid, checkpoint)
-            else:
-                self._clear_chat_checkpoint(sid)
-            return result
-        except HarnessError as exc:
-            reason = str(exc)
-            known_cost = float(getattr(exc, "known_cost", 0.0) or 0.0)
-            self._checkpoint_interruption(checkpoint, exc, known_cost_total)
-            checkpoint["generation_calls"] = generation_attempts
-            self._persist_chat_checkpoint(sid, checkpoint)
-            receipt(
-                "deferred", reason=reason,
-                generation_calls=generation_attempts,
-                known_cost=known_cost,
-                reserved_cost=float(getattr(exc, "reserved_cost", 0.0) or 0.0),
-                usage_unknown=bool(getattr(exc, "usage_unknown", False)))
-            result = {
-                "status": "deferred", "intent": "conversation",
-                "workflow_tier": "simple-answer", "prompt": prompt,
-                "response": ("I could not complete the bounded answer call. "
-                             "No repository or write action was attempted."),
-                "model": None,
-                "cost": round(known_cost_total + known_cost, 6),
-                "defer_reason": reason,
-                "next_step": "retry the ordinary answer when the model service is available",
-                "simple_request": {"generation_calls": generation_attempts},
-                **({"usage_unknown": True,
-                    "unknown_cost_reserve": round(float(
-                        getattr(exc, "reserved_cost", 0.0) or 0.0), 6)}
-                   if bool(getattr(exc, "usage_unknown", False)) else {}),
-            }
-            save_chat_turn(sid, result, self.history_dir)
-            return result
 
     def run_simple_action(self, prompt: str, session_id: Optional[str] = None,
                           cancel_check=None, probe_fn=None,
@@ -1346,27 +804,7 @@ class AutonomousAgent:
              verdict=verdict)
         return result
 
-    def _gather_web_context(self, prompt: str) -> List[Dict[str, Any]]:
-        # Web owns the network seams; pass those module functions through so
-        # policy and hermetic test patches remain at the single owner.
-        import harness.web as _web
-        return gather_web_context(
-            prompt,
-            allowed_hosts=DEFAULT_FETCH_HOSTS,
-            fetch_url_fn=_web.fetch_url,
-            search_web_fn=_web.search_web,
-            find_urls_fn=_web.find_urls,
-            extract_query_fn=_web.extract_query,
-            max_sources=_MAX_WEB_SOURCES,
-        )
 
-    @staticmethod
-    def _chat_ladder(settings: Settings) -> List[str]:
-        # Single-owner ladder: delegate to router's chat-ladder helper
-        # (harness/chat.py: chat_ladder) so panel/escalation policy isn't
-        # duplicated between the agent and the router.
-        from .chat import chat_ladder as _chat_ladder
-        return _chat_ladder(settings)
 
     # Free models defer in prose ("I can't do that") far more often than in
     # the marker contract. A refusal-shaped answer with no successful tool
@@ -1378,867 +816,15 @@ class AutonomousAgent:
         r"i (?:do not|don't) have (?:access|tools|internet|a browser|file|compute))\b",
         re.IGNORECASE)
 
-    @classmethod
-    def _refusal_reason(cls, response_text: str) -> Optional[str]:
-        for sentence in re.split(r"(?<=[.!?])\s+", response_text.strip()):
-            if cls._REFUSAL_RE.search(sentence):
-                return " ".join(sentence.split())[:200]
-        return None
 
-    def _hourglass_workspace_candidates(
-            self, prompt: str, *, repo_files: Optional[List[str]] = None) -> List[str]:
-        if self.root_dir is None:
-            return []
-        candidates = discover_target_files(prompt, self.root_dir)
-        if is_comprehensive_workspace_inspection_request(prompt):
-            inventory = (repo_files if repo_files is not None else
-                         enumerate_repo_files(self.root_dir, limit=1000))
-            return workspace_review_candidates(
-                prompt, inventory, max_files=_MAX_WORKSPACE_REVIEW_FILES,
-                preferred=candidates)
-        if not candidates:
-            candidates = keyword_fallback(
-                prompt, enumerate_repo_files(self.root_dir),
-                max_files=_MAX_HOURGLASS_CONTEXT_FILES)
-        return candidates[:_MAX_HOURGLASS_CONTEXT_FILES]
 
-    def _hourglass_request_context(self, prompt: str, web: bool = False,
-                                  workspace: bool = True):
-        """Gather a bounded, cheap intake brief for a non-edit request.
 
-        Intake is local and deterministic: explicit paths win, then filename
-        overlap, then no context.  It never feeds an unbounded repository to a
-        model.  Web evidence is added only when the caller explicitly enables
-        the existing bounded web lane.
-        """
-        files = {}
-        broad_review = bool(
-            workspace
-            and is_comprehensive_workspace_inspection_request(prompt))
-        repo_inventory = None
-        if broad_review and self.root_dir is not None:
-            repo_inventory = enumerate_repo_files(self.root_dir, limit=1000)
-        if self.root_dir is not None and workspace:
-            candidates = self._hourglass_workspace_candidates(
-                prompt, repo_files=repo_inventory)
-            for rel in candidates:
-                try:
-                    path = resolve_workspace_path(
-                        self.root_dir, rel, must_exist=True)
-                    if path.is_file():
-                        files[rel] = path.read_text(encoding="utf-8", errors="replace")
-                except (OSError, HarnessError):
-                    continue
-        context_limit = (_MAX_WORKSPACE_REVIEW_CHARS if broad_review
-                         else _MAX_HOURGLASS_CONTEXT_CHARS)
-        context_tokens = (_MAX_WORKSPACE_REVIEW_TOKENS if broad_review else 1800)
-        summary = prompt
-        if broad_review:
-            top_level_counts: Dict[str, int] = {}
-            for rel in repo_inventory or []:
-                top = rel.split("/", 1)[0]
-                top_level_counts[top] = top_level_counts.get(top, 0) + 1
-            inventory_note = ", ".join(
-                f"{name}: {count}" for name, count in
-                sorted(top_level_counts.items(), key=lambda item: (-item[1], item[0]))[:12])
-            summary = (
-                f"{prompt}\n\nRead-only repository review scope: the inventory "
-                f"contains up to {len(repo_inventory or [])} eligible files; "
-                f"{len(files)} files were selected using project guidance, "
-                "design/roadmap documents, manifests, source entry points, and "
-                "tests as selection priorities. Top-level inventory counts: "
-                f"{inventory_note or 'no files found'}. Treat this as a bounded "
-                "review sample: ground findings in the selected evidence and "
-                "name important areas that were not inspected instead of "
-                "claiming exhaustive coverage.")
-        brief = distill_context(
-            files=files, summary=summary, max_tokens=context_tokens)
-        # HV-2 evidence: the condensation is a ledger event, not a private
-        # step -- site=hourglass, schema-v2 pack attached to the MicroBrief.
-        ledger_for(self.settings, caller="agent").append(
-            "brief_built", site="hourglass", schema=2,
-            **brief.ledger_fields())
-        context = brief.to_prompt_context()[:context_limit]
-        web_sources = []
-        if web:
-            try:
-                web_sources = self._gather_web_context(prompt)
-            except (ToolCancelled, ProviderSpendLimitError):
-                raise
-            except Exception as exc:  # context failure must not kill the lane
-                web_sources = [{"kind": "web", "ok": False,
-                                "note": f"web tools error: {type(exc).__name__}"}]
-            for source in web_sources:
-                if source.get("ok"):
-                    body = str(source.get("text") or "")[:_MAX_WEB_CONTEXT_CHARS]
-                    context += "\n\nWEB EVIDENCE:\n" + body
-            context = context[:context_limit]
-        emit("context_condensed", estimated_tokens=brief.estimated_tokens,
-             files=list(files), web_sources=len(web_sources),
-             scope=("repository-review" if broad_review else
-                    "targeted-workspace" if workspace else "none"))
-        return context, files, brief, web_sources
 
-    def _hourglass_answer_once(self, prompt: str, context: str,
-                               prior: Optional[Dict[str, Any]] = None,
-                               model_offset: int = 0,
-                               cancel_check=None, governor=None,
-                               api_key=None, past_turns=None,
-                               web: bool = False,
-                               web_sources=None,
-                               max_tokens: Optional[int] = None,
-                               reasoning_effort: Optional[str] = None,
-                               token_budget: Optional[Any] = None) -> Dict[str, Any]:
-        """Run one cheap-to-capable answer attempt through the shared ladder."""
-        if cancel_check and cancel_check():
-            raise ToolCancelled("Prompt execution was cancelled by user")
-        if governor is None:
-            api_key, governor = governor_for(self.settings)
-        if api_key is None:
-            api_key = resolve_api_key()
-        gov = governor
-        target_tokens, lane_effort = effective_lane_policy(
-            "answer", max_tokens=max_tokens, reasoning_effort=reasoning_effort)
-        # The ordinary chat helper puts the judge first because it optimizes
-        # structured chat.  The all-request answer loop instead starts with
-        # the configured panel/scout pool, then adds judge and escalation
-        # rungs; this keeps the first paid attempt cheap and capability grows
-        # only when Jev asks for another iteration.
-        ladder = []
-        for source in (getattr(self.settings, "panel_pool", ()),
-                       (getattr(self.settings, "judge", None),),
-                       (getattr(self.settings, "convergence_model", None),),
-                       getattr(self.settings, "escalation_pool", ())):
-            for model in source:
-                if model and model not in ladder:
-                    ladder.append(model)
-        if not ladder:
-            raise HarnessError("answer ladder is empty")
-        start = max(0, min(int(model_offset), len(ladder) - 1))
-        ordered = ladder[start:] + ladder[:start]
-        system = DEFAULT_CHAT_SYSTEM_PROMPT
-        if web:
-            hosts = ", ".join(sorted(DEFAULT_FETCH_HOSTS)) or "(none configured)"
-            system += "\n\n" + _WEB_CAPABILITY_NOTE.format(hosts=hosts)
-            lines = []
-            for source in (web_sources or []):
-                if source.get("ok"):
-                    lines.append(f"SOURCE ({source.get('kind')}): {source.get('title') or ''} {source.get('url')}\n" + str(source.get("text") or "")[:_MAX_WEB_CONTEXT_CHARS])
-                else:
-                    lines.append(f"SOURCE ({source.get('kind')}) FAILED: {source.get('url') or ''} {source.get('note')}")
-            if lines:
-                system += "\n\n[Web tool results for this turn -- cite only these; do not invent others]\n" + "\n\n".join(lines)
-        else:
-            system += "\n\n" + _NO_WEB_DISCLOSURE
-        if context:
-            system += ("\n\n[Retained local context — use it as evidence, "
-                       "but do not claim facts that it does not contain]\n"
-                       + context)
-        user = prompt
-        if prior:
-            user += ("\n\n[Previous candidate and bounded Jev review]\n"
-                     "Candidate answer:\n"
-                     + str(prior.get("answer") or "")[:2400]
-                     + "\nJev review:\n"
-                     + str(prior.get("feedback") or "")[:1200]
-                     + "\nProduce a fresh, corrected answer. Do not mention the "
-                       "review process unless it helps the user.")
-        messages = [{"role": "system", "content": system}]
-        for turn in (past_turns or []):
-            if turn.get("prompt"):
-                messages.append({"role": "user", "content": turn["prompt"]})
-            if turn.get("response"):
-                messages.append({"role": "assistant", "content": turn["response"]})
-        messages.append({"role": "user", "content": user})
-        prompt_text = user
-        attempts = []
-        best_truncated_content = None
-        best_truncated_model = None
-        best_truncated_cost = 0.0
-        for model in (self._rate_circuit.available(ordered) or ordered):
-            if cancel_check and cancel_check():
-                raise ToolCancelled("Prompt execution was cancelled by user")
-            allocated_tokens = _resolve_lane_max_tokens(
-                gov, model, prompt_text, target_tokens, token_budget=token_budget)
-            if allocated_tokens < 1:
-                attempts.append(f"{model}: insufficient budget for output tokens")
-                continue
-            try:
-                gov.preflight(prompt_text, [("answer", model, allocated_tokens, 0)])
-                status, response = chat(
-                    transport=self.transport, api_key=api_key, model=model,
-                    messages=messages, max_tokens=allocated_tokens,
-                    reasoning_effort=lane_effort, governor=gov)
-            except ProviderSpendLimitError:
-                raise
-            except HarnessError as exc:
-                attempts.append(f"{model}: {exc}")
-                if "429" in str(exc) or "rate limit" in str(exc).lower():
-                    self._rate_circuit.note_rate_limited(model)
-                continue
-            if status != 200:
-                attempts.append(f"{model}: HTTP {status}")
-                if status == 429:
-                    self._rate_circuit.note_rate_limited(model)
-                emit("rotation", model=model, reason="answer_ladder_advance",
-                     note=f"HTTP {status}")
-                continue
-            content, finish_reason, cost, is_byok = \
-                extract_content_and_cost(response)
-            if is_byok:
-                gov.record_byok(model)
-                attempts.append(f"{model}: BYOK route refused")
-                continue
-            if cost:
-                gov.record_actual(cost, model)
-            usable, why = assess_output(content, finish_reason)
-            if usable and looks_truncated(content):
-                usable, why = False, "response truncated mid-body"
-            if not usable:
-                attempts.append(f"{model}: {why}")
-                if content and len(content) > len(best_truncated_content or ""):
-                    best_truncated_content = content
-                    best_truncated_model = model
-                    best_truncated_cost = cost
-                emit("rotation", model=model, reason="answer_ladder_advance",
-                     note=why)
-                continue
-            return {"model": model, "answer": content.strip(), "cost": cost, "truncated": False}
-        if best_truncated_content:
-            return {
-                "model": best_truncated_model,
-                "answer": best_truncated_content.strip() + TRUNCATION_NOTICE,
-                "cost": best_truncated_cost,
-                "truncated": True,
-            }
-        raise HarnessError("answer failed on every ladder model: "
-                           + "; ".join(attempts))
 
-    @staticmethod
-    def _jev_answer_envelope(result, structural: Dict[str, Any],
-                             threshold: float) -> Dict[str, Any]:
-        answers = result.answers if isinstance(result.answers, dict) else {}
-        sufficient = structural.get("answer_sufficient")
-        native = bool(structural.get("native"))
-        passed = bool(native and isinstance(sufficient, (int, float))
-                      and float(sufficient) >= threshold
-                      and not bool(structural.get("iteration_required")))
-        return {
-            "native": native,
-            "is_fallback": bool(result.is_fallback),
-            "fallback_reason": result.fallback_reason,
-            "verdict": result.verdict,
-            "supported": result.supported,
-            "answers": answers,
-            "reasons": list(result.reasons or []),
-            "cost": float(structural.get("cost") or 0.0),
-            "input_tokens": int(structural.get("input_tokens") or 0),
-            "output_tokens": int(structural.get("output_tokens") or 0),
-            "model": result.model,
-            "pack_version": structural.get("pack_version"),
-            "confidence": {
-                "threshold": threshold,
-                "observed": sufficient,
-                "passed": passed,
-                "source": "jev.noul.answer_sufficient",
-            },
-        }
 
-    def _persist_chat_checkpoint(self, session_id: str,
-                                 checkpoint: Dict[str, Any]) -> None:
-        try:
-            save_chat_checkpoint(session_id, checkpoint, self.history_dir)
-        except (HarnessError, OSError, TypeError, ValueError) as exc:
-            emit("chat_checkpoint_unavailable",
-                 error_type=type(exc).__name__)
 
-    def _clear_chat_checkpoint(self, session_id: str) -> None:
-        try:
-            clear_chat_checkpoint(session_id, self.history_dir)
-        except (HarnessError, OSError):
-            emit("chat_checkpoint_clear_failed", session_id=session_id)
 
-    @staticmethod
-    def _checkpoint_interruption(checkpoint: Dict[str, Any], exc: Exception,
-                                 known_cost: float) -> None:
-        checkpoint["status"] = "interrupted"
-        checkpoint["known_cost"] = round(
-            max(0.0, float(known_cost or 0.0)
-                + float(getattr(exc, "known_cost", 0.0) or 0.0)), 8)
-        reserved = max(0.0, float(getattr(exc, "reserved_cost", 0.0) or 0.0))
-        if getattr(exc, "usage_unknown", False) and reserved:
-            checkpoint["unknown_liability"] = round(
-                max(0.0, float(checkpoint.get("unknown_liability") or 0.0))
-                + reserved, 8)
-        checkpoint["usage_unknown"] = bool(
-            checkpoint.get("usage_unknown") or getattr(exc, "usage_unknown", False))
 
-    def _hourglass_context_matches(self, checkpoint: Dict[str, Any]) -> bool:
-        expected_root = str(checkpoint.get("workspace_root") or "")
-        actual_root = str(self.root_dir or "")
-        if expected_root != actual_root:
-            # Temporary directories on macOS are commonly exposed through
-            # /var while Path.resolve() stores /private/var. Treat those as
-            # the same selected workspace, but fail closed for missing or
-            # malformed checkpoint paths.
-            if not expected_root or self.root_dir is None:
-                return False
-            try:
-                if Path(expected_root).resolve(strict=True) != \
-                        self.root_dir.resolve(strict=True):
-                    return False
-            except (OSError, RuntimeError, ValueError):
-                return False
-        if (self.root_dir is not None
-                and bool(checkpoint.get("workspace_context_used"))):
-            prompt = checkpoint.get("prompt")
-            if not isinstance(prompt, str):
-                return False
-            current_files = self._hourglass_workspace_candidates(prompt)
-            saved_files = checkpoint.get("context_files") or []
-            if (not isinstance(saved_files, list)
-                    or sorted(current_files) != sorted(saved_files)):
-                return False
-        hashes = checkpoint.get("file_hashes") or {}
-        if not isinstance(hashes, dict):
-            return False
-        for rel, expected in hashes.items():
-            try:
-                path = resolve_workspace_path(
-                    self.root_dir, rel, must_exist=True)
-                actual = hashlib.sha256(
-                    path.read_bytes()).hexdigest()
-            except (OSError, HarnessError, TypeError):
-                return False
-            if actual != expected:
-                return False
-        return True
-
-    def run_hourglass_request(
-            self, prompt: str, *, session_id: Optional[str] = None,
-            cancel_check=None, web: bool = False,
-            confidence_threshold: Optional[float] = None,
-            max_rounds: int = _MAX_HOURGLASS_ANSWER_ROUNDS,
-            auto_apply: bool = False,
-            max_tokens: Optional[int] = None,
-            reasoning_effort: Optional[str] = None,
-            token_budget: Optional[Any] = None,
-            max_wall_seconds: Optional[float] = None,
-            request_preflight: Optional[Dict[str, Any]] = None,
-            resume_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Run the all-request composition used by external local drivers.
-
-        Edit requests enter the existing hourglass plan/executor lane. Direct
-        answers use local context intake, the cheapest configured answer rung,
-        and native Jev sufficiency/iteration signals in a bounded escalation
-        loop.  A plan signal is advisory: only an explicit edit/action request
-        can cross the write boundary.
-        """
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise HarnessError("Prompt cannot be empty")
-        threshold = float(
-            getattr(self.settings, "min_confidence",
-                    _DEFAULT_HOURGLASS_CONFIDENCE)
-            if confidence_threshold is None else confidence_threshold)
-        if threshold < 0.0 or threshold > 1.0:
-            raise HarnessError("confidence_threshold must be between 0 and 1")
-        rounds = max(1, min(int(max_rounds), _MAX_HOURGLASS_ANSWER_ROUNDS))
-        sid = session_id or "default"
-        intent = classify_prompt_intent(prompt)
-        hourglass_policy = resolve_hourglass(self.settings)
-        emit("hourglass_request", intent=intent, confidence_threshold=threshold,
-             max_rounds=rounds)
-        if intent == "audit" and not is_workspace_inspection_request(prompt):
-            return self._handle_audit(prompt, sid, cancel_check)
-        if intent == "simple-action":
-            return self.run_simple_action(prompt, session_id=sid,
-                                          cancel_check=cancel_check)
-        if intent == "edit":
-            result = self._handle_edit(
-                prompt, sid, auto_apply, cancel_check,
-                use_jev_completion=True)
-            result.setdefault("hourglass", {
-                "stages": ["context_intake", "planning_waist", "execution",
-                           "completion_jev"],
-                "source": "agent_edit_lane",
-            })
-            return result
-
-        # Current-data requests earn web retrieval; workspace references are
-        # handled from the selected local tree and never become web searches.
-        web = (bool(web) or is_research_question(prompt)
-               or is_current_information_request(prompt))
-        wall_budget = (DEFAULT_RUN_WALL_SECONDS if max_wall_seconds is None
-                       else float(max_wall_seconds))
-        deadline = time.monotonic() + max(0.0, wall_budget)
-        checkpoint = dict(resume_state or {})
-        resuming = bool(resume_state)
-        if not resuming:
-            initial_cost = max(
-                0.0, float((request_preflight or {}).get("cost") or 0.0))
-            checkpoint = {
-                "route": "hourglass", "status": "running", "stage": "route",
-                "prompt": prompt, "intent": intent,
-                "web_requested": web, "workspace_root": str(self.root_dir or ""),
-                "workspace_context_used": False,
-                "known_cost": round(initial_cost, 8),
-                "unknown_liability": 0.0,
-                "usage_unknown": False, "next_round": 1, "rounds": [],
-            }
-            if isinstance(request_preflight, dict):
-                checkpoint["route_preflight"] = request_preflight
-            self._persist_chat_checkpoint(sid, checkpoint)
-        api_key, gov = governor_for(self.settings)
-        policy = policy_for(
-            self.settings, transport=self.transport, governor=gov,
-            ledger=ledger_for(self.settings, caller="agent"))
-        if resuming:
-            prior_known = max(0.0, float(checkpoint.get("known_cost") or 0.0))
-            prior_unknown = max(
-                0.0, float(checkpoint.get("unknown_liability") or 0.0))
-            if prior_known:
-                gov.record_actual(prior_known, "chat-continuation", lane="answer")
-            if prior_unknown:
-                gov.retain_unknown(prior_unknown, "cancelled-chat-provider-call")
-            total_cost = prior_known
-        else:
-            total_cost = max(0.0, float((request_preflight or {}).get("cost") or 0.0))
-            if total_cost:
-                gov.record_actual(total_cost, "chat-route-preflight", lane="answer")
-            checkpoint["known_cost"] = round(total_cost, 8)
-
-        route_preflight = (request_preflight
-                           or checkpoint.get("route_preflight"))
-        if (not isinstance(route_preflight, dict)
-                and not callable(getattr(policy,
-                                         "evaluate_request_workflow", None))):
-            route_preflight = {
-                "source": "request-workflow-unavailable",
-                "choice": None, "native": False, "cost": 0.0,
-            }
-        if not isinstance(route_preflight, dict):
-            try:
-                route_evaluation = policy.evaluate_request_workflow(
-                    {"request": prompt}, task_id=sid, max_input_tokens=512)
-            except (ToolCancelled, ProviderUsageUnknown) as exc:
-                self._checkpoint_interruption(checkpoint, exc, total_cost)
-                self._persist_chat_checkpoint(sid, checkpoint)
-                raise
-            if (not isinstance(route_evaluation, (tuple, list))
-                    or len(route_evaluation) != 2
-                    or not isinstance(route_evaluation[1], dict)
-                    or not hasattr(route_evaluation[0], "answers")):
-                route_preflight = {
-                    "source": "jev_request_workflow_unusable",
-                    "choice": None, "native": False, "cost": 0.0,
-                }
-                emit("request_route_unusable",
-                     reason_code="invalid_judgment_shape")
-            else:
-                route_result, route_structural = route_evaluation
-                route_answer = (route_result.answers.get("workflow_tier")
-                                if isinstance(route_result.answers, dict) else None)
-                route_cost = route_structural.get("cost")
-                route_preflight = {
-                    "source": "jev_request_workflow",
-                    "choice": (route_answer.get("choice")
-                               if isinstance(route_answer, dict) else None),
-                    "native": not bool(getattr(
-                        route_result, "is_fallback", True)),
-                    "is_fallback": bool(getattr(
-                        route_result, "is_fallback", True)),
-                    "cost": (float(route_cost) if isinstance(
-                        route_cost, (int, float)) else 0.0),
-                }
-            total_cost += float(route_preflight.get("cost") or 0.0)
-        checkpoint["route_preflight"] = route_preflight
-        checkpoint["known_cost"] = round(total_cost, 8)
-        selected_workspace = (
-            is_workspace_inspection_request(prompt)
-            or route_preflight.get("choice") in {
-                "workspace-inspection", "workspace_inspection"})
-        if selected_workspace:
-            # Explicit local-workspace intent is stronger evidence than an
-            # advisory Jev route: never send a repo audit to web search.
-            web = False
-        elif (bool(route_preflight.get("native"))
-              and route_preflight.get("choice") == "web-research"):
-            web = True
-        elif (route_preflight.get("source") == "simple_strategy"
-              and route_preflight.get("choice") == "web_research"):
-            web = True
-        if (route_preflight.get("choice") in {
-                "workspace-inspection", "workspace_inspection"}
-                and self.root_dir is None):
-            return self._workspace_context_deferred(prompt, sid)
-        checkpoint["web_requested"] = web
-        checkpoint["intent"] = intent
-        effective_route = (
-            "workspace-inspection" if (
-                is_workspace_inspection_request(prompt)
-                or route_preflight.get("choice") == "workspace-inspection"
-                or route_preflight.get("choice") == "workspace_inspection")
-            else "web-research" if web
-            else "answer")
-        workspace_needed = effective_route == "workspace-inspection"
-        checkpoint["effective_route"] = effective_route
-        checkpoint["workspace_context_used"] = workspace_needed
-        emit("request_route_selected",
-             selected=route_preflight.get("choice"),
-             effective=effective_route,
-             source=route_preflight.get("source"),
-             native=bool(route_preflight.get("native")))
-        if (route_preflight.get("choice") == "clarify"
-                and bool(route_preflight.get("native"))):
-            result = {
-                "status": "deferred", "intent": intent,
-                "workflow_tier": "clarification", "prompt": prompt,
-                "response": "I need one clarification before I can answer safely.",
-                "model": None, "cost": round(total_cost, 6),
-                "defer_reason": "Jev selected clarification",
-                "next_step": "clarify the missing request detail",
-                "jev": {"workflow_tier": "clarify",
-                        "native": True},
-            }
-            save_chat_turn(sid, result, self.history_dir)
-            self._clear_chat_checkpoint(sid)
-            return result
-
-        saved_context = checkpoint.get("context")
-        context_current = (resuming and isinstance(saved_context, str)
-                           and self._hourglass_context_matches(checkpoint))
-        web_fresh = (
-            not web or time.time() - float(
-                checkpoint.get("context_updated_at") or 0.0) <= 300.0)
-        if context_current and web_fresh:
-            context = saved_context
-            context_files = list(checkpoint.get("context_files") or [])
-            context_tokens = int(checkpoint.get("context_tokens") or 0)
-            web_sources = list(checkpoint.get("web_sources") or [])
-        else:
-            context, file_contents, brief, web_sources = \
-                self._hourglass_request_context(
-                    prompt, web=web, workspace=workspace_needed)
-            context_files = list(file_contents)
-            context_tokens = int(brief.estimated_tokens)
-            file_hashes = {
-                rel: hashlib.sha256(resolve_workspace_path(
-                    self.root_dir, rel, must_exist=True).read_bytes()).hexdigest()
-                for rel in file_contents}
-            remaining_source_chars = _MAX_HOURGLASS_CONTEXT_CHARS
-            bounded_sources = []
-            for source in web_sources:
-                item = {key: source[key] for key in
-                        ("kind", "ok", "url", "title", "note")
-                        if key in source}
-                if source.get("text") and remaining_source_chars > 0:
-                    text = str(source.get("text"))[:min(
-                        1600, remaining_source_chars)]
-                    item["text"] = text
-                    remaining_source_chars -= len(text)
-                bounded_sources.append(item)
-            web_sources = bounded_sources
-            checkpoint.update({
-                "context": context,
-                "context_files": context_files,
-                "context_tokens": context_tokens,
-                "context_scope": (
-                    "repository-review" if (
-                        workspace_needed and
-                        is_comprehensive_workspace_inspection_request(prompt))
-                    else "targeted-workspace" if workspace_needed else "none"),
-                "file_hashes": file_hashes,
-                "web_sources": web_sources,
-                "context_updated_at": time.time(),
-                "workspace_root": str(self.root_dir or ""),
-                "workspace_context_used": workspace_needed,
-            })
-            if resuming and not (context_current and web_fresh):
-                checkpoint["answer"] = None
-                checkpoint["prior"] = None
-                checkpoint["rounds"] = []
-                checkpoint["next_round"] = 1
-                checkpoint["stage"] = "answer"
-            self._persist_chat_checkpoint(sid, checkpoint)
-
-        turns = load_chat_history(sid, self.history_dir)
-        if resuming:
-            turns = [turn for turn in turns if turn.get("prompt") != prompt]
-        past_turns = simple_relevant_history(
-            prompt, turns,
-            max_turns=3, max_chars=2400)
-        prior = checkpoint.get("prior") if resuming else None
-        history = list(checkpoint.get("rounds") or []) if resuming else []
-        answer = str(checkpoint.get("answer") or "") if resuming else ""
-        model = checkpoint.get("answer_model") if answer else None
-        pending_review = bool(resuming and answer
-                              and checkpoint.get("stage") == "jev_review")
-        first_round = max(1, int(checkpoint.get("next_round") or 1)) \
-            if resuming else 1
-        jev_result = None
-        jev_structural = None
-        previous_envelopes = [
-            entry.get("jev") for entry in history
-            if isinstance(entry, dict) and isinstance(entry.get("jev"), dict)]
-        last_envelope = previous_envelopes[-1] if previous_envelopes else None
-        best_envelope = max(
-            (item for item in previous_envelopes if item.get("native")),
-            key=lambda item: (item.get("confidence") or {}).get("observed") or 0.0,
-            default=None)
-        stop_reason = None
-        status = "needs_iteration"
-        attempt = ({"answer": answer, "model": model,
-                    "cost": float(checkpoint.get("answer_cost") or 0.0),
-                    "truncated": bool(checkpoint.get("truncated"))}
-                   if pending_review else {})
-        for round_no in range(first_round, rounds + 1):
-            if cancel_check and cancel_check():
-                if not (pending_review and round_no == first_round):
-                    checkpoint["stage"] = "answer"
-                    checkpoint["next_round"] = round_no
-                    checkpoint["prior"] = prior
-                checkpoint["known_cost"] = round(total_cost, 8)
-                self._persist_chat_checkpoint(sid, checkpoint)
-                raise ToolCancelled("Prompt execution was cancelled by user")
-            if time.monotonic() >= deadline:
-                # Stop iterating, but keep whatever was answered so far: the
-                # standing rule is that a run returns a real answer with an
-                # honest disclosure, never a bare dead end.
-                status = "needs_iteration"
-                stop_reason = (
-                    f"wall-clock budget of {wall_budget:.0f}s exhausted "
-                    f"after round {round_no - 1}")
-                break
-            if round_no > 1:
-                remaining = (gov.working_remaining()
-                             if callable(getattr(gov, "working_remaining", None))
-                             else None)
-                if isinstance(remaining, (int, float)) and remaining < jev_cost_ceiling():
-                    status = "deferred"
-                    stop_reason = (
-                        "Jev budget cannot safely reserve another answer review")
-                    break
-            if not (pending_review and round_no == first_round):
-                checkpoint.update({
-                    "stage": "answer", "next_round": round_no,
-                    "prior": prior, "known_cost": round(total_cost, 8),
-                })
-                self._persist_chat_checkpoint(sid, checkpoint)
-                try:
-                    attempt = self._hourglass_answer_once(
-                        prompt, context, prior=prior, model_offset=round_no - 1,
-                        cancel_check=cancel_check, governor=gov, api_key=api_key,
-                        past_turns=past_turns, web=web, web_sources=web_sources,
-                        max_tokens=max_tokens, reasoning_effort=reasoning_effort,
-                        token_budget=token_budget)
-                except (ToolCancelled, ProviderUsageUnknown) as exc:
-                    self._checkpoint_interruption(checkpoint, exc, total_cost)
-                    self._persist_chat_checkpoint(sid, checkpoint)
-                    raise
-                answer = attempt["answer"]
-                model = attempt["model"]
-                answer_cost = float(attempt.get("cost") or 0.0)
-                total_cost += answer_cost
-                checkpoint.update({
-                    "stage": "jev_review", "next_round": round_no,
-                    "answer": answer, "answer_model": model,
-                    "answer_cost": answer_cost,
-                    "truncated": bool(attempt.get("truncated")),
-                    "known_cost": round(total_cost, 8),
-                })
-                self._persist_chat_checkpoint(sid, checkpoint)
-                pending_review = False
-            try:
-                jev_result, jev_structural = policy.evaluate_answer(
-                    prompt, answer, context, site="answer", task_id=sid)
-            except (ToolCancelled, ProviderUsageUnknown) as exc:
-                self._checkpoint_interruption(checkpoint, exc, total_cost)
-                self._persist_chat_checkpoint(sid, checkpoint)
-                raise
-            total_cost += float(jev_structural.get("cost") or 0.0)
-            envelope = self._jev_answer_envelope(
-                jev_result, jev_structural, threshold)
-            last_envelope = envelope
-            observed = envelope["confidence"].get("observed")
-            if (envelope["native"]
-                    and (best_envelope is None
-                         or not isinstance(observed, (int, float))
-                         or float(observed) > float(
-                             best_envelope["confidence"].get("observed") or 0.0))):
-                best_envelope = envelope
-            history.append({"round": round_no, "model": model,
-                            "jev": envelope})
-            emit("answer_judged", round=round_no, model=model,
-                 native=envelope["native"],
-                 confidence=envelope["confidence"]["observed"],
-                 confidence_threshold=threshold,
-                 iteration_required=bool(jev_structural.get("iteration_required")),
-                 status=("pass" if envelope["confidence"]["passed"] else
-                         "unverified" if envelope["is_fallback"] else
-                         "needs_iteration" if bool(
-                             jev_structural.get("iteration_required"))
-                         else "stopped"))
-            checkpoint["known_cost"] = round(total_cost, 8)
-            checkpoint["rounds"] = history
-            checkpoint["last_jev"] = envelope
-            checkpoint["answer"] = answer
-            checkpoint["answer_model"] = model
-            checkpoint["answer_cost"] = float(attempt.get("cost") or 0.0)
-            checkpoint["next_round"] = round_no
-            checkpoint["stage"] = "jev_review"
-            self._persist_chat_checkpoint(sid, checkpoint)
-            if jev_structural.get("plan_required"):
-                # A direct-answer request must not turn an advisory Jev signal
-                # into a write.  The edit lane owns plan/execute; callers can
-                # explicitly resubmit this request as an edit when appropriate.
-                status = "plan_required"
-                break
-            if not envelope["native"] and not envelope["is_fallback"]:
-                # A rejected, malformed, or preflight-refused live request is
-                # not an allowed local fallback and cannot use the independent
-                # fulfillment check to turn it into approval.
-                status = "deferred"
-                stop_reason = "; ".join(envelope["reasons"] or []) or (
-                    "Jev could not produce a usable live judgment")
-                break
-            if not envelope["native"] and envelope["is_fallback"]:
-                # Keep the useful answer without pretending it was semantically
-                # reviewed or paying for a second generic completion model.
-                status = "ok"
-                stop_reason = (
-                    "Jev unavailable; response returned without semantic review")
-                break
-            if envelope["confidence"]["passed"]:
-                status = "ok"
-                break
-            if not bool(jev_structural.get("iteration_required")):
-                status = "needs_iteration"
-                stop_reason = (
-                    "Jev did not meet the configured sufficiency threshold and "
-                    "did not request another answer attempt")
-                break
-            prior = {
-                "answer": answer,
-                "feedback": "Jev says another answer attempt is needed: "
-                            + ("; ".join(envelope["reasons"])
-                               or "improve sufficiency against the retained context"),
-            }
-            if round_no == rounds:
-                status = "needs_iteration"
-                stop_reason = (
-                    f"Jev requested another answer attempt; the bounded limit "
-                    f"of {rounds} rounds was reached")
-            else:
-                checkpoint.update({
-                    "stage": "answer", "next_round": round_no + 1,
-                    "prior": prior, "answer": None,
-                    "answer_model": None, "answer_cost": 0.0,
-                })
-                self._persist_chat_checkpoint(sid, checkpoint)
-
-        is_truncated = bool(attempt.get("truncated"))
-        result = {
-            "status": status,
-            "intent": intent,
-            "workflow_tier": effective_route,
-            "prompt": prompt,
-            "response": answer,
-            "model": model,
-            "cost": round(total_cost, 6),
-            "request_workflow": {
-                "selected": route_preflight.get("choice"),
-                "effective": effective_route,
-                "source": route_preflight.get("source"),
-                "native": bool(route_preflight.get("native")),
-            },
-            "verification": {
-                "status": ("jev_verified" if status == "ok"
-                           and bool((best_envelope or last_envelope or {}).get("confidence", {}).get("passed"))
-                           else "unverified" if not bool((best_envelope or last_envelope or {}).get("native"))
-                           else "needs_review"),
-                "source": "jev.answer_sufficiency",
-                **({"reason": stop_reason} if stop_reason else {}),
-            },
-            **({"usage_unknown": True,
-                "unknown_cost_reserve": round(
-                    float(checkpoint.get("unknown_liability") or 0.0), 6)}
-               if checkpoint.get("usage_unknown") else {}),
-            **({"truncated": True} if is_truncated else {}),
-            # Every stop_reason above -- the Jev budget, the deferred branch
-            # and the new wall-clock ceiling -- was computed and then dropped
-            # on the floor here, so a caller could only see "needs_iteration"
-            # with no reason. A run that stops must say why.
-            **({"stop_reason": stop_reason} if stop_reason else {}),
-            "web_used": bool(web_sources and any(s.get("ok") for s in web_sources)),
-            "web_sources": [
-                {k: s[k] for k in ("kind", "ok", "url") if k in s}
-                for s in web_sources],
-            "confidence": ((best_envelope or last_envelope or {}).get(
-                "confidence", {"threshold": threshold, "observed": None,
-                               "passed": False,
-                               "source": "jev.noul.answer_sufficient"})),
-            "jev": (best_envelope or last_envelope),
-            **({"jev_last": last_envelope}
-               if last_envelope is not best_envelope else {}),
-            "hourglass": {
-                "stages": ["context_intake", "answer", "jev_review"],
-                "skipped": ["planning_waist", "execution"],
-                "settings": hourglass_policy,
-                "context_files": context_files,
-                "context_tokens": context_tokens,
-                "context_scope": checkpoint.get("context_scope", "none"),
-                "rounds": history,
-                "request_workflow": {
-                    "selected": route_preflight.get("choice"),
-                    "effective": effective_route,
-                    "source": route_preflight.get("source"),
-                    "native": bool(route_preflight.get("native")),
-                },
-                "web_sources": [
-                    {k: s[k] for k in ("kind", "ok", "url") if k in s}
-                    for s in web_sources],
-            },
-        }
-        marker_defer = CAPABILITY_MARKER in answer
-        if self._escalation_authorized(prompt, marker_defer, status):
-            defer_reason = None
-            if marker_defer:
-                head, _, tail = answer.partition(CAPABILITY_MARKER)
-                defer_reason = tail.strip().splitlines()[0].strip() if tail.strip() else ""
-            else:
-                defer_reason = "execution request routed to plan & execute lane"
-            emit("chat_escalated", reason=defer_reason, target="plan_lane")
-            try:
-                escalated = self._handle_edit(
-                    prompt, sid, auto_apply=True,
-                    cancel_check=cancel_check,
-                    escalation_note=defer_reason,
-                    use_jev_completion=True)
-                if isinstance(escalated, dict):
-                    escalated.setdefault("hourglass", {
-                        "stages": ["context_intake", "planning_waist", "execution",
-                                   "completion_jev"],
-                        "source": "hourglass_auto_escalation",
-                    })
-                    save_chat_turn(sid, escalated, self.history_dir)
-                    self._clear_chat_checkpoint(sid)
-                    return escalated
-            except ToolCancelled:
-                raise
-            except Exception:
-                pass
-
-        if status == "needs_iteration":
-            result["remaining_scope"] = (
-                "Jev requested or retained another review, but the bounded "
-                "answer path stopped without claiming completion")
-        elif stop_reason:
-            result["remaining_scope"] = stop_reason
-        save_chat_turn(sid, result, self.history_dir)
-        self._clear_chat_checkpoint(sid)
-        emit("hourglass_complete", status=status,
-             confidence=result["confidence"].get("observed"))
-        return result
 
     def _escalation_authorized(self, prompt: str, marker_defer: bool,
                                status: Optional[str]) -> bool:
@@ -2266,322 +852,10 @@ class AutonomousAgent:
             return False
         return bool(resolve_api_key())
 
-    def _handle_conversation(
-        self,
-        prompt: str,
-        session_id: str,
-        cancel_check: Optional[Callable[[], bool]] = None,
-        web: bool = False,
-        max_tokens: Optional[int] = None,
-        reasoning_effort: Optional[str] = None,
-        token_budget: Optional[Any] = None,
-    ) -> Dict[str, Any]:
-        # Handle informational or technical questions with conversational routing
-        api_key, gov = governor_for(self.settings)
-        target_tokens, lane_effort = effective_lane_policy(
-            "chat", max_tokens=max_tokens, reasoning_effort=reasoning_effort)
-
-        system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
-        web_sources: List[Dict[str, Any]] = []
-        if web:
-            if cancel_check and cancel_check():
-                raise ToolCancelled("Prompt execution was cancelled by user")
-            try:
-                web_sources = self._gather_web_context(prompt)
-            except ToolCancelled:
-                raise
-            except Exception as e:  # web tools must never kill the chat lane
-                web_sources = [{"kind": "web", "ok": False, "note": f"web tools error: {e}"}]
-            hosts = ", ".join(sorted(DEFAULT_FETCH_HOSTS)) or "(none configured)"
-            system_prompt += "\n\n" + _WEB_CAPABILITY_NOTE.format(hosts=hosts)
-            context_lines = []
-            for s in web_sources:
-                if s.get("ok"):
-                    body = (s.get("text") or "")[:_MAX_WEB_CONTEXT_CHARS]
-                    context_lines.append(f"SOURCE ({s['kind']}): {s.get('title') or ''} {s['url']}\n{body}")
-                else:
-                    context_lines.append(f"SOURCE ({s['kind']}) FAILED: {s.get('url') or ''} {s.get('note')}")
-            if context_lines:
-                system_prompt += "\n\n[Web tool results for this turn -- cite only these; do not invent others]\n" + "\n\n".join(context_lines)
-        else:
-            system_prompt += "\n\n" + _NO_WEB_DISCLOSURE
-
-        messages = [{"role": "system", "content": system_prompt}]
-        past_turns = simple_relevant_history(
-            prompt, load_chat_history(session_id, self.history_dir),
-            max_turns=3, max_chars=2400)
-        for turn in past_turns:
-            p_text = turn.get("prompt")
-            r_text = turn.get("response")
-            if p_text:
-                messages.append({"role": "user", "content": p_text})
-            if r_text:
-                messages.append({"role": "assistant", "content": r_text})
-        messages.append({"role": "user", "content": prompt})
-
-        # One governed attempt per ladder rung (preflight -> chat -> bill, the
-        # governed_text contract), advancing on HTTP failure or an unusable
-        # body. The old code pinned one free model, ignored the status, and
-        # rendered a fake apology on a 429; now every failure is recorded,
-        # emitted as a rotation, and an all-rungs failure raises honestly.
-        answered = None
-        attempts: List[str] = []
-        # Longest cut-off body seen while every rung was failing: the raw
-        # material for the honest truncation deferral.
-        best_truncated: Optional[tuple] = None
-        for model in self._chat_ladder(self.settings):
-            if cancel_check and cancel_check():
-                raise ToolCancelled("Prompt execution was cancelled by user")
-            note = None
-            content, cost = None, 0.0
-            allocated_tokens = _resolve_lane_max_tokens(
-                gov, model, prompt, target_tokens, token_budget=token_budget)
-            if allocated_tokens < 1:
-                attempts.append(f"{model}: insufficient budget for output tokens")
-                continue
-            try:
-                gov.preflight(prompt, [("chat", model, allocated_tokens, 0)])
-                status, resp = chat(
-                    transport=self.transport,
-                    api_key=api_key,
-                    model=model,
-                    messages=messages,
-                    max_tokens=allocated_tokens,
-                    reasoning_effort=lane_effort,
-                    governor=gov,
-                )
-            except HarnessError as e:
-                note = str(e)
-            else:
-                if status != 200:
-                    note = _http_error(status, resp)
-                else:
-                    content, finish_reason, cost, is_byok = \
-                        extract_content_and_cost(resp)
-                    if is_byok:
-                        gov.record_byok(model)
-                        note = (f"response for {model} was BYOK-routed; "
-                                "spend is not tracked on this key")
-                    else:
-                        # A billable-but-unusable completion is still billed
-                        # (the provider charged for it); only usable content
-                        # ends the walk.
-                        if cost:
-                            gov.record_actual(cost, model)
-                        usable, why = assess_output(content, finish_reason)
-                        if usable and looks_truncated(content):
-                            # Providers do not always report finish_reason
-                            # "length" honestly; an unbalanced fence/bracket
-                            # body is cut regardless of what they claim.
-                            usable, why = False, ("response cut off mid-body "
-                                                  "(unbalanced code fence "
-                                                  "or brackets)")
-                        if not usable:
-                            note = why
-                            if (content or "").strip() and (
-                                    best_truncated is None
-                                    or len(content) > len(best_truncated[1])):
-                                best_truncated = (model, content, cost)
-            if note is None:
-                answered = (model, content or "", cost)
-                break
-            attempts.append(f"{model}: {note}")
-            emit("rotation", model=model, reason="chat_ladder_advance",
-                 note=note)
-        if answered is None and best_truncated is not None:
-            # Every rung failed, but one produced substantive cut-off
-            # content: defer honestly, keeping the content. Rotating more
-            # cannot finish a body that exceeds the output cap.
-            model, response_text, cost = best_truncated
-            defer_reason = (f"response truncated at the token cap on every "
-                            f"ladder model (max_tokens={target_tokens})")
-            marker_defer = False
-            truncation_defer = True
-        elif answered is None:
-            raise HarnessError(
-                "chat failed on every ladder model: " + "; ".join(attempts))
-        else:
-            model, response_text, cost = answered
-            defer_reason = None
-            marker_defer = CAPABILITY_MARKER in response_text
-            truncation_defer = False
-
-        # The chat lane honors the same deferral contract as apply: a
-        # HARNESS_DEFER marker is the model handing the decision back instead
-        # of guessing. Free models usually defer in prose instead, so a
-        # refusal-shaped answer with no successful tool evidence is treated
-        # as the deferral it is; the model's own words become the reason.
-        if marker_defer:
-            head, _, tail = response_text.partition(CAPABILITY_MARKER)
-            first_line = tail.strip().splitlines()[0].strip() if tail.strip() else ""
-            defer_reason = " ".join(first_line.split())[:200] \
-                or "request exceeds the conversation lane's capability"
-            # A bare marker (no prose before it) still owes the user visible
-            # text in the saved turn; the UI banner carries the same reason.
-            response_text = head.strip() or f"Deferred: {defer_reason}"
-        elif defer_reason is None:
-            did_work = bool(web_sources and any(s.get("ok") for s in web_sources))
-            if not did_work:
-                defer_reason = self._refusal_reason(response_text)
-        if defer_reason is not None:
-            next_step = ('route to the plan lane: harness plan --goal "..." '
-                         "--execute (or the MCP plan_and_execute tool)")
-            if best_truncated is not None and answered is None:
-                next_step = ('say "continue" to keep this going in the chat '
-                             "lane, or route long-generation work to the plan "
-                             'lane: harness plan --goal "..." --execute '
-                             "(it has multi-round continuation)")
-            elif not marker_defer:
-                next_step = ('reframe within this lane (Q&A, small lookups), '
-                             "enable web or adjust the fetch allowlist for "
-                             "live data, or route real work to the plan lane: "
-                             'harness plan --goal "..." --execute')
-            ledger_for(self.settings).append(
-                "model_result", task_id=session_id or "(chat)",
-                event_note="chat", status="deferred", category="capability",
-                model=model, reason=defer_reason, cost=round(cost, 6))
-            # AUTO-ESCALATION: a capability defer with the paid key armed does
-            # not stop at a handoff note -- the request routes itself into the
-            # hourglass plan lane (frontier-planned DAG, governed apply with
-            # paid escalation rungs). Truncation defers keep their "continue"
-            # resume instead: the content already exists, it needs more room.
-            if not truncation_defer and self._auto_escalation_armed():
-                emit("chat_escalated", reason=defer_reason, target="plan_lane")
-                try:
-                    return self._handle_edit(
-                        prompt, session_id, auto_apply=True,
-                        cancel_check=cancel_check,
-                        escalation_note=defer_reason)
-                except HarnessError as e:
-                    # The handoff failed (no routable target files, plan
-                    # refusal, ...): the honest defer stands with the failure
-                    # recorded -- never a silent swallow.
-                    response_text += (f"\n\n[auto-escalation to the plan lane "
-                                      f"failed: {e}]")
-
-        result = {
-            "status": "deferred" if defer_reason else "ok",
-            "intent": "conversation",
-            "prompt": prompt,
-            "response": response_text,
-            "model": model,
-            "cost": round(cost, 6),
-            **({"truncated": True} if truncation_defer else {}),
-            **({"defer_reason": defer_reason,
-                # The resume hint a deferral owes the operator (render.py's
-                # contract): what to do instead of this lane's refusal.
-                "next_step": next_step}
-               if defer_reason else {}),
-            # Honest provenance: did this turn actually retrieve web evidence?
-            "web_used": bool(web_sources and any(s.get("ok") for s in web_sources)),
-            "web_sources": [
-                {k: s[k] for k in ("kind", "ok", "url") if k in s}
-                for s in web_sources
-            ],
-        }
-
-        save_chat_turn(session_id, result, self.history_dir)
-        emit("chat_response", intent="conversation", cost=cost, model=model)
-        return result
-
-    def _handle_audit(
-        self,
-        prompt: str,
-        session_id: str,
-        cancel_check: Optional[Callable[[], bool]] = None,
-    ) -> Dict[str, Any]:
-        # Handle audit and cryptographic ledger verification requests
-        ledger = ledger_for(self.settings)
-        ok, bad_seq = ledger.verify()
-        chain_info = ledger.chain_status()
-
-        if ok:
-            msg = f"Cryptographic ledger chain is clean and verified (0 quarantined entries, latest seq {chain_info.get('latest_seq', 0)})."
-        else:
-            msg = f"Ledger verification failed at record sequence {bad_seq}. Check quarantined entries."
-
-        result = {
-            "status": "ok" if ok else "audit_failed",
-            "intent": "audit",
-            "prompt": prompt,
-            "response": msg,
-            "chain_status": chain_info,
-            "cost": 0.0,
-        }
-
-        save_chat_turn(session_id, result, self.history_dir)
-        emit("chat_response", intent="audit", verified=ok)
-        return result
-
-    def _handle_provision(
-        self,
-        prompt: str,
-        session_id: str,
-        cancel_check: Optional[Callable[[], bool]] = None,
-    ) -> Dict[str, Any]:
-        """Plan host provisioning setup safely without automatic execution."""
-        from . import provision as pv
-        probe = pv.probe_host()
-        root = str(require_workspace(self.root_dir))
-        policy = pv.policy_for_probe(probe, [root])
-        plan = pv.plan_provision(prompt, probe, policy=policy)
-        rendered = pv.render_plan(plan)
-        result = {
-            "status": "planned",
-            "intent": "provision",
-            "prompt": prompt,
-            "response": rendered,
-            "plan": plan.to_dict(),
-            "cost": 0.0,
-        }
-        save_chat_turn(session_id, result, self.history_dir)
-        emit("chat_response", intent="provision", planned=True)
-        return result
-
-    def _handle_driver_task(
-        self,
-        prompt: str,
-        session_id: str,
-        cancel_check: Optional[Callable[[], bool]] = None,
-    ) -> Dict[str, Any]:
-        """Drive machine requests autonomously through Jev Driver across perception aspects."""
-        from .server import run_driver_task
-        task_id = f"drv/{session_id or 'default'}"
-        res = run_driver_task(
-            task_id,
-            {"goal": prompt, "max_steps": 5, "target": "cli"},
-            cancel_check=cancel_check,
-        )
-        total_steps = res.get("total_steps", 0)
-        summary = res.get("summary") or f"Jev driver completed {total_steps} step(s)."
-        steps = res.get("steps") or []
-        step_lines = []
-        for s in steps:
-            env = s.get("envelope") or {}
-            step_lines.append(
-                f"- **Step #{s.get('step_number', 1)}** ({s.get('aspect', 'cli')} ➔ {s.get('target', 'cli')}): "
-                f"stopped at `{env.get('stopped_at', 'complete')}`, "
-                f"status `{'ok' if env.get('ok') else env.get('reason')}`"
-            )
-        body_text = f"{summary}\n\n" + "\n".join(step_lines) if step_lines else summary
-        audit = res.get("audit") or {}
-        if audit.get("ok"):
-            body_text += (
-                f"\n\n---\n**Cryptographic Audit:** Verified clean (0 quarantined entries, "
-                f"status `{'ok' if audit.get('ok') else 'unverified'}`)."
-            )
-        result = {
-            "status": res.get("status", "done"),
-            "intent": "driver",
-            "prompt": prompt,
-            "response": body_text,
-            "total_steps": total_steps,
-            "steps": steps,
-            "cost": res.get("total_cost_usd", 0.0),
-        }
-        save_chat_turn(session_id, result, self.history_dir)
-        emit("chat_response", intent="driver", status=result["status"], cost=result["cost"])
-        return result
+    @staticmethod
+    def _classify_prompt_intent(prompt: str) -> str:
+        """Expose the router to the chat lifecycle without duplicating policy."""
+        return classify_prompt_intent(prompt)
 
     def _orchestrator_chat_fn(self, gov):
         """Injected chat_fn for orchestration calls (decompose/triage/judge):
@@ -2984,589 +1258,3 @@ class AutonomousAgent:
         if picked:
             emit("files_discovered", target_files=picked, triage="orchestrated")
         return picked
-
-    def _handle_edit(
-        self,
-        prompt: str,
-        session_id: str,
-        auto_apply: bool,
-        cancel_check: Optional[Callable[[], bool]] = None,
-        escalation_note: Optional[str] = None,
-        use_jev_completion: bool = False,
-    ) -> Dict[str, Any]:
-        # Handle code edit/refactor requests: the orchestrator drives the
-        # hourglass -- relevance triage over the whole repo, DAG decomposition
-        # and waist confirmation (the same composer the CLI/MCP lanes use),
-        # governed execution through the shared PlanExecutor (parallel
-        # workers, per-node cost reservations, worktree isolation, diff
-        # attestation), then a completion judge round that re-plans remaining
-        # scope until the goal is met or the round budget is spent.
-        root_dir = require_workspace(self.root_dir)
-        hourglass = resolve_hourglass(self.settings)
-        target_files = []
-
-        # Context-aware plan continuation & execution:
-        # If prompt is an execution directive or target_files is empty, inspect
-        # past session turns to resolve a prior formulated plan or discussed targets.
-        past_turns = load_chat_history(session_id, self.history_dir)
-        is_exec_directive = (
-            any(p in prompt.lower() for p in EXECUTION_PHRASES)
-            or any(re.search(rf"\b{action}\b.*?\b(?:plan|code|test|tests|implementation|script)\b", prompt.lower())
-                   for action in ("execute", "run", "apply"))
-        )
-        if is_exec_directive:
-            auto_apply = True
-
-        prior_plan = None
-        if past_turns and is_exec_directive:
-            for turn in reversed(past_turns):
-                if isinstance(turn, dict):
-                    if turn.get("dag") and turn.get("target_files"):
-                        prior_plan = turn
-                        target_files = list(turn["target_files"])
-                        break
-                    elif turn.get("target_files"):
-                        prior_plan = turn
-                        target_files = list(turn["target_files"])
-                        break
-
-        if not target_files:
-            target_files = self._triage_scope(prompt)
-
-        if past_turns and not target_files:
-            for turn in reversed(past_turns):
-                if isinstance(turn, dict):
-                    if turn.get("dag") and turn.get("target_files"):
-                        prior_plan = turn
-                        target_files = list(turn["target_files"])
-                        break
-                    elif turn.get("target_files"):
-                        prior_plan = turn
-                        target_files = list(turn["target_files"])
-                        break
-                    elif turn.get("response"):
-                        candidate_text = turn.get("response", "") + "\n" + turn.get("prompt", "")
-                        discovered = self._triage_scope(candidate_text)
-                        if discovered:
-                            target_files = discovered
-                            prior_plan = turn
-                            break
-
-        if prior_plan is not None:
-            if not target_files and prior_plan.get("target_files"):
-                target_files = list(prior_plan.get("target_files"))
-            prior_goal = prior_plan.get("prompt", "")
-            if prior_goal and prior_goal.lower() not in prompt.lower():
-                prompt = f"{prior_goal}\n\n[EXECUTION DIRECTIVE]: {prompt}"
-
-        if not target_files:
-            # Fallback for execution requests without explicit files:
-            # discover candidate test/verification targets in the workspace.
-            repo_files = enumerate_repo_files(self.root_dir)
-            test_files = [f for f in repo_files if "test" in f.lower() or f.endswith(".py")]
-            if test_files:
-                target_files = test_files[:3]
-
-        emit("files_discovered", target_files=target_files)
-
-        # Condense candidate file contexts
-        file_contents: Dict[str, str] = {}
-        original_contents: Dict[str, str] = {}
-        for tf in target_files:
-            fp = self.root_dir / tf
-            if fp.exists():
-                try:
-                    text = fp.read_text(encoding="utf-8")
-                    file_contents[tf] = text
-                    original_contents[tf] = text
-                except Exception:
-                    pass
-
-        brief = distill_context(files=file_contents, summary=prompt)
-        ledger_for(self.settings, caller="agent").append(
-            "brief_built", task_id=session_id, site="hourglass", schema=2,
-            **brief.ledger_fields())
-        emit("context_condensed", estimated_tokens=brief.estimated_tokens)
-
-        # Formulate the FIRST-round DAG plan (LLM decomposition when the
-        # orchestration ladder answers; heuristic fallback) and gate.
-        # The generative plan lane still requires the normal Harness
-        # governor. Jev's own key controls only the typed structural call;
-        # an unkeyed Jev evaluator remains the explicit local fallback.
-        _, gov = governor_for(self.settings)
-        run_token_budget = budget_from_settings(self.settings, label="edit")
-        plan_policy = policy_for(
-            self.settings, transport=self.transport, governor=gov,
-            ledger=ledger_for(self.settings, caller="agent"))
-        plan_prompt = prompt
-        plan_eval, plan_structural = plan_policy.evaluate_plan(
-            prompt, target_files, site="agent-plan", task_id=session_id)
-        if plan_eval.answers.get("requires_iteration"):
-            emit("orchestration_note",
-                 note="Jev structural analysis detected algorithmic iteration; injecting DAG loop directive")
-            plan_prompt = (
-                f"{prompt}\n\n[STRUCTURAL GUIDELINE]: This goal requires iterative "
-                "control flow, conditional branching, or multi-step execution. "
-                "Ensure the decomposed DAG explicitly breaks down the iterative "
-                "loop and discrete steps into executable nodes.")
-        try:
-            plan = self._plan_round(plan_prompt, target_files, gov,
-                                    confirm=hourglass["confirm"],
-                                    token_budget=run_token_budget)
-        except TypeError:
-            plan = self._plan_round(plan_prompt, target_files, gov,
-                                    confirm=hourglass["confirm"])
-        if isinstance(plan_structural, dict):
-            plan["structural"] = plan_structural
-        if plan.get("status") == "refused" and (
-            str(plan.get("confirmation", {}).get("reason", "")).startswith("validated restart to planning")
-        ):
-            # Iterate once with Jev stage guidance to refine the plan rather than immediately giving up
-            emit("orchestration_note",
-                 note="Iterating on plan with Jev stage-runner feedback")
-            refined_prompt = (
-                f"{plan_prompt}\n\n[JEV REVISION DIRECTIVE]: The initial work package required planning refinement: "
-                f"{plan.get('confirmation', {}).get('reason')}. Provide a more specific, verifiable, and safe execution plan."
-            )
-            try:
-                second_plan = self._plan_round(refined_prompt, target_files, gov,
-                                              confirm=hourglass["confirm"],
-                                              token_budget=run_token_budget)
-                if second_plan.get("status") != "refused":
-                    plan = second_plan
-            except ToolCancelled:
-                raise
-            except Exception:
-                pass
-        if plan.get("status") == "refused":
-            return self._refused_edit(plan, prompt, target_files, session_id)
-        if not any(isinstance(entry, dict)
-                   and entry.get("stage") == STAGE_EXECUTION
-                   for entry in (plan.get("composition") or {}).get("stages", [])):
-            plan["status"] = "refused"
-            plan["confirmation"] = {
-                "verdict": "refused", "model": "execution-budget",
-                "reason": "execution stage is not selected; refusing dispatch",
-            }
-            return self._refused_edit(plan, prompt, target_files, session_id)
-        emit("dag_planned", total_nodes=plan["total_nodes"],
-             total_ceiling=plan["total_cost_ceiling"],
-             nodes=[{"node_id": n["node_id"], "instruction": n["instruction"],
-                     "target": (n.get("target_files") or [""])[0]}
-                    for n in plan.get("nodes", [])])
-
-        # Auto-discover local verification gate
-        verification_gate = discover_verification_gate(target_files, self.root_dir)
-
-        if not auto_apply:
-            # Review-first mode: return proposed plan and candidate target files
-            result = {
-                "status": "preview_ready",
-                "intent": "edit",
-                "prompt": prompt,
-                "response": f"Plan formulated for {len(target_files)} target file(s). Ready for execution.",
-                "target_files": target_files,
-                "dag": plan["dag"],
-                "verification_gate": verification_gate,
-                "cost_ceiling": plan["total_cost_ceiling"],
-                "cost": 0.0,
-                # HV-5: the composed stages and the planning outcome are part
-                # of what the caller asked for, so they are part of the
-                # answer. A run that reports a plan without saying which
-                # stages it was allowed to spend, and how planning ended,
-                # is asking the reader to take the composition on trust.
-                **({"composition": dict(plan["composition"])}
-                   if isinstance(plan.get("composition"), dict) else {}),
-                **({"planning": dict(plan["planning"])}
-                   if isinstance(plan.get("planning"), dict) else {}),
-                **({"stage_judgments": dict(plan["stage_judgments"])}
-                   if isinstance(plan.get("stage_judgments"), dict) else {}),
-                **({"structural": dict(plan["structural"])}
-                   if isinstance(plan.get("structural"), dict) else {}),
-            }
-            save_chat_turn(session_id, result, self.history_dir)
-            return result
-
-        if cancel_check and cancel_check():
-            raise ToolCancelled("Prompt execution was cancelled by user")
-
-        # Autonomous execution mode: the orchestrator drives rounds --
-        # plan -> execute EVERY node (keep_going: failures are state for the
-        # judge, not abort) -> completion judge -> re-plan remaining scope --
-        # until the judge calls it complete or the round budget is spent.
-        # Keep the injected transport on the actual apply engine as well as
-        # planning/judging. This is the sole transport boundary for the agent
-        # lane; otherwise a dogfood/test transport silently fell back to live
-        # HTTP during node execution.
-        engine = apply_session(self.settings, transport=self.transport)
-
-        # Recreate the exact execution-stage ceiling reported by compose_plan,
-        # as a child of the SAME run budget. The live child is shared by all
-        # node calls, so concurrent reservations are accounted atomically.
-        execution_record = next((entry for entry in
-                                 (plan.get("composition") or {}).get("stages", [])
-                                 if isinstance(entry, dict)
-                                 and entry.get("stage") == STAGE_EXECUTION), None)
-        execution_budget = None
-        if execution_record:
-            execution_budget = run_token_budget.stage(
-                STAGE_EXECUTION,
-                max_input_tokens=execution_record.get("max_input_tokens"),
-                max_output_tokens=execution_record.get("max_output_tokens"))
-
-        def apply_node(target, node: DAGNode, route_kwargs, task_runner):
-            """One node's engine call for the agent lane: the absolute target
-            (the engine resolves paths against process CWD, the server's
-            directory, not the agent's chosen root), the gate fallback, the
-            MAX_FILE_LINES -> diff-backend switch, and the self-healing
-            retry. How the round runs -- worker count, reservations, worktree
-            isolation, attestation -- is the shared PlanExecutor's."""
-            if cancel_check and cancel_check():
-                raise ToolCancelled("Subtask cancelled by user")
-            if target is None and target_files:
-                target = target_files[0]
-            # Isolated nodes arrive absolute, inside their own worktree.
-            engine_target = target
-            if target and not Path(target).is_absolute():
-                engine_target = str(self.root_dir / target)
-            # The planner owns gate derivation. This lane deliberately does
-            # not repair or invent a gate: a missing plan-time gate remains a
-            # fail-closed trust refusal rather than becoming an ungated ok.
-            gate = node.local_gate
-            emit("subtask_start", node_id=node.node_id, instruction=node.instruction, target=target)
-
-            # Whole-file rewrites cap at MAX_FILE_LINES by engine policy;
-            # large-file nodes go straight to the diff backend (touched
-            # hunks only) instead of dying as "out of scope" fatals.
-            if engine_target and Path(engine_target).is_file():
-                try:
-                    line_count = len(Path(engine_target).read_text(
-                        encoding="utf-8", errors="replace").splitlines())
-                except OSError:
-                    line_count = 0
-                if line_count > MAX_FILE_LINES:
-                    route_kwargs.setdefault("backend", "diff")
-
-            apply_kwargs = dict(route_kwargs)
-            if execution_budget is not None:
-                apply_kwargs["token_budget"] = execution_budget
-            # Consent is bound to this exact node assignment and source pins.
-            # Pin contents are represented by digests; no prior chat history
-            # or web response bodies enter the consent prompt.
-            source_pins = {}
-            for rel in target_files:
-                source = self.root_dir / rel
-                if source.is_file():
-                    try:
-                        source_pins[str(rel)] = hashlib.sha256(
-                            source.read_bytes()).hexdigest()
-                    except OSError:
-                        source_pins[str(rel)] = "unreadable"
-            task_limit = route_kwargs.get(
-                "task_max_cost", engine.default_task_max_cost)
-            assignment = {
-                "schema": "jev-work-package-v1",
-                "request": prompt,
-                "node_id": node.node_id,
-                "instruction": node.instruction,
-                "target": str(target or ""),
-                "verification_gate": gate,
-                "context_pins": source_pins,
-                "model_policy": {
-                    "pinned_model": route_kwargs.get("model"),
-                    "apply_pool": list(route_kwargs.get("apply_pool") or
-                                        engine.router.apply_pool),
-                    "allow_escalation": bool(route_kwargs.get(
-                        "allow_escalation", self.settings.allow_escalation)),
-                },
-                "limits": {
-                    "task_max_cost": task_limit,
-                    "run_max_cost": gov.max_cost,
-                    "run_remaining_cost": gov.remaining(),
-                    "max_input_tokens": (execution_budget.max_input_tokens
-                                          if execution_budget else None),
-                    "max_output_tokens": (execution_budget.max_output_tokens
-                                           if execution_budget else None),
-                },
-            }
-            encoded = json.dumps(assignment, sort_keys=True,
-                                 separators=(",", ":"), default=str)
-            assignment["assignment_id"] = "wp-" + hashlib.sha256(
-                encoded.encode("utf-8")).hexdigest()[:24]
-            apply_kwargs["assignment_context"] = assignment
-            if task_runner is not None:
-                apply_kwargs["task_runner"] = task_runner
-            res = engine.apply_edit(
-                file_path=engine_target,
-                instruction=node.instruction,
-                verify_cmd=gate,
-                allow_verify=True,
-                require_consent=True,
-                require_diff_authorization=hourglass["require_diff_authorization"],
-                **apply_kwargs,
-            )
-            if isinstance(res, dict):
-                res.setdefault("assignment_id", assignment["assignment_id"])
-                res.setdefault("assignment_digest", hashlib.sha256(
-                    json.dumps(assignment, sort_keys=True, separators=(",", ":"),
-                               default=str).encode("utf-8")).hexdigest())
-                if execution_budget is not None:
-                    res["token_usage"] = execution_budget.snapshot()
-
-            # The shared engine gate owns Jev when it was composed normally.
-            # A lightweight injected engine (used by library callers/tests)
-            # has no policy, so this lane supplies the same policy owner as a
-            # compatibility boundary rather than silently skipping the check.
-            # JEV-P4: composition goes through session.jev_for → policy_for
-            # (no raw JevEvaluator outside the policy owner).
-            structural = res.get("structural") if isinstance(res, dict) else None
-            policy = getattr(engine, "jev_policy", None)
-            if (res.get("status") in SUCCESS_STATUSES and res.get("diff")
-                    and not isinstance(policy, JevPolicy)):
-                policy = jev_for(
-                    self.settings, transport=self.transport, governor=gov,
-                    ledger=ledger_for(self.settings, caller="agent"))
-                jev_res, structural = policy.evaluate_diff(
-                    diff=res["diff"], instruction=node.instruction,
-                    file_path=engine_target or "", candidate=res.get("content"),
-                    site="agent-apply", task_id=session_id,
-                    node_id=node.node_id)
-                emit("structural_eval", node_id=node.node_id,
-                     verdict=structural["verdict"],
-                     confidence=structural["confidence"],
-                     supported=structural["supported"])
-                if not jev_res.is_passing(min_confidence=self.settings.min_confidence):
-                    emit("subtask_retry", node_id=node.node_id,
-                         error="Structural check failed: " + "; ".join(jev_res.reasons))
-                    healing_inst = (f"{node.instruction}\nSTRUCTURAL EVALUATION FAILED:\n"
-                                    + "\n".join(jev_res.reasons))
-                    prior_cost = float(res.get("cost", 0.0) or 0.0)
-                    res = engine.apply_edit(
-                        file_path=engine_target,
-                        instruction=healing_inst,
-                        verify_cmd=gate,
-                        allow_verify=True,
-                        require_consent=True,
-                        require_diff_authorization=hourglass["require_diff_authorization"],
-                        **apply_kwargs,
-                    )
-                    if isinstance(res, dict):
-                        res["cost"] = round(prior_cost + float(res.get("cost", 0.0) or 0.0), 6)
-                        res["structural"] = structural
-
-            # Self-healing retry on verification failure
-            if res.get("status") not in SUCCESS_STATUSES and res.get("error"):
-                prior_cost = float(res.get("cost", 0.0) or 0.0)
-                condensed_err = condense_error_log(str(res.get("error")))
-                emit("subtask_retry", node_id=node.node_id, error=condensed_err[:120])
-                # Attempt retry with healing instruction
-                healing_inst = f"{node.instruction}\nPREVIOUS TEST FAILURE:\n{condensed_err}"
-                res = engine.apply_edit(
-                    file_path=engine_target,
-                    instruction=healing_inst,
-                    verify_cmd=gate,
-                    allow_verify=True,
-                    require_consent=True,
-                    require_diff_authorization=hourglass["require_diff_authorization"],
-                    **apply_kwargs,
-                )
-                if isinstance(res, dict):
-                    res["cost"] = round(prior_cost + float(res.get("cost", 0.0) or 0.0), 6)
-
-            emit("subtask_finish", node_id=node.node_id, status=res.get("status"))
-            return res
-
-        def execute_plan(plan_to_run):
-            dag = TaskDAG.from_dict(plan_to_run["dag"])
-            node_routes = {n.get("node_id"): n for n in plan_to_run["nodes"]}
-            run_gate = None
-            for n in plan_to_run.get("nodes") or ():
-                if isinstance(n, dict) and n.get("local_gate"):
-                    run_gate = n["local_gate"]
-                    break
-            plan_exec = PlanExecutor(
-                engine, node_routes,
-                parallel=hourglass["parallel"], isolate=hourglass["isolate"],
-                keep_going=True,
-                require_diff_authorization=hourglass["require_diff_authorization"],
-                route_kwargs_fn=lambda route: node_apply_kwargs(
-                    route,
-                    allow_escalation=self.settings.allow_escalation,
-                    attest_model=attest_model_for(self.settings)),
-                repo=str(root_dir), run_ceiling=gov.max_cost,
-                apply=apply_node,
-                # HG-final-gate: default ON when a verify command was
-                # discovered/declared; shared with CLI/MCP via PlanExecutor.
-                final_gate=hourglass.get("final_gate"),
-                run_gate=run_gate)
-            return plan_exec.execute(dag)
-
-        drive_kwargs = dict(
-            goal=prompt, target_files=target_files, initial_plan=plan,
-            root_dir=root_dir, plan_round=lambda next_goal: self._plan_round(
-                next_goal, target_files, gov, confirm=hourglass["confirm"],
-                token_budget=run_token_budget),
-            execute_plan=execute_plan,
-            completion_chat=lambda prompt_text: self._orchestrator_chat_fn(gov)(prompt_text),
-            emit=emit, cancel_check=cancel_check,
-            refused=lambda refused_plan: self._refused_edit(
-                refused_plan, prompt, target_files, session_id))
-        if use_jev_completion:
-            drive_kwargs.update(jev_policy=plan_policy,
-                                jev_completion_threshold=0.99)
-        driven = drive(**drive_kwargs)
-        if driven.get("status") == "refused":
-            return driven
-        all_results = driven["all_results"]
-        total_cost = driven["total_cost"]
-        rounds_history = driven["rounds_history"]
-        final_all_ok = driven["final_all_ok"]
-        remaining_scope = driven["remaining_scope"]
-        handoff = driven.get("handoff")
-        plan = driven["plan"]
-
-        # Evidence-bound escalation. The deferral note is a HANDOFF, not proof
-        # that a rung ran: a run that planned, handoff-routed, and executed
-        # every node on the free lane used to report itself as "escalated".
-        # Only a gate-passed escalation whose family differs from the primary
-        # it replaced may carry the label (escalation.escalation_evidence is
-        # the ONE definition of that evidence).
-        escalation_ev = None
-        for _node_result in all_results.values():
-            escalation_ev = escalation_evidence(_node_result)
-            if escalation_ev is not None:
-                break
-
-        # Generate unified diffs
-        diffs: List[str] = []
-        for tf in target_files:
-            fp = self.root_dir / tf
-            if fp.exists():
-                try:
-                    new_text = fp.read_text(encoding="utf-8")
-                    old_text = original_contents.get(tf, "")
-                    if old_text != new_text:
-                        diff = difflib.unified_diff(
-                            old_text.splitlines(keepends=True),
-                            new_text.splitlines(keepends=True),
-                            fromfile=f"a/{tf}",
-                            tofile=f"b/{tf}",
-                        )
-                        diffs.append("".join(diff))
-                except Exception:
-                    pass
-
-        unified_diff_str = "\n".join(diffs).strip()
-
-        # Synthesize clear natural language conclusion
-        if handoff:
-            response_msg = ("Execution stopped at the consent boundary. "
-                            "Completed node evidence is retained in the handoff.")
-        elif final_all_ok:
-            response_msg = (
-                f"Orchestrator complete after {len(rounds_history)} round(s). "
-                f"Modified {len(target_files)} file(s); the completion judge "
-                f"confirmed the goal is met."
-            )
-        elif remaining_scope:
-            response_msg = (f"Orchestrator stopped after {len(rounds_history)} "
-                            f"round(s) with honest remaining scope: "
-                            f"{remaining_scope}")
-        else:
-            response_msg = "Task encountered a verification failure during execution. Check diff and error details."
-        if escalation_note:
-            if escalation_ev is not None:
-                response_msg += (
-                    f"\n\n**Auto-escalated to the plan lane (hourglass)** after "
-                    f"a capability defer: {escalation_note} -- escalation rung "
-                    f"ran: {escalation_ev['from_family']} -> "
-                    f"{escalation_ev['family']} on {escalation_ev['model']}.")
-            else:
-                response_msg += (
-                    f"\n\n**Auto-escalation handoff ran, but no escalation rung "
-                    f"actually ran** (capability defer: {escalation_note}): every "
-                    f"node stayed on its configured lane, so this run is not "
-                    f"escalated.")
-
-        agent_structural = aggregate_structural(
-            list(all_results.values()), site="agent")
-        if agent_structural is None and isinstance(plan.get("structural"), dict):
-            agent_structural = dict(plan["structural"])
-            agent_structural["site"] = "agent"
-        last_jev = next((r.get("jev") for r in reversed(rounds_history)
-                         if isinstance(r, dict) and r.get("jev")), None)
-        hourglass_evidence = {
-            "stages": ["context_intake", "planning_waist", "execution",
-                       "completion_jev"] if use_jev_completion else
-                      ["context_intake", "planning_waist", "execution"],
-            "rounds": rounds_history,
-            "settings": hourglass,
-            "token_usage": run_token_budget.snapshot(),
-            "source": "agent_edit_lane",
-        }
-        result = {
-            "status": "deferred" if handoff else
-                      ("ok" if final_all_ok else "failed"),
-            **({"escalated_from_defer":
-                escalation_note or "free model capability defer"}
-               if escalation_ev is not None else {}),
-            **escalation_evidence_fields(escalation_ev),
-            "intent": "edit",
-            "prompt": prompt,
-            "response": response_msg,
-            "target_files": target_files,
-            "diff": unified_diff_str,
-            "verification_gate": verification_gate,
-            # The waist gate's own verdict rides the envelope, so a reader
-            # can see what confirmed this plan (and on which model).
-            **({"confirmation": plan["confirmation"]}
-               if plan.get("confirmation") else {}),
-            **({"structural": agent_structural}
-               if agent_structural is not None else {}),
-            # MS envelope: requested = first child's requested primary;
-            # observed = every model that served across the run.
-            **model_envelope(
-                model_requested=next((r.get("model_requested") for r in
-                                      all_results.values()
-                                      if isinstance(r, dict)
-                                      and r.get("model_requested")), None),
-                model_observed=[m for r in all_results.values()
-                                if isinstance(r, dict)
-                                for m in (r.get("model_observed") or [])]),
-            "cost": round(total_cost, 6),
-            # HV-5: the composed stages, the planning outcome and the
-            # execution-stage judgment are the same evidence the review-first
-            # envelope already carried, and `auto_apply` defaults to false --
-            # so leaving them on the preview branch only would have made the
-            # whole slice invisible on an ordinary autonomous run. They ride
-            # the final plan, next to the `hourglass` block that already
-            # carries stage evidence, because a reader of a completed run has
-            # at least as much claim to them as a reader of a preview.
-            **({"composition": dict(plan["composition"])}
-               if isinstance(plan.get("composition"), dict) else {}),
-            **({"planning": dict(plan["planning"])}
-               if isinstance(plan.get("planning"), dict) else {}),
-            **({"stage_judgments": dict(plan["stage_judgments"])}
-               if isinstance(plan.get("stage_judgments"), dict) else {}),
-            **engine.governor.snapshot(),
-            "results": list(all_results.values()),
-            "orchestrator_rounds": len(rounds_history),
-            "orchestrator_history": rounds_history,
-            "hourglass": hourglass_evidence,
-            **({"handoff": handoff} if handoff else {}),
-            **({"confidence": {
-                "threshold": 0.99,
-                "observed": (last_jev or {}).get("supported"),
-                "passed": bool(
-                    final_all_ok
-                    and (last_jev or {}).get("native")
-                    and isinstance((last_jev or {}).get("supported"), (int, float))
-                    and float((last_jev or {}).get("supported")) >= 0.99),
-                "source": "jev.noul.goal_achieved",
-            }} if last_jev else {}),
-            **({"remaining_scope": remaining_scope} if not final_all_ok else {}),
-        }
-
-        save_chat_turn(session_id, result, self.history_dir)
-        emit("chat_response", intent="edit", status=result["status"], cost=total_cost)
-        return result

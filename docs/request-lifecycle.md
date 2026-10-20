@@ -78,6 +78,23 @@ states that no lookup was run. This path has
 zero model, Jev, and network calls. Questions about event times (for example,
 when a meeting starts) remain ordinary requests.
 
+## Implementation ownership
+
+`AutonomousAgent` in `harness/agent.py` is the runtime and intent router: it
+owns settings, workspace, transport, cancellation, and dispatch to the
+specialized lanes. `ChatLifecycleMixin` in `harness/chat_lifecycle.py` owns
+conversation transitions and answer execution, including simple answers,
+workspace and web context, the legacy conversation fallback, Jev review, and
+interrupted-request resume. The mixin is stateless; request progress is passed
+through method arguments and results. `ChatCheckpoint` in `harness/history.py`
+owns the persisted lifecycle shape, validation, and atomic disk operations.
+Jev judgment stays in `harness/jev_policy.py`, workspace file selection in
+`harness/repo_scope.py`, and token allocation in `harness/token_budget.py`.
+
+The data flow is `run_prompt` → chat lifecycle → typed result/checkpoint →
+history storage. Renderers and GUI/MCP surfaces consume the same result and
+event contracts; they do not own a parallel checkpoint state machine.
+
 ## Order of operations for other freeform requests
 
 1. **Intent** (`classify_prompt_intent`): action verb + URL/host classifies

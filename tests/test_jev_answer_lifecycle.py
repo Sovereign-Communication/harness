@@ -260,7 +260,7 @@ class HourglassAnswerOnceTests(unittest.TestCase):
                       "usage": {"cost": 0.002}}),
             ]
             gov = MagicMock()
-            with patch("harness.agent.chat", side_effect=responses):
+            with patch("harness.hourglass_lifecycle.chat", side_effect=responses):
                 result = agent._hourglass_answer_once(
                     "q", "context", governor=gov, api_key="k")
         self.assertEqual(result["model"], "c1")
@@ -276,7 +276,7 @@ class HourglassAnswerOnceTests(unittest.TestCase):
                 {"ok": True, "kind": "fetch", "title": "Example", "url": "https://example.com", "text": "web info"},
                 {"ok": False, "kind": "search", "url": "https://bad.com", "note": "failed"},
             ]
-            with patch("harness.agent.chat", return_value=(200, {"choices": [{"message": {"content": "ok"}}], "usage": {"cost": 0.0}})) as mc:
+            with patch("harness.hourglass_lifecycle.chat", return_value=(200, {"choices": [{"message": {"content": "ok"}}], "usage": {"cost": 0.0}})) as mc:
                 agent._hourglass_answer_once(
                     "q", "context", governor=gov, api_key="k", web=True, web_sources=sources)
             sysmsg = mc.call_args[1]["messages"][0]["content"]
@@ -287,7 +287,7 @@ class HourglassAnswerOnceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
             gov = MagicMock()
-            with patch("harness.agent.chat",
+            with patch("harness.hourglass_lifecycle.chat",
                       return_value=(429, {"error": {"message": "down"}})):
                 with self.assertRaises(HarnessError) as ctx:
                     agent._hourglass_answer_once(
@@ -302,7 +302,7 @@ class HourglassAnswerOnceTests(unittest.TestCase):
             truncated = (200, {"choices": [{"message": {
                 "content": cut_text},
                 "finish_reason": "stop"}], "usage": {"cost": 0.0}})
-            with patch("harness.agent.chat", return_value=truncated):
+            with patch("harness.hourglass_lifecycle.chat", return_value=truncated):
                 res = agent._hourglass_answer_once(
                     "q", "", governor=gov, api_key="k")
             self.assertTrue(res.get("truncated"))
@@ -337,7 +337,7 @@ class HourglassAnswerOnceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
             checks = iter([False, True])
-            with patch("harness.agent.chat",
+            with patch("harness.hourglass_lifecycle.chat",
                       return_value=(429, {"error": {"message": "down"}})):
                 with self.assertRaises(ToolCancelled):
                     agent._hourglass_answer_once(
@@ -352,7 +352,7 @@ class HourglassAnswerOnceTests(unittest.TestCase):
             ok = (200, {"choices": [{"message": {"content": "answer"},
                                      "finish_reason": "stop"}],
                        "usage": {"cost": 0.001}})
-            with patch("harness.agent.chat", return_value=ok):
+            with patch("harness.hourglass_lifecycle.chat", return_value=ok):
                 result = agent._hourglass_answer_once(
                     "q", "", governor=gov, api_key="k")
         self.assertEqual(result["model"], "p2")
@@ -364,8 +364,8 @@ class HourglassAnswerOnceTests(unittest.TestCase):
             ok = (200, {"choices": [{"message": {"content": "answer"},
                                      "finish_reason": "stop"}],
                        "usage": {"cost": 0.0}})
-            with patch("harness.agent.governor_for", return_value=("k", gov)), \
-                 patch("harness.agent.chat", return_value=ok):
+            with patch("harness.hourglass_lifecycle.governor_for", return_value=("k", gov)), \
+                 patch("harness.hourglass_lifecycle.chat", return_value=ok):
                 result = agent._hourglass_answer_once("q", "")
         self.assertEqual(result["model"], "p1")
 
@@ -410,7 +410,7 @@ class HourglassRequestContextTests(unittest.TestCase):
                     encoding="utf-8")
             agent = AutonomousAgent(settings=_ladder_settings(),
                                     root_dir=root, history_dir=root)
-            with patch("harness.agent.ledger_for", return_value=MagicMock()):
+            with patch("harness.hourglass_lifecycle.ledger_for", return_value=MagicMock()):
                 context, files, _brief, web_sources = \
                     agent._hourglass_request_context(
                         "Audit this repo and determine the most valuable "
@@ -461,9 +461,9 @@ class AgentAnswerLoopTests(unittest.TestCase):
         agent = AutonomousAgent(settings=load_settings(), root_dir=None)
         with patch("harness.agent.load_chat_checkpoint",
                    side_effect=HarnessError("corrupt")), \
-             patch("harness.agent.policy_for",
+             patch("harness.simple_answer_lifecycle.policy_for",
                    side_effect=AssertionError("resume failure is local")), \
-             patch("harness.agent.governed_completion",
+             patch("harness.simple_answer_lifecycle.governed_completion",
                    side_effect=AssertionError("resume failure is local")):
             result = agent.run_prompt("continue", session_id="broken")
         self.assertEqual(result["status"], "deferred")
@@ -494,10 +494,10 @@ class AgentAnswerLoopTests(unittest.TestCase):
         agent = AutonomousAgent(settings=load_settings(), root_dir=None)
         existing = {"route": "hourglass", "status": "running",
                     "prompt": "old request"}
-        with patch("harness.agent.load_chat_checkpoint",
+        with patch("harness.chat_lifecycle.load_chat_checkpoint",
                    side_effect=HarnessError("corrupt")), \
              patch.object(agent, "_persist_chat_checkpoint") as persist, \
-             patch("harness.agent.save_chat_turn"):
+             patch("harness.chat_lifecycle.save_chat_turn"):
             result = agent._workspace_context_deferred(
                 "Audit this repo", "select-workspace")
         self.assertEqual(result["status"], "deferred")
@@ -505,9 +505,9 @@ class AgentAnswerLoopTests(unittest.TestCase):
         self.assertEqual(saved["prompt"], "Audit this repo")
         self.assertEqual(saved["stage"], "workspace_selection")
 
-        with patch("harness.agent.load_chat_checkpoint", return_value=existing), \
+        with patch("harness.chat_lifecycle.load_chat_checkpoint", return_value=existing), \
              patch.object(agent, "_persist_chat_checkpoint") as persist, \
-             patch("harness.agent.save_chat_turn"):
+             patch("harness.chat_lifecycle.save_chat_turn"):
             agent._workspace_context_deferred("old request", "select-workspace")
         saved = persist.call_args.args[1]
         self.assertEqual(saved["status"], "interrupted")
@@ -561,13 +561,13 @@ class AgentAnswerLoopTests(unittest.TestCase):
                 {"prompt": prompt, "response": "duplicate current turn"},
                 {"prompt": "Explain light energy", "response": "Prior context"},
             ]
-            with patch("harness.agent.governor_for", return_value=(None, governor)), \
-                 patch("harness.agent.policy_for", return_value=policy), \
-                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
-                 patch("harness.agent.load_chat_history", return_value=history), \
-                 patch("harness.agent.governed_completion",
+            with patch("harness.simple_answer_lifecycle.governor_for", return_value=(None, governor)), \
+                 patch("harness.simple_answer_lifecycle.policy_for", return_value=policy), \
+                 patch("harness.simple_answer_lifecycle.ledger_for", return_value=MagicMock()), \
+                 patch("harness.simple_answer_lifecycle.load_chat_history", return_value=history), \
+                 patch("harness.simple_answer_lifecycle.governed_completion",
                        side_effect=AssertionError("saved candidate must be reused")), \
-                 patch("harness.agent.save_chat_turn"), \
+                 patch("harness.simple_answer_lifecycle.save_chat_turn"), \
                  patch.object(agent, "_clear_chat_checkpoint"):
                 result = agent.run_simple_request(
                     prompt, session_id="simple-review", resume_state=checkpoint)
@@ -588,10 +588,10 @@ class AgentAnswerLoopTests(unittest.TestCase):
             "native": True, "strategy": "workspace_inspection",
             "cost": 0.00001,
         })
-        with patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
-             patch("harness.agent.policy_for", return_value=policy), \
-             patch("harness.agent.ledger_for", return_value=MagicMock()), \
-             patch("harness.agent.save_chat_turn"), \
+        with patch("harness.simple_answer_lifecycle.governor_for", return_value=(None, MagicMock())), \
+             patch("harness.simple_answer_lifecycle.policy_for", return_value=policy), \
+             patch("harness.simple_answer_lifecycle.ledger_for", return_value=MagicMock()), \
+             patch("harness.simple_answer_lifecycle.save_chat_turn"), \
              patch.object(agent, "_persist_chat_checkpoint"), \
              patch.object(agent, "_workspace_context_deferred",
                           return_value={"status": "deferred"}) as defer:
@@ -601,11 +601,11 @@ class AgentAnswerLoopTests(unittest.TestCase):
 
     def test_checkpoint_storage_failures_are_reported_without_raising(self):
         agent = AutonomousAgent(settings=load_settings(), root_dir=None)
-        with patch("harness.agent.save_chat_checkpoint",
+        with patch("harness.hourglass_lifecycle.save_chat_checkpoint",
                    side_effect=OSError("disk full")), \
-             patch("harness.agent.clear_chat_checkpoint",
+             patch("harness.hourglass_lifecycle.clear_chat_checkpoint",
                    side_effect=HarnessError("unsafe")), \
-             patch("harness.agent.emit") as emit_event:
+             patch("harness.hourglass_lifecycle.emit") as emit_event:
             agent._persist_chat_checkpoint("session", {"prompt": "x"})
             agent._clear_chat_checkpoint("session")
         self.assertEqual([call.args[0] for call in emit_event.call_args_list], [
@@ -644,6 +644,22 @@ class AgentAnswerLoopTests(unittest.TestCase):
             checkpoint["file_hashes"] = {}
             self.assertFalse(agent._hourglass_context_matches(checkpoint))
 
+    def test_checkpoint_workspace_root_comparison_is_canonical_and_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=load_settings(), root_dir=root,
+                                    history_dir=root)
+            checkpoint = {
+                "workspace_root": str(root / ".." / root.name),
+                "file_hashes": {},
+            }
+            self.assertTrue(agent._hourglass_context_matches(checkpoint))
+
+            checkpoint["workspace_root"] = ""
+            self.assertFalse(agent._hourglass_context_matches(checkpoint))
+            checkpoint["workspace_root"] = "\x00"
+            self.assertFalse(agent._hourglass_context_matches(checkpoint))
+
     def test_missing_root_returns_no_workspace_candidates(self):
         agent = AutonomousAgent(settings=load_settings(), root_dir=None)
         self.assertEqual(agent._hourglass_workspace_candidates("Audit this repo"), [])
@@ -661,15 +677,15 @@ class AgentAnswerLoopTests(unittest.TestCase):
             for index, route in enumerate(cases):
                 policy = _FakePolicy([(0.995, False, False)])
                 with self.subTest(route=route), \
-                     patch("harness.agent.policy_for", return_value=policy), \
-                     patch("harness.agent.governor_for",
+                     patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
+                     patch("harness.hourglass_lifecycle.governor_for",
                            return_value=(None, MagicMock())), \
-                     patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                     patch("harness.hourglass_lifecycle.ledger_for", return_value=MagicMock()), \
                      patch.object(agent, "_hourglass_request_context", return_value=(
                          "web context", {}, MagicMock(estimated_tokens=2), [])) as context, \
                      patch.object(agent, "_hourglass_answer_once", return_value={
                          "model": "m1", "answer": "grounded answer", "cost": 0.0}), \
-                     patch("harness.agent.save_chat_turn"):
+                     patch("harness.hourglass_lifecycle.save_chat_turn"):
                     result = agent.run_hourglass_request(
                         "Explain a current question", session_id=f"web-{index}",
                         request_preflight=route)
@@ -680,10 +696,10 @@ class AgentAnswerLoopTests(unittest.TestCase):
         agent = AutonomousAgent(settings=load_settings(), root_dir=None)
         route = {"source": "jev_request_workflow", "choice": "clarify",
                  "native": True, "cost": 0.0}
-        with patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
-             patch("harness.agent.policy_for", return_value=MagicMock()), \
-             patch("harness.agent.ledger_for", return_value=MagicMock()), \
-             patch("harness.agent.save_chat_turn") as save_turn, \
+        with patch("harness.hourglass_lifecycle.governor_for", return_value=(None, MagicMock())), \
+             patch("harness.hourglass_lifecycle.policy_for", return_value=MagicMock()), \
+             patch("harness.hourglass_lifecycle.ledger_for", return_value=MagicMock()), \
+             patch("harness.hourglass_lifecycle.save_chat_turn") as save_turn, \
              patch.object(agent, "_clear_chat_checkpoint") as clear, \
              patch.object(agent, "_hourglass_request_context",
                           side_effect=AssertionError("clarification is local")), \
@@ -701,9 +717,9 @@ class AgentAnswerLoopTests(unittest.TestCase):
         route = {"source": "jev_request_workflow",
                  "choice": "workspace-inspection", "native": True,
                  "cost": 0.0}
-        with patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
-             patch("harness.agent.policy_for", return_value=MagicMock()), \
-             patch("harness.agent.ledger_for", return_value=MagicMock()), \
+        with patch("harness.hourglass_lifecycle.governor_for", return_value=(None, MagicMock())), \
+             patch("harness.hourglass_lifecycle.policy_for", return_value=MagicMock()), \
+             patch("harness.hourglass_lifecycle.ledger_for", return_value=MagicMock()), \
              patch.object(agent, "_workspace_context_deferred",
                           return_value={"status": "deferred"}) as defer:
             result = agent.run_hourglass_request(
@@ -715,9 +731,9 @@ class AgentAnswerLoopTests(unittest.TestCase):
         agent = AutonomousAgent(settings=load_settings(), root_dir=None)
         policy = MagicMock()
         policy.evaluate_request_workflow.side_effect = ToolCancelled("stopped")
-        with patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
-             patch("harness.agent.policy_for", return_value=policy), \
-             patch("harness.agent.ledger_for", return_value=MagicMock()), \
+        with patch("harness.hourglass_lifecycle.governor_for", return_value=(None, MagicMock())), \
+             patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
+             patch("harness.hourglass_lifecycle.ledger_for", return_value=MagicMock()), \
              patch.object(agent, "_persist_chat_checkpoint") as persist, \
              self.assertRaises(ToolCancelled):
             agent.run_hourglass_request("Explain a topic", session_id="route-cancel")
@@ -745,15 +761,15 @@ class AgentAnswerLoopTests(unittest.TestCase):
             }
             policy = _FakePolicy([(0.995, False, False)])
             governor = MagicMock()
-            with patch("harness.agent.policy_for", return_value=policy), \
-                 patch("harness.agent.governor_for", return_value=(None, governor)), \
-                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+            with patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
+                 patch("harness.hourglass_lifecycle.governor_for", return_value=(None, governor)), \
+                 patch("harness.hourglass_lifecycle.ledger_for", return_value=MagicMock()), \
                  patch.object(agent, "_hourglass_request_context",
                               side_effect=AssertionError("current context should be reused")), \
                  patch.object(agent, "_hourglass_answer_once", return_value={
                      "model": "m1", "answer": "Plants store light energy.",
                      "cost": 0.001}), \
-                 patch("harness.agent.save_chat_turn"):
+                 patch("harness.hourglass_lifecycle.save_chat_turn"):
                 result = agent.run_hourglass_request(
                     checkpoint["prompt"], session_id="hourglass-cost-resume",
                     resume_state=checkpoint)
@@ -770,7 +786,7 @@ class AgentAnswerLoopTests(unittest.TestCase):
                                     history_dir=Path(tmp))
             with patch.object(agent, "run_hourglass_request",
                               return_value={"status": "ok"}) as run, \
-                 patch("harness.agent.save_chat_turn"):
+                 patch("harness.simple_answer_lifecycle.save_chat_turn"):
                 result = agent.run_prompt(
                     "Can you audit this repo and find the biggest issues?",
                     session_id="repo-audit")
@@ -783,14 +799,14 @@ class AgentAnswerLoopTests(unittest.TestCase):
             agent = AutonomousAgent(settings=load_settings(), root_dir=root,
                                     history_dir=root)
             policy = _FakePolicy([(0.90, False, False)])
-            with patch("harness.agent.policy_for", return_value=policy), \
-                 patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
-                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+            with patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
+                 patch("harness.hourglass_lifecycle.governor_for", return_value=(None, MagicMock())), \
+                 patch("harness.hourglass_lifecycle.ledger_for", return_value=MagicMock()), \
                  patch.object(agent, "_hourglass_answer_once", return_value={
                      "model": "m1", "answer": "local review", "cost": 0.001}), \
                  patch.object(agent, "_gather_web_context",
                               side_effect=AssertionError("workspace work must not search")), \
-                 patch("harness.agent.save_chat_turn"):
+                 patch("harness.hourglass_lifecycle.save_chat_turn"):
                 result = agent.run_hourglass_request(
                     "Can you audit this repo?", web=True,
                     request_preflight={
@@ -807,9 +823,9 @@ class AgentAnswerLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = AutonomousAgent(settings=load_settings(),
                                     root_dir=Path(tmp), history_dir=Path(tmp))
-            with patch("harness.agent.policy_for",
+            with patch("harness.simple_answer_lifecycle.policy_for",
                        side_effect=AssertionError("must not call Jev")), \
-                 patch("harness.agent.governed_completion",
+                 patch("harness.simple_answer_lifecycle.governed_completion",
                        side_effect=AssertionError("must not generate")):
                 result = agent.run_prompt("continue", session_id="no-checkpoint")
             self.assertEqual(result["status"], "deferred")
@@ -826,12 +842,12 @@ class AgentAnswerLoopTests(unittest.TestCase):
             self.assertEqual(deferred["status"], "deferred")
             agent.root_dir = root
             policy = _FakePolicy([(0.90, False, False)])
-            with patch("harness.agent.policy_for", return_value=policy), \
-                 patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
-                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+            with patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
+                 patch("harness.hourglass_lifecycle.governor_for", return_value=(None, MagicMock())), \
+                 patch("harness.hourglass_lifecycle.ledger_for", return_value=MagicMock()), \
                  patch.object(agent, "_hourglass_answer_once", return_value={
                      "model": "m1", "answer": "local audit", "cost": 0.001}), \
-                 patch("harness.agent.save_chat_turn"):
+                 patch("harness.hourglass_lifecycle.save_chat_turn"):
                 result = agent.run_prompt(
                     "continue", session_id="workspace-later")
 
@@ -856,12 +872,12 @@ class AgentAnswerLoopTests(unittest.TestCase):
                     raise value
                 return value
 
-            with patch("harness.agent.policy_for", return_value=policy), \
-                 patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
-                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+            with patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
+                 patch("harness.hourglass_lifecycle.governor_for", return_value=(None, MagicMock())), \
+                 patch("harness.hourglass_lifecycle.ledger_for", return_value=MagicMock()), \
                  patch.object(agent, "_hourglass_answer_once",
                               side_effect=answer_once), \
-                 patch("harness.agent.save_chat_turn"):
+                 patch("harness.hourglass_lifecycle.save_chat_turn"):
                 with self.assertRaises(ToolCancelled):
                     agent.run_hourglass_request(
                         "Explain the router", session_id="resume-hourglass")
@@ -888,12 +904,12 @@ class AgentAnswerLoopTests(unittest.TestCase):
 
             policy = CancelThenReview([(0.90, False, False)])
             answer = {"model": "m1", "answer": "saved candidate", "cost": 0.001}
-            with patch("harness.agent.policy_for", return_value=policy), \
-                 patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
-                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+            with patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
+                 patch("harness.hourglass_lifecycle.governor_for", return_value=(None, MagicMock())), \
+                 patch("harness.hourglass_lifecycle.ledger_for", return_value=MagicMock()), \
                  patch.object(agent, "_hourglass_answer_once",
                               return_value=answer) as generate, \
-                 patch("harness.agent.save_chat_turn"):
+                 patch("harness.hourglass_lifecycle.save_chat_turn"):
                 with self.assertRaises(ToolCancelled):
                     agent.run_hourglass_request(
                         "Explain the router", session_id="resume-review")
@@ -945,11 +961,11 @@ class AgentAnswerLoopTests(unittest.TestCase):
             {"model": "cheap", "answer": "first", "cost": 0.001},
             {"model": "capable", "answer": "second", "cost": 0.002},
         ])
-        with patch("harness.agent.policy_for", return_value=policy), \
-             patch("harness.agent.governor_for", return_value=(None, object())), \
+        with patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
+             patch("harness.hourglass_lifecycle.governor_for", return_value=(None, object())), \
              patch.object(agent, "_hourglass_answer_once",
                           side_effect=lambda *a, **k: next(answers)), \
-             patch("harness.agent.save_chat_turn"):
+             patch("harness.hourglass_lifecycle.save_chat_turn"):
             result = agent.run_hourglass_request(
                 "How does the router work?", session_id="answer-loop")
 
@@ -969,10 +985,10 @@ class AgentAnswerLoopTests(unittest.TestCase):
                                     history_dir=root)
             policy = _FakePolicy([(0.90, False, False)])
             attempts = iter([{"model": "m1", "answer": "complete", "cost": 0}])
-            with patch("harness.agent.policy_for", return_value=policy), \
-                 patch("harness.agent.governor_for", return_value=(None, object())), \
+            with patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
+                 patch("harness.hourglass_lifecycle.governor_for", return_value=(None, object())), \
                  patch.object(agent, "_hourglass_answer_once", side_effect=lambda *a, **k: next(attempts)), \
-                 patch("harness.agent.save_chat_turn"):
+                 patch("harness.hourglass_lifecycle.save_chat_turn"):
                 result = agent.run_hourglass_request("Explain router behavior", max_rounds=2)
             self.assertEqual(result["status"], "ok")
             self.assertEqual(len(result["hourglass"]["rounds"]), 1)
@@ -986,12 +1002,12 @@ class AgentAnswerLoopTests(unittest.TestCase):
             agent = AutonomousAgent(settings=load_settings(), root_dir=root,
                                     history_dir=root)
             policy = _FakePolicy([(0.60, False, False)])
-            with patch("harness.agent.policy_for", return_value=policy), \
-                 patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
-                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+            with patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
+                 patch("harness.hourglass_lifecycle.governor_for", return_value=(None, MagicMock())), \
+                 patch("harness.hourglass_lifecycle.ledger_for", return_value=MagicMock()), \
                  patch.object(agent, "_hourglass_answer_once", return_value={
                      "model": "m1", "answer": "candidate", "cost": 0.001}) as generate, \
-                 patch("harness.agent.save_chat_turn"):
+                 patch("harness.hourglass_lifecycle.save_chat_turn"):
                 result = agent.run_hourglass_request(
                     "Explain router behavior", max_rounds=3)
             self.assertEqual(result["status"], "needs_iteration")
@@ -1012,11 +1028,11 @@ class AgentAnswerLoopTests(unittest.TestCase):
                                     "cost": 0.0, "input_tokens": 0,
                                     "output_tokens": 0,
                                     "pack_version": "answer-sufficiency-v1"}
-            with patch("harness.agent.policy_for", return_value=FallbackPolicy()), \
-                 patch("harness.agent.governor_for", return_value=(None, object())), \
+            with patch("harness.hourglass_lifecycle.policy_for", return_value=FallbackPolicy()), \
+                 patch("harness.hourglass_lifecycle.governor_for", return_value=(None, object())), \
                  patch.object(agent, "_hourglass_answer_once", return_value={
                      "model": "m", "answer": "verified answer", "cost": 0}), \
-                 patch("harness.agent.save_chat_turn"):
+                 patch("harness.hourglass_lifecycle.save_chat_turn"):
                 result = agent.run_hourglass_request("Answer a question")
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["jev"]["fallback_reason"], "transport_error")
@@ -1041,11 +1057,11 @@ class AgentAnswerLoopTests(unittest.TestCase):
                                     "input_tokens": 0, "output_tokens": 0,
                                     "pack_version": "answer-sufficiency-v1"}
 
-            with patch("harness.agent.policy_for", return_value=RejectedPolicy()), \
-                 patch("harness.agent.governor_for", return_value=(None, object())), \
+            with patch("harness.hourglass_lifecycle.policy_for", return_value=RejectedPolicy()), \
+                 patch("harness.hourglass_lifecycle.governor_for", return_value=(None, object())), \
                  patch.object(agent, "_hourglass_answer_once", return_value={
                      "model": "m", "answer": "candidate", "cost": 0.0}), \
-                 patch("harness.agent.save_chat_turn"):
+                 patch("harness.hourglass_lifecycle.save_chat_turn"):
                 result = agent.run_hourglass_request("Answer a question")
             self.assertEqual(result["status"], "deferred")
             self.assertIn("HTTP 401", result["remaining_scope"])
@@ -1090,9 +1106,9 @@ class AgentAnswerLoopTests(unittest.TestCase):
                 seen_generation.append(kwargs)
                 return next(attempts)
 
-            with patch("harness.agent.policy_for", return_value=policy), \
-                 patch("harness.agent.governor_for", return_value=(None, object())), \
-                 patch("harness.agent.load_chat_history", return_value=[
+            with patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
+                 patch("harness.hourglass_lifecycle.governor_for", return_value=(None, object())), \
+                 patch("harness.hourglass_lifecycle.load_chat_history", return_value=[
                      {"prompt": "private prior question", "response": "prior answer"}]), \
                  patch.object(agent, "_hourglass_request_context", return_value=(
                      "WEB EVIDENCE: fetched secret body", {},
@@ -1100,7 +1116,7 @@ class AgentAnswerLoopTests(unittest.TestCase):
                          "url": "https://example.test", "title": "Result",
                          "text": "fetched secret body"}])), \
                  patch.object(agent, "_hourglass_answer_once", side_effect=answer_once), \
-                 patch("harness.agent.save_chat_turn"):
+                 patch("harness.hourglass_lifecycle.save_chat_turn"):
                 result = agent.run_hourglass_request("current question", web=True,
                                                      max_rounds=2)
 
@@ -1149,8 +1165,8 @@ class AgentAnswerLoopTests(unittest.TestCase):
         settings = load_settings()
         settings.jev_api_key = None
         agent = AutonomousAgent(settings=settings, root_dir=root, history_dir=root)
-        with patch("harness.agent.policy_for", return_value=_FakePolicy([])), \
-             patch("harness.agent.governor_for", return_value=(None, object())):
+        with patch("harness.hourglass_lifecycle.policy_for", return_value=_FakePolicy([])), \
+             patch("harness.hourglass_lifecycle.governor_for", return_value=(None, object())):
             with self.assertRaises(ToolCancelled):
                 agent.run_hourglass_request(
                     "How does the router work?", cancel_check=lambda: True)
@@ -1174,11 +1190,11 @@ class AgentAnswerLoopTests(unittest.TestCase):
                                "cost": 0.0, "input_tokens": 0, "output_tokens": 0,
                                "pack_version": "answer-sufficiency-v1"}
 
-        with patch("harness.agent.policy_for", return_value=_UnkeyedPolicy()), \
-             patch("harness.agent.governor_for", return_value=(None, object())), \
+        with patch("harness.hourglass_lifecycle.policy_for", return_value=_UnkeyedPolicy()), \
+             patch("harness.hourglass_lifecycle.governor_for", return_value=(None, object())), \
              patch.object(agent, "_hourglass_answer_once",
                           return_value={"model": "m", "answer": "a", "cost": 0.0}), \
-             patch("harness.agent.save_chat_turn"):
+             patch("harness.hourglass_lifecycle.save_chat_turn"):
             result = agent.run_hourglass_request(
                 "How does the router work?", session_id="deferred-1")
 
@@ -1194,11 +1210,11 @@ class AgentAnswerLoopTests(unittest.TestCase):
         settings.jev_api_key = None
         agent = AutonomousAgent(settings=settings, root_dir=root, history_dir=root)
         policy = _FakePolicy([(0.995, False, True)])
-        with patch("harness.agent.policy_for", return_value=policy), \
-             patch("harness.agent.governor_for", return_value=(None, object())), \
+        with patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
+             patch("harness.hourglass_lifecycle.governor_for", return_value=(None, object())), \
              patch.object(agent, "_hourglass_answer_once",
                           return_value={"model": "m", "answer": "a", "cost": 0.0}), \
-             patch("harness.agent.save_chat_turn"):
+             patch("harness.hourglass_lifecycle.save_chat_turn"):
             result = agent.run_hourglass_request(
                 "How does the router work?", session_id="plan-1")
 
@@ -1212,11 +1228,11 @@ class AgentAnswerLoopTests(unittest.TestCase):
         settings.jev_api_key = None
         agent = AutonomousAgent(settings=settings, root_dir=root, history_dir=root)
         policy = _FakePolicy([(0.2, True, False)] * 3)
-        with patch("harness.agent.policy_for", return_value=policy), \
-             patch("harness.agent.governor_for", return_value=(None, object())), \
+        with patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
+             patch("harness.hourglass_lifecycle.governor_for", return_value=(None, object())), \
              patch.object(agent, "_hourglass_answer_once",
                           return_value={"model": "m", "answer": "a", "cost": 0.0}), \
-             patch("harness.agent.save_chat_turn"):
+             patch("harness.hourglass_lifecycle.save_chat_turn"):
             result = agent.run_hourglass_request(
                 "How does the router work?", session_id="needs-iter-1",
                 max_rounds=3)
@@ -1232,11 +1248,11 @@ class AgentAnswerLoopTests(unittest.TestCase):
         settings.jev_api_key = None
         agent = AutonomousAgent(settings=settings, root_dir=root, history_dir=root)
         policy = _FakePolicy([(0.2, True, False)] * 2)
-        with patch("harness.agent.policy_for", return_value=policy), \
-             patch("harness.agent.governor_for", return_value=(None, object())), \
+        with patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
+             patch("harness.hourglass_lifecycle.governor_for", return_value=(None, object())), \
              patch.object(agent, "_hourglass_answer_once",
                           return_value={"model": "m", "answer": "a", "cost": 0.0}), \
-             patch("harness.agent.save_chat_turn"):
+             patch("harness.hourglass_lifecycle.save_chat_turn"):
             result = agent.run_hourglass_request(
                 "How does the router work?", session_id="last-round",
                 max_rounds=2)
@@ -1262,11 +1278,11 @@ class AgentAnswerLoopTests(unittest.TestCase):
         policy = _FakePolicy([(0.2, True, False)])
         gov = MagicMock()
         gov.working_remaining.return_value = 0.0
-        with patch("harness.agent.policy_for", return_value=policy), \
-             patch("harness.agent.governor_for", return_value=(None, gov)), \
+        with patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
+             patch("harness.hourglass_lifecycle.governor_for", return_value=(None, gov)), \
              patch.object(agent, "_hourglass_answer_once",
                           return_value={"model": "m", "answer": "a", "cost": 0.0}), \
-             patch("harness.agent.save_chat_turn"):
+             patch("harness.hourglass_lifecycle.save_chat_turn"):
             result = agent.run_hourglass_request(
                 "How does the router work?", session_id="budget-1", max_rounds=2)
 
@@ -1301,8 +1317,10 @@ class HandleEditJevCompletionTests(unittest.TestCase):
             mock_engine.apply_edit.side_effect = fake_apply_edit
             test_gov = SpendGovernor(FakeTransport(), "sk-test", max_cost=1.0)
 
-            with patch("harness.agent.apply_session", return_value=mock_engine), \
-                 patch("harness.agent.governor_for",
+            with patch("harness.edit_lifecycle.apply_session", return_value=mock_engine), \
+                 patch("harness.edit_lifecycle.governor_for",
+                      return_value=(None, test_gov)), \
+                 patch("harness.hourglass_lifecycle.governor_for",
                       return_value=(None, test_gov)), \
                  patch.object(AutonomousAgent, "_orchestrator_chat_fn",
                               side_effect=HarnessError("hermetic test")):

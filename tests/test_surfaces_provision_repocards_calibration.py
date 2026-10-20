@@ -41,11 +41,13 @@ class TestCliParserSurfaces(unittest.TestCase):
 
     def test_provision_apply_parsed(self):
         p = build_parser()
-        args = p.parse_args(["provision", "apply", "--plan-file", "plan.json", "--execute"])
+        args = p.parse_args(["provision", "apply", "--plan-file", "plan.json",
+                             "--execute", "--task-id", "install-ruff"])
         self.assertEqual(args.command, "provision")
         self.assertEqual(args.provision_cmd, "apply")
         self.assertEqual(args.plan_file, "plan.json")
         self.assertFalse(args.dry_run)
+        self.assertEqual(args.task_id, "install-ruff")
 
     def test_repo_cards_parsed(self):
         p = build_parser()
@@ -287,6 +289,85 @@ class TestProvisionCliExecution(unittest.TestCase):
             cli._cmd_provision(opts, SimpleNamespace())
         text = out_buf.getvalue()
         self.assertIn("Provision run:", text)
+
+    def test_provision_execute_cli_persists_and_reuses_terminal_result(self):
+        from harness.lifecycle import LifecycleCoordinator
+
+        plan = pv.Plan("install ruff", [pv.Step(
+            "inspect", "inspect Python", ("python", "--version"),
+            pv.READ, "prints version")], self.root, "test", "test", False)
+        plan_path = os.path.join(self.root, "plan_lifecycle.json")
+        with open(plan_path, "w", encoding="utf-8") as f:
+            json.dump(plan.to_dict(), f)
+        opts = SimpleNamespace(
+            provision_cmd="apply", plan_file=plan_path, dry_run=False,
+            approve_all=False, task_id="install-ruff-once", json=True,
+            out=None, quiet=True,
+        )
+        settings = SimpleNamespace()
+        coordinator = LifecycleCoordinator(history_dir=Path(self.tmp_dir))
+        result = {"plan_digest": plan.digest, "dry_run": False,
+                  "outcome": "completed", "results": [],
+                  "rollback_hints": [], "resumable": False,
+                  "audit_failed": False}
+
+        def execute(*args, lifecycle, lifecycle_state, task_id, **kwargs):
+            self.assertEqual(task_id, "install-ruff-once")
+            self.assertEqual(lifecycle_state["lane"], "provisioning")
+            lifecycle.finish(lifecycle_state, "complete", result=result)
+            return SimpleNamespace(outcome="completed", results=[], to_dict=lambda: result)
+
+        with mock.patch("harness.cli.LifecycleCoordinator",
+                        return_value=coordinator), \
+             mock.patch("harness.cli._ledger", return_value=None), \
+             mock.patch("harness.cli._pv.execute_plan", side_effect=execute) as run:
+            first_output = io.StringIO()
+            with mock.patch("sys.stdout", first_output):
+                cli._cmd_provision(opts, settings)
+            second_output = io.StringIO()
+            with mock.patch("sys.stdout", second_output):
+                cli._cmd_provision(opts, settings)
+
+        self.assertEqual(json.loads(first_output.getvalue()), result)
+        self.assertEqual(json.loads(second_output.getvalue()), result)
+        run.assert_called_once()
+
+    def test_provision_execute_cli_does_not_replay_unknown_step(self):
+        from harness.lifecycle import LifecycleCoordinator
+
+        plan = pv.Plan("install ruff", [pv.Step(
+            "inspect", "inspect Python", ("python", "--version"),
+            pv.READ, "prints version")], self.root, "test", "test", False)
+        plan_path = os.path.join(self.root, "plan_unknown.json")
+        with open(plan_path, "w", encoding="utf-8") as f:
+            json.dump(plan.to_dict(), f)
+        opts = SimpleNamespace(
+            provision_cmd="apply", plan_file=plan_path, dry_run=False,
+            approve_all=False, task_id="install-ruff-unknown", json=True,
+            out=None, quiet=True,
+        )
+        settings = SimpleNamespace()
+        coordinator = LifecycleCoordinator(history_dir=Path(self.tmp_dir))
+        state = coordinator.begin(
+            "provisioning", opts.task_id, plan.goal, stage="execute",
+            data={"plan": plan.to_dict(), "plan_digest": plan.digest})
+        coordinator.begin_effect(state, "provision-step-inspect",
+                                 "provision.execute-step")
+        coordinator.finish(
+            state, "deferred", result={"outcome": "deferred"}, resumable=True)
+
+        output = io.StringIO()
+        with mock.patch("harness.cli.LifecycleCoordinator",
+                        return_value=coordinator), \
+             mock.patch("harness.cli._ledger", return_value=None), \
+             mock.patch("harness.cli._pv.execute_plan") as run, \
+             mock.patch("sys.stdout", output):
+            cli._cmd_provision(opts, settings)
+
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["outcome"], "deferred")
+        self.assertIn("provision-step-inspect", result["requires_reconciliation"])
+        run.assert_not_called()
 
 
 class TestRepoCardsCliExecution(unittest.TestCase):
@@ -688,7 +769,10 @@ class TestAgentProvisionIntent(unittest.TestCase):
                 package_managers=(), probed_path=str(root_path))
             history_dir = root_path / "history"
             history_dir.mkdir()
-            agent = AutonomousAgent(root_dir=root_path,
+            agent = AutonomousAgent(
+                settings=SimpleNamespace(jev_api_key=None, jev_disabled=True,
+                                         allow_escalation=False),
+                root_dir=root_path,
                                     history_dir=history_dir)
             with mock.patch("harness.provision.probe_host", return_value=probe):
                 res = agent.run_prompt("plan provision for ruff")
@@ -703,7 +787,10 @@ class TestAgentProvisionIntent(unittest.TestCase):
 
     def test_agent_run_prompt_provision_force_conversation(self):
         with tempfile.TemporaryDirectory() as root:
-            agent = AutonomousAgent(root_dir=root)
+            agent = AutonomousAgent(
+                settings=SimpleNamespace(jev_api_key=None, jev_disabled=True,
+                                         allow_escalation=False),
+                root_dir=root)
             res = agent.run_prompt("provision host probe", force_conversation=True)
         self.assertEqual(res["status"], "planned")
         self.assertEqual(res["intent"], "provision")

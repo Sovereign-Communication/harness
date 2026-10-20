@@ -20,11 +20,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from harness.agent import (
-    DEFAULT_RUN_WALL_SECONDS,
-    AutonomousAgent,
-    is_research_question,
-)
+from harness.agent import AutonomousAgent
+from harness.chat_policy import DEFAULT_RUN_WALL_SECONDS, is_research_question
 from harness.config import load_settings
 from tests._fake import FakeTransport, _gov
 
@@ -85,10 +82,19 @@ class _RunCase(unittest.TestCase):
         self.root = Path(self._tmp.name)
         (self.root / ".hist").mkdir(exist_ok=True)
         self.addCleanup(self._tmp.cleanup)
-        patcher = patch("harness.agent.governor_for",
-                        return_value=(None, _TEST_GOVERNOR))
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        patchers = [
+            patch("harness.agent.governor_for",
+                  return_value=(None, _TEST_GOVERNOR)),
+            patch("harness.chat_lifecycle.governor_for",
+                  return_value=(None, _TEST_GOVERNOR)),
+            patch("harness.simple_answer_lifecycle.governor_for",
+                  return_value=(None, _TEST_GOVERNOR)),
+            patch("harness.hourglass_lifecycle.governor_for",
+                  return_value=(None, _TEST_GOVERNOR)),
+        ]
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def _agent(self):
         return AutonomousAgent(

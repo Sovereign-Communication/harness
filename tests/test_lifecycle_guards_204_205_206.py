@@ -709,8 +709,8 @@ class AgentRateCircuitIntegrationTests(unittest.TestCase):
         agent.settings.judge = None
         agent.settings.convergence_model = None
         agent.settings.escalation_pool = []
-        with patch("harness.agent.chat", side_effect=fake_chat), \
-             patch("harness.agent.governor_for", return_value=("k", gov)):
+        with patch("harness.hourglass_lifecycle.chat", side_effect=fake_chat), \
+             patch("harness.hourglass_lifecycle.governor_for", return_value=("k", gov)):
             attempt = agent._hourglass_answer_once("test question", "ctx", governor=gov)
         self.assertEqual(calls, ["m2"])
         self.assertEqual(attempt["model"], "m2")
@@ -739,8 +739,8 @@ class AgentRateCircuitIntegrationTests(unittest.TestCase):
         agent.settings.judge = None
         agent.settings.convergence_model = None
         agent.settings.escalation_pool = []
-        with patch("harness.agent.chat", side_effect=fake_chat), \
-             patch("harness.agent.governor_for", return_value=("k", gov)):
+        with patch("harness.hourglass_lifecycle.chat", side_effect=fake_chat), \
+             patch("harness.hourglass_lifecycle.governor_for", return_value=("k", gov)):
             attempt = agent._hourglass_answer_once("test question", "ctx", governor=gov)
         self.assertEqual(calls, ["m1", "m2"])
         self.assertTrue(agent._rate_circuit.should_skip("m1"))
@@ -771,8 +771,8 @@ class AgentRateCircuitIntegrationTests(unittest.TestCase):
         agent.settings.judge = None
         agent.settings.convergence_model = None
         agent.settings.escalation_pool = []
-        with patch("harness.agent.chat", side_effect=fake_chat), \
-             patch("harness.agent.governor_for", return_value=("k", gov)):
+        with patch("harness.hourglass_lifecycle.chat", side_effect=fake_chat), \
+             patch("harness.hourglass_lifecycle.governor_for", return_value=("k", gov)):
             attempt = agent._hourglass_answer_once("test question", "ctx", governor=gov)
         self.assertEqual(calls, ["m1"])
         self.assertEqual(attempt["model"], "m1")

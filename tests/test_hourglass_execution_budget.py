@@ -45,10 +45,13 @@ class _GovernedRun(unittest.TestCase):
     """
 
     def setUp(self):
-        patcher = patch("harness.agent.governor_for",
-                        return_value=(None, _TEST_GOVERNOR))
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for target in ("harness.agent.governor_for",
+                       "harness.chat_lifecycle.governor_for",
+                       "harness.hourglass_lifecycle.governor_for",
+                       "harness.edit_lifecycle.governor_for"):
+            patcher = patch(target, return_value=(None, _TEST_GOVERNOR))
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
 
 def _settings(**overrides):
@@ -321,7 +324,7 @@ class DefaultPathDeliversTheEvidenceTests(_GovernedRun):
         self.addCleanup(session_patcher.stop)
 
     def _autonomous_run(self):
-        session_patch = patch("harness.agent.apply_session",
+        session_patch = patch("harness.edit_lifecycle.apply_session",
                               return_value=_StubEngine())
         session_patch.start()
         self.addCleanup(session_patch.stop)

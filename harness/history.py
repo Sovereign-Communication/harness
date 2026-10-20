@@ -11,18 +11,58 @@ import hashlib
 import json
 import os
 import re
-import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
 from .errors import HarnessError
-from .osal import atomic_write_text
+from .lifecycle import LifecycleState
 
 
 CHAT_CHECKPOINT_SCHEMA = "harness-chat-checkpoint-v1"
 MAX_CHAT_CHECKPOINT_BYTES = 96_000
 _CHAT_SESSION_ID_MAX_CHARS = 512
 _CHAT_SAFE_SESSION_ID_RE = re.compile(r"\A[A-Za-z0-9_.-]{1,128}\Z")
+
+
+class ChatResumePayload(TypedDict, total=False):
+    """Route-specific chat details nested inside the shared typed contract."""
+
+    schema: str
+    session_id: str
+    updated_at: float
+    route: str
+    status: str
+    stage: str
+    prompt: str
+    intent: str
+    web_requested: bool
+    workspace_root: str
+    workspace_context_used: bool
+    known_cost: float
+    unknown_liability: float
+    usage_unknown: bool
+    next_round: int
+    rounds: List[Dict[str, Any]]
+    route_preflight: Dict[str, Any]
+    context: str
+    context_files: List[str]
+    context_tokens: int
+    context_scope: str
+    context_updated_at: float
+    history_turns: List[Dict[str, Any]]
+    answer: Optional[str]
+    answer_model: Optional[str]
+    answer_cost: float
+    generation_calls: int
+    pre: Dict[str, Any]
+    prior: Any
+    last_jev: Dict[str, Any]
+    truncated: bool
+
+
+# The on-disk checkpoint is the discriminated union. This alias remains for
+# consumers that need to annotate the persisted contract itself.
+ChatCheckpoint = LifecycleState
 
 
 def _chat_history_path(session_id: str,
@@ -107,57 +147,46 @@ def _chat_checkpoint_path(session_id: str,
     return checkpoint_dir / f"{session_key}.json"
 
 
-def save_chat_checkpoint(session_id: str, checkpoint: Dict[str, Any],
+def save_chat_checkpoint(session_id: str, checkpoint: ChatResumePayload,
                          history_dir: Optional[Path] = None) -> Path:
-    """Atomically persist bounded state for a resumable conversational run.
-
-    Checkpoints intentionally live beside (not inside) completed chat turns.
-    They are private local state and contain no provider credentials.
-    """
+    """Store chat route state within the one shared lifecycle checkpoint."""
     if not isinstance(checkpoint, dict):
         raise HarnessError("chat checkpoint must be an object")
-    payload = dict(checkpoint)
-    payload["schema"] = CHAT_CHECKPOINT_SCHEMA
-    payload["session_id"] = session_id
-    payload["updated_at"] = time.time()
-    try:
-        encoded = json.dumps(
-            payload, ensure_ascii=False, separators=(",", ":"),
-            allow_nan=False)
-        encoded_bytes = encoded.encode("utf-8")
-    except (TypeError, ValueError, UnicodeEncodeError) as exc:
-        raise HarnessError("chat checkpoint contains unsupported state") from exc
-    if len(encoded_bytes) > MAX_CHAT_CHECKPOINT_BYTES:
-        raise HarnessError("chat checkpoint exceeds its storage limit")
-    path = _chat_checkpoint_path(session_id, history_dir, create=True)
-    atomic_write_text(str(path), encoded, newline=None)
-    return path
+    from .lifecycle import LifecycleCoordinator
+    coordinator = LifecycleCoordinator(history_dir=history_dir)
+    coordinator.adopt_chat_payload(session_id, dict(checkpoint))
+    return _chat_checkpoint_path(session_id, history_dir)
 
 
 def load_chat_checkpoint(session_id: str,
-                         history_dir: Optional[Path] = None) -> Optional[Dict[str, Any]]:
-    """Load the pending checkpoint for one session, if it is valid and active."""
+                         history_dir: Optional[Path] = None) -> Optional[ChatResumePayload]:
+    """Load the legacy chat view of the shared checkpoint, if it is active."""
+    from .lifecycle import LifecycleCoordinator
+    coordinator = LifecycleCoordinator(history_dir=history_dir)
     path = _chat_checkpoint_path(session_id, history_dir)
     if path.is_symlink():
-        raise HarnessError("chat continuation state is invalid")
-    if not path.exists():
+        raise HarnessError("request lifecycle state is invalid")
+    if path.exists():
+        try:
+            with path.open("rb") as stream:
+                raw = stream.read(MAX_CHAT_CHECKPOINT_BYTES + 1)
+            if len(raw) > MAX_CHAT_CHECKPOINT_BYTES:
+                raise HarnessError("request lifecycle exceeds its storage limit")
+            legacy = json.loads(raw.decode("utf-8"))
+        except HarnessError:
+            raise
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            raise HarnessError("request lifecycle state is unreadable") from exc
+        if isinstance(legacy, dict) and legacy.get("schema") == CHAT_CHECKPOINT_SCHEMA:
+            if legacy.get("session_id") != session_id:
+                raise HarnessError("request lifecycle state is invalid")
+            if legacy.get("status") == "complete":
+                return None
+            coordinator.adopt_chat_payload(session_id, legacy)
+    state = coordinator.load(session_id)
+    if state is None or state["lane"] != "chat" or state["status"] == "complete":
         return None
-    try:
-        with path.open("rb") as stream:
-            raw = stream.read(MAX_CHAT_CHECKPOINT_BYTES + 1)
-        if len(raw) > MAX_CHAT_CHECKPOINT_BYTES:
-            raise HarnessError("chat continuation state exceeds its storage limit")
-        payload = json.loads(raw.decode("utf-8"))
-    except HarnessError:
-        raise
-    except (OSError, ValueError) as exc:
-        raise HarnessError("chat continuation state is unreadable") from exc
-    if (not isinstance(payload, dict)
-            or payload.get("schema") != CHAT_CHECKPOINT_SCHEMA
-            or payload.get("session_id") != session_id):
-        raise HarnessError("chat continuation state is invalid")
-    if payload.get("status") == "complete":
-        return None
+    payload = dict(state["data"])
     if not isinstance(payload.get("prompt"), str) or not payload["prompt"].strip():
         raise HarnessError("chat continuation state has no original request")
     return payload
@@ -165,13 +194,9 @@ def load_chat_checkpoint(session_id: str,
 
 def clear_chat_checkpoint(session_id: str,
                           history_dir: Optional[Path] = None) -> bool:
-    """Remove one completed conversational checkpoint without touching history."""
-    path = _chat_checkpoint_path(session_id, history_dir)
-    try:
-        path.unlink()
-        return True
-    except FileNotFoundError:
-        return False
+    """Clear the one lifecycle checkpoint without touching chat history."""
+    from .lifecycle import LifecycleCoordinator
+    return LifecycleCoordinator(history_dir=history_dir).clear(session_id)
 
 
 def list_chat_sessions():
