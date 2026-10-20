@@ -282,7 +282,7 @@ class TestAgentCover(unittest.TestCase):
                     agent._hourglass_request_context("What is 2+2?",
                                                      web=True)
 
-    def _hourglass_mocks(self, agent, completion):
+    def _hourglass_mocks(self, agent):
         gov = mock.MagicMock()
         policy = mock.MagicMock()
         policy.evaluate_answer.return_value = (
@@ -301,24 +301,24 @@ class TestAgentCover(unittest.TestCase):
                                             "cost": 0.0}),
             mock.patch.object(agent, "_jev_answer_envelope",
                               return_value={"native": True,
+                                            "is_fallback": False,
                                             "confidence": {
                                                 "passed": False,
                                                 "observed": 0.9},
                                             "reasons": []}),
-            mock.patch("harness.agent.assess_completion",
-                       return_value=completion),
         ]
         return patches
 
     def test_completion_cancellation_propagates(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(tmp)
-            patches = self._hourglass_mocks(agent, None)
+            patches = self._hourglass_mocks(agent)
             for patcher in patches:
                 patcher.start()
                 self.addCleanup(patcher.stop)
-            with mock.patch("harness.agent.assess_completion",
-                           side_effect=ToolCancelled("stop")):
+            with mock.patch("harness.agent.policy_for") as policy_for:
+                policy = policy_for.return_value
+                policy.evaluate_answer.side_effect = ToolCancelled("stop")
                 with self.assertRaises(ToolCancelled):
                     agent.run_hourglass_request("What is the capital?",
                                                 max_rounds=1)
@@ -326,7 +326,7 @@ class TestAgentCover(unittest.TestCase):
     def test_escalation_cancellation_propagates(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(tmp)
-            patches = self._hourglass_mocks(agent, {"complete": False})
+            patches = self._hourglass_mocks(agent)
             for patcher in patches:
                 patcher.start()
                 self.addCleanup(patcher.stop)

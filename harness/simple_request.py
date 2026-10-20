@@ -29,6 +29,21 @@ _SUPPLIED_TEXT_MARKERS = (
     "this:", "following:", "text:", "paragraph:", "sentence:",
     "in a friendlier tone", "in a clearer tone", "more concise",
 )
+_WORKSPACE_REFERENCE_RE = re.compile(
+    r"\b(?:this|the|our|my|current|selected)\s+"
+    r"(?:repo(?:sitory)?|codebase|code\s+base|workspace|project)\b"
+    r"|\b(?:repo(?:sitory)?|codebase|code\s+base|workspace|project)\s+"
+    r"(?:audit|review|inspection|contents?|files?)\b"
+)
+_WORKSPACE_REVIEW_RE = re.compile(
+    r"\b(?:audit|inspect|review|scan|analy[sz]e|examine|assess|"
+    r"determine|identify|find|what|which|how)\b"
+)
+_WORKSPACE_WRITE_DIRECTIVE_RE = re.compile(
+    r"\b(?:edit|modify|change|update|fix|add|delete|remove|create|write|"
+    r"implement|refactor|rename|move|migrate|install|configure|enable|"
+    r"disable|deploy|publish|commit)\b"
+)
 _SIMPLE_OPENERS = (
     "what ", "how ", "why ", "who ", "where ", "when ", "which ",
     "explain ", "describe ", "define ", "tell me ", "give me ", "list ",
@@ -154,6 +169,33 @@ def is_supplied_text_rewrite(prompt: str) -> bool:
     return any(marker in text for marker in _SUPPLIED_TEXT_MARKERS)
 
 
+def is_workspace_inspection_request(prompt: str) -> bool:
+    """Return whether answering requires reading the selected workspace.
+
+    This distinguishes questions about *this* project from general questions
+    about repositories. It is a capability hint only; it grants no write or
+    execution authority.
+    """
+    text = (prompt or "").strip().lower()
+    if not text:
+        return False
+    if FILE_TARGET_RE.search(text):
+        if _WORKSPACE_WRITE_DIRECTIVE_RE.search(text):
+            return False
+        return bool(_WORKSPACE_REVIEW_RE.search(text) or text.endswith("?"))
+    if not _WORKSPACE_REFERENCE_RE.search(text):
+        return False
+    return bool(_WORKSPACE_REVIEW_RE.search(text) or text.endswith("?"))
+
+
+def is_comprehensive_workspace_inspection_request(prompt: str) -> bool:
+    """Return whether a workspace review asks for repository-wide coverage."""
+    text = (prompt or "").strip().lower()
+    return bool(
+        not FILE_TARGET_RE.search(text)
+        and is_workspace_inspection_request(text))
+
+
 def is_simple_answer_request(prompt: str, *, intent: str = "conversation") -> bool:
     """Return whether *prompt* is a stable, no-tool, direct-answer request."""
     text = (prompt or "").strip()
@@ -161,6 +203,8 @@ def is_simple_answer_request(prompt: str, *, intent: str = "conversation") -> bo
     if intent != "conversation" or not text or len(text) > 2000:
         return False
     if FILE_TARGET_RE.search(text):
+        return False
+    if is_workspace_inspection_request(text):
         return False
     words = set(_WORD_RE.findall(lowered))
     if words & _REPO_ACTION_WORDS:

@@ -729,6 +729,12 @@ function handleLiveEvent(ev, agentMsg) {
   if (ev.type === "chat_turn_start") {
     label = "Request accepted; preparing context and routing.";
     agentMsg.stepperTitleText.textContent = "Preparing your request...";
+  } else if (ev.type === "chat_resume") {
+    label = `Resuming the interrupted ${ev.route || "conversation"} request from its saved context.`;
+    agentMsg.stepperTitleText.textContent = "Resuming your request...";
+  } else if (ev.type === "chat_resume_unavailable") {
+    label = "No interrupted chat request is saved to resume.";
+    agentMsg.stepperTitleText.textContent = "Ready for a new request.";
   } else if (ev.type === "hourglass_request") {
     label = `Request review started (${ev.intent || "general"}; up to ${ev.max_rounds || 1} answer round(s)).`;
     agentMsg.stepperTitleText.textContent = "Reviewing your request...";
@@ -799,8 +805,28 @@ function handleLiveEvent(ev, agentMsg) {
     label = `${ev.model || "Model"} failed: ${detail}`;
     agentMsg.stepperTitleText.textContent = "Trying the next configured model...";
   } else if (ev.type === "answer_judged") {
-    label = `Jev reviewed answer round ${ev.round || "?"}${ev.status ? ` (${ev.status})` : ""}.`;
-    agentMsg.stepperTitleText.textContent = "Reviewing the answer...";
+    const score = Number(ev.confidence);
+    const threshold = Number(ev.confidence_threshold);
+    const scoreText = Number.isFinite(score)
+      ? `; sufficiency ${Math.round(score * 100)}%` : "";
+    const thresholdText = Number.isFinite(threshold)
+      ? ` (threshold ${Math.round(threshold * 100)}%)` : "";
+    const disposition = ev.status === "pass" ? "accepted" :
+      ev.status === "unverified" ? "returned without semantic review" :
+        ev.status === "needs_iteration" ? "another answer pass requested" :
+          "stopped without another answer pass";
+    label = `Jev ${disposition} at round ${ev.round || "?"}${scoreText}${thresholdText}.`;
+    agentMsg.stepperTitleText.textContent = ev.status === "pass"
+      ? "Jev accepted the answer." : ev.status === "unverified"
+        ? "Returning the answer without Jev review."
+        : ev.status === "needs_iteration"
+          ? "Preparing another bounded answer attempt."
+          : "Returning the answer with review status.";
+  } else if (ev.type === "request_route_selected") {
+    label = ev.native
+      ? `Jev suggested ${ev.selected || "a route"}; using ${ev.effective || "the bounded answer lane"}.`
+      : `Jev routing unavailable; using ${ev.effective || "the bounded answer lane"}.`;
+    agentMsg.stepperTitleText.textContent = "Choosing the smallest useful context...";
   } else if (ev.type === "chat_escalated") {
     label = `Handing off to ${ev.target || "another lane"}: ${String(ev.reason || "").slice(0, 140)}`;
     agentMsg.stepperTitleText.textContent = `Switching to ${ev.target || "another lane"}...`;

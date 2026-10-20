@@ -16,7 +16,9 @@ from harness.jev_policy import policy_for
 from harness.simple_request import (
     answer_clock,
     is_current_information_request,
+    is_comprehensive_workspace_inspection_request,
     is_simple_answer_request,
+    is_workspace_inspection_request,
     parse_clock_request,
     relevant_history,
 )
@@ -91,6 +93,25 @@ class RequestKindTests(unittest.TestCase):
                 self.assertFalse(is_simple_answer_request(prompt, intent=intent))
         self.assertTrue(is_current_information_request(
             "What is the weather tomorrow?"))
+
+    def test_workspace_review_is_local_intent_not_general_repository_question(self):
+        local = "Can you audit this repo and find the biggest remaining issues?"
+        general = "How do I audit a software repository?"
+        self.assertTrue(is_workspace_inspection_request(local))
+        self.assertTrue(is_comprehensive_workspace_inspection_request(local))
+        self.assertFalse(is_simple_answer_request(local))
+        self.assertFalse(is_workspace_inspection_request(general))
+        self.assertTrue(is_workspace_inspection_request(
+            "What does router.py do?"))
+        self.assertFalse(is_workspace_inspection_request(
+            "Update router.py to change its timeout."))
+        self.assertFalse(is_comprehensive_workspace_inspection_request(
+            "What does router.py do?"))
+
+    def test_general_review_question_without_workspace_reference_is_not_local(self):
+        prompt = "How do I audit software repositories effectively?"
+        self.assertFalse(is_workspace_inspection_request(prompt))
+        self.assertFalse(is_comprehensive_workspace_inspection_request(prompt))
 
     def test_history_is_relevant_and_bounded(self):
         turns = [
@@ -167,8 +188,9 @@ class SimpleStrategyPolicyTests(unittest.TestCase):
             "strategy": {
                 "type": "choice", "choice": "direct_answer",
                 "probabilities": {
-                    "direct_answer": 0.34, "needs_tool": 0.33,
-                    "ambiguous": 0.33,
+                    "direct_answer": 0.34, "web_research": 0.0,
+                    "workspace_inspection": 0.0, "simple_action": 0.0,
+                    "needs_tool": 0.0, "plan": 0.0, "ambiguous": 0.66,
                 },
                 "confidence": 0.01,
             }
@@ -356,7 +378,6 @@ class SimpleLifecycleTests(unittest.TestCase):
             patch("harness.agent.governed_completion", return_value=completion) as generate,
             patch("harness.agent.enumerate_repo_files", side_effect=AssertionError("no repo intake")),
             patch("harness.agent.discover_target_files", side_effect=AssertionError("no AST intake")),
-            patch("harness.agent.assess_completion", side_effect=AssertionError("no model judge")),
         ):
             result = self.agent.run_prompt(
                 "How do I make a peanut butter and jelly sandwich?",
@@ -522,6 +543,59 @@ class SimpleLifecycleTests(unittest.TestCase):
         self.assertFalse(result["simple_request"]["post_review_available"])
         self.assertIn("deadline", result["simple_request"]["post_skipped"])
 
+    def test_deadline_unknown_usage_is_checkpointed_with_candidate_or_without(self):
+        from harness.history import load_chat_checkpoint
+
+        for has_candidate in (False, True):
+            with self.subTest(has_candidate=has_candidate):
+                policy = MagicMock()
+                policy.evaluate_simple_strategy.return_value = _pre()
+                exc = ToolCancelled("provider stopped", usage_unknown=True)
+                exc.reserved_cost = 0.004
+                if has_candidate:
+                    policy.evaluate_answer.side_effect = exc
+                    completion = {
+                        "content": "Useful candidate.",
+                        "model": "cheap-test-model", "cost": 0.000002,
+                        "input_tokens": 5, "output_tokens": 4,
+                        "cost_estimated": False,
+                    }
+                    provider = patch(
+                        "harness.agent.governed_completion",
+                        return_value=completion)
+                else:
+                    provider = patch(
+                        "harness.agent.governed_completion",
+                        side_effect=exc)
+                clock_calls = {"n": 0}
+                deadline_check = 5 if has_candidate else 4
+
+                def clock():
+                    clock_calls["n"] += 1
+                    return (0.0 if clock_calls["n"] <= deadline_check
+                            else 2.0)
+
+                with patch("harness.agent.time.monotonic", side_effect=clock), \
+                     patch("harness.agent.governor_for",
+                           return_value=("key", self.gov)), \
+                     patch("harness.agent.policy_for", return_value=policy), \
+                     patch("harness.agent.ledger_for", return_value=self.ledger), \
+                     provider:
+                    result = self.agent.run_simple_request(
+                        "Explain ice?", session_id=f"unknown-{has_candidate}",
+                        max_wall_seconds=1)
+
+                checkpoint = load_chat_checkpoint(
+                    f"unknown-{has_candidate}", self.root)
+                self.assertTrue(result.get("usage_unknown"))
+                self.assertTrue(checkpoint["usage_unknown"])
+                self.assertAlmostEqual(checkpoint["unknown_liability"], 0.004)
+                if has_candidate:
+                    self.assertEqual(result["response"], "Useful candidate.")
+                    self.assertEqual(checkpoint["stage"], "answer_review")
+                else:
+                    self.assertEqual(result["status"], "deferred")
+
     def test_direct_method_cannot_let_choice_grant_mutation(self):
         with (
             patch("harness.agent.governor_for") as governor,
@@ -541,8 +615,9 @@ class SimpleLifecycleTests(unittest.TestCase):
             "strategy": {
                 "type": "choice", "choice": "direct_answer",
                 "probabilities": {
-                    "direct_answer": 1.0, "needs_tool": 0.0,
-                    "ambiguous": 0.0,
+                    "direct_answer": 1.0, "web_research": 0.0,
+                    "workspace_inspection": 0.0, "simple_action": 0.0,
+                    "needs_tool": 0.0, "plan": 0.0, "ambiguous": 0.0,
                 },
                 "confidence": 1.0,
             }
@@ -566,8 +641,6 @@ class SimpleLifecycleTests(unittest.TestCase):
             patch("harness.agent.ledger_for", return_value=self.ledger),
             patch("harness.agent.enumerate_repo_files",
                   side_effect=AssertionError("no repo intake")),
-            patch("harness.agent.assess_completion",
-                  side_effect=AssertionError("no model judge")),
         ):
             result = agent.run_prompt(
                 "How do I make a simple sandwich?", session_id="shared-path")

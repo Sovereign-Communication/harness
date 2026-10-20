@@ -3,11 +3,12 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from harness.agent import AutonomousAgent
 from harness.config import load_settings
-from harness.errors import HarnessError
+from harness.errors import HarnessError, ToolCancelled
 from harness.jev import JevEvaluationResult
 from harness.jev_policy import policy_for
 from harness.ledger import AutonomyLedger
@@ -199,6 +200,7 @@ class _FakePolicy:
     def __init__(self, assessments):
         self.assessments = list(assessments)
         self.calls = []
+        self.route_calls = 0
 
     def evaluate_answer(self, prompt, answer, context, **kwargs):
         self.calls.append((prompt, answer, context, kwargs))
@@ -216,6 +218,17 @@ class _FakePolicy:
             "iteration_required": iteration, "plan_required": plan,
             "cost": 0.001, "input_tokens": 10, "output_tokens": 1,
         }
+
+    def evaluate_request_workflow(self, state, **kwargs):
+        self.route_calls += 1
+        choice = ("workspace-inspection"
+                  if "this repo" in str(state.get("request", "")).lower()
+                  else "answer")
+        return SimpleNamespace(
+            answers={"workflow_tier": {"choice": choice}},
+            is_fallback=False, cost=0.0, model="jev-test", reasons=[]), {
+                "cost": 0.0, "native": True,
+            }
 
 
 def _ladder_settings(**overrides):
@@ -371,6 +384,49 @@ class HourglassRequestContextTests(unittest.TestCase):
         self.assertEqual(web_sources, [])
         self.assertIsInstance(context, str)
 
+    def test_broad_workspace_review_uses_balanced_context_and_discloses_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir()
+            (root / "src").mkdir()
+            (root / "tests").mkdir()
+            (root / "AGENTS.md").write_text(
+                "Repository instructions.\n", encoding="utf-8")
+            (root / "README.md").write_text(
+                "Project overview.\n", encoding="utf-8")
+            (root / "pyproject.toml").write_text(
+                "[project]\nname='sample'\n", encoding="utf-8")
+            (root / "docs" / "roadmap.md").write_text(
+                "# Remaining improvements\n", encoding="utf-8")
+            (root / "src" / "main.py").write_text(
+                "def main():\n    return True\n", encoding="utf-8")
+            (root / "src" / "service.py").write_text(
+                "class Service:\n    pass\n", encoding="utf-8")
+            (root / "tests" / "test_service.py").write_text(
+                "def test_service():\n    assert True\n", encoding="utf-8")
+            for index in range(24):
+                (root / "src" / f"module_{index}.py").write_text(
+                    f"def module_{index}():\n    return {index}\n",
+                    encoding="utf-8")
+            agent = AutonomousAgent(settings=_ladder_settings(),
+                                    root_dir=root, history_dir=root)
+            with patch("harness.agent.ledger_for", return_value=MagicMock()):
+                context, files, _brief, web_sources = \
+                    agent._hourglass_request_context(
+                        "Audit this repo and determine the most valuable "
+                        "remaining improvements.")
+
+        self.assertLessEqual(len(files), 20)
+        self.assertGreater(len(files), 8)
+        self.assertIn("AGENTS.md", files)
+        self.assertIn("README.md", files)
+        self.assertIn("pyproject.toml", files)
+        self.assertIn("docs/roadmap.md", files)
+        self.assertIn("src/main.py", files)
+        self.assertIn("tests/test_service.py", files)
+        self.assertIn("bounded review sample", context)
+        self.assertEqual(web_sources, [])
+
     def test_web_true_attaches_ok_sources_to_context(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -401,7 +457,482 @@ class HourglassRequestContextTests(unittest.TestCase):
 
 
 class AgentAnswerLoopTests(unittest.TestCase):
-    def test_loop_reiterates_until_native_threshold(self):
+    def test_invalid_continue_checkpoint_fails_locally_without_provider_work(self):
+        agent = AutonomousAgent(settings=load_settings(), root_dir=None)
+        with patch("harness.agent.load_chat_checkpoint",
+                   side_effect=HarnessError("corrupt")), \
+             patch("harness.agent.policy_for",
+                   side_effect=AssertionError("resume failure is local")), \
+             patch("harness.agent.governed_completion",
+                   side_effect=AssertionError("resume failure is local")):
+            result = agent.run_prompt("continue", session_id="broken")
+        self.assertEqual(result["status"], "deferred")
+        self.assertEqual(result["defer_reason"], "invalid chat checkpoint")
+
+    def test_continue_dispatches_saved_simple_answer_route(self):
+        agent = AutonomousAgent(settings=load_settings(), root_dir=None)
+        checkpoint = {"route": "simple-answer", "prompt": "Explain photosynthesis"}
+        with patch("harness.agent.load_chat_checkpoint", return_value=checkpoint), \
+             patch.object(agent, "run_simple_request",
+                          return_value={"status": "ok"}) as run:
+            result = agent.run_prompt("continue", session_id="resume-simple")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(run.call_args.args[0], "Explain photosynthesis")
+        self.assertEqual(run.call_args.kwargs["resume_state"], checkpoint)
+
+    def test_force_conversation_routes_local_review_to_workspace_context(self):
+        agent = AutonomousAgent(settings=load_settings(), root_dir=None)
+        with patch.object(agent, "_workspace_context_deferred",
+                          return_value={"status": "deferred"}) as defer:
+            result = agent.run_prompt(
+                "Audit this repo", force_conversation=True,
+                session_id="chat-audit")
+        self.assertEqual(result["status"], "deferred")
+        defer.assert_called_once_with("Audit this repo", "chat-audit")
+
+    def test_workspace_selection_defer_recovers_corrupt_checkpoint_and_stage(self):
+        agent = AutonomousAgent(settings=load_settings(), root_dir=None)
+        existing = {"route": "hourglass", "status": "running",
+                    "prompt": "old request"}
+        with patch("harness.agent.load_chat_checkpoint",
+                   side_effect=HarnessError("corrupt")), \
+             patch.object(agent, "_persist_chat_checkpoint") as persist, \
+             patch("harness.agent.save_chat_turn"):
+            result = agent._workspace_context_deferred(
+                "Audit this repo", "select-workspace")
+        self.assertEqual(result["status"], "deferred")
+        saved = persist.call_args.args[1]
+        self.assertEqual(saved["prompt"], "Audit this repo")
+        self.assertEqual(saved["stage"], "workspace_selection")
+
+        with patch("harness.agent.load_chat_checkpoint", return_value=existing), \
+             patch.object(agent, "_persist_chat_checkpoint") as persist, \
+             patch("harness.agent.save_chat_turn"):
+            agent._workspace_context_deferred("old request", "select-workspace")
+        saved = persist.call_args.args[1]
+        self.assertEqual(saved["status"], "interrupted")
+        self.assertEqual(saved["stage"], "workspace_selection")
+
+    def test_pre_generation_simple_strategy_falls_through_with_route_evidence(self):
+        agent = AutonomousAgent(settings=load_settings(), root_dir=Path("."))
+        deferred = {"status": "deferred", "simple_request": {
+            "generation_calls": 0,
+            "pre": {"strategy": "direct_answer", "native": True,
+                    "cost": 0.00001},
+        }}
+        for force_conversation in (False, True):
+            with self.subTest(force_conversation=force_conversation), \
+                 patch.object(agent, "run_simple_request", return_value=deferred), \
+                 patch.object(agent, "_live_jev_available", return_value=True), \
+                 patch.object(agent, "run_hourglass_request",
+                              return_value={"status": "ok"}) as hourglass:
+                result = agent.run_prompt(
+                    "Explain photosynthesis", force_conversation=force_conversation)
+            self.assertEqual(result["status"], "ok")
+            evidence = hourglass.call_args.kwargs["request_preflight"]
+            self.assertEqual(evidence["source"], "simple_strategy")
+            self.assertEqual(evidence["choice"], "direct_answer")
+
+    def test_simple_answer_resume_reviews_candidate_and_restores_cost_liability(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = _ladder_settings()
+            agent = AutonomousAgent(settings=settings, root_dir=root,
+                                    history_dir=root)
+            prompt = "Explain photosynthesis"
+            checkpoint = {
+                "route": "simple-answer", "status": "interrupted",
+                "stage": "answer_review", "prompt": prompt,
+                "known_cost": 0.003, "unknown_liability": 0.002,
+                "pre": {"strategy": "direct_answer", "native": True,
+                        "cost": 0.001},
+                "answer": "Plants convert light into chemical energy.",
+                "answer_model": "p1", "answer_cost": 0.001,
+                "generation_calls": 1,
+            }
+            policy = MagicMock()
+            policy.evaluate_answer.return_value = (None, {
+                "native": True, "verdict": "pass",
+                "answer_sufficient": 0.99, "iteration_required": False,
+                "plan_required": False, "cost": 0.0001,
+            })
+            governor = MagicMock()
+            history = [
+                {"prompt": prompt, "response": "duplicate current turn"},
+                {"prompt": "Explain light energy", "response": "Prior context"},
+            ]
+            with patch("harness.agent.governor_for", return_value=(None, governor)), \
+                 patch("harness.agent.policy_for", return_value=policy), \
+                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                 patch("harness.agent.load_chat_history", return_value=history), \
+                 patch("harness.agent.governed_completion",
+                       side_effect=AssertionError("saved candidate must be reused")), \
+                 patch("harness.agent.save_chat_turn"), \
+                 patch.object(agent, "_clear_chat_checkpoint"):
+                result = agent.run_simple_request(
+                    prompt, session_id="simple-review", resume_state=checkpoint)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["response"], checkpoint["answer"])
+        governor.record_actual.assert_called_once_with(
+            0.003, "chat-continuation", lane="answer")
+        governor.retain_unknown.assert_called_once_with(
+            0.002, "cancelled-chat-provider-call")
+        reviewed_context = policy.evaluate_answer.call_args.args[2]
+        self.assertNotIn("duplicate current turn", reviewed_context)
+
+    def test_simple_strategy_workspace_choice_defers_without_selected_root(self):
+        agent = AutonomousAgent(settings=_ladder_settings(), root_dir=None)
+        policy = MagicMock()
+        policy.evaluate_simple_strategy.return_value = (None, {
+            "native": True, "strategy": "workspace_inspection",
+            "cost": 0.00001,
+        })
+        with patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
+             patch("harness.agent.policy_for", return_value=policy), \
+             patch("harness.agent.ledger_for", return_value=MagicMock()), \
+             patch("harness.agent.save_chat_turn"), \
+             patch.object(agent, "_persist_chat_checkpoint"), \
+             patch.object(agent, "_workspace_context_deferred",
+                          return_value={"status": "deferred"}) as defer:
+            result = agent.run_simple_request("Explain this project")
+        self.assertEqual(result["status"], "deferred")
+        defer.assert_called_once()
+
+    def test_checkpoint_storage_failures_are_reported_without_raising(self):
+        agent = AutonomousAgent(settings=load_settings(), root_dir=None)
+        with patch("harness.agent.save_chat_checkpoint",
+                   side_effect=OSError("disk full")), \
+             patch("harness.agent.clear_chat_checkpoint",
+                   side_effect=HarnessError("unsafe")), \
+             patch("harness.agent.emit") as emit_event:
+            agent._persist_chat_checkpoint("session", {"prompt": "x"})
+            agent._clear_chat_checkpoint("session")
+        self.assertEqual([call.args[0] for call in emit_event.call_args_list], [
+            "chat_checkpoint_unavailable", "chat_checkpoint_clear_failed"])
+
+    def test_checkpoint_interruption_accumulates_unknown_provider_liability(self):
+        exc = ToolCancelled("provider cancellation", usage_unknown=True)
+        exc.reserved_cost = 0.004
+        checkpoint = {"unknown_liability": 0.002, "known_cost": 0.0}
+        AutonomousAgent._checkpoint_interruption(checkpoint, exc, 0.003)
+        self.assertEqual(checkpoint["known_cost"], 0.003)
+        self.assertEqual(checkpoint["unknown_liability"], 0.006)
+        self.assertTrue(checkpoint["usage_unknown"])
+
+    def test_workspace_checkpoint_hash_validation_covers_stale_and_bad_entries(self):
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "router.py"
+            source.write_text("def route(): return 1\n", encoding="utf-8")
+            agent = AutonomousAgent(settings=load_settings(), root_dir=root,
+                                    history_dir=root)
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            checkpoint = {
+                "workspace_root": str(root), "workspace_context_used": False,
+                "file_hashes": {"router.py": digest},
+            }
+            self.assertTrue(agent._hourglass_context_matches(checkpoint))
+            checkpoint["file_hashes"] = {"router.py": "wrong"}
+            self.assertFalse(agent._hourglass_context_matches(checkpoint))
+            checkpoint["file_hashes"] = ["malformed"]
+            self.assertFalse(agent._hourglass_context_matches(checkpoint))
+            checkpoint["workspace_context_used"] = True
+            checkpoint["prompt"] = None
+            checkpoint["file_hashes"] = {}
+            self.assertFalse(agent._hourglass_context_matches(checkpoint))
+
+    def test_missing_root_returns_no_workspace_candidates(self):
+        agent = AutonomousAgent(settings=load_settings(), root_dir=None)
+        self.assertEqual(agent._hourglass_workspace_candidates("Audit this repo"), [])
+
+    def test_native_web_research_and_simple_strategy_routes_enable_web(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_ladder_settings(),
+                                    root_dir=Path(tmp), history_dir=Path(tmp))
+            cases = (
+                {"source": "jev_request_workflow", "choice": "web-research",
+                 "native": True, "cost": 0.0},
+                {"source": "simple_strategy", "choice": "web_research",
+                 "native": False, "cost": 0.0},
+            )
+            for index, route in enumerate(cases):
+                policy = _FakePolicy([(0.995, False, False)])
+                with self.subTest(route=route), \
+                     patch("harness.agent.policy_for", return_value=policy), \
+                     patch("harness.agent.governor_for",
+                           return_value=(None, MagicMock())), \
+                     patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                     patch.object(agent, "_hourglass_request_context", return_value=(
+                         "web context", {}, MagicMock(estimated_tokens=2), [])) as context, \
+                     patch.object(agent, "_hourglass_answer_once", return_value={
+                         "model": "m1", "answer": "grounded answer", "cost": 0.0}), \
+                     patch("harness.agent.save_chat_turn"):
+                    result = agent.run_hourglass_request(
+                        "Explain a current question", session_id=f"web-{index}",
+                        request_preflight=route)
+                self.assertEqual(result["status"], "ok")
+                self.assertTrue(context.call_args.kwargs["web"])
+
+    def test_native_clarify_route_returns_local_question_without_generation(self):
+        agent = AutonomousAgent(settings=load_settings(), root_dir=None)
+        route = {"source": "jev_request_workflow", "choice": "clarify",
+                 "native": True, "cost": 0.0}
+        with patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
+             patch("harness.agent.policy_for", return_value=MagicMock()), \
+             patch("harness.agent.ledger_for", return_value=MagicMock()), \
+             patch("harness.agent.save_chat_turn") as save_turn, \
+             patch.object(agent, "_clear_chat_checkpoint") as clear, \
+             patch.object(agent, "_hourglass_request_context",
+                          side_effect=AssertionError("clarification is local")), \
+             patch.object(agent, "_hourglass_answer_once",
+                          side_effect=AssertionError("clarification is local")):
+            result = agent.run_hourglass_request(
+                "Explain this", session_id="clarify",
+                request_preflight=route)
+        self.assertEqual(result["workflow_tier"], "clarification")
+        save_turn.assert_called_once()
+        clear.assert_called_once_with("clarify")
+
+    def test_native_workspace_route_without_root_is_deferred(self):
+        agent = AutonomousAgent(settings=load_settings(), root_dir=None)
+        route = {"source": "jev_request_workflow",
+                 "choice": "workspace-inspection", "native": True,
+                 "cost": 0.0}
+        with patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
+             patch("harness.agent.policy_for", return_value=MagicMock()), \
+             patch("harness.agent.ledger_for", return_value=MagicMock()), \
+             patch.object(agent, "_workspace_context_deferred",
+                          return_value={"status": "deferred"}) as defer:
+            result = agent.run_hourglass_request(
+                "Explain this project", request_preflight=route)
+        self.assertEqual(result["status"], "deferred")
+        defer.assert_called_once()
+
+    def test_route_policy_cancellation_persists_interruption(self):
+        agent = AutonomousAgent(settings=load_settings(), root_dir=None)
+        policy = MagicMock()
+        policy.evaluate_request_workflow.side_effect = ToolCancelled("stopped")
+        with patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
+             patch("harness.agent.policy_for", return_value=policy), \
+             patch("harness.agent.ledger_for", return_value=MagicMock()), \
+             patch.object(agent, "_persist_chat_checkpoint") as persist, \
+             self.assertRaises(ToolCancelled):
+            agent.run_hourglass_request("Explain a topic", session_id="route-cancel")
+        checkpoint = persist.call_args.args[1]
+        self.assertEqual(checkpoint["status"], "interrupted")
+        self.assertEqual(checkpoint["stage"], "route")
+
+    def test_hourglass_resume_restores_cost_and_reuses_current_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=_ladder_settings(), root_dir=root,
+                                    history_dir=root)
+            checkpoint = {
+                "route": "hourglass", "status": "interrupted",
+                "stage": "jev_review", "prompt": "Explain photosynthesis",
+                "intent": "conversation", "web_requested": False,
+                "workspace_root": str(root), "workspace_context_used": False,
+                "known_cost": 0.005, "unknown_liability": 0.002,
+                "route_preflight": {"source": "jev_request_workflow",
+                                    "choice": "answer", "native": True,
+                                    "cost": 0.0},
+                "context": "retained context", "context_files": [],
+                "context_tokens": 4, "web_sources": [], "file_hashes": {},
+                "answer": None, "rounds": [], "next_round": 1,
+            }
+            policy = _FakePolicy([(0.995, False, False)])
+            governor = MagicMock()
+            with patch("harness.agent.policy_for", return_value=policy), \
+                 patch("harness.agent.governor_for", return_value=(None, governor)), \
+                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                 patch.object(agent, "_hourglass_request_context",
+                              side_effect=AssertionError("current context should be reused")), \
+                 patch.object(agent, "_hourglass_answer_once", return_value={
+                     "model": "m1", "answer": "Plants store light energy.",
+                     "cost": 0.001}), \
+                 patch("harness.agent.save_chat_turn"):
+                result = agent.run_hourglass_request(
+                    checkpoint["prompt"], session_id="hourglass-cost-resume",
+                    resume_state=checkpoint)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(policy.calls[0][2], "retained context")
+            governor.record_actual.assert_called_once_with(
+                0.005, "chat-continuation", lane="answer")
+            governor.retain_unknown.assert_called_once_with(
+                0.002, "cancelled-chat-provider-call")
+
+    def test_workspace_audit_routes_to_local_inspection_without_web(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=load_settings(), root_dir=Path(tmp),
+                                    history_dir=Path(tmp))
+            with patch.object(agent, "run_hourglass_request",
+                              return_value={"status": "ok"}) as run, \
+                 patch("harness.agent.save_chat_turn"):
+                result = agent.run_prompt(
+                    "Can you audit this repo and find the biggest issues?",
+                    session_id="repo-audit")
+            self.assertEqual(result["status"], "ok")
+            self.assertFalse(run.call_args.kwargs["web"])
+
+    def test_workspace_intent_overrides_advisory_web_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=load_settings(), root_dir=root,
+                                    history_dir=root)
+            policy = _FakePolicy([(0.90, False, False)])
+            with patch("harness.agent.policy_for", return_value=policy), \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
+                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                 patch.object(agent, "_hourglass_answer_once", return_value={
+                     "model": "m1", "answer": "local review", "cost": 0.001}), \
+                 patch.object(agent, "_gather_web_context",
+                              side_effect=AssertionError("workspace work must not search")), \
+                 patch("harness.agent.save_chat_turn"):
+                result = agent.run_hourglass_request(
+                    "Can you audit this repo?", web=True,
+                    request_preflight={
+                        "source": "jev_request_workflow",
+                        "choice": "web-research", "native": True,
+                        "cost": 0.0,
+                    })
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["workflow_tier"], "workspace-inspection")
+            self.assertFalse(result["web_used"])
+
+    def test_continue_without_saved_interruption_is_a_local_terminal_reply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=load_settings(),
+                                    root_dir=Path(tmp), history_dir=Path(tmp))
+            with patch("harness.agent.policy_for",
+                       side_effect=AssertionError("must not call Jev")), \
+                 patch("harness.agent.governed_completion",
+                       side_effect=AssertionError("must not generate")):
+                result = agent.run_prompt("continue", session_id="no-checkpoint")
+            self.assertEqual(result["status"], "deferred")
+            self.assertEqual(result["cost"], 0.0)
+            self.assertIn("no interrupted request", result["response"])
+
+    def test_workspace_selection_defer_is_resumable_after_folder_is_selected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=load_settings(), root_dir=None,
+                                    history_dir=root)
+            deferred = agent.run_prompt(
+                "Can you audit this repo?", session_id="workspace-later")
+            self.assertEqual(deferred["status"], "deferred")
+            agent.root_dir = root
+            policy = _FakePolicy([(0.90, False, False)])
+            with patch("harness.agent.policy_for", return_value=policy), \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
+                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                 patch.object(agent, "_hourglass_answer_once", return_value={
+                     "model": "m1", "answer": "local audit", "cost": 0.001}), \
+                 patch("harness.agent.save_chat_turn"):
+                result = agent.run_prompt(
+                    "continue", session_id="workspace-later")
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["prompt"], "Can you audit this repo?")
+            self.assertEqual(result["response"], "local audit")
+
+    def test_continue_resumes_cancelled_hourglass_without_losing_original_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=load_settings(), root_dir=root,
+                                    history_dir=root)
+            policy = _FakePolicy([(0.90, False, False)])
+            answers = iter([
+                ToolCancelled("cancelled after dispatch", usage_unknown=True),
+                {"model": "m1", "answer": "repo answer", "cost": 0.001},
+            ])
+
+            def answer_once(*args, **kwargs):
+                value = next(answers)
+                if isinstance(value, Exception):
+                    raise value
+                return value
+
+            with patch("harness.agent.policy_for", return_value=policy), \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
+                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                 patch.object(agent, "_hourglass_answer_once",
+                              side_effect=answer_once), \
+                 patch("harness.agent.save_chat_turn"):
+                with self.assertRaises(ToolCancelled):
+                    agent.run_hourglass_request(
+                        "Explain the router", session_id="resume-hourglass")
+                result = agent.run_prompt(
+                    "continue", session_id="resume-hourglass")
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["prompt"], "Explain the router")
+            self.assertEqual(result["response"], "repo answer")
+            self.assertEqual(len(policy.calls), 1)
+
+    def test_continue_reuses_candidate_when_jev_review_was_cancelled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=load_settings(), root_dir=root,
+                                    history_dir=root)
+
+            class CancelThenReview(_FakePolicy):
+                def evaluate_answer(self, prompt, answer, context, **kwargs):
+                    if not self.calls:
+                        self.calls.append((prompt, answer, context, kwargs))
+                        raise ToolCancelled("review cancelled", usage_unknown=True)
+                    return super().evaluate_answer(prompt, answer, context, **kwargs)
+
+            policy = CancelThenReview([(0.90, False, False)])
+            answer = {"model": "m1", "answer": "saved candidate", "cost": 0.001}
+            with patch("harness.agent.policy_for", return_value=policy), \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
+                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                 patch.object(agent, "_hourglass_answer_once",
+                              return_value=answer) as generate, \
+                 patch("harness.agent.save_chat_turn"):
+                with self.assertRaises(ToolCancelled):
+                    agent.run_hourglass_request(
+                        "Explain the router", session_id="resume-review")
+                result = agent.run_prompt("continue", session_id="resume-review")
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["response"], "saved candidate")
+            generate.assert_called_once()
+            self.assertEqual(len(policy.calls), 2)
+
+    def test_workspace_context_checkpoint_invalidates_on_added_relevant_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "router.py").write_text("def route(): return 'old'\n")
+            agent = AutonomousAgent(settings=load_settings(), root_dir=root,
+                                    history_dir=root)
+            prompt = "Can you inspect this repo: router.py?"
+            checkpoint = {
+                "prompt": prompt, "workspace_root": str(root),
+                "workspace_context_used": True,
+                "context_files": [], "file_hashes": {},
+            }
+            self.assertFalse(agent._hourglass_context_matches(checkpoint))
+
+    def test_workspace_context_checkpoint_invalidates_when_selected_root_changes(self):
+        with tempfile.TemporaryDirectory() as first, \
+             tempfile.TemporaryDirectory() as second:
+            agent = AutonomousAgent(
+                settings=load_settings(), root_dir=Path(second),
+                history_dir=Path(second))
+            checkpoint = {
+                "prompt": "Can you inspect this repo?",
+                "workspace_root": first,
+                "workspace_context_used": True,
+                "context_files": [], "file_hashes": {},
+            }
+            self.assertFalse(agent._hourglass_context_matches(checkpoint))
+
+    def test_loop_reiterates_only_when_jev_requests_it(self):
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)
         root = Path(td.name)
@@ -416,8 +947,6 @@ class AgentAnswerLoopTests(unittest.TestCase):
         ])
         with patch("harness.agent.policy_for", return_value=policy), \
              patch("harness.agent.governor_for", return_value=(None, object())), \
-             patch("harness.agent.assess_completion",
-                   return_value={"complete": True, "remaining": "", "reason": "fulfilled"}), \
              patch.object(agent, "_hourglass_answer_once",
                           side_effect=lambda *a, **k: next(answers)), \
              patch("harness.agent.save_chat_turn"):
@@ -428,32 +957,48 @@ class AgentAnswerLoopTests(unittest.TestCase):
         self.assertEqual(result["response"], "second")
         self.assertEqual(result["model"], "capable")
         self.assertEqual(len(policy.calls), 2)
-        self.assertEqual(result["confidence"]["threshold"], 0.99)
+        self.assertEqual(result["confidence"]["threshold"], 0.70)
         self.assertTrue(result["confidence"]["passed"])
         self.assertEqual(len(result["hourglass"]["rounds"]), 2)
 
-    def test_high_jev_score_does_not_finish_when_independent_judge_says_incomplete(self):
+    def test_high_jev_score_stops_without_independent_completion_judge(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             settings = load_settings()
             agent = AutonomousAgent(settings=settings, root_dir=root,
                                     history_dir=root)
-            policy = _FakePolicy([(0.999, False, False), (0.999, False, False)])
-            attempts = iter([{"model": "m1", "answer": "partial", "cost": 0},
-                             {"model": "m2", "answer": "complete", "cost": 0}])
-            judges = iter([{"complete": False, "remaining": "explain edge case", "reason": "missing"},
-                           {"complete": True, "remaining": "", "reason": "done"}])
+            policy = _FakePolicy([(0.90, False, False)])
+            attempts = iter([{"model": "m1", "answer": "complete", "cost": 0}])
             with patch("harness.agent.policy_for", return_value=policy), \
                  patch("harness.agent.governor_for", return_value=(None, object())), \
-                 patch("harness.agent.assess_completion", side_effect=lambda *a: next(judges)), \
                  patch.object(agent, "_hourglass_answer_once", side_effect=lambda *a, **k: next(attempts)), \
                  patch("harness.agent.save_chat_turn"):
                 result = agent.run_hourglass_request("Explain router behavior", max_rounds=2)
             self.assertEqual(result["status"], "ok")
-            self.assertEqual(len(result["hourglass"]["rounds"]), 2)
-            self.assertFalse(result["hourglass"]["rounds"][0]["completion"]["complete"])
+            self.assertEqual(len(result["hourglass"]["rounds"]), 1)
+            self.assertEqual(result["verification"]["status"], "jev_verified")
+            self.assertEqual(policy.route_calls, 1)
+            self.assertEqual(len(policy.calls), 1)
 
-    def test_fallback_reason_is_visible_and_independent_judge_can_verify_fulfillment(self):
+    def test_low_score_without_iteration_request_stops_without_extra_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=load_settings(), root_dir=root,
+                                    history_dir=root)
+            policy = _FakePolicy([(0.60, False, False)])
+            with patch("harness.agent.policy_for", return_value=policy), \
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
+                 patch("harness.agent.ledger_for", return_value=MagicMock()), \
+                 patch.object(agent, "_hourglass_answer_once", return_value={
+                     "model": "m1", "answer": "candidate", "cost": 0.001}) as generate, \
+                 patch("harness.agent.save_chat_turn"):
+                result = agent.run_hourglass_request(
+                    "Explain router behavior", max_rounds=3)
+            self.assertEqual(result["status"], "needs_iteration")
+            self.assertEqual(len(policy.calls), 1)
+            generate.assert_called_once()
+
+    def test_fallback_reason_is_visible_without_a_second_generic_judge(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = AutonomousAgent(settings=load_settings(), root_dir=Path(tmp),
                                     history_dir=Path(tmp))
@@ -469,14 +1014,13 @@ class AgentAnswerLoopTests(unittest.TestCase):
                                     "pack_version": "answer-sufficiency-v1"}
             with patch("harness.agent.policy_for", return_value=FallbackPolicy()), \
                  patch("harness.agent.governor_for", return_value=(None, object())), \
-                 patch("harness.agent.assess_completion", return_value={
-                     "complete": True, "remaining": "", "reason": "fulfilled"}), \
                  patch.object(agent, "_hourglass_answer_once", return_value={
                      "model": "m", "answer": "verified answer", "cost": 0}), \
                  patch("harness.agent.save_chat_turn"):
                 result = agent.run_hourglass_request("Answer a question")
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["jev"]["fallback_reason"], "transport_error")
+            self.assertEqual(result["verification"]["status"], "unverified")
 
     def test_unusable_live_jev_response_defers_without_completion_approval(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -501,12 +1045,10 @@ class AgentAnswerLoopTests(unittest.TestCase):
                  patch("harness.agent.governor_for", return_value=(None, object())), \
                  patch.object(agent, "_hourglass_answer_once", return_value={
                      "model": "m", "answer": "candidate", "cost": 0.0}), \
-                 patch("harness.agent.assess_completion") as completion, \
                  patch("harness.agent.save_chat_turn"):
                 result = agent.run_hourglass_request("Answer a question")
             self.assertEqual(result["status"], "deferred")
             self.assertIn("HTTP 401", result["remaining_scope"])
-            completion.assert_not_called()
 
     def test_default_entrypoints_require_opt_in_before_jev_apply(self):
         agent = AutonomousAgent(settings=load_settings(), root_dir=Path("."))
@@ -558,8 +1100,6 @@ class AgentAnswerLoopTests(unittest.TestCase):
                          "url": "https://example.test", "title": "Result",
                          "text": "fetched secret body"}])), \
                  patch.object(agent, "_hourglass_answer_once", side_effect=answer_once), \
-                 patch("harness.agent.assess_completion", return_value={
-                     "complete": True, "remaining": "", "reason": "fulfilled"}), \
                  patch("harness.agent.save_chat_turn"):
                 result = agent.run_hourglass_request("current question", web=True,
                                                      max_rounds=2)
@@ -570,7 +1110,8 @@ class AgentAnswerLoopTests(unittest.TestCase):
                              "private prior question")
             self.assertIn("fetched secret body",
                           seen_generation[0]["web_sources"][0]["text"])
-            self.assertEqual([call[2] for call in policy.calls], ["", ""])
+            self.assertTrue(all("WEB EVIDENCE" in call[2]
+                                for call in policy.calls))
 
     def test_edit_request_uses_existing_hourglass_executor_with_jev_completion(self):
         agent = AutonomousAgent(settings=load_settings(), root_dir=Path("."))
@@ -635,14 +1176,14 @@ class AgentAnswerLoopTests(unittest.TestCase):
 
         with patch("harness.agent.policy_for", return_value=_UnkeyedPolicy()), \
              patch("harness.agent.governor_for", return_value=(None, object())), \
-             patch("harness.agent.assess_completion", return_value=None), \
              patch.object(agent, "_hourglass_answer_once",
                           return_value={"model": "m", "answer": "a", "cost": 0.0}), \
              patch("harness.agent.save_chat_turn"):
             result = agent.run_hourglass_request(
                 "How does the router work?", session_id="deferred-1")
 
-        self.assertEqual(result["status"], "deferred")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["verification"]["status"], "unverified")
         self.assertTrue(result["jev"]["fallback_reason"])
 
     def test_plan_required_stops_before_any_write(self):
@@ -683,7 +1224,7 @@ class AgentAnswerLoopTests(unittest.TestCase):
         self.assertEqual(result["status"], "needs_iteration")
         self.assertIn("remaining_scope", result)
 
-    def _exhausted_rounds(self, completion):
+    def _exhausted_rounds(self, completion=None):
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)
         root = Path(td.name)
@@ -693,31 +1234,23 @@ class AgentAnswerLoopTests(unittest.TestCase):
         policy = _FakePolicy([(0.2, True, False)] * 2)
         with patch("harness.agent.policy_for", return_value=policy), \
              patch("harness.agent.governor_for", return_value=(None, object())), \
-             patch("harness.agent.assess_completion",
-                   return_value=completion) as judge, \
              patch.object(agent, "_hourglass_answer_once",
                           return_value={"model": "m", "answer": "a", "cost": 0.0}), \
              patch("harness.agent.save_chat_turn"):
             result = agent.run_hourglass_request(
                 "How does the router work?", session_id="last-round",
                 max_rounds=2)
-        return result, judge
+        return result, policy
 
-    def test_last_round_independent_judge_can_establish_completion(self):
-        # Jev still says "another attempt", but the independent completion
-        # judge is the authority on fulfillment on the final round: it is
-        # asked once, and a complete verdict is recorded with the round.
-        result, judge = self._exhausted_rounds(
-            {"complete": True, "verdict": "pass"})
-        self.assertEqual(result["status"], "ok")
-        judge.assert_called_once()
-        self.assertTrue(result["hourglass"]["rounds"][-1]["completion"]["complete"])
-
-    def test_last_round_incomplete_judge_leaves_needs_iteration(self):
-        result, judge = self._exhausted_rounds(
-            {"complete": False, "remaining": "no evidence"})
+    def test_last_round_does_not_call_generic_completion_judge(self):
+        result, policy = self._exhausted_rounds()
         self.assertEqual(result["status"], "needs_iteration")
-        judge.assert_called_once()
+        self.assertEqual(len(policy.calls), 2)
+
+    def test_iteration_rounds_remain_bounded_by_jev_request(self):
+        result, policy = self._exhausted_rounds()
+        self.assertEqual(result["status"], "needs_iteration")
+        self.assertEqual(len(policy.calls), 2)
 
     def test_budget_deferred_before_a_second_round(self):
         td = tempfile.TemporaryDirectory()

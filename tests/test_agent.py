@@ -485,10 +485,8 @@ class TestAutonomousAgent(unittest.TestCase):
                 self.assertIn("2+2 is 4", generation_prompt)
                 self.assertIn("and what is that plus 2?", generation_prompt)
 
-    def test_force_conversation_bypasses_classifier(self):
-        """UI chat path: force_conversation=True always routes to _handle_conversation,
-        even for prompts that look like edit requests (e.g. contain 'fix', 'verify'),
-        ensuring session history is always loaded."""
+    def test_force_conversation_keeps_normal_chat_conversational(self):
+        """UI chat keeps conversational prompts in chat while loading history."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             save_chat_turn("ui_sess", {"prompt": "what is 2+2?", "response": "4"}, history_dir=tmp_path)
@@ -1032,7 +1030,7 @@ class TestChatTruncation(unittest.TestCase):
                  patch("harness.agent.governor_for",
                        return_value=(None, MagicMock())), \
                  patch("harness.agent.ledger_for", return_value=MagicMock()):
-                agent.run_prompt("continue", session_id="t3",
+                agent.run_prompt("Continue until complete.", session_id="t3",
                                  force_conversation=True)
             turns = load_chat_history("t3", Path(tmp))
         self.assertEqual(len(turns), 1)
@@ -2420,7 +2418,7 @@ class TestDynamicTokenAllocation(unittest.TestCase):
                 self.assertEqual(res["status"], "escalated_ok")
                 self.assertTrue(m_edit.called)
 
-    def test_conversation_assesses_completion_complete(self):
+    def test_conversation_returns_ok_without_legacy_completion_judge(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = AutonomousAgent(settings=_lane_settings(), history_dir=Path(tmp))
             resp = {
@@ -2428,8 +2426,7 @@ class TestDynamicTokenAllocation(unittest.TestCase):
                 "usage": {"cost": 0.0},
             }
             with patch("harness.agent.chat", return_value=(200, resp)), \
-                 patch("harness.agent.governor_for", return_value=(None, MagicMock())), \
-                 patch("harness.agent.assess_completion", return_value={"complete": True, "verdict": "pass"}):
+                 patch("harness.agent.governor_for", return_value=(None, MagicMock())):
                 res = agent._handle_conversation("explain code", "test_sess")
                 self.assertEqual(res["status"], "ok")
 
