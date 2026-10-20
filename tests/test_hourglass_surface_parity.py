@@ -208,7 +208,7 @@ class DogfoodSurfaceParityTests(unittest.TestCase):
                 "verify": "python -m unittest",
                 "max_rounds": 2,
             })
-            self.assertEqual(validated["file"], target_path)
+            self.assertTrue(os.path.samefile(validated["file"], target_path))
             self.assertEqual(validated["instruction"], "fix bug")
             self.assertEqual(validated["max_rounds"], 2)
 

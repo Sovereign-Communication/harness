@@ -171,7 +171,9 @@ class TestBriefMcp(unittest.TestCase):
                 "files": fpath,
             })
             self.assertEqual(res["status"], "ok")
-            self.assertEqual(res["brief"]["scope"]["included"], [fpath])
+            included = res["brief"]["scope"]["included"]
+            self.assertEqual(len(included), 1)
+            self.assertTrue(os.path.samefile(included[0], fpath))
 
     def test_mcp_invoke_generate_brief_invalid_files_type(self):
         from tests.test_mcp import make_server

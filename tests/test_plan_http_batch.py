@@ -127,11 +127,12 @@ class TestPlanTaskRunner(unittest.TestCase):
                 json.dump({"file_path": target, "verify_only": True}, stream)
             result = run_continue_task("task-continue", {
                 "root_dir": root, "state": state}, None)
-        self.assertEqual(result["status"], "ok")
-        continuation = engine.apply_batch.call_args.kwargs["options"].continuation
-        self.assertEqual(continuation["file_path"], target)
-        self.assertEqual(mock_session.call_args.kwargs["allowed_roots"],
-                         [os.path.realpath(root)])
+            self.assertEqual(result["status"], "ok")
+            continuation = engine.apply_batch.call_args.kwargs[
+                "options"].continuation
+            self.assertTrue(os.path.samefile(continuation["file_path"], target))
+            self.assertEqual(mock_session.call_args.kwargs["allowed_roots"],
+                             [os.path.realpath(root)])
 
     @mock.patch("harness.bench.run_bench", return_value={"status": "ok"})
     @mock.patch("harness.bench.load_manifest", return_value=[{}])

@@ -491,8 +491,9 @@ def run_plan_task(task_id, args, cancel_check):
     if isinstance(candidate_files, str):
         candidate_files = [candidate_files]
     if candidate_files:
-        candidate_files = [str(Path(path).relative_to(root))
-                           for path in candidate_files]
+        candidate_files = [str(resolve_workspace_path(
+            root, path, must_exist=True).relative_to(root))
+            for path in candidate_files]
     frontier_model = args.get("frontier_model") or getattr(settings, "frontier_model", None)
     plan_ceiling = args.get("task_max_cost") or args.get("max_cost")
 

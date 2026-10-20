@@ -290,7 +290,11 @@ class RunDriverTaskSummaryTest(unittest.TestCase):
                 "goal": "g", "max_steps": 1, "verify": "true",
                 "root_dir": root,
             }, None)
-        run_gate.assert_called_once_with("true", timeout=30, cwd=root)
+            run_gate.assert_called_once()
+            args, kwargs = run_gate.call_args
+            self.assertEqual(args, ("true",))
+            self.assertEqual(kwargs["timeout"], 30)
+            self.assertTrue(os.path.samefile(kwargs["cwd"], root))
 
     def test_all_refused_is_not_reported_as_verified(self):
         adapter = _FakeAdapter([_REFUSED, _REFUSED], audit={"ok": True})

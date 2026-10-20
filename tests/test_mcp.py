@@ -75,7 +75,7 @@ class WorkspaceMcpBoundaryTests(unittest.TestCase):
             })
         self.assertEqual(result["status"], "ok")
         continued = apply_batch.call_args.kwargs["options"].continuation
-        self.assertEqual(continued["file_path"], str(self.file.resolve()))
+        self.assertTrue(os.path.samefile(continued["file_path"], self.file))
 
     def test_apply_continuation_outside_configured_roots_is_refused(self):
         with self.assertRaisesRegex(HarnessError, "outside every allowed root"):
@@ -91,7 +91,7 @@ class WorkspaceMcpBoundaryTests(unittest.TestCase):
             link.symlink_to(self.file)
         except (OSError, NotImplementedError):
             self.skipTest("symlinks unavailable")
-        with self.assertRaisesRegex(HarnessError, "symlink targets"):
+        with self.assertRaisesRegex(HarnessError, "symlink"):
             self.server._invoke("apply_edit", {
                 "continuation": {"file_path": str(link), "verify_only": True},
                 "verify_only": True,
