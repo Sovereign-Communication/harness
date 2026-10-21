@@ -143,6 +143,17 @@ class RequestRoutingMixin:
                             token_budget=token_budget,
                             resume_state=resume_state,
                         )
+                    if resume_state.get("route") == "conversation":
+                        return self._run_fallback_conversation(
+                            prompt,
+                            sid,
+                            cancel_check=cancel_check,
+                            web=bool(resume_state.get("web_requested")),
+                            max_tokens=max_tokens,
+                            reasoning_effort=reasoning_effort,
+                            token_budget=token_budget,
+                            lifecycle_state=resumed,
+                        )
                 elif lane == "audit":
                     return self._handle_audit(
                         prompt, sid, cancel_check=cancel_check, lifecycle_state=resumed
@@ -283,10 +294,10 @@ class RequestRoutingMixin:
                     reasoning_effort=reasoning_effort,
                     token_budget=token_budget,
                 )
-            return self._handle_conversation(
+            return self._run_fallback_conversation(
                 prompt,
                 sid,
-                cancel_check,
+                cancel_check=cancel_check,
                 web=web,
                 max_tokens=max_tokens,
                 reasoning_effort=reasoning_effort,
@@ -362,10 +373,10 @@ class RequestRoutingMixin:
                     reasoning_effort=reasoning_effort,
                     token_budget=token_budget,
                 )
-            return self._handle_conversation(
+            return self._run_fallback_conversation(
                 prompt,
                 sid,
-                cancel_check,
+                cancel_check=cancel_check,
                 web=web,
                 max_tokens=max_tokens,
                 reasoning_effort=reasoning_effort,

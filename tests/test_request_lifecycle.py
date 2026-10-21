@@ -161,6 +161,63 @@ class LiteralGreetingFastPathTests(unittest.TestCase):
         ])
 
 
+class FallbackChatContinuationTests(unittest.TestCase):
+    def test_cancelled_no_jev_chat_resumes_from_shared_lifecycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            history_dir = Path(tmp)
+            agent = AutonomousAgent(
+                settings=_lane_settings(), history_dir=history_dir)
+            prompt = "First request must be stopped so we can exercise recovery."
+            cancelled = ToolCancelled(usage_unknown=True)
+            cancelled.reserved_cost = 0.002
+            governor = MagicMock()
+
+            with patch("harness.conversation_lifecycle.governor_for",
+                       return_value=("fake-key", governor)), \
+                 patch("harness.conversation_lifecycle.ledger_for",
+                       return_value=MagicMock()), \
+                 patch("harness.conversation_lifecycle.chat",
+                       side_effect=cancelled) as chat_call:
+                with self.assertRaises(ToolCancelled):
+                    agent.run_prompt(
+                        prompt, session_id="fallback-chat",
+                        force_conversation=True)
+
+            interrupted = agent.lifecycle.load("fallback-chat")
+            self.assertEqual(interrupted["status"], "interrupted")
+            self.assertEqual(interrupted["lane"], "chat")
+            self.assertEqual(interrupted["data"]["route"], "conversation")
+            self.assertEqual(interrupted["usage"]["unknown_liability"], 0.002)
+            self.assertEqual(chat_call.call_count, 1)
+
+            response = {
+                "choices": [{"message": {"content": "Recovered answer."},
+                             "finish_reason": "stop"}],
+                "usage": {"cost": 0.001},
+            }
+            with patch("harness.conversation_lifecycle.governor_for",
+                       return_value=("fake-key", governor)), \
+                 patch("harness.conversation_lifecycle.ledger_for",
+                       return_value=MagicMock()), \
+                 patch("harness.conversation_lifecycle.chat",
+                       return_value=(200, response)) as resumed_chat:
+                result = agent.run_prompt(
+                    "continue", session_id="fallback-chat",
+                    force_conversation=True)
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["response"], "Recovered answer.")
+            self.assertEqual(resumed_chat.call_count, 1)
+            self.assertEqual(
+                resumed_chat.call_args.kwargs["messages"][-1]["content"],
+                prompt)
+            governor.retain_unknown.assert_called_once_with(
+                0.002, "cancelled-chat-provider-call")
+            completed = agent.lifecycle.load("fallback-chat")
+            self.assertEqual(completed["status"], "complete")
+            self.assertAlmostEqual(completed["usage"]["known_cost"], 0.001)
+
+
 class PublicSiteProbeTests(unittest.TestCase):
     def test_https_200_is_up(self):
         out = probe_public_site(

@@ -15,11 +15,12 @@ from .conversation_lifecycle import ConversationLifecycleMixin
 from .request_intent import classify_prompt_intent
 from .simple_answer_lifecycle import SimpleAnswerLifecycleMixin
 
-from .errors import HarnessError
+from .errors import HarnessError, ToolCancelled
 from .history import (
     load_chat_checkpoint,
     save_chat_turn,
 )
+from .lifecycle_types import LifecycleState
 
 
 class ChatLifecycleMixin(
@@ -43,6 +44,57 @@ class ChatLifecycleMixin(
         if not self.settings.allow_escalation:
             return False
         return bool(resolve_api_key())
+
+    def _run_fallback_conversation(
+        self,
+        prompt: str,
+        session_id: str,
+        *,
+        cancel_check=None,
+        web: bool = False,
+        max_tokens=None,
+        reasoning_effort=None,
+        token_budget=None,
+        lifecycle_state: Optional[LifecycleState] = None,
+    ) -> Dict[str, Any]:
+        """Run the no-Jev chat route under the same persisted lifecycle."""
+        state = lifecycle_state or self.lifecycle.begin(
+            "chat",
+            session_id,
+            prompt,
+            stage="answer",
+            data={"route": "conversation", "web_requested": bool(web)},
+        )
+        try:
+            result = self._handle_conversation(
+                prompt,
+                session_id,
+                cancel_check,
+                web=web,
+                max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
+                token_budget=token_budget,
+                lifecycle_state=state,
+            )
+        except ToolCancelled as exc:
+            self.lifecycle.interrupt(state, exc)
+            raise
+        except Exception:
+            if state["status"] in ("running", "interrupted"):
+                self.lifecycle.finish(state, "failed")
+            raise
+
+        cost = max(0.0, float(result.get("cost") or 0.0))
+        if cost:
+            state["usage"]["known_cost"] += cost
+            self.lifecycle.save(state)
+        self._finish_chat_request(
+            session_id,
+            result,
+            candidate=result.get("response"),
+            resumable=bool(result.get("truncated")),
+        )
+        return result
 
     @staticmethod
     def _classify_prompt_intent(prompt: str) -> str:

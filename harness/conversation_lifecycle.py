@@ -15,6 +15,7 @@ from .config import Settings, effective_lane_policy
 from .errors import HarnessError, ToolCancelled
 from .events import emit
 from .history import load_chat_history, save_chat_turn
+from .lifecycle_types import LifecycleState
 from .prompts import CAPABILITY_MARKER
 from .results import _http_error
 from .session import governor_for, ledger_for
@@ -41,6 +42,7 @@ class ConversationLifecycleMixin:
         max_tokens: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
         token_budget: Optional[Any] = None,
+        lifecycle_state: Optional[LifecycleState] = None,
     ) -> Dict[str, Any]:
         # Handle informational or technical questions with conversational routing
         api_key, gov = governor_for(self.settings)
@@ -98,6 +100,17 @@ class ConversationLifecycleMixin:
         # body. The old code pinned one free model, ignored the status, and
         # rendered a fake apology on a 429; now every failure is recorded,
         # emitted as a rotation, and an all-rungs failure raises honestly.
+        if lifecycle_state is not None:
+            usage = lifecycle_state["usage"]
+            known_cost = max(0.0, float(usage.get("known_cost") or 0.0))
+            unknown_liability = max(
+                0.0, float(usage.get("unknown_liability") or 0.0))
+            if known_cost:
+                gov.record_actual(
+                    known_cost, "chat-continuation", lane="answer")
+            if unknown_liability:
+                gov.retain_unknown(
+                    unknown_liability, "cancelled-chat-provider-call")
         answered = None
         attempts: List[str] = []
         # Longest cut-off body seen while every rung was failing: the raw
