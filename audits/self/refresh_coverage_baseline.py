@@ -136,7 +136,7 @@ def main():
            "commit": head.stdout.strip(),
            "modules": baseline}
     # write_text(newline=...) needs 3.10+; the support floor is 3.9.
-    data = json.dumps(doc, sort_keys=True) + chr(10)
+    data = json.dumps(doc, sort_keys=True, indent=2) + chr(10)
     with open(out, "w", encoding="utf-8", newline=chr(10)) as f:
         f.write(data)
     nmods = len(baseline)
