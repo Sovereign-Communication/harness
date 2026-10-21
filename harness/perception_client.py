@@ -27,10 +27,10 @@ transport error as a refusal would make a caller retry an outage as though
 the driver had declined. Both are recoverable-looking and neither is correct,
 so the boundary is asserted rather than documented.
 
-Non-interference: driver-core is configured entirely under ``DRIVER_*`` and
-reads nothing from this project's environment. This adapter reads only
-``DRIVER_BASE_URL`` / ``DRIVER_TOKEN`` / ``DRIVER_CONFIG_PATH`` and never
-writes a Harness state file on the driver's behalf.
+Non-interference: driver-core's endpoint, token, and policy are configured
+under ``DRIVER_*``. This adapter also uses the shared Harness config directory
+only to locate its default ``driver.json``; ``DRIVER_CONFIG_PATH`` overrides
+that location. It never writes a Harness state file on the driver's behalf.
 
 Usage (Python):
     from harness.perception_client import PerceptionAdapter, PerceptionUnavailable
@@ -54,6 +54,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .paths import get_config_dir
+
 # No provider or service brand strings are hardcoded here. The endpoint is
 # always resolved from config or environment, in this order: explicit
 # constructor args > config file > env vars > loopback default. The default
@@ -75,7 +77,7 @@ def _default_base():
 def _config_path():
     return os.environ.get(
         "DRIVER_CONFIG_PATH",
-        os.path.join(os.path.expanduser("~"), ".config", "harness", "driver.json"),
+        os.path.join(get_config_dir(), "driver.json"),
     )
 
 #: The closed set of reasons the driver may report for a blocked step,

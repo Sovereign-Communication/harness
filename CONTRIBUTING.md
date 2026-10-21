@@ -107,7 +107,7 @@ cli.py / mcp.py          interfaces (arg parsing, JSON-RPC; boundary
     bench.py  ledger.py  task runner; hash-chained evidence store
     (cli `dogfood` composes the lanes: hermetic ground gate -> live panel
     tally gate -> gated self-apply; deliberately not exposed over MCP)
-    config.py  tokens.py  output.py  errors.py
+    config.py  paths.py  tokens.py  output.py  errors.py
 ```
 
 - **One owner per concern.** Cost policy lives only in `spend.py`; model
@@ -192,6 +192,7 @@ statement covers the CI matrix by direct execution.
 | Path | Owns |
 |---|---|
 | `harness/config.py` | settings, key resolution, lane curation |
+| `harness/paths.py` | shared per-user root for Harness-managed configuration and state |
 | `harness/spend.py` | SpendGovernor: spend ceilings, BYOK, model discovery |
 | `harness/router.py` | cheap-first routing ladder: model pools, rotation, gated escalation |
 | `harness/capability.py` | model capability profiles + observed evidence |

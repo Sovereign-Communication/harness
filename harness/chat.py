@@ -763,7 +763,8 @@ def chat_for_route(route, transport, openrouter_key, fireworks_key, messages,
         if not fireworks_key:
             raise HarnessError(
                 "Fireworks key missing: set ~/.config/scmorc/fireworks.env, "
-                "~/.config/harness/fireworks.env, or FIREWORKS_API_KEY")
+                "$HARNESS_CONFIG_DIR/fireworks.env (default: "
+                "~/.config/harness/fireworks.env), or FIREWORKS_API_KEY")
         return _chat_fireworks(transport, fireworks_key, route.wire_model,
                                messages, max_tokens, governor)
     return chat(transport, openrouter_key, route.wire_model, messages, max_tokens,

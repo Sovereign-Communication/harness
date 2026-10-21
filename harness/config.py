@@ -3,11 +3,11 @@
 Key resolution order (back-compatible with SCMessenger's fusion_lite.py):
   1. ~/.config/scmorc/openrouter_fusion.env   (dedicated spend-limited fusion key)
   2. ~/.config/scmorc/openrouter.env
-  3. ~/.config/harness/openrouter.env          (this package's home)
+  3. $HARNESS_CONFIG_DIR/openrouter.env        (default: ~/.config/harness/openrouter.env)
   4. $OPENROUTER_API_KEY environment variable
 
-Settings come from ~/.config/harness/config.json, with $HARNESS_* env
-variables taking precedence.
+Settings come from $HARNESS_CONFIG_DIR/config.json (default: ~/.config/harness/config.json),
+with $HARNESS_* env variables taking precedence.
 
 Free-tier routing: by default (`use_free=True`) every lane uses the best
 current free OpenRouter models. Model slugs go stale, so the pools below are
@@ -25,9 +25,10 @@ from types import SimpleNamespace
 from .errors import HarnessError
 from . import osal
 from .output import eprint
+from .paths import get_config_dir
 from .validation import finite_number
 
-CONFIG_DIR = os.path.expanduser("~/.config/harness")
+CONFIG_DIR = get_config_dir()
 
 # OpenRouter endpoints
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -575,8 +576,9 @@ def resolve_api_key():
 def resolve_jev_key():
     """Resolve the Jev / System One API key: env file first, then environment.
 
-    Checks ~/.config/scmorc/jev.env, ~/.config/harness/jev.env, and environment
-    variables HARNESS_JEV_KEY, TYPESAFE_API_KEY, and JEV_API_KEY.
+    Checks ~/.config/scmorc/jev.env, $HARNESS_CONFIG_DIR/jev.env (default:
+    ~/.config/harness/jev.env), and environment variables HARNESS_JEV_KEY,
+    TYPESAFE_API_KEY, and JEV_API_KEY.
     """
     for p in (
         os.path.join(os.path.expanduser("~/.config/scmorc"), "jev.env"),

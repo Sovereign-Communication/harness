@@ -32,7 +32,8 @@ def governor_for(settings, max_cost_override=None):
         if not fw_key:
             raise HarnessError(
                 "no Fireworks API key found (FIREWORKS_API_KEY env or "
-                "~/.config/harness/fireworks.env).")
+            "$HARNESS_CONFIG_DIR/fireworks.env (default: "
+            "~/.config/harness/fireworks.env).")
         if max_cost_override is None:
             max_cost = settings.max_cost
         else:
@@ -48,7 +49,9 @@ def governor_for(settings, max_cost_override=None):
     if not api_key:
         raise HarnessError(
             "no OpenRouter API key found (OPENROUTER_API_KEY env, "
-            "~/.config/scmorc/openrouter*.env, or ~/.config/harness/openrouter.env).")
+            "~/.config/scmorc/openrouter*.env, or "
+            "$HARNESS_CONFIG_DIR/openrouter.env (default: "
+            "~/.config/harness/openrouter.env).")
     if max_cost_override is None:
         max_cost = settings.max_cost
     else:

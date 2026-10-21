@@ -4,6 +4,11 @@ Harness treats model output as untrusted input. It may propose file content,
 protocol markers, JSON, or verification-related prose, but the host policy
 remains in Harness.
 
+Harness settings, provider key files, chat history, the UI token, and default
+media/driver adapter config use `~/.config/harness` by default. Set
+`HARNESS_CONFIG_DIR` before starting Harness to place those files elsewhere; see
+[installation and credentials](../README.md#install--configure).
+
 ## Important limitation
 
 Tokenization and `shell=False` prevent shell metacharacters from being
