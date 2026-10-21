@@ -13,8 +13,8 @@ from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness.agent import (
-    AutonomousAgent,
+from harness.agent import AutonomousAgent
+from harness.request_intent import (
     classify_prompt_intent,
     is_literal_greeting_request,
     is_site_check_prompt,
@@ -748,6 +748,24 @@ class SimpleActionProbeSeamTests(unittest.TestCase):
         _, kwargs = probe.call_args
         self.assertIsNotNone(kwargs.get("resolve_fn"))
         self.assertNotIn("connect_fn", kwargs)
+
+    def test_boolean_jev_probability_cannot_claim_site_is_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            with patch("harness.web.probe_public_site",
+                       return_value=self._up()), \
+                 patch("harness.simple_action_lifecycle.jev_for",
+                       return_value=_site_jev(True)), \
+                 patch("harness.simple_action_lifecycle.ledger_for",
+                       return_value=MagicMock()):
+                result = agent.run_simple_action(
+                    "is example.com up?", session_id="s-bool-probability",
+                    resolve_fn=_resolve_public("93.184.216.34"),
+                    preflight_plan=self._plan())
+
+        self.assertEqual(result["status"], "deferred")
+        self.assertNotEqual(result.get("answer"), "yes")
+        self.assertIsNone(result["jev"]["http_response_received"])
 
     def test_cancel_after_probe_aborts_before_judgment(self):
         with tempfile.TemporaryDirectory() as tmp:

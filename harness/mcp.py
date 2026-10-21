@@ -17,7 +17,8 @@ from pathlib import Path
 from . import __version__
 from . import events as _events
 from . import trust as trust_policy
-from .agent import AutonomousAgent, is_site_check_prompt
+from .agent import AutonomousAgent
+from .request_intent import is_site_check_prompt
 from .batch import BatchOptions
 from .consent import probe_consent
 from .continuation import validate_continuation

@@ -77,7 +77,16 @@ class LifecycleCoordinator:
                 raw = stream.read(_MAX_CHECKPOINT_BYTES + 1)
             if len(raw) > _MAX_CHECKPOINT_BYTES:
                 raise HarnessError("request lifecycle exceeds its storage limit")
-            state = validate_lifecycle_state(json.loads(raw.decode("utf-8")))
+            decoded = json.loads(raw.decode("utf-8"))
+            from .history import CHAT_CHECKPOINT_SCHEMA
+            if (isinstance(decoded, dict)
+                    and decoded.get("schema") == CHAT_CHECKPOINT_SCHEMA):
+                if decoded.get("session_id") != session_id:
+                    raise HarnessError("request lifecycle state is invalid")
+                # Let the chat compatibility adapter validate and adopt this
+                # older view into the typed lifecycle before any lane resumes.
+                return None
+            state = validate_lifecycle_state(decoded)
         except HarnessError:
             raise
         except (OSError, ValueError, UnicodeDecodeError) as exc:

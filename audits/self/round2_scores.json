@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.96,
+        "confidence": 0.97,
         "evaluated": true
       }
     },
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 4737 tests in 295.882s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 4776 tests in 276.291s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -268,7 +268,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "93/93 modules imported by tests"
+        "evidence": "106/106 modules imported by tests"
       },
       {
         "id": "S7",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 504/511 = 99% (bar 95%) vs baseline 6b17c0bf98; untested: agent.py:480,1701,1796; history.py:38,100,142; simple_request.py:181)"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 811/830 = 98% (bar 95%) vs baseline f371eb74c8; untested: hourglass_lifecycle.py:489,495,568,778,779,780,782,787...; lifecycle.py:85; simple_answer_lifecycle.py:147)"
       }
     ]
   }

@@ -5,12 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness.agent import (
-    AutonomousAgent,
-    classify_prompt_intent,
-    discover_target_files,
-    enumerate_repo_files,
-)
+from harness.agent import AutonomousAgent
+from harness.request_intent import classify_prompt_intent
 from harness.history import get_default_history_dir, load_chat_history, save_chat_turn
 from harness.jev import JevEvaluationResult
 from harness.config import (
@@ -20,7 +16,12 @@ from harness.config import (
 )
 from harness.errors import HarnessError, ToolCancelled
 from harness.provider_errors import ProviderSpendLimitError
-from harness.repo_scope import _gate_python, discover_verification_gate
+from harness.repo_scope import (
+    _gate_python,
+    discover_target_files,
+    discover_verification_gate,
+    enumerate_repo_files,
+)
 from tests._fake import FakeTransport, _gov
 
 

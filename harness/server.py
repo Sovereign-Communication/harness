@@ -36,7 +36,8 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 from . import events as _events
-from .agent import AutonomousAgent, classify_prompt_intent
+from .agent import AutonomousAgent
+from .request_intent import classify_prompt_intent
 import harness.history as _history
 from .batch import BatchOptions
 from .config import (HARD_MAX_COST, HARD_TASK_MAX_COST, load_settings,

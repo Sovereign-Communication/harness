@@ -311,9 +311,8 @@ class SimpleActionLifecycleMixin:
             else None
         )
         probability = answer.get("noul") if isinstance(answer, dict) else None
-        if (
-            jev_result is None
-            or jev_result.is_fallback
+        if jev_result is None or (
+            jev_result.is_fallback
             or isinstance(probability, bool)
             or not isinstance(probability, (int, float))
             or not 0.0 <= float(probability) <= 1.0

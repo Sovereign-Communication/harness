@@ -5,7 +5,8 @@ from unittest.mock import MagicMock, patch
 import tempfile
 import unittest
 
-from harness.agent import AutonomousAgent, classify_prompt_intent
+from harness.agent import AutonomousAgent
+from harness.request_intent import classify_prompt_intent
 from harness.config import load_settings
 from harness.errors import (
     HarnessError,
@@ -810,6 +811,78 @@ class SimpleRequestEdgeTests(unittest.TestCase):
         self.assertEqual(result["response"], "direct convo fact")
         convo.assert_called_once()
         self.assertTrue(convo.call_args[1].get("web"))
+
+    def test_unknown_strategy_dispatch_is_never_replayed_by_simple_answer(self):
+        prompt = "Explain ice?"
+        state = self.agent.lifecycle.begin(
+            "chat", "saved-unknown", prompt, stage="strategy",
+            data={"route": "simple-answer"})
+        call_id = state["request_id"] + ":simple-strategy"
+        self.agent.lifecycle.provider_started(state, call_id, 0.003)
+        policy = MagicMock()
+        checkpoint = {
+            "route": "simple-answer", "status": "interrupted",
+            "stage": "strategy", "prompt": prompt,
+            "known_cost": 0.0, "unknown_liability": 0.0,
+            "usage_unknown": False,
+        }
+        with (
+            patch("harness.simple_answer_lifecycle.governor_for",
+                  return_value=("key", self.gov)),
+            patch("harness.simple_answer_lifecycle.policy_for",
+                  return_value=policy),
+            patch("harness.simple_answer_lifecycle.ledger_for",
+                  return_value=self.ledger),
+        ):
+            result = self.agent.run_simple_request(
+                prompt, session_id="saved-unknown", resume_state=checkpoint)
+
+        saved = self.agent.lifecycle.load("saved-unknown")
+        self.assertEqual(result["status"], "deferred")
+        self.assertIn("did not replay it", result["response"])
+        self.assertEqual(result["next_step"], "restate the request as a new task")
+        self.assertEqual(saved["status"], "deferred")
+        self.assertEqual(saved["usage"]["provider_calls"][call_id]["status"], "unknown")
+        self.assertAlmostEqual(saved["usage"]["unknown_liability"], 0.003)
+        policy.evaluate_simple_strategy.assert_not_called()
+
+    def test_simple_answer_rejects_lifecycle_owned_by_another_lane(self):
+        prompt = "Explain ice?"
+        self.agent.lifecycle.begin("driver", "wrong-lane", prompt)
+        with (
+            patch("harness.simple_answer_lifecycle.ledger_for",
+                  return_value=self.ledger),
+        ):
+            result = self.agent.run_simple_request(
+                prompt, session_id="wrong-lane", resume_state={
+                    "route": "simple-answer", "status": "interrupted",
+                    "stage": "strategy", "prompt": prompt,
+                })
+
+        self.assertEqual(result["status"], "deferred")
+        self.assertEqual(
+            result["defer_reason"], "chat request lifecycle could not be restored")
+
+    def test_corrupt_shared_state_is_cleared_then_legacy_chat_is_adopted(self):
+        prompt = "Explain ice?"
+        self.agent.lifecycle._path("corrupt-chat", create=True).write_text(
+            "{not valid lifecycle", encoding="utf-8")
+        with patch("harness.simple_answer_lifecycle.ledger_for",
+                   return_value=self.ledger):
+            with self.assertRaises(ToolCancelled):
+                self.agent.run_simple_request(
+                    prompt, session_id="corrupt-chat",
+                    cancel_check=lambda: True,
+                    resume_state={
+                        "route": "simple-answer", "status": "interrupted",
+                        "stage": "strategy", "prompt": prompt,
+                    })
+
+        recovered = self.agent.lifecycle.load("corrupt-chat")
+        self.assertEqual(recovered["lane"], "chat")
+        self.assertEqual(recovered["original_request"], prompt)
+        self.assertFalse(self.agent.lifecycle._path("corrupt-chat").read_text(
+            encoding="utf-8").startswith("{not valid lifecycle"))
 
 
 if __name__ == "__main__":

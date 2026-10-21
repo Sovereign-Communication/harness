@@ -31,7 +31,8 @@ from . import jev_calibration as _jcal
 from . import provision as _pv
 from . import refine as _refine
 from . import repo_cards as _rc
-from .agent import AutonomousAgent, is_site_check_prompt
+from .agent import AutonomousAgent
+from .request_intent import is_site_check_prompt
 from .consent import probe_consent
 from .config import (
     DEFAULT_MAX_COST,

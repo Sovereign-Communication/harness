@@ -677,6 +677,22 @@ class StageCallingLanesIntegrationTests(unittest.TestCase):
         self.assertTrue(decision["consent_renewal_required"])
         self.assertIn("consent no longer covers this assignment", " ".join(decision["reasons"]))
 
+    def test_restart_decision_discards_out_of_vocabulary_jev_target(self):
+        from harness.agent import AutonomousAgent
+        from pathlib import Path
+        agent = AutonomousAgent(settings=load_settings(), root_dir=Path(self.tmp.name))
+        asked = [
+            {"signals": {"restart_target": {"target": "undeclared-stage"}},
+             "native": True},
+            {"signals": {"consent_fresh": 0.95}, "native": True},
+        ]
+        with mock.patch.object(agent, "_ask_stage_dimension", side_effect=asked):
+            decision = agent._restart_decision("inspect sample.py", object(), {})
+
+        self.assertEqual(decision["recommendation_source"], "undeclared_discarded")
+        self.assertFalse(decision["allowed"])
+        self.assertIsNone(decision["target"])
+
     def test_intake_brief_handles_non_tuple_and_exception(self):
         from harness.waist import intake_brief
         from unittest.mock import MagicMock

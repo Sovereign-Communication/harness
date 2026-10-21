@@ -235,7 +235,12 @@ statement covers the CI matrix by direct execution.
 | `harness/mission_record.py` | HUL-A mission pack schema/layout/STATUS/receipts/budget/resume + `evaluate_scope_on_pack` storage (no second Jev client) |
 | `harness/mission_driver.py` | HUL-D until-limits driver: attempts until cost/token/error limits, honest HUL-C success, or stall; FINDINGS.md + interrupt-safe resume |
 | `harness/providers.py` | modular provider adapter interface and registry for external execution backends |
-| `harness/agent.py` | autonomous agent orchestration: natural language prompt intent classification, file/gate discovery, sliding-scale DAG execution, self-healing retry |
+| `harness/agent.py` | runtime composition root for route adapters and the shared lifecycle coordinator |
+| `harness/request_intent.py` | deterministic prompt intent, greeting, and bounded site-check classification |
+| `harness/request_router.py` | request dispatch, continuation routing, and workspace scope selection |
+| `harness/simple_action_lifecycle.py` | bounded read-only public site checks with Jev route selection |
+| `harness/conversation_lifecycle.py` | conversational fallback generation, web evidence, and honest deferral |
+| `harness/execution_stages.py` | planning-stage composition, stage judgments, and restart guards |
 | `harness/lifecycle_types.py` | discriminated chat/audit/auto-edit/driver/provisioning states and their cross-field invariants |
 | `harness/lifecycle.py` | the single persisted request-state owner: Jev rounds, continuation, usage liability, side-effect receipts, and terminal transitions; lane adapters do not own duplicate state |
 | `harness/chat_policy.py` | chat intent and route policy shared by the answer lanes |

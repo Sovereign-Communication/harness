@@ -1,5 +1,7 @@
 """Behavior checks for the typed lifecycle across each task lane."""
 import tempfile
+import time
+import json
 from concurrent.futures import ThreadPoolExecutor
 import unittest
 from pathlib import Path
@@ -9,7 +11,11 @@ from unittest.mock import MagicMock, patch
 from harness.agent import AutonomousAgent
 from harness.config import load_settings
 from harness.errors import HarnessError, ProviderUsageUnknown, ToolCancelled
-from harness.history import load_chat_checkpoint, save_chat_checkpoint
+from harness.history import (
+    CHAT_CHECKPOINT_SCHEMA,
+    load_chat_checkpoint,
+    save_chat_checkpoint,
+)
 from harness.lifecycle import (
     LifecycleCoordinator,
     adapter_for,
@@ -154,7 +160,495 @@ class TypedLifecycleContractTests(unittest.TestCase):
             self.assertIsNone(saved["review"]["history"][0]["supported"])
             self.assertIsNone(saved["review"]["history"][0]["confidence"])
 
+    def test_legacy_chat_reviews_are_reconstructed_as_typed_judgments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            coordinator = LifecycleCoordinator(history_dir=Path(tmp))
+            state = coordinator.adopt_chat_payload("legacy-chat", {
+                "prompt": "Explain photosynthesis",
+                "route": "hourglass",
+                "status": "interrupted",
+                "stage": "answer_review",
+                "max_review_rounds": 3,
+                # A legacy boolean threshold is invalid; adoption uses the
+                # conservative default instead of treating True as numeric 1.
+                "confidence_threshold": True,
+                "rounds": [
+                    "missing old review envelope",
+                    {
+                        "round": 2,
+                        "jev": {
+                            "native": True,
+                            "verdict": "fail",
+                            "confidence": {"observed": 0.82},
+                            "supported": 0.81,
+                            "answers": {
+                                "iteration_required": False,
+                                "plan_required": False,
+                            },
+                            "cost": 0.001,
+                        },
+                    },
+                    {
+                        "round": 3,
+                        "native": False,
+                        "confidence": True,
+                        "supported": True,
+                        "iteration_required": True,
+                    },
+                ],
+            })
+
+            self.assertEqual(state["review"]["max_rounds"], 3)
+            self.assertEqual(state["review"]["rounds"], 2)
+            self.assertEqual(
+                [item["decision"] for item in state["review"]["history"]],
+                ["pass", "revise"],
+            )
+            self.assertEqual(state["review"]["history"][0]["supported"], 0.82)
+            self.assertIsNone(state["review"]["history"][1]["confidence"])
+            self.assertIsNone(state["review"]["history"][1]["supported"])
+
+    def test_lane_adapter_rejects_invalid_reviews_and_refuses_provider_replay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            coordinator = LifecycleCoordinator(history_dir=Path(tmp))
+            adapter = adapter_for(coordinator, "chat")
+            state = adapter.begin("provider-boundary", "answer safely")
+            with self.assertRaisesRegex(HarnessError, "threshold"):
+                adapter.review(
+                    state, "bad-threshold", {"native": True},
+                    confidence_threshold=True)
+
+            invoked = []
+            coordinator.provider_started(state, "in-flight")
+            with self.assertRaisesRegex(HarnessError, "not replayed"):
+                adapter.provider_call(
+                    state, "in-flight", lambda: invoked.append("dispatch"),
+                    retry_unknown=True)
+            self.assertEqual(invoked, [])
+
+            coordinator.interrupt(
+                state, ProviderUsageUnknown("provider reply lost",
+                                            reserved_cost=0.004),
+                call_id="in-flight")
+            resumed = adapter.resume("provider-boundary")
+            with self.assertRaisesRegex(HarnessError, "not replayed"):
+                adapter.provider_call(
+                    resumed, "in-flight", lambda: invoked.append("retry"),
+                    retry_unknown=False)
+            self.assertEqual(invoked, [])
+
+            race_state = adapter.begin("provider-race", "answer once")
+
+            def concurrent_completion(_state, call_id):
+                _state["usage"]["provider_calls"][call_id] = {
+                    "status": "completed", "reserved_cost": 0.0,
+                    "actual_cost": 0.001, "result": {"answer": "saved"},
+                }
+                return False
+
+            with patch.object(coordinator, "provider_started",
+                              side_effect=concurrent_completion):
+                raced = adapter.provider_call(
+                    race_state, "same-call", lambda: invoked.append("race"))
+            self.assertEqual(raced, {"answer": "saved"})
+            with patch.object(coordinator, "provider_started", return_value=False):
+                with self.assertRaisesRegex(HarnessError, "not replayed"):
+                    adapter.provider_call(
+                        race_state, "unreserved", lambda: invoked.append("unreserved"))
+            self.assertEqual(invoked, [])
+
+    def test_lifecycle_rejects_non_boolean_resumable_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            coordinator = LifecycleCoordinator(history_dir=Path(tmp))
+            state = coordinator.begin("chat", "bad-resume-marker", "answer")
+            state["data"]["resumable"] = "yes"
+            with self.assertRaisesRegex(HarnessError, "resumable state"):
+                validate_lifecycle_state(state)
+
 class SharedLaneBehaviorTests(unittest.TestCase):
+    def test_chat_helpers_return_existing_terminal_and_recognize_only_bare_continue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_settings(), history_dir=Path(tmp))
+            self.assertIsNone(agent._finish_chat_request(
+                "missing-chat", {"status": "ok", "response": "done"}))
+            self.assertTrue(agent._is_continue_command("Continue!"))
+            self.assertFalse(agent._is_continue_command("continue with the tests"))
+
+            state = agent.lifecycle.begin("chat", "terminal-chat", "say hello")
+            agent.lifecycle.finish(state, "complete", candidate="Hello.")
+            terminal = agent._finish_chat_request(
+                "terminal-chat", {"status": "ok", "response": "Hello."})
+            self.assertEqual(terminal["status"], "complete")
+            self.assertEqual(terminal["candidate"], "Hello.")
+
+    def test_continuation_router_restores_legacy_chat_driver_and_provision_lanes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=_settings(), history_dir=root)
+
+            legacy_path = agent.lifecycle._path("legacy-hourglass", create=True)
+            legacy_path.write_text(json.dumps({
+                "schema": CHAT_CHECKPOINT_SCHEMA,
+                "session_id": "legacy-hourglass",
+                "route": "hourglass", "status": "interrupted",
+                "stage": "answer_review", "prompt": "Summarize this project",
+                "answer": "A saved partial answer.",
+            }), encoding="utf-8")
+            with patch.object(agent, "run_hourglass_request",
+                              return_value={"status": "ok"}) as hourglass:
+                result = agent.run_prompt(
+                    "continue", session_id="legacy-hourglass")
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(
+                hourglass.call_args.kwargs["resume_state"]["route"],
+                "hourglass")
+
+            for lane, handler_name in (
+                    ("provisioning", "_handle_provision"),
+                    ("driver", "_handle_driver_task")):
+                session_id = f"resume-{lane}"
+                state = adapter_for(agent.lifecycle, lane).begin(
+                    session_id, f"continue {lane}")
+                agent.lifecycle.interrupt(state, ToolCancelled("interrupted"))
+                with patch.object(agent, handler_name,
+                                  return_value={"status": "ok", "intent": lane}) as handler:
+                    resumed_result = agent.run_prompt(
+                        "continue", session_id=session_id)
+                self.assertEqual(resumed_result["intent"], lane)
+                self.assertEqual(
+                    handler.call_args.kwargs["lifecycle_state"]["lane"], lane)
+
+    def test_hourglass_review_continuation_reuses_answer_and_saved_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=_settings(), history_dir=root)
+            prompt = "What is 2 + 2?"
+            agent.lifecycle.begin(
+                "chat", "hourglass-resume", prompt, stage="strategy",
+                data={"route": "simple-answer"})
+            policy = MagicMock()
+            policy.evaluate_request_workflow.return_value = (
+                SimpleNamespace(
+                    answers={"workflow_tier": {"choice": "answer"}},
+                    is_fallback=False),
+                {"cost": 0.0},
+            )
+            review_calls = []
+
+            def review_once(*_args, **_kwargs):
+                review_calls.append("review")
+                if len(review_calls) == 1:
+                    raise ToolCancelled("review interrupted after dispatch")
+                return (
+                    SimpleNamespace(verdict="pass", is_fallback=False,
+                                     confidence=0.95),
+                    {"cost": 0.001, "answer_sufficient": 0.95,
+                     "iteration_required": False, "plan_required": False},
+                )
+
+            policy.evaluate_answer.side_effect = review_once
+            brief = SimpleNamespace(estimated_tokens=5)
+            answer_calls = []
+            envelope = {
+                "native": True, "is_fallback": False, "verdict": "pass",
+                "confidence": {"observed": 0.95}, "supported": 0.95,
+                "reasons": [],
+            }
+            preflight = {
+                "source": "simple_strategy", "choice": "direct_answer",
+                "native": False, "cost": 0.0,
+            }
+            with patch("harness.hourglass_lifecycle.governor_for",
+                       return_value=("key", MagicMock())), \
+                 patch("harness.hourglass_lifecycle.ledger_for",
+                       return_value=MagicMock()), \
+                 patch("harness.hourglass_lifecycle.policy_for",
+                       return_value=policy), \
+                 patch.object(agent, "_hourglass_request_context",
+                              return_value=("retained context", {}, brief, [])) as context, \
+                 patch.object(agent, "_hourglass_answer_once",
+                              side_effect=lambda *_a, **_k: (
+                                  answer_calls.append("answer") or {
+                                      "answer": "2 + 2 = 4", "model": "cheap",
+                                      "cost": 0.002,
+                                  })), \
+                 patch.object(agent, "_jev_answer_envelope",
+                              return_value=envelope):
+                with self.assertRaises(ToolCancelled):
+                    agent.run_hourglass_request(
+                        prompt, session_id="hourglass-resume", max_rounds=1,
+                        request_preflight=preflight)
+
+                interrupted = agent.lifecycle.load("hourglass-resume")
+                self.assertEqual(interrupted["status"], "interrupted")
+                self.assertEqual(interrupted["lane"], "chat")
+                self.assertEqual(interrupted["candidate"], "2 + 2 = 4")
+                self.assertEqual(interrupted["execution"]["effects"], {})
+
+                result = agent.run_prompt(
+                    "continue", session_id="hourglass-resume")
+
+            saved = agent.lifecycle.load("hourglass-resume")
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["response"], "2 + 2 = 4")
+            self.assertEqual(answer_calls, ["answer"])
+            self.assertEqual(context.call_count, 1)
+            self.assertEqual(review_calls, ["review", "review"])
+            self.assertEqual(saved["status"], "complete")
+            self.assertEqual(saved["candidate"], "2 + 2 = 4")
+            self.assertTrue(any(key.endswith(":retry:1") for key in
+                                saved["usage"]["provider_calls"]))
+
+    def test_hourglass_restores_legacy_checkpoint_after_corrupt_typed_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=_settings(), history_dir=root)
+            session_id = "legacy-hourglass-restore"
+            prompt = "What is 2 + 2?"
+            agent.lifecycle._path(session_id, create=True).write_text(
+                "{not a lifecycle", encoding="utf-8")
+            checkpoint = {
+                "route": "hourglass", "status": "interrupted",
+                "stage": "jev_review", "prompt": prompt,
+                "context": "saved context", "context_files": [],
+                "context_tokens": 5, "file_hashes": {},
+                "workspace_root": "", "context_updated_at": time.time(),
+                "route_preflight": {
+                    "source": "simple_strategy", "choice": "direct_answer",
+                    "native": False, "cost": 0.0,
+                },
+                "answer": "2 + 2 = 4", "answer_model": "cheap",
+                "answer_cost": 0.001, "known_cost": 0.001,
+                "unknown_liability": 0.0, "usage_unknown": False,
+                "next_round": 1, "rounds": [],
+            }
+            policy = MagicMock()
+            policy.evaluate_answer.return_value = (
+                SimpleNamespace(verdict="pass", is_fallback=False,
+                                 confidence=0.95),
+                {"cost": 0.001, "answer_sufficient": 0.95,
+                 "iteration_required": False, "plan_required": False},
+            )
+            envelope = {
+                "native": True, "is_fallback": False, "verdict": "pass",
+                "confidence": {"observed": 0.95}, "supported": 0.95,
+                "reasons": [],
+            }
+            with patch("harness.hourglass_lifecycle.governor_for",
+                       return_value=("key", MagicMock())), \
+                 patch("harness.hourglass_lifecycle.ledger_for",
+                       return_value=MagicMock()), \
+                 patch("harness.hourglass_lifecycle.policy_for",
+                       return_value=policy), \
+                 patch.object(agent, "_hourglass_request_context",
+                              side_effect=AssertionError("saved context was lost")), \
+                 patch.object(agent, "_hourglass_answer_once",
+                              side_effect=AssertionError("saved answer was replayed")), \
+                 patch.object(agent, "_jev_answer_envelope",
+                              return_value=envelope):
+                result = agent.run_hourglass_request(
+                    prompt, session_id=session_id, max_rounds=1,
+                    resume_state=checkpoint)
+
+            saved = agent.lifecycle.load(session_id)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["response"], "2 + 2 = 4")
+            self.assertEqual(saved["lane"], "chat")
+            self.assertEqual(saved["status"], "complete")
+            self.assertEqual(saved["candidate"], "2 + 2 = 4")
+            self.assertFalse(agent.lifecycle._path(session_id).read_text(
+                encoding="utf-8").startswith("{not a lifecycle"))
+
+    def test_new_hourglass_request_replaces_corrupt_stale_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=_settings(), history_dir=root)
+            session_id = "fresh-hourglass-after-corrupt"
+            prompt = "What is 2 + 2?"
+            agent.lifecycle._path(session_id, create=True).write_text(
+                "{stale typed state", encoding="utf-8")
+            policy = MagicMock()
+            policy.evaluate_answer.return_value = (
+                SimpleNamespace(verdict="pass", is_fallback=False,
+                                 confidence=0.95),
+                {"cost": 0.001, "answer_sufficient": 0.95,
+                 "iteration_required": False, "plan_required": False},
+            )
+            envelope = {
+                "native": True, "is_fallback": False, "verdict": "pass",
+                "confidence": {"observed": 0.95}, "supported": 0.95,
+                "reasons": [],
+            }
+            brief = SimpleNamespace(estimated_tokens=5)
+            with patch("harness.hourglass_lifecycle.governor_for",
+                       return_value=("key", MagicMock())), \
+                 patch("harness.hourglass_lifecycle.ledger_for",
+                       return_value=MagicMock()), \
+                 patch("harness.hourglass_lifecycle.policy_for",
+                       return_value=policy), \
+                 patch.object(agent, "_hourglass_request_context",
+                              return_value=("fresh context", {}, brief, [])), \
+                 patch.object(agent, "_hourglass_answer_once", return_value={
+                     "answer": "2 + 2 = 4", "model": "cheap", "cost": 0.002}), \
+                 patch.object(agent, "_jev_answer_envelope",
+                              return_value=envelope):
+                result = agent.run_hourglass_request(
+                    prompt, session_id=session_id, max_rounds=1,
+                    request_preflight={
+                        "source": "simple_strategy", "choice": "direct_answer",
+                        "native": False, "cost": 0.0,
+                    })
+
+            saved = agent.lifecycle.load(session_id)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(saved["status"], "complete")
+            self.assertEqual(saved["original_request"], prompt)
+            self.assertFalse(agent.lifecycle._path(session_id).read_text(
+                encoding="utf-8").startswith("{stale typed state"))
+
+    def test_hourglass_unknown_route_receipt_does_not_replay_route_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=_settings(), history_dir=root)
+            session_id = "unknown-route-review"
+            prompt = "What is 2 + 2?"
+            state = agent.lifecycle.begin("chat", session_id, prompt,
+                                          stage="route")
+            route_call_id = state["request_id"] + ":chat-route-review"
+            agent.lifecycle.provider_started(state, route_call_id, 0.004)
+            policy = MagicMock()
+            policy.evaluate_answer.return_value = (
+                SimpleNamespace(verdict="pass", is_fallback=False,
+                                 confidence=0.95),
+                {"cost": 0.001, "answer_sufficient": 0.95,
+                 "iteration_required": False, "plan_required": False},
+            )
+            envelope = {
+                "native": True, "is_fallback": False, "verdict": "pass",
+                "confidence": {"observed": 0.95}, "supported": 0.95,
+                "reasons": [],
+            }
+            checkpoint = {
+                "route": "hourglass", "status": "interrupted",
+                "stage": "route", "prompt": prompt,
+                "context": "saved context", "context_files": [],
+                "context_tokens": 5, "file_hashes": {},
+                "workspace_root": "", "context_updated_at": time.time(),
+                "known_cost": 0.0, "unknown_liability": 0.004,
+                "usage_unknown": True, "next_round": 1, "rounds": [],
+            }
+            answer_calls = []
+            with patch("harness.hourglass_lifecycle.governor_for",
+                       return_value=("key", MagicMock())), \
+                 patch("harness.hourglass_lifecycle.ledger_for",
+                       return_value=MagicMock()), \
+                 patch("harness.hourglass_lifecycle.policy_for",
+                       return_value=policy), \
+                 patch.object(agent, "_hourglass_request_context",
+                              side_effect=AssertionError("saved context was lost")), \
+                 patch.object(agent, "_hourglass_answer_once",
+                              side_effect=lambda *_a, **_k: (
+                                  answer_calls.append("answer") or {
+                                      "answer": "2 + 2 = 4", "model": "cheap",
+                                      "cost": 0.002,
+                                  })), \
+                 patch.object(agent, "_jev_answer_envelope",
+                              return_value=envelope):
+                result = agent.run_hourglass_request(
+                    prompt, session_id=session_id, max_rounds=1,
+                    resume_state=checkpoint)
+
+            saved = agent.lifecycle.load(session_id)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["response"], "2 + 2 = 4")
+            self.assertEqual(answer_calls, ["answer"])
+            policy.evaluate_request_workflow.assert_not_called()
+            self.assertEqual(
+                saved["usage"]["provider_calls"][route_call_id]["status"],
+                "unknown")
+            self.assertEqual(saved["usage"]["unknown_liability"], 0.004)
+
+    def test_forced_workspace_review_cancels_before_context_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_settings(), root_dir=Path(tmp),
+                                    history_dir=Path(tmp))
+            prompt = "Can you audit this repo and find the biggest remaining issues?"
+            with self.assertRaises(ToolCancelled):
+                agent.run_prompt(prompt, session_id="workspace-cancel",
+                                 force_conversation=True,
+                                 cancel_check=lambda: True)
+
+            with patch.object(agent, "run_hourglass_request",
+                              return_value={"status": "ok"}) as hourglass:
+                result = agent.run_prompt(
+                    prompt, session_id="workspace-review",
+                    force_conversation=True, cancel_check=lambda: False)
+            self.assertEqual(result["status"], "ok")
+            hourglass.assert_called_once()
+            self.assertEqual(hourglass.call_args.args[0], prompt)
+
+    def test_scope_triage_uses_local_fallback_when_jev_selection_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_settings(), root_dir=Path(tmp),
+                                    history_dir=Path(tmp))
+            with patch("harness.request_router.discover_target_files",
+                       return_value=[]), \
+                 patch("harness.request_router.enumerate_repo_files",
+                       return_value=["app.py"]), \
+                 patch("harness.request_router.governor_for",
+                       return_value=(None, None)), \
+                 patch.object(agent, "_orchestrator_chat_fn", return_value=MagicMock()), \
+                 patch("harness.request_router.triage_files",
+                       side_effect=HarnessError("review unavailable")), \
+                 patch("harness.request_router.keyword_fallback",
+                       return_value=["app.py"]) as fallback:
+                self.assertEqual(agent._triage_scope("update app.py"), ["app.py"])
+            fallback.assert_called_once_with("update app.py", ["app.py"])
+
+    def test_audit_review_outage_preserves_local_result_and_cancellation_interrupts(self):
+        for failure in (
+                ProviderUsageUnknown("review receipt lost", reserved_cost=0.006),
+                RuntimeError("review unavailable")):
+            with self.subTest(error=type(failure).__name__), \
+                 tempfile.TemporaryDirectory() as tmp:
+                agent = AutonomousAgent(settings=_settings(), history_dir=Path(tmp))
+                ledger = MagicMock()
+                ledger.verify.return_value = (True, None)
+                ledger.chain_status.return_value = {"latest_seq": 1, "quarantined": 0}
+                policy = MagicMock()
+                policy.evaluate_answer.side_effect = failure
+                with patch.object(agent, "_live_jev_available", return_value=True), \
+                     patch("harness.task_lifecycle.jev_face_governor",
+                           return_value=MagicMock()), \
+                     patch("harness.task_lifecycle.ledger_for",
+                           return_value=ledger), \
+                     patch("harness.task_lifecycle.policy_for", return_value=policy):
+                    result = agent._handle_audit("audit the ledger", "audit-outage")
+                saved = agent.lifecycle.load("audit-outage")
+                self.assertEqual(result["status"], "ok")
+                self.assertEqual(saved["status"], "complete")
+                self.assertEqual(policy.evaluate_answer.call_count, 1)
+                call = saved["usage"]["provider_calls"][
+                    saved["request_id"] + ":audit-review"]
+                self.assertEqual(call["status"], "unknown")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_settings(), history_dir=Path(tmp))
+            ledger = MagicMock()
+            ledger.verify.return_value = (True, None)
+            ledger.chain_status.return_value = {"latest_seq": 1, "quarantined": 0}
+            policy = MagicMock()
+            policy.evaluate_answer.side_effect = ToolCancelled("review cancelled")
+            with patch.object(agent, "_live_jev_available", return_value=True), \
+                 patch("harness.task_lifecycle.jev_face_governor",
+                       return_value=MagicMock()), \
+                 patch("harness.task_lifecycle.ledger_for", return_value=ledger), \
+                 patch("harness.task_lifecycle.policy_for", return_value=policy):
+                with self.assertRaises(ToolCancelled):
+                    agent._handle_audit("audit the ledger", "audit-cancelled")
+            self.assertEqual(
+                agent.lifecycle.load("audit-cancelled")["status"], "interrupted")
+
     def test_chat_checkpoint_merges_partial_updates_and_followup_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

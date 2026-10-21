@@ -14,7 +14,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from harness import cli, provision as pv
-from harness.agent import AutonomousAgent, classify_prompt_intent
+from harness.agent import AutonomousAgent
+from harness.request_intent import classify_prompt_intent
 from harness.cli_parser import build_parser
 from harness.errors import HarnessError
 from harness.mcp_lanes import lane_for
