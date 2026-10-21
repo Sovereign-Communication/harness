@@ -78,6 +78,23 @@ states that no lookup was run. This path has
 zero model, Jev, and network calls. Questions about event times (for example,
 when a meeting starts) remain ordinary requests.
 
+## Implementation ownership
+
+`AutonomousAgent` in `harness/agent.py` is the runtime and intent router: it
+owns settings, workspace, transport, cancellation, and dispatch to the
+specialized lanes. `ChatLifecycleMixin` in `harness/chat_lifecycle.py` owns
+conversation transitions and answer execution, including simple answers,
+workspace and web context, the legacy conversation fallback, Jev review, and
+interrupted-request resume. The mixin is stateless; request progress is passed
+through method arguments and results. `ChatCheckpoint` in `harness/history.py`
+owns the persisted lifecycle shape, validation, and atomic disk operations.
+Jev judgment stays in `harness/jev_policy.py`, workspace file selection in
+`harness/repo_scope.py`, and token allocation in `harness/token_budget.py`.
+
+The data flow is `run_prompt` → chat lifecycle → typed result/checkpoint →
+history storage. Renderers and GUI/MCP surfaces consume the same result and
+event contracts; they do not own a parallel checkpoint state machine.
+
 ## Order of operations for other freeform requests
 
 1. **Intent** (`classify_prompt_intent`): action verb + URL/host classifies
@@ -151,3 +168,23 @@ The workspace-route, early-stop, and resumable-chat contracts are covered by
 and `tests/test_chat_checkpoint.py`. These are a targeted #207 follow-up; they
 do not replace the outstanding full small-task matrix or establish GUI/CLI/MCP
 surface parity by themselves.
+
+## Shared lifecycle ownership (#297)
+
+`harness.lifecycle.LifecycleCoordinator` is the sole owner of checkpoint
+transitions, review history, provider-call receipts, effect receipts, and
+terminal state. `harness.lifecycle_types` defines the lane-discriminated
+contract and rejects invalid lane, status, stage, resume, and review-state
+combinations before they are saved or resumed. Completed provider calls are
+reused by id; unknown provider usage remains reserved, and unknown side
+effects require reconciliation before continuation.
+
+`harness.agent.AutonomousAgent` now only composes route adapters and initializes
+shared dependencies. `request_router` owns dispatch and continuation routing;
+`chat_lifecycle` composes chat adapters, with simple-answer, hourglass, and
+conversational generation in their route modules; `edit_lifecycle` owns
+auto-edit; `task_lifecycle` adapts audit, driver, and provisioning; and
+`execution_stages` owns planning and execution-stage composition. The route
+adapters store lane-specific data in the shared state while all review and
+terminal transitions go through the coordinator. Behavior tests cover resume,
+review, terminal results, and side-effect replay boundaries for each lane.

@@ -13,8 +13,8 @@ from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness.agent import (
-    AutonomousAgent,
+from harness.agent import AutonomousAgent
+from harness.request_intent import (
     classify_prompt_intent,
     is_literal_greeting_request,
     is_site_check_prompt,
@@ -144,9 +144,9 @@ class LiteralGreetingFastPathTests(unittest.TestCase):
                  patch.object(
                     agent, "_handle_conversation",
                     side_effect=AssertionError("no chat model call")), \
-                 patch("harness.agent.chat",
+                 patch("harness.conversation_lifecycle.chat",
                        side_effect=AssertionError("no OpenRouter call")), \
-                 patch("harness.agent.emit") as emitted:
+                 patch("harness.request_router.emit") as emitted:
                 result = agent.run_prompt(
                     "test - say hello and stop", force_conversation=True,
                     web=True, session_id="literal-greeting")
@@ -264,13 +264,13 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "reason": "'example.com' is up (HTTPS 200)",
                                      "latency_s": 0.4, "host": "example.com",
                                      "url": "https://example.com"}) as probe, \
-                 patch("harness.agent.chat",
+                 patch("harness.conversation_lifecycle.chat",
                        side_effect=AssertionError("no model calls")), \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        return_value=_site_jev(0.99, calls=jev_calls)) as jev, \
                  patch.object(AutonomousAgent, "_handle_edit",
                               side_effect=AssertionError("no plan lane")), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 res = agent.run_prompt(
                     "check if example.com is up - respond yes/no",
@@ -293,11 +293,11 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "reason": "'example.com' responds but denied page access (HTTPS 403)",
                                      "latency_s": 0.4, "host": "example.com",
                                      "url": "https://example.com"}), \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        return_value=_site_jev(0.999)), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()), \
-                 patch("harness.agent.emit") as emitted:
+                 patch("harness.simple_action_lifecycle.emit") as emitted:
                 res = agent.run_simple_action(
                     "check if example.com is up", session_id="s2",
                     probe_fn=lambda host, path, timeout: (403, "", host),
@@ -322,9 +322,9 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "reason": "'example.com' timed out",
                                      "latency_s": 8.0, "host": "example.com",
                                      "url": "https://example.com"}), \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        return_value=_site_jev(0.001)), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 res = agent.run_simple_action("is example.com up?",
                                               session_id="s3")
@@ -342,13 +342,13 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "verdict": "up", "latency_s": 0.3,
                                      "host": "example.com",
                                      "url": "https://example.com"}), \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        return_value=_site_jev(0.73)), \
-                 patch("harness.agent.chat",
+                 patch("harness.conversation_lifecycle.chat",
                        side_effect=AssertionError("no OpenRouter escalation")), \
                  patch.object(AutonomousAgent, "_handle_edit",
                               side_effect=AssertionError("no plan escalation")), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 res = agent.run_simple_action("is example.com up?", session_id="s-mid")
         self.assertEqual(res["status"], "deferred")
@@ -362,9 +362,9 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "verdict": "up", "latency_s": 0.3,
                                      "host": "example.com",
                                      "url": "https://example.com"}), \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        return_value=_site_jev(None, fallback=True)), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 res = agent.run_simple_action("is example.com up?", session_id="s-no-jev")
         self.assertEqual(res["status"], "deferred")
@@ -380,9 +380,9 @@ class SimpleActionLaneTests(unittest.TestCase):
                                          "verdict": "up", "latency_s": 0.3,
                                          "host": "example.com",
                                          "url": "https://example.com"}), \
-                     patch("harness.agent.jev_for",
+                     patch("harness.simple_action_lifecycle.jev_for",
                            return_value=_site_jev(value)), \
-                     patch("harness.agent.ledger_for",
+                     patch("harness.simple_action_lifecycle.ledger_for",
                            return_value=MagicMock()):
                     res = agent.run_simple_action(
                         "is example.com up?", session_id="s-invalid-noul")
@@ -398,9 +398,9 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "verdict": "server_error",
                                      "latency_s": 0.3, "host": "example.com",
                                      "url": "https://example.com"}), \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        return_value=_site_jev(0.999)), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 res = agent.run_simple_action("is example.com up?", session_id="s-503")
         self.assertEqual(res["status"], "ok")
@@ -424,9 +424,9 @@ class SimpleActionLaneTests(unittest.TestCase):
                                          "latency_s": 0.3,
                                          "host": "example.com",
                                          "url": "https://example.com"}), \
-                     patch("harness.agent.jev_for",
+                     patch("harness.simple_action_lifecycle.jev_for",
                            return_value=_site_jev(0.999)), \
-                     patch("harness.agent.ledger_for",
+                     patch("harness.simple_action_lifecycle.ledger_for",
                            return_value=MagicMock()):
                     res = agent.run_simple_action(
                         "is example.com up?", session_id=f"s-{code}")
@@ -443,9 +443,9 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "verdict": "timeout", "latency_s": 8.0,
                                      "host": "example.com",
                                      "url": "https://example.com"}), \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        return_value=_site_jev(0.999)), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 res = agent.run_simple_action("is example.com up?", session_id="s-timeout-high")
         self.assertEqual(res["status"], "deferred")
@@ -457,13 +457,13 @@ class SimpleActionLaneTests(unittest.TestCase):
             with patch("harness.web.probe_public_site",
                        side_effect=HarnessError(
                            "site probe refused: only https:// URLs are probed")), \
-                 patch("harness.agent.chat",
+                 patch("harness.conversation_lifecycle.chat",
                        side_effect=AssertionError("no model calls")), \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        side_effect=AssertionError("refused target must not call Jev")), \
                  patch.object(AutonomousAgent, "_handle_edit",
                               side_effect=AssertionError("no plan lane")), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 res = agent.run_simple_action("check http://example.com now",
                                               session_id="s4")
@@ -482,13 +482,13 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "reason": "'example.com' is up (HTTPS 200)",
                                      "latency_s": 0.3, "host": "example.com",
                                      "url": "https://example.com"}), \
-                 patch("harness.agent.chat",
+                 patch("harness.conversation_lifecycle.chat",
                        side_effect=AssertionError("no model calls")), \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        return_value=_site_jev(0.999)), \
                  patch.object(AutonomousAgent, "_handle_edit",
                               side_effect=AssertionError("no plan lane")), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 res = agent.run_prompt(
                     "check if example.com is up - respond yes/no",
@@ -508,6 +508,7 @@ class SimpleActionLaneTests(unittest.TestCase):
             policy = _site_jev(0.999, calls=noul_calls,
                                route_calls=route_calls)
             policy.ledger = action_ledger
+            emitted = MagicMock()
             with patch("harness.web.preflight_public_site",
                        return_value={"url": "https://example.com",
                                      "host": "example.com", "port": 443,
@@ -518,16 +519,17 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "verdict": "up", "latency_s": 0.2,
                                      "host": "example.com",
                                      "url": "https://example.com"}) as probe, \
-                 patch("harness.agent.jev_for", return_value=policy) as jev, \
-                 patch("harness.agent.jev_face_governor",
+                 patch("harness.simple_action_lifecycle.jev_for", return_value=policy) as jev, \
+                 patch("harness.simple_action_lifecycle.jev_face_governor",
                        return_value=MagicMock()), \
-                 patch("harness.agent.chat",
+                 patch("harness.conversation_lifecycle.chat",
                        side_effect=AssertionError("no OpenRouter calls")), \
                  patch.object(AutonomousAgent, "_handle_edit",
                               side_effect=AssertionError("no plan lane")), \
-                  patch("harness.agent.ledger_for",
+                  patch("harness.simple_action_lifecycle.ledger_for",
                         return_value=action_ledger) as ledger_factory, \
-                 patch("harness.agent.emit") as emitted:
+                 patch("harness.request_router.emit", new=emitted), \
+                 patch("harness.simple_action_lifecycle.emit", new=emitted):
                 result = agent.run_prompt(
                     "is example.com up?", session_id="jev-route-site",
                     force_conversation=True)
@@ -561,12 +563,12 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "host": "example.com", "port": 443,
                                      "path": "/",
                                      "addresses": ("93.184.216.34",)}), \
-                 patch("harness.agent.jev_for", return_value=policy), \
-                 patch("harness.agent.jev_face_governor",
+                 patch("harness.simple_action_lifecycle.jev_for", return_value=policy), \
+                 patch("harness.simple_action_lifecycle.jev_face_governor",
                        return_value=MagicMock()), \
                  patch("harness.web.probe_public_site",
                        side_effect=AssertionError("Jev chose plan; no probe")), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 result = agent.run_prompt(
                     "is example.com up?", session_id="jev-route-plan",
@@ -585,11 +587,11 @@ class SimpleActionLaneTests(unittest.TestCase):
             with patch("harness.web.preflight_public_site",
                        side_effect=HarnessError(
                            "site probe refused: resolves to a private address")), \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        side_effect=AssertionError("unsafe target must not call Jev")), \
                  patch("harness.web.probe_public_site",
                        side_effect=AssertionError("unsafe target must not probe")), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 result = agent.run_prompt(
                     "is example.com up?", session_id="jev-route-refuse",
@@ -617,7 +619,7 @@ class SimpleActionLifecycleBranchTests(unittest.TestCase):
             agent = self._agent(tmp)
             with patch("harness.web.extract_site_target",
                        return_value=None), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 res = agent._run_simple_action_lifecycle(
                     "is example.com up?", session_id="s-no-target")
@@ -629,11 +631,11 @@ class SimpleActionLifecycleBranchTests(unittest.TestCase):
             agent = self._agent(tmp)
             with patch("harness.web.preflight_public_site",
                        return_value=self._plan()), \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        return_value=_site_jev(0.99)), \
-                 patch("harness.agent.jev_face_governor",
+                 patch("harness.simple_action_lifecycle.jev_face_governor",
                        return_value=MagicMock()), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 with self.assertRaises(ToolCancelled):
                     agent._run_simple_action_lifecycle(
@@ -648,10 +650,10 @@ class SimpleActionLifecycleBranchTests(unittest.TestCase):
                 "route down")
             with patch("harness.web.preflight_public_site",
                        return_value=self._plan()), \
-                 patch("harness.agent.jev_for", return_value=policy), \
-                 patch("harness.agent.jev_face_governor",
+                 patch("harness.simple_action_lifecycle.jev_for", return_value=policy), \
+                 patch("harness.simple_action_lifecycle.jev_face_governor",
                        return_value=MagicMock()), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 res = agent._run_simple_action_lifecycle(
                     "is example.com up?", session_id="s-route-down")
@@ -668,10 +670,10 @@ class SimpleActionLifecycleBranchTests(unittest.TestCase):
                 "route stopped")
             with patch("harness.web.preflight_public_site",
                        return_value=self._plan()), \
-                 patch("harness.agent.jev_for", return_value=policy), \
-                 patch("harness.agent.jev_face_governor",
+                 patch("harness.simple_action_lifecycle.jev_for", return_value=policy), \
+                 patch("harness.simple_action_lifecycle.jev_face_governor",
                        return_value=MagicMock()), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 with self.assertRaises(ToolCancelled):
                     agent._run_simple_action_lifecycle(
@@ -682,11 +684,11 @@ class SimpleActionLifecycleBranchTests(unittest.TestCase):
             agent = self._agent(tmp)
             with patch("harness.web.preflight_public_site",
                        return_value=self._plan()), \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        return_value=_site_jev(route_choice="needs_tool")), \
-                 patch("harness.agent.jev_face_governor",
+                 patch("harness.simple_action_lifecycle.jev_face_governor",
                        return_value=MagicMock()), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 res = agent._run_simple_action_lifecycle(
                     "is example.com up?", session_id="s-other-choice")
@@ -698,11 +700,11 @@ class SimpleActionLifecycleBranchTests(unittest.TestCase):
             agent = self._agent(tmp)
             with patch("harness.web.preflight_public_site",
                        return_value=self._plan()), \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        return_value=_site_jev(route_choice="simple-action")), \
-                 patch("harness.agent.jev_face_governor",
+                 patch("harness.simple_action_lifecycle.jev_face_governor",
                        return_value=MagicMock()), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 with self.assertRaises(ToolCancelled):
                     agent._run_simple_action_lifecycle(
@@ -734,9 +736,9 @@ class SimpleActionProbeSeamTests(unittest.TestCase):
             agent = self._agent(tmp)
             with patch("harness.web.probe_public_site",
                        return_value=self._up()) as probe, \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        return_value=_site_jev(0.99)), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 res = agent.run_simple_action(
                     "is example.com up?", session_id="s-resolve",
@@ -747,14 +749,32 @@ class SimpleActionProbeSeamTests(unittest.TestCase):
         self.assertIsNotNone(kwargs.get("resolve_fn"))
         self.assertNotIn("connect_fn", kwargs)
 
+    def test_boolean_jev_probability_cannot_claim_site_is_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            with patch("harness.web.probe_public_site",
+                       return_value=self._up()), \
+                 patch("harness.simple_action_lifecycle.jev_for",
+                       return_value=_site_jev(True)), \
+                 patch("harness.simple_action_lifecycle.ledger_for",
+                       return_value=MagicMock()):
+                result = agent.run_simple_action(
+                    "is example.com up?", session_id="s-bool-probability",
+                    resolve_fn=_resolve_public("93.184.216.34"),
+                    preflight_plan=self._plan())
+
+        self.assertEqual(result["status"], "deferred")
+        self.assertNotEqual(result.get("answer"), "yes")
+        self.assertIsNone(result["jev"]["http_response_received"])
+
     def test_cancel_after_probe_aborts_before_judgment(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(tmp)
             with patch("harness.web.probe_public_site",
                        return_value=self._up()), \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        return_value=_site_jev(0.99)), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 with self.assertRaises(ToolCancelled):
                     agent.run_simple_action(
@@ -767,9 +787,9 @@ class SimpleActionProbeSeamTests(unittest.TestCase):
             jev_calls = []
             with patch("harness.web.probe_public_site",
                        return_value=self._up(latency_s="soon")), \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        return_value=_site_jev(0.99, calls=jev_calls)), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 res = agent.run_simple_action(
                     "is example.com up?", session_id="s-latency")
@@ -866,13 +886,13 @@ class NonForceSimpleActionTests(unittest.TestCase):
                                      "reason": "'example.com' is up (HTTPS 200)",
                                      "latency_s": 0.2, "host": "example.com",
                                      "url": "https://example.com"}), \
-                 patch("harness.agent.chat",
+                 patch("harness.conversation_lifecycle.chat",
                        side_effect=AssertionError("no model calls")), \
-                 patch("harness.agent.jev_for",
+                 patch("harness.simple_action_lifecycle.jev_for",
                        return_value=_site_jev(0.999)), \
                  patch.object(AutonomousAgent, "_handle_edit",
                               side_effect=AssertionError("no plan lane")), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 res = agent.run_prompt("check if example.com is up",
                                        session_id="nf1")
@@ -1123,16 +1143,14 @@ evidence-based result.
                        side_effect=fake_preflight), \
                  patch("harness.web.probe_public_site",
                        side_effect=fake_probe), \
-                 patch("harness.agent.chat",
+                 patch("harness.conversation_lifecycle.chat",
                        side_effect=AssertionError("no OpenRouter calls")), \
-                 patch("harness.agent.jev_for", return_value=jev_policy), \
-                 patch("harness.agent.jev_face_governor",
+                 patch("harness.simple_action_lifecycle.jev_for", return_value=jev_policy), \
+                 patch("harness.simple_action_lifecycle.jev_face_governor",
                        return_value=MagicMock()), \
-                 patch("harness.agent.governor_for",
-                       side_effect=AssertionError("no spend governance")), \
                  patch.object(AutonomousAgent, "_handle_edit",
                               side_effect=AssertionError("no plan lane")), \
-                 patch("harness.agent.ledger_for",
+                 patch("harness.simple_action_lifecycle.ledger_for",
                        return_value=MagicMock()):
                 start = time.monotonic()
                 res = agent.run_prompt(

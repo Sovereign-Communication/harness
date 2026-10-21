@@ -735,6 +735,9 @@ def build_parser():
                           help="explicit operator confirmation to execute plan mutating steps")
     pp_apply.add_argument("--approve-all", action="store_true", default=False,
                           help="pre-approve non-irreversible steps for convenience")
+    pp_apply.add_argument(
+        "--task-id", default=None,
+        help="resume this provisioning lifecycle; use a new id for an intentional rerun")
     pp_apply.add_argument("--json", action="store_true", help="emit raw JSON report only")
     _add_output_flags(pp_apply)
 

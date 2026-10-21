@@ -120,10 +120,14 @@ class RestartGuardIsReachedTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.ledger = AutonomyLedger(str(Path(self.tmp.name) / "ledger.jsonl"))
         self.governor = _RecordingGovernor()
-        gov_patch = patch("harness.agent.governor_for",
-                          return_value=(None, _gov(FakeTransport(), max_cost=0.05)))
-        gov_patch.start()
-        self.addCleanup(gov_patch.stop)
+        governor = _gov(FakeTransport(), max_cost=0.05)
+        for target in ("harness.hourglass_lifecycle.governor_for",
+                       "harness.conversation_lifecycle.governor_for",
+                       "harness.hourglass_lifecycle.governor_for",
+                       "harness.edit_lifecycle.governor_for"):
+            gov_patch = patch(target, return_value=(None, governor))
+            gov_patch.start()
+            self.addCleanup(gov_patch.stop)
 
     def _real_policy(self, evaluator):
         """A REAL JevPolicy with a scripted evaluator.
@@ -152,11 +156,23 @@ class RestartGuardIsReachedTests(unittest.TestCase):
             for key, value in stages.items():
                 setattr(settings, key, value)
             policy_patch = patch(
-                "harness.agent.policy_for",
+                "harness.hourglass_lifecycle.policy_for",
                 side_effect=lambda *a, **k: self._real_policy(
                     _ScriptedEvaluator(answers)))
             policy_patch.start()
             self.addCleanup(policy_patch.stop)
+            agent_policy_patch = patch(
+                "harness.execution_stages.policy_for",
+                side_effect=lambda *a, **k: self._real_policy(
+                    _ScriptedEvaluator(answers)))
+            agent_policy_patch.start()
+            self.addCleanup(agent_policy_patch.stop)
+            edit_policy_patch = patch(
+                "harness.edit_lifecycle.policy_for",
+                side_effect=lambda *a, **k: self._real_policy(
+                    _ScriptedEvaluator(answers)))
+            edit_policy_patch.start()
+            self.addCleanup(edit_policy_patch.stop)
             agent = AutonomousAgent(settings=settings, root_dir=root,
                                     transport=FakeTransport())
             return agent.run_hourglass_request(
@@ -269,10 +285,20 @@ class RestartGuardIsReachedTests(unittest.TestCase):
             settings.jev_api_key = None
             settings.hourglass_confirm = False
             policy_patch = patch(
-                "harness.agent.policy_for",
+                "harness.hourglass_lifecycle.policy_for",
                 side_effect=lambda *a, **k: self._real_policy(evaluator))
             policy_patch.start()
             self.addCleanup(policy_patch.stop)
+            agent_policy_patch = patch(
+                "harness.execution_stages.policy_for",
+                side_effect=lambda *a, **k: self._real_policy(evaluator))
+            agent_policy_patch.start()
+            self.addCleanup(agent_policy_patch.stop)
+            edit_policy_patch = patch(
+                "harness.edit_lifecycle.policy_for",
+                side_effect=lambda *a, **k: self._real_policy(evaluator))
+            edit_policy_patch.start()
+            self.addCleanup(edit_policy_patch.stop)
             agent = AutonomousAgent(settings=settings, root_dir=root,
                                     transport=FakeTransport())
             agent.run_hourglass_request(
@@ -318,7 +344,7 @@ class RestartGuardIsReachedTests(unittest.TestCase):
         self.assertIsNone(decision["target"])
 
     def test_declared_walk_back_returns_none_if_execution_not_in_targets(self):
-        with patch("harness.agent.declared_restart_targets", return_value=["context", "planning"]):
+        with patch("harness.execution_stages.declared_restart_targets", return_value=["context", "planning"]):
             self.assertIsNone(AutonomousAgent._declared_walk_back())
 
     def test_the_stage_is_judged_not_dispatched(self):

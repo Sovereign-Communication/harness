@@ -31,7 +31,8 @@ from . import jev_calibration as _jcal
 from . import provision as _pv
 from . import refine as _refine
 from . import repo_cards as _rc
-from .agent import AutonomousAgent, is_site_check_prompt
+from .agent import AutonomousAgent
+from .request_intent import is_site_check_prompt
 from .consent import probe_consent
 from .config import (
     DEFAULT_MAX_COST,
@@ -46,6 +47,7 @@ from .config import (
 )
 from .endpoint_pricing import load_fireworks_endpoints
 from .errors import HarnessError
+from .lifecycle import LifecycleCoordinator
 from .fireworks import compare_fireworks_vs_openrouter
 from .fireworks_probe import run_fireworks_probe
 from .routing_table import (
@@ -1678,12 +1680,62 @@ def _cmd_provision(opts, settings):
                 reason="CLI --approve-all flag",
             )
         ledger = _ledger(settings)
-        report = _pv.execute_plan(plan, gate, policy=policy, ledger=ledger, dry_run=dry_run)
-        res = report.to_dict()
+        task_id = getattr(opts, "task_id", None)
+        lifecycle = lifecycle_state = None
+        if not dry_run:
+            task_id = str(task_id or f"provision-{plan.digest[:32]}")
+            lifecycle = LifecycleCoordinator()
+            lifecycle_state = lifecycle.load(task_id)
+            if lifecycle_state is None:
+                lifecycle_state = lifecycle.begin(
+                    "provisioning", task_id, plan.goal, stage="approval",
+                    data={"plan": plan.to_dict(), "plan_digest": plan.digest})
+            elif (lifecycle_state["lane"] != "provisioning"
+                  or lifecycle_state["data"].get("plan_digest") != plan.digest):
+                raise HarnessError(
+                    "provision task id is already bound to a different lifecycle or plan")
+            if lifecycle_state["status"] in {"complete", "failed"}:
+                saved = lifecycle_state["data"].get("result")
+                if not isinstance(saved, dict):
+                    raise HarnessError(
+                        "completed provision task has no saved result; refusing to rerun")
+                res = saved
+                report = None
+            else:
+                prior_state = lifecycle_state
+                lifecycle_state = lifecycle.resume(task_id) or prior_state
+                if lifecycle_state["status"] != "running":
+                    saved = lifecycle_state["data"].get("result")
+                    res = dict(saved) if isinstance(saved, dict) else {
+                        "plan_digest": plan.digest, "dry_run": False,
+                    }
+                    res["outcome"] = "deferred"
+                    res["resumable"] = bool(
+                        lifecycle_state["data"].get("resumable"))
+                    res["defer_reason"] = lifecycle_state["data"].get(
+                        "defer_reason", "the prior operation requires reconciliation")
+                    res["requires_reconciliation"] = list(
+                        lifecycle_state["execution"]["requires_reconciliation"])
+                    report = None
+                else:
+                    report = _pv.execute_plan(
+                        plan, gate, policy=policy, ledger=ledger,
+                        task_id=task_id, dry_run=False, lifecycle=lifecycle,
+                        lifecycle_state=lifecycle_state)
+                    res = report.to_dict()
+        else:
+            report = _pv.execute_plan(
+                plan, gate, policy=policy, ledger=ledger, dry_run=True)
+            res = report.to_dict()
         if not getattr(opts, "json", False) and not getattr(opts, "quiet", False):
-            print(f"Provision run: {report.outcome} (dry_run={dry_run})")
-            for sr in report.results:
-                print(f"  [{sr.status}] step {sr.step_id}: {sr.note or sr.status}")
+            outcome = report.outcome if report is not None else res.get("outcome", "deferred")
+            print(f"Provision run: {outcome} (dry_run={dry_run})")
+            for sr in (report.results if report is not None else res.get("results", [])):
+                if hasattr(sr, "status"):
+                    print(f"  [{sr.status}] step {sr.step_id}: {sr.note or sr.status}")
+                else:
+                    print(f"  [{sr.get('status')}] step {sr.get('step_id')}: "
+                          f"{sr.get('note') or sr.get('status')}")
         _emit(res, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
 
 

@@ -293,9 +293,9 @@ class TestAgentCover(unittest.TestCase):
         patches = [
             mock.patch.object(agent, "_hourglass_request_context",
                               return_value=("ctx", {}, brief, [])),
-            mock.patch("harness.agent.governor_for",
+            mock.patch("harness.hourglass_lifecycle.governor_for",
                        return_value=("k", gov)),
-            mock.patch("harness.agent.policy_for", return_value=policy),
+            mock.patch("harness.hourglass_lifecycle.policy_for", return_value=policy),
             mock.patch.object(agent, "_hourglass_answer_once",
                               return_value={"answer": "Paris", "model": "m",
                                             "cost": 0.0}),
@@ -316,7 +316,7 @@ class TestAgentCover(unittest.TestCase):
             for patcher in patches:
                 patcher.start()
                 self.addCleanup(patcher.stop)
-            with mock.patch("harness.agent.policy_for") as policy_for:
+            with mock.patch("harness.hourglass_lifecycle.policy_for") as policy_for:
                 policy = policy_for.return_value
                 policy.evaluate_answer.side_effect = ToolCancelled("stop")
                 with self.assertRaises(ToolCancelled):
@@ -350,12 +350,12 @@ class TestAgentCover(unittest.TestCase):
             plan_policy.evaluate_plan.return_value = (plan_eval, None)
             with mock.patch.object(agent, "_triage_scope",
                                    return_value=["a.py"]), \
-                    mock.patch("harness.agent.distill_context") as distill, \
-                    mock.patch("harness.agent.governor_for",
+                    mock.patch("harness.edit_lifecycle.distill_context") as distill, \
+                    mock.patch("harness.edit_lifecycle.governor_for",
                                return_value=("k", mock.MagicMock())), \
-                    mock.patch("harness.agent.policy_for",
+                    mock.patch("harness.edit_lifecycle.policy_for",
                                return_value=plan_policy), \
-                    mock.patch("harness.agent.budget_from_settings",
+                    mock.patch("harness.edit_lifecycle.budget_from_settings",
                                return_value=None), \
                     mock.patch.object(agent, "_plan_round",
                                       side_effect=[refused,
