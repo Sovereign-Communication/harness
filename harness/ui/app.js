@@ -3,7 +3,17 @@ function getAuthToken() {
     if (location.hash && location.hash.length > 1) {
       const h = decodeURIComponent(location.hash.slice(1));
       if (h && !h.startsWith("/")) {
-        try { localStorage.setItem("harness_ui_auth_token", h); } catch (_e) {}
+        let stored = false;
+        try {
+          localStorage.setItem("harness_ui_auth_token", h);
+          stored = true;
+        } catch (_e) {}
+        if (stored && window.history && window.history.replaceState) {
+          try {
+            window.history.replaceState(window.history.state, "",
+              window.location.pathname + window.location.search);
+          } catch (_e) {}
+        }
         return h;
       }
     }
