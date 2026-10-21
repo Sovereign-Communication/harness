@@ -167,7 +167,7 @@ let autoApply = false;
 // Mirror of the server-side ``allow_escalation`` setting (single source of
 // truth: /api/settings). The old localStorage flag is gone -- it desynced
 // from the server and clicking the route badge changed nothing real.
-let paidEnabled = true;
+let paidEnabled = null;
 let webEnabled = localStorage.getItem("harness_web_enabled") === "true";
 // Retire the old profile-global workspace: blank now means chat-only.
 localStorage.removeItem("harness_workdir");
@@ -411,6 +411,13 @@ function updateRouteDisplay() {
   const s = backendSettings || {};
   const hasPaidKey = s.paid_key_present;
 
+  if (!backendSettings || typeof paidEnabled !== "boolean") {
+    badge.classList.add("disarmed");
+    text.textContent = "Route: loading...";
+    badge.title = "Routing posture is loading from the server.";
+    return;
+  }
+
   if (s.use_free === false) {
     badge.classList.remove("disarmed");
     if (icon) icon.textContent = "💳";
@@ -563,8 +570,8 @@ async function submitPrompt(prompt) {
       session_id: sessionId,
       auto_apply: autoApply,
       web: webEnabled,
-      allow_paid: paidEnabled,
     };
+    if (typeof paidEnabled === "boolean") payload.allow_paid = paidEnabled;
     if (workDir) payload.root_dir = workDir;
 
     const run = await api("/api/chat", {
@@ -1320,6 +1327,8 @@ async function pollRoute() {
       throw new Error("routing posture is incomplete");
     }
     backendSettings = s;
+    paidEnabled = typeof s.allow_escalation === "boolean"
+      ? s.allow_escalation : null;
     updateRouteDisplay();
   } catch (_e) {
     if (requestSeq !== routeRequestSeq) return;
