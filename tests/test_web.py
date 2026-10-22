@@ -421,6 +421,89 @@ class BareDomainAndSiteQueryTests(unittest.TestCase):
         self.assertNotIn("the", q.split())
 
 
+class SubjectRelevanceGateTests(unittest.TestCase):
+    """A search whose query names a specific site must not feed the model
+    off-subject navigational junk as evidence (the Sep-2026 Riemann-class
+    fabrication vector): when Bing has no real result for an obscure site it
+    answers with an unrelated fallback, which the parser would otherwise
+    hand over as if it were about the subject."""
+
+    @staticmethod
+    def _bing(items):
+        blocks = "".join(
+            f'<li class="b_algo"><h2><a href="{u}">{t}</a></h2>'
+            f"<p>{s}</p></li>" for t, u, s in items)
+        return ("<html><body><ol id=\"b_results\">" + blocks
+                + "</ol></body></html>").encode()
+
+    def test_off_subject_junk_is_refused_not_fabricated(self):
+        # The real failing shape: query names the site; Bing returns movie
+        # times / shower-rod articles that never mention it.
+        page = self._bing([
+            ("Movie Showtimes near Seattle", "https://www.fandango.com/s", "c"),
+            ("How to Fix a Shower Curtain Rod", "https://r.example/fix", "t"),
+            ("Contact Microsoft Support", "https://support.example/c", "h"),
+        ])
+        q = web.extract_query(
+            "audit www.freeoffgridcalculator.com for user friendliness")
+        with mock.patch.object(web, "_http_get",
+                               return_value=(200, page, "https://bing/")):
+            with self.assertRaises(HarnessError) as ctx:
+                web.search_web(q)
+        self.assertIn("off-subject", str(ctx.exception))
+
+    def test_a_result_mentioning_the_subject_keeps_the_evidence(self):
+        page = self._bing([
+            ("Movie Showtimes near Seattle", "https://www.fandango.com/s", "c"),
+            ("Free Off Grid Calculator review", "https://blog.example/f",
+             "the freeoffgridcalculator.com interface"),
+        ])
+        q = web.extract_query(
+            "audit www.freeoffgridcalculator.com for user friendliness")
+        with mock.patch.object(web, "_http_get",
+                               return_value=(200, page, "https://bing/")):
+            results = web.search_web(q)
+        self.assertEqual(len(results), 2)
+        self.assertIn("freeoffgridcalculator",
+                      (results[1]["snippet"] + results[1]["url"]))
+
+    def test_topical_query_without_a_site_subject_is_unaffected(self):
+        # No bare domain in the query -> the gate is inert (existing topical
+        # searches keep their behavior).
+        page = self._bing([("Riemann Bound Moved", "https://a.example/x",
+                            "zero-free region extended")])
+        with mock.patch.object(web, "_http_get",
+                               return_value=(200, page, "https://bing/")):
+            results = web.search_web("riemann bound")
+        self.assertEqual(len(results), 1)
+
+    def test_subject_core_label_extraction(self):
+        self.assertEqual(
+            web._subject_core_label("audit www.freeoffgridcalculator.com now"),
+            "freeoffgridcalculator")
+        self.assertEqual(web._subject_core_label("check example.com"),
+                         "example")
+        self.assertEqual(web._subject_core_label("is bbc.co.uk up"), "bbc")
+        self.assertIsNone(web._subject_core_label("riemann hypothesis"))
+
+    def test_non_fetchable_tld_token_yields_no_subject(self):
+        # 'report.pdf' matches the bare-domain shape but its TLD is not a
+        # web TLD, so it is skipped (defensive continue) -> no subject.
+        self.assertIsNone(web._subject_core_label("audit report.pdf now"))
+
+    def test_generic_only_host_yields_no_subject(self):
+        # A host made entirely of generic labels (www/com/net/org) has no
+        # distinctive brand label to gate on -> skipped (defensive continue).
+        self.assertIsNone(web._subject_core_label("check www.com now"))
+        self.assertIsNone(web._subject_core_label("see net.net"))
+
+    def test_result_mentions_subject_treats_absent_label_as_match(self):
+        # No subject label means the gate cannot judge relevance; the helper
+        # reports a match rather than refusing (defensive short-circuit).
+        self.assertTrue(web._result_mentions_subject([{"title": "x"}], None))
+        self.assertTrue(web._result_mentions_subject([], ""))
+
+
 class AllowlistRelaxationTests(unittest.TestCase):
     """Disabling the allowlist lets any PUBLIC https host be fetched, but the
     SSRF public-address guard is retained -- never an internal probe."""

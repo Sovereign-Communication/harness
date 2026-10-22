@@ -293,6 +293,41 @@ def filter_search_relevance(query, results):
     return filtered
 
 
+def _subject_core_label(query):
+    """The distinctive brand label when a query names a bare web domain.
+
+    ``'audit www.freeoffgridcalculator.com ...'`` -> ``'freeoffgridcalculator'``.
+    Returns ``None`` when the query names no fetchable bare domain, so the
+    subject-relevance gate in :func:`search_web` stays inert for ordinary
+    topical searches (which have no single host subject).
+    """
+    text = (query or "").strip().lower()
+    for m in _BARE_DOMAIN_RE.finditer(text):
+        host = (m.group(1) + m.group(2)).lower()
+        if not _is_fetchable_domain(host):
+            continue
+        labels = [lb for lb in host.split(".")
+                  if lb not in ("www", "com", "net", "org")]
+        if not labels:
+            continue
+        # The brand label is the longest remaining component (handles co.uk /
+        # com.au second-level TLDs without hardcoding a country list).
+        return max(labels, key=len)
+    return None
+
+
+def _result_mentions_subject(results, label):
+    """True when at least one result references the subject brand label."""
+    if not label:
+        return True
+    needle = label.lower()
+    for r in results:
+        blob = " ".join(str(r.get(k) or "") for k in ("title", "url", "snippet"))
+        if needle in blob.lower():
+            return True
+    return False
+
+
 def _parse_results(page_html, max_results):
     """Extract (title, url, snippet) triples from the search result page.
 
@@ -358,6 +393,18 @@ def search_web(query, max_results=5, timeout=12.0):
     if not results:
         emit("web_search", phase="end", ok=False, query=q)
         raise HarnessError("web search returned no usable results")
+    # Subject-relevance gate: when the query names a specific site, a result
+    # set that never mentions that site is off-subject navigational junk
+    # (search engines answer an obscure query with an unrelated fallback).
+    # Handing that to the model as "evidence" is the fabrication vector this
+    # module exists to prevent, so refuse honestly instead.
+    subject = _subject_core_label(q)
+    if subject and not _result_mentions_subject(results, subject):
+        emit("web_search", phase="end", ok=False, query=q,
+             reason="off_subject_results")
+        raise HarnessError(
+            f"web search returned no results about '{subject}' "
+            "(the results were off-subject)")
 
     emit("web_search", phase="end", ok=True, query=q, results=len(results))
     return results
