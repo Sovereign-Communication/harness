@@ -510,6 +510,8 @@ _ENV_NAMES = {
     "openrouter_enabled": "HARNESS_OPENROUTER_ENABLED",
     "fireworks_enabled": "HARNESS_FIREWORKS_ENABLED",
     "fireworks_budget_usd": "HARNESS_FIREWORKS_BUDGET_USD",
+    "fetch_allowlist_enabled": "HARNESS_FETCH_ALLOWLIST_ENABLED",
+    "fetch_allowlist_hosts": "HARNESS_FETCH_ALLOWLIST_HOSTS",
 }
 
 
@@ -662,7 +664,8 @@ class Settings:
                   token_budget_output=DEFAULT_TOKEN_BUDGET_OUTPUT,
                   openrouter_enabled=True, fireworks_enabled=False,
                   fireworks_budget_usd=0.0,
-                  use_fireworks=False, fireworks_key="", trial_model=""):
+                  use_fireworks=False, fireworks_key="", trial_model="",
+                  fetch_allowlist_enabled=True, fetch_allowlist_hosts=None):
         self.use_free = use_free
         self.openrouter_enabled = bool(openrouter_enabled)
         self.fireworks_enabled = bool(fireworks_enabled or use_fireworks)
@@ -739,6 +742,14 @@ class Settings:
         # i.e. every stage; the composition owner validates any subset.
         self.hourglass_stages = (list(hourglass_stages)
                                  if hourglass_stages else None)
+        # Web fetch allowlist posture (ONE owner: harness/web.py). When the
+        # allowlist is enabled (default) only the listed hosts may be fetched;
+        # an empty host list means "use the built-in DEFAULT_FETCH_HOSTS".
+        # When disabled, any PUBLIC https host is fetchable -- but the SSRF
+        # guard (public-address validation) still applies, so this never
+        # becomes an internal-network probe. Sanitized at use-time by web.py.
+        self.fetch_allowlist_enabled = bool(fetch_allowlist_enabled)
+        self.fetch_allowlist_hosts = list(fetch_allowlist_hosts or [])
 
     def to_dict(self):
         return {k: getattr(self, k) for k in (
@@ -759,7 +770,8 @@ class Settings:
             "jev_endpoint", "jev_model", "min_confidence",
             "token_budget_input", "token_budget_output",
             "hourglass_stages", "openrouter_enabled", "fireworks_enabled",
-            "fireworks_budget_usd")}
+            "fireworks_budget_usd", "fetch_allowlist_enabled",
+            "fetch_allowlist_hosts")}
 
 
 # JEV-P4 freeze: the two settings an operator pins after first calibration,
@@ -799,7 +811,8 @@ def update_config(values):
             "unknown setting(s): " + ", ".join(sorted(unknown)))
     allowed = {"use_free", "allow_escalation", "max_cost", "task_max_cost",
                "hourglass_stages", "token_budget_input", "token_budget_output",
-               "openrouter_enabled", "fireworks_enabled", "fireworks_budget_usd"}
+               "openrouter_enabled", "fireworks_enabled", "fireworks_budget_usd",
+               "fetch_allowlist_enabled", "fetch_allowlist_hosts"}
     allowed |= set(JEV_FREEZE_KEYS)
     disallowed = set(values) - allowed
     if disallowed:
@@ -1024,6 +1037,8 @@ def load_settings(overrides=None):
         openrouter_enabled=_as_bool(get("openrouter_enabled", True)),
         fireworks_enabled=_as_bool(get("fireworks_enabled", use_fireworks)),
         fireworks_budget_usd=_num("fireworks_budget_usd", float, 0.0, 1_000_000.0, 0.0),
+        fetch_allowlist_enabled=_as_bool(get("fetch_allowlist_enabled", True)),
+        fetch_allowlist_hosts=_split_list(str(get("fetch_allowlist_hosts", ""))),
     )
 
 
