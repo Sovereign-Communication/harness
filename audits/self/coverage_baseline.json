@@ -1,6 +1,6 @@
 {
   "_comment": "Lines executed by the full battery under stdlib trace; regenerate only via refresh_coverage_baseline.py and commit as a reviewable diff.",
-  "commit": "9bac6a2c1461b126f110aa85b307f64aaf3dd214",
+  "commit": "661d476474e25e71a8354f9f5acfe84dec6ff4e7",
   "modules": {
     "harness/__init__.py": [
       1,
@@ -37234,13 +37234,16 @@
       305,
       306,
       307,
+      308,
       309,
       310,
       311,
+      312,
       315,
       316,
       319,
       321,
+      322,
       323,
       324,
       325,

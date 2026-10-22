@@ -486,6 +486,23 @@ class SubjectRelevanceGateTests(unittest.TestCase):
         self.assertEqual(web._subject_core_label("is bbc.co.uk up"), "bbc")
         self.assertIsNone(web._subject_core_label("riemann hypothesis"))
 
+    def test_non_fetchable_tld_token_yields_no_subject(self):
+        # 'report.pdf' matches the bare-domain shape but its TLD is not a
+        # web TLD, so it is skipped (defensive continue) -> no subject.
+        self.assertIsNone(web._subject_core_label("audit report.pdf now"))
+
+    def test_generic_only_host_yields_no_subject(self):
+        # A host made entirely of generic labels (www/com/net/org) has no
+        # distinctive brand label to gate on -> skipped (defensive continue).
+        self.assertIsNone(web._subject_core_label("check www.com now"))
+        self.assertIsNone(web._subject_core_label("see net.net"))
+
+    def test_result_mentions_subject_treats_absent_label_as_match(self):
+        # No subject label means the gate cannot judge relevance; the helper
+        # reports a match rather than refusing (defensive short-circuit).
+        self.assertTrue(web._result_mentions_subject([{"title": "x"}], None))
+        self.assertTrue(web._result_mentions_subject([], ""))
+
 
 class AllowlistRelaxationTests(unittest.TestCase):
     """Disabling the allowlist lets any PUBLIC https host be fetched, but the
