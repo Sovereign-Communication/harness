@@ -281,6 +281,24 @@ class SharedLaneBehaviorTests(unittest.TestCase):
             self.assertEqual(terminal["status"], "complete")
             self.assertEqual(terminal["candidate"], "Hello.")
 
+    def test_chat_finalizer_does_not_finish_new_same_lane_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_settings(), history_dir=Path(tmp))
+            original = agent.lifecycle.begin(
+                "chat", "reused-session", "first request")
+            replacement = agent.lifecycle.begin(
+                "chat", "reused-session", "replacement request")
+
+            result = agent._finish_chat_request(
+                "reused-session", {"status": "ok", "response": "stale"},
+                expected_request_id=original["request_id"])
+
+            self.assertIsNone(result)
+            saved = agent.lifecycle.load("reused-session")
+            self.assertEqual(saved["request_id"], replacement["request_id"])
+            self.assertEqual(saved["status"], "running")
+            self.assertIsNone(saved["candidate"])
+
     def test_continuation_router_restores_legacy_chat_driver_and_provision_lanes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

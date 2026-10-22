@@ -84,33 +84,103 @@ that and its hard guarantees:
 
 ## Install & configure
 
-```bash
-pip install sovereign-harness   # when using the published package
-#   ...or from a checkout:
-pip install -e .          # installs `harness`, `harness-mcp`
+`sovereign-harness` is not available from PyPI yet. The tag-publish workflow is
+ready, but its one-time PyPI trusted-publisher registration is still pending
+(see [issue #107](https://github.com/Sovereign-Communication/harness/issues/107)).
+Until that release step is complete, install the default build from the public
+GitHub repository.
 
-# Key: $OPENROUTER_API_KEY, or a file at any of (first wins):
-#   ~/.config/scmorc/openrouter_fusion.env
-#   ~/.config/scmorc/openrouter.env
-#   ~/.config/harness/openrouter.env
+Create a virtual environment and install the default build:
+
+```powershell
+# Windows PowerShell
+py -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install "git+https://github.com/Sovereign-Communication/harness.git@main"
 ```
 
-For MCP, configure `mcp_allowed_roots` and deliberate write/verify authorization;
-see [docs/mcp.md](docs/mcp.md). Runtime verification commands execute with host
-privileges even though Harness uses `shell=False`.
-
-If the console scripts are not found after installing (`harness: command
-not found`), the install still succeeded — pip may have placed them in a
-directory that is not on your `PATH` (pip warns about this). Either add
-`python -m site --user-base`'s `Scripts` (Windows) / `bin` (POSIX) directory
-to `PATH`, or invoke the package directly:
-
 ```bash
-python -m harness.cli      # the CLI, identical surface to `harness`
-python -m harness.mcp      # the MCP stdio server, same as `harness-mcp`
+# Linux / macOS
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install "git+https://github.com/Sovereign-Communication/harness.git@main"
 ```
 
-Free tier is on by default. Config lives in `~/.config/harness/config.json`
+For a local checkout, replace the GitHub install command with:
+
+```powershell
+# Windows PowerShell
+.venv\Scripts\python.exe -m pip install -e .
+.venv\Scripts\python.exe -m pip install -e ".[desktop]" # optional native window
+```
+
+```bash
+# Linux / macOS, with the venv activated
+python -m pip install -e .
+python -m pip install -e ".[desktop]" # optional native window
+```
+
+To install the native desktop extra directly from GitHub, use
+`.venv\Scripts\python.exe -m pip install "sovereign-harness[desktop] @ git+https://github.com/Sovereign-Communication/harness.git@main"`
+on Windows, or the same `python -m pip install ...` command on Linux/macOS
+with the venv activated. Without the extra, `harness-desktop` falls back to the
+system browser. Both install modes provide `harness`, `harness-mcp`,
+`harness-desktop`, and `driver-core`.
+
+### Credentials and local auth
+
+Harness settings, provider key files, chat history, the UI token, and default
+media/driver adapter config share one directory:
+`$HARNESS_CONFIG_DIR`, defaulting to `~/.config/harness` on Windows, macOS, and
+Linux. Set `HARNESS_CONFIG_DIR` before launching Harness to relocate those
+files. Create the directory and put the following line in `openrouter.env`:
+
+```text
+OPENROUTER_API_KEY=your-openrouter-key
+```
+
+An OpenRouter key is required for model calls, including calls routed to free
+models. For automation, `OPENROUTER_API_KEY` may instead be set in the process
+environment. Existing SCMessenger key files remain supported and take
+precedence over this package file: `~/.config/scmorc/openrouter_fusion.env`,
+then `~/.config/scmorc/openrouter.env`, then
+`$HARNESS_CONFIG_DIR/openrouter.env`, then the environment variable.
+
+For POSIX systems, restrict key files with `chmod 600`. On Windows, key files
+inherit the config directory's ACL; Harness does not change that ACL.
+
+These credentials are separate:
+
+| Surface | Credential and behavior |
+|---|---|
+| Jev / System One | Optional for workflows that use Jev. Precedence: `HARNESS_JEV_KEY` in the environment, `jev_api_key` in `config.json`, `~/.config/scmorc/jev.env`, `$HARNESS_CONFIG_DIR/jev.env`, then `TYPESAFE_API_KEY` or `JEV_API_KEY` in the environment. |
+| Direct Fireworks lane | Only needed when selected. Key file order: `~/.config/scmorc/fireworks.env`, then `$HARNESS_CONFIG_DIR/fireworks.env`, then `FIREWORKS_API_KEY` in the environment. |
+| Web / desktop UI | `harness serve --open` and `harness desktop` use `--auth-token`, then `HARNESS_UI_AUTH_TOKEN`, then a generated and reused `$HARNESS_CONFIG_DIR/desktop_token`. This token protects the local UI/API; it is not a model key. |
+| Local MCP stdio | No separate token by default; the MCP host process is the trust boundary. `HARNESS_MCP_AUTH_TOKEN` / `mcp_auth_token` can add a shared token. File edits still require allowed roots and write/verify authorization; see [docs/mcp.md](docs/mcp.md). |
+| Media adapter | Its service-specific token comes from `$HARNESS_CONFIG_DIR/media.json`, then `MEDIA_TOKEN`; `MEDIA_CONFIG_PATH` relocates that file. |
+| Driver adapter | Its service-specific token comes from `DRIVER_TOKEN` or `$HARNESS_CONFIG_DIR/driver.json`; `DRIVER_CONFIG_PATH` relocates that file. |
+
+Runtime verification commands execute with host privileges even though Harness
+uses `shell=False`.
+
+If the console scripts are not found, run them from the venv's script folder,
+or invoke the module with that venv's Python:
+
+```powershell
+# Windows PowerShell
+.venv\Scripts\python.exe -m harness.cli
+.venv\Scripts\python.exe -m harness.mcp
+```
+
+```bash
+# Linux / macOS, with the venv activated
+python -m harness.cli
+python -m harness.mcp
+```
+
+Free tier is on by default. Config lives in
+`$HARNESS_CONFIG_DIR/config.json` (default `~/.config/harness/config.json`)
 with `HARNESS_*` env overrides:
 
 | Setting | Default | Meaning |
@@ -393,11 +463,10 @@ verify-gate validation, and the trust gates are never bypassed; the UI adds a
 human confirmation step on top, never instead.
 
 Security posture: loopback bind only (non-loopback Host headers are refused —
-DNS-rebinding guard), optional shared token (`HARNESS_UI_AUTH_TOKEN`),
-secrets shown as presence-only in the settings view. The desktop shell
-(`pip install sovereign-harness[desktop]`) auto-generates a per-session token
-and passes it via the URL fragment. See [docs/ui-readiness.md](docs/ui-readiness.md)
-for the data contracts the UI consumes.
+DNS-rebinding guard), token-protected API routes, and secrets shown as
+presence-only in the settings view. The desktop shell reuses the persisted UI
+token and passes it via the URL fragment. See [docs/security.md](docs/security.md)
+and [docs/ui-readiness.md](docs/ui-readiness.md) for details.
 
 ## MCP — native dispatch
 

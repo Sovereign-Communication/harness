@@ -1101,6 +1101,73 @@ class TestChatAutoEscalation(unittest.TestCase):
         self.assertTrue(kwargs["auto_apply"])
         self.assertEqual(kwargs["escalation_note"], "exceeds the lane")
 
+    def test_auto_escalation_keeps_edit_lifecycle_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._defer_agent(tmp)
+            plan_result = {"status": "deferred", "intent": "edit",
+                           "response": "resume the edit", "cost": 0.01}
+
+            def start_edit_lifecycle(prompt, session_id, **_kwargs):
+                state = agent.lifecycle.begin(
+                    "auto_edit", session_id, prompt,
+                    data={"auto_apply": True})
+                state["usage"]["known_cost"] = 0.01
+                agent.lifecycle.save(state)
+                agent.lifecycle.finish(
+                    state, "deferred", result=plan_result, resumable=True)
+                return plan_result
+
+            with patch("harness.conversation_lifecycle.chat",
+                       return_value=(200, self._DEFER)), \
+                 patch("harness.conversation_lifecycle.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch("harness.conversation_lifecycle.ledger_for",
+                       return_value=MagicMock()), \
+                 patch.object(AutonomousAgent, "_auto_escalation_armed",
+                              return_value=True), \
+                 patch.object(AutonomousAgent, "_handle_edit",
+                              side_effect=start_edit_lifecycle):
+                result = agent.run_prompt(
+                    "refactor the whole engine", session_id="edit-owner",
+                    auto_apply=False, force_conversation=True)
+
+            self.assertEqual(result, plan_result)
+            saved = agent.lifecycle.load("edit-owner")
+            self.assertEqual(saved["lane"], "auto_edit")
+            self.assertEqual(saved["status"], "deferred")
+            self.assertTrue(saved["data"]["resumable"])
+            self.assertAlmostEqual(saved["usage"]["known_cost"], 0.01)
+
+    def test_transferred_owner_survives_cancel_and_failure(self):
+        cases = (
+            (ToolCancelled("edit cancelled"), "interrupted"),
+            (RuntimeError("edit failed"), "failed"),
+        )
+        for raised, terminal in cases:
+            with self.subTest(terminal=terminal), tempfile.TemporaryDirectory() as tmp:
+                agent = self._defer_agent(tmp)
+
+                def transfer_then_raise(*_args, **_kwargs):
+                    edit_state = agent.lifecycle.begin(
+                        "auto_edit", "transferred-owner", "edit request",
+                        data={"auto_apply": True})
+                    if terminal == "interrupted":
+                        agent.lifecycle.interrupt(edit_state, raised)
+                    else:
+                        agent.lifecycle.finish(edit_state, "failed")
+                    raise raised
+
+                with patch.object(
+                        agent, "_handle_conversation",
+                        side_effect=transfer_then_raise):
+                    with self.assertRaises(type(raised)):
+                        agent._run_fallback_conversation(
+                            "edit request", "transferred-owner")
+
+                saved = agent.lifecycle.load("transferred-owner")
+                self.assertEqual(saved["lane"], "auto_edit")
+                self.assertEqual(saved["status"], terminal)
+
     def test_escalation_note_without_a_rung_walk_is_never_stamped(self):
         # A handoff note is NOT evidence. The stubbed plan has no executable
         # nodes and no escalation rung can have run, so the old label

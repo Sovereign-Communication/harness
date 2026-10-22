@@ -15,11 +15,12 @@ from .conversation_lifecycle import ConversationLifecycleMixin
 from .request_intent import classify_prompt_intent
 from .simple_answer_lifecycle import SimpleAnswerLifecycleMixin
 
-from .errors import HarnessError
+from .errors import HarnessError, ToolCancelled
 from .history import (
     load_chat_checkpoint,
     save_chat_turn,
 )
+from .lifecycle_types import LifecycleState
 
 
 class ChatLifecycleMixin(
@@ -44,17 +45,87 @@ class ChatLifecycleMixin(
             return False
         return bool(resolve_api_key())
 
+    def _run_fallback_conversation(
+        self,
+        prompt: str,
+        session_id: str,
+        *,
+        cancel_check=None,
+        web: bool = False,
+        max_tokens=None,
+        reasoning_effort=None,
+        token_budget=None,
+        lifecycle_state: Optional[LifecycleState] = None,
+    ) -> Dict[str, Any]:
+        """Run the no-Jev chat route under the same persisted lifecycle."""
+        state = lifecycle_state or self.lifecycle.begin(
+            "chat",
+            session_id,
+            prompt,
+            stage="answer",
+            data={"route": "conversation", "web_requested": bool(web)},
+        )
+
+        def owned_state():
+            current = self.lifecycle.load(session_id)
+            if (current is not None
+                    and current["lane"] == "chat"
+                    and current["request_id"] == state["request_id"]):
+                return current
+            return None
+
+        try:
+            result = self._handle_conversation(
+                prompt,
+                session_id,
+                cancel_check,
+                web=web,
+                max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
+                token_budget=token_budget,
+                lifecycle_state=state,
+            )
+        except ToolCancelled as exc:
+            current = owned_state()
+            if current is not None:
+                self.lifecycle.interrupt(current, exc)
+            raise
+        except Exception:
+            current = owned_state()
+            if current is not None and current["status"] in ("running", "interrupted"):
+                self.lifecycle.finish(current, "failed")
+            raise
+
+        current = owned_state()
+        if current is not None:
+            cost = max(0.0, float(result.get("cost") or 0.0))
+            if cost:
+                current["usage"]["known_cost"] += cost
+                self.lifecycle.save(current)
+            self._finish_chat_request(
+                session_id,
+                result,
+                candidate=result.get("response"),
+                resumable=bool(result.get("truncated")),
+                expected_request_id=state["request_id"],
+            )
+        return result
+
     @staticmethod
     def _classify_prompt_intent(prompt: str) -> str:
         """Expose the single intent policy to chat routes."""
         return classify_prompt_intent(prompt)
 
     def _finish_chat_request(
-        self, session_id: str, result: Dict[str, Any], *, candidate=None, resumable: bool = False
+        self, session_id: str, result: Dict[str, Any], *, candidate=None,
+        resumable: bool = False, expected_request_id: Optional[str] = None,
     ):
         """Persist chat terminal state through the shared lifecycle owner."""
         state = self.lifecycle.load(session_id)
         if state is None or state["lane"] != "chat":
+            return None
+        if (expected_request_id is not None
+                and state["request_id"] != expected_request_id):
             return None
         if state["status"] in ("complete", "deferred", "failed"):
             return state

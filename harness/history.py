@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 from .errors import HarnessError
 from .lifecycle import LifecycleState
+from .paths import get_config_dir
 
 
 CHAT_CHECKPOINT_SCHEMA = "harness-chat-checkpoint-v1"
@@ -91,7 +92,7 @@ def _chat_history_path(session_id: str,
 
 def get_default_history_dir() -> Path:
     # Resolve directory for persisted conversation histories
-    base = Path(os.environ.get("HARNESS_CONFIG_DIR", Path.home() / ".config" / "harness"))
+    base = Path(get_config_dir())
     history_dir = base / "chat_history"
     if history_dir.exists() and not history_dir.is_dir():
         # Older installs may have used this path as a single history file.

@@ -28,6 +28,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .paths import get_config_dir
+
 # No provider/service brand strings are hardcoded here: the endpoint the
 # adapter talks to is always resolved from config or environment, in this
 # order: explicit constructor args > config file > env vars > loopback
@@ -36,7 +38,7 @@ import urllib.request
 DEFAULT_BASE = os.environ.get("MEDIA_BASE_URL", "http://127.0.0.1:8765")
 CONFIG_PATH = os.environ.get(
     "MEDIA_CONFIG_PATH",
-    os.path.join(os.path.expanduser("~"), ".config", "harness", "media.json"),
+    os.path.join(get_config_dir(), "media.json"),
 )
 
 

@@ -224,8 +224,10 @@ thread owned by the server process, stopped when the process exits).
 
 `harness desktop` takes its UI token from `--auth-token`, then
 `HARNESS_UI_AUTH_TOKEN`; with neither it generates one, stores it in
-`~/.config/harness/desktop_token` (created owner-only, mode 0600 on POSIX), and reuses it so the window keeps working
-across restarts. The server only ever accepts the token it was started with:
+`$HARNESS_CONFIG_DIR/desktop_token` (default
+`~/.config/harness/desktop_token`; created owner-only, mode 0600 on POSIX),
+and reuses it so the window keeps working across restarts. The server only
+ever accepts the token it was started with:
 a caller cannot replace it by presenting a different one first.
 
 ## MCP tools
@@ -257,7 +259,7 @@ loopback default**. No Harness state file is written on the driver's behalf.
 |---|---|---|
 | Endpoint | `DRIVER_BASE_URL` | `http://127.0.0.1:8791` |
 | Token | `DRIVER_TOKEN` | generated per start when unset |
-| Config file | `DRIVER_CONFIG_PATH` | `~/.config/harness/driver.json` |
+| Config file | `DRIVER_CONFIG_PATH` | `$HARNESS_CONFIG_DIR/driver.json` (`~/.config/harness/driver.json` by default) |
 | Audit log | `DRIVER_AUDIT_PATH` | per-user state directory |
 | Allow side-effect executors | `DRIVER_ALLOW_WRITE` | off |
 | Dry run | `DRIVER_DRY_RUN` | off |

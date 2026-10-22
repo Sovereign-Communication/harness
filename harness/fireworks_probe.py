@@ -86,7 +86,8 @@ def run_fireworks_probe(transport, openrouter_key, fireworks_key, governor,
     if not fireworks_key:
         raise HarnessError(
             "Fireworks key missing: set ~/.config/scmorc/fireworks.env, "
-            "~/.config/harness/fireworks.env, or FIREWORKS_API_KEY")
+            "$HARNESS_CONFIG_DIR/fireworks.env (default: "
+            "~/.config/harness/fireworks.env), or FIREWORKS_API_KEY")
     # The marker goes down before any network call, so even a failed call
     # cannot be retried into a second paid call.
     parent = os.path.dirname(os.path.abspath(marker))
