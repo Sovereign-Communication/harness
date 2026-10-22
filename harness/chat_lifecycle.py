@@ -65,6 +65,15 @@ class ChatLifecycleMixin(
             stage="answer",
             data={"route": "conversation", "web_requested": bool(web)},
         )
+
+        def owned_state():
+            current = self.lifecycle.load(session_id)
+            if (current is not None
+                    and current["lane"] == "chat"
+                    and current["request_id"] == state["request_id"]):
+                return current
+            return None
+
         try:
             result = self._handle_conversation(
                 prompt,
@@ -77,23 +86,29 @@ class ChatLifecycleMixin(
                 lifecycle_state=state,
             )
         except ToolCancelled as exc:
-            self.lifecycle.interrupt(state, exc)
+            current = owned_state()
+            if current is not None:
+                self.lifecycle.interrupt(current, exc)
             raise
         except Exception:
-            if state["status"] in ("running", "interrupted"):
-                self.lifecycle.finish(state, "failed")
+            current = owned_state()
+            if current is not None and current["status"] in ("running", "interrupted"):
+                self.lifecycle.finish(current, "failed")
             raise
 
-        cost = max(0.0, float(result.get("cost") or 0.0))
-        if cost:
-            state["usage"]["known_cost"] += cost
-            self.lifecycle.save(state)
-        self._finish_chat_request(
-            session_id,
-            result,
-            candidate=result.get("response"),
-            resumable=bool(result.get("truncated")),
-        )
+        current = owned_state()
+        if current is not None:
+            cost = max(0.0, float(result.get("cost") or 0.0))
+            if cost:
+                current["usage"]["known_cost"] += cost
+                self.lifecycle.save(current)
+            self._finish_chat_request(
+                session_id,
+                result,
+                candidate=result.get("response"),
+                resumable=bool(result.get("truncated")),
+                expected_request_id=state["request_id"],
+            )
         return result
 
     @staticmethod
@@ -102,11 +117,15 @@ class ChatLifecycleMixin(
         return classify_prompt_intent(prompt)
 
     def _finish_chat_request(
-        self, session_id: str, result: Dict[str, Any], *, candidate=None, resumable: bool = False
+        self, session_id: str, result: Dict[str, Any], *, candidate=None,
+        resumable: bool = False, expected_request_id: Optional[str] = None,
     ):
         """Persist chat terminal state through the shared lifecycle owner."""
         state = self.lifecycle.load(session_id)
         if state is None or state["lane"] != "chat":
+            return None
+        if (expected_request_id is not None
+                and state["request_id"] != expected_request_id):
             return None
         if state["status"] in ("complete", "deferred", "failed"):
             return state

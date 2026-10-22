@@ -154,7 +154,7 @@ These credentials are separate:
 
 | Surface | Credential and behavior |
 |---|---|
-| Jev / System One | Optional for workflows that use Jev. Precedence: `jev_api_key` in `config.json`, then `~/.config/scmorc/jev.env`, `$HARNESS_CONFIG_DIR/jev.env`, then `HARNESS_JEV_KEY`, `TYPESAFE_API_KEY`, or `JEV_API_KEY` in the environment. |
+| Jev / System One | Optional for workflows that use Jev. Precedence: `HARNESS_JEV_KEY` in the environment, `jev_api_key` in `config.json`, `~/.config/scmorc/jev.env`, `$HARNESS_CONFIG_DIR/jev.env`, then `TYPESAFE_API_KEY` or `JEV_API_KEY` in the environment. |
 | Direct Fireworks lane | Only needed when selected. Key file order: `~/.config/scmorc/fireworks.env`, then `$HARNESS_CONFIG_DIR/fireworks.env`, then `FIREWORKS_API_KEY` in the environment. |
 | Web / desktop UI | `harness serve --open` and `harness desktop` use `--auth-token`, then `HARNESS_UI_AUTH_TOKEN`, then a generated and reused `$HARNESS_CONFIG_DIR/desktop_token`. This token protects the local UI/API; it is not a model key. |
 | Local MCP stdio | No separate token by default; the MCP host process is the trust boundary. `HARNESS_MCP_AUTH_TOKEN` / `mcp_auth_token` can add a shared token. File edits still require allowed roots and write/verify authorization; see [docs/mcp.md](docs/mcp.md). |
