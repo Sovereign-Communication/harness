@@ -38,7 +38,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 1.0,
+        "confidence": 0.99,
         "evaluated": true
       },
       "SD": {
@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.97,
+        "confidence": 0.91,
         "evaluated": true
       }
     },
@@ -61,7 +61,7 @@
     "min_score": 10.0,
     "is_fallback": false,
     "reasons": [],
-    "model": "jev-1.13.0",
+    "model": "jev-1.14.0",
     "cost": 5.5566e-05,
     "input_tokens": 1323,
     "output_tokens": 60
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 4776 tests in 276.291s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 4808 tests in 365.873s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -268,7 +268,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "106/106 modules imported by tests"
+        "evidence": "107/107 modules imported by tests"
       },
       {
         "id": "S7",
@@ -288,7 +288,7 @@
         "id": "D1",
         "label": "MCP tool parity with README",
         "score": 1.0,
-        "evidence": "README documents all 28 MCP tools, no stale names"
+        "evidence": "README documents all 29 MCP tools, no stale names"
       },
       {
         "id": "D2",
@@ -306,7 +306,7 @@
         "id": "D4",
         "label": "config table keys real",
         "score": 1.0,
-        "evidence": "24 README config keys all resolve to real settings (50 configurable)"
+        "evidence": "24 README config keys all resolve to real settings (52 configurable)"
       },
       {
         "id": "D5",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 811/830 = 98% (bar 95%) vs baseline f371eb74c8; untested: hourglass_lifecycle.py:489,495,568,778,779,780,782,787...; lifecycle.py:85; simple_answer_lifecycle.py:147)"
+        "evidence": "no executable harness changes since the coverage baseline eb3d419c0d"
       }
     ]
   }
