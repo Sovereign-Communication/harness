@@ -385,6 +385,106 @@ class WeatherAllowlistTests(unittest.TestCase):
             self.assertIn(host, web.DEFAULT_FETCH_HOSTS)
 
 
+class BareDomainAndSiteQueryTests(unittest.TestCase):
+    """A site named without a scheme is still fetched (not mangled into a
+    search query), and a site-focused search leads with the host."""
+
+    def test_find_urls_recognizes_www_bare_domain(self):
+        urls = web.find_urls(
+            "audit www.freeoffgridcalculator.com for user friendliness")
+        self.assertEqual(urls, ["https://www.freeoffgridcalculator.com"])
+
+    def test_find_urls_recognizes_bare_domain_with_known_tld(self):
+        urls = web.find_urls("check freeoffgridcalculator.com today")
+        self.assertEqual(urls, ["https://freeoffgridcalculator.com"])
+
+    def test_find_urls_keeps_scheme_urls_and_dedupes(self):
+        urls = web.find_urls(
+            "see https://example.com/a and also example.com/b")
+        self.assertEqual(urls, ["https://example.com/a",
+                                "https://example.com/b"])
+
+    def test_find_urls_ignores_file_names_not_sites(self):
+        self.assertEqual(web.find_urls("compare report.pdf and image.png"), [])
+
+    def test_extract_query_leads_with_the_host_not_audit(self):
+        q = web.extract_query(
+            "audit www.freeoffgridcalculator.com for user friendliness")
+        self.assertTrue(q.startswith("freeoffgridcalculator.com"), q)
+        self.assertNotIn("audit", q.split())
+        self.assertNotIn("www", q.split())
+        self.assertIn("friendliness", q.split())
+
+    def test_extract_query_without_site_is_unchanged(self):
+        q = web.extract_query("what is the longest road in the world")
+        self.assertIn("longest", q.split())
+        self.assertNotIn("the", q.split())
+
+
+class AllowlistRelaxationTests(unittest.TestCase):
+    """Disabling the allowlist lets any PUBLIC https host be fetched, but the
+    SSRF public-address guard is retained -- never an internal probe."""
+
+    def test_default_path_still_enforces_the_allowlist(self):
+        with self.assertRaises(HarnessError):
+            web.fetch_url("https://freeoffgridcalculator.com/",
+                          allowed_hosts=["en.wikipedia.org"])
+
+    def test_allow_any_public_refuses_non_public_address(self):
+        with mock.patch.object(
+                web, "_resolved_addresses_public",
+                side_effect=HarnessError(
+                    "site probe refused: resolves to non-public address")):
+            with self.assertRaises(HarnessError):
+                web.fetch_url("https://internal.example/secret",
+                              allowed_hosts=[], allow_any_public=True)
+
+    def test_allow_any_public_fetches_a_public_host(self):
+        body = b"<html><title>P</title><body>hello world</body></html>"
+        with mock.patch.object(web, "_resolved_addresses_public",
+                               return_value=["93.184.216.34"]), \
+             mock.patch.object(
+                 web, "_http_get",
+                 return_value=(200, body,
+                               "https://freeoffgridcalculator.com/")):
+            page = web.fetch_url("https://freeoffgridcalculator.com/",
+                                 allowed_hosts=[], allow_any_public=True)
+        self.assertIn("hello world", page["text"])
+
+
+class FetchAllowlistConfigTests(unittest.TestCase):
+    """The GUI-tunable allowlist posture resolves through the ONE owner
+    (web.resolve_fetch_allowlist), with hostile host values sanitized."""
+
+    def _settings(self, **kw):
+        from harness.config import load_settings
+        return load_settings(overrides=dict(kw))
+
+    def test_default_is_enabled_with_builtin_hosts(self):
+        hosts, any_public = web.resolve_fetch_allowlist(self._settings())
+        self.assertFalse(any_public)
+        self.assertIn("en.wikipedia.org", hosts)
+
+    def test_disabled_allowlist_allows_any_public(self):
+        _, any_public = web.resolve_fetch_allowlist(
+            self._settings(fetch_allowlist_enabled=False))
+        self.assertTrue(any_public)
+
+    def test_custom_hosts_replace_defaults_and_are_sanitized(self):
+        hosts, any_public = web.resolve_fetch_allowlist(self._settings(
+            fetch_allowlist_hosts=(
+                "FreeOffGridCalculator.com, https://evil.com, a.com/path")))
+        self.assertEqual(hosts, {"freeoffgridcalculator.com"})
+        self.assertFalse(any_public)
+
+    def test_host_sanitizer_drops_hostile_values(self):
+        self.assertIsNone(web._sanitize_host("https://evil.com"))
+        self.assertIsNone(web._sanitize_host("a.com/path"))
+        self.assertIsNone(web._sanitize_host("user@bad.com"))
+        self.assertIsNone(web._sanitize_host("nodots"))
+        self.assertEqual(web._sanitize_host(" Example.COM "), "example.com")
+
+
 if __name__ == "__main__":
     unittest.main()
 

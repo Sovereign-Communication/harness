@@ -62,6 +62,77 @@ DEFAULT_FETCH_HOSTS = frozenset({
     "wttr.in",
 })
 
+# Web TLDs that mark a bare token as a fetchable site (so 'audit example.com'
+# is fetched, while 'report.pdf' / 'image.png' are not). A www-prefixed host
+# is always treated as a site regardless of TLD.
+_FETCHABLE_TLDS = frozenset({
+    "com", "org", "net", "io", "gov", "edu", "co", "uk", "de", "fr", "jp",
+    "info", "app", "dev", "ai", "me", "us", "ca", "biz", "tv", "xyz",
+    "site", "online", "tech", "news", "blog", "store", "cloud",
+})
+
+# A bare domain (labels + a 2+-letter TLD), optionally with a path, not
+# preceded by a scheme/word/dot/slash/@ so it is not re-matched inside an
+# existing URL or an email address.
+_BARE_DOMAIN_RE = re.compile(
+    r"(?<![\w./@])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+)([a-z]{2,})"
+    r"(/[^\s)>\]'\"]*)?",
+    re.IGNORECASE)
+
+_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+# Generic request scaffolding dropped from a site-focused search query (the
+# site is the subject; these words only add noise that drifts the search).
+_SITE_SCAFFOLD = frozenset({
+    "audit", "www", "com", "http", "https", "site", "website", "webpage",
+    "page", "url", "domain", "review", "check", "test", "look", "visit",
+})
+
+
+def _is_fetchable_domain(host):
+    """True when a bare host looks like a real web site, not a file name."""
+    host = (host or "").lower()
+    return host.startswith("www.") or host.rsplit(".", 1)[-1] in _FETCHABLE_TLDS
+
+
+def _sanitize_host(host):
+    """Return a normalized hostname if well-formed, else None.
+
+    Drops anything that could smuggle a scheme, path, port, or credential
+    into the host set, so a hostile config value cannot widen the boundary.
+    """
+    h = (host or "").strip().lower().rstrip(".")
+    if not h or len(h) > 253:
+        return None
+    if any(c in h for c in "/:@ ?#"):
+        return None
+    labels = h.split(".")
+    if len(labels) < 2 or not all(_HOST_LABEL_RE.match(label) for label in labels):
+        return None
+    return h
+
+
+def resolve_fetch_allowlist(settings):
+    """Derive ``(allowed_hosts, allow_any_public)`` from settings.
+
+    The web-fetch posture is ONE owner (this module); settings only tune it.
+    An empty/absent host list means "use the built-in DEFAULT_FETCH_HOSTS".
+    When the allowlist is disabled, any PUBLIC https host is fetchable -- but
+    ``fetch_url`` still runs the SSRF public-address guard, so relaxing the
+    allowlist never turns the fetcher into an internal-network probe.
+    """
+    enabled = bool(getattr(settings, "fetch_allowlist_enabled", True))
+    raw = getattr(settings, "fetch_allowlist_hosts", None) or []
+    hosts = set()
+    for h in raw:
+        clean = _sanitize_host(str(h))
+        if clean:
+            hosts.add(clean)
+    if not hosts:
+        hosts = set(DEFAULT_FETCH_HOSTS)
+    return hosts, (not enabled)
+
+
 _USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) HarnessLocalUI/0.3 (personal local tool)"
 )
@@ -309,13 +380,20 @@ def _page_title(page_html):
     return _clean_text(m.group(1))[:200] if m else ""
 
 
-def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000):
-    """Fetch ONE allowlisted https URL and return {url, title, text}.
+def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000,
+              allow_any_public=False):
+    """Fetch ONE https URL and return {url, title, text}.
 
     Refusals are HarnessErrors with machine-readable messages:
     scheme, allowlist, redirect, network, and no-readable-text. A transient
     failure (timeout/network error, HTTP 429 or 5xx) is retried once after a
     short backoff; policy refusals and other statuses are not.
+
+    When ``allow_any_public`` is set (the operator disabled the fetch
+    allowlist), the host need not be on the allowlist -- but it MUST resolve
+    to a globally public address, so the fetcher can never reach a private,
+    loopback, link-local, or metadata address (the SSRF guard is retained
+    even when the allowlist is relaxed).
     """
     if not url or not url.strip():
         raise HarnessError("web fetch: empty url")
@@ -324,10 +402,20 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000):
     if parsed.scheme != "https":
         raise HarnessError("web fetch refused: only https:// URLs are fetched")
     host = (parsed.hostname or "").lower()
-    allowed = {h.lower() for h in (allowed_hosts or [])}
-    if not host or host not in allowed:
-        raise HarnessError(
-            f"web fetch refused: host '{host or '?'}' is not on the fetch allowlist")
+    if not host:
+        raise HarnessError("web fetch refused: no host in URL")
+    if allow_any_public:
+        import socket as _socket
+        try:
+            _resolved_addresses_public(host, _socket.getaddrinfo)
+        except HarnessError as e:
+            raise HarnessError(
+                f"web fetch refused: {str(e).split(':', 1)[-1].strip()}") from e
+    else:
+        allowed = {h.lower() for h in (allowed_hosts or [])}
+        if host not in allowed:
+            raise HarnessError(
+                f"web fetch refused: host '{host}' is not on the fetch allowlist")
     emit("web_fetch", phase="start", url=u)
     raw = final_url = None
     error_note = None
@@ -368,7 +456,7 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000):
             "text": text}
 
 
-def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, fetch_url_fn=None, search_web_fn=None, find_urls_fn=None, extract_query_fn=None, max_sources=3):
+def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, allow_any_public=False, fetch_url_fn=None, search_web_fn=None, find_urls_fn=None, extract_query_fn=None, max_sources=3):
     """Single-owner web evidence gathering for one chat turn.
 
     Fetches allowlisted URLs in the prompt (one per URL, up to max_sources);
@@ -386,7 +474,14 @@ def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, fetch_
     if urls:
         for u in urls:
             try:
-                page = fetch_fn(u, allowed_hosts=allowed_hosts)
+                # Pass allow_any_public only when set, so the injectable seam
+                # keeps its original (url, allowed_hosts=...) shape for the
+                # default allowlisted path and existing test doubles.
+                if allow_any_public:
+                    page = fetch_fn(u, allowed_hosts=allowed_hosts,
+                                    allow_any_public=True)
+                else:
+                    page = fetch_fn(u, allowed_hosts=allowed_hosts)
                 sources.append({"kind": "fetch", "ok": True, "url": page["url"], "title": page["title"], "text": page["text"]})
             except HarnessError as e:
                 sources.append({"kind": "fetch", "ok": False, "url": u, "note": str(e)})
@@ -438,8 +533,30 @@ _QUERY_SPELLING_FIXES = {
 
 
 def find_urls(prompt):
-    """All URLs mentioned in a prompt, in order, capped in length."""
-    return [u[:500] for u in _URL_RE.findall(prompt or "")]
+    """Every fetchable URL or bare domain in a prompt, normalized to https.
+
+    Recognizes scheme URLs (https://...), www-prefixed hosts, and bare domains
+    with a known web TLD -- so a site named without a scheme (the common
+    'audit example.com' shape) is fetched directly instead of being mangled
+    into a search query. File names (report.pdf) are excluded by the TLD
+    allowlist. Results are capped in length and de-duplicated.
+    """
+    text = prompt or ""
+    out = [u[:500] for u in _URL_RE.findall(text)]
+    seen = set(out)
+    for m in _BARE_DOMAIN_RE.finditer(text):
+        host = (m.group(1) + m.group(2)).lower()
+        if not _is_fetchable_domain(host):
+            continue
+        # A hostname over 253 chars is invalid -- never a fetch target, so
+        # extract_site_target's length guard still sees it as no candidate.
+        if len(host) > 253:
+            continue
+        url = "https://" + host + (m.group(3) or "")
+        if url not in seen:
+            seen.add(url)
+            out.append(url[:500])
+    return out
 
 
 # ---- bounded public-site liveness probe (request-lifecycle #202) -----------
@@ -690,8 +807,28 @@ def _probe_verdict(host, url, status, location, latency, final_host):
 
 
 def extract_query(prompt, max_words=10):
-    """Reduce a natural-language prompt to a search query (stopwords out, spellings normalized)."""
-    words = re.findall(r"[a-zA-Z0-9_']+", (prompt or "").lower())
+    """Reduce a natural-language prompt to a search query.
+
+    Stopwords and spellings are normalized. When the prompt names a fetchable
+    site, that site is the subject: the query leads with the bare host (never
+    tokenized into 'www x com') and drops generic request scaffolding (audit,
+    review, site ...) so the search targets the site instead of drifting onto
+    a keyword like 'audit' and returning unrelated results.
+    """
+    text = (prompt or "").strip()
+    words = re.findall(r"[a-zA-Z0-9_']+", text.lower())
+    host = None
+    for m in _BARE_DOMAIN_RE.finditer(text):
+        h = (m.group(1) + m.group(2)).lower()
+        if _is_fetchable_domain(h):
+            host = h.replace("www.", "", 1)
+            break
+    if host:
+        host_tokens = set(host.split("."))
+        kept = [w for w in words
+                if w not in _QUERY_STOPWORDS and w not in _SITE_SCAFFOLD
+                and w not in host_tokens and len(w) > 1]
+        return (host + " " + " ".join(kept[:max_words])).strip()
     kept = []
     for w in words:
         w_fixed = _QUERY_SPELLING_FIXES.get(w, w)

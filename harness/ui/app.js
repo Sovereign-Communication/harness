@@ -437,11 +437,32 @@ function setupHeaderControls() {
   const webBtn = $("#btn-web-toggle");
   if (webBtn) {
     updateWebDisplay();
-    webBtn.addEventListener("click", () => {
+    webBtn.addEventListener("click", (ev) => {
+      if (ev.shiftKey) {
+        ev.stopPropagation();
+        const pop = $("#web-popover");
+        if (pop && pop.hidden) openWebPopover();
+        else closeWebPopover();
+        return;
+      }
       webEnabled = !webEnabled;
       localStorage.setItem("harness_web_enabled", webEnabled ? "true" : "false");
       updateWebDisplay();
     });
+    const webPop = $("#web-popover");
+    if (webPop) {
+      $("#web-allowlist-save").addEventListener("click", saveWebAllowlist);
+      $("#web-allowlist-hosts").addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") $("#web-allowlist-save").click();
+      });
+      document.addEventListener("click", (ev) => {
+        if (!webPop.hidden && !webPop.contains(ev.target)
+            && !webBtn.contains(ev.target)) closeWebPopover();
+      });
+      document.addEventListener("keydown", (ev) => {
+        if (ev.key === "Escape" && !webPop.hidden) closeWebPopover();
+      });
+    }
   }
 
   const authBtn = $("#btn-auth-toggle");
@@ -1494,6 +1515,53 @@ async function saveCap(raw) {
       $("#spend-limit").textContent = `/ ${fmtCost(backendSettings.max_cost)}`;
     }
     closeCapPopover();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.hidden = false;
+  }
+}
+
+// ---- web fetch allowlist popover ------------------------------------------
+// The fetch allowlist is a security boundary owned by harness/web.py; the UI
+// only tunes the posture (enable / modify / disable) through POST
+// /api/settings, which validates fail-closed. Blank hosts means "use the
+// built-in defaults". Disabling the allowlist lets any PUBLIC https site be
+// fetched -- the SSRF public-address guard still applies.
+function openWebPopover() {
+  const pop = $("#web-popover");
+  if (!pop) return;
+  const s = backendSettings || {};
+  const enabled = typeof s.fetch_allowlist_enabled === "boolean"
+    ? s.fetch_allowlist_enabled : true;
+  $("#web-allowlist-enabled").checked = enabled;
+  const hosts = Array.isArray(s.fetch_allowlist_hosts)
+    ? s.fetch_allowlist_hosts.join(", ") : "";
+  $("#web-allowlist-hosts").value = hosts;
+  $("#web-allowlist-error").hidden = true;
+  pop.hidden = false;
+}
+
+function closeWebPopover() {
+  const pop = $("#web-popover");
+  if (pop) pop.hidden = true;
+}
+
+async function saveWebAllowlist() {
+  const errEl = $("#web-allowlist-error");
+  errEl.hidden = true;
+  const enabled = $("#web-allowlist-enabled").checked;
+  const raw = $("#web-allowlist-hosts").value || "";
+  const hosts = raw.split(",").map((h) => h.trim()).filter(Boolean);
+  try {
+    const data = await api("/api/settings", {
+      method: "POST",
+      body: JSON.stringify({
+        fetch_allowlist_enabled: enabled,
+        fetch_allowlist_hosts: hosts.join(","),
+      }),
+    });
+    backendSettings = data.settings || backendSettings;
+    closeWebPopover();
   } catch (e) {
     errEl.textContent = e.message;
     errEl.hidden = false;

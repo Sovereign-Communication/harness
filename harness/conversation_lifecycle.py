@@ -21,7 +21,7 @@ from .results import _http_error
 from .session import governor_for, ledger_for
 from .simple_request import relevant_history as simple_relevant_history
 from .token_budget import resolve_lane_max_tokens as _resolve_lane_max_tokens
-from .web import DEFAULT_FETCH_HOSTS, gather_web_context
+from .web import gather_web_context, resolve_fetch_allowlist
 
 
 class ConversationLifecycleMixin:
@@ -61,7 +61,11 @@ class ConversationLifecycleMixin:
                 raise
             except Exception as e:  # web tools must never kill the chat lane
                 web_sources = [{"kind": "web", "ok": False, "note": f"web tools error: {e}"}]
-            hosts = ", ".join(sorted(DEFAULT_FETCH_HOSTS)) or "(none configured)"
+            _allowed, _any = resolve_fetch_allowlist(self.settings)
+            if _any:
+                hosts = "any public website (SSRF-guarded)"
+            else:
+                hosts = ", ".join(sorted(_allowed)) or "(none configured)"
             system_prompt += "\n\n" + _WEB_CAPABILITY_NOTE.format(hosts=hosts)
             context_lines = []
             for s in web_sources:
@@ -299,9 +303,11 @@ class ConversationLifecycleMixin:
         # policy and hermetic test patches remain at the single owner.
         import harness.web as _web
 
+        allowed, any_public = resolve_fetch_allowlist(self.settings)
         return gather_web_context(
             prompt,
-            allowed_hosts=DEFAULT_FETCH_HOSTS,
+            allowed_hosts=allowed,
+            allow_any_public=any_public,
             fetch_url_fn=_web.fetch_url,
             search_web_fn=_web.search_web,
             find_urls_fn=_web.find_urls,

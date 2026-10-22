@@ -60,7 +60,7 @@ from .simple_request import (
     relevant_history as simple_relevant_history,
 )
 from .token_budget import resolve_lane_max_tokens as _resolve_lane_max_tokens
-from .web import DEFAULT_FETCH_HOSTS
+from .web import resolve_fetch_allowlist
 from .workspace import resolve_workspace_path
 
 
@@ -198,7 +198,11 @@ class HourglassLifecycleMixin:
         ordered = ladder[start:] + ladder[:start]
         system = DEFAULT_CHAT_SYSTEM_PROMPT
         if web:
-            hosts = ", ".join(sorted(DEFAULT_FETCH_HOSTS)) or "(none configured)"
+            _allowed, _any = resolve_fetch_allowlist(self.settings)
+            if _any:
+                hosts = "any public website (SSRF-guarded)"
+            else:
+                hosts = ", ".join(sorted(_allowed)) or "(none configured)"
             system += "\n\n" + _WEB_CAPABILITY_NOTE.format(hosts=hosts)
             lines = []
             for source in (web_sources or []):
