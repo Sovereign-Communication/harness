@@ -1424,6 +1424,153 @@ class DesktopTokenTests(unittest.TestCase):
             ui_mod.main(["--browser", "--auth-token", "t"])
 
 
+
+class UiAuthClientTests(unittest.TestCase):
+
+    def test_auth_dialog_explains_desktop_and_serve_token_sources(self):
+        html = Path("harness/ui/index.html").read_text(encoding="utf-8")
+        self.assertIn("harness desktop", html)
+        self.assertIn("authenticates the window it opens automatically", html)
+        self.assertIn("HARNESS_UI_AUTH_TOKEN", html)
+        self.assertIn("--auth-token &lt;token&gt; --open", html)
+
+    def test_auth_dialog_keeps_bad_token_open_and_accepts_valid_token(self):
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("deps: Node.js runtime is not installed for this UI behavior check")
+        app = Path("harness/ui/app.js").read_text(encoding="utf-8")
+        client = app.split("const $ =", 1)[0]
+        script = r'''
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+(async () => {
+const elements = new Map();
+for (const [id, value] of Object.entries({
+  "auth-modal": { hidden: true },
+  "auth-error-msg": { textContent: "" },
+  "auth-token-input": { value: "", focus() {} },
+  "auth-feedback": { hidden: true, textContent: "" },
+  "btn-save-token": { disabled: false },
+  "btn-cancel-token": {},
+})) elements.set(id, value);
+const storage = new Map();
+const calls = [];
+let resolveSlowCheck;
+const context = vm.createContext({
+  window: {},
+  document: { getElementById(id) { return elements.get(id) || null; } },
+  localStorage: {
+    getItem(key) { return storage.get(key) ?? null; },
+    setItem(key, value) { storage.set(key, String(value)); },
+    removeItem(key) { storage.delete(key); },
+  },
+  fetch: async (url, opts) => {
+    calls.push({ url, headers: opts.headers });
+    if (opts.headers["X-Harness-Auth"] === "slow-token") {
+      return new Promise(resolve => { resolveSlowCheck = resolve; });
+    }
+    const status = opts.headers["X-Harness-Auth"] === "valid-token" ? 200 : 401;
+    return { status, ok: status === 200 };
+  },
+});
+vm.runInContext(process.env.HARNESS_AUTH_CLIENT +
+  "\nfunction pollRoute() {} function pollSpend() {} function refreshSessionList() {}",
+  context);
+const modal = elements.get("auth-modal");
+const input = elements.get("auth-token-input");
+const feedback = elements.get("auth-feedback");
+const save = elements.get("btn-save-token");
+const cancel = elements.get("btn-cancel-token");
+const abandonedPrompt = context.window.HARNESS_PROMPT_AUTH("missing or wrong X-Harness-Auth token");
+input.value = "slow-token";
+const staleValidation = save.onclick();
+assert.equal(save.disabled, true);
+cancel.onclick();
+assert.equal(await abandonedPrompt, null);
+const prompt = context.window.HARNESS_PROMPT_AUTH("missing or wrong X-Harness-Auth token");
+assert.equal(save.disabled, false);
+resolveSlowCheck({ status: 401, ok: false });
+await staleValidation;
+assert.equal(modal.hidden, false);
+assert.equal(feedback.textContent, "");
+input.value = "wrong-token";
+await save.onclick();
+assert.equal(modal.hidden, false);
+assert.match(feedback.textContent, /not accepted/);
+assert.equal(storage.has("harness_ui_auth_token"), false);
+input.value = "valid-token";
+await save.onclick();
+assert.equal(await prompt, "valid-token");
+assert.equal(modal.hidden, true);
+assert.equal(storage.get("harness_ui_auth_token"), "valid-token");
+assert.deepEqual(calls.map(call => call.url),
+  ["/api/status", "/api/status", "/api/status"]);
+assert.deepEqual(calls.map(call => call.headers["X-Harness-Auth"]),
+  ["slow-token", "wrong-token", "valid-token"]);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+'''
+        env = dict(os.environ, HARNESS_AUTH_CLIENT=client)
+        result = subprocess.run([node, "-e", script], capture_output=True,
+                                text=True, env=env, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_manual_auth_keeps_token_in_memory_when_browser_storage_is_blocked(self):
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("deps: Node.js runtime is not installed for this UI behavior check")
+        app = Path("harness/ui/app.js").read_text(encoding="utf-8")
+        client = app.split("const $ =", 1)[0]
+        script = r'''
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+(async () => {
+const elements = new Map();
+for (const [id, value] of Object.entries({
+  "auth-modal": { hidden: true },
+  "auth-error-msg": { textContent: "" },
+  "auth-token-input": { value: "", focus() {} },
+  "auth-feedback": { hidden: true, textContent: "" },
+  "btn-save-token": { disabled: false },
+  "btn-cancel-token": {},
+})) elements.set(id, value);
+const calls = [];
+const context = vm.createContext({
+  window: {},
+  document: { getElementById(id) { return elements.get(id) || null; } },
+  localStorage: {
+    getItem() { throw new Error("storage disabled"); },
+    setItem() { throw new Error("storage disabled"); },
+    removeItem() { throw new Error("storage disabled"); },
+  },
+  fetch: async (url, opts) => {
+    calls.push({ url, headers: opts.headers });
+    return { status: 200, ok: true, statusText: "OK", json: async () => ({ status: "ok" }) };
+  },
+});
+vm.runInContext(process.env.HARNESS_AUTH_CLIENT +
+  "\nfunction pollRoute() {} function pollSpend() {} function refreshSessionList() {}",
+  context);
+const prompt = context.window.HARNESS_PROMPT_AUTH("missing or wrong X-Harness-Auth token");
+elements.get("auth-token-input").value = "valid-token";
+await elements.get("btn-save-token").onclick();
+assert.equal(await prompt, "valid-token");
+await vm.runInContext("api('/api/status')", context);
+assert.deepEqual(calls.map(call => call.headers["X-Harness-Auth"]),
+  ["valid-token", "valid-token"]);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+'''
+        env = dict(os.environ, HARNESS_AUTH_CLIENT=client)
+        result = subprocess.run([node, "-e", script], capture_output=True,
+                                text=True, env=env, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class ChatEndpointTests(ServerHarness):
     def test_chat_post_and_history(self):
         fake_chat_result = {

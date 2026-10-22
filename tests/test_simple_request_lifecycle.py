@@ -22,6 +22,7 @@ from harness.simple_request import (
     is_workspace_inspection_request,
     parse_clock_request,
     relevant_history,
+    resolve_answer_retry,
 )
 from harness.spend import SpendGovernor
 from tests._fake import FakeTransport, comp, jev_resp, m
@@ -113,6 +114,32 @@ class RequestKindTests(unittest.TestCase):
         prompt = "How do I audit software repositories effectively?"
         self.assertFalse(is_workspace_inspection_request(prompt))
         self.assertFalse(is_comprehensive_workspace_inspection_request(prompt))
+
+    def test_retry_and_original_request_controls_stay_on_simple_lane(self):
+        turns = [
+            {"prompt": "What's the longest continuous road in the world?",
+             "response": "The Pan-American Highway is generally considered longest."},
+            {"prompt": "try again", "response": "The previous answer was deferred."},
+            {"prompt": "What does the idiom 'third time's the charm' mean?",
+             "response": "It means the third attempt may succeed."},
+        ]
+        for prompt in ("try again", "Please try again."):
+            with self.subTest(prompt=prompt):
+                self.assertTrue(is_simple_answer_request(prompt))
+                self.assertEqual(
+                    resolve_answer_retry(prompt, turns), turns[-1]["prompt"])
+        original = "fulfil the original request in full please"
+        self.assertTrue(is_simple_answer_request(original))
+        self.assertEqual(resolve_answer_retry(original, turns), turns[0]["prompt"])
+
+    def test_anaphoric_followup_keeps_nearest_answer_without_topic_overlap(self):
+        turns = [
+            {"prompt": "What's the longest continuous road in the world?",
+             "response": "The Pan-American Highway stretches roughly 19,000 miles."},
+        ]
+        selected = relevant_history("How many nanometers long is that?", turns)
+        self.assertEqual(len(selected), 1)
+        self.assertIn("19,000 miles", selected[0]["response"])
 
     def test_history_is_relevant_and_bounded(self):
         turns = [
@@ -273,6 +300,16 @@ class ClockFastPathTests(unittest.TestCase):
             parse_clock_request("What is the current date and time in HST?"),
             "HST")
 
+    def test_hawaii_location_answers_in_hst_not_machine_local_time(self):
+        from datetime import datetime, timezone
+        prompt = "what is todays date in hawaii?"
+        self.assertEqual(parse_clock_request(prompt), "HST")
+        answer = answer_clock(
+            prompt, now=datetime(2026, 10, 15, 8, 0, tzinfo=timezone.utc))
+        self.assertIn("October 14, 2026", answer)
+        self.assertIn("HST", answer)
+        self.assertIn("UTC-10", answer)
+
     def test_bare_clock_questions_use_machine_local(self):
         for prompt in ("What time is it?", "What's today's date?",
                        "What day is it?", "Tell me the time."):
@@ -363,11 +400,13 @@ class SimpleLifecycleTests(unittest.TestCase):
         self.ledger = MagicMock()
 
     def _run(self, answer="Spread peanut butter, add jelly, and close the bread.",
-             pre=None, post=None):
+             pre=None, post=None,
+             prompt="How do I make a peanut butter and jelly sandwich?",
+             completion=None, saved_turns=None, session_id="simple-test"):
         policy = MagicMock()
         policy.evaluate_simple_strategy.return_value = pre or _pre()
         policy.evaluate_answer.return_value = post or _post()
-        completion = {
+        completion = completion or {
             "content": answer, "model": "cheap-test-model",
             "cost": 0.000002, "input_tokens": 21, "output_tokens": 9,
             "cost_estimated": False,
@@ -377,10 +416,17 @@ class SimpleLifecycleTests(unittest.TestCase):
             patch("harness.simple_answer_lifecycle.policy_for", return_value=policy),
             patch("harness.simple_answer_lifecycle.ledger_for", return_value=self.ledger),
             patch("harness.simple_answer_lifecycle.governed_completion", return_value=completion) as generate,
+            patch("harness.simple_answer_lifecycle.load_chat_history",
+                  return_value=list(saved_turns or [])),
+            patch("harness.hourglass_lifecycle.enumerate_repo_files",
+                  side_effect=AssertionError("no repo intake")),
+            patch("harness.request_router.discover_target_files",
+                  side_effect=AssertionError("no AST intake")),
+            patch("harness.orchestrator.assess_completion",
+                  side_effect=AssertionError("no model judge")),
         ):
             result = self.agent.run_prompt(
-                "How do I make a peanut butter and jelly sandwich?",
-                session_id="simple-test")
+                prompt, session_id=session_id)
         return result, policy, generate
 
     def test_normal_path_is_pre_generation_post_once(self):
@@ -399,6 +445,58 @@ class SimpleLifecycleTests(unittest.TestCase):
         self.assertTrue(all(
             call["status"] == "completed"
             for call in state["usage"]["provider_calls"].values()))
+
+    def test_billed_overrun_returns_answer_and_skips_further_jev_spend(self):
+        completion = {
+            "content": "The Pan-American Highway is generally considered longest.",
+            "model": "cheap-test-model", "cost": 0.0022,
+            "input_tokens": 45, "output_tokens": 22,
+            "cost_estimated": False,
+            "budget_overrun": "actual running cost exceeded ceiling",
+        }
+        result, policy, _ = self._run(
+            prompt="What's the longest continuous road in the world?",
+            completion=completion, session_id="overrun-answer")
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("Pan-American", result["response"])
+        self.assertAlmostEqual(result["cost"], 0.0022 + 0.000001)
+        self.assertFalse(result["simple_request"]["post_review_available"])
+        self.assertIn("budget_overrun", result["simple_request"])
+        policy.evaluate_answer.assert_not_called()
+
+    def test_retry_uses_latest_answer_for_generation_and_review(self):
+        latest = "What does the idiom 'third time's the charm' mean?"
+        turns = [
+            {"prompt": "What's the longest continuous road in the world?",
+             "response": "The Pan-American Highway is generally considered longest."},
+            {"prompt": "try again", "resolved_prompt": "What's the longest continuous road in the world?",
+             "response": "A refreshed road answer."},
+            {"prompt": latest, "response": "It means the third attempt may succeed."},
+        ]
+        result, policy, generate = self._run(
+            prompt="try again", saved_turns=turns, session_id="retry-latest")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(policy.evaluate_simple_strategy.call_args.args[0], latest)
+        self.assertEqual(policy.evaluate_answer.call_args.args[0], latest)
+        self.assertEqual(result["simple_request"]["resolved_prompt"], latest)
+        self.assertIn(latest, generate.call_args.args[4])
+
+    def test_anaphoric_followup_passes_the_nearest_answer_as_context(self):
+        prompt = "How many nanometers long is that?"
+        turns = [
+            {"prompt": "Tell me about bicycles.",
+             "response": "A bicycle is a two-wheeled vehicle."},
+            {"prompt": "What's the longest continuous road in the world?",
+             "response": "The Pan-American route is roughly 30,000 km long."},
+        ]
+        result, policy, generate = self._run(
+            prompt=prompt, saved_turns=turns, session_id="anaphoric-followup")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(policy.evaluate_simple_strategy.call_args.args[0], prompt)
+        self.assertEqual(policy.evaluate_answer.call_args.args[0], prompt)
+        generation_prompt = generate.call_args.args[4]
+        self.assertIn("roughly 30,000 km long", generation_prompt)
+        self.assertNotIn("two-wheeled vehicle", generation_prompt)
 
     def test_failed_review_and_plan_signal_are_not_reported_as_passed(self):
         failed_judgment = SimpleNamespace(verdict="fail")

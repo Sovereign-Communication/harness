@@ -1,4 +1,7 @@
+let authTokenOverride;
+
 function getAuthToken() {
+  if (authTokenOverride !== undefined) return authTokenOverride;
   if (typeof location !== "undefined") {
     if (location.hash && location.hash.length > 1) {
       const h = decodeURIComponent(location.hash.slice(1));
@@ -18,15 +21,18 @@ function getAuthToken() {
       }
     }
   }
+  // The fragment is only a launch handoff. Remove it from the address bar and
+  // browser history before any API request; the token is sent in a header.
   try {
-    return localStorage.getItem("harness_ui_auth_token") || null;
-  } catch (_e) {
-    return null;
-  }
+    if (typeof history !== "undefined" && history.replaceState) {
+      history.replaceState(history.state, "", location.pathname + location.search);
+    }
+  } catch (_e) {}
 }
 
 function setAuthToken(token) {
   const t = token ? String(token).trim() : null;
+  authTokenOverride = t;
   if (t) {
     try { localStorage.setItem("harness_ui_auth_token", t); } catch (_e) {}
   } else {
@@ -40,10 +46,12 @@ window.HARNESS_SET_TOKEN = setAuthToken;
 
 let isAuthPromptOpen = false;
 let authPromptPromise = null;
+let authPromptGeneration = 0;
 
 function promptForAuthToken(errMsg) {
   if (isAuthPromptOpen && authPromptPromise) return authPromptPromise;
   isAuthPromptOpen = true;
+  const generation = ++authPromptGeneration;
   authPromptPromise = new Promise((resolve) => {
     const modal = document.getElementById("auth-modal");
     if (!modal) {
@@ -56,14 +64,21 @@ function promptForAuthToken(errMsg) {
     const errText = document.getElementById("auth-error-msg");
     if (errText && errMsg) errText.textContent = errMsg;
     const input = document.getElementById("auth-token-input");
+    const feedback = document.getElementById("auth-feedback");
     if (input) input.value = getAuthToken() || "";
+    if (feedback) {
+      feedback.textContent = "";
+      feedback.hidden = true;
+    }
     modal.hidden = false;
     if (input) input.focus();
 
     const saveBtn = document.getElementById("btn-save-token");
     const cancelBtn = document.getElementById("btn-cancel-token");
+    if (saveBtn) saveBtn.disabled = false;
 
     const cleanup = () => {
+      if (generation !== authPromptGeneration || !isAuthPromptOpen) return;
       modal.hidden = true;
       isAuthPromptOpen = false;
       authPromptPromise = null;
@@ -82,14 +97,52 @@ function promptForAuthToken(errMsg) {
     }
 
     if (saveBtn) {
-      saveBtn.onclick = () => {
+      saveBtn.onclick = async () => {
         const val = input ? input.value.trim() : "";
-        if (val) setAuthToken(val);
-        cleanup();
-        pollRoute();
-        pollSpend();
-        refreshSessionList();
-        resolve(val);
+        if (!val) {
+          if (feedback) {
+            feedback.textContent = "Enter the local UI token to continue.";
+            feedback.hidden = false;
+          }
+          if (input) input.focus();
+          return;
+        }
+        saveBtn.disabled = true;
+        if (feedback) {
+          feedback.textContent = "Checking token…";
+          feedback.hidden = false;
+        }
+        try {
+          const check = await fetch("/api/status", {
+            headers: { "X-Harness-Auth": val }, cache: "no-store",
+          });
+          if (generation !== authPromptGeneration || !isAuthPromptOpen) return;
+          if (check.status === 401) {
+            if (feedback) feedback.textContent =
+              "That token was not accepted. Check the launch instructions above and try again.";
+            return;
+          }
+          if (!check.ok) {
+            if (feedback) feedback.textContent =
+              `Harness could not validate the token (HTTP ${check.status}). Try again.`;
+            return;
+          }
+          setAuthToken(val);
+          cleanup();
+          pollRoute();
+          pollSpend();
+          refreshSessionList();
+          resolve(val);
+        } catch (_e) {
+          if (generation === authPromptGeneration && isAuthPromptOpen && feedback) {
+            feedback.textContent =
+              "Could not reach Harness to check the token. Confirm the server is running and try again.";
+          }
+        } finally {
+          if (generation === authPromptGeneration && isAuthPromptOpen) {
+            saveBtn.disabled = false;
+          }
+        }
       };
     }
     if (cancelBtn) {

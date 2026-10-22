@@ -560,6 +560,17 @@ class McpServer:
         raise HarnessError(message)
 
     def _invoke(self, name, args, cancel_check=None):
+        if name == "ask":
+            prompt = validate_mcp_prompt(args.get("prompt"))
+            settings = self.settings or load_settings()
+            session_id = (validate_mcp_task_id(args.get("session_id"))
+                          if args.get("session_id") is not None else None)
+            agent = AutonomousAgent(settings=settings,
+                                    transport=self.transport)
+            return agent.run_prompt(
+                prompt=prompt, auto_apply=False, session_id=session_id,
+                cancel_check=cancel_check, force_conversation=True)
+
         if name == "site_check":
             prompt = validate_mcp_prompt(args.get("prompt"))
             if not is_site_check_prompt(prompt):
