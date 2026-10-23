@@ -15,6 +15,35 @@ Related design context (not the tracker): [system-one-integration.md](system-one
 
 ---
 
+## Audit security follow-through — 2026-10-06 (proposed, PR #194)
+
+Merged audit data PR #193 at `71b203bd` and issue comments #181–#192 are
+revision-bound review inputs, not instructions to apply every prescription.
+Conclusive CSV: 109 distinct functions, 105 false positives, four needs-human,
+zero confirmed. High-confidence prescriptions and six dead-code candidates
+were exonerated; unreviewed test/concurrency/stub queues remain open.
+
+The operator resolved the four needs-human findings in #184/#185: media IDs
+must be opaque encoded segments, and HTTP mission reads must use explicit
+server-owned roots with symlink containment. PR #194 advanced to `15566fe`
+(numeric coverage refresh atop `02a7143`, not an additional security repair).
+Local review reproduced a mismatch between the path checked and raw path read;
+the root resolver now returns the exact authorized path. HTTP roots are explicit
+startup allowlists. MCP's new remote-head restriction is retained and pinned at
+startup, with nested reads and STATUS/INDEX/artifact refresh paths checked by
+the same pack-boundary owner. CLI authority is unchanged.
+
+Provider-free verification fixed a review-runner Git cause (empty external-diff
+command; explicitly disable external diff/textconv) and the existing half-open
+concurrency test's sleep-based overlap (hold the probe until seven competitors
+observe half-open, retain one-call/seven-refusal assertions). The chaos test's
+20-second bound and workloads are unchanged. Fresh full-battery evidence is
+required after these edits; no completion or green remote CI is claimed.
+
+| ID / source | Acceptance evidence | Status |
+|---|---|---|
+| `AUDIT-SEC-194` / #184/#185/#194 | Named `OpaqueJobIdTests`, `JobIdQuotingTests`, `MissionRootPolicyTests`, `MissionRootStartupTests`, `MissionStatusToolTests` plus existing media/server/MCP suites; meaningful source-bound changed-line coverage ≥95%; independent review, full local gates and current PR CI green. Keep PR #180's Hourglass/D12 repairs separate and land serially. | **open** — approved policy, local repair under verification; no baseline manipulation or remote delivery. |
+
 ## North star
 
 > **Jev is Harness’s tier-0 System One decision layer.** Every material plan, consent, write, and verify-adjacent judgment can be gated by typed Jev questions, with calibrated confidence used as a *second axis* (not free-text voting). Local AST/JSON/diff fallback remains the unkeyed degraded path. Costs are token-priced, preflighted, billed, and ledgered. CLI, MCP, agent, and plan lanes share **one policy owner**. The verification gate remains the authority for code correctness — Jev triages, escalates, and refuses *before* expensive generative work.

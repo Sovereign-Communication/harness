@@ -1,9 +1,9 @@
-"""Regression floor for D12 (`sd_coverage_changed`) — the coverage ritual.
+"""Regression floor for D12 (`sd_coverage_changed`) â€” the coverage ritual.
 
 `DF-AUDIT-3`: the committed baseline named a commit that did not exist in the
 repository, so `git diff` failed, D12 returned its fail-open `SKIP` with a
 perfect score, and the "changed harness lines are suite-executed" rule was not
-running at all — locally *or* in CI. Nothing caught it, because no test
+running at all â€” locally *or* in CI. Nothing caught it, because no test
 asserted that D12 *evaluates* rather than skips.
 
 These tests pin three things:
@@ -45,6 +45,18 @@ class D12BaselinePinTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.audit = _load_audit()
+
+    def test_provider_free_git_diff_disables_external_helpers_and_still_evaluates(self):
+        import tempfile
+        spec = importlib.util.spec_from_file_location("_review_guard", _ROOT / "audits/self/coverage_isolation.py")
+        boundary = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(boundary)
+        with tempfile.TemporaryDirectory() as sandbox:
+            argv = boundary.git_command(["git", "diff", "--unified=0", "HEAD", "--", "harness/"], str(_ROOT), sandbox)
+            self.assertIn("--no-ext-diff", argv)
+            self.assertIn("--no-textconv", argv)
+            result = _git("diff", "--no-ext-diff", "--no-textconv", "--unified=0", "HEAD", "--", "harness/")
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_baseline_names_a_commit_present_in_this_repository(self):
         import json

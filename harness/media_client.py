@@ -56,6 +56,15 @@ class MediaUnavailable(Exception):
     """The media service could not be reached or refused the request."""
 
 
+def _job_path(job_id):
+    """An opaque job identifier is exactly one URL path segment."""
+    if (not isinstance(job_id, str) or not job_id.strip()
+            or all(char == "." for char in job_id)
+            or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in job_id)):
+        raise MediaUnavailable("invalid media job id")
+    return "/v1/jobs/" + urllib.parse.quote(job_id, safe="")
+
+
 class MediaAdapter:
     def __init__(self, base_url=None, token=None, timeout=60, opener=None):
         base, env_token = _load_endpoint()
@@ -115,18 +124,17 @@ class MediaAdapter:
 
     def wait(self, job_id, timeout=600.0, interval=2.0):
         import time
+        path = _job_path(job_id)
         deadline = time.time() + timeout
         while time.time() < deadline:
-            job = self._request("GET", "/v1/jobs/{}".format(
-                urllib.parse.quote(str(job_id), safe="")))
+            job = self._request("GET", path)
             if job.get("status") in ("succeeded", "failed", "refused"):
                 return self._envelope(job)
             time.sleep(interval)
         return {"status": "timeout", "job_id": job_id}
 
     def job(self, job_id):
-        return self._envelope(self._request(
-            "GET", "/v1/jobs/{}".format(urllib.parse.quote(str(job_id), safe=""))))
+        return self._envelope(self._request("GET", _job_path(job_id)))
 
     def jobs(self, project=None, limit=20):
         q = "/v1/jobs?limit={}".format(int(limit))

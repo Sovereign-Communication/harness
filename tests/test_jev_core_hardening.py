@@ -921,19 +921,46 @@ class BreakerDegradationTests(_Base):
         for i in range(BREAKER_FAILURE_THRESHOLD):
             policy.evaluate_route("g{}".format(i), ["a.py"])
         now[0] += 31.0
-        transport.default = echo(5)
-        transport.delay = {("requires_iteration", "route"): 0.2}
+        # Hold the admitted probe until ALL seven competitors have actually
+        # observed half-open. A fixed sleep lets late threads reach a breaker
+        # already closed by the successful probe (especially under tracing).
+        entered, release, competitors_done = (threading.Event() for _ in range(3))
+        start = threading.Barrier(9)
+        lock = threading.Lock()
+        results, errors = [], []
+
+        def held_probe(payload):
+            entered.set()
+            if not release.wait(10):
+                raise RuntimeError("probe rendezvous timed out")
+            return echo(5)(payload)
+        transport.default = held_probe
         base = len(transport.calls)
-        results = []
 
         def go(i):
-            results.append(policy.evaluate_route(
-                "conc {}".format(i), ["a.py"])[1]["fallback_reason"])
+            try:
+                start.wait(10)
+                reason = policy.evaluate_route("conc {}".format(i), ["a.py"])[1]["fallback_reason"]
+                with lock:
+                    results.append(reason)
+                    if results.count("circuit_open") == 7:
+                        competitors_done.set()
+            except Exception as exc:
+                with lock:
+                    errors.append(exc)
         threads = [threading.Thread(target=go, args=(i,)) for i in range(8)]
         for t in threads:
             t.start()
-        for t in threads:
-            t.join()
+        try:
+            start.wait(10)
+            self.assertTrue(entered.wait(10), "probe never entered transport")
+            self.assertTrue(competitors_done.wait(10), "competitors did not observe half-open")
+        finally:
+            release.set()
+            for t in threads:
+                t.join(10)
+        self.assertFalse(any(t.is_alive() for t in threads))
+        self.assertFalse(errors, errors)
         self.assertEqual(len(transport.calls) - base, 1)
         self.assertEqual(results.count("circuit_open"), 7)
         self.assertTrue(policy.available("route"))

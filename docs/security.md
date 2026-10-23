@@ -43,6 +43,38 @@ is unchanged and still no sandbox.
   program the server user can. Keep the UI token secret and the server on
   loopback. A server-side allowlist is an open hardening item.
 
+## Media and mission read boundaries (audit #184/#185, PR #194)
+
+Media job IDs are opaque strings encoded as one URL path segment, never
+pre-decoded. Empty/whitespace-only, dot-only and control-containing IDs are
+refused before lookup/poll dispatch. Invalid service-returned IDs do not trigger
+polling; the existing media CLI failure contract remains exit 4.
+
+HTTP mission list/detail reads are restricted to startup-owned allowed roots.
+`harness serve --mission-root <path>` and `harness desktop --mission-root <path>`
+are repeatable; default is resolved `./missions` pinned at startup. Library
+callers pass `make_server(..., mission_roots=[...])`. No HTTP request can expand
+this allowlist. Explicit query paths are resolved using their existing cwd
+semantics, and the exact validated path is passed to readers. Absolute paths
+inside an explicitly allowed root remain usable; traversal/sibling/outside
+roots are HTTP 400 before directory or pack reads.
+
+Containment uses the shared realpath/case-aware owner. Pack directories and
+all persisted files read for summaries are checked too: an escaping pack/file
+symlink is excluded from list pages and detail returns 400. No history or
+projection writes are added. Auth/Host guards remain in force. Root symlink
+identity changes are refused. These pathname checks do not defend against a
+malicious local process swapping paths between check and open; such an actor
+already has the server user's filesystem privileges.
+
+PR #194 also restricts MCP `mission_status`: its default `./missions` is pinned
+at server construction, and requests may select only that root or descendants.
+It uses the same exact-path resolver and pack containment owner as HTTP.
+Existing STATUS/INDEX refresh behavior remains, but every persisted read,
+projection destination and artifact-directory enumeration is checked before
+loading or refreshing. Generic MCP write roots do not widen mission-status
+read authority. CLI mission commands retain their local filesystem contract.
+
 ## Platform-specific protections (and their limits)
 
 | Control | Linux | macOS | Windows |
