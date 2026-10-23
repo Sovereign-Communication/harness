@@ -35,121 +35,6 @@ MAX_FILE_TRIAGE = 15
 MAX_CLAIM_SUPPORT_PACK = 8
 MAX_CONTEXT_PACK_CHARS = 1200
 
-SITE_REACHABILITY_SITE = "site_reachability"
-REQUEST_WORKFLOW_SITE = "request_workflow"
-ECONOMICS_ROUTE_SITE = "economics_route"
-
-
-def economics_route_question_pack() -> Dict[str, Dict[str, Any]]:
-    """Load or build the EV-3 advisory economics tier-routing question pack."""
-    pack_path = Path(__file__).resolve().parent.parent / "packs" / "economics_route.pack.json"
-    try:
-        raw = json.loads(pack_path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict) and isinstance(raw.get("questions"), dict):
-            return dict(raw["questions"])
-    except (OSError, ValueError):
-        pass
-    return {
-        "tier": {
-            "type": "choice",
-            "instructions": (
-                "Select the minimum capability tier (T0, T1, T2, T3) required "
-                "to complete this task reliably. Never name a provider or model brand."),
-            "criteria": {
-                "T0": "Trivial formatting, docstring, typo, or single-line comment change with zero behavioral impact.",
-                "T1": "Standard localized implementation, unit test addition, or routine single-file code edit.",
-                "T2": "Multi-file refactor, DAG planning, structured judgment, or complex debugging.",
-                "T3": "High-stakes concurrency, cryptographic invariant, distributed protocol, or security architecture.",
-            },
-        },
-        "reasoning_required": {
-            "type": "noul",
-            "instructions": "Does this task require explicit chain-of-thought reasoning to avoid structural failure?",
-            "criteria": {
-                "true": "Multi-step causal analysis, invariant verification, or architectural synthesis is needed.",
-                "false": "Direct structured emission or straightforward code application is sufficient.",
-            },
-        },
-        "context_band": {
-            "type": "choice",
-            "instructions": "Select the expected input context band required to ground this task.",
-            "criteria": {
-                "short": "The task is a compact single-snippet or localized edit (<4k input tokens).",
-                "medium": "The task inspects one or two modules of moderate size (4k-32k input tokens).",
-                "long": "The task spans multiple modules or large files (>32k input tokens).",
-            },
-        },
-    }
-
-
-def request_workflow_question_pack() -> Dict[str, Dict[str, Any]]:
-    """Select the smallest capability lane for a freeform request."""
-    return {
-        "workflow_tier": {
-            "type": "choice",
-            "instructions": (
-                "Choose the smallest safe workflow that fully satisfies the "
-                "request. Use `simple-action` only for one clear, read-only "
-                "check of current public-site availability that can be "
-                "answered with one bounded HTTPS probe and an evidence "
-                "judgment. Use `workspace-inspection` when the answer depends "
-                "on reading the selected local repository, and `web-research` "
-                "when it depends on fresh external sources. These choices do "
-                "not grant permission to mutate files or execute actions."),
-            "criteria": {
-                "answer": (
-                    "The request asks for an explanation or ordinary answer "
-                    "that does not require a fresh external action."),
-                "simple-action": (
-                    "The request asks whether one named public website is "
-                    "currently reachable or up; one bounded HTTPS probe is "
-                    "sufficient, with no page-content research or mutation."),
-                "workspace-inspection": (
-                    "The request asks for an answer, audit, or review grounded "
-                    "in files from the selected local workspace, with no file "
-                    "changes or execution."),
-                "web-research": (
-                    "The answer needs fresh information from external sources "
-                    "beyond a single public-site availability probe."),
-                "plan": (
-                    "The request requires code changes, multiple dependent "
-                    "actions, broad research, or other work that cannot be "
-                    "completed by one read-only HTTPS probe."),
-                "clarify": (
-                    "The request lacks an essential detail or does not provide "
-                    "enough information to select a safe useful workflow."),
-            },
-        },
-    }
-
-
-def site_reachability_question_pack() -> Dict[str, Dict[str, Any]]:
-    """One typed probability about whether the probed HTTPS host answered."""
-    return {
-        "http_response_received": {
-            "type": "noul",
-            "instructions": (
-                "Is the probe state's `http_status_received` field true? "
-                "Answer yes exactly when it is true: receipt of any valid "
-                "HTTP status proves the requested HTTPS endpoint responded. "
-                "Answer no when it is false. Do not infer page access or "
-                "application health from endpoint reachability."),
-            "criteria": {
-                "true": (
-                    "The probe state has `http_status_received=true` and a "
-                    "valid integer `http_status` from 100 through 599. Any "
-                    "status, including 403, proves the requested HTTPS "
-                    "endpoint answered this probe. A 403 means it responded "
-                    "but denied page access; it does not prove page health."),
-                "false": (
-                    "The probe state has `http_status_received=false` and no "
-                    "valid HTTP status because the request timed out or "
-                    "failed before receiving an HTTP response. This means "
-                    "unreachable on this probe only."),
-            },
-        },
-    }
-
 # HV-0: an operator-owned assessment pack.  Its JSON mirror lives under
 # packs/ and is checked against this runtime contract by tests.
 VISION_ASSESSMENT_SITE = "hourglass_vision_assessment"
@@ -521,11 +406,8 @@ def build_vision_assessment_state(repo_root: str) -> Dict[str, Any]:
     start = roadmap.find(start_marker)
     if start < 0:
         raise ValueError("canonical Hourglass realization section is missing")
-    next_h3 = roadmap.find("\n### ", start + len(start_marker))
-    next_h2 = roadmap.find("\n## ", start + len(start_marker))
-    candidates = [pos for pos in (next_h3, next_h2) if pos >= 0]
-    end = min(candidates) if candidates else len(roadmap)
-    roadmap_section = roadmap[start:end]
+    end = roadmap.find("\n## ", start + len(start_marker))
+    roadmap_section = roadmap[start:end if end >= 0 else len(roadmap)]
     sources = []
     for ref, content in (("docs/hourglass-vision.md", vision),
                          ("docs/jev-roadmap.md#hourglass-vision-realization", roadmap_section)):
@@ -543,7 +425,7 @@ def build_vision_assessment_state(repo_root: str) -> Dict[str, Any]:
             "contracts are implemented."),
         "current_status": {
             "canon_next_slice": "HV-0",
-            "hv_0_through_hv_6": "complete on origin/main (HV-0..HV-6 delivered)",
+            "hv_0_through_hv_6": "planned; implementation progress is stated in the roadmap source",
             "source_selection": "complete vision plus the canonical HV realization and progress section",
         },
         "sources": sources,
@@ -719,57 +601,6 @@ def completion_question_pack() -> Dict[str, Dict[str, Any]]:
 # separate: ``answer_sufficient`` is evidence of alignment, while the two
 # action nouls are advisory signals that code turns into a bounded transition.
 ANSWER_PACK_VERSION = "answer-sufficiency-v1"
-
-# A Choice reports which strategy best fits and how concentrated its
-# distribution is.  Its confidence is not calibrated correctness or
-# permission; callers inspect the selected vocabulary value only.
-SIMPLE_STRATEGY_PACK_VERSION = "simple-answer-strategy-v2"
-
-
-def simple_strategy_question_pack() -> Dict[str, Dict[str, Any]]:
-    """Choose the disposition for one stable, no-tool answer candidate."""
-    return {
-        "strategy": {
-            "type": "choice",
-            "instructions": (
-                "Choose the smallest capability lane that can answer this "
-                "request. Deterministic checks found no explicit file target, "
-                "current-data requirement, or write directive. A selected "
-                "lane is routing evidence only: it does not grant permission "
-                "to mutate files, execute actions, or bypass policy."
-            ),
-            "criteria": {
-                "direct_answer": (
-                    "Answer once from stable general knowledge or transform "
-                    "the supplied prose without tools or side effects."
-                ),
-                "web_research": (
-                    "The answer needs specific external facts or sources that "
-                    "are not reliably available from stable general knowledge."
-                ),
-                "workspace_inspection": (
-                    "The answer depends on reading files from the selected "
-                    "local repository, without changing or executing them."
-                ),
-                "simple_action": (
-                    "The request asks for one bounded read-only check of a "
-                    "named public website's current availability."
-                ),
-                "needs_tool": (
-                    "A trustworthy answer requires a tool, but none of the "
-                    "more specific tool lanes clearly fits."
-                ),
-                "plan": (
-                    "The request requires code changes or multiple dependent "
-                    "actions rather than a direct answer."
-                ),
-                "ambiguous": (
-                    "The request lacks enough information to answer directly; "
-                    "ask for clarification or defer."
-                ),
-            },
-        }
-    }
 
 
 def answer_question_pack() -> Dict[str, Dict[str, Any]]:

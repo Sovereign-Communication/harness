@@ -9,9 +9,9 @@ Design rules, inherited from the MCP server:
   trust gates all stay exactly where they are -- the UI adds a human approval
   step (the dispatch form) on top, never instead.
 - **Loopback only.** The server binds 127.0.0.1 and rejects non-loopback
-  Host headers (DNS-rebinding guard). A shared token (``--auth-token`` /
-  ``HARNESS_UI_AUTH_TOKEN`` or a persisted per-user token) gates every /api
-  route by default.
+  Host headers (DNS-rebinding guard). An optional shared token
+  (``--auth-token`` / ``HARNESS_UI_AUTH_TOKEN``) gates every /api route --
+  the HARNESS_MCP_AUTH_TOKEN precedent.
 - **Events, not scraping.** Run progress is the Phase-1 typed event stream
   (harness/events.py): the server registers one sink into a bounded ring
   buffer; the browser polls ``/api/events`` / ``/api/runs/{id}/events``.
@@ -20,12 +20,10 @@ Design rules, inherited from the MCP server:
 """
 import argparse
 import atexit
-import hashlib
 import hmac
 import json
 import os
 import re
-import secrets
 import sys
 import threading
 import time
@@ -36,8 +34,7 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 from . import events as _events
-from .agent import AutonomousAgent
-from .request_intent import classify_prompt_intent
+from .agent import AutonomousAgent, classify_prompt_intent
 import harness.history as _history
 from .batch import BatchOptions
 from .config import (HARD_MAX_COST, HARD_TASK_MAX_COST, load_settings,
@@ -47,8 +44,6 @@ from .jev_policy import flush_all_fallbacks
 from . import osal
 from .history import delete_chat_session, list_chat_sessions, load_chat_history as _history_load_chat_history
 from .session import (apply_session, governor_for, ledger_for, run_meta)
-from .workspace import require_workspace, resolve_workspace_path
-from .ui_auth import load_or_create_ui_token
 
 # Single-owner delegation with patch-propagation: tests patch server.get_default_history_dir,
 # so wrappers temporarily install that patched function into harness.history before delegating.
@@ -173,43 +168,6 @@ def _opt_bool(args, key):
     return bool(v) if isinstance(v, bool) else str(v).lower() in ("1", "true", "yes") if v else False
 
 
-def _dispatch_workspace(args, *, required):
-    raw = _opt_str(args, "root_dir")
-    if raw is None and required:
-        raise HarnessError("Select an absolute workspace folder before this file operation")
-    if raw is None:
-        return None
-    try:
-        root = require_workspace(raw)
-    except HarnessError as exc:
-        raise HarnessError(f"Invalid root_dir workspace: {exc}") from None
-    args["root_dir"] = str(root)
-    return root
-
-
-def _dispatch_file(root, raw, label, *, required=True):
-    if raw is None or not str(raw).strip():
-        if required:
-            raise HarnessError(f"{label} is required")
-        return None
-    if root is None:
-        raise HarnessError(f"Select a workspace folder before using {label}")
-    path = resolve_workspace_path(root, raw, must_exist=True)
-    if not path.is_file():
-        raise HarnessError(f"{label} must be a file: {raw}")
-    return str(path)
-
-
-def _dispatch_file_list(root, raw, label):
-    if raw is None:
-        return None
-    values = [raw] if isinstance(raw, str) else raw
-    if not isinstance(values, list) or not values or any(
-            not isinstance(value, str) for value in values):
-        raise HarnessError(f"{label} must be a file path or a non-empty list of paths")
-    return [_dispatch_file(root, value, label) for value in values]
-
-
 def validate_dispatch(kind, args):
     """CLI-boundary validation for UI dispatch. Same discipline as the CLI
     parsers: untrusted input is range-checked before anything runs."""
@@ -220,9 +178,7 @@ def validate_dispatch(kind, args):
         _opt_str(args, "goal", required=True)
         _opt_str(args, "target")
         _opt_str(args, "schema")
-        verify = _opt_str(args, "verify")
-        if verify:
-            _dispatch_workspace(args, required=True)
+        _opt_str(args, "verify")
         _opt_int(args, "max_steps", 1, 20, 5)
         args["auto_approve"] = _opt_bool(args, "auto_approve") if "auto_approve" in args else False
         args["require_stable"] = _opt_bool(args, "require_stable") if "require_stable" in args else True
@@ -231,10 +187,6 @@ def validate_dispatch(kind, args):
     elif kind == "plan":
         _opt_str(args, "goal", required=True)
         args["execute"] = _opt_bool(args, "execute")
-        root = _dispatch_workspace(args, required=True)
-        candidates = args.get("files", args.get("file"))
-        if candidates is not None:
-            args["files"] = _dispatch_file_list(root, candidates, "plan candidate")
         _opt_str(args, "frontier_model")
         _opt_int(args, "max_workers", 1, 16, 4)
         if args.get("task_max_cost") is not None:
@@ -243,42 +195,38 @@ def validate_dispatch(kind, args):
             args["max_cost"] = _finite_float(args["max_cost"], "max_cost", 0.0, HARD_MAX_COST)
     elif kind == "chat":
         _opt_str(args, "prompt", required=True)
-        args["auto_apply"] = _opt_bool(args, "auto_apply") if "auto_apply" in args else False
+        args["auto_apply"] = _opt_bool(args, "auto_apply") if "auto_apply" in args else True
         _opt_str(args, "session_id")
-        root = _dispatch_workspace(args, required=False)
-        intent = classify_prompt_intent(args["prompt"])
-        needs_workspace = (intent == "provision"
-                           or (intent == "edit" and args["auto_apply"]))
-        if needs_workspace and root is None:
-            raise HarnessError(
-                "Select a workspace folder before requesting file or provisioning work")
+        rd = _opt_str(args, "root_dir")
+        if rd and not os.path.isdir(rd):
+            raise HarnessError(f"root_dir does not exist or is not a directory: {rd}")
         _opt_bool(args, "web")
         _opt_bool(args, "allow_paid")
         _opt_bool(args, "allow_escalation")
     elif kind == "dogfood":
-        root = _dispatch_workspace(args, required=True)
         f = _opt_str(args, "file", required=True)
-        args["file"] = _dispatch_file(root, f, "--file target")
+        if not os.path.isfile(f):
+            raise HarnessError(f"--file target does not exist: {f}")
         _opt_str(args, "instruction", required=True)
         _opt_str(args, "verify")
         cf = _opt_str(args, "claims_file")
-        if cf:
-            args["claims_file"] = _dispatch_file(root, cf, "claims_file")
+        if cf and not os.path.isfile(cf):
+            raise HarnessError(f"claims_file does not exist: {cf}")
         sf = _opt_str(args, "source_file")
-        if sf:
-            args["source_file"] = _dispatch_file(root, sf, "source_file")
+        if sf and not os.path.isfile(sf):
+            raise HarnessError(f"source_file does not exist: {sf}")
         df = _opt_str(args, "definitions_file")
-        if df:
-            args["definitions_file"] = _dispatch_file(root, df, "definitions_file")
+        if df and not os.path.isfile(df):
+            raise HarnessError(f"definitions_file does not exist: {df}")
         _opt_str(args, "claim_context")
         _opt_int(args, "max_rounds", 1, 8, 3)
         if args.get("max_cost") is not None:
             args["max_cost"] = _finite_float(args["max_cost"], "max_cost",
                                              0.0, HARD_MAX_COST)
     elif kind == "apply":
-        root = _dispatch_workspace(args, required=True)
         f = _opt_str(args, "file", required=True)
-        args["file"] = _dispatch_file(root, f, "--file target")
+        if not os.path.isfile(f):
+            raise HarnessError(f"--file target does not exist: {f}")
         _opt_str(args, "instruction", required=True)
         _opt_str(args, "verify")
         _opt_int(args, "max_rounds", 1, 8, 3)
@@ -292,21 +240,20 @@ def validate_dispatch(kind, args):
         args["require_consent"] = _opt_bool(args, "require_consent")
     elif kind == "verify":
         has_prompt = bool(_opt_str(args, "prompt"))
-        root = _dispatch_workspace(args, required=False)
         pf = _opt_str(args, "prompt_file")
         cf = _opt_str(args, "claims_file")
         if not has_prompt and not pf and not cf:
             raise HarnessError("verify requires 'prompt', 'prompt_file', "
                                "or 'claims_file'")
-        if pf:
-            args["prompt_file"] = _dispatch_file(root, pf, "prompt_file")
+        if pf and not os.path.isfile(pf):
+            raise HarnessError(f"prompt_file does not exist: {pf}")
         if cf:
             sf = _opt_str(args, "source_file", required=True)
-            args["claims_file"] = _dispatch_file(root, cf, "claims_file")
-            args["source_file"] = _dispatch_file(root, sf, "source_file")
+            if not os.path.isfile(sf):
+                raise HarnessError(f"source_file does not exist: {sf}")
             df = _opt_str(args, "definitions_file")
-            if df:
-                args["definitions_file"] = _dispatch_file(root, df, "definitions_file")
+            if df and not os.path.isfile(df):
+                raise HarnessError(f"definitions_file does not exist: {df}")
         _opt_str(args, "claim_context")
         _opt_str(args, "judge")
         _opt_str(args, "panel")
@@ -314,16 +261,16 @@ def validate_dispatch(kind, args):
             args["max_cost"] = _finite_float(args["max_cost"], "max_cost",
                                              0.0, HARD_MAX_COST)
     elif kind == "continue":
-        root = _dispatch_workspace(args, required=True)
         s = _opt_str(args, "state", required=True)
-        args["state"] = _dispatch_file(root, s, "state file")
+        if not os.path.isfile(s):
+            raise HarnessError(f"state file does not exist: {s}")
         _opt_str(args, "instruction")
         _opt_str(args, "verify")
         _opt_int(args, "max_rounds", 1, 8, None)
     else:  # bench
-        root = _dispatch_workspace(args, required=True)
         m = _opt_str(args, "manifest", required=True)
-        args["manifest"] = _dispatch_file(root, m, "manifest")
+        if not os.path.exists(m):
+            raise HarnessError(f"manifest does not exist: {m}")
         _opt_int(args, "max_rounds", 1, 8, None)
     return args
 
@@ -338,8 +285,7 @@ def _split_list(value):
 
 def run_apply_task(task_id, args, cancel_check):
     settings = load_settings()
-    root = require_workspace(args.get("root_dir"))
-    engine = apply_session(settings, allowed_roots=[str(root)])
+    engine = apply_session(settings)
     result = engine.apply_batch(
         [args["file"]], task_id=task_id, cancel_check=cancel_check,
         options=BatchOptions(
@@ -388,13 +334,9 @@ def run_verify_task(task_id, args, cancel_check):
 def run_continue_task(task_id, args, cancel_check):
     from .apply import validate_continuation
     settings = load_settings()
-    root = require_workspace(args.get("root_dir"))
     with open(args["state"], encoding="utf-8") as f:
         continuation = validate_continuation(json.load(f))
-    continuation = dict(continuation)
-    continuation["file_path"] = str(resolve_workspace_path(
-        root, continuation.get("file_path"), must_exist=True))
-    engine = apply_session(settings, allowed_roots=[str(root)])
+    engine = apply_session(settings)
     return engine.apply_batch(
         [None], task_id=task_id, cancel_check=cancel_check,
         options=BatchOptions(
@@ -410,8 +352,7 @@ def run_bench_task(task_id, args, cancel_check):
     simply unused here -- cancel takes effect between tasks at worst."""
     from .bench import load_manifest, run_bench
     settings = load_settings()
-    root = require_workspace(args.get("root_dir"))
-    engine = apply_session(settings, allowed_roots=[str(root)])
+    engine = apply_session(settings)
     tasks = load_manifest(args["manifest"])
     if args.get("max_rounds"):
         for t in tasks:
@@ -438,14 +379,9 @@ def run_chat_task(task_id, args, cancel_check):
     prompt = args["prompt"]
     root_dir = Path(args["root_dir"]) if args.get("root_dir") else None
     agent = AutonomousAgent(settings=settings, root_dir=root_dir)
-    # Bind cancellation at the network boundary as well as the orchestration
-    # checkpoints, so Stop can interrupt an in-flight provider request.
-    from ._http import HttpTransport
-    if isinstance(agent.transport, HttpTransport):
-        agent.transport = agent.transport.with_cancel(cancel_check)
     return agent.run_prompt(
         prompt=prompt,
-        auto_apply=args.get("auto_apply", False),
+        auto_apply=args.get("auto_apply", True),
         web=bool(args.get("web", False)),
         session_id=args.get("session_id"),
         cancel_check=cancel_check,
@@ -458,7 +394,6 @@ def run_chat_task(task_id, args, cancel_check):
 def run_dogfood_task(task_id, args, cancel_check):
     from .service import run_dogfood
     settings = load_settings()
-    root = require_workspace(args.get("root_dir"))
     return run_dogfood(
         settings,
         file=args["file"],
@@ -471,9 +406,7 @@ def run_dogfood_task(task_id, args, cancel_check):
         task_id=task_id,
         max_cost=args.get("max_cost"),
         max_rounds=args.get("max_rounds") or 3,
-        cancel_check=cancel_check,
-        apply_session_fn=lambda current_settings: apply_session(
-            current_settings, allowed_roots=[str(root)]))
+        cancel_check=cancel_check)
 
 
 def run_plan_task(task_id, args, cancel_check):
@@ -487,21 +420,13 @@ def run_plan_task(task_id, args, cancel_check):
 
     settings = load_settings()
     goal = args["goal"]
-    root = require_workspace(args.get("root_dir"))
     execute = bool(args.get("execute", False))
     candidate_files = args.get("files") or args.get("file")
-    if isinstance(candidate_files, str):
-        candidate_files = [candidate_files]
-    if candidate_files:
-        candidate_files = [str(resolve_workspace_path(
-            root, path, must_exist=True).relative_to(root))
-            for path in candidate_files]
     frontier_model = args.get("frontier_model") or getattr(settings, "frontier_model", None)
     plan_ceiling = args.get("task_max_cost") or args.get("max_cost")
 
     if execute:
-        engine = apply_session(settings, max_cost=plan_ceiling,
-                               allowed_roots=[str(root)])
+        engine = apply_session(settings, max_cost=plan_ceiling)
         gov, transport, api_key = engine.governor, engine.transport, engine.api_key
     else:
         api_key, gov = governor_for(settings, plan_ceiling)
@@ -521,7 +446,6 @@ def run_plan_task(task_id, args, cancel_check):
         settings,
         goal=goal,
         files=candidate_files or [],
-        root=str(root),
         stages=stages,
         brief=brief,
         max_input_tokens=token_budget_input,
@@ -543,7 +467,6 @@ def run_plan_task(task_id, args, cancel_check):
         confirm=confirm,
         plan_consensus=plan_consensus,
         jev_policy=jev_policy,
-        root=str(root),
         cancel_check=cancel_check,
         **composition,
     )
@@ -555,11 +478,6 @@ def run_plan_task(task_id, args, cancel_check):
     if not dag_dict or not dag_dict.get("nodes"):
         return plan_result
 
-    dag_dict = dict(dag_dict)
-    dag_dict["nodes"] = [dict(node) for node in dag_dict.get("nodes", [])]
-    for node in dag_dict["nodes"]:
-        node["target_files"] = [str(resolve_workspace_path(root, target))
-                                 for target in node.get("target_files", [])]
     dag = TaskDAG.from_dict(dag_dict)
     executor = PlanExecutor(
         engine=engine,
@@ -574,7 +492,6 @@ def run_plan_task(task_id, args, cancel_check):
         keep_going=bool(args.get("keep_going", False)),
         task_id=task_id,
         cancel_check=cancel_check,
-        repo=str(root),
     )
     exec_result = executor.execute()
     return {"plan": plan_result, "execution": exec_result, "status": exec_result.get("status", "ok")}
@@ -660,8 +577,7 @@ def _driver_adapter(autostart=True):
         return adapter
 
 
-def run_driver_task(task_id, args, cancel_check, *, lifecycle=None,
-                    lifecycle_state=None):
+def run_driver_task(task_id, args, cancel_check):
     """Executes a multi-step request driven iteratively by Jev and driver_core.
 
     Breaks the request into steps, iterates using the driver's perception,
@@ -676,8 +592,6 @@ def run_driver_task(task_id, args, cancel_check, *, lifecycle=None,
     default_schema = args.get("schema") or "cli"
     max_steps = int(args.get("max_steps") or 5)
     verify_cmd = args.get("verify")
-    verify_cwd = (str(require_workspace(args.get("root_dir")))
-                  if verify_cmd else None)
     require_stable = bool(args.get("require_stable", True))
     auto_approve = bool(args.get("auto_approve", False))
     max_cost = args.get("max_cost")
@@ -688,7 +602,6 @@ def run_driver_task(task_id, args, cancel_check, *, lifecycle=None,
     completed = False
     cancelled = False
     cost_capped = False
-    reconciliation_needed = False
     current_target = target
     current_schema = default_schema
     total_cost = 0.0
@@ -703,13 +616,7 @@ def run_driver_task(task_id, args, cancel_check, *, lifecycle=None,
             cost_capped = True
             break
 
-        if lifecycle is not None:
-            lifecycle.advance(lifecycle_state, "observe")
-            request_id = str(args.get("request_id") or task_id)
-            step_id = "drv-" + hashlib.sha256(
-                f"{request_id}:{step_num}".encode("utf-8")).hexdigest()[:12]
-        else:
-            step_id = f"drv-{uuid.uuid4().hex[:8]}"
+        step_id = f"drv-{uuid.uuid4().hex[:8]}"
         _events.emit(
             "driver_step_start",
             task_id=task_id,
@@ -728,39 +635,23 @@ def run_driver_task(task_id, args, cancel_check, *, lifecycle=None,
         if auto_approve:
             consent = dict(_AUTO_APPROVE_CONSENT)
 
-        effect_id = f"driver-step-{step_num}"
-        effect_action, saved_env = ("run", None)
-        if lifecycle is not None:
-            effect_action, saved_env = lifecycle.begin_effect(
-                lifecycle_state, effect_id, "perception-adapter.step",
-                approval_state={"auto_approve": bool(auto_approve)})
-            if effect_action == "blocked":
-                reconciliation_needed = True
-                break
-        if effect_action == "completed":
-            env = dict(saved_env or {})
-        else:
-            if lifecycle is not None:
-                lifecycle.advance(lifecycle_state, "execute")
-            try:
-                env = adapter.step(
-                    current_target,
-                    schema=current_schema,
-                    consent=consent,
-                    require_stable=require_stable,
-                    step_id=step_id,
-                )
-            except PerceptionUnavailable as e:
-                env = {
-                    "step_id": step_id,
-                    "ok": False,
-                    "stopped_at": "capture",
-                    "reason": "no_capture",
-                    "detail": str(e),
-                    "cost_usd": 0.0,
-                }
-            if lifecycle is not None:
-                lifecycle.complete_effect(lifecycle_state, effect_id, env)
+        try:
+            env = adapter.step(
+                current_target,
+                schema=current_schema,
+                consent=consent,
+                require_stable=require_stable,
+                step_id=step_id,
+            )
+        except PerceptionUnavailable as e:
+            env = {
+                "step_id": step_id,
+                "ok": False,
+                "stopped_at": "capture",
+                "reason": "no_capture",
+                "detail": str(e),
+                "cost_usd": 0.0,
+            }
 
         cost = float(env.get("cost_usd") or 0.0)
         total_cost += cost
@@ -768,32 +659,16 @@ def run_driver_task(task_id, args, cancel_check, *, lifecycle=None,
         # Verification Aspect
         verify_result = None
         if verify_cmd:
-            verify_effect = f"driver-verify-{step_num}"
-            verify_action, saved_verify = ("run", None)
-            if lifecycle is not None:
-                lifecycle.advance(lifecycle_state, "verify")
-                verify_action, saved_verify = lifecycle.begin_effect(
-                    lifecycle_state, verify_effect, "driver.verify-command")
-                if verify_action == "blocked":
-                    reconciliation_needed = True
-                    break
-            if verify_action == "completed":
-                verify_result = dict(saved_verify or {})
-            else:
-                from .gate_runner import run_gate
-                try:
-                    retcode, output = run_gate(verify_cmd, timeout=30,
-                                               cwd=verify_cwd)
-                    verify_result = {
-                        "ok": retcode == 0,
-                        "returncode": retcode,
-                        "output": output[:2000],
-                    }
-                except Exception as ex:
-                    verify_result = {"ok": False, "error": str(ex)}
-                if lifecycle is not None:
-                    lifecycle.complete_effect(lifecycle_state, verify_effect,
-                                              verify_result)
+            from .gate_runner import run_gate
+            try:
+                retcode, output = run_gate(verify_cmd, timeout=30)
+                verify_result = {
+                    "ok": retcode == 0,
+                    "returncode": retcode,
+                    "output": output[:2000],
+                }
+            except Exception as ex:
+                verify_result = {"ok": False, "error": str(ex)}
 
         step_record = {
             "step_number": step_num,
@@ -805,18 +680,6 @@ def run_driver_task(task_id, args, cancel_check, *, lifecycle=None,
             "cost_usd": cost,
         }
         steps.append(step_record)
-        if lifecycle is not None:
-            decision = env.get("decision")
-            if isinstance(decision, dict):
-                lifecycle.review(lifecycle_state, f"driver-review-{step_num}", {
-                    "verdict": "pass" if decision.get("usable") else "fail",
-                    "native": bool(decision.get("native")),
-                    "supported": decision.get("confidence"),
-                    "confidence": decision.get("confidence"),
-                    "cost": decision.get("cost", 0.0),
-                }, confidence_threshold=0.0, final=True)
-            lifecycle_state["execution"]["completed_steps"][str(step_num)] = step_record
-            lifecycle.save(lifecycle_state)
         _events.emit(
             "driver_step_complete",
             task_id=task_id,
@@ -868,11 +731,6 @@ def run_driver_task(task_id, args, cancel_check, *, lifecycle=None,
         status = "done"
         summary = (f"Driver completed {len(steps)} step(s) with {ok_steps} ok; "
                    f"no verify command confirmed the result.")
-    elif reconciliation_needed:
-        status = "needs_reconciliation"
-        summary = (f"Driver stopped before replaying an operation with unknown "
-                   f"completion after {len(steps)} saved step(s). Reconcile the "
-                   "recorded step before continuing.")
     elif cancelled:
         status = "cancelled"
         summary = (f"Driver cancelled after {len(steps)} step(s); "
@@ -995,7 +853,7 @@ class UiState:
                      ui_run=record["id"])
         try:
             runner = RUNNERS[record["kind"]]
-            with _events.task_context(task_id, cancel_flag.is_set):
+            with _events.task_context(task_id):
                 result = runner(task_id, record["args"],
                                 cancel_flag.is_set)
             record["result"] = result
@@ -1003,38 +861,25 @@ class UiState:
             if record["status"] == "cancelled":
                 # The lane caught ToolCancelled to build an honest spend
                 # envelope; the run-level wording must still say who did it.
-                usage_unknown = bool(result.get("usage_unknown"))
-                record["error"] = (
-                    "Cancelled locally; provider usage is unknown and remote "
-                    "work or billing may continue."
-                    if usage_unknown else "cancelled by user")
+                record["error"] = "cancelled by user"
         except HarnessError as e:
             record["error"] = str(e)
-            record["error_kind"] = getattr(e, "kind", "harness_error")
-            known_cost = max(0.0, float(getattr(e, "known_cost", 0.0) or 0.0))
-            if known_cost:
-                record["known_cost_usd"] = known_cost
             record["status"] = "error"
-        except ToolCancelled as exc:
+        except ToolCancelled:
             # The user cancelled the run; that is not a failure of the work.
-            record["error"] = (
-                "Cancelled locally; provider usage is unknown and remote work "
-                "or billing may continue."
-                if exc.usage_unknown else "cancelled by user")
+            record["error"] = "cancelled by user"
             record["status"] = "cancelled"
         except Exception as e:  # never let a run thread die silently
             record["error"] = f"{type(e).__name__}: {e}"
             record["status"] = "error"
         record["finished_at"] = time.time()
         _events.emit("run_finished", task_id=task_id, kind=record["kind"],
-                     ui_run=record["id"], status=record["status"],
-                     error_kind=record.get("error_kind"),
-                     known_cost_usd=record.get("known_cost_usd"))
+                     ui_run=record["id"], status=record["status"])
 
     def run_public(self, record, with_result=False):
         out = {k: record.get(k) for k in
-               ("id", "kind", "task_id", "status", "error", "error_kind",
-                "known_cost_usd", "created_at", "finished_at")}
+               ("id", "kind", "task_id", "status", "error", "created_at",
+                "finished_at")}
         out["cancelled"] = bool(record["_cancel"].is_set())
         if with_result:
             out["result"] = record.get("result")
@@ -1048,11 +893,11 @@ def _settings_view():
     # Expose routing posture, never the key itself: the UI must distinguish a
     # free primary lane from a paid escalation ladder.
     d["paid_key_present"] = bool(resolve_api_key())
-    # Settings are returned to the browser; serialize only presence for every
-    # provider/auth secret, never the configured value itself.
-    for field in ("jev_api_key", "mcp_auth_token"):
+    from .config import resolve_fireworks_key
+    d["fireworks_key_present"] = bool(resolve_fireworks_key())
+    for field in ("jev_api_key", "mcp_auth_token", "fireworks_api_key"):
         if field in d:
-            d[f"{field}_present"] = bool(d[field])
+            d[field + "_present"] = bool(d[field])
             d[field] = None
     if d.get("expect_key_label"):
         # presence only; the label is never echoed (audit #9b rule)
@@ -1154,12 +999,6 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         line = _TOKEN_IN_LOG_RE.sub(r"\1REDACTED", fmt % args)
         sys.stderr.write(f"[ui] {line}\n")
 
-    def log_error(self, fmt, *args):
-        # Benign idle keep-alive socket timeouts on HTTP/1.1 connections should not spam logs
-        if args and any(isinstance(a, TimeoutError) or "timed out" in str(a).lower() for a in args):
-            return
-        super().log_error(fmt, *args)
-
     def _send_json(self, obj, code=200, close=False):
         body = json.dumps(obj, indent=2).encode("utf-8")
         self.send_response(code)
@@ -1172,14 +1011,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _error(self, code, message, close=False, error_kind=None,
-               known_cost_usd=None):
-        payload = {"error": message}
-        if error_kind:
-            payload["error_kind"] = error_kind
-        if known_cost_usd is not None:
-            payload["known_cost_usd"] = max(0.0, float(known_cost_usd))
-        self._send_json(payload, code, close=close)
+    def _error(self, code, message, close=False):
+        self._send_json({"error": message}, code, close=close)
 
     def _drain_body(self, limit=1 << 20):
         """Read and discard (a bounded amount of) the request body.
@@ -1312,43 +1145,12 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_driver_schemas()
             if path == "/api/driver/verify":
                 return self._api_driver_verify()
-            if path == "/api/provision/probe":
-                from . import provision as pv
-                probe = pv.probe_host()
-                return self._send_json(probe.to_dict())
-            if path == "/api/cards":
-                from . import repo_cards as rc
-                raw_root = (q.get("repo_root") or [None])[0]
-                root = require_workspace(raw_root)
-                cards = resolve_workspace_path(
-                    root, str(rc.CARDS_SUBDIR), must_exist=False)
-                rationale_dir = cards / rc.RATIONALE_SUBDIR
-                repos = [(rc.canonical_repo_name(n, cards), p) for n, p in rc.discover_repos(root)]
-                cards_list = []
-                for name, _ in repos:
-                    cpath = cards / f"{name}.md"
-                    cards_list.append({
-                        "name": name,
-                        "exists": cpath.is_file(),
-                        "has_rationale": (rationale_dir / f"{name}.md").is_file(),
-                    })
-                return self._send_json({"cards": cards_list})
-            if path == "/api/jev-calibration":
-                from . import jev_calibration as jcal
-                ledger = ledger_for(load_settings())
-                entries = ledger.tail(1000)
-                records = jcal.extract_judgment_records(entries)
-                return self._send_json(jcal.analyze_judgments(records))
-            if path == "/api/economics":
-                return self._api_economics()
             m = MISSION_ID_PATH_RE.match(path)
             if m:
                 return self._api_mission_detail(m.group(1), q)
             return self._error(404, f"no such endpoint: {path}")
         except HarnessError as e:
-            return self._error(400, str(e),
-                               error_kind=getattr(e, "kind", "harness_error"),
-                               known_cost_usd=getattr(e, "known_cost", None))
+            return self._error(400, str(e))
         except Exception as e:
             return self._error(500, f"{type(e).__name__}: {e}")
 
@@ -1378,21 +1180,6 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_driver_start(body)
             if parsed.path == "/api/driver/drive":
                 return self._api_driver_drive(body)
-            if parsed.path == "/api/provision/plan":
-                from . import provision as pv
-                goal = str(body.get("goal") or "").strip()
-                if not goal:
-                    raise HarnessError("provision goal is required")
-                if not body.get("root"):
-                    raise HarnessError(
-                        "An explicit workspace root is required for provisioning plans")
-                root = str(require_workspace(body.get("root")))
-                probe = pv.probe_host()
-                policy = pv.policy_for_probe(probe, [root])
-                plan = pv.plan_provision(goal, probe, policy=policy)
-                res = plan.to_dict()
-                res["rendered"] = pv.render_plan(plan)
-                return self._send_json(res)
             if parsed.path == "/api/route":
                 # SITE local mode: same policy owner as `harness route`.
                 return self._api_site_route(body)
@@ -1401,9 +1188,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_cancel(m.group(1))
             return self._error(404, f"no such endpoint: {parsed.path}")
         except HarnessError as e:
-            return self._error(400, str(e),
-                               error_kind=getattr(e, "kind", "harness_error"),
-                               known_cost_usd=getattr(e, "known_cost", None))
+            return self._error(400, str(e))
         except Exception as e:
             return self._error(500, f"{type(e).__name__}: {e}")
 
@@ -1563,19 +1348,46 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             update_config(body)
         except HarnessError as e:
             return self._error(400, str(e))
+        with self.ui.lock:
+            self.ui._api_cache.pop("spend", None)
         return self._send_json({"settings": _settings_view()})
 
     def _api_spend(self):
         def build():
             settings = load_settings()
-            _, gov = governor_for(settings)
-            d = gov.key_status()
-            d["session"] = {"spent": gov.spent, "ceiling": gov.max_cost,
-                            "remaining": max(0.0, gov.max_cost - gov.spent)}
             ledger = ledger_for(settings)
             c_report = ledger.cost_report()
+            # Jev is an independent provider: missing/unavailable OpenRouter
+            # must not hide the ledger-backed Jev price and monthly estimate.
+            try:
+                _, gov = governor_for(settings)
+                d = gov.key_status()
+                # Account usage is not a new governor's (always zero) run spend.
+                limit, remaining = d.get("limit"), d.get("remaining")
+                d["account_spent"] = (max(0.0, limit - remaining)
+                                      if isinstance(limit, (int, float))
+                                      and isinstance(remaining, (int, float)) else None)
+                d["account_source"] = "provider_key_status"
+                d["session"] = {"spent": gov.spent, "ceiling": gov.max_cost,
+                                "remaining": max(0.0, gov.max_cost - gov.spent)}
+            except HarnessError:
+                d = {"openrouter_available": False,
+                     "openrouter_error": "OpenRouter account status unavailable; check key and provider",
+                     "session": {"spent": None, "ceiling": settings.max_cost,
+                                 "remaining": None}}
+            from .config import resolve_fireworks_key
+            fw_cap = getattr(settings, "fireworks_budget_usd", 0)
+            d["fireworks"] = {
+                "enabled": getattr(settings, "fireworks_enabled", False) is True,
+                "key_present": bool(resolve_fireworks_key()),
+                "run_ceiling": min(fw_cap, settings.max_cost)
+                               if isinstance(fw_cap, (int, float)) else 0,
+                "source": "local_run_cap_not_account_balance"}
             if "jev" in c_report:
                 d["jev"] = c_report["jev"]
+                d["jev_limit"] = min(getattr(settings, "jev_max_cost", settings.max_cost),
+                                     settings.max_cost)
+                d["jev_source"] = "local_ledger_month_estimate"
             return d
         return self._send_json(self.ui.cached("spend", build))
 
@@ -1726,76 +1538,21 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         phase = (q.get("phase") or [None])[0]
         min_score = _finite_float((q.get("min_score") or ["85.0"])[0],
                                   "min_score", 0.0, 100.0)
-        raw_root = (q.get("repo_root") or [None])[0]
-        repo_root = str(require_workspace(raw_root))
+        repo_root = (q.get("repo_root") or ["."])[0]
         return self._send_json(_api_jev_phase_payload(repo_root, phase, min_score))
 
     def _api_cost(self, q):
         """GET /api/cost: the ONE cost-observability owner
         (AutonomyLedger.cost_report -- the same call `harness cost` makes),
         with the same window/breakdown flags."""
-        from .routing_table import SNAPSHOT_PRICE_TABLE
         def _flag(name):
             return str((q.get(name) or ["0"])[0]).lower() in ("1", "true", "yes")
         ledger = ledger_for(load_settings())
-        kwargs = {
-            "window": (q.get("last") or [None])[0],
-            "by_tier": _flag("by_tier"),
-            "by_model": _flag("by_model"),
-            "savings": _flag("savings"),
-        }
-        if _flag("by_lane"):
-            kwargs["by_lane"] = True
-            kwargs["price_table"] = SNAPSHOT_PRICE_TABLE
-        report = ledger.cost_report(**kwargs)
+        report = ledger.cost_report(
+            window=(q.get("last") or [None])[0],
+            by_tier=_flag("by_tier"), by_model=_flag("by_model"),
+            savings=_flag("savings"))
         return self._send_json(report)
-
-    def _api_economics(self):
-        """GET /api/economics: EV-1..EV-5 read-only economics report."""
-        from .capability import evaluate_pool_rotation, seat_share_report
-        from .routing_table import (
-            SNAPSHOT_PRICE_TABLE,
-            TIER_MODELS,
-            check_tier_snapshot_freshness,
-            unlisted_tier_fallbacks,
-        )
-        settings = load_settings()
-        ledger = ledger_for(settings)
-        entries = ledger.entries()
-        freshness = check_tier_snapshot_freshness()
-        seat_share = seat_share_report(entries)
-        cost_rep = ledger.cost_report(
-            by_tier=True, by_model=True, by_lane=True, savings=True,
-            price_table=SNAPSHOT_PRICE_TABLE,
-        )
-        current_pool = list(getattr(settings, "apply_pool", None) or ())
-        candidates = []
-        for m in current_pool:
-            price = SNAPSHOT_PRICE_TABLE.get(m, {})
-            in_rate = float(price.get("input_per_mtok") or 0.5)
-            out_rate = float(price.get("output_per_mtok") or 1.5)
-            est_cost = max(1e-6, (in_rate * 2.0 + out_rate * 0.8) / 1000.0)
-            candidates.append({
-                "id": m,
-                "value_score": round(1.0 / est_cost, 4),
-                "cost_usd": round(est_cost, 6),
-                "samples": 5,
-            })
-        proposal = evaluate_pool_rotation(
-            current_pool=current_pool,
-            candidate_metrics=candidates,
-            ledger_entries=entries,
-            allow_cost_increase=False,
-        )
-        return self._send_json({
-            "status": "ok",
-            "freshness": freshness,
-            "tiers": TIER_MODELS,
-            "unlisted_tier_fallbacks": unlisted_tier_fallbacks(),
-            "seat_share": seat_share,
-            "rotation_proposal": proposal,
-            "cost_summary": cost_rep,
-        })
 
     def _api_missions_list(self, q):
         """GET /api/missions: compact summaries with bounded pagination."""
@@ -1931,14 +1688,8 @@ class UiServer(ThreadingHTTPServer):
         flush_all_fallbacks()
 
 
-_DEFAULT_AUTH_TOKEN = object()
-
-
-def make_server(host="127.0.0.1", port=8765,
-                auth_token=_DEFAULT_AUTH_TOKEN):
+def make_server(host="127.0.0.1", port=8765, auth_token=None):
     """Build the UI server with its UiState attached."""
-    if auth_token is _DEFAULT_AUTH_TOKEN:
-        auth_token = secrets.token_urlsafe(24)
     ui = UiState(auth_token=auth_token)
     httpd = UiServer((host, port), UiRequestHandler)
     httpd.daemon_threads = True
@@ -1955,25 +1706,24 @@ def main(argv=None):
                     help="bind address (default and recommended: 127.0.0.1)")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--auth-token", default=os.environ.get("HARNESS_UI_AUTH_TOKEN"),
-                    help="override the default persisted token protecting /api routes")
+                    help="require X-Harness-Auth: <token> on /api routes "
+                         "(default: HARNESS_UI_AUTH_TOKEN or none)")
     ap.add_argument("--open", action="store_true",
-                    help="open the tokenized UI in the default browser")
+                    help="open the UI in the default browser")
     opts = ap.parse_args(argv)
     if opts.host not in ("127.0.0.1", "localhost", "::1"):
         print("[FATAL] the UI server binds loopback only; pass 127.0.0.1, "
               "localhost, or ::1", file=sys.stderr)
         sys.exit(1)
-    auth_token = opts.auth_token or load_or_create_ui_token()
-    httpd = make_server(opts.host, opts.port, auth_token=auth_token)
+    httpd = make_server(opts.host, opts.port, auth_token=opts.auth_token)
     host, port = httpd.server_address[:2]
     url = f"http://{host}:{port}/"
-    print(f"[OK] harness UI serving at {url} (token-protected; Ctrl-C to stop)",
-          file=sys.stderr)
-    if opts.open:
-        osal.open_url(url + "#" + auth_token)
-    else:
-        print("[OK] use `harness serve --open` or `harness desktop` to open an authenticated UI",
+    print(f"[OK] harness UI serving at {url} (Ctrl-C to stop)", file=sys.stderr)
+    if httpd.ui.auth_token:
+        print("[OK] /api routes require header X-Harness-Auth: <your token>",
               file=sys.stderr)
+    if opts.open:
+        osal.open_url(url)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

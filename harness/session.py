@@ -27,31 +27,12 @@ def governor_for(settings, max_cost_override=None):
     """Resolve the API key and verify it against OpenRouter, returning
     ``(api_key, governor)``. The key is threaded to every engine-routed
     chat call by engine_for -- regression-pinned (the round-1 401 failure)."""
-    if getattr(settings, "use_fireworks", False):
-        fw_key = getattr(settings, "fireworks_key", "") or resolve_fireworks_key()
-        if not fw_key:
-            raise HarnessError(
-                "no Fireworks API key found (FIREWORKS_API_KEY env or "
-            "$HARNESS_CONFIG_DIR/fireworks.env (default: "
-            "~/.config/harness/fireworks.env).")
-        if max_cost_override is None:
-            max_cost = settings.max_cost
-        else:
-            max_cost = finite_number(max_cost_override, "max_cost", 0.0,
-                                     HARD_MAX_COST)
-        gov = SpendGovernor(HttpTransport(), fw_key, settings.expect_key_label,
-                            max_cost,
-                            fireworks_budget_usd=getattr(
-                                settings, "fireworks_budget_usd", 0.0))
-        gov.key_info = {"label": "fireworks", "limit": max_cost, "remaining": max_cost}
-        return fw_key, gov
     api_key = resolve_api_key()
-    if not api_key:
+    fireworks_key = resolve_fireworks_key() if getattr(settings, "fireworks_enabled", False) else None
+    if not api_key and not fireworks_key:
         raise HarnessError(
             "no OpenRouter API key found (OPENROUTER_API_KEY env, "
-            "~/.config/scmorc/openrouter*.env, or "
-            "$HARNESS_CONFIG_DIR/openrouter.env (default: "
-            "~/.config/harness/openrouter.env).")
+            "~/.config/scmorc/openrouter*.env, or ~/.config/harness/openrouter.env).")
     if max_cost_override is None:
         max_cost = settings.max_cost
     else:
@@ -61,10 +42,13 @@ def governor_for(settings, max_cost_override=None):
         max_cost = finite_number(max_cost_override, "max_cost", 0.0,
                                  HARD_MAX_COST)
     gov = SpendGovernor(HttpTransport(), api_key, settings.expect_key_label,
-                        max_cost,
-                        fireworks_budget_usd=getattr(
-                            settings, "fireworks_budget_usd", 0.0))
-    gov.verify_key()
+                        max_cost, jev_max_cost=getattr(settings, "jev_max_cost", max_cost),
+                        fireworks_key=fireworks_key,
+                        fireworks_enabled=getattr(settings, "fireworks_enabled", False),
+                        openrouter_enabled=getattr(settings, "openrouter_enabled", True),
+                        fireworks_budget_usd=getattr(settings, "fireworks_budget_usd", 0))
+    if api_key and gov.openrouter_enabled:
+        gov.verify_key()
     return api_key, gov
 
 
@@ -93,8 +77,7 @@ def jev_face_governor(settings, max_cost_override=None):
                                  HARD_MAX_COST)
     return SpendGovernor(HttpTransport(), resolve_api_key(),
                          settings.expect_key_label, max_cost,
-                         fireworks_budget_usd=getattr(
-                             settings, "fireworks_budget_usd", 0.0))
+                         jev_max_cost=getattr(settings, "jev_max_cost", max_cost))
 
 
 def ledger_for(settings, caller="cli"):
@@ -107,8 +90,7 @@ def ledger_for(settings, caller="cli"):
     return AutonomyLedger(settings.ledger_path, caller=caller)
 
 
-def jev_for(settings, transport=None, governor=None, ledger=None,
-            **options) -> JevPolicy:
+def jev_for(settings, transport=None, governor=None, ledger=None) -> JevPolicy:
     """Session composition for Jev: ONE policy owner (JEV-P4).
 
     Historically this returned a raw ``JevEvaluator`` — an orphan client
@@ -118,7 +100,7 @@ def jev_for(settings, transport=None, governor=None, ledger=None,
     (tests), pass it via ``policy_for(..., evaluator=...)``.
     """
     return policy_for(settings, transport=transport, governor=governor,
-                      ledger=ledger, **options)
+                      ledger=ledger)
 
 
 def attest_model_for(settings):
@@ -159,8 +141,7 @@ def router_for(settings, *, jev_policy=None):
                   jev_policy=jev_policy)
 
 
-def engine_for(settings, api_key, gov, ledger, router, transport=None,
-               allowed_roots=None):
+def engine_for(settings, api_key, gov, ledger, router, transport=None):
     """The ApplyEngine with every settings-level policy applied. Only
     per-request knobs (instruction, ceilings for THIS task) are passed at
     the engine call site -- construction-level policy lives here."""
@@ -181,12 +162,11 @@ def engine_for(settings, api_key, gov, ledger, router, transport=None,
         default_max_rotations=settings.max_rotations,
         default_task_max_cost=settings.task_max_cost,
         use_free=settings.use_free,
-        allowed_roots=(settings.mcp_allowed_roots if allowed_roots is None
-                       else allowed_roots),
+        allowed_roots=settings.mcp_allowed_roots,
         min_confidence=settings.min_confidence)
 
 
-def apply_session(settings, max_cost=None, transport=None, allowed_roots=None):
+def apply_session(settings, max_cost=None, transport=None):
     """ONE assembly step for engine-running commands (apply, continue,
     dogfood's apply phase, bench): key+governor, ledger, the pre-spend
     saturation look-ahead (advice only, never a gate), router, engine.
@@ -198,27 +178,22 @@ def apply_session(settings, max_cost=None, transport=None, allowed_roots=None):
     ledger = ledger_for(settings)
     pre_run_warning(governor=gov, ledger=ledger, use_free=settings.use_free)
     return engine_for(settings, api_key, gov, ledger, router_for(settings),
-                      transport=transport, allowed_roots=allowed_roots)
+                      transport=transport)
 
 
-def run_meta(settings, governor, *, panel=None, judge=None,
-             reasoning_effort=None, use_free=None):
+def run_meta(settings, governor):
     """Run metadata for a result envelope's ``meta`` block: the settings
     snapshot an interface (CLI, UI server) attaches so a consumer can
-    reproduce the run; supplied values are the effective lane settings,
-    not merely configured defaults. Deliberately excludes the key label
-    (never echoed) and any secret material. Advisory: a non-numeric
+    reproduce the run, plus the ceiling. Deliberately excludes the key
+    label (never echoed) and any secret material. Advisory: a non-numeric
     ceiling (test fakes) degrades to None instead of failing the run."""
     try:
         ceiling = round(float(governor.max_cost), 6)
     except (TypeError, ValueError):
         ceiling = None
-    return {"use_free": settings.use_free if use_free is None else use_free,
-            "panel": settings.panel if panel is None else panel,
-            "judge": settings.judge if judge is None else judge,
+    return {"use_free": settings.use_free,
+            "panel": settings.panel, "judge": settings.judge,
             "apply_model": settings.apply_model,
-            "reasoning_effort": (settings.reasoning_effort
-                                 if reasoning_effort is None
-                                 else reasoning_effort),
+            "reasoning_effort": settings.reasoning_effort,
             "max_cost_ceiling": ceiling,
             "key_label_present": bool(settings.expect_key_label)}

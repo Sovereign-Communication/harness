@@ -8,7 +8,7 @@ driven with a stubbed conversation lane.
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from harness.agent import AutonomousAgent
 from harness.config import DEFAULT_MAX_COST, DEFAULT_TASK_MAX_COST, load_settings
@@ -523,12 +523,7 @@ class SimpleActionEntrySeamTests(unittest.TestCase):
         self.assertIn("could not find a site", res["response"])
         self.assertIn("rephrase with a URL", res["next_step"])
 
-    def test_redirect_without_noul_is_inconclusive(self):
-        # #207 Noul-gated contract: a probe HTTP status alone never answers
-        # yes -- the yes requires a live Jev Noul >= 0.99. Without a key the
-        # judgment is fallback, so even a 301 redirect stays inconclusive.
-        # The Noul-gated yes path is pinned in test_request_lifecycle.py
-        # (test_redirect_rate_limit_and_other_http_error_can_answer_yes).
+    def test_redirect_answers_yes_with_redirect(self):
         def probe(host, path, timeout):
             return (301, "https://example.com/new-path", host)
         with tempfile.TemporaryDirectory() as tmp:
@@ -536,32 +531,27 @@ class SimpleActionEntrySeamTests(unittest.TestCase):
             res = agent.run_simple_action("Is https://example.com up?",
                                           probe_fn=probe,
                                           resolve_fn=_resolve_public("93.184.216.34"))
-        self.assertEqual(res["status"], "deferred")
-        self.assertTrue(res["response"].startswith("Inconclusive"))
-        self.assertIsNone(res["jev"]["http_response_received"])
+        self.assertEqual(res["status"], "ok")
+        self.assertIn("redirect", res["response"])
 
-    def test_ledger_failure_on_probe_path_defers_without_noul(self):
-        # #207 Noul-gated contract: ledger failure is tolerated (append is
-        # best-effort), but the yes still requires a live Jev Noul. With the
-        # ledger down and no usable judgment, the probe stays inconclusive.
+    def test_ledger_failure_on_probe_path_still_returns_ok(self):
         def probe(host, path, timeout):
             return (200, "", host)
         with tempfile.TemporaryDirectory() as tmp:
             agent = _agent(tmp)
-            with patch("harness.simple_action_lifecycle.ledger_for",
+            with patch("harness.agent.ledger_for",
                        side_effect=RuntimeError("ledger down")):
                 res = agent.run_simple_action("Is https://example.com up?",
                                               probe_fn=probe,
                                               resolve_fn=_resolve_public("93.184.216.34"))
-        self.assertEqual(res["status"], "deferred")
-        self.assertTrue(res["response"].startswith("Inconclusive"))
+        self.assertEqual(res["status"], "ok")
 
     def test_preflight_probe_failure_with_ledger_down_still_defers(self):
         def boom(host, path, timeout):
             raise HarnessError("denied")
         with tempfile.TemporaryDirectory() as tmp:
             agent = _agent(tmp)
-            with patch("harness.simple_action_lifecycle.ledger_for",
+            with patch("harness.agent.ledger_for",
                        side_effect=RuntimeError("ledger down")):
                 res = agent.run_simple_action("Is https://example.com up?",
                                               probe_fn=boom,
@@ -656,143 +646,5 @@ class WaistCooldownSkipTests(unittest.TestCase):
         self.assertEqual(plan["status"], "refused")
 
 
-class AgentRateCircuitIntegrationTests(unittest.TestCase):
-    def test_agent_orchestrator_chat_fn_notes_429_and_skips_model(self):
-        from harness.agent import AutonomousAgent
-        from tests._fake import FakeTransport
-        transport = FakeTransport()
-        agent = AutonomousAgent(transport=transport)
-        gov = MagicMock()
-        calls = []
-
-        def fake_governed_text(trans, key, g, model, prompt, tokens, label="orchestrate"):
-            calls.append(model)
-            if model == "m1":
-                raise HarnessError("HTTP 429: rate limited")
-            return "ok response", 0.0001
-
-        with patch("harness.execution_stages.resolve_scout_ladder", return_value=["m1", "m2"]), \
-             patch("harness.execution_stages.resolve_api_key", return_value="k"), \
-             patch("harness.execution_stages.governed_text", side_effect=fake_governed_text):
-            chat_fn = agent._orchestrator_chat_fn(gov)
-            # Call 1: tries m1 (gets 429), then m2 (succeeds)
-            res1 = chat_fn("prompt 1")
-            self.assertEqual(res1, "ok response")
-            self.assertEqual(calls, ["m1", "m2"])
-            self.assertTrue(agent._rate_circuit.should_skip("m1"))
-
-            # Call 2: m1 is skipped because it's in rate circuit cooldown, goes straight to m2
-            res2 = chat_fn("prompt 2")
-            self.assertEqual(res2, "ok response")
-            self.assertEqual(calls, ["m1", "m2", "m2"])
-
-    def test_agent_hourglass_answer_once_skips_rate_limited_model(self):
-        from harness.agent import AutonomousAgent
-        from tests._fake import FakeTransport
-        transport = FakeTransport()
-        agent = AutonomousAgent(transport=transport)
-        agent._rate_circuit.note_rate_limited("m1")
-        gov = MagicMock()
-        gov.preflight = MagicMock()
-        gov.working_remaining = MagicMock(return_value=1.0)
-        gov.record_actual = MagicMock()
-
-        calls = []
-
-        def fake_chat(transport, api_key, model, messages, max_tokens, reasoning_effort, governor):
-            calls.append(model)
-            return 200, {"choices": [{"message": {"content": "answer from " + model}}],
-                         "usage": {"cost": 0.0001}}
-
-        agent.settings = MagicMock()
-        agent.settings.panel_pool = ["m1", "m2"]
-        agent.settings.judge = None
-        agent.settings.convergence_model = None
-        agent.settings.escalation_pool = []
-        with patch("harness.hourglass_lifecycle.chat", side_effect=fake_chat), \
-             patch("harness.hourglass_lifecycle.governor_for", return_value=("k", gov)):
-            attempt = agent._hourglass_answer_once("test question", "ctx", governor=gov)
-        self.assertEqual(calls, ["m2"])
-        self.assertEqual(attempt["model"], "m2")
-
-    def test_agent_hourglass_answer_once_handles_429_harness_error(self):
-        from harness.agent import AutonomousAgent
-        from tests._fake import FakeTransport
-        transport = FakeTransport()
-        agent = AutonomousAgent(transport=transport)
-        gov = MagicMock()
-        gov.preflight = MagicMock()
-        gov.working_remaining = MagicMock(return_value=1.0)
-        gov.record_actual = MagicMock()
-
-        calls = []
-
-        def fake_chat(transport, api_key, model, messages, max_tokens, reasoning_effort, governor):
-            calls.append(model)
-            if model == "m1":
-                raise HarnessError("HTTP 429: rate limit exceeded")
-            return 200, {"choices": [{"message": {"content": "answer from " + model}}],
-                         "usage": {"cost": 0.0001}}
-
-        agent.settings = MagicMock()
-        agent.settings.panel_pool = ["m1", "m2"]
-        agent.settings.judge = None
-        agent.settings.convergence_model = None
-        agent.settings.escalation_pool = []
-        with patch("harness.hourglass_lifecycle.chat", side_effect=fake_chat), \
-             patch("harness.hourglass_lifecycle.governor_for", return_value=("k", gov)):
-            attempt = agent._hourglass_answer_once("test question", "ctx", governor=gov)
-        self.assertEqual(calls, ["m1", "m2"])
-        self.assertTrue(agent._rate_circuit.should_skip("m1"))
-        self.assertEqual(attempt["model"], "m2")
-
-    def test_all_models_rate_limited_falls_back_to_original_pools(self):
-        from harness.agent import AutonomousAgent
-        from tests._fake import FakeTransport
-        transport = FakeTransport()
-        agent = AutonomousAgent(transport=transport)
-        agent._rate_circuit.note_rate_limited("m1")
-        agent._rate_circuit.note_rate_limited("m2")
-
-        gov = MagicMock()
-        gov.preflight = MagicMock()
-        gov.working_remaining = MagicMock(return_value=1.0)
-        gov.record_actual = MagicMock()
-
-        calls = []
-
-        def fake_chat(transport, api_key, model, messages, max_tokens, reasoning_effort, governor):
-            calls.append(model)
-            return 200, {"choices": [{"message": {"content": "answer from " + model}}],
-                         "usage": {"cost": 0.0001}}
-
-        agent.settings = MagicMock()
-        agent.settings.panel_pool = ["m1", "m2"]
-        agent.settings.judge = None
-        agent.settings.convergence_model = None
-        agent.settings.escalation_pool = []
-        with patch("harness.hourglass_lifecycle.chat", side_effect=fake_chat), \
-             patch("harness.hourglass_lifecycle.governor_for", return_value=("k", gov)):
-            attempt = agent._hourglass_answer_once("test question", "ctx", governor=gov)
-        self.assertEqual(calls, ["m1"])
-        self.assertEqual(attempt["model"], "m1")
-
-        # Test orchestrator_chat_fn fallback when all models are rate limited
-        orch_calls = []
-
-        def fake_gov_text(transport, api_key, governor, model, prompt_text, max_tokens, label=None):
-            orch_calls.append(model)
-            return "orchestrator ok", 0.0001
-
-        with patch("harness.execution_stages.resolve_scout_ladder", return_value=["m1", "m2"]), \
-             patch("harness.execution_stages.resolve_api_key", return_value="k"), \
-             patch("harness.execution_stages.governed_text", side_effect=fake_gov_text):
-            chat_fn = agent._orchestrator_chat_fn(gov)
-            res = chat_fn("prompt")
-            self.assertEqual(res, "orchestrator ok")
-            self.assertEqual(orch_calls, ["m1"])
-
-
 if __name__ == "__main__":
     unittest.main()
-

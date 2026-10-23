@@ -33,8 +33,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .errors import HarnessError, ToolCancelled
-from .events import current_cancel_check, emit
+from .errors import HarnessError
+from .events import emit
 
 # The one search endpoint. Operator-configurable via env because the choice
 # of search provider is policy, not code. Only the query varies per call.
@@ -57,81 +57,13 @@ DEFAULT_FETCH_HOSTS = frozenset({
     "arxiv.org",
     "scientificamerican.com",
     "quantamagazine.org",
-    "api.weather.gov",
+    # Authoritative US forecast pages so a ZIP-anchored weather lookup can
+    # enrich its snippet with primary-page text instead of a search fragment.
     "weather.gov",
-    "wttr.in",
+    "www.weather.gov",
+    "forecast.weather.gov",
+    "api.weather.gov",
 })
-
-# Web TLDs that mark a bare token as a fetchable site (so 'audit example.com'
-# is fetched, while 'report.pdf' / 'image.png' are not). A www-prefixed host
-# is always treated as a site regardless of TLD.
-_FETCHABLE_TLDS = frozenset({
-    "com", "org", "net", "io", "gov", "edu", "co", "uk", "de", "fr", "jp",
-    "info", "app", "dev", "ai", "me", "us", "ca", "biz", "tv", "xyz",
-    "site", "online", "tech", "news", "blog", "store", "cloud",
-})
-
-# A bare domain (labels + a 2+-letter TLD), optionally with a path, not
-# preceded by a scheme/word/dot/slash/@ so it is not re-matched inside an
-# existing URL or an email address.
-_BARE_DOMAIN_RE = re.compile(
-    r"(?<![\w./@])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+)([a-z]{2,})"
-    r"(/[^\s)>\]'\"]*)?",
-    re.IGNORECASE)
-
-_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
-
-# Generic request scaffolding dropped from a site-focused search query (the
-# site is the subject; these words only add noise that drifts the search).
-_SITE_SCAFFOLD = frozenset({
-    "audit", "www", "com", "http", "https", "site", "website", "webpage",
-    "page", "url", "domain", "review", "check", "test", "look", "visit",
-})
-
-
-def _is_fetchable_domain(host):
-    """True when a bare host looks like a real web site, not a file name."""
-    host = (host or "").lower()
-    return host.startswith("www.") or host.rsplit(".", 1)[-1] in _FETCHABLE_TLDS
-
-
-def _sanitize_host(host):
-    """Return a normalized hostname if well-formed, else None.
-
-    Drops anything that could smuggle a scheme, path, port, or credential
-    into the host set, so a hostile config value cannot widen the boundary.
-    """
-    h = (host or "").strip().lower().rstrip(".")
-    if not h or len(h) > 253:
-        return None
-    if any(c in h for c in "/:@ ?#"):
-        return None
-    labels = h.split(".")
-    if len(labels) < 2 or not all(_HOST_LABEL_RE.match(label) for label in labels):
-        return None
-    return h
-
-
-def resolve_fetch_allowlist(settings):
-    """Derive ``(allowed_hosts, allow_any_public)`` from settings.
-
-    The web-fetch posture is ONE owner (this module); settings only tune it.
-    An empty/absent host list means "use the built-in DEFAULT_FETCH_HOSTS".
-    When the allowlist is disabled, any PUBLIC https host is fetchable -- but
-    ``fetch_url`` still runs the SSRF public-address guard, so relaxing the
-    allowlist never turns the fetcher into an internal-network probe.
-    """
-    enabled = bool(getattr(settings, "fetch_allowlist_enabled", True))
-    raw = getattr(settings, "fetch_allowlist_hosts", None) or []
-    hosts = set()
-    for h in raw:
-        clean = _sanitize_host(str(h))
-        if clean:
-            hosts.add(clean)
-    if not hosts:
-        hosts = set(DEFAULT_FETCH_HOSTS)
-    return hosts, (not enabled)
-
 
 _USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) HarnessLocalUI/0.3 (personal local tool)"
@@ -150,20 +82,6 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def _http_get(url, timeout=12.0):
     """One bounded GET: bounded body, no redirects, no credentials sent."""
-    cancel_check = current_cancel_check()
-    if cancel_check is not None:
-        from ._http import cancellable_request
-        status, raw, _retry_after, final_url = cancellable_request(
-            "GET", url,
-            headers={
-                "User-Agent": _USER_AGENT,
-                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-            },
-            timeout=timeout, cancel_check=cancel_check,
-            max_bytes=_MAX_BYTES + 1, no_redirect=True)
-        if len(raw) > _MAX_BYTES:
-            raw = raw[:_MAX_BYTES]
-        return status, raw, final_url
     req = urllib.request.Request(
         url,
         headers={
@@ -282,50 +200,58 @@ _IRRELEVANT_PATTERNS = (
 )
 
 
+_ZIP_RE = re.compile(r"\b(\d{5})\b")
+
+
+def extract_zip_codes(text):
+    """Return 5-digit ZIP codes in prompt/query order, deduplicated."""
+    seen = []
+    for m in _ZIP_RE.finditer(text or ""):
+        z = m.group(1)
+        if z not in seen:
+            seen.append(z)
+    return seen
+
+
+def location_scope_note(prompt):
+    """Ground synthesis for an exact-ZIP lookup so the model cannot invent
+    ZIP geography (the 96778 incident: Seattle evidence answered for a
+    Hawai'i Island ZIP, then mislabeled it Oahu). Returns None when the
+    prompt names no ZIP."""
+    zips = extract_zip_codes(prompt)
+    if not zips:
+        return None
+    z = zips[0]
+    return (
+        f"LOCATION SCOPE: the request is anchored to ZIP {z}. Only use web "
+        f"evidence that mentions {z}; if no such evidence is present, say so "
+        "and do not state or infer the ZIP's city, island, county, or state."
+    )
+
+
 def filter_search_relevance(query, results):
-    """Filter out non-informational spam or navigational clutter."""
+    """Filter out non-informational spam or navigational clutter.
+
+    When the query names an exact 5-digit ZIP, additionally require the
+    result to mention that ZIP (title, snippet, or URL). A wrong-location
+    snippet (e.g. Seattle for 96778) is dropped so the caller honestly
+    defers instead of synthesizing a forecast for the wrong place."""
     if not results:
         return results
     filtered = [
         r for r in results
         if not any(pat.search(r.get("title", "")) for pat in _IRRELEVANT_PATTERNS)
     ]
+    zips = extract_zip_codes(query)
+    if zips:
+        anchored = []
+        for r in filtered:
+            hay = " ".join((r.get("title", ""), r.get("snippet", ""),
+                              r.get("url", "")))
+            if any(z in hay for z in zips):
+                anchored.append(r)
+        return anchored
     return filtered
-
-
-def _subject_core_label(query):
-    """The distinctive brand label when a query names a bare web domain.
-
-    ``'audit www.freeoffgridcalculator.com ...'`` -> ``'freeoffgridcalculator'``.
-    Returns ``None`` when the query names no fetchable bare domain, so the
-    subject-relevance gate in :func:`search_web` stays inert for ordinary
-    topical searches (which have no single host subject).
-    """
-    text = (query or "").strip().lower()
-    for m in _BARE_DOMAIN_RE.finditer(text):
-        host = (m.group(1) + m.group(2)).lower()
-        if not _is_fetchable_domain(host):
-            continue
-        labels = [lb for lb in host.split(".")
-                  if lb not in ("www", "com", "net", "org")]
-        if not labels:
-            continue
-        # The brand label is the longest remaining component (handles co.uk /
-        # com.au second-level TLDs without hardcoding a country list).
-        return max(labels, key=len)
-    return None
-
-
-def _result_mentions_subject(results, label):
-    """True when at least one result references the subject brand label."""
-    if not label:
-        return True
-    needle = label.lower()
-    for r in results:
-        blob = " ".join(str(r.get(k) or "") for k in ("title", "url", "snippet"))
-        if needle in blob.lower():
-            return True
-    return False
 
 
 def _parse_results(page_html, max_results):
@@ -377,10 +303,6 @@ def search_web(query, max_results=5, timeout=12.0):
     )
     try:
         status, raw, _ = _http_get(url, timeout=timeout)
-    except ToolCancelled:
-        emit("web_search", phase="end", ok=False, query=q,
-             reason="cancelled")
-        raise
     except (urllib.error.URLError, urllib.error.HTTPError, OSError,
             ValueError) as e:
         emit("web_search", phase="end", ok=False, query=q)
@@ -393,18 +315,6 @@ def search_web(query, max_results=5, timeout=12.0):
     if not results:
         emit("web_search", phase="end", ok=False, query=q)
         raise HarnessError("web search returned no usable results")
-    # Subject-relevance gate: when the query names a specific site, a result
-    # set that never mentions that site is off-subject navigational junk
-    # (search engines answer an obscure query with an unrelated fallback).
-    # Handing that to the model as "evidence" is the fabrication vector this
-    # module exists to prevent, so refuse honestly instead.
-    subject = _subject_core_label(q)
-    if subject and not _result_mentions_subject(results, subject):
-        emit("web_search", phase="end", ok=False, query=q,
-             reason="off_subject_results")
-        raise HarnessError(
-            f"web search returned no results about '{subject}' "
-            "(the results were off-subject)")
 
     emit("web_search", phase="end", ok=True, query=q, results=len(results))
     return results
@@ -427,20 +337,13 @@ def _page_title(page_html):
     return _clean_text(m.group(1))[:200] if m else ""
 
 
-def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000,
-              allow_any_public=False):
-    """Fetch ONE https URL and return {url, title, text}.
+def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000, cancel_check=None):
+    """Fetch ONE allowlisted https URL and return {url, title, text}.
 
     Refusals are HarnessErrors with machine-readable messages:
     scheme, allowlist, redirect, network, and no-readable-text. A transient
     failure (timeout/network error, HTTP 429 or 5xx) is retried once after a
     short backoff; policy refusals and other statuses are not.
-
-    When ``allow_any_public`` is set (the operator disabled the fetch
-    allowlist), the host need not be on the allowlist -- but it MUST resolve
-    to a globally public address, so the fetcher can never reach a private,
-    loopback, link-local, or metadata address (the SSRF guard is retained
-    even when the allowlist is relaxed).
     """
     if not url or not url.strip():
         raise HarnessError("web fetch: empty url")
@@ -449,24 +352,19 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000,
     if parsed.scheme != "https":
         raise HarnessError("web fetch refused: only https:// URLs are fetched")
     host = (parsed.hostname or "").lower()
-    if not host:
-        raise HarnessError("web fetch refused: no host in URL")
-    if allow_any_public:
-        import socket as _socket
-        try:
-            _resolved_addresses_public(host, _socket.getaddrinfo)
-        except HarnessError as e:
-            raise HarnessError(
-                f"web fetch refused: {str(e).split(':', 1)[-1].strip()}") from e
-    else:
-        allowed = {h.lower() for h in (allowed_hosts or [])}
-        if host not in allowed:
-            raise HarnessError(
-                f"web fetch refused: host '{host}' is not on the fetch allowlist")
+    allowed = {h.lower() for h in (allowed_hosts or [])}
+    if not host or host not in allowed:
+        raise HarnessError(
+            f"web fetch refused: host '{host or '?'}' is not on the fetch allowlist")
+    from .errors import ToolCancelled as _Cancelled
+    if cancel_check is not None and cancel_check():
+        raise _Cancelled("Prompt execution was cancelled by user")
     emit("web_fetch", phase="start", url=u)
     raw = final_url = None
     error_note = None
     for attempt in (1, 2):
+        if cancel_check is not None and cancel_check():
+            raise _Cancelled("Prompt execution was cancelled by user")
         try:
             status, raw, final_url = _http_get(u, timeout=timeout)
             if status == 200:
@@ -475,17 +373,13 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000,
             error_note = f"web fetch HTTP {status}"
             if status not in (429, 500, 502, 503, 504):
                 break  # deterministic status: a retry cannot change it
-        except ToolCancelled:
-            emit("web_fetch", phase="end", ok=False, url=u,
-                 reason="cancelled")
-            raise
         except (urllib.error.URLError, urllib.error.HTTPError, OSError,
                 ValueError) as e:
             error_note = f"web fetch failed: {e}"
         if attempt == 1:
             emit("web_fetch", phase="retry", url=u)
-            from ._http import interruptible_sleep
-            interruptible_sleep(1.5, current_cancel_check())
+            from . import events as _events
+            _events.sleep_or_cancel(1.5, cancel_check)
     if error_note is not None or raw is None:
         emit("web_fetch", phase="end", ok=False, url=u)
         raise HarnessError(error_note or "web fetch failed: empty response")
@@ -503,7 +397,7 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000,
             "text": text}
 
 
-def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, allow_any_public=False, fetch_url_fn=None, search_web_fn=None, find_urls_fn=None, extract_query_fn=None, max_sources=3):
+def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, fetch_url_fn=None, search_web_fn=None, find_urls_fn=None, extract_query_fn=None, max_sources=3, cancel_check=None):
     """Single-owner web evidence gathering for one chat turn.
 
     Fetches allowlisted URLs in the prompt (one per URL, up to max_sources);
@@ -517,17 +411,17 @@ def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, allow_
     find_fn = find_urls_fn if find_urls_fn is not None else find_urls
     extract_fn = extract_query_fn if extract_query_fn is not None else extract_query
     sources: List[Dict[str, Any]] = []
+    from .errors import ToolCancelled as _Cancelled
     urls = find_fn(prompt)[:max_sources]
     if urls:
         for u in urls:
+            if cancel_check is not None and cancel_check():
+                raise _Cancelled("Prompt execution was cancelled by user")
             try:
-                # Pass allow_any_public only when set, so the injectable seam
-                # keeps its original (url, allowed_hosts=...) shape for the
-                # default allowlisted path and existing test doubles.
-                if allow_any_public:
+                try:
                     page = fetch_fn(u, allowed_hosts=allowed_hosts,
-                                    allow_any_public=True)
-                else:
+                                    cancel_check=cancel_check)
+                except TypeError:
                     page = fetch_fn(u, allowed_hosts=allowed_hosts)
                 sources.append({"kind": "fetch", "ok": True, "url": page["url"], "title": page["title"], "text": page["text"]})
             except HarnessError as e:
@@ -535,19 +429,28 @@ def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, allow_
         if any(s["ok"] for s in sources):
             return sources
     try:
-        results = search_fn(extract_fn(prompt))
+        query = extract_fn(prompt)
+        results = search_fn(query)
+        # Defense in depth: search_web already relevance-filters, but an
+        # injected search seam (or future caller) must not smuggle a
+        # wrong-location snippet past a ZIP-anchored request.
+        results = filter_search_relevance(query, results)
         for r in results[:max_sources]:
             r_url = r.get("url", "")
             r_host = (urllib.parse.urlsplit(r_url).hostname or "").lower()
             allowed = {h.lower() for h in (allowed_hosts or [])}
+            if cancel_check is not None and cancel_check():
+                raise _Cancelled("Prompt execution was cancelled by user")
             # If the discovered source is from an allowlisted host, enrich snippet with primary page text
             if r_host in allowed and not any(s.get("kind") == "fetch" and s.get("ok") for s in sources):
                 try:
-                    page = fetch_fn(r_url, allowed_hosts=allowed_hosts)
+                    try:
+                        page = fetch_fn(r_url, allowed_hosts=allowed_hosts,
+                                        cancel_check=cancel_check)
+                    except TypeError:
+                        page = fetch_fn(r_url, allowed_hosts=allowed_hosts)
                     sources.append({"kind": "fetch", "ok": True, "url": page["url"], "title": page["title"], "text": page["text"]})
                     continue
-                except ToolCancelled:
-                    raise
                 except Exception:
                     pass
             sources.append({"kind": "search", "ok": True, "url": r["url"], "title": r["title"], "text": r["snippet"]})
@@ -580,30 +483,8 @@ _QUERY_SPELLING_FIXES = {
 
 
 def find_urls(prompt):
-    """Every fetchable URL or bare domain in a prompt, normalized to https.
-
-    Recognizes scheme URLs (https://...), www-prefixed hosts, and bare domains
-    with a known web TLD -- so a site named without a scheme (the common
-    'audit example.com' shape) is fetched directly instead of being mangled
-    into a search query. File names (report.pdf) are excluded by the TLD
-    allowlist. Results are capped in length and de-duplicated.
-    """
-    text = prompt or ""
-    out = [u[:500] for u in _URL_RE.findall(text)]
-    seen = set(out)
-    for m in _BARE_DOMAIN_RE.finditer(text):
-        host = (m.group(1) + m.group(2)).lower()
-        if not _is_fetchable_domain(host):
-            continue
-        # A hostname over 253 chars is invalid -- never a fetch target, so
-        # extract_site_target's length guard still sees it as no candidate.
-        if len(host) > 253:
-            continue
-        url = "https://" + host + (m.group(3) or "")
-        if url not in seen:
-            seen.add(url)
-            out.append(url[:500])
-    return out
+    """All URLs mentioned in a prompt, in order, capped in length."""
+    return [u[:500] for u in _URL_RE.findall(prompt or "")]
 
 
 # ---- bounded public-site liveness probe (request-lifecycle #202) -----------
@@ -649,6 +530,7 @@ def _resolved_addresses_public(host, resolve_fn):
     Returns the address list on success. Raises :class:`HarnessError` when
     resolution fails, yields nothing, or any address is private, loopback,
     link-local, multicast, reserved, or unspecified -- the SSRF refusal."""
+    import ipaddress as _ipaddress
     try:
         infos = resolve_fn(host, 443)
     except Exception as e:
@@ -659,11 +541,6 @@ def _resolved_addresses_public(host, resolve_fn):
         ip = sockaddr[0] if sockaddr else None
         if ip:
             addrs.append(ip)
-    return _validate_public_addresses(host, addrs)
-
-
-def _validate_public_addresses(host, addrs):
-    import ipaddress as _ipaddress
     if not addrs:
         raise HarnessError(f"site probe refused: no addresses for '{host}'")
     for ip in addrs:
@@ -677,48 +554,8 @@ def _validate_public_addresses(host, addrs):
     return addrs
 
 
-def preflight_public_site(url, resolve_fn=None, cancel_check=None):
-    """Validate one HTTPS target and pin its public DNS addresses.
-
-    This is the no-HTTP capability/security preflight used before Jev
-    workflow selection. The resulting plan lets the later request use the
-    same DNS answers, so a hostname cannot change between preflight and probe.
-    """
-    import socket as _socket
-    if cancel_check and cancel_check():
-        from .errors import ToolCancelled as _Cancelled
-        raise _Cancelled("site probe cancelled by user")
-    if not url or not url.strip():
-        raise HarnessError("site probe refused: empty url")
-    u = url.strip()[:500]
-    try:
-        parsed = urllib.parse.urlsplit(u if "://" in u else f"https://{u}")
-    except ValueError:
-        raise HarnessError("site probe refused: malformed URL") from None
-    if parsed.scheme != "https":
-        raise HarnessError("site probe refused: only https:// URLs are probed")
-    if parsed.username or parsed.password or "@" in (parsed.netloc or ""):
-        raise HarnessError("site probe refused: credentials in URL are rejected")
-    host = (parsed.hostname or "").lower()
-    if not host:
-        raise HarnessError("site probe refused: no host in URL")
-    try:
-        port = parsed.port or 443
-    except ValueError:
-        raise HarnessError("site probe refused: malformed port") from None
-    if port != 443:
-        raise HarnessError("site probe refused: only the default https port is probed")
-    path = parsed.path or "/"
-    if parsed.query:
-        path += "?" + parsed.query
-    resolve = resolve_fn or _socket.getaddrinfo
-    addrs = _resolved_addresses_public(host, resolve)
-    return {"url": u, "host": host, "port": port,
-            "path": path, "addresses": tuple(addrs)}
-
-
 def probe_public_site(url, timeout=8.0, cancel_check=None, resolve_fn=None,
-                      connect_fn=None, preflight_plan=None):
+                      connect_fn=None):
     """Perform one bounded HTTPS liveness probe against a public site.
 
     Returns a plain dict ``{ok, http_status, verdict, reason, latency_s,
@@ -734,17 +571,25 @@ def probe_public_site(url, timeout=8.0, cancel_check=None, resolve_fn=None,
     if cancel_check and cancel_check():
         from .errors import ToolCancelled as _Cancelled
         raise _Cancelled("site probe cancelled by user")
-    plan = (preflight_plan if preflight_plan is not None
-            else preflight_public_site(url, resolve_fn=resolve_fn,
-                                       cancel_check=cancel_check))
-    raw_url = url.strip()[:500] if isinstance(url, str) else ""
-    if not isinstance(plan, dict) or plan.get("url") != raw_url:
-        raise HarnessError("site probe refused: preflight plan does not match url")
-    host = plan["host"]
-    port = plan["port"]
-    path = plan["path"]
-    u = plan["url"]
-    addrs = _validate_public_addresses(host, list(plan.get("addresses") or ()))
+    if not url or not url.strip():
+        raise HarnessError("site probe refused: empty url")
+    u = url.strip()[:500]
+    parsed = urllib.parse.urlsplit(u if "://" in u else f"https://{u}")
+    if parsed.scheme != "https":
+        raise HarnessError("site probe refused: only https:// URLs are probed")
+    if parsed.username or parsed.password or "@" in (parsed.netloc or ""):
+        raise HarnessError("site probe refused: credentials in URL are rejected")
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise HarnessError("site probe refused: no host in URL")
+    port = parsed.port or 443
+    if port != 443:
+        raise HarnessError("site probe refused: only the default https port is probed")
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+    resolve = resolve_fn or _socket.getaddrinfo
+    addrs = _resolved_addresses_public(host, resolve)
     if cancel_check and cancel_check():
         from .errors import ToolCancelled as _Cancelled
         raise _Cancelled("site probe cancelled by user")
@@ -821,8 +666,7 @@ def probe_public_site(url, timeout=8.0, cancel_check=None, resolve_fn=None,
 
 def _probe_verdict(host, url, status, location, latency, final_host):
     """Map one observed HTTP status to an honest liveness verdict."""
-    base = {"latency_s": round(float(latency), 2), "host": host,
-            "url": url, "reachable": True}
+    base = {"latency_s": round(float(latency), 2), "host": host, "url": url}
     if 200 <= status < 300:
         return {**base, "ok": True, "http_status": status, "verdict": "up",
                 "reason": f"'{host}' is up (HTTPS {status})"}
@@ -836,49 +680,28 @@ def _probe_verdict(host, url, status, location, latency, final_host):
                 "reason": (f"'{host}' answered with HTTPS {status}{dest}; "
                            f"redirects are not followed, so the destination "
                            f"is not claimed reachable")}
-    if status == 429:
-        return {**base, "ok": False, "http_status": status,
-                "verdict": "rate_limited",
-                "reason": f"'{host}' responded but rate-limited the probe (HTTPS {status})"}
-    if 500 <= status < 600:
-        return {**base, "ok": False, "http_status": status,
-                "verdict": "server_error",
-                "reason": f"'{host}' responded with a server error (HTTPS {status})"}
-    if 400 <= status < 500:
-        return {**base, "ok": False, "http_status": status,
-                "verdict": "http_error",
-                "reason": f"'{host}' responded with an HTTP error (HTTPS {status})"}
+    if status == 429 or 500 <= status < 600:
+        return {**base, "ok": False, "http_status": status, "verdict": "network",
+                "reason": f"'{host}' answered HTTPS {status}; uptime not established"}
     return {**base, "ok": False, "http_status": status or None,
             "verdict": "network",
             "reason": f"'{host}' gave an unusable response (HTTPS {status or '?'})"}
 
 
 def extract_query(prompt, max_words=10):
-    """Reduce a natural-language prompt to a search query.
+    """Reduce a natural-language prompt to a search query (stopwords out, spellings normalized).
 
-    Stopwords and spellings are normalized. When the prompt names a fetchable
-    site, that site is the subject: the query leads with the bare host (never
-    tokenized into 'www x com') and drops generic request scaffolding (audit,
-    review, site ...) so the search targets the site instead of drifting onto
-    a keyword like 'audit' and returning unrelated results.
-    """
-    text = (prompt or "").strip()
-    words = re.findall(r"[a-zA-Z0-9_']+", text.lower())
-    host = None
-    for m in _BARE_DOMAIN_RE.finditer(text):
-        h = (m.group(1) + m.group(2)).lower()
-        if _is_fetchable_domain(h):
-            host = h.replace("www.", "", 1)
-            break
-    if host:
-        host_tokens = set(host.split("."))
-        kept = [w for w in words
-                if w not in _QUERY_STOPWORDS and w not in _SITE_SCAFFOLD
-                and w not in host_tokens and len(w) > 1]
-        return (host + " " + " ".join(kept[:max_words])).strip()
+    Exact 5-digit ZIPs are load-bearing location anchors (never stopwords,
+    never truncated away): they lead the query so the search stays on the
+    requested place instead of drifting to an unrelated city."""
+    zips = extract_zip_codes(prompt)
+    words = re.findall(r"[a-zA-Z0-9_']+", (prompt or "").lower())
     kept = []
     for w in words:
         w_fixed = _QUERY_SPELLING_FIXES.get(w, w)
+        if w_fixed in zips:
+            continue  # re-attached up front in prompt order
         if w_fixed not in _QUERY_STOPWORDS and len(w_fixed) > 1:
             kept.append(w_fixed)
-    return " ".join(kept[:max_words]).strip()
+    ordered = zips + kept
+    return " ".join(ordered[:max(1, max_words)]).strip()

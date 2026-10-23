@@ -45,13 +45,10 @@ class _GovernedRun(unittest.TestCase):
     """
 
     def setUp(self):
-        for target in ("harness.hourglass_lifecycle.governor_for",
-                       "harness.conversation_lifecycle.governor_for",
-                       "harness.hourglass_lifecycle.governor_for",
-                       "harness.edit_lifecycle.governor_for"):
-            patcher = patch(target, return_value=(None, _TEST_GOVERNOR))
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        patcher = patch("harness.agent.governor_for",
+                        return_value=(None, _TEST_GOVERNOR))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
 
 def _settings(**overrides):
@@ -69,21 +66,6 @@ def _settings(**overrides):
 
 REPO = 'def add(a, b):\n    """Add two numbers."""\n    return a + b\n'
 DECLARED_OUTCOMES = ("sufficient", "plan", "evidence_request", "defer")
-
-
-class _BlockedTransport:
-    """Refuses every provider call, so the proof cannot spend."""
-
-    def get(self, *a, **k):
-        raise HarnessError("transport blocked (HV-5 default-path test)")
-
-    def post(self, *a, **k):
-        raise HarnessError("transport blocked (HV-5 default-path test)")
-
-    def __getattr__(self, name):
-        def _blocked(*a, **k):
-            raise HarnessError("transport blocked (HV-5 default-path test)")
-        return _blocked
 
 
 class _Repo:
@@ -104,7 +86,7 @@ class _Repo:
     def agent(self, **overrides):
         return AutonomousAgent(
             settings=_settings(**overrides), root_dir=self.root,
-            transport=_BlockedTransport(), history_dir=self.root / ".hist")
+            transport=FakeTransport(), history_dir=self.root / ".hist")
 
     def run_edit(self, **overrides):
         return self.agent(**overrides).run_hourglass_request(
@@ -305,6 +287,20 @@ class _StubEngine:
                 "diff": "", "node_id": "n1"}
 
 
+class _BlockedTransport:
+    """Refuses every provider call, so the proof cannot spend."""
+
+    def get(self, *a, **k):
+        raise HarnessError("transport blocked (HV-5 default-path test)")
+
+    def post(self, *a, **k):
+        raise HarnessError("transport blocked (HV-5 default-path test)")
+
+    def __getattr__(self, name):
+        def _blocked(*a, **k):
+            raise HarnessError("transport blocked (HV-5 default-path test)")
+        return _blocked
+
 
 class DefaultPathDeliversTheEvidenceTests(_GovernedRun):
     """``auto_apply`` defaults to True, so the default path is the real one.
@@ -324,7 +320,7 @@ class DefaultPathDeliversTheEvidenceTests(_GovernedRun):
         self.addCleanup(session_patcher.stop)
 
     def _autonomous_run(self):
-        session_patch = patch("harness.edit_lifecycle.apply_session",
+        session_patch = patch("harness.agent.apply_session",
                               return_value=_StubEngine())
         session_patch.start()
         self.addCleanup(session_patch.stop)

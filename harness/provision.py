@@ -53,14 +53,13 @@ import shutil
 import tempfile
 import time
 import unicodedata
-import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional,
                     Sequence, Tuple)
 
 from . import osal
-from .errors import HarnessError, ProviderUsageUnknown, ToolCancelled
+from .errors import HarnessError
 from .ledger import AutonomyLedger
 from .jev_packs import (PROVISION_PACK_VERSION, PROVISION_SITE,
                         provision_selection_question_pack,
@@ -1641,8 +1640,7 @@ def execute_plan(plan: Plan, gate: ApprovalGate, *, policy: ProvisionPolicy,
                  ledger=None, task_id: Optional[str] = None,
                  dry_run: bool = True, runner: Optional[Callable] = None,
                  done: Iterable[str] = (), which: Optional[Callable] = None,
-                 environ: Optional[Mapping[str, str]] = None,
-                 lifecycle=None, lifecycle_state=None) -> ExecutionReport:
+                 environ: Optional[Mapping[str, str]] = None) -> ExecutionReport:
     """Run (or, by default, only preview) a validated plan.
 
     ``dry_run=True`` is the default and executes NOTHING -- not a command,
@@ -1683,32 +1681,7 @@ def execute_plan(plan: Plan, gate: ApprovalGate, *, policy: ProvisionPolicy,
     run = runner or osal.run_tree
     find = which or osal.which
     digest = plan.digest
-    if lifecycle is not None:
-        if lifecycle_state is None:
-            lifecycle_state = lifecycle.begin(
-                "provisioning", str(task_id or ("provision-" + uuid.uuid4().hex)),
-                plan.goal, stage="approval" if not dry_run else "plan",
-                data={"plan": plan.to_dict(), "plan_digest": digest})
-        if lifecycle_state.get("lane") != "provisioning":
-            raise ProvisionError("provision lifecycle state has the wrong lane")
-        prior_digest = lifecycle_state["data"].get("plan_digest")
-        if prior_digest and prior_digest != digest:
-            raise ProvisionError(
-                "provision lifecycle plan changed; approval must be renewed")
-        lifecycle_state["data"]["plan"] = plan.to_dict()
-        lifecycle_state["data"]["plan_digest"] = digest
-        if lifecycle_state["status"] in ("running", "interrupted"):
-            lifecycle.advance(lifecycle_state, "approval" if not dry_run else "plan")
-    verified_candidates = set(done)
-    if lifecycle is not None:
-        for step_id in lifecycle_state["execution"]["completed_steps"]:
-            receipt = lifecycle_state["execution"]["effects"].get(
-                "provision-step-" + step_id, {})
-            if receipt.get("status") == "completed":
-                verified_candidates.add(step_id)
-    # A lifecycle receipt suggests which ids to verify; only the hash-chained
-    # provisioning ledger can prove that they are safe to skip.
-    finished = _verified_done(ledger, digest, verified_candidates)
+    finished = _verified_done(ledger, digest, done)
     if base_root is not None:
         _clean_stale_private_dirs(base_root)
     state = {"stop": None, "audit": False}
@@ -1754,25 +1727,6 @@ def execute_plan(plan: Plan, gate: ApprovalGate, *, policy: ProvisionPolicy,
             output_sha256=_sha256(result.stdout + "\x00" + result.stderr))
         if not logged and state["stop"] is None:
             state["stop"] = AUDIT_FAILED
-        if lifecycle is not None and logged:
-            effect_id = "provision-step-" + step.id
-            if status in (COMPLETED, ALREADY_DONE):
-                effect = lifecycle_state["execution"]["effects"].get(effect_id)
-                if effect is None:
-                    action, _ = lifecycle.begin_effect(
-                        lifecycle_state, effect_id, "provision.execute-step",
-                        approval_state={"plan_digest": digest,
-                                        "decision": result.approval,
-                                        "approver": result.approver})
-                    if action == "blocked":
-                        return False
-                lifecycle.complete_effect(lifecycle_state, effect_id,
-                                          result.to_dict())
-                lifecycle_state["execution"]["completed_steps"][step.id] = \
-                    result.to_dict()
-                lifecycle.save(lifecycle_state)
-            elif status == FAILED:
-                lifecycle.unknown_effect(lifecycle_state, effect_id)
         return logged
 
     for step in plan.steps:
@@ -1840,31 +1794,6 @@ def execute_plan(plan: Plan, gate: ApprovalGate, *, policy: ProvisionPolicy,
             state["stop"] = AUDIT_FAILED
             continue
 
-        lifecycle_effect_id = "provision-step-" + step.id
-        if lifecycle is not None:
-            approval_snapshot = {
-                "plan_digest": digest, "decision": approval,
-                "approver": approver,
-            }
-            lifecycle_state["execution"]["approval_state"][step.id] = \
-                approval_snapshot
-            action, _ = lifecycle.begin_effect(
-                lifecycle_state, lifecycle_effect_id,
-                "provision.execute-step", approval_state=approval_snapshot)
-            if action == "blocked":
-                finish(step, DEFERRED, approval=approval, approver=approver,
-                       note="a previous attempt has unknown completion; not run")
-                state["stop"] = DEFERRED
-                continue
-            if action == "completed":
-                # The lifecycle receipt alone cannot replace the provisioning
-                # ledger's verified completion record.
-                finish(step, DEFERRED, approval=approval, approver=approver,
-                       note="saved completion is not verified by the ledger; not rerun")
-                state["stop"] = DEFERRED
-                continue
-            lifecycle.advance(lifecycle_state, "execute")
-
         workdir = None
         leftover = ""
         leftovers: Tuple[str, ...] = ()
@@ -1884,10 +1813,6 @@ def execute_plan(plan: Plan, gate: ApprovalGate, *, policy: ProvisionPolicy,
                     outcome = run(command, cwd=workdir,
                                   timeout=policy.step_timeout_s,
                                   env=_scrubbed_env(environ))
-        except ToolCancelled as exc:
-            if lifecycle is not None:
-                lifecycle.interrupt(lifecycle_state, exc)
-            raise
         except Exception as exc:  # a runner may fail in any way; keep the record
             outcome = osal.CommandResult(126, "", f"runner error: {exc}")
         finally:
@@ -1939,15 +1864,8 @@ def execute_plan(plan: Plan, gate: ApprovalGate, *, policy: ProvisionPolicy,
                         completed=completed,
                         rollback_hints=[list(h) for h in hints]):
         outcome_name = AUDIT_FAILED if not dry_run else outcome_name
-    report = ExecutionReport(digest, dry_run, outcome_name, tuple(results),
-                             tuple(hints), audit_failed=state["audit"])
-    if lifecycle is not None:
-        terminal = ("deferred" if report.resumable else
-                    "failed" if outcome_name in (FAILED, DECLINED, AUDIT_FAILED)
-                    else "complete")
-        lifecycle.finish(lifecycle_state, terminal, result=report.to_dict(),
-                         resumable=report.resumable)
-    return report
+    return ExecutionReport(digest, dry_run, outcome_name, tuple(results),
+                           tuple(hints), audit_failed=state["audit"])
 
 
 # --------------------------------------------------------------------------
@@ -2141,24 +2059,15 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:32] or "pkg"
 
 
-def _inventory_steps(probe: HostProbe,
-                     policy: ProvisionPolicy) -> List[Step]:
-    python_argv = (probe.python_executable, "--version")
-    python_class = classify_argv(python_argv, policy).minimum_class
-    python_rollback = ""
-    if python_class in (MUTATING, IRREVERSIBLE):
-        python_rollback = (
-            "No rollback applies to a version query; the executable is "
-            "inside the approved root, so execution requires review")
+def _inventory_steps(probe: HostProbe) -> List[Step]:
     steps = [Step("python-version", "Report the interpreter version",
-                  python_argv, python_class,
-                  "prints the interpreter version", python_rollback)]
+                  (probe.python_executable, "--version"), READ,
+                  "prints the interpreter version")]
     for pm in probe.package_managers:
         if pm.usable:
-            steps.append(Step(
-                f"{pm.name}-version", f"Report the {pm.name} version",
-                (pm.name, "--version"), READ,
-                f"prints the {pm.name} version"))
+            steps.append(Step(f"{pm.name}-version", f"Report the {pm.name} version",
+                              (pm.name, "--version"), READ,
+                              f"prints the {pm.name} version"))
     return steps
 
 
@@ -2198,110 +2107,52 @@ def _answer(result: Any, key: str, field_name: str):
     return entry.get(field_name) if isinstance(entry, dict) else None
 
 
-def _lifecycle_jev(lifecycle, lifecycle_state, call_id, invoke):
-    """Reuse a recorded Jev result; account an indeterminate dispatch once."""
-    if lifecycle is None or lifecycle_state is None:
-        result, _cost = invoke()
-        return result
-    prior = lifecycle_state["usage"]["provider_calls"].get(call_id)
-    if prior is not None:
-        return prior.get("result") if prior.get("status") == "completed" else None
-    if not lifecycle.provider_started(lifecycle_state, call_id):
-        return None
-    try:
-        result, cost = invoke()
-    except ToolCancelled as exc:
-        lifecycle.interrupt(lifecycle_state, exc, call_id=call_id)
-        raise
-    except ProviderUsageUnknown as exc:
-        lifecycle.interrupt(lifecycle_state, exc, call_id=call_id)
-        return None
-    lifecycle.provider_completed(lifecycle_state, call_id, result, cost)
-    return result
-
-
-def _jev_select(jev, goal, probe, candidates, task_id, *,
-                lifecycle=None, lifecycle_state=None):
+def _jev_select(jev, goal, probe, candidates, task_id):
     """A live Jev choice among ``candidates`` -- or ``None`` with reasons."""
     ids = [cid for cid, _ in candidates]
-    def evaluate():
+    try:
         questions = provision_selection_question_pack(candidates)
-        result, structural = jev.evaluate_provision(
+        result, _ = jev.evaluate_provision(
             {"goal": goal, "host": probe.jev_facts(), "candidates": ids,
              "pack_version": PROVISION_PACK_VERSION},
             questions, site=PROVISION_SITE, task_id=task_id)
-        choice = _answer(result, "recipe", "choice")
-        fallback = bool(getattr(result, "is_fallback", True))
-        accepted = (choice if not fallback and isinstance(choice, str)
-                    and choice in ids else None)
-        reasons = (["jev selection fell back; using the deterministic order"]
-                   if fallback else [f"jev chose {accepted}"] if accepted else
-                   [f"jev answer {choice!r} is not a declared recipe; refused"])
-        return {"choice": accepted, "reasons": reasons,
-                "fallback": fallback}, float(structural.get("cost") or 0.0)
-
-    try:
-        outcome = _lifecycle_jev(
-            lifecycle, lifecycle_state,
-            f"{lifecycle_state['request_id']}:provision-select" if lifecycle_state
-            else "provision-select", evaluate)
-    except Exception as exc:  # any judgment failure degrades to fixed order
-        if isinstance(exc, (ToolCancelled, ProviderUsageUnknown)):
-            raise
+    except Exception as exc:  # any judgment failure degrades to the fixed order
         return None, [f"jev selection unavailable: {exc}"]
-    if not isinstance(outcome, dict):
-        return None, ["jev selection outcome unknown; using deterministic order"]
-    return outcome.get("choice"), list(outcome.get("reasons") or [])
+    if getattr(result, "is_fallback", True):
+        return None, ["jev selection fell back; using the deterministic order"]
+    choice = _answer(result, "recipe", "choice")
+    if isinstance(choice, str) and choice in ids:
+        return choice, [f"jev chose {choice}"]
+    return None, [f"jev answer {choice!r} is not a declared recipe; refused"]
 
 
-def _jev_review(jev, plan, task_id, *, lifecycle=None, lifecycle_state=None):
+def _jev_review(jev, plan, task_id):
     """Advisory review of a built plan; never loosens the allowlist."""
     state = {"goal": plan.goal, "recipe": plan.recipe,
              "steps": [{"id": s.id, "description": s.description,
                         "class": s.classification, "argv": list(s.argv)}
                        for s in plan.steps]}
-    def evaluate():
-        result, structural = jev.evaluate_provision(
+    try:
+        result, _ = jev.evaluate_provision(
             state, provision_verification_question_pack(),
             site=PROVISION_SITE, task_id=task_id)
-        if getattr(result, "is_fallback", True):
-            summary = {"is_fallback": True, "reason": "jev review fell back"}
-            flagged = False
-        else:
-            satisfies = _answer(result, "satisfies_goal", "noul")
-            exceeds = _answer(result, "exceeds_goal", "noul")
-            if (not isinstance(satisfies, (int, float))
-                    or not isinstance(exceeds, (int, float))):
-                summary = {"is_fallback": True, "reason": "jev review unparseable"}
-                flagged = False
-            else:
-                flagged = float(exceeds) >= 0.5 or float(satisfies) < 0.5
-                summary = {"is_fallback": False,
-                           "satisfies_goal": float(satisfies),
-                           "exceeds_goal": float(exceeds)}
-        return {"review": summary, "flagged": flagged}, float(
-            structural.get("cost") or 0.0)
-
-    try:
-        outcome = _lifecycle_jev(
-            lifecycle, lifecycle_state,
-            f"{lifecycle_state['request_id']}:provision-review" if lifecycle_state
-            else "provision-review", evaluate)
-    except Exception as exc:
-        if isinstance(exc, (ToolCancelled, ProviderUsageUnknown)):
-            raise
+    except Exception as exc:  # advisory only: any failure is a recorded fallback
         return {"is_fallback": True, "reason": str(exc)}, False
-    if not isinstance(outcome, dict):
-        return {"is_fallback": True,
-                "reason": "jev review outcome unknown"}, False
-    return dict(outcome.get("review") or {}), bool(outcome.get("flagged"))
+    if getattr(result, "is_fallback", True):
+        return {"is_fallback": True, "reason": "jev review fell back"}, False
+    satisfies = _answer(result, "satisfies_goal", "noul")
+    exceeds = _answer(result, "exceeds_goal", "noul")
+    if not isinstance(satisfies, (int, float)) or not isinstance(exceeds, (int, float)):
+        return {"is_fallback": True, "reason": "jev review unparseable"}, False
+    flagged = float(exceeds) >= 0.5 or float(satisfies) < 0.5
+    return {"is_fallback": False, "satisfies_goal": float(satisfies),
+            "exceeds_goal": float(exceeds)}, flagged
 
 
 def plan_provision(goal: str, probe: HostProbe, *, policy: ProvisionPolicy,
                    packages: Optional[Sequence[PackageRequest]] = None,
                    root: Optional[str] = None, jev=None,
-                   task_id: Optional[str] = None, lifecycle=None,
-                   lifecycle_state=None) -> Plan:
+                   task_id: Optional[str] = None) -> Plan:
     """Build a reviewable plan for ``goal`` on this host. Never executes.
 
     Recipe applicability is decided by code from the probe; Jev (when ``jev``
@@ -2333,22 +2184,17 @@ def plan_provision(goal: str, probe: HostProbe, *, policy: ProvisionPolicy,
     recipe, is_fallback, source = RECIPE_INVENTORY, True, "deterministic"
     if not requests:
         notes.append("no installable package was identified in the goal; "
-                     "emitting a host inventory; checks using executables "
-                     "inside an approved root require review. Name a package (for "
+                     "emitting a read-only inventory. Name a package (for "
                      "example name==1.2.3) to get an install plan.")
     elif not candidates:
         notes.append("no setup recipe fits this host and policy; emitting a "
-                     "host inventory; executable trust determines which "
-                     "checks require review.")
+                     "read-only inventory.")
     else:
         recipe = candidates[0]
         if len(candidates) > 1 and jev is not None:
-            if lifecycle is not None:
-                lifecycle.advance(lifecycle_state, "select")
             chosen, reasons = _jev_select(
                 jev, goal, probe,
-                [(cid, _RECIPE_DESCRIPTIONS[cid]) for cid in candidates], task_id,
-                lifecycle=lifecycle, lifecycle_state=lifecycle_state)
+                [(cid, _RECIPE_DESCRIPTIONS[cid]) for cid in candidates], task_id)
             notes.extend(reasons)
             if chosen is not None:
                 recipe, is_fallback, source = chosen, False, "jev"
@@ -2358,18 +2204,14 @@ def plan_provision(goal: str, probe: HostProbe, *, policy: ProvisionPolicy,
         else:
             notes.append(f"only one recipe fits this host: {recipe}")
     if recipe == RECIPE_INVENTORY:
-        steps = _inventory_steps(probe, policy)
+        steps = _inventory_steps(probe)
     else:
         steps = _BUILDERS[recipe](requests, probe, work_root)
     plan = Plan(goal.strip(), tuple(steps), work_root, recipe, source,
                 is_fallback, tuple(notes))
     validate_plan(plan, policy)
     if jev is not None and recipe != RECIPE_INVENTORY:
-        if lifecycle is not None:
-            lifecycle.advance(lifecycle_state, "review")
-        review, flagged = _jev_review(
-            jev, plan, task_id, lifecycle=lifecycle,
-            lifecycle_state=lifecycle_state)
+        review, flagged = _jev_review(jev, plan, task_id)
         live_review = not review["is_fallback"]
         plan = Plan(plan.goal, plan.steps, plan.root, plan.recipe,
                     "jev-review" if live_review and plan.source != "jev"

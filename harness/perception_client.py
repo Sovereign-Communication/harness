@@ -27,10 +27,10 @@ transport error as a refusal would make a caller retry an outage as though
 the driver had declined. Both are recoverable-looking and neither is correct,
 so the boundary is asserted rather than documented.
 
-Non-interference: driver-core's endpoint, token, and policy are configured
-under ``DRIVER_*``. This adapter also uses the shared Harness config directory
-only to locate its default ``driver.json``; ``DRIVER_CONFIG_PATH`` overrides
-that location. It never writes a Harness state file on the driver's behalf.
+Non-interference: driver-core is configured entirely under ``DRIVER_*`` and
+reads nothing from this project's environment. This adapter reads only
+``DRIVER_BASE_URL`` / ``DRIVER_TOKEN`` / ``DRIVER_CONFIG_PATH`` and never
+writes a Harness state file on the driver's behalf.
 
 Usage (Python):
     from harness.perception_client import PerceptionAdapter, PerceptionUnavailable
@@ -54,8 +54,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .paths import get_config_dir
-
 # No provider or service brand strings are hardcoded here. The endpoint is
 # always resolved from config or environment, in this order: explicit
 # constructor args > config file > env vars > loopback default. The default
@@ -77,7 +75,7 @@ def _default_base():
 def _config_path():
     return os.environ.get(
         "DRIVER_CONFIG_PATH",
-        os.path.join(get_config_dir(), "driver.json"),
+        os.path.join(os.path.expanduser("~"), ".config", "harness", "driver.json"),
     )
 
 #: The closed set of reasons the driver may report for a blocked step,
@@ -151,18 +149,14 @@ class PerceptionAdapter:
             # error means the request never became a decision.
             try:
                 try:
-                    decoded_error = json.loads(e.read().decode("utf-8"))
+                    err = json.loads(e.read().decode("utf-8"))
                 except Exception:
-                    decoded_error = {"error": "HTTP {}".format(e.code)}
+                    err = {"error": "HTTP {}".format(e.code)}
             finally:
                 e.close()
-            if isinstance(decoded_error, dict):
-                detail = decoded_error.get("error") or decoded_error
-            else:
-                detail = decoded_error
             raise PerceptionUnavailable(
                 "driver service returned HTTP {}: {}".format(
-                    e.code, detail)
+                    e.code, err.get("error") or err)
             ) from e
         except (urllib.error.URLError, OSError) as e:
             raise PerceptionUnavailable(

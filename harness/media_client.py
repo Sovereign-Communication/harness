@@ -28,8 +28,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .paths import get_config_dir
-
 # No provider/service brand strings are hardcoded here: the endpoint the
 # adapter talks to is always resolved from config or environment, in this
 # order: explicit constructor args > config file > env vars > loopback
@@ -38,7 +36,7 @@ from .paths import get_config_dir
 DEFAULT_BASE = os.environ.get("MEDIA_BASE_URL", "http://127.0.0.1:8765")
 CONFIG_PATH = os.environ.get(
     "MEDIA_CONFIG_PATH",
-    os.path.join(get_config_dir(), "media.json"),
+    os.path.join(os.path.expanduser("~"), ".config", "harness", "media.json"),
 )
 
 
@@ -125,7 +123,7 @@ class MediaAdapter:
         if job.get("status") == "refused":
             return job  # budget refusal envelope with math
         if not wait:
-            return self._envelope(job)
+            return job
         return self.wait(job["id"], timeout=timeout)
 
     def wait(self, job_id, timeout=600.0, interval=2.0):
@@ -214,12 +212,6 @@ def run_cli(args, settings=None):
     p.add_argument("--project", default=None)
 
     opts = ap.parse_args(args)
-    if opts.media_cmd == "job":
-        try:
-            MediaAdapter._quote_job_id(opts.job_id)
-        except ValueError as e:
-            ap.error(str(e))
-
     adapter = MediaAdapter()
 
     def show(env):
@@ -238,13 +230,6 @@ def run_cli(args, settings=None):
         if env.get("math"):
             print("  math:     {}".format(json.dumps(env["math"], sort_keys=True)))
 
-    def exit_code(env):
-        status = env.get("status")
-        if (status == "succeeded"
-                or (opts.no_wait and status in ("queued", "running"))):
-            return 0
-        return 1
-
     try:
         if opts.media_cmd == "image":
             params = {k: v for k, v in (("size", opts.size), ("quality", opts.quality)) if v}
@@ -252,14 +237,14 @@ def run_cli(args, settings=None):
                                 timeout=opts.timeout, provider=opts.provider,
                                 model=opts.model, **params)
             show(env)
-            return exit_code(env)
+            return 0 if env.get("status") == "succeeded" else 1
         if opts.media_cmd == "video":
             params = {"seconds": opts.seconds} if opts.seconds else {}
             env = adapter.video(opts.prompt, project=opts.project, wait=not opts.no_wait,
                                 timeout=opts.timeout, provider=opts.provider,
                                 model=opts.model, **params)
             show(env)
-            return exit_code(env)
+            return 0 if env.get("status") == "succeeded" else 1
         if opts.media_cmd == "job":
             show(adapter.job(opts.job_id))
             return 0

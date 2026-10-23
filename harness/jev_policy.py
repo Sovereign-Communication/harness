@@ -18,9 +18,7 @@ from dataclasses import replace
 from typing import (Any, Callable, Dict, Iterable, List, Optional, Sequence,
                     Tuple)
 
-from .errors import HarnessError, ProviderUsageUnknown, ToolCancelled
-from .events import submit_with_context
-from .provider_errors import ProviderSpendLimitError
+from .errors import HarnessError
 from .config import HARD_MAX_COST
 from .jev import (ACTIVE_GUARD, ACTIVE_RESERVER, ACTIVE_SITE, BREAKER_COOLDOWN_SECONDS,
                   BREAKER_FAILURE_THRESHOLD, CircuitBreakers,
@@ -34,15 +32,11 @@ from .route_pack import (ROUTE_QUERY_SITE, choose_rung_for_tier, fallback_route,
                          validate_route_pack)
 from .jev_packs import (
     ANSWER_PACK_VERSION,
-    SIMPLE_STRATEGY_PACK_VERSION,
     AUDIT_DIMENSIONS_SITE,
     HUL_SCOPE_SITE,
     LOG_FACTOR_SITE,
     PHASE_COMPLETION_SITE,
     PROVISION_SITE,
-    REQUEST_WORKFLOW_SITE,
-    SITE_REACHABILITY_SITE,
-    ECONOMICS_ROUTE_SITE,
     REPO_SUMMARY_SITE,
     HOURGLASS_STAGE_DIMENSIONS,
     HOURGLASS_STAGE_PACK_ID,
@@ -61,7 +55,6 @@ from .jev_packs import (
     SCOPE_COVERAGE_HOLD,
     SCOPE_NOUL_HOLD,
     answer_question_pack,
-    simple_strategy_question_pack,
     claim_support_question_pack,
     claims_from_payload,
     completion_bar_question_pack,
@@ -74,9 +67,6 @@ from .jev_packs import (
     heuristic_route,
     hul_scope_question_pack,
     issue_sort_question_pack,
-    request_workflow_question_pack,
-    site_reachability_question_pack,
-    economics_route_question_pack,
     log_factor_question_pack,
     match_completion_keywords,
     match_keywords,
@@ -279,9 +269,7 @@ class JevPolicy:
     def __init__(self, settings, *, transport=None, governor=None, ledger=None,
                  evaluator=None, breaker_threshold: Optional[int] = None,
                  breaker_cooldown: Optional[float] = None,
-                 clock: Optional[Callable[[], float]] = None,
-                 request_timeout: float = 120.0,
-                 single_attempt: bool = False):
+                 clock: Optional[Callable[[], float]] = None):
         if settings is None:
             raise HarnessError("Jev policy requires settings")
         self.settings = settings
@@ -314,16 +302,12 @@ class JevPolicy:
             transport=transport,
             settings=settings,
             breakers=breakers,
-            request_timeout=request_timeout,
-            single_attempt=single_attempt,
         ) if explicitly_disabled else evaluator or JevEvaluator(
             api_key=getattr(settings, "jev_api_key", None),
             endpoint=getattr(settings, "jev_endpoint", None),
             transport=transport,
             settings=settings,
             breakers=breakers,
-            request_timeout=request_timeout,
-            single_attempt=single_attempt,
         ))
 
     @property
@@ -498,9 +482,7 @@ class JevPolicy:
             try:
                 return job[1]()
             except BaseException as exc:
-                self._release_reservation(exc)
-                if isinstance(exc, ToolCancelled) or getattr(exc, "usage_unknown", False):
-                    raise
+                self._release_reservation()
                 if not fail_closed or not isinstance(exc, Exception):
                     raise
                 if isinstance(exc, HarnessError):
@@ -515,57 +497,20 @@ class JevPolicy:
             return [run(job, fail_closed=False) for job in jobs]
         with ThreadPoolExecutor(max_workers=workers,
                                 thread_name_prefix="jev-fanout") as pool:
-            futures = [submit_with_context(
-                pool, run, job, fail_closed=True) for job in jobs]
+            futures = [pool.submit(run, job, fail_closed=True) for job in jobs]
             results = [future.result() for future in futures]
         for item in results:
             if isinstance(item, _Escaped):
                 raise item.exc  # first HarnessError in job order
         return results
 
-    def _release_reservation(self, error=None) -> None:
+    def _release_reservation(self) -> None:
         """Release this thread's reservation if a call died holding it."""
         handle = getattr(self._tl, "token", None)
+        self._tl.token = None
         if handle is not None:
-            if isinstance(error, ToolCancelled) or getattr(error, "usage_unknown", False):
-                self._settle_cancelled(handle, error)
-            elif isinstance(error, ProviderSpendLimitError):
-                self._release_after_provider_limit(handle, error)
-            else:
-                self._release(handle)
-        else:
-            self._clear_dispatch_state()
-
-    def _release_after_provider_limit(self, reservation, error, *,
-                                      task_id=None) -> None:
-        """Release liability and preserve a terminal provider failure receipt."""
-        site = ACTIVE_SITE.get() or "jev"
-        cost = max(0.0, float(getattr(error, "known_cost", 0.0) or 0.0))
-        model = getattr(self.evaluator, "model", None) or "jev"
-        self._release(reservation)
-        from .provider_errors import account_provider_spend_limit
-        account_provider_spend_limit(error, self.governor, model)
-        if self.ledger is not None and not getattr(error, "ledger_recorded", False):
-            should_write = cost > 0.0
-            repeat = 1
-            if not should_write:
-                should_write, repeat = self._dedupe(
-                    site, "provider_spend_limit",
-                    _digest(task_id, getattr(error, "http_status", None)))
-            if should_write:
-                metadata = {"result_state": "provider_spend_limit",
-                            "error_kind": error.kind,
-                            "http_status": getattr(error, "http_status", None),
-                            "reason": str(error)}
-                if repeat > 1:
-                    metadata["repeat_count"] = repeat
-                self.ledger.append(
-                    "jev_eval", task_id=task_id, site=site, model=model,
-                    verdict="fail", supported=0.0, confidence=0.0,
-                    answers={}, input_tokens=0, output_tokens=0,
-                    cost=cost, is_fallback=False, discarded=cost > 0.0,
-                    known_cost_usd=cost, **metadata)
-                error.ledger_recorded = True
+            self._release(handle)
+        self._clear_dispatch_state()
 
     def _preflight(self, *, site: str, max_input_tokens: int,
                    eager: bool = False):
@@ -608,12 +553,6 @@ class JevPolicy:
 
     def _release(self, reservation) -> None:
         """Settle a reservation at zero (the call was refused or failed)."""
-        # ``_account`` clears the active handle immediately after settlement.
-        # An exception raised later (for example while appending the ledger
-        # row) must not reconcile that already-settled token a second time.
-        if getattr(self._tl, "token", None) is not reservation:
-            self._clear_dispatch_state()
-            return
         token = self._token_of(reservation)
         if token is not None and self.governor is not None:
             try:
@@ -621,71 +560,6 @@ class JevPolicy:
             except HarnessError:
                 pass  # already settled on the call's own path
         self._clear_dispatch_state(reservation)
-
-    def _settle_cancelled(self, reservation, error) -> None:
-        """Book known spend and keep unknown post-dispatch liability reserved."""
-        if getattr(self._tl, "token", None) is not reservation:
-            # The normal accounting path already settled and cleared this
-            # handle; a later cancellation (for example, ledger I/O) must not
-            # reconcile the same token again.
-            self._clear_dispatch_state()
-            return
-        if getattr(error, "usage_unknown", False):
-            # The provider may have received this request, but the usage
-            # response was lost when the local worker was stopped. Book any
-            # known earlier attempts; leave this dispatch's worst-case
-            # reservation outstanding instead of falsely settling it at $0.
-            cost = max(0.0, float(getattr(error, "known_cost", 0.0) or 0.0))
-            token = self._token_of(reservation)
-            model = getattr(self.evaluator, "model", None) or "jev"
-            if cost > 0.0 and not getattr(error, "cost_accounted", False):
-                try:
-                    if self.governor is not None:
-                        self.governor.record_actual(cost, model)
-                    error.cost_accounted = True
-                except HarnessError:
-                    book = getattr(self.governor, "record_overrun", None)
-                    if callable(book):
-                        book(cost, model)
-                    error.cost_accounted = True
-            from .events import emit
-            reserved = token[1] if isinstance(token, tuple) and len(token) > 1 else None
-            if token is not None and self.governor is not None:
-                reclassify = getattr(self.governor, "reclassify_unknown", None)
-                if callable(reclassify):
-                    try:
-                        reserved = reclassify(token)
-                    except HarnessError:
-                        # Preserve the already-held reservation if a custom
-                        # governor cannot reclassify it; never release or
-                        # duplicate the liability after dispatch.
-                        pass
-            error.reserved_cost = float(reserved or 0.0)
-            error.cost_accounted = True
-            phase = (getattr(reservation, "site", None)
-                     or (token[0] if isinstance(token, tuple) and token else None))
-            emit("provider_usage_unknown", model=model, known_cost=cost,
-                 reserved_cost=reserved, phase=phase)
-            self._clear_dispatch_state(reservation)
-            return
-        if getattr(error, "cost_accounted", False):
-            self._release(reservation)
-            return
-        cost = max(0.0, float(getattr(error, "known_cost", 0.0) or 0.0))
-        token = self._token_of(reservation)
-        model = getattr(self.evaluator, "model", None) or "jev"
-        try:
-            if token is not None and self.governor is not None:
-                self.governor.reconcile(token, cost)
-            elif self.governor is not None and cost > 0.0:
-                self.governor.record_actual(cost, model)
-        except HarnessError:
-            book = getattr(self.governor, "record_overrun", None)
-            if cost > 0.0 and callable(book):
-                book(cost, model)
-        finally:
-            self._clear_dispatch_state(reservation)
-        error.cost_accounted = True
 
     def _clear_dispatch_state(self, reservation=None) -> None:
         ACTIVE_SITE.set("")
@@ -917,15 +791,6 @@ class JevPolicy:
             )
             reservation = None
             return result, structural
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             self._release(reservation)
             return self._record_refusal(
@@ -1141,15 +1006,6 @@ class JevPolicy:
                 **{key: values.get(key) for key in signals},
             })
             return result, structural
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             self._release(reservation)
             values = {key: None for key in signals}
@@ -1158,93 +1014,6 @@ class JevPolicy:
                 ["hourglass stage judgment unavailable: " + str(exc)],
                 is_fallback=False, model=self.evaluator.model)
             return finish(fallback, values, False)
-
-    def evaluate_simple_strategy(
-            self, prompt: str, context: str = "", *,
-            site: str = "simple-strategy", task_id: Optional[str] = None,
-            max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
-        """Choose a pre-answer strategy without granting tool authority.
-
-        Choice concentration and probabilities are retained as observations;
-        only the explicit selected option controls this narrow transition.
-        Unavailable Jev yields an honest ``direct_answer`` fallback because
-        deterministic request-kind checks already excluded tool/current work.
-        """
-        options = {
-            "direct_answer", "web_research", "workspace_inspection",
-            "simple_action", "needs_tool", "plan", "ambiguous",
-        }
-
-        def fallback(reason: str, *, result=None):
-            raw_result = result
-            fb = JevEvaluationResult(
-                "fail", 0.0, 0.0,
-                {"strategy": "direct_answer",
-                 "probabilities": None, "concentration": None,
-                 "pack_version": SIMPLE_STRATEGY_PACK_VERSION},
-                [reason],
-                cost=float(getattr(raw_result, "cost", 0.0) or 0.0),
-                input_tokens=getattr(raw_result, "input_tokens", None),
-                output_tokens=getattr(raw_result, "output_tokens", None),
-                is_fallback=True,
-                model=getattr(raw_result, "model", self.evaluator.model),
-                discarded=bool(getattr(raw_result, "discarded", False)),
-                fallback_reason=(getattr(raw_result, "fallback_reason", None)
-                                 or "strategy_unavailable"),
-            )
-            return fb
-
-        reservation = None
-        try:
-            reservation = self._preflight(
-                site=site, max_input_tokens=max_input_tokens)
-            result = self.evaluator.evaluate(
-                {"request": str(prompt or "")[:1400],
-                 "relevant_history": str(context or "")[:1200]},
-                simple_strategy_question_pack())
-            raw = result.answers if isinstance(result.answers, dict) else {}
-            answer = raw.get("strategy")
-            choice = answer.get("choice") if isinstance(answer, dict) else None
-            probabilities = (answer.get("probabilities")
-                             if isinstance(answer, dict) else None)
-            concentration = (answer.get("confidence")
-                             if isinstance(answer, dict) else None)
-            valid = (not result.is_fallback and choice in options
-                     and isinstance(probabilities, dict)
-                     and all(name in probabilities for name in options))
-            if valid:
-                normalized = {
-                    "strategy": choice,
-                    "probabilities": dict(probabilities),
-                    "concentration": concentration,
-                    "pack_version": SIMPLE_STRATEGY_PACK_VERSION,
-                }
-                result = replace(result, answers=normalized, is_fallback=False)
-            else:
-                reason = ((result.reasons or ["simple strategy unavailable"])[0])
-                result = fallback(str(reason), result=result)
-            structural = self._account(
-                result, site=site, task_id=task_id, reservation=reservation)
-            structural.update(result.answers)
-            structural["native"] = not result.is_fallback
-            return result, structural
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
-        except HarnessError as exc:
-            self._release(reservation)
-            result = fallback(str(exc))
-            structural = self._account(
-                result, site=site, task_id=task_id)
-            structural.update(result.answers)
-            structural["native"] = False
-            return result, structural
 
     def evaluate_answer(
             self, prompt: str, answer: str, context: str = "", *,
@@ -1359,15 +1128,6 @@ class JevPolicy:
                     else values["plan_required"] >= 0.5),
             })
             return result, structural
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             self._release(reservation)
             # Only a settlement failure happens AFTER a request was billed; a
@@ -1434,15 +1194,6 @@ class JevPolicy:
             structural = self._account(result, site=site, task_id=task_id,
                                        reservation=reservation)
             return result, structural
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             self._release(reservation)
             # Honest local triage is heuristic only; it never pretends to be live.
@@ -1490,15 +1241,6 @@ class JevPolicy:
                 result, site=site, task_id=task_id, reservation=reservation)
             reservation = None
             return result, structural
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             self._release(reservation)
             return self._record_refusal(
@@ -1569,15 +1311,6 @@ class JevPolicy:
                 })
             reservation = None
             return verdict, structural
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             self._release(reservation)
             result, structural = self._record_refusal(
@@ -1604,15 +1337,6 @@ class JevPolicy:
             )
             reservation = None
             return result, structural
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             self._release(reservation)
             return self._record_refusal(
@@ -1675,15 +1399,6 @@ class JevPolicy:
                 result, site=site, task_id=task_id, node_id=node_id,
                 reservation=reservation)
             return result, structural
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             self._release(reservation)
             route = heuristic_route(prompt, target_files)
@@ -1755,15 +1470,6 @@ class JevPolicy:
                 result, site=site, task_id=task_id, reservation=reservation)
             structural["files"] = list(result.answers["files"])
             return result, structural
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             self._release(reservation)
             picked = heuristic_file_relevance(goal, scoped, max_files=max_files)
@@ -1851,15 +1557,6 @@ class JevPolicy:
             structural["claim_flags"] = flags
             structural["skipped"] = False
             return result, structural
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             self._release(reservation)
             flags = [{"id": c["id"], "supported": None, "fallback": True}
@@ -1977,15 +1674,6 @@ class JevPolicy:
             structural["cannot_complete"] = bool(cannot)
             structural["missing_artifacts"] = missing
             return result, structural
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             self._release(reservation)
             post_dispatch = dispatched and self._sent(reservation)
@@ -2279,15 +1967,6 @@ class JevPolicy:
                 reservation=reservation)
             structural["determination"] = determination
             return result, structural, determination
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             self._release(reservation)
             determination = self._scope_determination(
@@ -2447,15 +2126,6 @@ class JevPolicy:
             result = self.evaluator.evaluate(
                 {"issue": issue_text, "pack_id": pack_doc["id"]},
                 questions)
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             return keyword_sort([str(exc)], reservation=reservation,
                                 reason=_refusal_reason(exc))
@@ -2607,15 +2277,6 @@ class JevPolicy:
                 site=site, max_input_tokens=max_input_tokens)
             result = self.evaluator.evaluate(
                 {"item": text, "pack_id": pack_doc["id"]}, questions)
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             return keyword_judgment([str(exc)], reservation=reservation,
                                     reason=_refusal_reason(exc))
@@ -2792,15 +2453,6 @@ class JevPolicy:
             reservation = self._preflight(
                 site=site, max_input_tokens=max_input_tokens)
             result = self.evaluator.evaluate(payload, questions)
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             return fallback_judgment([str(exc)], reservation=reservation,
                                      reason=_refusal_reason(exc))
@@ -2982,15 +2634,6 @@ class JevPolicy:
             result = self.evaluator.evaluate(
                 {"goal": goal_text, "pack_id": pack_doc["id"]},
                 questions)
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             return heuristic_route(
                 [str(exc)], _refusal_reason(exc), reservation=reservation)
@@ -3193,15 +2836,6 @@ class JevPolicy:
             reservation = self._preflight(
                 site=site, max_input_tokens=max_input_tokens)
             result = self.evaluator.evaluate(payload, questions)
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             return fallback_judgment([str(exc)], reservation=reservation,
                                      reason=_refusal_reason(exc))
@@ -3407,15 +3041,6 @@ class JevPolicy:
             reservation = self._preflight(
                 site=site, max_input_tokens=JEV_MAX_INPUT_TOKENS)
             result = self.evaluator.evaluate(payload, questions)
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
             return fallback_judgment(
                 [f"transport_error: {exc}"], reservation=reservation,
@@ -3668,15 +3293,6 @@ class JevPolicy:
 
         try:
             result = self.evaluator.evaluate_once(sanitized_state, questions)
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except Exception as exc:
             # An injected evaluator should not turn an exception into an
             # implicit fallback score; record the dispatched attempt once.
@@ -3760,18 +3376,25 @@ class JevPolicy:
             "assessed" if assessed else "unassessed", result=result,
             reasons=reasons, perfect=bool(assessed and perfect))
 
-    def evaluate_typed_pack(self, state, questions, *, site: str,
-                            task_id: Optional[str] = None,
-                            node_id: Optional[str] = None,
-                            max_input_tokens: int = JEV_MAX_INPUT_TOKENS,
-                            fallback_reason: str = "unkeyed Jev judgment is unavailable"):
-        """Dispatch one typed pack through the shared budget and ledger owner."""
+    def evaluate_provision(self, state, questions, *, site: str = PROVISION_SITE,
+                           task_id: Optional[str] = None,
+                           node_id: Optional[str] = None,
+                           max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
+        """Run one provisioning question pack (recipe choice or plan review).
+
+        ``harness/provision.py`` owns the packs' meaning and refuses any
+        answer outside its declared candidates; this method only owns the
+        dispatch, bounded spend, and the ONE ledger ``jev_eval``. Unkeyed
+        returns an honest ``is_fallback=True`` result with NO answers -- the
+        planner then falls back to its deterministic order, and nothing is
+        ever approved by a missing judgment. Returns ``(result, structural)``.
+        """
         if not self.keyed:
             result = JevEvaluationResult(
                 "fail", 0.0, 0.0, {},
-                [fallback_reason],
+                ["unkeyed: provisioning falls back to the deterministic plan"],
                 is_fallback=True, model=self.evaluator.model,
-                fallback_reason=self._no_key_reason())
+                fallback_reason="missing_key")
             structural = self._account(
                 result, site=site, task_id=task_id, node_id=node_id)
             return result, structural
@@ -3785,108 +3408,14 @@ class JevPolicy:
                 reservation=reservation)
             reservation = None
             return result, structural
-        except ProviderUsageUnknown as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ToolCancelled as exc:
-            self._settle_cancelled(reservation, exc)
-            raise
-        except ProviderSpendLimitError as exc:
-            self._release_after_provider_limit(reservation, exc, task_id=task_id)
-            raise
         except HarnessError as exc:
-            self._release(reservation)
+            if reservation is not None and self.governor is not None:
+                try:
+                    self.governor.reconcile(reservation, 0.0)
+                except HarnessError:
+                    pass
             return self._record_refusal(
                 str(exc), site=site, task_id=task_id, node_id=node_id)
-
-    def evaluate_site_reachability(self, state, *, task_id: Optional[str] = None,
-                                   max_input_tokens: int = 512):
-        """Ask one bounded Jev Noul whether a probe received an HTTPS response."""
-        return self.evaluate_typed_pack(
-            state, site_reachability_question_pack(),
-            site=SITE_REACHABILITY_SITE, task_id=task_id,
-            max_input_tokens=max_input_tokens,
-            fallback_reason="unkeyed Jev cannot judge site reachability")
-
-    def evaluate_request_workflow(self, state, *, task_id: Optional[str] = None,
-                                  max_input_tokens: int = 512):
-        """Choose answer/simple-action/plan for a freeform request candidate."""
-        return self.evaluate_typed_pack(
-            state, request_workflow_question_pack(),
-            site=REQUEST_WORKFLOW_SITE, task_id=task_id,
-            max_input_tokens=max_input_tokens,
-            fallback_reason="unkeyed Jev cannot select a request workflow")
-
-    def evaluate_provision(self, state, questions, *, site: str = PROVISION_SITE,
-                           task_id: Optional[str] = None,
-                           node_id: Optional[str] = None,
-                           max_input_tokens: int = JEV_MAX_INPUT_TOKENS):
-        """Run a provisioning question pack through shared spend and ledger."""
-        return self.evaluate_typed_pack(
-            state, questions, site=site, task_id=task_id, node_id=node_id,
-            max_input_tokens=max_input_tokens,
-            fallback_reason="unkeyed: provisioning falls back to the deterministic plan")
-
-    def evaluate_economics_route(self, state, *, task_id: Optional[str] = None,
-                                 max_input_tokens: int = 512) -> Dict[str, Any]:
-        """Advisory EV-3 Jev tier-routing judgment (DF-EV-6).
-
-        Dispatches ``packs/economics_route.pack.json`` through the shared
-        budget and ledger owner when keyed, and always computes the
-        deterministic :func:`~harness.routing_table.classify_task_tier`
-        baseline. Because EV-3 is advisory until 30 real tasks prove >=10%
-        better accuracy, ``effective_tier`` stays deterministic unless
-        explicitly promoted, while ``advisory_tier`` and ``agreement``
-        record Jev's typed judgment.
-        """
-        from .routing_table import TIER_ORDER, classify_task_tier, get_tier_route
-
-        prompt = ""
-        target_files: List[str] = []
-        if isinstance(state, dict):
-            prompt = str(state.get("prompt") or state.get("instruction") or "")
-            raw_files = state.get("target_files") or state.get("files") or []
-            if isinstance(raw_files, (list, tuple)):
-                target_files = [str(f) for f in raw_files]
-        else:
-            prompt = str(state or "")
-
-        deterministic_tier = classify_task_tier(prompt, target_files=target_files)
-        result, structural = self.evaluate_typed_pack(
-            {"prompt": prompt[:1200], "target_files": target_files[:15]},
-            economics_route_question_pack(),
-            site=ECONOMICS_ROUTE_SITE,
-            task_id=task_id,
-            max_input_tokens=max_input_tokens,
-            fallback_reason="unkeyed: economics_route uses deterministic classify_task_tier",
-        )
-        answers = result.answers if isinstance(result.answers, dict) else {}
-        raw_tier = answers.get("tier")
-        if isinstance(raw_tier, dict):
-            raw_tier = raw_tier.get("choice") or raw_tier.get("value")
-        advisory_tier = (
-            str(raw_tier) if str(raw_tier) in TIER_ORDER else deterministic_tier
-        )
-        confident = (
-            not result.is_fallback
-            and float(result.confidence or 0.0) >= float(getattr(self, "min_confidence", 0.70) or 0.70)
-            and str(raw_tier) in TIER_ORDER
-        )
-        route = get_tier_route(deterministic_tier)
-        return {
-            "site": ECONOMICS_ROUTE_SITE,
-            "mode": "advisory",
-            "effective_tier": deterministic_tier,
-            "deterministic_tier": deterministic_tier,
-            "advisory_tier": advisory_tier,
-            "agreement": advisory_tier == deterministic_tier,
-            "confident": confident,
-            "confidence": float(result.confidence or 0.0),
-            "is_fallback": bool(result.is_fallback),
-            "answers": dict(answers),
-            "route": route,
-            "structural": structural,
-        }
 
     @staticmethod
     def attach(envelope: Dict[str, Any], structural: Optional[Dict[str, Any]]):

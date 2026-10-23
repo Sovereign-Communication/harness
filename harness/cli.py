@@ -26,36 +26,17 @@ import json
 import os
 import tempfile
 import time
-from pathlib import Path
-from . import jev_calibration as _jcal
-from . import provision as _pv
-from . import refine as _refine
-from . import repo_cards as _rc
-from .agent import AutonomousAgent
-from .request_intent import is_site_check_prompt
 from .consent import probe_consent
 from .config import (
     DEFAULT_MAX_COST,
     DISCOUNT_IS_MULTIPLIER,
     DISCOUNT_LISTED_IS_EFFECTIVE,
     HARD_MAX_COST,
-    apply_pool_rotation,
     freeze_jev_settings,
     load_vision_preflight_settings,
-    resolve_fireworks_key,
     resolve_hourglass,
 )
-from .endpoint_pricing import load_fireworks_endpoints
 from .errors import HarnessError
-from .lifecycle import LifecycleCoordinator
-from .fireworks import compare_fireworks_vs_openrouter
-from .fireworks_probe import run_fireworks_probe
-from .routing_table import (
-    SNAPSHOT_PRICE_TABLE,
-    TIER_MODELS,
-    check_tier_snapshot_freshness,
-    unlisted_tier_fallbacks,
-)
 from .spend import discover_free_models
 from .filesafety import VERIFY_TIMEOUT, validate_target_file, validate_verify_command
 from .gate_runner import (GATES, GATE_ORDER, STAGE_GATE_TIMEOUT, gate_help,
@@ -98,11 +79,7 @@ from .repo_summary import write_map as _repo_write_map
 from .log_analysis import analyze_log as _log_analyze, load_log_text as _log_load_text, write_analysis as _log_write_analysis
 from .mission_driver import pack_probe_attempt as _mission_pack_probe
 from .mission_driver import run_mission as _mission_run
-from .capability import (
-    capabilities_payload as _capability_payload_owner,
-    evaluate_pool_rotation,
-    seat_share_report,
-)
+from .capability import capabilities_payload as _capability_payload_owner
 from .brief import build_brief, freshness_report, render_brief, validate_brief
 from .dag import TaskDAG, node_apply_kwargs
 from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
@@ -200,14 +177,14 @@ def _cmd_verify(opts, settings):
     # derivation all live in service.prepare_verify. The CLI keeps only
     # presentation -- lint printing, the rejected exit, and the reassurance
     # banner. Error wording is preserved verbatim at the CLI boundary.
-    if opts.prompt is not None and not opts.prompt.strip():
-        raise HarnessError("prompt is empty.")
     if not (opts.claims_file or opts.prompt_file or opts.prompt):
         raise HarnessError(
             "verify requires --prompt-file/--prompt or --claims-file.")
     if opts.claims_file and not opts.source_file:
         raise HarnessError("verify --claims-file requires --source-file "
                            "(the verbatim code window the panel will review).")
+    if opts.prompt is not None and not opts.prompt.strip():
+        raise HarnessError("prompt is empty.")
     prepared = _prepare_verify(
         prompt=opts.prompt, prompt_file=opts.prompt_file,
         claims_file=opts.claims_file, source_file=opts.source_file,
@@ -429,11 +406,10 @@ def _batch_options(opts, continuation=None):
     if continuation and instruction:
         continuation = dict(continuation)
         continuation["remaining_scope"] = instruction
-    model = opts.model or getattr(opts, "trial_model", None)
     return BatchOptions(
         instruction=instruction, edit_snippet=opts.edit_snippet,
         verify_cmd=opts.verify, max_rounds=opts.max_rounds,
-        require_consent=opts.require_consent, model=model,
+        require_consent=opts.require_consent, model=opts.model,
         max_tokens=opts.max_tokens, task_max_cost=opts.task_max_cost,
         allow_escalation=opts.allow_escalation,
         reasoning_effort=opts.reasoning_effort, renew_consent=opts.renew_consent,
@@ -442,7 +418,6 @@ def _batch_options(opts, continuation=None):
         max_rotations=opts.max_rotations, backend=opts.backend,
         verify_only=opts.verify_only, max_lines=opts.max_lines,
         continuation=continuation)
-
 
 
 def _cmd_apply(opts, settings):
@@ -485,8 +460,6 @@ def _cmd_continue(opts, settings):
 
 
 def _cmd_offer(opts, settings):
-    if not isinstance(opts.task, str) or not opts.task.strip():
-        raise HarnessError("offer requires a non-empty --task.")
     api_key, gov = _governor(settings)
     ledger = _ledger(settings)
     result = probe_consent(
@@ -698,8 +671,7 @@ def _cmd_site_export(opts, settings):
     import harness as _harness_pkg
     bundle = _site_export_bundle(
         opts.ledger, opts.consent, pricing_path=opts.pricing,
-        harness_version=_harness_pkg.__version__,
-        include_economics=bool(getattr(opts, "economics", False)))
+        harness_version=_harness_pkg.__version__)
     size = _site_export_write(bundle, opts.out)
     eprint(f"[site-export] bundle {bundle['bundle_id']} written: {opts.out} "
            f"({size} bytes, {bundle['totals']['runs']} runs, "
@@ -758,36 +730,6 @@ def _cmd_bench(opts, settings):
         sys.exit(2)
 
 
-def _cmd_site_check(opts, settings):
-    """Thin CLI face over AutonomousAgent's shared request lifecycle."""
-    prompt = " ".join(opts.prompt).strip()
-    if not is_site_check_prompt(prompt):
-        raise HarnessError(
-            "site-check requires a single current availability question "
-            "for a named public site")
-    agent = AutonomousAgent(settings=settings)
-    result = agent.run_prompt(
-        prompt=prompt, auto_apply=False, session_id=opts.session_id,
-        force_conversation=True)
-    _emit(result, opts.out)
-    code = terminal_exit_code(result.get("status"))
-    if code:
-        sys.exit(code)
-
-
-def _cmd_ask(opts, settings):
-    """CLI face over the same conversational owner used by the GUI."""
-    prompt = " ".join(opts.prompt).strip()
-    agent = AutonomousAgent(settings=settings)
-    result = agent.run_prompt(
-        prompt=prompt, auto_apply=False, session_id=opts.session_id,
-        force_conversation=True)
-    _emit(result, opts.out)
-    code = terminal_exit_code(result.get("status"))
-    if code:
-        sys.exit(code)
-
-
 def _cmd_models(opts, settings):
     if opts.limit < 1:
         raise HarnessError("--limit must be a positive integer")
@@ -835,15 +777,13 @@ def _cmd_spend(opts, settings):
 
 
 def _cmd_cost(opts, settings):
-    """Cost observability snapshot: track spend by tier, model, lane, and calculate savings."""
+    """Cost observability snapshot: track spend by tier, model, and calculate savings."""
     ledger = _ledger(settings)
     report = ledger.cost_report(
         window=getattr(opts, "last", None),
         by_tier=bool(getattr(opts, "by_tier", False)),
         by_model=bool(getattr(opts, "by_model", False)),
-        by_lane=bool(getattr(opts, "by_lane", False)),
         savings=bool(getattr(opts, "savings", False)),
-        price_table=SNAPSHOT_PRICE_TABLE,
     )
     if not getattr(opts, "json", False):
         _print_cost_table(report)
@@ -875,19 +815,11 @@ def _run_mission_driver(pack, opts):
     (DF-HUL-3: one driver, no second loop). Adds the CLI attempt-seat note
     (DF-HUL-2) to the returned summary."""
     run_settings = load_settings()
-    allow_live_jev = bool(getattr(opts, "live_jev", False))
-    if allow_live_jev and getattr(run_settings, "jev_api_key", None):
-        plan_ceiling = getattr(opts, "max_cost_usd", None) or getattr(opts, "max_cost", None) or 0.10
-        gov = jev_face_governor(run_settings, plan_ceiling)
-        transport = HttpTransport()
-        ledger = _ledger(run_settings) if hasattr(run_settings, "ledger_path") else None
-        scope_policy = policy_for(run_settings, transport=transport, governor=gov, ledger=ledger)
-    else:
-        run_settings.jev_api_key = None
-        try:
-            scope_policy = policy_for(run_settings)
-        except HarnessError:
-            scope_policy = None
+    run_settings.jev_api_key = None
+    try:
+        scope_policy = policy_for(run_settings)
+    except HarnessError:
+        scope_policy = None
     stall_limit = getattr(opts, "stall_limit", None)
     result = _mission_run(
         pack,
@@ -952,7 +884,7 @@ def _cmd_mission(opts, settings):
         mr.write_status(pack)
         out = mr.pack_summary(pack)
         out["resume"] = validated
-        resumable = not mr.is_terminal(pack)
+        resumable = validated["status"] not in ("terminal", "complete", "failed")
         out["resumable"] = resumable
         out["resumed"] = False
         out["how_to_continue"] = (
@@ -1002,88 +934,21 @@ def _cmd_rankings(opts, settings):
 
 
 def _cmd_economics(opts, settings):
-    """Economics & value surfaces: EV-0a discount probe, EV-1..EV-5 report /
-    freshness / bounded pool-rotation proposals, and EV-6 Fireworks comparison.
+    """EV-0's only shipped surface: the EV-0a discount-truth probe.
+
+    A CLI exists because a probe nobody can run is not shipped -- not because
+    this face reports anything. The shortlist-pricing report that used to
+    live here (`--models`/`--max-fetches`/`--receipt-dir`, plus its receipt
+    writer) was unrequested scope and is gone with its canon rows (DF-EV-12);
+    endpoint pricing, the cost index and cheapest-endpoint selection are
+    EV-1..EV-4's work, and this module owes them evidence plus a gate.
+
+    Read-only with respect to configuration: the only write is `--record`,
+    which stores the discount-semantics verdict the price gate refuses to
+    proceed without. That verdict is repo evidence, not machine state: it
+    lands in the committed receipt and has to be committed like any other
+    artifact the gate depends on.
     """
-    if getattr(opts, "provider", None) == "fireworks":
-        if getattr(opts, "confirm_single_paid_call", False) or getattr(opts, "model", None):
-            return _cmd_fireworks_verify(opts, settings)
-        endpoints = load_fireworks_endpoints(pack_path=getattr(opts, "pack", None))
-        comparisons = compare_fireworks_vs_openrouter(endpoints=endpoints)
-        if not getattr(opts, "json", False):
-            hdr = f"{'Family':<22} {'Fireworks ($/M)':<18} {'OpenRouter ($/M)':<18} {'Cheaper'}"
-            print(hdr)
-            print("-" * len(hdr))
-            for row in comparisons:
-                fw_in = row.get("fireworks_input_per_mtok", 0.0)
-                fw_out = row.get("fireworks_output_per_mtok", 0.0)
-                or_in = row.get("openrouter_input_per_mtok", 0.0)
-                or_out = row.get("openrouter_output_per_mtok", 0.0)
-                print(f"{row.get('family', ''):<22} {fw_in:.2f}/{fw_out:.2f}{'':<8} "
-                      f"{or_in:.2f}/{or_out:.2f}{'':<8} {row.get('cheaper_provider', '')}")
-        _emit({
-            "provider": "fireworks",
-            "endpoints": len(endpoints),
-            "comparisons": comparisons,
-        }, opts.out, force_json=getattr(opts, "json", False))
-        return
-
-    if getattr(opts, "check_fresh", False):
-        freshness = check_tier_snapshot_freshness()
-        _emit(freshness, opts.out, force_json=getattr(opts, "json", False))
-        if not freshness.get("ok"):
-            sys.exit(2)
-        return
-
-    if (getattr(opts, "report", False)
-            or getattr(opts, "propose", False)
-            or getattr(opts, "apply", False)):
-        ledger = _ledger(settings)
-        entries = ledger.entries()
-        freshness = check_tier_snapshot_freshness()
-        seat_share = seat_share_report(entries)
-        cost_rep = ledger.cost_report(
-            by_tier=True, by_model=True, by_lane=True, savings=True,
-            price_table=SNAPSHOT_PRICE_TABLE,
-        )
-        current_pool = list(getattr(settings, "apply_pool", None) or ())
-        candidates = []
-        for m in current_pool:
-            price = SNAPSHOT_PRICE_TABLE.get(m, {})
-            in_rate = float(price.get("input_per_mtok") or 0.5)
-            out_rate = float(price.get("output_per_mtok") or 1.5)
-            est_cost = max(1e-6, (in_rate * 2.0 + out_rate * 0.8) / 1000.0)
-            candidates.append({
-                "id": m,
-                "value_score": round(1.0 / est_cost, 4),
-                "cost_usd": round(est_cost, 6),
-                "samples": 5,
-            })
-        proposal = evaluate_pool_rotation(
-            current_pool=current_pool,
-            candidate_metrics=candidates,
-            ledger_entries=entries,
-            allow_cost_increase=bool(getattr(opts, "allow_cost_increase", False)),
-        )
-        applied = False
-        if (getattr(opts, "apply", False)
-                and proposal.get("changed")
-                and proposal.get("proposed_pool")):
-            apply_pool_rotation(proposal["proposed_pool"])
-            applied = True
-        payload = {
-            "status": "ok",
-            "freshness": freshness,
-            "tiers": TIER_MODELS,
-            "unlisted_tier_fallbacks": unlisted_tier_fallbacks(),
-            "seat_share": seat_share,
-            "rotation_proposal": proposal,
-            "applied": applied,
-            "cost_summary": cost_rep,
-        }
-        _emit(payload, opts.out, force_json=getattr(opts, "json", False))
-        return
-
     if not opts.probe_model:
         raise HarnessError(
             "`harness economics` runs the EV-0a discount probe; pass "
@@ -1105,7 +970,6 @@ def _cmd_economics(opts, settings):
                    f"({record['semantics']}: {record.get('reason')}); "
                    "nothing recorded, the price gate keeps refusing.")
     _emit(report, opts.out)
-
 
 
 def _cmd_capabilities(opts, settings):
@@ -1194,8 +1058,7 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
                             stages=getattr(opts, "stages", None),
                             brief=getattr(opts, "brief", None),
                             max_input_tokens=getattr(opts, "token_budget_input", None),
-                            max_output_tokens=getattr(opts, "token_budget_output", None),
-                            jev_policy=jev_policy))
+                            max_output_tokens=getattr(opts, "token_budget_output", None)))
 
 
 def _resolve_hourglass(opts, settings):
@@ -1232,10 +1095,6 @@ def _cmd_plan(opts, settings):
     elif decompose_llm or confirm or plan_consensus:
         api_key, gov = _governor(settings, plan_ceiling)
         transport = HttpTransport()
-    elif getattr(settings, "jev_api_key", None):
-        gov = jev_face_governor(settings, plan_ceiling)
-        transport = HttpTransport()
-        api_key = settings.jev_api_key
     else:
         gov, transport, api_key = None, None, None
 
@@ -1598,10 +1457,6 @@ def _cmd_jev_vision_assessment(opts, settings):
         raise HarnessError("vision assessment is unassessed; see the emitted reason")
 
 
-def _extract_judgment_records(entries):
-    return _jcal.extract_judgment_records(entries)
-
-
 def _cmd_jev_freeze(opts, settings):
     """Operator face over ``config.freeze_jev_settings`` (GAP-freeze-face).
 
@@ -1613,22 +1468,10 @@ def _cmd_jev_freeze(opts, settings):
     ``effective`` block is read back with ``load_settings()``, i.e. what the
     NEXT run will actually use rather than what this call hoped it wrote.
     """
-    min_confidence = getattr(opts, "min_confidence", None)
-    if getattr(opts, "calibrate", False) and min_confidence is None:
-        ledger = _ledger(settings)
-        entries = ledger.tail(2000)
-        records = _extract_judgment_records(entries)
-        if records:
-            report = _jcal.analyze_judgments(records)
-            rec = report.get("recommendation")
-            if rec and rec.get("discriminating_band"):
-                min_confidence = rec["discriminating_band"][0]
-                eprint(f"[jev-freeze] calibration recommended min_confidence: {min_confidence:.3f}")
-
     frozen = freeze_jev_settings(
         settings,
         jev_model=getattr(opts, "model", None),
-        min_confidence=min_confidence,
+        min_confidence=getattr(opts, "min_confidence", None),
         persist=bool(getattr(opts, "persist", False)))
     result = {
         "status": "frozen" if frozen["persisted"] else "preview",
@@ -1644,284 +1487,11 @@ def _cmd_jev_freeze(opts, settings):
         eprint("[jev-freeze] preview only (no write); pass --persist to pin")
 
 
-def _cmd_provision(opts, settings):
-    """Host provisioning (PROVISION-CORE): probe, plan, or execute with approval."""
-    cmd = getattr(opts, "provision_cmd", None)
-    if cmd == "probe":
-        probe = _pv.probe_host()
-        res = probe.to_dict()
-        if not getattr(opts, "json", False) and not getattr(opts, "quiet", False):
-            print(f"OS: {probe.os_name} ({probe.arch})")
-            print(f"Python: {probe.python_version} ({probe.python_executable})")
-            print(f"GPU: {probe.gpu_present} (free disk: {(probe.free_disk_bytes or 0) / (1024**3):.1f} GB)")
-            print(f"Package managers: {', '.join(sorted(probe.usable_managers())) or 'none'}")
-        _emit(res, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
-    elif cmd == "plan":
-        root = os.path.abspath(getattr(opts, "root", "."))
-        probe = _pv.probe_host()
-        policy = _pv.policy_for_probe(probe, [root])
-        plan = _pv.plan_provision(opts.goal, probe, policy=policy)
-        rendered = _pv.render_plan(plan)
-        res = plan.to_dict()
-        res["rendered"] = rendered
-        if not getattr(opts, "json", False) and not getattr(opts, "quiet", False):
-            print(rendered)
-        _emit(res, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
-    elif cmd == "apply":
-        plan_file = getattr(opts, "plan_file", None)
-        if not plan_file or not os.path.isfile(plan_file):
-            raise HarnessError(f"plan file not found: {plan_file}")
-        try:
-            with open(plan_file, encoding="utf-8") as f:
-                raw = json.load(f)
-        except Exception as exc:
-            raise HarnessError(f"failed to read plan JSON: {exc}") from exc
-        try:
-            plan = _pv.plan_from_dict(raw)
-        except Exception as exc:
-            raise HarnessError(f"malformed plan JSON: {exc}") from exc
-        probe = _pv.probe_host()
-        policy = _pv.policy_for_probe(probe, [plan.root])
-        _pv.validate_plan(plan, policy)
-        dry_run = bool(getattr(opts, "dry_run", True))
-        gate = _pv.ApprovalGate()
-        if getattr(opts, "approve_all", False):
-            gate.record(
-                plan,
-                _pv.APPROVE,
-                approver="operator-cli",
-                reason="CLI --approve-all flag",
-            )
-        ledger = _ledger(settings)
-        task_id = getattr(opts, "task_id", None)
-        lifecycle = lifecycle_state = None
-        if not dry_run:
-            task_id = str(task_id or f"provision-{plan.digest[:32]}")
-            lifecycle = LifecycleCoordinator()
-            lifecycle_state = lifecycle.load(task_id)
-            if lifecycle_state is None:
-                lifecycle_state = lifecycle.begin(
-                    "provisioning", task_id, plan.goal, stage="approval",
-                    data={"plan": plan.to_dict(), "plan_digest": plan.digest})
-            elif (lifecycle_state["lane"] != "provisioning"
-                  or lifecycle_state["data"].get("plan_digest") != plan.digest):
-                raise HarnessError(
-                    "provision task id is already bound to a different lifecycle or plan")
-            if lifecycle_state["status"] in {"complete", "failed"}:
-                saved = lifecycle_state["data"].get("result")
-                if not isinstance(saved, dict):
-                    raise HarnessError(
-                        "completed provision task has no saved result; refusing to rerun")
-                res = saved
-                report = None
-            else:
-                prior_state = lifecycle_state
-                lifecycle_state = lifecycle.resume(task_id) or prior_state
-                if lifecycle_state["status"] != "running":
-                    saved = lifecycle_state["data"].get("result")
-                    res = dict(saved) if isinstance(saved, dict) else {
-                        "plan_digest": plan.digest, "dry_run": False,
-                    }
-                    res["outcome"] = "deferred"
-                    res["resumable"] = bool(
-                        lifecycle_state["data"].get("resumable"))
-                    res["defer_reason"] = lifecycle_state["data"].get(
-                        "defer_reason", "the prior operation requires reconciliation")
-                    res["requires_reconciliation"] = list(
-                        lifecycle_state["execution"]["requires_reconciliation"])
-                    report = None
-                else:
-                    report = _pv.execute_plan(
-                        plan, gate, policy=policy, ledger=ledger,
-                        task_id=task_id, dry_run=False, lifecycle=lifecycle,
-                        lifecycle_state=lifecycle_state)
-                    res = report.to_dict()
-        else:
-            report = _pv.execute_plan(
-                plan, gate, policy=policy, ledger=ledger, dry_run=True)
-            res = report.to_dict()
-        if not getattr(opts, "json", False) and not getattr(opts, "quiet", False):
-            outcome = report.outcome if report is not None else res.get("outcome", "deferred")
-            print(f"Provision run: {outcome} (dry_run={dry_run})")
-            for sr in (report.results if report is not None else res.get("results", [])):
-                if hasattr(sr, "status"):
-                    print(f"  [{sr.status}] step {sr.step_id}: {sr.note or sr.status}")
-                else:
-                    print(f"  [{sr.get('status')}] step {sr.get('step_id')}: "
-                          f"{sr.get('note') or sr.get('status')}")
-        _emit(res, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
-
-
-def _cmd_repo_cards(opts, settings):
-    """Repo philosophy cards (REPO-CARDS): deterministic scan of committed config."""
-    root = Path(opts.root) if getattr(opts, "root", None) else _rc.default_root()
-    cards = Path(opts.cards) if getattr(opts, "cards", None) else (Path(__file__).resolve().parent.parent / _rc.CARDS_SUBDIR)
-    check = bool(getattr(opts, "check", False))
-    repo_filter = getattr(opts, "repo", None)
-
-    rationale_dir = cards / _rc.RATIONALE_SUBDIR
-    repos = [(_rc.canonical_repo_name(n, cards), p) for n, p in _rc.discover_repos(root)]
-    if repo_filter:
-        repos = [(n, p) for n, p in repos if n == repo_filter or n.lower() == repo_filter.lower()]
-
-    if check:
-        stale = []
-        for name, path in repos:
-            body = _rc.render_card(name, _rc.scan_repo(path), _rc.rationale_for(name, rationale_dir))
-            target = cards / f"{name}.md"
-            if not target.is_file() or target.read_text(encoding="utf-8") != body:
-                stale.append(name)
-        res = {
-            "status": "stale" if stale else "ok",
-            "checked": len(repos),
-            "stale": stale,
-            "up_to_date": len(repos) - len(stale),
-        }
-        _emit(res, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
-        if stale:
-            for s in stale:
-                eprint(f"[repo-cards] stale: {s}")
-            raise HarnessError(f"{len(stale)} card(s) would change")
-        if not getattr(opts, "quiet", False) and not getattr(opts, "json", False):
-            print("cards up to date")
-    else:
-        changed, unchanged = _rc.generate(root, cards, repo=repo_filter)
-        res = {
-            "status": "written",
-            "changed": changed,
-            "unchanged": unchanged,
-        }
-        _emit(res, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
-        if not getattr(opts, "quiet", False) and not getattr(opts, "json", False):
-            for c in changed:
-                print(f"wrote {c}")
-            for u in unchanged:
-                print(f"unchanged {u}")
-
-
-def _cmd_jev_calibration(opts, settings):
-    """Jev calibration analysis (JEV-P3-calibration-analysis): confidence distribution & threshold band."""
-    records = []
-    file_path = getattr(opts, "file", None)
-    if file_path:
-        if not os.path.isfile(file_path):
-            raise HarnessError(f"file not found: {file_path}")
-        with open(file_path, encoding="utf-8") as f:
-            raw = json.load(f)
-            if isinstance(raw, list):
-                records = raw
-            elif isinstance(raw, dict) and "records" in raw:
-                records = raw["records"]
-    else:
-        ledger = _ledger(settings)
-        entries = ledger.tail(2000)
-        records = _extract_judgment_records(entries)
-
-    report = _jcal.analyze_judgments(records)
-    if not getattr(opts, "json", False) and not getattr(opts, "quiet", False):
-        print(_jcal.format_report(report))
-    _emit(report, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
-
-
-def _cmd_refine(opts, settings):
-    """Propose-Probe-Compose refinement loop (issue #239, Phase 0 pilot)."""
-    ledger = _ledger(settings)
-
-    # --record-outcome TASK_ID FAMILY JEV_OUTCOME : P0 task outcome tracking.
-    if getattr(opts, "record_outcome", None):
-        task_id, family, outcome_s = opts.record_outcome
-        try:
-            outcome = float(outcome_s)
-        except ValueError as err:
-            raise HarnessError(f"JEV_OUTCOME must be a number 0-1, got {outcome_s!r}") from err
-        try:
-            rec = _refine.record_task_outcome(ledger, task_id, family, outcome)
-        except ValueError as err:
-            raise HarnessError(str(err)) from err
-        _emit({"recorded": True, "task_id": task_id, "seq": rec.get("seq")},
-              getattr(opts, "out", None),
-              force_json=getattr(opts, "json", False))
-        return
-
-    # --status : pilot status, lessons, tiers.
-    if getattr(opts, "status", False):
-        report = _refine.status_report(ledger)
-        if not getattr(opts, "json", False) and not getattr(opts, "quiet", False):
-            print(f"refine pilot: {'ACTIVE' if report['pilot_active'] else 'inactive'} "
-                  f"({report['pilot_cycles_completed']}/{report['pilot_cycles_target']} cycles)")
-            print(f"lessons: {report['lessons_count']} ({report['seed_lessons']} seed)")
-            print(f"families: {', '.join(report['families'])}")
-        _emit(report, getattr(opts, "out", None),
-              force_json=getattr(opts, "json", False))
-        return
-
-    # --task / --family : validate the inputs for the not-yet-implemented Phase 2 cycle.
-    task_id = getattr(opts, "task", None)
-    family = getattr(opts, "family", None)
-    if task_id is not None and not task_id.strip():
-        raise HarnessError("--task requires a non-empty task ID")
-    if not task_id and not family:
-        raise HarnessError("harness refine needs --task, --family, --status, or --record-outcome")
-    if not _refine.pilot_active() and not _refine.load_pilot_state().get("graduated"):
-        raise HarnessError("refine pilot complete and not graduated: operator review required "
-                           "(see issue #239 Phase 0)")
-    # Full cycle execution lands in Phase 2; the scaffold validates inputs now.
-    if task_id:
-        rec = _refine.get_task_outcome(ledger, task_id)
-        if rec is None:
-            raise HarnessError(f"no task_outcome recorded for {task_id!r} "
-                               f"(record with: harness refine --record-outcome {task_id} <family> <0-1>)")
-        _emit({"task_id": task_id, "outcome": rec.get("jev_outcome"),
-               "pilot_cycle": "validated (Phase 2 executes the loop)"},
-              getattr(opts, "out", None),
-              force_json=getattr(opts, "json", False))
-        return
-    if not _refine.valid_family(family):
-        raise HarnessError(f"unknown task family: {family!r}")
-    _emit({"family": family, "pilot_cycle": "validated (Phase 2 executes the loop)"},
-          getattr(opts, "out", None),
-          force_json=getattr(opts, "json", False))
-
-
-def _cmd_fireworks_verify(opts, settings):
-    """EV-8's only shipped surface: the single paid Fireworks call.
-
-    No new command: ``harness economics --provider fireworks
-    --confirm-single-paid-call --model <confirmed-path> --max-cost <= 0.01``.
-    Every refusal lives in ``run_fireworks_probe`` (the ONE owner of the
-    one-shot rule); this face only resolves keys, builds the session, and
-    emits the report.
-    """
-    if not getattr(opts, "confirm_single_paid_call", False):
-        raise HarnessError(
-            "the paid Fireworks verification sends real money; pass "
-            "--confirm-single-paid-call to confirm this one call.")
-    if not getattr(opts, "model", None):
-        raise HarnessError(
-            "pass --model accounts/fireworks/models/<slug> with a confirmed "
-            "model path for the verification call.")
-    if getattr(opts, "max_cost", None) is None:
-        raise HarnessError(
-            "pass an explicit --max-cost (at most $0.01) for the single paid "
-            "verification call.")
-    api_key, gov = _governor(settings, getattr(opts, "max_cost", None))
-    report = run_fireworks_probe(
-        HttpTransport(), api_key, resolve_fireworks_key(), gov,
-        _ledger(settings), model=opts.model, max_cost=opts.max_cost,
-        fireworks_enabled=getattr(settings, "fireworks_enabled", False),
-        receipt_path=getattr(opts, "receipt", None))
-    _emit(report, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
-    if not report.get("contains_ok"):
-        raise SystemExit(2)
-
-
 # Command -> handler. `required=True` subparsers make an unknown command
 # unreachable here, so the table has no default arm; every handler takes
 # (opts, settings), so a signature drift fails loudly at dispatch instead of
 # silently mis-binding arguments.
 _DISPATCH = {
-    "ask": _cmd_ask,
-    "site-check": _cmd_site_check,
     "verify": _cmd_verify,
     "lint-claims": _cmd_lint_claims,
     "brief": _cmd_brief,
@@ -1950,10 +1520,6 @@ _DISPATCH = {
     "jev-vision-assessment": _cmd_jev_vision_assessment,
     "jev-freeze": _cmd_jev_freeze,
     "mission": _cmd_mission,
-    "provision": _cmd_provision,
-    "repo-cards": _cmd_repo_cards,
-    "jev-calibration": _cmd_jev_calibration,
-    "refine": _cmd_refine,
 }
 
 
@@ -2012,14 +1578,9 @@ def main(argv=None):
                 max_cost_override=getattr(opts, "max_cost", None))
         else:
             settings = load_settings()
-        if getattr(opts, "trial_model", None):
-            settings.trial_model = opts.trial_model
         _DISPATCH[opts.command](opts, settings)
     except HarnessError as e:
-        kind = getattr(e, "kind", "harness_error")
-        cost = max(0.0, float(getattr(e, "known_cost", 0.0) or 0.0))
-        usage = f" (known billed usage: ${cost:.6f})" if cost else ""
-        print(f"[FATAL] [{kind}] {e}{usage}", file=sys.stderr)
+        print(f"[FATAL] {e}", file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:
         print("[interrupted] aborted by user (Ctrl-C); no further spend", file=sys.stderr)
@@ -2027,7 +1588,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    # Match the installed console-script entry point: adapter status codes
-    # (notably media/driver deferrals) must reach the calling shell.
-    sys.exit(main())
-
+    main()

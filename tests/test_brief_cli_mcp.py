@@ -144,7 +144,7 @@ class TestBriefMcp(unittest.TestCase):
             with open(fpath, "w", encoding="utf-8") as f:
                 f.write("print('hello world')\n")
 
-            _, server = make_server(allowed_roots=[d])
+            _, server = make_server()
             res = server._invoke("generate_brief", {
                 "goal": "Explain main",
                 "files": [fpath],
@@ -165,15 +165,13 @@ class TestBriefMcp(unittest.TestCase):
             fpath = os.path.join(d, "single.py")
             with open(fpath, "w", encoding="utf-8") as f:
                 f.write("val = 123\n")
-            _, server = make_server(allowed_roots=[d])
+            _, server = make_server()
             res = server._invoke("generate_brief", {
                 "goal": "Test string file",
                 "files": fpath,
             })
             self.assertEqual(res["status"], "ok")
-            included = res["brief"]["scope"]["included"]
-            self.assertEqual(len(included), 1)
-            self.assertTrue(os.path.samefile(included[0], fpath))
+            self.assertEqual(res["brief"]["scope"]["included"], [fpath])
 
     def test_mcp_invoke_generate_brief_invalid_files_type(self):
         from tests.test_mcp import make_server

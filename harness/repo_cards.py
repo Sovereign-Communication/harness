@@ -249,18 +249,13 @@ def scan_repo(repo: Path) -> List[Row]:
 
 
 def discover_repos(root: Path) -> List[Tuple[str, Path]]:
-    """Return ``(name, path)`` for a selected repo or canonical siblings.
+    """Return ``(name, path)`` for canonical sibling repos, sorted by name.
 
-    A selected git checkout is returned by itself. Otherwise, a directory
-    qualifies when a child is a git checkout and is not a worktree of another
-    repository. The test-repo and scratch directories are skipped.
+    A directory qualifies when it is a git checkout and is not a worktree of
+    another repository. The test-repo and scratch directories are skipped.
     """
-    root = Path(root)
-    if (root / ".git").exists():
-        return [(root.name, root)]
     try:
-        entries = sorted(p for p in root.iterdir()
-                         if p.is_dir() and not p.is_symlink())
+        entries = sorted(p for p in root.iterdir() if p.is_dir())
     except OSError:
         return []
     found = []
@@ -320,16 +315,7 @@ def write_card(cards_dir: Path, repo_name: str, body: str) -> bool:
     return True
 
 
-def canonical_repo_name(name: str, cards_dir: Path) -> str:
-    """Resolve repo name matching existing card filename case-insensitively, or return name."""
-    if cards_dir.is_dir():
-        for f in cards_dir.glob("*.md"):
-            if f.stem.lower() == name.lower():
-                return f.stem
-    return name
-
-
-def generate(root: Path, cards_dir: Path, repo: Optional[str] = None) -> Tuple[List[str], List[str]]:
+def generate(root: Path, cards_dir: Path) -> Tuple[List[str], List[str]]:
     """Generate a card for every canonical repo under ``root``.
 
     Returns ``(changed, unchanged)`` repo names.
@@ -337,10 +323,7 @@ def generate(root: Path, cards_dir: Path, repo: Optional[str] = None) -> Tuple[L
     rationale_dir = cards_dir / RATIONALE_SUBDIR
     changed: List[str] = []
     unchanged: List[str] = []
-    repos = [(canonical_repo_name(n, cards_dir), p) for n, p in discover_repos(root)]
-    if repo:
-        repos = [(n, p) for n, p in repos if n == repo or n.lower() == repo.lower()]
-    for name, path in repos:
+    for name, path in discover_repos(root):
         body = render_card(name, scan_repo(path), rationale_for(name, rationale_dir))
         if write_card(cards_dir, name, body):
             changed.append(name)
@@ -362,21 +345,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         help="output directory for generated cards")
     parser.add_argument("--check", action="store_true",
                         help="report cards that would change; write nothing")
-    parser.add_argument("--repo", default=None,
-                        help="optional specific repository name to generate/check")
     args = parser.parse_args(argv)
 
     root = args.root or default_root()
     cards = args.cards or Path(__file__).resolve().parent.parent / CARDS_SUBDIR
 
-    repos = [(canonical_repo_name(n, cards), p) for n, p in discover_repos(root)]
-    if args.repo:
-        repos = [(n, p) for n, p in repos if n == args.repo or n.lower() == args.repo.lower()]
-
     if args.check:
         rationale_dir = cards / RATIONALE_SUBDIR
         stale = []
-        for name, path in repos:
+        for name, path in discover_repos(root):
             body = render_card(name, scan_repo(path), rationale_for(name, rationale_dir))
             target = cards / "{}.md".format(name)
             if not target.is_file() or target.read_text(encoding="utf-8") != body:
@@ -386,7 +363,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("{} card(s) would change".format(len(stale)) if stale else "cards up to date")
         return 1 if stale else 0
 
-    changed, unchanged = generate(root, cards, repo=args.repo)
+    changed, unchanged = generate(root, cards)
     for name in changed:
         print("wrote {}".format(name))
     for name in unchanged:

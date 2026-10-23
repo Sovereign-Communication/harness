@@ -12,13 +12,11 @@ export const state = {
   snapshot: null,
 };
 
-const demoSnapshotUrl = new URL("../data/demo/snapshot.json", import.meta.url).href;
-
 export async function loadSnapshot() {
   if (state.snapshot) return state.snapshot;
   const sources = state.mode === "local"
-    ? ["/api/snapshot", demoSnapshotUrl]
-    : [demoSnapshotUrl];
+    ? ["/api/snapshot", "./data/demo/snapshot.json"]
+    : ["./data/demo/snapshot.json"];
   for (const url of sources) {
     try {
       const res = await fetch(url, { headers: { accept: "application/json" } });
@@ -74,26 +72,17 @@ export function hourglass(metrics) {
   const rows = tiers.map(t => ({
     tier: t, runs: depth[t]?.runs || 0, share: depth[t]?.share || 0,
   }));
-  const unknown = depth.unknown;
-  const unknownSummary = unknown?.runs > 0
-    ? `; unknown depth: ${unknown.runs} run${unknown.runs === 1 ? "" : "s"} (${pct(unknown.share)})`
-    : "";
   const max = Math.max(...rows.map(r => r.runs), 1);
   const cell = (r, cls) => el("div", { class: `col ${cls}` },
     el("strong", {}, r.tier), el("div", { class: "cap" },
       `${r.runs} runs · ${pct(r.share)}`));
   return el("div", { class: "hg", role: "img",
-    "aria-label": `Run depth: T0 through T3${unknownSummary}` },
+    "aria-label": "Run depth: base tiers carry most runs; frontier is rare" },
     cell(rows[0], "base"),
     el("div", { style: `width:${18 + 82 * (rows[3].runs / max)}%; border-left:3px solid var(--warn); grid-row:1/3;` }),
     cell(rows[3], "waist"),
     cell(rows[1], "base"),
-    cell(rows[2], "base"),
-    unknown?.runs > 0
-      ? el("div", { class: "col unknown", style: "grid-column:1 / -1" },
-          el("strong", {}, "Unknown"), el("div", { class: "cap" },
-            `${unknown.runs} runs · ${pct(unknown.share)}`))
-      : null);
+    cell(rows[2], "base"));
 }
 
 export function barChart(items, { label, value, format } = {}) {
@@ -209,12 +198,10 @@ export async function renderRouter(root, snapshot) {
   root.append(
     el("h2", {}, "Route a query — the marketplace demo"),
     el("p", { class: "muted" },
-      "This demo submits a fixed ladder of tier, cost class, and guidance to ",
-      "the route endpoint. Local mode uses Harness; public mode uses a ",
-      "Worker-side Jev proxy and deterministic fallback. The CLI defaults to ",
-      "packs/model_route.pack.json; MCP requires callers to supply a pack. ",
-      "These surfaces ",
-      "do not share this demo pack."),
+      "Type a request; the router compares it against the declared rung ladder ",
+      "(tier, cost class, observed success) and picks the cheapest capable rung. ",
+      "This is the same pack the harness CLI/MCP route command uses — the site ",
+      "demos the product, it does not re-implement it."),
     el("form", { class: "inline", onsubmit: onSubmit },
       el("input", { type: "text", name: "goal", required: true,
         placeholder: "e.g. fix the race in the token bucket",
@@ -361,9 +348,7 @@ export function renderMethodology(root, snapshot) {
     el("h3", {}, "Demo data"),
     el("p", {}, snapshot?.demo
       ? snapshot.demo_note || "This snapshot is labeled demo data."
-      : snapshot
-        ? "No demo flag on this snapshot: it claims to be live evidence."
-        : "No snapshot is available, so its evidence status cannot be classified."),
+      : "No demo flag on this snapshot: it claims to be live evidence."),
     el("h3", {}, "Failures are data"),
     el("p", {}, m ? "Abort rates, gate-waste and fail outcomes ride alongside "
       + `the wins: gated pass rate overall ${pct(m.gated_pass_rate?.overall?.pass_rate)}.`

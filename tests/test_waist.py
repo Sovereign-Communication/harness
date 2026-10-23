@@ -62,53 +62,6 @@ class DecomposeViaLlmTests(unittest.TestCase):
         with self.assertRaises(HarnessError):
             decompose_via_llm(lambda p: "```json\n{malformed\n```", "g")
 
-    def test_repair_truncated_json_and_candidates(self):
-        from harness.waist import _repair_truncated_json, _parse_json_object, _json_object_candidates
-        self.assertIsNone(_repair_truncated_json("not json"))
-        repaired = _repair_truncated_json('{"escaped": "hello \\"world\\"", "list": [1], "nested": {"a": 2}, "tail": "cut off')
-        self.assertEqual(repaired.get("list"), [1])
-        self.assertEqual(repaired.get("nested"), {"a": 2})
-        parsed = _parse_json_object('{"verdict": "pass", "reason": "all good', "test")
-        self.assertEqual(parsed.get("verdict"), "pass")
-        candidates = list(_json_object_candidates("<think>reasoning</think>```json\n{\"a\": 1}\n```"))
-        self.assertIn('{"a": 1}', candidates)
-
-    def test_empty_response_refused(self):
-        with self.assertRaises(HarnessError) as ctx:
-            decompose_via_llm(lambda p: "", "g")
-        self.assertIn("empty response", str(ctx.exception).lower())
-
-    def test_confirm_plan_with_string_returning_chat_fn_success(self):
-        from harness.waist import compose_plan
-        from tests._fake import FakeTransport
-        from harness.spend import SpendGovernor
-        # chat_fn returning string (like orchestrator chat_fn) must not be sliced on char 0
-        transport = FakeTransport()
-        gov = SpendGovernor(transport, "key", max_cost=0.5)
-        plan = compose_plan(
-            transport=transport, api_key="k", governor=gov, ledger=None,
-            opts_goal="Split the work", candidate_files=["harness/sync.py"],
-            decompose_llm=True, chat_fn=lambda p: DECOMP_JSON)
-        self.assertIn("nodes", plan)
-        self.assertEqual(len(plan["nodes"]), 2)
-
-    def test_confirm_plan_with_tuple_and_dict_returning_chat_fn_success(self):
-        from harness.waist import compose_plan
-        from tests._fake import FakeTransport
-        from harness.spend import SpendGovernor
-        transport = FakeTransport()
-        gov = SpendGovernor(transport, "key", max_cost=0.5)
-        plan1 = compose_plan(
-            transport=transport, api_key="k", governor=gov, ledger=None,
-            opts_goal="Split the work", candidate_files=["harness/sync.py"],
-            decompose_llm=True, chat_fn=lambda p: (DECOMP_JSON, 0.001))
-        self.assertIn("nodes", plan1)
-        plan2 = compose_plan(
-            transport=transport, api_key="k", governor=gov, ledger=None,
-            opts_goal="Split the work", candidate_files=["harness/sync.py"],
-            decompose_llm=True, chat_fn=lambda p: {"content": DECOMP_JSON})
-        self.assertIn("nodes", plan2)
-
     def test_plan_task_uses_decomposed_dag_and_classifies_tiers(self):
         dag = decompose_via_llm(lambda p: DECOMP_JSON, "Split the work")
         plan = plan_task("Split the work", decomposed_dag=dag)
@@ -588,31 +541,6 @@ class ComposePlanTests(_WaistFixture):
                             decompose_llm=True,
                             decompose_model="m/cheap",
                             chat_fn=lambda p: (DECOMP_JSON, 0.005))
-        self.assertEqual(plan["decomposition"], "llm:m/cheap")
-
-    def test_parse_json_object_candidates_and_fallbacks(self):
-        from harness.waist import _parse_json_object
-        from harness.errors import HarnessError
-        res1 = _parse_json_object("[1, 2, 3]\n{'ok': 1}", "test")
-        self.assertEqual(res1, {"ok": 1})
-        res2 = _parse_json_object('{"a": 1, // comment\n}', "test")
-        self.assertEqual(res2, {"a": 1})
-        res3 = _parse_json_object("{'flag': True, 'val': None}", "test")
-        self.assertEqual(res3, {"flag": True, "val": None})
-        with self.assertRaises(HarnessError):
-            _parse_json_object("[1, 2, 3]", "test_list")
-        with self.assertRaises(HarnessError):
-            _parse_json_object("[1, 2, // comment\n 3]", "test_comment_list")
-
-    def test_compose_plan_governed_chat_caller(self):
-        from tests._fake import FakeTransport, m, comp
-        from harness.spend import SpendGovernor
-        fake = FakeTransport(models=[m("m/cheap")], posts=[comp(DECOMP_JSON)])
-        gov = SpendGovernor(fake, "sk-test", max_cost=1.0)
-        plan = compose_plan(transport=fake, api_key="k", governor=gov,
-                            ledger=self.ledger, opts_goal="Split work",
-                            decompose_llm=True, decompose_model="m/cheap",
-                            allow_escalation=True)
         self.assertEqual(plan["decomposition"], "llm:m/cheap")
 
     def test_heuristic_default_untouched(self):

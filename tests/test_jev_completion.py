@@ -1364,9 +1364,11 @@ class DriverPhaseRowsTests(unittest.TestCase):
     """`DRV-1`/`DRV-2` are registered phases, so `jev-phase` reads their own
     STATUS rows.
 
-    PR #159 merged `DRV-1` and PR #223 merged `DRV-2` onto `main`. Both
-    phases are closed with live paid-cheap dogfood receipts and pass
-    all hard gates and Jev completion bars."""
+    PR #159 merged `DRV-1` onto `main`, so that row is now real merge
+    evidence. The invariant that still matters for both rows is the honest one:
+    a landed PR is not the same as a finished phase, so neither row may claim
+    completion while its remaining conditions are open. `DRV-2` has not landed
+    at all and must not read as merge evidence."""
 
     def _repo_root(self):
         return str(Path(__file__).resolve().parents[1])
@@ -1379,15 +1381,25 @@ class DriverPhaseRowsTests(unittest.TestCase):
         self.assertTrue(drv1.startswith("| `DRV-1` `harness driver` adapter"))
         self.assertTrue(drv2.startswith("| `DRV-2` driver-core extraction"))
 
-    def test_driver_rows_claim_complete_and_pass_gates(self):
-        for phase in ("DRV-1", "DRV-2"):
-            evidence = collect_phase_evidence(self._repo_root(), phase)
-            self.assertTrue(evidence["pr_merged"], evidence["status_row"])
-            self.assertTrue(evidence["ci_green"], evidence["status_row"])
-            self.assertTrue(
-                phase_status_claims_complete(evidence["status_row"] or ""),
-                evidence["status_row"])
-            self.assertEqual(evidence["open_blockers"], [], evidence["open_blockers"])
+    def test_a_landed_driver_row_is_merge_evidence_but_not_a_finished_phase(self):
+        evidence = collect_phase_evidence(self._repo_root(), "DRV-1")
+        self.assertTrue(evidence["pr_merged"], evidence["status_row"])
+        # The merge is necessary but not sufficient: the completion rule also
+        # wants CI green on the merge and a paid-cheap dogfood receipt, so the
+        # row must stay open and must not be readable as a finished phase.
+        self.assertFalse(
+            phase_status_claims_complete(evidence["status_row"] or ""),
+            evidence["status_row"])
+        self.assertTrue(evidence["open_blockers"], evidence["open_blockers"])
+
+    def test_an_unlanded_driver_row_is_open_and_not_merge_evidence(self):
+        evidence = collect_phase_evidence(self._repo_root(), "DRV-2")
+        self.assertFalse(evidence["pr_merged"], evidence["status_row"])
+        self.assertFalse(evidence["ci_green"], evidence["status_row"])
+        self.assertFalse(
+            phase_status_claims_complete(evidence["status_row"] or ""),
+            evidence["status_row"])
+        self.assertTrue(evidence["open_blockers"], evidence["open_blockers"])
 
     def test_the_driver_contracts_name_real_tests_and_files(self):
         root = Path(self._repo_root())
@@ -1411,25 +1423,9 @@ class ShippedCanonRowsAreRegisteredTests(unittest.TestCase):
     """
 
     #: canon row says **complete** with no open clause -> must report merged.
-    COMPLETE = (
-        "JEV-CORE-HARDENING",
-        "DYN-ROT",
-        "CHAT-LANE",
-        "REPO-CARDS",
-        "PROVISION-CORE",
-        "JEV-P3-CALIBRATION-ANALYSIS",
-        "EV-0",
-        "EV-1",
-        "EV-2",
-        "EV-3",
-        "EV-4",
-        "EV-5",
-        "EV-6",
-        "EV-7",
-        "REFINE-LOOP",
-    )
+    COMPLETE = ("JEV-CORE-HARDENING", "DYN-ROT", "CHAT-LANE")
     #: canon row keeps an open clause -> must still report open.
-    OPEN: tuple[str, ...] = ("EV-8",)
+    OPEN = ("REPO-CARDS", "PROVISION-CORE", "JEV-P3-CALIBRATION-ANALYSIS")
     ALL = COMPLETE + OPEN
 
     def _repo_root(self):
@@ -1495,9 +1491,13 @@ class ShippedCanonRowsAreRegisteredTests(unittest.TestCase):
             self.assertFalse(result["can_mark_complete"], (phase, result["bar"]))
 
     def test_a_genuinely_open_row_does_not_claim_completion(self):
-        """A genuinely open row does not claim completion. Registering the row
-        must not turn the fallback's uniform 35.0/False into a false pass."""
-        ev = collect_phase_evidence(self._repo_root(), "OC-HANDOFF")
+        """PROVISION-CORE's PR really did merge; its WORK is open. This pins
+        the distinction that makes the registration honest: a visible merge is
+        not a completion. Registering the row must not turn the fallback's
+        uniform 35.0/False into a false pass just because the merge is now
+        readable."""
+        ev = collect_phase_evidence(self._repo_root(), "PROVISION-CORE")
+        self.assertTrue(ev["pr_merged"], ev["status_row"])
         self.assertFalse(
             phase_status_claims_complete(ev["status_row"]), ev["status_row"])
         self.assertIn("STATUS row not complete", ev["open_blockers"])
@@ -1609,19 +1609,23 @@ class PhaseRegistryHonestyTests(unittest.TestCase):
         self.assertIsNotNone(row, self.EV0)
         self.assertIn("`" + self.EV0.lower() + "`", row.split("|")[1].lower())
 
-    def test_ev0_completes_with_verified_receipt_and_pinned_pr(self):
-        """The probe receipt has landed in audits/self/dogfood/EV0A_DISCOUNT_SEMANTICS.json;
-        EV-0 now passes its hard gates and scores above the bar with pr_pattern pinned."""
+    def test_ev0_reports_its_real_open_work_not_an_unlanded_phase(self):
+        """Visible now, still incomplete: the `EV-0a` probe receipt really is
+        missing, so this must NOT pass -- but it must fail on what is
+        actually open, with `origin_evidence` pointing at its own row."""
         ev = collect_phase_evidence(self._repo_root(), self.EV0)
         self.assertIsNotNone(ev["status_row"], self.EV0)
         self.assertEqual(ev["origin_evidence"], ev["status_row"], self.EV0)
-        self.assertTrue(ev["pr_merged"], ev["status_row"])
-        self.assertTrue(ev["local_gates_green"], ev["status_row"])
-        self.assertEqual(ev["open_blockers"], [], self.EV0)
-        self.assertIsNotNone(PHASE_CONTRACTS[self.EV0]["pr_pattern"], self.EV0)
+        self.assertFalse(ev["pr_merged"], ev["status_row"])
+        self.assertFalse(ev["local_gates_green"], ev["status_row"])
+        self.assertIn("STATUS row not complete", ev["open_blockers"])
         result = score_phase_completion(ev, jev_policy=None)
-        self.assertTrue(result["can_mark_complete"], self.EV0)
-        self.assertTrue(result["bar"]["pass"], self.EV0)
+        self.assertFalse(result["can_mark_complete"], self.EV0)
+
+    def test_ev0_keeps_its_unpinned_pr_until_the_probe_receipt_lands(self):
+        """The needle is the fix; `pr_pattern: None` is deliberate and stays,
+        so no PR can be read as merged evidence before EV-0a has one."""
+        self.assertIsNone(PHASE_CONTRACTS[self.EV0]["pr_pattern"], self.EV0)
 
     def test_an_unresolvable_phase_states_its_cause_where_the_operator_reads_it(self):
         """The cause used to land in `notes`, which `jev-phase` never prints.
@@ -1641,13 +1645,13 @@ class PhaseRegistryHonestyTests(unittest.TestCase):
         self.assertIn("no STATUS row found for JEV-P0", printed)
 
     def test_an_honest_open_row_is_not_told_to_rewrite_its_wording(self):
-        """An honest open row's open cell is correct: its work did not
-        finish. Nothing needs correcting, so the bucket that says otherwise
-        must not appear and the advice must not be printed."""
+        """`PROVISION-CORE`'s `**open**` cell is correct: its PR merged, its
+        work did not finish. Nothing needs correcting, so the bucket that
+        says otherwise must not appear and the advice must not be printed."""
         for label, (evidence, result) in (
                 ("fixture", self._score(self.HONEST_OPEN)),
                 ("live", (lambda ev: (ev, score_phase_completion(ev, jev_policy=None)))(
-                    collect_phase_evidence(self._repo_root(), "OC-HANDOFF")))):
+                    collect_phase_evidence(self._repo_root(), "PROVISION-CORE")))):
             with self.subTest(label=label):
                 self.assertIn("STATUS row not complete", evidence["open_blockers"],
                               evidence["status_row"])

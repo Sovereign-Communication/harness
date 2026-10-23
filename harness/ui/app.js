@@ -1,38 +1,22 @@
-let authTokenOverride;
-
 function getAuthToken() {
-  if (authTokenOverride !== undefined) return authTokenOverride;
   if (typeof location !== "undefined") {
     if (location.hash && location.hash.length > 1) {
       const h = decodeURIComponent(location.hash.slice(1));
       if (h && !h.startsWith("/")) {
-        let stored = false;
-        try {
-          localStorage.setItem("harness_ui_auth_token", h);
-          stored = true;
-        } catch (_e) {}
-        if (stored && window.history && window.history.replaceState) {
-          try {
-            window.history.replaceState(window.history.state, "",
-              window.location.pathname + window.location.search);
-          } catch (_e) {}
-        }
+        try { localStorage.setItem("harness_ui_auth_token", h); } catch (_e) {}
         return h;
       }
     }
   }
-  // The fragment is only a launch handoff. Remove it from the address bar and
-  // browser history before any API request; the token is sent in a header.
   try {
-    if (typeof history !== "undefined" && history.replaceState) {
-      history.replaceState(history.state, "", location.pathname + location.search);
-    }
-  } catch (_e) {}
+    return localStorage.getItem("harness_ui_auth_token") || null;
+  } catch (_e) {
+    return null;
+  }
 }
 
 function setAuthToken(token) {
   const t = token ? String(token).trim() : null;
-  authTokenOverride = t;
   if (t) {
     try { localStorage.setItem("harness_ui_auth_token", t); } catch (_e) {}
   } else {
@@ -46,12 +30,10 @@ window.HARNESS_SET_TOKEN = setAuthToken;
 
 let isAuthPromptOpen = false;
 let authPromptPromise = null;
-let authPromptGeneration = 0;
 
 function promptForAuthToken(errMsg) {
   if (isAuthPromptOpen && authPromptPromise) return authPromptPromise;
   isAuthPromptOpen = true;
-  const generation = ++authPromptGeneration;
   authPromptPromise = new Promise((resolve) => {
     const modal = document.getElementById("auth-modal");
     if (!modal) {
@@ -64,21 +46,14 @@ function promptForAuthToken(errMsg) {
     const errText = document.getElementById("auth-error-msg");
     if (errText && errMsg) errText.textContent = errMsg;
     const input = document.getElementById("auth-token-input");
-    const feedback = document.getElementById("auth-feedback");
     if (input) input.value = getAuthToken() || "";
-    if (feedback) {
-      feedback.textContent = "";
-      feedback.hidden = true;
-    }
     modal.hidden = false;
     if (input) input.focus();
 
     const saveBtn = document.getElementById("btn-save-token");
     const cancelBtn = document.getElementById("btn-cancel-token");
-    if (saveBtn) saveBtn.disabled = false;
 
     const cleanup = () => {
-      if (generation !== authPromptGeneration || !isAuthPromptOpen) return;
       modal.hidden = true;
       isAuthPromptOpen = false;
       authPromptPromise = null;
@@ -97,52 +72,14 @@ function promptForAuthToken(errMsg) {
     }
 
     if (saveBtn) {
-      saveBtn.onclick = async () => {
+      saveBtn.onclick = () => {
         const val = input ? input.value.trim() : "";
-        if (!val) {
-          if (feedback) {
-            feedback.textContent = "Enter the local UI token to continue.";
-            feedback.hidden = false;
-          }
-          if (input) input.focus();
-          return;
-        }
-        saveBtn.disabled = true;
-        if (feedback) {
-          feedback.textContent = "Checking token…";
-          feedback.hidden = false;
-        }
-        try {
-          const check = await fetch("/api/status", {
-            headers: { "X-Harness-Auth": val }, cache: "no-store",
-          });
-          if (generation !== authPromptGeneration || !isAuthPromptOpen) return;
-          if (check.status === 401) {
-            if (feedback) feedback.textContent =
-              "That token was not accepted. Check the launch instructions above and try again.";
-            return;
-          }
-          if (!check.ok) {
-            if (feedback) feedback.textContent =
-              `Harness could not validate the token (HTTP ${check.status}). Try again.`;
-            return;
-          }
-          setAuthToken(val);
-          cleanup();
-          pollRoute();
-          pollSpend();
-          refreshSessionList();
-          resolve(val);
-        } catch (_e) {
-          if (generation === authPromptGeneration && isAuthPromptOpen && feedback) {
-            feedback.textContent =
-              "Could not reach Harness to check the token. Confirm the server is running and try again.";
-          }
-        } finally {
-          if (generation === authPromptGeneration && isAuthPromptOpen) {
-            saveBtn.disabled = false;
-          }
-        }
+        if (val) setAuthToken(val);
+        cleanup();
+        pollRoute();
+        pollSpend();
+        refreshSessionList();
+        resolve(val);
       };
     }
     if (cancelBtn) {
@@ -214,23 +151,15 @@ const fmtCost = (v) => (typeof v === "number") ? `$${v.toFixed(4)}` : "$0.0000";
 let sessionId = localStorage.getItem("harness_session_id") || "sess_" + Math.random().toString(36).slice(2, 10);
 localStorage.setItem("harness_session_id", sessionId);
 
-// A fresh page starts review-first. Auto Apply is a deliberate page-local choice.
-localStorage.removeItem("harness_auto_apply");
-let autoApply = false;
+let autoApply = localStorage.getItem("harness_auto_apply") !== "false";
 // Mirror of the server-side ``allow_escalation`` setting (single source of
 // truth: /api/settings). The old localStorage flag is gone -- it desynced
 // from the server and clicking the route badge changed nothing real.
-let paidEnabled = null;
+let paidEnabled = true;
 let webEnabled = localStorage.getItem("harness_web_enabled") === "true";
-// Retire the old profile-global workspace: blank now means chat-only.
-localStorage.removeItem("harness_workdir");
-const workspaceKey = (id) => `harness_workspace:${id}`;
-let workDir = sessionStorage.getItem(workspaceKey(sessionId)) || "";
-window.getHarnessWorkspace = () => workDir.trim();
+let workDir = localStorage.getItem("harness_workdir") || "";
 let currentRunId = null;
-let activeAgentMessage = null;
 let pollTimer = null;
-let runGeneration = 0;
 let eventSeq = 0;
 let routeRequestSeq = 0;
 
@@ -254,8 +183,7 @@ function setupSidebar() {
     workdirInput.value = workDir;
     workdirInput.addEventListener("change", () => {
       workDir = workdirInput.value.trim();
-      if (workDir) sessionStorage.setItem(workspaceKey(sessionId), workDir);
-      else sessionStorage.removeItem(workspaceKey(sessionId));
+      localStorage.setItem("harness_workdir", workDir);
     });
   }
   refreshSessionList();
@@ -297,11 +225,6 @@ async function switchSession(id) {
   if (id === sessionId) return;
   sessionId = id;
   localStorage.setItem("harness_session_id", sessionId);
-  workDir = sessionStorage.getItem(workspaceKey(sessionId)) || "";
-  const workdirInput = $("#workdir-input");
-  if (workdirInput) workdirInput.value = workDir;
-  autoApply = false;
-  updateModeDisplay();
   $("#chat-feed").innerHTML = "";
   $("#welcome-hero").hidden = false;
   await loadHistory();
@@ -315,11 +238,6 @@ async function deleteSession(id) {
     if (id === sessionId) {
       sessionId = "sess_" + Math.random().toString(36).slice(2, 10);
       localStorage.setItem("harness_session_id", sessionId);
-      workDir = "";
-      autoApply = false;
-      const workdirInput = $("#workdir-input");
-      if (workdirInput) workdirInput.value = "";
-      updateModeDisplay();
       $("#chat-feed").innerHTML = "";
       $("#welcome-hero").hidden = false;
     }
@@ -347,6 +265,7 @@ function setupHeaderControls() {
 
   modeBtn.addEventListener("click", () => {
     autoApply = !autoApply;
+    localStorage.setItem("harness_auto_apply", autoApply ? "true" : "false");
     updateModeDisplay();
   });
 
@@ -387,6 +306,24 @@ function setupHeaderControls() {
   // against the hard ceiling and refuses out-of-range values).
   const meter = $("#spend-meter");
   const capPop = $("#cap-popover");
+  const fwMeter = $("#fireworks-spend-meter");
+  if (fwMeter && capPop) {
+    fwMeter.classList.add("clickable");
+    fwMeter.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (capPop.hidden) openCapPopover("fireworks_budget_usd");
+      else closeCapPopover();
+    });
+  }
+  const jevMeter = $("#jev-spend-meter");
+  if (jevMeter && capPop) {
+    jevMeter.classList.add("clickable");
+    jevMeter.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (capPop.hidden) openCapPopover("jev_max_cost");
+      else closeCapPopover();
+    });
+  }
   if (meter && capPop) {
     meter.classList.add("clickable");
     meter.addEventListener("click", (ev) => {
@@ -422,11 +359,6 @@ function setupHeaderControls() {
   $("#btn-new-chat").addEventListener("click", () => {
     sessionId = "sess_" + Math.random().toString(36).slice(2, 10);
     localStorage.setItem("harness_session_id", sessionId);
-    workDir = "";
-    autoApply = false;
-    const workdirInput = $("#workdir-input");
-    if (workdirInput) workdirInput.value = "";
-    updateModeDisplay();
     $("#chat-feed").innerHTML = "";
     $("#welcome-hero").hidden = false;
     $("#prompt-input").value = "";
@@ -437,32 +369,11 @@ function setupHeaderControls() {
   const webBtn = $("#btn-web-toggle");
   if (webBtn) {
     updateWebDisplay();
-    webBtn.addEventListener("click", (ev) => {
-      if (ev.shiftKey) {
-        ev.stopPropagation();
-        const pop = $("#web-popover");
-        if (pop && pop.hidden) openWebPopover();
-        else closeWebPopover();
-        return;
-      }
+    webBtn.addEventListener("click", () => {
       webEnabled = !webEnabled;
       localStorage.setItem("harness_web_enabled", webEnabled ? "true" : "false");
       updateWebDisplay();
     });
-    const webPop = $("#web-popover");
-    if (webPop) {
-      $("#web-allowlist-save").addEventListener("click", saveWebAllowlist);
-      $("#web-allowlist-hosts").addEventListener("keydown", (ev) => {
-        if (ev.key === "Enter") $("#web-allowlist-save").click();
-      });
-      document.addEventListener("click", (ev) => {
-        if (!webPop.hidden && !webPop.contains(ev.target)
-            && !webBtn.contains(ev.target)) closeWebPopover();
-      });
-      document.addEventListener("keydown", (ev) => {
-        if (ev.key === "Escape" && !webPop.hidden) closeWebPopover();
-      });
-    }
   }
 
   const authBtn = $("#btn-auth-toggle");
@@ -484,13 +395,6 @@ function updateRouteDisplay() {
 
   const s = backendSettings || {};
   const hasPaidKey = s.paid_key_present;
-
-  if (!backendSettings || typeof paidEnabled !== "boolean") {
-    badge.classList.add("disarmed");
-    text.textContent = "Route: loading...";
-    badge.title = "Routing posture is loading from the server.";
-    return;
-  }
 
   if (s.use_free === false) {
     badge.classList.remove("disarmed");
@@ -586,42 +490,16 @@ function setupInputHandlers() {
   });
 
   stopBtn.addEventListener("click", async () => {
-    const agentMsg = activeAgentMessage;
-    if (!agentMsg) return;
-    agentMsg.stopRequested = true;
-    stopBtn.disabled = true;
-    stopBtn.title = "Stop requested; waiting for the active request to close...";
-    agentMsg.stepperTitleText.textContent = "Stop requested; closing the active request...";
-    // /api/chat creates the run before returning its ID. Preserve this stop
-    // intent and send it as soon as that response arrives.
-    if (currentRunId) await requestRunCancellation(currentRunId, agentMsg);
+    if (currentRunId) {
+      try {
+        await api(`/api/runs/${currentRunId}/cancel`, { method: "POST" });
+      } catch (_e) {}
+    }
   });
-}
-
-async function requestRunCancellation(runId, agentMsg) {
-  try {
-    const result = await api(`/api/runs/${runId}/cancel`, { method: "POST" });
-    if (currentRunId !== runId || activeAgentMessage !== agentMsg) return false;
-    if (!result.cancel_requested) throw new Error("server did not accept the stop request");
-    agentMsg.activeRequests = {};
-    agentMsg.activeRequestAt = null;
-    return true;
-  } catch (_e) {
-    if (currentRunId !== runId || activeAgentMessage !== agentMsg) return false;
-    const stopBtn = $("#btn-stop");
-    stopBtn.disabled = false;
-    stopBtn.title = "Stop execution";
-    agentMsg.stopRequested = false;
-    agentMsg.stepperTitleText.textContent = "Stop request failed; try again.";
-    return false;
-  }
 }
 
 // Submit Prompt
 async function submitPrompt(prompt) {
-  const generation = ++runGeneration;
-  if (pollTimer !== null) clearTimeout(pollTimer);
-  pollTimer = null;
   $("#welcome-hero").hidden = true;
   const ta = $("#prompt-input");
   ta.value = "";
@@ -632,7 +510,6 @@ async function submitPrompt(prompt) {
 
   // Append Agent Card with Live Progress Stepper
   const agentMsg = createAgentMessageCard();
-  activeAgentMessage = agentMsg;
   $("#chat-feed").appendChild(agentMsg.card);
   scrollToBottom();
 
@@ -644,71 +521,45 @@ async function submitPrompt(prompt) {
       session_id: sessionId,
       auto_apply: autoApply,
       web: webEnabled,
+      allow_paid: paidEnabled,
     };
-    if (typeof paidEnabled === "boolean") payload.allow_paid = paidEnabled;
     if (workDir) payload.root_dir = workDir;
 
     const run = await api("/api/chat", {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    if (generation !== runGeneration || activeAgentMessage !== agentMsg) return;
     currentRunId = run.id;
     eventSeq = 0;
-    if (agentMsg.stopRequested) await requestRunCancellation(run.id, agentMsg);
-    if (generation !== runGeneration || currentRunId !== run.id
-        || activeAgentMessage !== agentMsg) return;
-    pollExecution(run.id, agentMsg, generation);
+        pollExecution(run.id, agentMsg);
       } catch (err) {
-        if (generation !== runGeneration || activeAgentMessage !== agentMsg) return;
         agentMsg.stepper.hidden = true;
         agentMsg.body.innerHTML = `<p style="color:var(--red);">Error starting task: ${esc(err.message)}</p>`;
-        activeAgentMessage = null;
         setInFlight(false);
       }
     }
 
 // Poll Execution & Events
-function pollExecution(runId, agentMsg, generation = runGeneration) {
+function pollExecution(runId, agentMsg) {
   const pollInterval = 350;
-  let stopped = false;
-
-  function ownsRun() {
-    return !stopped && generation === runGeneration
-      && currentRunId === runId && activeAgentMessage === agentMsg;
-  }
 
   async function tick() {
-    if (!ownsRun()) return;
-    pollTimer = null;
+    if (!currentRunId) return;
     try {
       // 1. Fetch recent events
       const evData = await api(`/api/runs/${runId}/events?after=${eventSeq}`);
-      if (!ownsRun()) return;
       if (evData.events && evData.events.length) {
         for (const ev of evData.events) {
           eventSeq = Math.max(eventSeq, ev.seq);
           handleLiveEvent(ev, agentMsg);
         }
       }
-      if (agentMsg.stopRequested) {
-        agentMsg.stepperTitleText.textContent = "Stop requested; closing the active request...";
-      } else if (Object.keys(agentMsg.activeRequests || {}).length) {
-        updateActiveProviderProgress(agentMsg);
-      }
 
       // 2. Check run status
       const resData = await api(`/api/runs/${runId}/result`);
-      if (!ownsRun()) return;
       if (resData.status !== "running") {
-        stopped = true;
-        if (pollTimer !== null) clearTimeout(pollTimer);
-        pollTimer = null;
+        clearInterval(pollTimer);
         currentRunId = null;
-        agentMsg.stopRequested = false;
-        agentMsg.activeRequests = {};
-        agentMsg.activeRequestAt = null;
-        activeAgentMessage = null;
         setInFlight(false);
         renderFinalResult(resData, agentMsg);
         pollSpend();
@@ -718,15 +569,9 @@ function pollExecution(runId, agentMsg, generation = runGeneration) {
         return;
       }
     } catch (_e) {}
-
-    // Schedule only after the current poll has completely finished. This
-    // prevents overlapping requests and makes late responses harmless once
-    // another run owns the UI.
-    if (ownsRun()) {
-      pollTimer = setTimeout(tick, pollInterval);
-    }
   }
 
+  pollTimer = setInterval(tick, pollInterval);
   tick();
 }
 
@@ -815,203 +660,8 @@ function handleLiveEvent(ev, agentMsg) {
 
   let label = "";
   let icon = "✓";
-  let active = false;
 
-  if (ev.type === "chat_turn_start") {
-    label = "Request accepted; preparing context and routing.";
-    agentMsg.stepperTitleText.textContent = "Preparing your request...";
-  } else if (ev.type === "chat_resume") {
-    label = `Resuming the interrupted ${ev.route || "conversation"} request from its saved context.`;
-    agentMsg.stepperTitleText.textContent = "Resuming your request...";
-  } else if (ev.type === "chat_resume_unavailable") {
-    label = "No interrupted chat request is saved to resume.";
-    agentMsg.stepperTitleText.textContent = "Ready for a new request.";
-  } else if (ev.type === "hourglass_request") {
-    label = `Request review started (${ev.intent || "general"}; up to ${ev.max_rounds || 1} answer round(s)).`;
-    agentMsg.stepperTitleText.textContent = "Reviewing your request...";
-  } else if (ev.type === "model_request_start") {
-    if (!agentMsg.activeRequests) agentMsg.activeRequests = {};
-    const requestId = String(ev.request_id || `event-${ev.seq || Date.now()}`);
-    agentMsg.activeRequests[requestId] = {
-      model: ev.model || "provider",
-      attempt: ev.attempt || "request",
-      startedAt: Date.now(),
-    };
-    updateActiveProviderProgress(agentMsg);
-    const retry = ev.attempt === "reasoning_retry" ? " (retry without reasoning)" : "";
-    label = `Calling ${ev.model || "provider"}${retry}; waiting for the response.`;
-    if (!agentMsg.stopRequested) {
-      updateActiveProviderProgress(agentMsg);
-    }
-  } else if (ev.type === "model_request_end") {
-    const requests = agentMsg.activeRequests || {};
-    let requestId = ev.request_id ? String(ev.request_id) : null;
-    if (!requestId || !Object.prototype.hasOwnProperty.call(requests, requestId)) {
-      requestId = Object.keys(requests).find((key) =>
-        requests[key].model === (ev.model || "provider") &&
-        requests[key].attempt === (ev.attempt || "request"));
-    }
-    if (requestId) delete requests[requestId];
-    agentMsg.activeRequests = requests;
-    const remainingRequests = Object.keys(requests).length;
-    if (remainingRequests) updateActiveProviderProgress(agentMsg);
-    else agentMsg.activeRequestAt = null;
-    const seconds = Number(ev.duration_s || 0).toFixed(1);
-    label = ev.outcome === "response"
-      ? `${ev.model || "Provider"} replied HTTP ${ev.http_status} in ${seconds}s.`
-      : `${ev.model || "Provider"} request ${ev.outcome || "ended"} after ${seconds}s.`;
-    if (!agentMsg.stopRequested && !remainingRequests) {
-      agentMsg.stepperTitleText.textContent = ev.outcome === "response"
-        ? "Assessing the response..." : `Provider request ${ev.outcome || "ended"}.`;
-    }
-  } else if (ev.type === "provider_http_attempt") {
-    const requestId = String(ev.request_id || "");
-    const request = (agentMsg.activeRequests || {})[requestId];
-    if (request) {
-      request.wireAttempt = ev.wire_attempt;
-      request.httpPhase = ev.phase;
-      request.httpStatus = ev.http_status;
-      request.retryReason = ev.retry_reason;
-      request.retryDelay = ev.delay_s;
-    }
-    const model = ev.model || (request && request.model) || "provider";
-    const wire = ev.wire_attempt ? ` attempt ${ev.wire_attempt}/${ev.max_wire_attempts || "?"}` : "";
-    if (ev.phase === "start") {
-      label = `${model}: sending provider request${wire}.`;
-    } else if (ev.phase === "response") {
-      label = `${model}: provider replied HTTP ${ev.http_status}${wire} in ${Number(ev.duration_s || 0).toFixed(1)}s.`;
-    } else if (ev.phase === "retry_wait") {
-      label = `${model}: HTTP ${ev.http_status}; retrying ${ev.retry_reason || "transient failure"} after ${Number(ev.delay_s || 0).toFixed(1)}s${wire}.`;
-      if (!agentMsg.stopRequested) agentMsg.stepperTitleText.textContent = "Waiting before provider retry...";
-    } else if (ev.phase === "cancelled") {
-      label = `${model}: provider request cancelled${ev.usage_unknown ? "; usage is unknown" : ""}${wire}.`;
-    } else if (ev.phase === "error") {
-      label = `${model}: provider request failed (${ev.error_type || "network error"})${wire}${ev.usage_unknown ? "; usage is unknown" : ""}.`;
-    }
-  } else if (ev.type === "provider_usage_unknown") {
-    const held = Number(ev.reserved_cost || 0);
-    label = `${ev.model || "Provider"}: usage is unknown after dispatch; $${held.toFixed(6)} held against this run's budget.`;
-  } else if (ev.type === "rotation") {
-    const detail = String(ev.note || ev.reason || "provider response unusable").slice(0, 140);
-    label = `${ev.model || "Model"} failed: ${detail}`;
-    agentMsg.stepperTitleText.textContent = "Trying the next configured model...";
-  } else if (ev.type === "answer_judged") {
-    const score = Number(ev.confidence);
-    const threshold = Number(ev.confidence_threshold);
-    const scoreText = Number.isFinite(score)
-      ? `; sufficiency ${Math.round(score * 100)}%` : "";
-    const thresholdText = Number.isFinite(threshold)
-      ? ` (threshold ${Math.round(threshold * 100)}%)` : "";
-    const disposition = ev.status === "pass" ? "accepted" :
-      ev.status === "unverified" ? "returned without semantic review" :
-        ev.status === "needs_iteration" ? "another answer pass requested" :
-          "stopped without another answer pass";
-    label = `Jev ${disposition} at round ${ev.round || "?"}${scoreText}${thresholdText}.`;
-    agentMsg.stepperTitleText.textContent = ev.status === "pass"
-      ? "Jev accepted the answer." : ev.status === "unverified"
-        ? "Returning the answer without Jev review."
-        : ev.status === "needs_iteration"
-          ? "Preparing another bounded answer attempt."
-          : "Returning the answer with review status.";
-  } else if (ev.type === "request_route_selected") {
-    label = ev.native
-      ? `Jev suggested ${ev.selected || "a route"}; using ${ev.effective || "the bounded answer lane"}.`
-      : `Jev routing unavailable; using ${ev.effective || "the bounded answer lane"}.`;
-    agentMsg.stepperTitleText.textContent = "Choosing the smallest useful context...";
-  } else if (ev.type === "chat_escalated") {
-    label = `Handing off to ${ev.target || "another lane"}: ${String(ev.reason || "").slice(0, 140)}`;
-    agentMsg.stepperTitleText.textContent = `Switching to ${ev.target || "another lane"}...`;
-  } else if (ev.type === "research_unavailable") {
-    label = `Web research stopped before model retries: ${String(ev.reason || "no usable source").slice(0, 160)}`;
-    agentMsg.stepperTitleText.textContent = "Web research unavailable; stopping early.";
-  } else if (ev.type === "simple_action_route_start") {
-    label = "Jev is selecting the request workflow...";
-    icon = "⌛";
-    active = true;
-    agentMsg.stepperTitleText.textContent = "Jev is selecting a bounded action...";
-    activateModularAspect(agentMsg, "simple_action_route", "Jev Choice", "⌛");
-  } else if (ev.type === "simple_action_route_complete") {
-    label = ev.selected === "simple-action"
-      ? "Jev selected the one-probe simple-action workflow"
-      : `Jev selected ${ev.selected || "no usable workflow"}; no site probe will run`;
-    icon = ev.selected === "simple-action" && !ev.fallback ? "✓" : "⚠";
-    agentMsg.stepperTitleText.textContent = ev.selected === "simple-action"
-      ? "Preparing the site check..." : "Site check stopped before a probe";
-    activateModularAspect(agentMsg, "simple_action_route", "Jev Choice", icon);
-  } else if (ev.type === "simple_action_route_unavailable") {
-    label = "Jev could not select a workflow; no site probe was sent";
-    icon = "⚠";
-    activateModularAspect(agentMsg, "simple_action_route", "Jev Unavailable", icon);
-  } else if (ev.type === "simple_action_start") {
-    label = "Preparing one bounded site-availability check";
-    icon = "⌛";
-    active = true;
-    agentMsg.stepperTitleText.textContent = "Checking site availability...";
-    activateModularAspect(agentMsg, "simple_action", "Site Check", "⌛");
-  } else if (ev.type === "simple_action_preflight_start") {
-    label = `Checking public HTTPS target safety for ${ev.target || "the site"}...`;
-    icon = "⌛";
-    active = true;
-    agentMsg.stepperTitleText.textContent = "Checking target safety...";
-    activateModularAspect(agentMsg, "simple_action_preflight", "Safety Check", "⌛");
-  } else if (ev.type === "simple_action_preflight_complete") {
-    label = "Target passed HTTPS and public-address checks; Jev can route the request";
-    agentMsg.stepperTitleText.textContent = "Jev is selecting the request workflow...";
-    activateModularAspect(agentMsg, "simple_action_preflight", "Safety Check", "✓");
-  } else if (ev.type === "simple_action_probe_start") {
-    label = `Sending one HTTPS probe to ${ev.target || "the site"}...`;
-    icon = "⌛";
-    active = true;
-    agentMsg.stepperTitleText.textContent = "Checking the HTTPS endpoint...";
-    activateModularAspect(agentMsg, "simple_action_probe", "HTTPS Probe", "⌛");
-  } else if (ev.type === "simple_action_probe_complete") {
-    const status = Number.isInteger(ev.http_status)
-      ? `HTTP ${ev.http_status}` : "no HTTP response";
-    const details = ev.verdict === "denied" ? " (access denied; endpoint responded)"
-      : ev.verdict === "redirect" ? " (redirect; destination not checked)"
-      : ev.verdict === "rate_limited" ? " (rate limited)"
-      : ev.verdict === "server_error" ? " (server error)" : "";
-    const elapsed = Number.isFinite(ev.latency_s)
-      ? ` in ${ev.latency_s.toFixed(2)}s` : "";
-    label = `HTTPS probe received ${status}${details}${elapsed}`;
-    agentMsg.stepperTitleText.textContent = "Jev is checking the observed response...";
-    activateModularAspect(agentMsg, "simple_action_probe", `Probe: ${status}`, "✓");
-  } else if (ev.type === "simple_action_probe_refused") {
-    label = "HTTPS probe stopped by the public-site safety check";
-    icon = "⚠";
-    activateModularAspect(agentMsg, "simple_action_probe", "Probe Refused", "⚠");
-  } else if (ev.type === "simple_action_jev_start") {
-    label = "Jev is judging whether the response shows the site is reachable...";
-    icon = "⌛";
-    active = true;
-    agentMsg.stepperTitleText.textContent = "Jev is judging the response...";
-    activateModularAspect(agentMsg, "simple_action_jev", "Jev Judgment", "⌛");
-  } else if (ev.type === "simple_action_jev_complete") {
-    const probability = Number.isFinite(ev.http_response_received)
-      ? ev.http_response_received : null;
-    if (probability === null) {
-      label = "Jev could not provide a usable yes/no judgment; result stays inconclusive";
-      icon = "⚠";
-    } else {
-      const pct = (probability * 100).toFixed(1);
-      const thresholdMet = probability >= 0.99;
-      label = `Jev yes probability ${pct}%${thresholdMet ? "; 99% threshold met" : "; below 99% threshold"}`;
-      icon = thresholdMet ? "✓" : "…";
-    }
-    agentMsg.stepperTitleText.textContent = "Site-check result ready";
-    activateModularAspect(agentMsg, "simple_action_jev", "Jev Judgment", icon);
-  } else if (ev.type === "simple_action_jev_unavailable") {
-    label = "Jev is unavailable; the site check will remain inconclusive";
-    icon = "⚠";
-    activateModularAspect(agentMsg, "simple_action_jev", "Jev Unavailable", "⚠");
-  } else if (ev.type === "simple_action_complete") {
-    label = ev.status === "ok"
-      ? `Site check complete${ev.answer ? `: ${ev.answer}` : ""}`
-      : "Site check inconclusive";
-    icon = ev.status === "ok" ? "✓" : "⚠";
-    agentMsg.stepperTitleText.textContent = "Execution complete";
-    activateModularAspect(agentMsg, "simple_action", label, icon);
-  } else if (ev.type === "web_search") {
+  if (ev.type === "web_search") {
     label = ev.phase === "start" ? `Web search: ${ev.query || ""}` : `Web search completed (${ev.results || 0} results)`;
     icon = "🌐";
     activateModularAspect(agentMsg, "web_search", ev.phase === "start" ? "Web Search" : `Search (${ev.results || 0} hits)`, "🌐");
@@ -1106,7 +756,7 @@ function handleLiveEvent(ev, agentMsg) {
 
   if (label) {
     const item = document.createElement("div");
-    item.className = active ? "step-item active" : "step-item done";
+    item.className = "step-item done";
     item.innerHTML = `<span class="step-icon">${esc(icon)}</span> <span>${esc(label)}</span>`;
     body.appendChild(item);
     scrollToBottom();
@@ -1159,35 +809,19 @@ function hideConsentBanner() {
 function renderFinalResult(runRecord, agentMsg) {
   hideConsentBanner();
   agentMsg.spinner.hidden = true;
-  agentMsg.stepperTitleText.textContent = runRecord.status === "error"
-    ? "Execution stopped" : "Execution complete";
+  agentMsg.stepperTitleText.textContent = "Execution complete";
 
   if (runRecord.status === "cancelled") {
-    const notice = runRecord.error || "Execution cancelled by user.";
-    agentMsg.body.innerHTML = `<p style="color:var(--yellow);">${esc(notice)}</p>`;
+    agentMsg.body.innerHTML = `<p style="color:var(--yellow);">Execution cancelled by user.</p>`;
     return;
   }
 
   const res = runRecord.result || {};
   const responseText = res.response || runRecord.error || "Completed.";
 
-  if (runRecord.status === "error") {
-    const kind = String(runRecord.error_kind || "harness_error");
-    agentMsg.body.innerHTML = `<p style="color:var(--red);"><strong>${esc(kind)}</strong>: ${esc(responseText)}</p>`;
-    if (kind === "provider_spend_limit") {
-      const billed = Number(runRecord.known_cost_usd || 0);
-      const stopNote = document.createElement("div");
-      stopNote.className = "deferred-note";
-      stopNote.innerHTML = `<p style="color:var(--yellow); margin:8px 0 0;">
-        <strong>Stopped: provider spend limit</strong>${billed > 0 ? `<br><span>Known billed usage: $${billed.toFixed(6)}</span>` : ""}
-      </p>`;
-      agentMsg.body.appendChild(stopNote);
-    }
-    return;
-  }
-
   // Render Markdown Body
   agentMsg.body.innerHTML = renderSimpleMarkdown(responseText);
+
   // An honest deferral is an outcome, not an error: show the reason and the
   // resume path the lane owes the operator.
   if (res.status === "deferred") {
@@ -1262,7 +896,7 @@ function createAgentMessageCard() {
         <div class="stepper-header" onclick="this.nextElementSibling.nextElementSibling.hidden = !this.nextElementSibling.nextElementSibling.hidden">
           <div class="stepper-title">
             <span class="spinner"></span>
-            <span class="stepper-title-text">Starting request...</span>
+            <span class="stepper-title-text">Processing task with Jev driver...</span>
           </div>
           <span style="font-size:10px; color:var(--dim);">collapse</span>
         </div>
@@ -1286,28 +920,7 @@ function createAgentMessageCard() {
     phaseList: null,
     phaseItems: {},
     orchRound: 1,
-    activeRequestAt: null,
-    activeRequests: {},
-    stopRequested: false,
   };
-}
-
-function updateActiveProviderProgress(agentMsg) {
-  const active = Object.values(agentMsg.activeRequests || {});
-  if (!active.length) {
-    agentMsg.activeRequestAt = null;
-    return;
-  }
-  const earliest = Math.min(...active.map((request) => request.startedAt));
-  agentMsg.activeRequestAt = earliest;
-  const elapsed = Math.max(0, Math.floor((Date.now() - earliest) / 1000));
-  const models = [...new Set(active.map((request) => request.model || "provider"))];
-  const summary = active.length === 1
-    ? `${models[0]} (${active[0].attempt})`
-    : `${active.length} provider requests (${models.slice(0, 3).join(", ")}${models.length > 3 ? ", ..." : ""})`;
-  if (!agentMsg.stopRequested) {
-    agentMsg.stepperTitleText.textContent = `Waiting for ${summary} (${elapsed}s)...`;
-  }
 }
 
 // Simple Markdown & Diff Helpers
@@ -1346,8 +959,6 @@ function renderDiffLines(diffText) {
 function setInFlight(inFlight) {
   $("#btn-send").hidden = inFlight;
   $("#btn-stop").hidden = !inFlight;
-  $("#btn-stop").disabled = false;
-  $("#btn-stop").title = "Stop execution";
   $("#prompt-input").disabled = inFlight;
   if (!inFlight) $("#prompt-input").focus();
 }
@@ -1401,8 +1012,6 @@ async function pollRoute() {
       throw new Error("routing posture is incomplete");
     }
     backendSettings = s;
-    paidEnabled = typeof s.allow_escalation === "boolean"
-      ? s.allow_escalation : null;
     updateRouteDisplay();
   } catch (_e) {
     if (requestSeq !== routeRequestSeq) return;
@@ -1427,18 +1036,30 @@ async function pollSpend() {
       return;
     }
     const s = spend.session || {};
-    $("#spend-val").textContent = fmtCost(s.spent || 0);
-    $("#spend-limit").textContent = `/ ${fmtCost(s.ceiling || 0.05)}`;
-    markSpendAvailable();
+    if (spend.openrouter_available === false) {
+      markSpendUnavailable(spend.openrouter_error);
+    } else {
+      markSpendAvailable();
+      $("#spend-val").textContent = typeof spend.account_spent === "number"
+        ? `OR: ${fmtCost(spend.account_spent)}` : "OR: —";
+      $("#spend-limit").textContent = `/ ${fmtCost(spend.limit)} key cap`;
+      $("#spend-meter").title = `OpenRouter key cap usage (not run spend); run ceiling ${fmtCost(s.ceiling)}. Click to adjust run ceiling.`;
+    }
+    if (spend.fireworks) {
+      const fw = spend.fireworks;
+      $("#fireworks-spend-val").textContent = fw.enabled ? (fw.key_present ? "FW: ready" : "FW: no key") : "FW: off";
+      $("#fireworks-spend-limit").textContent = `· cap ${fmtCost(fw.run_ceiling)}`;
+      $("#fireworks-spend-meter").title = "Fireworks local per-run ceiling (not account balance). Enable via provider settings; click to set its cap.";
+    }
     if (spend.jev) {
       const j = spend.jev;
       const elVal = $("#jev-spend-val");
       const elLim = $("#jev-spend-limit");
       const elMeter = $("#jev-spend-meter");
       if (elVal) elVal.textContent = `Jev: ${fmtCost(j.cost || 0)}`;
-      if (elLim) elLim.textContent = `/ $${Number(j.monthly_credit || 5.0).toFixed(2)}`;
+      if (elLim) elLim.textContent = `/ $${Number(j.monthly_credit ?? 5.0).toFixed(2)} · cap ${fmtCost(spend.jev_limit)}`;
       if (elMeter) {
-        elMeter.title = `TypeSafe Jev: ${fmtCost(j.cost || 0)} spent of $${Number(j.monthly_credit || 5.0).toFixed(2)} monthly credit (${Number(j.input_tokens || 0).toLocaleString()} tokens, ${(j.used_percent || 0).toFixed(1)}% used, $${Number(j.remaining_credit || 5.0).toFixed(4)} remaining)`;
+        elMeter.title = `TypeSafe Jev: ${fmtCost(j.cost || 0)} spent of $${Number(j.monthly_credit || 5.0).toFixed(2)} monthly credit (${Number(j.input_tokens || 0).toLocaleString()} tokens, ${(j.used_percent || 0).toFixed(1)}% used, $${Number(j.remaining_credit ?? 5.0).toFixed(4)} remaining; ledger estimate, not provider balance; $${j.price_per_million_input}/M input, output free). Click to adjust Jev per-run cap.`;
       }
     }
   } catch (err) {
@@ -1474,9 +1095,12 @@ function markSpendAvailable() {
 const CAP_SLIDER_MIN = 0.01;
 const CAP_SLIDER_MAX = 1.00;
 
-function openCapPopover() {
+let capSetting = "max_cost";
+function openCapPopover(setting = "max_cost") {
+  capSetting = setting;
   const pop = $("#cap-popover");
-  const current = (backendSettings && backendSettings.max_cost) || 0.05;
+  $(".cap-title").textContent = setting === "jev_max_cost" ? "Jev per-run ceiling" : setting === "fireworks_budget_usd" ? "Fireworks per-run ceiling" : "Run cost ceiling";
+  const current = (backendSettings && backendSettings[setting]) ?? 0.05;
   $("#cap-text").value = current.toFixed(2);
   $("#cap-slider").max = String(CAP_SLIDER_MAX);
   $("#cap-slider").min = String(CAP_SLIDER_MIN);
@@ -1500,68 +1124,22 @@ async function saveCap(raw) {
   const errEl = $("#cap-error");
   errEl.hidden = true;
   const v = Number(raw);
-  if (!Number.isFinite(v) || v <= 0) {
-    errEl.textContent = "Enter a positive dollar amount";
+  if (!Number.isFinite(v) || v < 0 || (capSetting === "max_cost" && v === 0)) {
+    errEl.textContent = "Enter a non-negative dollar amount (run ceiling must be positive)";
     errEl.hidden = false;
     return;
   }
   try {
     const data = await api("/api/settings", {
       method: "POST",
-      body: JSON.stringify({ max_cost: v }),
+      body: JSON.stringify({ [capSetting]: v }),
     });
     backendSettings = data.settings || backendSettings;
     if (backendSettings && typeof backendSettings.max_cost === "number") {
       $("#spend-limit").textContent = `/ ${fmtCost(backendSettings.max_cost)}`;
     }
     closeCapPopover();
-  } catch (e) {
-    errEl.textContent = e.message;
-    errEl.hidden = false;
-  }
-}
-
-// ---- web fetch allowlist popover ------------------------------------------
-// The fetch allowlist is a security boundary owned by harness/web.py; the UI
-// only tunes the posture (enable / modify / disable) through POST
-// /api/settings, which validates fail-closed. Blank hosts means "use the
-// built-in defaults". Disabling the allowlist lets any PUBLIC https site be
-// fetched -- the SSRF public-address guard still applies.
-function openWebPopover() {
-  const pop = $("#web-popover");
-  if (!pop) return;
-  const s = backendSettings || {};
-  const enabled = typeof s.fetch_allowlist_enabled === "boolean"
-    ? s.fetch_allowlist_enabled : true;
-  $("#web-allowlist-enabled").checked = enabled;
-  const hosts = Array.isArray(s.fetch_allowlist_hosts)
-    ? s.fetch_allowlist_hosts.join(", ") : "";
-  $("#web-allowlist-hosts").value = hosts;
-  $("#web-allowlist-error").hidden = true;
-  pop.hidden = false;
-}
-
-function closeWebPopover() {
-  const pop = $("#web-popover");
-  if (pop) pop.hidden = true;
-}
-
-async function saveWebAllowlist() {
-  const errEl = $("#web-allowlist-error");
-  errEl.hidden = true;
-  const enabled = $("#web-allowlist-enabled").checked;
-  const raw = $("#web-allowlist-hosts").value || "";
-  const hosts = raw.split(",").map((h) => h.trim()).filter(Boolean);
-  try {
-    const data = await api("/api/settings", {
-      method: "POST",
-      body: JSON.stringify({
-        fetch_allowlist_enabled: enabled,
-        fetch_allowlist_hosts: hosts.join(","),
-      }),
-    });
-    backendSettings = data.settings || backendSettings;
-    closeWebPopover();
+    pollSpend();
   } catch (e) {
     errEl.textContent = e.message;
     errEl.hidden = false;

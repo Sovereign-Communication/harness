@@ -15,9 +15,8 @@ import concurrent.futures
 import time
 
 from .chat import (_chat_reservation_slots, _extract_json, _reported_cost,
-                   assess_output, chat, extract_content_and_cost,
+                   assess_output, chat, extract_content_and_cost, record_response,
                    looks_truncated, REASONING_FALLBACK_PREFIX)
-from ._http import interruptible_sleep
 from .capability import ordered_pool
 from .config import DEFAULT_MAX_TOKENS, PanelLanePolicy
 from . import events as _events
@@ -124,7 +123,7 @@ def _run_judge_attempt(*, transport, api_key, governor, judge_prompt, model,
                     else ("truncated" if looks_truncated(content)
                           else "unparseable"))
     if cost and not paid_byok:
-        governor.record_actual(cost, model)
+        record_response(governor, resp, cost, model)
     if ledger and task_id:
         fields = dict(event_note="judge", model=model, task_type=task_type,
                       json_expected=True, json_ok=note == "parseable",
@@ -324,17 +323,15 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             status, resp = chat(transport, api_key, model,
                                 [{"role": "user", "content": prompt}], policy.vote.tokens,
                                 policy.vote.effort, reasoning_token_budget, governor)
-            response_cost = _reported_cost(resp)
             if cancel_check and cancel_check():
                 from .errors import ToolCancelled
-                if response_cost:
-                    governor.record_actual(response_cost, model)
                 raise ToolCancelled()
+            response_cost = _reported_cost(resp)
             response_cost_recorded = False
             if status != 429 or retry_count >= MAX_429_RETRIES:
                 break
             if response_cost:
-                governor.record_actual(response_cost, f"{model} (429 retry)")
+                record_response(governor, resp, response_cost, f"{model} (429 retry)")
             response_cost_recorded = True
             if ledger and task_id:
                 ledger.append("model_result", task_id=task_id, event_note="panel",
@@ -347,13 +344,14 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             _events.emit("rotation", task_id=task_id, model=model,
                          reason="rate_limited", retry=retry_count)
             delay = RETRY_429_BACKOFF_SECONDS * retry_count
-            interruptible_sleep(delay, cancel_check)
+            # Interruptible: Stop during backoff must not sit out the delay.
+            _events.sleep_or_cancel(delay, cancel_check)
         elapsed = time.time() - t0
         if status != 200:
             err = resp.get("error", {}).get("message", str(resp)) if isinstance(resp, dict) else str(resp)
             cost = response_cost
             if cost and not response_cost_recorded:
-                governor.record_actual(cost, model)
+                record_response(governor, resp, cost, model)
             panel_failures.append({"model": model, "reason": err,
                                    "status": status, "cost": cost,
                                     "retries": retry_count})
@@ -391,7 +389,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             # judge never sees them and convergence cannot count them as
             # participation. (Truncation is tolerated in prose mode with a
             # warning below; structured mode rejects it via valid_claims.)
-            governor.record_actual(cost, model)
+            record_response(governor, resp, cost, model)
             panel_failures.append({"model": model, "reason": unusable,
                                     "status": "invalid_output", "cost": cost,
                                     "retries": retry_count})
@@ -406,7 +404,7 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             _events.emit("rotation", task_id=task_id, model=model,
                          reason="unusable_output", detail=unusable)
             return None
-        governor.record_actual(cost, model)
+        record_response(governor, resp, cost, model)
         eprint(f"[panel] {model}: cost=${cost:.6f}, finish_reason={finish_reason}, {elapsed:.1f}s")
         _events.emit("panel_vote", task_id=task_id, model=model, cost=cost,
                      finish_reason=finish_reason, elapsed_s=round(elapsed, 3),
@@ -442,27 +440,51 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     candidates = iter(panel_pool)
     tried = 0
     _futures = set()
-    with concurrent.futures.ThreadPoolExecutor(
-            max_workers=target if _parallel else 1) as _pool:
+    from .errors import ToolCancelled as _Cancelled
+    _pool = concurrent.futures.ThreadPoolExecutor(
+        max_workers=target if _parallel else 1)
+    _fan_cancelled = False
+    try:
+        def _pool_submit(pool, fn, *a):
+            return pool.submit(_events.wrap_with_task_id(fn), *a)
         for _ in range(target):
+            if cancel_check and cancel_check():
+                _fan_cancelled = True
+                raise _Cancelled("Prompt execution was cancelled by user")
             _first = next(candidates, None)
             if _first is None:
                 break
             tried += 1
-            _futures.add(_events.submit_with_context(
-                _pool, _run_panel_slot, _first))
+            _futures.add(_pool_submit(_pool, _run_panel_slot, _first))
         while _futures and len(panel_results) < target:
+            if cancel_check and cancel_check():
+                _fan_cancelled = True
+                for _f in _futures:
+                    _f.cancel()
+                raise _Cancelled("Prompt execution was cancelled by user")
             _done, _futures = concurrent.futures.wait(
-                _futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                _futures, timeout=0.05,
+                return_when=concurrent.futures.FIRST_COMPLETED)
             for _fut in _done:
-                _slot = _fut.result()
+                try:
+                    _slot = _fut.result()
+                except _Cancelled:
+                    _fan_cancelled = True
+                    for _f in _futures:
+                        _f.cancel()
+                    raise
                 if _slot is None:
                     if len(panel_results) < target:
+                        if cancel_check and cancel_check():
+                            _fan_cancelled = True
+                            for _f in _futures:
+                                _f.cancel()
+                            raise _Cancelled(
+                                "Prompt execution was cancelled by user")
                         _next_model = next(candidates, None)
                         if _next_model is not None:
                             tried += 1
-                            _futures.add(_events.submit_with_context(
-                                _pool, _run_panel_slot, _next_model))
+                            _futures.add(_pool_submit(_pool, _run_panel_slot, _next_model))
                     continue
                 if _slot["ok"]:
                     panel_results.append(_slot["result"])
@@ -480,8 +502,12 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                         _next_model = next(candidates, None)
                         if _next_model is not None:
                             tried += 1
-                            _futures.add(_events.submit_with_context(
-                                _pool, _run_panel_slot, _next_model))
+                            _futures.add(_pool_submit(_pool, _run_panel_slot, _next_model))
+    finally:
+        try:
+            _pool.shutdown(wait=not _fan_cancelled, cancel_futures=True)
+        except TypeError:
+            _pool.shutdown(wait=not _fan_cancelled)
     if not panel_results:
         raise HarnessError("all panel calls failed. Aborting.")
     # Report votes in pool order regardless of completion order: with a fast

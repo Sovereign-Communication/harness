@@ -323,6 +323,39 @@ class ExtractionHelpersTests(unittest.TestCase):
     def test_extract_query_empty(self):
         self.assertEqual(web.extract_query("can you verify?"), "")
 
+    def test_extract_query_leads_with_zip_anchor(self):
+        q = web.extract_query(
+            "search for the weather near 96778 and see if there's any upcoming significant events in the forecast?")
+        self.assertIn("96778", q.split())
+        self.assertEqual(q.split()[0], "96778")
+        self.assertIn("weather", q.split())
+
+    def test_zip_relevance_keeps_only_matching_location(self):
+        results = [
+            {"title": "Seattle weather forecast", "url": "https://wx.example/seattle",
+             "snippet": "Seattle rain this weekend"},
+            {"title": "96778 weather forecast", "url": "https://forecast.weather.gov/x?zip=96778",
+             "snippet": "Pahala HI 96778 forecast"},
+        ]
+        kept = web.filter_search_relevance("96778 weather forecast", results)
+        self.assertEqual(len(kept), 1)
+        self.assertIn("96778", kept[0]["title"] + kept[0]["snippet"] + kept[0]["url"])
+
+    def test_zip_relevance_with_no_match_defers_honestly(self):
+        results = [{"title": "Seattle weather", "url": "https://wx.example/sea",
+                     "snippet": "Seattle rain"}]
+        self.assertEqual(web.filter_search_relevance("96778 weather", results), [])
+
+    def test_location_scope_note_forbids_invented_geography(self):
+        note = web.location_scope_note("search weather near 96778?")
+        self.assertIn("96778", note)
+        self.assertIn("do not state or infer", note.lower())
+        self.assertIsNone(web.location_scope_note("search weather?"))
+
+    def test_weather_hosts_are_fetchable(self):
+        for host in ("weather.gov", "forecast.weather.gov", "api.weather.gov"):
+            self.assertIn(host, web.DEFAULT_FETCH_HOSTS)
+
 
 
 class GatherWebContextTests(unittest.TestCase):
@@ -379,195 +412,5 @@ class GatherWebContextTests(unittest.TestCase):
         self.assertIn("offline", sources[0]["note"])
 
 
-class WeatherAllowlistTests(unittest.TestCase):
-    def test_weather_hosts_in_default_fetch_hosts(self):
-        for host in ("api.weather.gov", "weather.gov", "wttr.in"):
-            self.assertIn(host, web.DEFAULT_FETCH_HOSTS)
-
-
-class BareDomainAndSiteQueryTests(unittest.TestCase):
-    """A site named without a scheme is still fetched (not mangled into a
-    search query), and a site-focused search leads with the host."""
-
-    def test_find_urls_recognizes_www_bare_domain(self):
-        urls = web.find_urls(
-            "audit www.freeoffgridcalculator.com for user friendliness")
-        self.assertEqual(urls, ["https://www.freeoffgridcalculator.com"])
-
-    def test_find_urls_recognizes_bare_domain_with_known_tld(self):
-        urls = web.find_urls("check freeoffgridcalculator.com today")
-        self.assertEqual(urls, ["https://freeoffgridcalculator.com"])
-
-    def test_find_urls_keeps_scheme_urls_and_dedupes(self):
-        urls = web.find_urls(
-            "see https://example.com/a and also example.com/b")
-        self.assertEqual(urls, ["https://example.com/a",
-                                "https://example.com/b"])
-
-    def test_find_urls_ignores_file_names_not_sites(self):
-        self.assertEqual(web.find_urls("compare report.pdf and image.png"), [])
-
-    def test_extract_query_leads_with_the_host_not_audit(self):
-        q = web.extract_query(
-            "audit www.freeoffgridcalculator.com for user friendliness")
-        self.assertTrue(q.startswith("freeoffgridcalculator.com"), q)
-        self.assertNotIn("audit", q.split())
-        self.assertNotIn("www", q.split())
-        self.assertIn("friendliness", q.split())
-
-    def test_extract_query_without_site_is_unchanged(self):
-        q = web.extract_query("what is the longest road in the world")
-        self.assertIn("longest", q.split())
-        self.assertNotIn("the", q.split())
-
-
-class SubjectRelevanceGateTests(unittest.TestCase):
-    """A search whose query names a specific site must not feed the model
-    off-subject navigational junk as evidence (the Sep-2026 Riemann-class
-    fabrication vector): when Bing has no real result for an obscure site it
-    answers with an unrelated fallback, which the parser would otherwise
-    hand over as if it were about the subject."""
-
-    @staticmethod
-    def _bing(items):
-        blocks = "".join(
-            f'<li class="b_algo"><h2><a href="{u}">{t}</a></h2>'
-            f"<p>{s}</p></li>" for t, u, s in items)
-        return ("<html><body><ol id=\"b_results\">" + blocks
-                + "</ol></body></html>").encode()
-
-    def test_off_subject_junk_is_refused_not_fabricated(self):
-        # The real failing shape: query names the site; Bing returns movie
-        # times / shower-rod articles that never mention it.
-        page = self._bing([
-            ("Movie Showtimes near Seattle", "https://www.fandango.com/s", "c"),
-            ("How to Fix a Shower Curtain Rod", "https://r.example/fix", "t"),
-            ("Contact Microsoft Support", "https://support.example/c", "h"),
-        ])
-        q = web.extract_query(
-            "audit www.freeoffgridcalculator.com for user friendliness")
-        with mock.patch.object(web, "_http_get",
-                               return_value=(200, page, "https://bing/")):
-            with self.assertRaises(HarnessError) as ctx:
-                web.search_web(q)
-        self.assertIn("off-subject", str(ctx.exception))
-
-    def test_a_result_mentioning_the_subject_keeps_the_evidence(self):
-        page = self._bing([
-            ("Movie Showtimes near Seattle", "https://www.fandango.com/s", "c"),
-            ("Free Off Grid Calculator review", "https://blog.example/f",
-             "the freeoffgridcalculator.com interface"),
-        ])
-        q = web.extract_query(
-            "audit www.freeoffgridcalculator.com for user friendliness")
-        with mock.patch.object(web, "_http_get",
-                               return_value=(200, page, "https://bing/")):
-            results = web.search_web(q)
-        self.assertEqual(len(results), 2)
-        self.assertIn("freeoffgridcalculator",
-                      (results[1]["snippet"] + results[1]["url"]))
-
-    def test_topical_query_without_a_site_subject_is_unaffected(self):
-        # No bare domain in the query -> the gate is inert (existing topical
-        # searches keep their behavior).
-        page = self._bing([("Riemann Bound Moved", "https://a.example/x",
-                            "zero-free region extended")])
-        with mock.patch.object(web, "_http_get",
-                               return_value=(200, page, "https://bing/")):
-            results = web.search_web("riemann bound")
-        self.assertEqual(len(results), 1)
-
-    def test_subject_core_label_extraction(self):
-        self.assertEqual(
-            web._subject_core_label("audit www.freeoffgridcalculator.com now"),
-            "freeoffgridcalculator")
-        self.assertEqual(web._subject_core_label("check example.com"),
-                         "example")
-        self.assertEqual(web._subject_core_label("is bbc.co.uk up"), "bbc")
-        self.assertIsNone(web._subject_core_label("riemann hypothesis"))
-
-    def test_non_fetchable_tld_token_yields_no_subject(self):
-        # 'report.pdf' matches the bare-domain shape but its TLD is not a
-        # web TLD, so it is skipped (defensive continue) -> no subject.
-        self.assertIsNone(web._subject_core_label("audit report.pdf now"))
-
-    def test_generic_only_host_yields_no_subject(self):
-        # A host made entirely of generic labels (www/com/net/org) has no
-        # distinctive brand label to gate on -> skipped (defensive continue).
-        self.assertIsNone(web._subject_core_label("check www.com now"))
-        self.assertIsNone(web._subject_core_label("see net.net"))
-
-    def test_result_mentions_subject_treats_absent_label_as_match(self):
-        # No subject label means the gate cannot judge relevance; the helper
-        # reports a match rather than refusing (defensive short-circuit).
-        self.assertTrue(web._result_mentions_subject([{"title": "x"}], None))
-        self.assertTrue(web._result_mentions_subject([], ""))
-
-
-class AllowlistRelaxationTests(unittest.TestCase):
-    """Disabling the allowlist lets any PUBLIC https host be fetched, but the
-    SSRF public-address guard is retained -- never an internal probe."""
-
-    def test_default_path_still_enforces_the_allowlist(self):
-        with self.assertRaises(HarnessError):
-            web.fetch_url("https://freeoffgridcalculator.com/",
-                          allowed_hosts=["en.wikipedia.org"])
-
-    def test_allow_any_public_refuses_non_public_address(self):
-        with mock.patch.object(
-                web, "_resolved_addresses_public",
-                side_effect=HarnessError(
-                    "site probe refused: resolves to non-public address")):
-            with self.assertRaises(HarnessError):
-                web.fetch_url("https://internal.example/secret",
-                              allowed_hosts=[], allow_any_public=True)
-
-    def test_allow_any_public_fetches_a_public_host(self):
-        body = b"<html><title>P</title><body>hello world</body></html>"
-        with mock.patch.object(web, "_resolved_addresses_public",
-                               return_value=["93.184.216.34"]), \
-             mock.patch.object(
-                 web, "_http_get",
-                 return_value=(200, body,
-                               "https://freeoffgridcalculator.com/")):
-            page = web.fetch_url("https://freeoffgridcalculator.com/",
-                                 allowed_hosts=[], allow_any_public=True)
-        self.assertIn("hello world", page["text"])
-
-
-class FetchAllowlistConfigTests(unittest.TestCase):
-    """The GUI-tunable allowlist posture resolves through the ONE owner
-    (web.resolve_fetch_allowlist), with hostile host values sanitized."""
-
-    def _settings(self, **kw):
-        from harness.config import load_settings
-        return load_settings(overrides=dict(kw))
-
-    def test_default_is_enabled_with_builtin_hosts(self):
-        hosts, any_public = web.resolve_fetch_allowlist(self._settings())
-        self.assertFalse(any_public)
-        self.assertIn("en.wikipedia.org", hosts)
-
-    def test_disabled_allowlist_allows_any_public(self):
-        _, any_public = web.resolve_fetch_allowlist(
-            self._settings(fetch_allowlist_enabled=False))
-        self.assertTrue(any_public)
-
-    def test_custom_hosts_replace_defaults_and_are_sanitized(self):
-        hosts, any_public = web.resolve_fetch_allowlist(self._settings(
-            fetch_allowlist_hosts=(
-                "FreeOffGridCalculator.com, https://evil.com, a.com/path")))
-        self.assertEqual(hosts, {"freeoffgridcalculator.com"})
-        self.assertFalse(any_public)
-
-    def test_host_sanitizer_drops_hostile_values(self):
-        self.assertIsNone(web._sanitize_host("https://evil.com"))
-        self.assertIsNone(web._sanitize_host("a.com/path"))
-        self.assertIsNone(web._sanitize_host("user@bad.com"))
-        self.assertIsNone(web._sanitize_host("nodots"))
-        self.assertEqual(web._sanitize_host(" Example.COM "), "example.com")
-
-
 if __name__ == "__main__":
     unittest.main()
-

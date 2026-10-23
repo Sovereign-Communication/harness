@@ -23,13 +23,13 @@
 
     <!-- Working Directory -->
     <div class="workdir-section">
-      <label class="workdir-label" for="workdir-input">Workspace folder (optional)</label>
+      <label class="workdir-label" for="workdir-input">Working Directory</label>
       <input
         type="text"
         id="workdir-input"
         class="workdir-input"
-        placeholder="No workspace selected — chat only"
-        title="Select a folder to allow file reads and edits inside that folder"
+        placeholder="Default (server cwd)"
+        title="Set the working directory for file edits"
         autocomplete="off"
         spellcheck="false"
       />
@@ -61,6 +61,11 @@
         <span id="jev-spend-val">Jev: $0.0000</span>
         <span class="dim" id="jev-spend-limit">/ $5.00</span>
       </div>
+      <div class="spend-badge" id="fireworks-spend-meter" title="Fireworks local per-run ceiling, not account balance">
+        <span class="dot" style="background: #f59e0b;"></span>
+        <span id="fireworks-spend-val">FW: —</span>
+        <span class="dim" id="fireworks-spend-limit"></span>
+      </div>
       <div class="cap-popover" id="cap-popover" hidden>
         <div class="cap-title">Run cost ceiling</div>
         <div class="cap-row">
@@ -78,26 +83,6 @@
         <div class="cap-error" id="cap-error" hidden></div>
         <div class="cap-hint">Applies to new runs; per-task ceiling unchanged.</div>
       </div>
-      <div class="cap-popover" id="web-popover" hidden>
-        <div class="cap-title">Web fetch allowlist</div>
-        <div class="cap-row">
-          <label class="cap-label" for="web-allowlist-enabled">
-            <input type="checkbox" id="web-allowlist-enabled">
-            Restrict fetch to allowlist
-          </label>
-        </div>
-        <div class="cap-row">
-          <label class="cap-label" for="web-allowlist-hosts">Allowed hosts (comma-separated; blank = built-in defaults):</label>
-        </div>
-        <div class="cap-row">
-          <input type="text" id="web-allowlist-hosts" placeholder="en.wikipedia.org, example.com" aria-label="Fetch allowlist hosts" style="width: 100%;">
-        </div>
-        <div class="cap-row">
-          <button type="button" id="web-allowlist-save" class="cap-save">Save</button>
-        </div>
-        <div class="cap-error" id="web-allowlist-error" hidden></div>
-        <div class="cap-hint">When unchecked, any public https site may be fetched (still SSRF-guarded: the host must resolve to a public address).</div>
-      </div>
       <button type="button" class="mode-badge route-badge" id="route-badge"
               title="Click to switch primary route free/paid; Shift+click to arm or disarm paid escalation">
         <span id="route-icon">💳</span> <span id="route-text">Primary: free · paid escalation armed</span>
@@ -105,7 +90,7 @@
       <button type="button" id="btn-mode-toggle" class="mode-badge" title="Click to toggle between autonomous execution and review-first preview">
         <span id="mode-icon">⚡</span> <span id="mode-text">Auto</span>
       </button>
-      <button type="button" id="btn-web-toggle" class="mode-badge web-badge" title="Toggle live web search/fetch for chat (off: the agent states it has no web access). Shift+click to configure the fetch allowlist (enable/modify/disable)">
+      <button type="button" id="btn-web-toggle" class="mode-badge web-badge" title="Toggle live web search/fetch for chat (off: the agent states it has no web access)">
         <span id="web-icon">🌐</span> <span id="web-text">Web off</span>
       </button>
       <button type="button" id="btn-auth-toggle" class="mode-badge auth-badge" title="Configure or view X-Harness-Auth token">
@@ -117,15 +102,9 @@
   <!-- Auth Token Modal -->
   <div id="auth-modal" class="auth-modal" hidden>
     <div class="auth-card">
-      <div class="auth-title">🔒 Connect to this Harness server</div>
-      <p class="auth-desc">This browser tab needs the local UI token (<code id="auth-error-msg">missing or wrong X-Harness-Auth token</code>). It is separate from your model provider API key.</p>
-      <div class="auth-help">
-        <p><strong>Using <code>harness desktop</code>?</strong> It authenticates the window it opens automatically. Switch to that window or tab.</p>
-        <p><strong>Using <code>harness serve</code>?</strong> Start it with <code>--auth-token &lt;token&gt; --open</code>, or set <code>HARNESS_UI_AUTH_TOKEN</code> before running <code>harness serve --open</code>. If you opened the page yourself, enter the same token here.</p>
-      </div>
-      <label class="auth-label" for="auth-token-input">Local UI token</label>
+      <div class="auth-title">🔒 Server Authentication Required</div>
+      <p class="auth-desc">The Harness server is protected with an authorization token (<code id="auth-error-msg">missing or wrong X-Harness-Auth token</code>). Enter your token below to authenticate API requests:</p>
       <input type="password" id="auth-token-input" class="pane-input" placeholder="Enter X-Harness-Auth token..." autocomplete="off" />
-      <p id="auth-feedback" class="auth-feedback" role="status" aria-live="polite" hidden></p>
       <div class="auth-actions">
         <button type="button" id="btn-save-token" class="pane-fetch">Authenticate</button>
         <button type="button" id="btn-cancel-token" class="btn-cancel">Cancel</button>

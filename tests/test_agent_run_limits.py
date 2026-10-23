@@ -20,8 +20,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from harness.agent import AutonomousAgent
-from harness.chat_policy import DEFAULT_RUN_WALL_SECONDS, is_research_question
+from harness.agent import (
+    DEFAULT_RUN_WALL_SECONDS,
+    AutonomousAgent,
+    is_research_question,
+)
 from harness.config import load_settings
 from tests._fake import FakeTransport, _gov
 
@@ -61,13 +64,14 @@ class ResearchQuestionTests(unittest.TestCase):
         for prompt in ("find the bug in auth.py",
                        "fix the failing test in test_waist.py",
                        "refactor auth.py to use tokens",
-                       "review site/public/assets/app.js",
-                       r"inspect site\public\assets\app.js",
-                       "review site.py",
                        "run the tests",
                        "2+2",
                        "update the README with the new release notes"):
             self.assertFalse(is_research_question(prompt), prompt)
+
+    def test_weather_lookup_is_research_not_repository_work(self):
+        prompt = "search for the weather near 96778 and see if there's any upcoming significant events in the forecast?"
+        self.assertTrue(is_research_question(prompt))
 
     def test_empty_is_not_a_research_question(self):
         for prompt in ("", "   ", None):
@@ -82,19 +86,10 @@ class _RunCase(unittest.TestCase):
         self.root = Path(self._tmp.name)
         (self.root / ".hist").mkdir(exist_ok=True)
         self.addCleanup(self._tmp.cleanup)
-        patchers = [
-            patch("harness.request_router.governor_for",
-                  return_value=(None, _TEST_GOVERNOR)),
-            patch("harness.conversation_lifecycle.governor_for",
-                  return_value=(None, _TEST_GOVERNOR)),
-            patch("harness.simple_answer_lifecycle.governor_for",
-                  return_value=(None, _TEST_GOVERNOR)),
-            patch("harness.hourglass_lifecycle.governor_for",
-                  return_value=(None, _TEST_GOVERNOR)),
-        ]
-        for patcher in patchers:
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        patcher = patch("harness.agent.governor_for",
+                        return_value=(None, _TEST_GOVERNOR))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _agent(self):
         return AutonomousAgent(
@@ -106,9 +101,8 @@ class _RunCase(unittest.TestCase):
         agent = agent or self._agent()
         seen = {}
 
-        def fake_context(p, web=False, workspace=False):
+        def fake_context(p, web=False):
             seen["web"] = web
-            seen["workspace"] = workspace
             return ("ctx", [], SimpleNamespace(estimated_tokens=0), [])
 
         calls = []
@@ -118,7 +112,9 @@ class _RunCase(unittest.TestCase):
             return {"answer": "4", "model": "double", "cost": 0.0}
 
         with patch.object(agent, "_hourglass_request_context", fake_context), \
-             patch.object(agent, "_hourglass_answer_once", fake_answer):
+             patch.object(agent, "_hourglass_answer_once", fake_answer), \
+             patch("harness.agent.assess_completion",
+                   return_value={"complete": True}):
             result = agent.run_hourglass_request(prompt, **kwargs)
         return result, seen, calls
 
@@ -158,6 +154,21 @@ class ResearchQuestionWebRoutingTests(_RunCase):
             "can you find news about recent papers on riemann?",
             max_wall_seconds=0.0)
         self.assertTrue(seen.get("web"))
+
+    def test_weather_cannot_escalate_into_edit_lane(self):
+        agent = self._agent()
+        prompt = "search for the weather near 96778 and see if there's any upcoming significant events in the forecast?"
+        with patch.object(agent, "_auto_escalation_armed", return_value=True):
+            self.assertFalse(agent._escalation_authorized(prompt, True, "plan_required"))
+
+    def test_weather_context_does_not_read_events_module(self):
+        agent = self._agent()
+        prompt = "search weather near 96778 and upcoming events in the forecast?"
+        with patch("harness.agent.discover_target_files", side_effect=AssertionError("repo lookup")), \
+                patch("harness.agent.enumerate_repo_files", side_effect=AssertionError("repo scan")), \
+                patch.object(agent, "_gather_web_context", return_value=[]):
+            _, files, _, _ = agent._hourglass_request_context(prompt, web=True)
+        self.assertEqual(files, {})
 
     def test_a_plain_question_does_not(self):
         _result, seen, _calls = self._run("2+2", max_wall_seconds=0.0)

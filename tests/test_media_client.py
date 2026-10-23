@@ -96,9 +96,7 @@ class MediaAdapterSuccessTests(unittest.TestCase):
         opener = _fake_opener([job])
         adapter = MediaAdapter(base_url="http://media.local", opener=opener)
         result = adapter.video("ocean waves", project="demo", wait=False)
-        self.assertEqual(result["job_id"], "job-2")
-        self.assertEqual(result["status"], "queued")
-        self.assertEqual(result["kind"], "video")
+        self.assertEqual(result, job)
         self.assertEqual(len(opener.calls), 1)
 
     def test_balance(self):
@@ -170,22 +168,6 @@ class MediaCliTests(unittest.TestCase):
         self.assertIn("succeeded", out.getvalue())
         self.assertIn("/tmp/out.png", out.getvalue())
 
-    def test_cli_no_wait_reports_accepted_job_and_exits_zero(self):
-        for kind, status in (("image", "queued"), ("video", "running")):
-            with self.subTest(kind=kind, status=status):
-                job_id = f"{kind}-accepted"
-                job = {"id": job_id, "status": status, "kind": kind}
-                opener = _fake_opener([job])
-                out = io.StringIO()
-                with mock.patch("harness.media_client.MediaAdapter",
-                                lambda *a, **k: MediaAdapter(opener=opener)):
-                    with redirect_stdout(out):
-                        code = run_cli([kind, "test prompt", "--no-wait"])
-
-                self.assertEqual(code, 0)
-                self.assertIn(f"job {job_id}  [{status}]", out.getvalue())
-                self.assertEqual(len(opener.calls), 1)
-
     def test_cli_service_unavailable_exits_four_and_defers(self):
         opener = _fake_opener([urllib.error.URLError("refused")])
         err = io.StringIO()
@@ -195,34 +177,6 @@ class MediaCliTests(unittest.TestCase):
                 code = run_cli(["image", "a cabin", "--project", "demo"])
         self.assertEqual(code, 4)
         self.assertIn("[defer] media:", err.getvalue())
-
-    def test_cli_invalid_job_ids_are_argparse_errors(self):
-        for job_id in ("", ".", ".."):
-            with self.subTest(job_id=job_id):
-                err = io.StringIO()
-                with mock.patch.object(MediaAdapter, "_request") as request:
-                    with redirect_stderr(err):
-                        with self.assertRaises(SystemExit) as raised:
-                            run_cli(["job", job_id])
-
-                self.assertEqual(raised.exception.code, 2)
-                self.assertIn("non-empty path segment", err.getvalue())
-                self.assertNotIn("Traceback", err.getvalue())
-                request.assert_not_called()
-
-    def test_cli_job_lookup_still_succeeds(self):
-        done = {
-            "id": "job-1", "status": "succeeded", "kind": "image",
-            "provider": "acme", "model": "gen-1", "project": "demo",
-        }
-        out = io.StringIO()
-        with mock.patch.object(MediaAdapter, "_request", return_value=done) as request:
-            with redirect_stdout(out):
-                code = run_cli(["job", "job-1"])
-
-        self.assertEqual(code, 0)
-        self.assertIn("job job-1  [succeeded]", out.getvalue())
-        request.assert_called_once_with("GET", "/v1/jobs/job-1")
 
     def test_cli_budget_refused_exits_nonzero_and_shows_math(self):
         e = _http_error(402, {

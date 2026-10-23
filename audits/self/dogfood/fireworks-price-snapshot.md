@@ -24,7 +24,7 @@
 | Ember-1 | 3.00 / 0.30 / 15.00 | live-confirmed | unconfirmed: `ember-1` | 3.75 / 0.375 / 18.75 |
 | DeepSeek V4.1 Flash | 0.30 / 0.006 / 1.20 | live-confirmed | unconfirmed: `deepseek-v4p1-flash` | 0.375 / 0.0075 / 1.50 |
 | GLM 5.3 | 1.40 / 0.26 / 4.40 | live-confirmed | unconfirmed: `glm-5p3` | 1.75 / 0.325 / 5.50 |
-| GLM 5.3 Flash | 0.15 / 0.03 / 0.50 | live-confirmed | unconfirmed: `glm-5p3-flash` | 0.1875 / 0.0375 / 0.625 |
+| GLM 5.3 Flash | 0.15 / 0.03 / 0.50 | live-confirmed | confirmed: `glm-5p3-flash` | 0.1875 / 0.0375 / 0.625 |
 | GLM 5.2 | 1.40 / 0.14 / 4.40 | live-confirmed | unconfirmed: `glm-5p2` | not in docs table |
 | Qwen 3.8 Max | 2.00 / 0.25 / 6.00 | live-confirmed | unconfirmed: `qwen3p8-max` | 3.00 / 0.375 / 9.00 |
 | Kimi K3 | 3.00 / 0.30 / 15.00 | live-confirmed | unconfirmed: `kimi-k3` | 3.75 / 0.375 / 18.75 |
@@ -66,6 +66,16 @@ Embeddings, docs-only (per 1M input tokens): up to 150M $0.008; 150M–350M $0.0
 2. **Model paths.** Only Nemotron Lightning is confirmed (see the Path column).
 3. **Batch pricing.** The docs say batch inference is billed at 50% of serverless pricing. That is not applied to any row.
 4. **Serverless Training API and on-demand GPU prices.** Out of scope for routing and not captured.
+
+## Verified identity refresh — 2026-10-10
+
+The public model page https://fireworks.ai/models/fireworks/glm-5p3-flash confirms
+`accounts/fireworks/models/glm-5p3-flash`, serverless support, and Standard rates
+$0.15/$0.03/$0.50. The same GLM 5.3 Flash identity is `z-ai/glm-5.3-flash` on
+OpenRouter. The pack generator carries this reviewed mapping; it does not infer
+aliases by fuzzy name matching. The Nemotron model page was rechecked and still
+confirms its path and $0.05/$0.01/$0.20 rates. API transport is documented at
+https://docs.fireworks.ai/tools-sdks/openai-compatibility.
 
 ## Keeping this accurate
 

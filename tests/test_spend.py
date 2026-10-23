@@ -1,35 +1,13 @@
 """Spend-governor policy: per-token math, ceilings, key trust, payload guards."""
 import unittest
-from types import SimpleNamespace
-from unittest import mock
 
-from harness.errors import HarnessError, ToolCancelled
-from harness.provider_errors import ProviderSpendLimitError
+from harness.errors import HarnessError
 from harness.panel import panel_judge
 from harness.tokens import estimate_prompt_tokens
 from tests._fake import FakeTransport, m, comp, _gov, P1, P2, JUDGE
 
 
 class CostMathTests(unittest.TestCase):
-    def test_key_verification_preserves_cancellation(self):
-        class CancelledTransport:
-            def get(self, *args, **kwargs):
-                raise ToolCancelled()
-
-        gov = _gov(CancelledTransport())
-        with self.assertRaises(ToolCancelled):
-            gov.verify_key()
-
-    def test_model_refresh_preserves_cancellation_even_with_cache(self):
-        class CancelledTransport:
-            def get(self, *args, **kwargs):
-                raise ToolCancelled()
-
-        gov = _gov(CancelledTransport())
-        gov._models = [{"id": "cached/model"}]
-        with self.assertRaises(ToolCancelled):
-            gov.fetch_models(refresh=True)
-
     def test_snapshot_reports_public_spend_state(self):
         gov = _gov(FakeTransport(models=[m(P1)]), max_cost=0.05)
         token = gov.reserve(0.00234567, "task_1")
@@ -39,22 +17,6 @@ class CostMathTests(unittest.TestCase):
             "outstanding": 0.0,
             "ceiling": 0.05,
         })
-
-    def test_supports_reasoning_edge_cases(self):
-        gov = _gov(FakeTransport())
-        self.assertTrue(gov.supports_reasoning(""))
-        self.assertTrue(gov.supports_reasoning(None))
-        self.assertFalse(gov.supports_reasoning("openrouter/free"))
-        self.assertFalse(gov.supports_reasoning("openrouter/auto"))
-        gov._models = [
-            {"id": "m/with-reasoning", "supported_parameters": ["reasoning", "tools"]},
-            {"id": "m/no-reasoning", "supported_parameters": ["tools"]},
-            {"id": "m/none-params", "supported_parameters": None},
-        ]
-        self.assertTrue(gov.supports_reasoning("m/with-reasoning"))
-        self.assertFalse(gov.supports_reasoning("m/no-reasoning"))
-        self.assertTrue(gov.supports_reasoning("m/none-params"))
-        self.assertTrue(gov.supports_reasoning("m/unknown"))
 
     def test_pricing_is_per_token_not_per_million(self):
         """Regression: OpenRouter pricing fields are per-token dollars. An
@@ -90,44 +52,6 @@ class CostMathTests(unittest.TestCase):
         gov = _gov(fake)
         with self.assertRaises(HarnessError):
             gov.verify_key()
-
-    def test_session_preflight_stops_on_exhausted_provider_allowance(self):
-        from harness import session
-
-        fake = FakeTransport(key={"label": "sk-test", "limit": 1.0,
-                                  "limit_remaining": 0.0})
-        settings = SimpleNamespace(max_cost=0.05, expect_key_label=None)
-        with mock.patch.object(session, "HttpTransport", return_value=fake), \
-             mock.patch.object(session, "resolve_api_key", return_value="sk-test"), \
-             self.assertRaises(ProviderSpendLimitError) as ctx:
-            session.governor_for(settings)
-        self.assertEqual(ctx.exception.kind, "provider_spend_limit")
-        self.assertIn("operation was stopped", str(ctx.exception))
-        self.assertEqual(fake.chat_posts(), [])
-
-    def test_key_with_unknown_remaining_is_not_called_exhausted(self):
-        fake = FakeTransport(key={"label": "sk-test", "limit": 1.0,
-                                  "limit_remaining": None})
-        info = _gov(fake).verify_key()
-        self.assertIsNone(info["remaining"])
-
-    def test_verify_key_propagates_provider_spend_limit(self):
-        fake = FakeTransport()
-        err = ProviderSpendLimitError("key check 402")
-        with mock.patch.object(fake, "get", side_effect=err):
-            gov = _gov(fake)
-            with self.assertRaises(ProviderSpendLimitError) as ctx:
-                gov.verify_key()
-            self.assertEqual(ctx.exception, err)
-
-    def test_fetch_models_propagates_provider_spend_limit(self):
-        fake = FakeTransport()
-        err = ProviderSpendLimitError("catalog check 402")
-        with mock.patch.object(fake, "get", side_effect=err):
-            gov = _gov(fake)
-            with self.assertRaises(ProviderSpendLimitError) as ctx:
-                gov.fetch_models(refresh=True)
-            self.assertEqual(ctx.exception, err)
 
     def test_expect_key_label_mismatch(self):
         fake = FakeTransport(key={"label": "sk-or-v1-aaaa", "limit": 1.0})
@@ -180,6 +104,70 @@ class GuardTests(unittest.TestCase):
                         panel=[P1, P2], judge=JUDGE)
         # judge must never have been called
         self.assertEqual(len(fake.chat_posts()), 2)
+
+
+class JevCeilingTests(unittest.TestCase):
+    def _governor(self, cap):
+        from harness.spend import SpendGovernor
+        return SpendGovernor(FakeTransport(), None, max_cost=0.05,
+                             jev_max_cost=cap)
+
+    def test_jev_ceiling_narrows_total_and_includes_reservations(self):
+        gov = self._governor(0.002)
+        token = gov.reserve(0.002, "jev:plan")
+        with self.assertRaisesRegex(HarnessError, "Jev ceiling"):
+            gov.reserve(0.0001, "jev:answer")
+        gov.reconcile(token, 0.001)
+        second = gov.reserve(0.001, "jev:answer")
+        gov.reconcile(second, 0.001)
+        with self.assertRaisesRegex(HarnessError, "Jev ceiling"):
+            gov.preflight_jev(1)
+        gov.record_actual(0.001, "test/model")  # independent provider still fits
+
+    def test_zero_cap_refuses_before_dispatch_but_zero_release_works(self):
+        gov = self._governor(0)
+        with self.assertRaisesRegex(HarnessError, "Jev ceiling"):
+            gov.reserve(0.001, "jev:plan")
+        token = gov.reserve(0, "jev:cache")
+        gov.reconcile(token, 0)
+        self.assertEqual(gov.spent, 0)
+
+    def test_actual_overrun_releases_liability_and_is_booked_honestly(self):
+        gov = self._governor(0.001)
+        token = gov.reserve(0.001, "jev:plan")
+        with self.assertRaisesRegex(HarnessError, "Jev ceiling"):
+            gov.reconcile(token, 0.002)
+        self.assertEqual(gov.outstanding, 0)
+        gov.record_overrun(0.002, "jev-1.13.0")
+        self.assertEqual(gov.spent, 0.002)
+        with self.assertRaisesRegex(HarnessError, "Jev ceiling"):
+            gov.reserve(0.0001, "jev:next")
+
+    def test_total_ceiling_cannot_be_widened_by_jev_ceiling(self):
+        gov = self._governor(1)
+        with self.assertRaises(HarnessError):
+            gov.reserve(0.06, "jev:plan")
+
+    def test_concurrent_jev_reservations_share_one_cap(self):
+        import threading
+        gov = self._governor(0.001)
+        admitted = []
+        lock = threading.Lock()
+        def reserve():
+            try:
+                token = gov.reserve(0.0006, "jev:parallel")
+            except HarnessError:
+                return
+            with lock:
+                admitted.append(token)
+        threads = [threading.Thread(target=reserve) for _ in range(10)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(len(admitted), 1)
+        gov.reconcile(admitted[0], 0.0005)
+        self.assertEqual(gov.spent, 0.0005)
 
 
 class ReservationTests(unittest.TestCase):

@@ -6,9 +6,7 @@ Covers the three faces the site/UI consume: the local-mode proof snapshot
 pane assets being served (SITE-8) and the fail-closed behaviors (broken
 chain refuses the snapshot; unroutable/invalid packs return honest 400s).
 """
-import json
 import unittest
-from pathlib import Path
 from unittest import mock
 
 from harness.config import load_settings
@@ -86,47 +84,6 @@ class SitePageServingTests(ServerHarness):
             status, data = _request(conn, "GET", "/site/index.html")
             self.assertEqual(status, 200)
             self.assertIn("Proof Bench", data.get("raw", ""))
-        finally:
-            conn.close()
-
-    def test_home_footer_does_not_claim_metrics_link_to_evidence(self):
-        path = Path("site/public/index.html")
-        page = path.read_text(encoding="utf-8")
-        footer = page.split("<footer", 1)[1].split("</footer>", 1)[0]
-        self.assertIn("Metrics summarize sanitized, consented site-export bundles", footer)
-        self.assertNotIn("Every number on this site links", footer)
-
-    def test_traces_footer_describes_confidence_badges(self):
-        path = Path("site/public/traces/index.html")
-        page = path.read_text(encoding="utf-8")
-        footer = page.split("<footer", 1)[1].split("</footer>", 1)[0]
-        self.assertIn("Jev confidence appears on Jev-directed climb badges", footer)
-        self.assertNotIn("confidence columns", footer)
-
-    def test_publish_instructions_match_worker_submission_contract(self):
-        path = Path("site/public/publish/index.html")
-        page = path.read_text(encoding="utf-8")
-        self.assertNotIn('type="file"', page)
-        self.assertIn("There is no file picker or pre-submission preview", page)
-        self.assertIn("Submit on the deployed Proof Bench", page)
-        self.assertIn("checks the bundle schema, consent block, and exported hash-chain claim", page)
-        self.assertIn("verified the actual ledger chain locally", page)
-        self.assertIn("harness serve</code> does not provide <code>/api/submit", page)
-        self.assertNotIn("exactly what will be sent", page)
-        self.assertNotIn("re-validates the schema", page)
-
-    def test_public_demo_snapshot_asset_is_served_and_in_sync(self):
-        root = Path(__file__).resolve().parents[1]
-        source = root / "site" / "data" / "demo" / "snapshot.json"
-        public = root / "site" / "public" / "data" / "demo" / "snapshot.json"
-        expected = json.loads(source.read_text(encoding="utf-8"))
-        self.assertEqual(json.loads(public.read_text(encoding="utf-8")), expected)
-
-        conn = self._conn()
-        try:
-            status, data = _request(conn, "GET", "/site/data/demo/snapshot.json")
-            self.assertEqual(status, 200)
-            self.assertEqual(data, expected)
         finally:
             conn.close()
 
@@ -322,10 +279,15 @@ class RouteEndpointTests(ServerHarness):
                         "unkeyed route must never present itself as a live Jev answer")
 
 
-class SiteAppJsBehaviorTests(unittest.TestCase):
-    """Real-JS behavior pins (node when present; skipped cleanly when not)."""
+class SiteAppJsElTests(unittest.TestCase):
+    """Real-JS behavioral pin (node when present, skipped cleanly when not):
+    el() must append child ARRAYS as nodes. The dogfood regression -- barChart
+    and the router reasons list pass arrays; Element.append() stringifies an
+    array to "[object HTMLDivElement],..." so Proof Bench charts silently
+    rendered garbage. Identity checks make the pin vacuity-proof: a
+    stringifying el() leaves strings in kids and fails."""
 
-    def _run_app(self, body, *, location_search=""):
+    def _run_app(self, body):
         import os
         import shutil
         import subprocess
@@ -336,13 +298,12 @@ class SiteAppJsBehaviorTests(unittest.TestCase):
             self.skipTest("platform: node not available; JS behavior asserted in CI")
         uri = Path("site/public/assets/app.js").resolve().as_uri()
         script = (
-            "globalThis.location = { search: " + json.dumps(location_search) + " };\n"
-            "const mk = (tag) => ({ tag, kids: [], attrs: {},\n"
+            "globalThis.location = { search: '' };\n"
+            "const mk = (tag) => ({ tag, kids: [],\n"
             "  append(...xs) { this.kids.push(...xs); },\n"
-            "  setAttribute(k, v) { this.attrs[k] = v; }, addEventListener() {} });\n"
-            "globalThis.document = { createElement: mk, getElementById: () => null };\n"
-            "const app = await import('" + uri + "');\n"
-            "const { el } = app;\n" + body)
+            "  setAttribute() {}, addEventListener() {} });\n"
+            "globalThis.document = { createElement: mk };\n"
+            "const { el } = await import('" + uri + "');\n" + body)
         with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as f:
             f.write(script)
             path = f.name
@@ -384,66 +345,3 @@ class SiteAppJsBehaviorTests(unittest.TestCase):
             "const ul = el('ul', {}, [null, a, undefined]);\n"
             "process.stdout.write(JSON.stringify({ n: ul.kids.length }));\n")
         self.assertEqual(json.loads(out)["n"], 1)
-
-    def test_hourglass_discloses_unknown_run_depth(self):
-        import json
-        out = self._run_app(
-            "const nodeText = (node) => typeof node === 'string' ? node :\n"
-            "  (node.kids || []).map(nodeText).join('');\n"
-            "const chart = app.hourglass({ run_depth_distribution: {\n"
-            "  T0: { runs: 4, share: 0.4 }, T1: { runs: 3, share: 0.3 },\n"
-            "  T2: { runs: 2, share: 0.2 }, T3: { runs: 0, share: 0 },\n"
-            "  unknown: { runs: 1, share: 0.1 } } });\n"
-            "process.stdout.write(JSON.stringify({\n"
-            "  text: nodeText(chart), label: chart.attrs['aria-label']\n"
-            "}));\n")
-        data = json.loads(out)
-        self.assertIn("Unknown1 runs", data["text"])
-        self.assertIn("10%", data["text"])
-        self.assertIn("unknown depth: 1 run (10%)", data["label"])
-
-    def test_public_demo_snapshot_url_is_relative_to_the_shared_app_asset(self):
-        out = self._run_app(
-            "globalThis.fetch = async (url) => ({\n"
-            "  ok: true, json: async () => ({ demo: true })\n"
-            "});\n"
-            "const snapshot = await app.loadSnapshot();\n"
-            "process.stdout.write(JSON.stringify({\n"
-            "  url: app.state.snapshotSource, demo: snapshot.demo\n"
-            "}));\n",
-            location_search="?mode=public")
-        data = json.loads(out)
-        expected = (Path("site/public/data/demo/snapshot.json")
-                    .resolve().as_uri())
-        self.assertEqual(data["url"], expected)
-        self.assertTrue(data["demo"])
-
-    def test_missing_methodology_snapshot_does_not_claim_live_evidence(self):
-        out = self._run_app(
-            "const root = { kids: [], append(...xs) { this.kids.push(...xs); } };\n"
-            "const textOf = (node) => typeof node === 'string' ? node :\n"
-            "  (node.kids || []).map(textOf).join('');\n"
-            "app.renderMethodology(root, null);\n"
-            "process.stdout.write(JSON.stringify(textOf(root)));\n")
-        text = json.loads(out)
-        self.assertIn("No snapshot is available", text)
-        self.assertIn("cannot be classified", text)
-        self.assertNotIn("claims to be live evidence", text)
-
-    def test_router_copy_describes_distinct_demo_cli_and_mcp_packs(self):
-        import json
-        out = self._run_app(
-            "const root = { kids: [], append(...xs) { this.kids.push(...xs); } };\n"
-            "const textOf = (node) => typeof node === 'string' ? node :\n"
-            "  (node.kids || []).map(textOf).join('');\n"
-            "await app.renderRouter(root, null);\n"
-            "process.stdout.write(JSON.stringify(textOf(root)));\n")
-        text = json.loads(out)
-        self.assertIn("fixed ladder", text)
-        self.assertIn("Worker-side Jev proxy", text)
-        self.assertIn("CLI defaults to packs/model_route.pack.json", text)
-        self.assertIn("MCP requires callers to supply a pack", text)
-        self.assertNotIn("same pack the harness CLI/MCP route command uses", text)
-        router_html = Path("site/public/router/index.html").read_text(encoding="utf-8")
-        self.assertIn("fixed demo pack", router_html)
-        self.assertNotIn("does not re-implement routing", router_html)

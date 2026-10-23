@@ -11,11 +11,9 @@ from types import SimpleNamespace
 from unittest import mock
 
 from harness.apply import ApplyEngine
-from harness.errors import HarnessError
 from harness.spend import SpendGovernor
 from harness.ledger import AutonomyLedger
 from harness.mcp import McpServer
-from harness.provider_errors import ProviderSpendLimitError
 from harness.mcp_lanes import LANES, lane_for
 from harness.mcp_schemas import TOOL_SCHEMAS
 from harness.router import Router
@@ -36,7 +34,7 @@ _TMP = tempfile.TemporaryDirectory()
 atexit.register(_TMP.cleanup)
 
 
-def make_server(posts=None, allow_write=True, allowed_roots=None):
+def make_server(posts=None, allow_write=True):
     transport = FakeTransport(models=[m(JUDGE), m(P1), m(P2), m(APPLY)], posts=posts)
     governor = SpendGovernor(transport, "sk-test")
     ledger = AutonomyLedger(os.path.join(_TMP.name, f"ledger-{os.urandom(4).hex()}.jsonl"))
@@ -45,147 +43,7 @@ def make_server(posts=None, allow_write=True, allowed_roots=None):
                          default_require_consent=True)
     return transport, McpServer(transport=transport, api_key="sk-test", governor=governor,
                                 ledger=ledger, router=router, engine=engine,
-                                allow_write=allow_write,
-                                allowed_roots=([_TMP.name] if allowed_roots is None
-                                               else allowed_roots))
-
-
-class WorkspaceMcpBoundaryTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name) / "workspace"
-        self.root.mkdir()
-        self.file = self.root / "sample.txt"
-        self.file.write_text("safe", encoding="utf-8")
-        self.outside = Path(self.temp.name) / "outside.txt"
-        self.outside.write_text("outside", encoding="utf-8")
-        self._transport, self.server = make_server(
-            allowed_roots=[self.root])
-
-    def tearDown(self):
-        self.temp.cleanup()
-
-    def test_apply_continuation_is_canonicalized_and_confined(self):
-        with mock.patch.object(self.server.engine, "apply_batch",
-                               return_value={"status": "ok"}) as apply_batch:
-            result = self.server._invoke("apply_edit", {
-                "continuation": {"file_path": str(self.file),
-                                 "verify_only": True},
-                "verify_only": True,
-            })
-        self.assertEqual(result["status"], "ok")
-        continued = apply_batch.call_args.kwargs["options"].continuation
-        self.assertTrue(os.path.samefile(continued["file_path"], self.file))
-
-    def test_apply_continuation_outside_configured_roots_is_refused(self):
-        with self.assertRaisesRegex(HarnessError, "outside every allowed root"):
-            self.server._invoke("apply_edit", {
-                "continuation": {"file_path": str(self.outside),
-                                 "verify_only": True},
-                "verify_only": True,
-            })
-
-    def test_apply_continuation_symlink_is_refused_before_dispatch(self):
-        link = self.root / "linked.txt"
-        try:
-            link.symlink_to(self.file)
-        except (OSError, NotImplementedError):
-            self.skipTest("symlinks unavailable")
-        with self.assertRaisesRegex(HarnessError, "symlink"):
-            self.server._invoke("apply_edit", {
-                "continuation": {"file_path": str(link), "verify_only": True},
-                "verify_only": True,
-            })
-        self.assertEqual(self._transport.chat_posts(), [])
-
-    def test_plan_brief_json_must_be_an_object(self):
-        with self.assertRaisesRegex(HarnessError, "brief JSON must be an object"):
-            self.server._invoke("plan_and_execute", {
-                "goal": "plan safely", "brief": "[]"})
-
-    def test_plan_brief_file_must_be_a_regular_file(self):
-        directory = self.root / "brief-dir"
-        directory.mkdir()
-        with self.assertRaisesRegex(HarnessError, "brief must be a JSON file"):
-            self.server._invoke("plan_and_execute", {
-                "goal": "plan safely", "brief": "brief-dir",
-                "root": str(self.root)})
-
-    def test_plan_brief_object_is_passed_to_composer(self):
-        with mock.patch("harness.mcp.compose_plan", return_value={
-                "status": "ok", "goal": "plan safely", "dag": {"nodes": []}}) as compose:
-            result = self.server._invoke("plan_and_execute", {
-                "goal": "plan safely", "brief": '{"summary":"source"}'})
-        self.assertEqual(result["status"], "ok")
-        self.assertIsNone(compose.call_args.kwargs["root"])
-
-    def test_plan_execution_defensively_requires_workspace(self):
-        with (mock.patch.object(self.server, "_workspace_for", return_value=None),
-              mock.patch("harness.mcp.compose_plan", return_value={
-                  "status": "ok", "goal": "plan", "dag": {"nodes": []}})):
-            with self.assertRaisesRegex(HarnessError, "selected workspace"):
-                self.server._invoke("plan_and_execute", {
-                    "goal": "plan", "execute": True, "allow_write": True})
-
-    def test_plan_execution_rebases_dag_targets_to_selected_workspace(self):
-        plan = {
-            "status": "ok", "goal": "plan safely",
-            "dag": {"nodes": [{
-                "node_id": "n1", "instruction": "inspect the sample",
-                "target_files": ["sample.txt"],
-            }]},
-            "nodes": [{"node_id": "n1", "local_gate": None}],
-        }
-        with (mock.patch("harness.mcp.compose_plan", return_value=plan),
-              mock.patch("harness.mcp.PlanExecutor.execute", return_value={
-                  "n1": {"status": "ok", "cost": 0.0}}) as execute):
-            result = self.server._invoke("plan_and_execute", {
-                "goal": "plan safely", "execute": True,
-                "root": str(self.root), "allow_write": True,
-            })
-        self.assertEqual(result["status"], "ok")
-        dag = execute.call_args.args[0]
-        self.assertEqual(dag.nodes["n1"].target_files,
-                         (str(self.file.resolve()),))
-
-    def test_dogfood_rejects_directory_target(self):
-        directory = self.root / "not-a-file"
-        directory.mkdir()
-        with self.assertRaisesRegex(HarnessError, "dogfood target must be a file"):
-            self.server._invoke("dogfood", {
-                "file": "not-a-file", "instruction": "inspect",
-                "root": str(self.root)})
-
-    def test_generate_brief_rejects_directory_but_accepts_empty_sources(self):
-        directory = self.root / "source-dir"
-        directory.mkdir()
-        with self.assertRaisesRegex(HarnessError, "source paths must be files"):
-            self.server._invoke("generate_brief", {
-                "goal": "summarize", "files": ["source-dir"],
-                "root": str(self.root)})
-        result = self.server._invoke("generate_brief", {
-            "goal": "summarize", "files": []})
-        self.assertEqual(result["status"], "ok")
-
-    def test_generate_brief_scopes_sources_and_optional_rendering(self):
-        result = self.server._invoke("generate_brief", {
-            "goal": "summarize sample", "files": ["sample.txt"],
-            "root": str(self.root), "freshness": True, "render": True,
-        })
-        self.assertEqual(result["status"], "ok")
-        self.assertIn("freshness_report", result)
-        self.assertIn("rendered", result)
-
-    def test_repo_cards_read_check_uses_only_selected_root(self):
-        result = self.server._invoke("repo_cards", {"root": str(self.root)})
-        self.assertEqual(result, {"status": "ok", "checked": 0, "stale": []})
-
-    def test_repo_cards_write_requires_explicit_enablement(self):
-        _transport, server = make_server(
-            allow_write=False, allowed_roots=[self.root])
-        with self.assertRaisesRegex(HarnessError, "repo_cards writes are disabled"):
-            server._invoke("repo_cards", {"check": False,
-                                            "root": str(self.root)})
+                                allow_write=allow_write, allowed_roots=[_TMP.name])
 
 
 def consent_json(decision, reason="ok"):
@@ -382,12 +240,6 @@ class McpProtocolTests(unittest.TestCase):
         # tools/list
         self.assertEqual(lines[1]["id"], 2)
         tools = {t["name"]: t for t in lines[1]["result"]["tools"]}
-        self.assertIn("site_check", tools)
-        self.assertTrue(tools["site_check"]["inputSchema"]["properties"]["prompt"])
-        self.assertTrue(tools["site_check"]["annotations"]["readOnlyHint"])
-        self.assertIn("ask", tools)
-        self.assertTrue(tools["ask"]["inputSchema"]["properties"]["prompt"])
-        self.assertTrue(tools["ask"]["annotations"]["readOnlyHint"])
         self.assertIn("panel_verify", tools)
         self.assertIn("apply_edit", tools)
         self.assertIn("offer_work", tools)
@@ -402,73 +254,6 @@ class McpProtocolTests(unittest.TestCase):
         # ping
         self.assertEqual(lines[2]["id"], 3)
         self.assertEqual(lines[2]["result"], {})
-
-    def test_readme_mcp_inventory_matches_tools_list(self):
-        import re
-        _, lines = run('{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n')
-        names = [tool["name"] for tool in lines[0]["result"]["tools"]]
-        root = Path(__file__).resolve().parents[1]
-        readme = (root / "README.md").read_text(encoding="utf-8")
-        marker = "Tools (`tools/list` order):"
-        inventory = readme.split(marker, 1)[1].split(
-            "\n`economics_report` reports", 1)[0]
-        documented = re.findall(r"`([a-z_]+)`", inventory)
-        self.assertEqual(documented, names)
-
-        mcp_doc = (root / "docs" / "mcp.md").read_text(encoding="utf-8")
-        self.assertIn("[README MCP inventory](../README.md)", mcp_doc)
-
-    def test_ask_delegates_to_shared_conversational_lifecycle(self):
-        import harness.mcp as mcp_module
-        expected = {"status": "ok", "response": "3.06e19 nanometers."}
-        settings = SimpleNamespace()
-        transport, server = make_server()
-        with mock.patch.object(mcp_module, "load_settings",
-                               return_value=settings), \
-             mock.patch("harness.agent.AutonomousAgent.run_prompt",
-                        return_value=expected) as run_prompt:
-            result = server._invoke(
-                "ask",
-                {"prompt": "How many nanometers long is that?",
-                 "session_id": "mcp-followup"},
-                cancel_check=lambda: False)
-        self.assertEqual(result, expected)
-        run_prompt.assert_called_once_with(
-            prompt="How many nanometers long is that?", auto_apply=False,
-            session_id="mcp-followup", cancel_check=mock.ANY,
-            force_conversation=True)
-
-    def test_site_check_delegates_to_shared_agent_lifecycle(self):
-        import harness.mcp as mcp_module
-        expected = {
-            "status": "ok", "intent": "simple-action",
-            "workflow_tier": "simple-action",
-            "response": "Yes -- https://example.com responded with HTTPS 200.",
-        }
-        settings = SimpleNamespace()
-        transport, server = make_server()
-        with mock.patch.object(mcp_module, "load_settings",
-                               return_value=settings), \
-             mock.patch("harness.agent.AutonomousAgent.run_prompt",
-                        return_value=expected) as run_prompt:
-            result = server._invoke(
-                "site_check",
-                {"prompt": "check if example.com is up",
-                 "session_id": "mcp-site-check"},
-                cancel_check=lambda: False)
-
-        self.assertEqual(result, expected)
-        run_prompt.assert_called_once_with(
-            prompt="check if example.com is up", auto_apply=False,
-            session_id="mcp-site-check", cancel_check=mock.ANY,
-            force_conversation=True)
-
-    def test_site_check_rejects_non_site_prompt(self):
-        from harness.errors import HarnessError
-        transport, server = make_server()
-        with self.assertRaises(HarnessError):
-            server._invoke("site_check", {"prompt": "tell me a joke"},
-                           cancel_check=lambda: False)
 
     def test_initialize_captures_client_caller(self):
         """The stdio peer names itself in clientInfo: the server tags its
@@ -891,34 +676,6 @@ class McpProtocolTests(unittest.TestCase):
         self.assertNotIn("error", lines[0])
         self.assertTrue(lines[0]["result"]["isError"])
 
-    def test_non_object_driver_http_error_body_stays_a_typed_tool_error(self):
-        import urllib.error
-        from harness.perception_client import PerceptionAdapter
-
-        feed = json.dumps({
-            "jsonrpc": "2.0", "id": 35, "method": "tools/call",
-            "params": {"name": "driver_health", "arguments": {}},
-        }) + "\n"
-
-        def malformed_error(request, timeout):
-            raise urllib.error.HTTPError(
-                request.full_url, 502, "bad gateway", {}, io.BytesIO(b"[]"))
-
-        def make_adapter():
-            return PerceptionAdapter(
-                base_url="http://driver.test", token="test-token",
-                opener=malformed_error)
-
-        with mock.patch("harness.mcp.PerceptionAdapter", side_effect=make_adapter):
-            _, lines = run(feed)
-
-        self.assertNotIn("error", lines[0])
-        self.assertTrue(lines[0]["result"]["isError"])
-        self.assertEqual(lines[0]["result"]["errorKind"], "driver_tool_error")
-        message = lines[0]["result"]["content"][0]["text"]
-        self.assertIn("driver-core request failed", message)
-        self.assertIn("driver service returned HTTP 502: []", message)
-
     def test_apply_rejects_ungated_continuation_before_capability_lookup(self):
         """MCP must share the CLI/library authority boundary. Validation now
         runs structurally before any governor/capability access, so the guard
@@ -1236,12 +993,10 @@ class LaneSchedulingTests(unittest.TestCase):
              "continue_work": "mutation",
              "jev_freeze": "mutation",
              "dogfood": "mutation",
-             "ask": "spendy",
              "panel_verify": "spendy",
              "offer_work": "spendy",
              "log_judgment": "spendy",
              "route_query": "spendy",
-             "site_check": "observe",
              "ledger_status": "observe",
              "defer_work": "observe",
              "participation_report": "observe",
@@ -1254,12 +1009,7 @@ class LaneSchedulingTests(unittest.TestCase):
              "driver_health": "observe",
              "driver_vocabulary": "observe",
              "driver_verify": "observe",
-             "jev_phase": "observe",
-             "host_provision_probe": "observe",
-             "host_provision_plan": "spendy",
-             "repo_cards": "observe",
-             "jev_calibration": "observe",
-             "economics_report": "observe"})
+             "jev_phase": "observe"})
 
     def test_unknown_and_missing_names_ride_observe(self):
         self.assertEqual(lane_for("not_a_tool"), "observe")
@@ -1628,7 +1378,7 @@ class JevPhaseToolTests(unittest.TestCase):
         self.assertEqual(set(properties),
                          {"repo_root", "phase", "all", "min_score"})
         self.assertEqual(properties["repo_root"]["type"], "string")
-        self.assertNotIn("default", properties["repo_root"])
+        self.assertEqual(properties["repo_root"]["default"], ".")
         self.assertEqual(properties["phase"]["type"], "string")
         self.assertIn("required unless 'all' is set",
                       properties["phase"]["description"])
@@ -1642,7 +1392,7 @@ class JevPhaseToolTests(unittest.TestCase):
         _write_jev_repo(
             self.tmp.name,
             "| 2 Pillars `JEV-P2-*` | **in progress / repair** | PR OPEN |")
-        _, server = make_server(allowed_roots=[self.tmp.name])
+        _, server = make_server()
         # A live Jev call would need a settings object; jev_phase never
         # builds one (settings=None, use_live_jev=False), so this must
         # succeed even though nothing here can reach the network.
@@ -1656,7 +1406,7 @@ class JevPhaseToolTests(unittest.TestCase):
         _write_jev_repo(
             self.tmp.name,
             "| 2 Pillars `JEV-P2-*` | **in progress / repair** | PR OPEN |")
-        _, server = make_server(allowed_roots=[self.tmp.name])
+        _, server = make_server()
         board = server._invoke("jev_phase", {"repo_root": self.tmp.name, "all": True})
         self.assertIn("phases", board)
         self.assertIn("false_complete", board)
@@ -1664,7 +1414,7 @@ class JevPhaseToolTests(unittest.TestCase):
     def test_jev_phase_requires_phase_unless_all(self):
         from harness.errors import HarnessError
 
-        _, server = make_server(allowed_roots=[self.tmp.name])
+        _, server = make_server()
         with self.assertRaises(HarnessError):
             server._invoke("jev_phase", {"repo_root": self.tmp.name})
 
@@ -1851,7 +1601,7 @@ class ContinueWorkToolTests(unittest.TestCase):
             continuation = {"file_path": target, "verify_only": False,
                             "verification_required": False,
                             "remaining_scope": "add zero"}
-            with self.assertRaisesRegex(Exception, "outside every configured allowed root"):
+            with self.assertRaisesRegex(Exception, "outside every allowed root"):
                 server._invoke("continue_work", {
                     "continuation": continuation, "allow_write": True,
                 })
@@ -1870,23 +1620,6 @@ class ContinueWorkToolTests(unittest.TestCase):
             "continuation": continuation, "instruction": "add zero explicitly",
         })
         self.assertEqual(result["status"], "preview")
-
-    def test_mcp_serializes_provider_spend_limit_kind(self):
-        _, server = make_server()
-        with mock.patch.object(
-                server, "_invoke",
-                side_effect=ProviderSpendLimitError(
-                    "account balance is too low", known_cost=0.000012)):
-            reply = server._handle({
-                "jsonrpc": "2.0", "id": 25, "method": "tools/call",
-                "params": {"name": "spend_status", "arguments": {}},
-            })
-        result = reply["result"]
-        self.assertTrue(result["isError"])
-        self.assertEqual(result["errorKind"], "provider_spend_limit")
-        self.assertEqual(result["error_kind"], "provider_spend_limit")
-        self.assertIn("spend limit exhausted", result["content"][0]["text"])
-        self.assertAlmostEqual(result["known_cost_usd"], 0.000012)
 
 
 if __name__ == "__main__":

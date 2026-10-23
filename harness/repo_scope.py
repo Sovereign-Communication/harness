@@ -7,14 +7,10 @@ module location changed.
 """
 import os
 import re
-import stat
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from . import osal
 from .osal import python_exe
-from .errors import HarnessError
-from .workspace import is_sensitive_path, resolve_workspace_path
 
 
 def _gate_python() -> str:
@@ -31,24 +27,16 @@ def _gate_python() -> str:
 
 def discover_target_files(prompt: str, root_dir: Optional[Path] = None) -> List[str]:
     # Autonomously identify candidate target files from prompt or repository
-    if root_dir is None:
-        return []
-    root = Path(root_dir).resolve()
+    root = root_dir or Path.cwd()
     candidates: List[str] = []
 
     # 1. Regex search for explicit filenames in prompt
     matches = re.findall(r"\b[a-zA-Z0-9_./-]+\.(?:py|rs|go|ts|js|md|json|toml|yaml|yml|c|cpp|h)\b", prompt)
     for m in matches:
         clean_path = m.strip("`'\" \t\r\n")
-        try:
-            full_path = resolve_workspace_path(root, clean_path, must_exist=True)
-            if not full_path.is_file():
-                continue
-            rel_path = full_path.relative_to(root).as_posix()
-        except (HarnessError, OSError, ValueError):
-            continue
-        if rel_path not in candidates:
-            candidates.append(rel_path)
+        full_path = root / clean_path
+        if full_path.exists() and clean_path not in candidates:
+            candidates.append(clean_path.replace("\\", "/"))
 
     if candidates:
         return candidates
@@ -60,12 +48,7 @@ def discover_target_files(prompt: str, root_dir: Optional[Path] = None) -> List[
         for p in sorted(harness_dir.glob("*.py")):
             stem = p.stem.lower()
             if stem in words and stem != "__init__":
-                try:
-                    safe_path = resolve_workspace_path(
-                        root, p, must_exist=True)
-                    rel = safe_path.relative_to(root).as_posix()
-                except (HarnessError, OSError, ValueError):
-                    continue
+                rel = p.relative_to(root).as_posix()
                 if rel not in candidates:
                     candidates.append(rel)
 
@@ -92,161 +75,22 @@ def enumerate_repo_files(root_dir: Optional[Path] = None, limit: int = 300,
     that must cover the whole tree; the default keeps the historical
     relevance-pass behavior byte-for-byte identical. ``limit=None`` caps nothing.
     """
-    if root_dir is None:
-        return []
-    root = Path(root_dir).resolve()
+    root = (root_dir or Path.cwd()).resolve()
     hard_dirs = _REPO_SKIP_DIRS - (_REPO_SOFT_DIRS if include_soft_skipped else set())
     hard_suffixes = _REPO_SKIP_SUFFIXES - (
         _REPO_SOFT_SUFFIXES if include_soft_skipped else set())
-    hard_dirs = {name.casefold() for name in hard_dirs}
-    hard_suffixes = {suffix.casefold() for suffix in hard_suffixes}
-    if limit is not None and limit <= 0:
-        return []
-    root_path = str(root)
-    def is_reparse(entry, info):
-        # Windows junctions are not always reported as symbolic links. Treat
-        # every reparse point as a link so inventory never walks into it.
-        reparse = bool(getattr(info, "st_file_attributes", 0) & 0x400)
-        return reparse or entry.is_symlink()
-
     files: List[str] = []
-    pending = [root]
-    visited = set()
-    while pending:
-        directory = pending.pop()
-        try:
-            canonical_dir = directory.resolve(strict=True)
-            if (not osal.is_within(str(canonical_dir), root_path)
-                    or str(canonical_dir) in visited):
-                continue
-            visited.add(str(canonical_dir))
-            with os.scandir(directory) as scan:
-                entries = sorted(scan, key=lambda entry: (entry.name.casefold(),
-                                                          entry.name))
-        except (OSError, RuntimeError):
+    for p in sorted(root.rglob("*")):
+        if not p.is_file():
             continue
-
-        subdirs = []
-        for entry in entries:
-            path = Path(entry.path)
-            try:
-                info = entry.stat(follow_symlinks=False)
-                if is_reparse(entry, info):
-                    continue
-                if stat.S_ISDIR(info.st_mode):
-                    if (entry.name.casefold() not in hard_dirs
-                            and not is_sensitive_path(path)):
-                        subdirs.append(path)
-                    continue
-                if not stat.S_ISREG(info.st_mode):
-                    continue
-                safe_path = resolve_workspace_path(
-                    root, path, must_exist=True)
-                rel = safe_path.relative_to(root).as_posix()
-            except (HarnessError, OSError, RuntimeError, ValueError):
-                continue
-            if any(part.casefold() in hard_dirs for part in Path(rel).parts):
-                continue
-            if (Path(rel).suffix.casefold() in hard_suffixes
-                    or is_sensitive_path(safe_path)):
-                continue
-            files.append(rel)
-
-        # LIFO: reverse here so directories are walked in ascending order.
-        pending.extend(reversed(subdirs))
-
-    files.sort()
-    return files if limit is None else files[:limit]
-
-
-def workspace_review_candidates(prompt: str, files: Sequence[str], *,
-                                max_files: int = 20,
-                                preferred: Sequence[str] = ()) -> List[str]:
-    """Choose a balanced, bounded file sample for a repository-wide review.
-
-    Stable project instructions, overview/design documents, build manifests,
-    implementation entry points, and tests provide complementary evidence.
-    Prompt/path overlap and explicit file references rank ahead of defaults.
-    """
-    if max_files <= 0:
-        return []
-    available = {str(path).replace("\\", "/") for path in files}
-    selected: List[str] = []
-    for path in preferred:
-        normalized = str(path).replace("\\", "/")
-        if normalized in available and normalized not in selected:
-            selected.append(normalized)
-    if len(selected) >= max_files:
-        return selected[:max_files]
-
-    prompt_words = set(re.findall(r"[a-z0-9]+", (prompt or "").casefold()))
-    anchors = {
-        "agents.md": 110, "readme.md": 100, "contributing.md": 90,
-        "pyproject.toml": 80, "package.json": 80, "cargo.toml": 80,
-        "go.mod": 80, "pom.xml": 80, "build.gradle": 80,
-        "requirements.txt": 70, "makefile": 65,
-    }
-    doc_markers = {
-        "roadmap": 78, "architecture": 72, "lifecycle": 70,
-        "design": 64, "security": 60, "overview": 58,
-        "status": 54, "audit": 50,
-    }
-    entrypoints = {
-        "agent", "app", "api", "cli", "core", "index", "main",
-        "mod", "router", "server", "service", "worker",
-    }
-    source_suffixes = {
-        ".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go",
-        ".java", ".kt", ".swift", ".c", ".cpp", ".h", ".cs",
-        ".php", ".rb", ".ex",
-    }
-    buckets = {"docs": [], "source": [], "tests": [], "other": []}
-    for rel in available:
-        if rel in selected:
+        if any(part in hard_dirs for part in p.parts):
             continue
-        path = rel.casefold()
-        name = path.rsplit("/", 1)[-1]
-        stem = name.rsplit(".", 1)[0]
-        stem_words = set(re.findall(r"[a-z0-9]+", stem))
-        score = anchors.get(name, 0)
-        if path.startswith("docs/") and name.endswith(".md"):
-            score = max(score, max((value for marker, value in doc_markers.items()
-                                    if marker in stem), default=30))
-        if stem in entrypoints:
-            score = max(score, 46)
-        if Path(name).suffix.casefold() in source_suffixes:
-            score = max(score, 24)
-        is_test = (name.startswith("test_") or path.startswith("tests/")
-                   or "/tests/" in path)
-        is_doc = (name in anchors or
-                  (path.startswith("docs/") and name.endswith(".md")))
-        if is_test:
-            score = max(score, 22)
-        if stem_words.intersection(prompt_words):
-            score += 35
-        if not score:
+        if p.suffix in hard_suffixes:
             continue
-        category = ("tests" if is_test else "docs" if is_doc else
-                    "source" if Path(name).suffix.casefold() in source_suffixes
-                    else "other")
-        buckets[category].append((-score, path, rel))
-    for bucket in buckets.values():
-        bucket.sort()
-    remaining = max_files - len(selected)
-    quotas = {
-        "docs": max(3, int(max_files * 0.30)),
-        "source": max(4, int(max_files * 0.45)),
-        "tests": max(2, int(max_files * 0.20)),
-    }
-    for category in ("docs", "source", "tests"):
-        take = min(remaining, quotas[category], len(buckets[category]))
-        selected.extend(rel for _, _, rel in buckets[category][:take])
-        remaining -= take
-    leftovers = sorted(
-        item for bucket in buckets.values() for item in bucket
-        if item[2] not in selected)
-    selected.extend(rel for _, _, rel in leftovers[:remaining])
-    return selected
+        files.append(p.relative_to(root).as_posix())
+        if limit is not None and len(files) >= limit:
+            break
+    return files
 
 
 def discover_verification_gate(target_files: Sequence[str], root_dir=None) -> Optional[str]:
@@ -254,9 +98,7 @@ def discover_verification_gate(target_files: Sequence[str], root_dir=None) -> Op
     # ``root_dir`` arrives as a Path from callers that hold one and as a str
     # from lanes whose plan carries its root verbatim, so it is coerced here
     # (the owner) instead of at every call site.
-    if root_dir is None:
-        return None
-    root = Path(root_dir)
+    root = Path(root_dir) if root_dir else Path.cwd()
     if not target_files:
         return None
 
@@ -295,7 +137,7 @@ def gate_for_targets(target_files: Sequence[str],
     gateless write is refused at mutation time at unknown trust, so losing
     this rule costs the write -- it never silently writes unverified.
     """
-    root = Path(root_dir) if root_dir else None
+    root = Path(root_dir) if root_dir else Path.cwd()
     targets = [str(t) for t in (target_files or []) if t]
     gate = str(declared).strip() if declared else None
     if not gate:
@@ -304,25 +146,22 @@ def gate_for_targets(target_files: Sequence[str],
     if not gate:
         primary = targets[0] if targets else None
         if primary and primary.endswith(".py"):
-            if root is not None:
-                gate = f'{_gate_python()} -m py_compile "{root / primary}"'
+            gate = f'{_gate_python()} -m py_compile "{root / primary}"'
     return gate
 
 
 def _rebase_path(path, from_root, to_root) -> str:
     """Map a planned absolute/relative target into the execution checkout."""
     raw = str(path)
-    source = Path(from_root).resolve() if from_root else None
+    source = Path(from_root).resolve() if from_root else Path.cwd().resolve()
     destination = Path(to_root).resolve() if to_root else source
     candidate = Path(raw)
     if candidate.is_absolute():
-        if source is None:
-            return raw
         try:
             return str(destination / candidate.relative_to(source))
         except ValueError:
             return raw
-    return str(destination / candidate) if destination is not None else raw
+    return str(destination / candidate)
 
 
 def rebase_gate(gate: Optional[str], from_root, to_root) -> Optional[str]:

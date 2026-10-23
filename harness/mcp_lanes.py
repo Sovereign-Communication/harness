@@ -19,8 +19,7 @@ LANES = ("mutation", "spendy", "observe")
 
 MUTATION_LANE = {"apply_edit", "plan_and_execute", "continue_work",
                  "jev_freeze", "dogfood", "driver_step"}
-SPENDY_LANE = {"ask", "panel_verify", "offer_work", "log_judgment",
-               "route_query", "host_provision_plan"}
+SPENDY_LANE = {"panel_verify", "offer_work", "log_judgment", "route_query"}
 
 
 def lane_for(tool_name):

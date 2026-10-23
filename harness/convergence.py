@@ -12,7 +12,7 @@ the vote count.
 
 from . import events as _events
 from .chat import (_chat_reservation_slots, _extract_json, _reported_cost,
-                   assess_output, chat, extract_content_and_cost)
+                   assess_output, chat, extract_content_and_cost, record_response)
 from .config import MIN_CONVERGENCE_PANEL_TOKENS, MIN_SYNTHESIS_TOKENS
 from .errors import HarnessError
 from .output import eprint
@@ -448,7 +448,7 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
         if status != 200:
             error_cost = _reported_cost(resp)
             if error_cost:
-                governor.record_actual(error_cost, m_)
+                record_response(governor, resp, error_cost, m_)
                 total_cost += error_cost
             error = (resp.get("error", {}).get("message", str(resp))
                      if isinstance(resp, dict) else str(resp))
@@ -475,7 +475,7 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
                       "error": "paid BYOK route; no specialist verdict",
                       "cost": total_cost}
             continue
-        governor.record_actual(cost, m_)
+        record_response(governor, resp, cost, m_)
         total_cost += cost
         # Imperfect-output triage: a reasoning-only, empty, or truncated body
         # must never be JSON-mined (a reasoning trace can embed JSON-looking

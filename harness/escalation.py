@@ -12,7 +12,7 @@ plans from apply output (apply returns file content, not judge JSON).
 """
 from . import events as _events
 from .chat import (_chat_reservation_slots, chat, extract_content_and_cost,
-                   assess_output)
+                   assess_output, record_response)
 from .config import effective_lane_policy
 from .errors import HarnessError
 from .output import eprint
@@ -249,11 +249,8 @@ class EscalationDriver:
         ``base_prompt_fn(state, rung_context) -> prompt``
         ``finish_fn(model, content, cost) -> terminal result | None``
         """
-        max_rot = getattr(req, "max_rot", 1)
-        if req.allow_escalation is not None:
-            allowed = req.allow_escalation
-        else:
-            allowed = self.router.allow_escalation and max_rot > 0
+        allowed = req.allow_escalation if req.allow_escalation is not None \
+            else self.router.allow_escalation
         if not allowed or not self.router.escalation_pool:
             return None
 
@@ -340,7 +337,7 @@ class EscalationDriver:
                 except (TypeError, ValueError):
                     pass
                 if error_cost:
-                    self.governor.record_actual(error_cost, model)
+                    record_response(self.governor, resp, error_cost, model)
                 eprint(f"[escalation] rung {rung} model {model}: HTTP {status}; {error}")
                 state.rounds.append({
                     "phase": "escalation", "rung": rung, "model": model,
@@ -368,11 +365,7 @@ class EscalationDriver:
                 self._ledger(model, rung, "error", 0.0, reason="paid BYOK route")
                 continue
 
-            self.governor.record_actual(cost, model)
-            if self.task_max_cost is not None and self.task_start_spent is not None:
-                if (float(getattr(self.governor, "spent", 0.0) or 0.0) - float(self.task_start_spent)) > float(self.task_max_cost):
-                    raise HarnessError(
-                        f"actual task cost would exceed --task-max-cost ${float(self.task_max_cost):.6f}; refusing")
+            record_response(self.governor, resp, cost, model)
             # A capability deferral is not file content -- hand it to finish_fn
             # (which routes HARNESS_DEFER) instead of treating it as a write.
             usable, unusable = assess_output(content, finish, allow_truncated=False)

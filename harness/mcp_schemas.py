@@ -9,35 +9,6 @@ schemas only.
 
 TOOL_SCHEMAS = [
     {
-        "name": "ask",
-        "title": "Answer an ordinary request",
-        "description": (
-            "Answer one conversational request through the shared Harness "
-            "lifecycle. Short follow-ups reuse the session's prior context; "
-            "this tool does not grant repository-write scope."),
-        "inputSchema": {"type": "object", "properties": {
-            "prompt": {"type": "string", "description": "Question or short ordinary request"},
-            "session_id": {"type": "string", "description": "Optional shared chat-history session id"},
-        }, "required": ["prompt"]},
-        "annotations": {"readOnlyHint": True, "openWorldHint": True},
-    },
-    {
-        "name": "site_check",
-        "title": "Check one public site's availability",
-        "description": (
-            "Run the shared freeform request lifecycle for one current "
-            "public-site availability question: Jev selects the workflow, "
-            "Harness performs at most one bounded HTTPS probe, and Jev judges "
-            "the observed response. No page-content research or mutation."),
-        "inputSchema": {"type": "object", "properties": {
-            "prompt": {"type": "string",
-                       "description": "Natural-language request to check one public site"},
-            "session_id": {"type": "string",
-                          "description": "Optional chat-history session id"},
-        }, "required": ["prompt"]},
-        "annotations": {"readOnlyHint": True, "openWorldHint": True},
-    },
-    {
         "name": "panel_verify",
         "title": "Multi-model verification",
         "description": "Panel of cheap/free models answers a self-contained question, then a judge "
@@ -168,7 +139,6 @@ TOOL_SCHEMAS = [
                        "and optionally execute independent subtasks concurrently with file mutual exclusion.",
         "inputSchema": {"type": "object", "properties": {
             "goal": {"type": "string", "description": "High-level goal or instruction to plan and accomplish"},
-            "root": {"type": "string", "description": "Selected workspace inside configured MCP allowed roots; required for execution or file access"},
             "execute": {"type": "boolean", "default": False, "description": "Execute the DAG if true; preview/plan only if false"},
             "parallel": {"type": "boolean", "default": True, "description": "Execute independent subtasks concurrently in parallel (default: on; isolation per the session's hourglass_isolate setting)"},
             "max_workers": {"type": "integer", "default": 4, "minimum": 1, "maximum": 16},
@@ -191,7 +161,7 @@ TOOL_SCHEMAS = [
                          {"type": "string"},
                          {"type": "array", "items": {"type": "string"}, "minItems": 1},
                      ],
-                     "description": "Optional source or target paths, all confined to root"},
+                     "description": "Optional allowed file paths"},
             "stages": {
                 "anyOf": [
                     {"type": "string"},
@@ -204,7 +174,7 @@ TOOL_SCHEMAS = [
                     {"type": "object"},
                     {"type": "string"},
                 ],
-                "description": "Supplied context brief artifact or JSON pack file path inside root",
+                "description": "Supplied context brief artifact or path to JSON pack file",
             },
             "token_budget_input": {
                 "type": "integer",
@@ -322,8 +292,8 @@ TOOL_SCHEMAS = [
                        "Always local-only -- never calls a live Jev judge and "
                        "never mutates STATUS or the repo.",
         "inputSchema": {"type": "object", "properties": {
-            "repo_root": {"type": "string",
-                          "description": "Workspace inside configured MCP allowed roots; defaults only when exactly one root is configured"},
+            "repo_root": {"type": "string", "default": ".",
+                          "description": "Repo root to read STATUS/evidence from"},
             "phase": {"type": "string", "description": "Phase id, e.g. DF-UI-2 "
                      "(required unless 'all' is set)"},
             "all": {"type": "boolean", "default": False,
@@ -369,8 +339,6 @@ TOOL_SCHEMAS = [
         "description": "DF-UI-2 / HV-6: Run the self-hosting dogfood loop "
                        "(ground -> verify -> apply) over claims and source window.",
         "inputSchema": {"type": "object", "properties": {
-            "root": {"type": "string",
-                     "description": "Selected workspace inside configured MCP allowed roots"},
             "file": {"type": "string",
                      "description": "Target file to repair under apply gate"},
             "instruction": {"type": "string",
@@ -400,8 +368,6 @@ TOOL_SCHEMAS = [
                        "Hermetic: no network, no model call.",
         "inputSchema": {"type": "object", "properties": {
             "goal": {"type": "string", "description": "High-level goal or instruction to brief"},
-            "root": {"type": "string",
-                     "description": "Selected workspace inside configured MCP allowed roots when source files are supplied"},
             "files": {"type": "array", "items": {"type": "string"},
                       "description": "Source file paths to inspect and cite"},
             "budget": {"type": "integer", "default": 48000,
@@ -455,52 +421,4 @@ TOOL_SCHEMAS = [
             "task_id": {"type": "string"},
         }},
     },
-    {
-        "name": "host_provision_probe",
-        "title": "Probe host system facts for provisioning",
-        "description": "Probe host hardware, operating system, interpreter, GPU, and package managers (read-only facts).",
-        "inputSchema": {"type": "object", "properties": {}},
-        "annotations": {"readOnlyHint": True, "openWorldHint": True},
-    },
-    {
-        "name": "host_provision_plan",
-        "title": "Plan host provisioning for a goal",
-        "description": "Generate an ordered, typed host-provisioning Plan for a goal (dry-run/advisory only; consent required before execution).",
-        "inputSchema": {"type": "object", "properties": {
-            "goal": {"type": "string", "description": "Provisioning goal text (e.g. 'install ruff')"},
-            "root": {"type": "string", "description": "Workspace inside configured MCP allowed roots; defaults only when exactly one root is configured"},
-        }, "required": ["goal"]},
-        "annotations": {"readOnlyHint": True, "openWorldHint": True},
-    },
-    {
-        "name": "repo_cards",
-        "title": "Repo philosophy cards generator/checker",
-        "description": "Generate or check deterministic repo philosophy cards from committed repository config.",
-        "inputSchema": {"type": "object", "properties": {
-            "root": {"type": "string", "description": "Selected repo or parent workspace inside configured MCP allowed roots"},
-            "check": {"type": "boolean", "default": True, "description": "True to verify cards match without writing (default)"},
-            "repo": {"type": "string", "description": "Optional specific repository name"},
-            "allow_write": {"type": "boolean", "description": "Explicit permission to write generated cards when check=false"},
-        }},
-        "annotations": {"openWorldHint": True},
-    },
-    {
-        "name": "jev_calibration",
-        "title": "Jev judgment calibration analysis",
-        "description": "Analyze Jev judgment confidence distribution and recommend calibration threshold bands from ledger history (read-only).",
-        "inputSchema": {"type": "object", "properties": {
-            "window": {"type": "integer", "default": 1000, "description": "Number of recent ledger entries to inspect"},
-        }},
-        "annotations": {"readOnlyHint": True, "openWorldHint": True},
-    },
-    {
-        "name": "economics_report",
-        "title": "Economics & value routing report",
-        "description": "Report tier snapshot freshness, seat-share diversity, per-lane/per-tier cost metering, and bounded pool-rotation proposals (read-only).",
-        "inputSchema": {"type": "object", "properties": {
-            "allow_cost_increase": {"type": "boolean", "default": False, "description": "Allow proposing a candidate with higher expected cost"},
-        }},
-        "annotations": {"readOnlyHint": True, "openWorldHint": True},
-    },
 ]
-

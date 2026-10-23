@@ -60,14 +60,10 @@ class TestSessionJevForUsesPolicy(unittest.TestCase):
 
     def test_agent_composes_via_session_jev_for(self):
         import harness.agent as agent_mod
-        import harness.simple_action_lifecycle as action_mod
-        composition = inspect.getsource(agent_mod)
-        adapter = inspect.getsource(action_mod)
-        self.assertIn("SimpleActionLifecycleMixin", composition)
-        self.assertIn("jev_for(", adapter)
-        # Route adapters must use the session policy factory, not construct
-        # an evaluator outside the policy owner.
-        self.assertNotIn("JevEvaluator(", adapter)
+        src = inspect.getsource(agent_mod)
+        self.assertIn("jev_for(", src)
+        # Agent must not pass a raw evaluator=jev_for(...) factory call.
+        self.assertNotIn("evaluator=jev_for(", src)
 
 
 class TestDogfoodDisableSwitch(unittest.TestCase):

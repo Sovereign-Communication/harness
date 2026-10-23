@@ -9,11 +9,9 @@ import io
 import json
 import os
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
 import unittest
 
 from harness import events, render
-from harness.provider_errors import ProviderSpendLimitError
 
 
 def _collect():
@@ -51,84 +49,35 @@ class EventsBusTests(unittest.TestCase):
         self.assertEqual(ev["seq"], 1)
         self.assertIsInstance(ev["ts"], float)
 
-    def test_task_context_adds_identity_only_to_unscoped_events(self):
+    def test_task_context_is_nested_and_restored(self):
         got, sink = _collect()
         events.add_sink(sink)
-        with events.task_context("ui/run-1", lambda: True):
-            events.emit("model_request_start", model="m")
-            events.emit("panel_call", task_id="explicit/run-2", model="other")
-            events.emit("provider_http_attempt", task_id=None, phase="start")
-            self.assertIs(events.current_cancel_check()(), True)
-        self.assertEqual(got[0]["task_id"], "ui/run-1")
-        self.assertEqual(got[1]["task_id"], "explicit/run-2")
-        self.assertEqual(got[2]["task_id"], "ui/run-1")
-        self.assertIsNone(events.current_cancel_check())
+        with events.task_context("outer"):
+            events.emit("web_search")
+            with events.task_context("inner"):
+                events.emit("provider_result")
+            events.emit("answer_judged", task_id="explicit")
+            events.emit("context_condensed")
+        events.emit("unscoped")
+        self.assertEqual([e.get("task_id") for e in got],
+                         ["outer", "inner", "explicit", "outer", None])
 
-    def test_submit_with_context_carries_run_id_and_cancellation(self):
+    def test_task_context_does_not_cross_concurrent_runs(self):
+        import threading
         got, sink = _collect()
         events.add_sink(sink)
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            with events.task_context("ui/run-worker", lambda: True):
-                future = events.submit_with_context(
-                    pool, events.emit, "model_request_start", model="m")
-                future.result(timeout=2)
-                cancelled = events.submit_with_context(
-                    pool, lambda: events.current_cancel_check()())
-                self.assertTrue(cancelled.result(timeout=2))
-        self.assertEqual(got[0]["task_id"], "ui/run-worker")
-
-    def test_spend_limit_latch_stops_queued_worker_before_provider_call(self):
-        # Without latch, raise_if_provider_spend_limited does not raise
-        events.raise_if_provider_spend_limited()
-
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            with events.task_context("task-latch", lambda: False):
-                def worker_one():
-                    events.raise_if_provider_spend_limited()
-                    ProviderSpendLimitError("insufficient balance", http_status=429)
-                    return True
-
-                def worker_two():
-                    events.raise_if_provider_spend_limited()
-                    return True
-
-                f1 = events.submit_with_context(pool, worker_one)
-                self.assertTrue(f1.result(timeout=2))
-
-                f2 = events.submit_with_context(pool, worker_two)
-                with self.assertRaises(ProviderSpendLimitError) as ctx:
-                    f2.result(timeout=2)
-                self.assertEqual(ctx.exception.http_status, 429)
-                self.assertIn("Upstream provider spend limit exhausted", str(ctx.exception))
-                self.assertIn("sibling request already exhausted", ctx.exception.detail)
-
-            # Outside task context, latch reset works
-            events.reset_provider_spend_limit_latch()
-            events.raise_if_provider_spend_limited()
-
-        # Executor-level fallback latch when no task_context is active
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            def pool_worker_one():
-                events.raise_if_provider_spend_limited()
-                events.mark_provider_spend_limit(
-                    ProviderSpendLimitError("limit reached", http_status=402))
-                return True
-
-            def pool_worker_two():
-                events.raise_if_provider_spend_limited()
-                return True
-
-            f1 = events.submit_with_context(pool, pool_worker_one)
-            self.assertTrue(f1.result(timeout=2))
-
-            f2 = events.submit_with_context(pool, pool_worker_two)
-            with self.assertRaises(ProviderSpendLimitError) as ctx:
-                f2.result(timeout=2)
-            self.assertEqual(ctx.exception.http_status, 402)
-
-            events.reset_executor_spend_limit(pool)
-            f3 = events.submit_with_context(pool, pool_worker_two)
-            self.assertTrue(f3.result(timeout=2))
+        barrier = threading.Barrier(2)
+        def run(task):
+            with events.task_context(task):
+                barrier.wait(timeout=3)
+                events.emit("progress", expected=task)
+        threads = [threading.Thread(target=run, args=(task,)) for task in ("a", "b")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+        self.assertEqual(len(got), 2)
+        self.assertTrue(all(e["task_id"] == e["expected"] for e in got))
 
     def test_seq_increases_across_events(self):
         got, sink = _collect()

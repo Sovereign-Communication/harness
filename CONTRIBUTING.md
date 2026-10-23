@@ -107,7 +107,7 @@ cli.py / mcp.py          interfaces (arg parsing, JSON-RPC; boundary
     bench.py  ledger.py  task runner; hash-chained evidence store
     (cli `dogfood` composes the lanes: hermetic ground gate -> live panel
     tally gate -> gated self-apply; deliberately not exposed over MCP)
-    config.py  paths.py  tokens.py  output.py  errors.py
+    config.py  tokens.py  output.py  errors.py
 ```
 
 - **One owner per concern.** Cost policy lives only in `spend.py`; model
@@ -192,8 +192,8 @@ statement covers the CI matrix by direct execution.
 | Path | Owns |
 |---|---|
 | `harness/config.py` | settings, key resolution, lane curation |
-| `harness/paths.py` | shared per-user root for Harness-managed configuration and state |
 | `harness/spend.py` | SpendGovernor: spend ceilings, BYOK, model discovery |
+| `harness/fireworks.py` | Confirmed second-provider dispatch, same-model whole-endpoint comparison and bounded failover; spend uses the shared governor |
 | `harness/router.py` | cheap-first routing ladder: model pools, rotation, gated escalation |
 | `harness/capability.py` | model capability profiles + observed evidence |
 | `harness/saturation.py` | one free-tier saturation policy: per-attempt evidence -> the plain-language verdict terminal surfaces print when the tier fail-closes |
@@ -202,8 +202,6 @@ statement covers the CI matrix by direct execution.
 | `harness/benchmark_ingest.py` | `EV-*` benchmark capability evidence: `/api/v1/benchmarks` (Artificial Analysis indices, Design Arena, OpenRouter tau-bench/GPQA/search) normalized onto one source-independent row shape with the raw payload retained; evidence in, no ranking |
 | `harness/discount_probe.py` | the `EV-0a` discount-truth probe (`harness economics --probe-model`): one tiny governed call, provider-reported `usage.cost` compared against both discount hypotheses, `ambiguous`/`unresolved` reported honestly |
 | `harness/discount_gate.py` | the price gate: a promoted model's rates are refused until a conclusive measured verdict is committed as repo evidence (`audits/self/dogfood/EV0A_DISCOUNT_SEMANTICS.json`, SHA-256-pinned by D11). Fail-closed on missing/unreadable/stale; no default, because the two readings differ by 2x |
-| `harness/fireworks.py` | `EV-7` Fireworks route, offer lookup (`resolve_offer`, `resolve_route`), and per-endpoint Standard rate cost estimation (`cost_estimate`, `compare_fireworks_vs_openrouter`); fails closed when Fireworks is disabled or model path is unconfirmed |
-| `harness/fireworks_probe.py` | `EV-8` one-shot Fireworks verification probe (`run_fireworks_probe`): marker written before any network call, refuses second run, enforces `<= $0.01` ceiling and confirmed model path, sanitizes failure bodies |
 | `harness/apply.py` | apply engine lifecycle: construction, the public `apply_edit` entry, and batch dispatch; per-round machinery mixed in from apply_policy |
 | `harness/apply_policy.py` | the apply engine's per-round machinery (billing, edit loop, consent, rotation, deferrals, escalation) -- mixed into `ApplyEngine` verbatim |
 | `harness/batch.py` | multi-file batch orchestration: one governed session per file, shared task budget, fail-fast -- owns the LOOP, the engine owns the per-file apply |
@@ -218,7 +216,6 @@ statement covers the CI matrix by direct execution.
 | `harness/jev.py` | TypeSafe AI Jev / System One structural verification client with local AST and diff fallbacks |
 | `harness/jev_packs.py` | JEV-P3 utilization packs and pure helpers (route vocabulary, file-relevance/claim/completion nouls, context pack, artifact facts) — no second Jev client |
 | `harness/jev_policy.py` | shared Jev decision policy: bounded packs, spend preflight, ledger evidence, and structural envelopes |
-| `harness/simple_request.py` | #207 bounded simple-answer helpers: stable no-tool question boundary, relevant-history slice, prompt builder, and deterministic clock answers; generated answers receive Jev review through the agent |
 | `harness/jev_completion.py` | phase-completion dogfood gate: hard mechanical gates + Jev 0-100 semantic score; STATUS complete only when `can_mark_complete` and score ≥ 85 (`harness jev-phase`) |
 | `harness/jev_calibration.py` | Jev judgment calibration analysis: confidence distribution, per-disposition breakdown, destructive-flag count, and a documented threshold recommendation (measurement only, no active threshold is changed) |
 | `harness/jev_packs.py` | operator-declared issue-sort bucket packs (schema validation, TypeSafe choice pack builder, keyword matcher); never invents buckets or actions |
@@ -236,20 +233,7 @@ statement covers the CI matrix by direct execution.
 | `harness/mission_record.py` | HUL-A mission pack schema/layout/STATUS/receipts/budget/resume + `evaluate_scope_on_pack` storage (no second Jev client) |
 | `harness/mission_driver.py` | HUL-D until-limits driver: attempts until cost/token/error limits, honest HUL-C success, or stall; FINDINGS.md + interrupt-safe resume |
 | `harness/providers.py` | modular provider adapter interface and registry for external execution backends |
-| `harness/agent.py` | runtime composition root for route adapters and the shared lifecycle coordinator |
-| `harness/request_intent.py` | deterministic prompt intent, greeting, and bounded site-check classification |
-| `harness/request_router.py` | request dispatch, continuation routing, and workspace scope selection |
-| `harness/simple_action_lifecycle.py` | bounded read-only public site checks with Jev route selection |
-| `harness/conversation_lifecycle.py` | conversational fallback generation, web evidence, and honest deferral |
-| `harness/execution_stages.py` | planning-stage composition, stage judgments, and restart guards |
-| `harness/lifecycle_types.py` | discriminated chat/audit/auto-edit/driver/provisioning states and their cross-field invariants |
-| `harness/lifecycle.py` | the single persisted request-state owner: Jev rounds, continuation, usage liability, side-effect receipts, and terminal transitions; lane adapters do not own duplicate state |
-| `harness/chat_policy.py` | chat intent and route policy shared by the answer lanes |
-| `harness/chat_lifecycle.py` | chat checkpoints, workspace hand-off, and continuation restoration |
-| `harness/hourglass_lifecycle.py` | multi-round chat answer generation and advisory Jev review |
-| `harness/simple_answer_lifecycle.py` | bounded no-tool answer lane with candidate reuse and usage accounting |
-| `harness/edit_lifecycle.py` | auto-edit planning, preview/approval, execution receipts, and verification adapter |
-| `harness/task_lifecycle.py` | audit, driver, and provisioning adapters for shared Jev review and resumable task state |
+| `harness/agent.py` | autonomous agent orchestration: natural language prompt intent classification, file/gate discovery, sliding-scale DAG execution, self-healing retry |
 | `harness/apply_gate.py` | one candidate-to-gate transaction: write, verify, preview, rewind, and terminal gate results |
 | `harness/apply_state.py` | apply request data and mutable per-run state |
 | `harness/results.py` | the apply result vocabulary (round entries, terminal/deferred results, HTTP error rendering) -- one def site per result shape, plus the status-meaning policy: `SUCCESS_STATUSES` and `terminal_exit_code` (interfaces never re-derive what a status means) |
@@ -289,7 +273,6 @@ statement covers the CI matrix by direct execution.
 | `harness/token_budget.py` | the ONE owner of token allowances: per-call input/output maxima, composable stage/run reservations (a stage may only narrow its parent), honest `actual`/`estimated`/`unavailable` usage labels, and `snapshot()` for envelopes. Independent of spend.py's dollars -- neither can raise the other. |
 | `harness/mission_record.py` | HUL-A/B mission pack: mission.yaml schema, pack layout under missions/<id>/, STATUS generator, append-only receipts/jev_evals, dual-budget budget.json (delegates formula to spend.py) + resume.json, terminal findings helper |
 | `harness/convergence.py` | deterministic tally over panel votes + the rotating specialist lane |
-| `harness/provider_errors.py` | typed classification for terminal upstream provider account/spend-limit exhaustion (`ProviderSpendLimitError`), secret-redacting diagnostics, and latch helpers |
 | `harness/errors.py` | shared exception types (`HarnessError`) |
 | `harness/filesafety.py` | file-safety primitives: every mutation of a real file goes through these |
 | `harness/output.py` | the ONE stderr owner for progress chatter and --quiet |
@@ -297,9 +280,6 @@ statement covers the CI matrix by direct execution.
 | `harness/prompts.py` | apply prompt contracts + response parsing (pure functions, no I/O) |
 | `harness/tokens.py` | token estimation shared by every cost preflight |
 | `harness/ui.py` | the pywebview desktop shell around the harness web UI |
-| `harness/ui_auth.py` | local UI bearer-token persistence shared by the desktop and HTTP server, with symlink refusal and atomic writes |
-| `harness/workspace.py` | explicit workspace selection and canonical path access; rejects traversal, symlink escapes, and sensitive credential paths |
-| `harness/refine.py` | Propose-Probe-Compose refinement loop (`REFINE-LOOP`, issue #239): code-enforced TIER 0/1/2 safety boundaries, P0 task outcome tracking on the ledger, P1 task family taxonomy (`task_families.json`), P3 lessons library (`experience.md` with 30-day recency decay), Jev 4-dimension scoring rubric with gating rules, CycleCost 3x budget check, and Phase 0 pilot state (20 cycles, TIER 2 only, no auto-merge) |
 | `tests/` | one test module per product owner (test_spend, test_panel, test_convergence, test_specialist, test_chat, test_ledger, test_prompts, ...); shared fakes and the `_gov` helper live in `tests/_fake.py` |
 
 ## Audit corpus integrity

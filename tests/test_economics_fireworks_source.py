@@ -20,8 +20,8 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
-from harness.config import FIREWORKS_PROVIDER
-from harness.endpoint_pricing import FIREWORKS_PACK, fireworks_offers
+from harness.endpoint_pricing import (FIREWORKS_PACK, FIREWORKS_PROVIDER,
+                                      fireworks_offers)
 from harness.errors import HarnessError
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -110,6 +110,10 @@ class RowFilterTests(unittest.TestCase):
 
 class LoaderTests(unittest.TestCase):
     def setUp(self):
+        from datetime import date
+        clock = mock.patch("harness.endpoint_pricing.date", wraps=date)
+        clock.start().today.return_value = date(2026, 10, 10)
+        self.addCleanup(clock.stop)
         self.offers = fireworks_offers()
         self.by_name = {o.model: o for o in self.offers}
 
@@ -128,7 +132,8 @@ class LoaderTests(unittest.TestCase):
     def test_only_the_confirmed_model_is_routable(self):
         routable = [o for o in self.offers if o.routable]
         self.assertEqual([o.model for o in routable],
-                         ["Nemotron Lightning 3.5 30B A3B"])
+                         ["Nemotron Lightning 3.5 30B A3B", "GLM 5.3 Flash"])
+        self.assertEqual(routable[1].canonical_model, "z-ai/glm-5.3-flash")
         self.assertEqual(routable[0].path,
                          "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b")
         self.assertFalse(self.by_name["Ember-1"].routable)
@@ -141,7 +146,7 @@ class LoaderTests(unittest.TestCase):
     def test_malformed_pack_raises_instead_of_reading_as_no_offers(self):
         with tempfile.TemporaryDirectory() as tmp:
             bad = Path(tmp) / "bad.json"
-            bad.write_text('{"models": "not a list"}', encoding="utf-8")
+            bad.write_text('{"captured": "2026-10-08", "models": "not a list"}', encoding="utf-8")
             with self.assertRaises(HarnessError):
                 fireworks_offers(bad)
 

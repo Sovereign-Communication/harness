@@ -10,7 +10,8 @@
       "cached_input": 0.01,
       "output": 0.2,
       "slug": "nemotron-lightning-3p5-30b-a3b",
-      "path": "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b"
+      "path": "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
+      "context_length": 262000
     },
     {
       "name": "Ember-1",
@@ -42,7 +43,9 @@
       "cached_input": 0.03,
       "output": 0.5,
       "slug": "glm-5p3-flash",
-      "path": null
+      "path": "accounts/fireworks/models/glm-5p3-flash",
+      "canonical_model": "z-ai/glm-5.3-flash",
+      "context_length": 1040000
     },
     {
       "name": "GLM 5.2",
