@@ -355,6 +355,37 @@ any issue. Every G1-G4 requirement above still has to run on fresh allocations.
 synchronization, live fetch, native plan execution or audit-score result is
 asserted by this review; those remain acceptance requirements for the phase PRs.
 
+### Post-review finding: the D12 audit gate is broken repo-wide - 2026-10-22
+
+Recorded here, after the plan review, because it blocks *landing* rather than
+planning; the reviewed block above is unchanged (hash still `a7282ad0`).
+
+PR #348 is green on every check except `audit`, which fails closed at D12 with
+`baseline commit 661d476474e2 is not reachable in this checkout`. The cause is
+not this branch's content, which touches only this file:
+
+- `audits/self/coverage_baseline.json` pins `661d476474e2`.
+- That commit is the head of PR #341's branch `fix/web-search-subject-relevance`,
+  which was **squash-merged** as `c3cff45` and then deleted on origin, so the SHA
+  is reachable only through GitHub's hidden `refs/pull/341/head`.
+- The `pull_request` checkout fetches only the merge ref for the PR under test,
+  so `git diff <baseline> -- harness/` cannot resolve it and D12 fails closed
+  before evaluating any changed line. `main`'s recent green depended on a wider
+  fetch in that job's log (`fix/d12-baseline-repoint` and other branch refs), not
+  on the pin being sound.
+
+The consequence is that **any** new PR fails `audit` today, independent of its
+content, and the next `main` push loses its accidental borrow of that object.
+This is the exact failure mode #276 exists to fix: the baseline must be measured
+against a merge-base that is reachable from `main` at CI time, never a
+PR-branch SHA.
+
+No baseline edit is made in this branch: rule 5 forbids hand-tuning
+`coverage_baseline.json`, and a legitimate re-point requires
+`refresh_coverage_baseline.py` to execute the traced battery for real. That is
+its own reviewed PR, and it should land before any phase PR, this one included.
+Closing this blocker is a prerequisite for G3 on every row in the register.
+
 ---
 
 ## Canonical current status — final burndown 2026-10-18
