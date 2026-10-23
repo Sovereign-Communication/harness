@@ -32,15 +32,21 @@ def _add_engine_flags(p, *, max_tokens_default, verify_required=False,
                    help=task_max_cost_help or
                    "per-task spend ceiling in USD (default: the session's "
                    "configured/engine ceiling)")
-    p.add_argument("--allow-escalation", dest="allow_escalation", action="store_true", default=None,
-                   help="walk the paid escalation ladder when the cheap/free "
-                        "lane exhausts its verify budget or saturates (429s). "
-                        "Default: on automatically when a paid OpenRouter key "
-                        "is configured (free-tier runs then fail over to the "
-                        "cheapest capable paid rung with no flag needed), off "
-                        "on a free-tier-only key. Every rung is preflighted "
-                        "against the run's cost ceiling and billed + ledgered "
-                        "per attempt, never silently.")
+    escalation = p.add_mutually_exclusive_group()
+    escalation.add_argument(
+        "--allow-escalation", dest="allow_escalation", action="store_true",
+        default=None,
+        help="walk the paid escalation ladder when the cheap/free lane "
+             "exhausts its verify budget or saturates (429s). Default: on "
+             "automatically when a paid OpenRouter key is configured "
+             "(free-tier runs then fail over to the cheapest capable paid "
+             "rung with no flag needed), off on a free-tier-only key. Every "
+             "rung is preflighted against the run's cost ceiling and billed "
+             "+ ledgered per attempt, never silently.")
+    escalation.add_argument(
+        "--no-escalation", dest="allow_escalation", action="store_false",
+        help="disable the paid escalation ladder for this run, overriding "
+             "the configured default")
     p.add_argument("--reasoning-effort", default=None,
                    choices=["auto", "off", "none", "low", "medium", "high", "on"])
     p.add_argument("--max-rotations", type=int, default=None)

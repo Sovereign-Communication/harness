@@ -215,11 +215,13 @@ class EscalationDriverTests(unittest.TestCase):
         driver = EscalationDriver(router, transport=None, api_key="k",
                                   governor=FakeGov(), ledger=None, task_id="t")
         req = SimpleNamespace(allow_escalation=False)
-        result = driver.run_with_escalation(
-            req, RunState(rounds=[], history=[], current_content="x"),
-            lambda s, c: "p",
-            lambda m, c, cost: {"status": "ok"})
+        with mock.patch("harness.escalation.chat") as paid_chat:
+            result = driver.run_with_escalation(
+                req, RunState(rounds=[], history=[], current_content="x"),
+                lambda s, c: "p",
+                lambda m, c, cost: {"status": "ok"})
         self.assertIsNone(result)
+        paid_chat.assert_not_called()
 
     def test_driver_saturation_rotates_to_next_rung(self):
         # A 429 on a rung is "busy", not "impossible": the ladder walks on

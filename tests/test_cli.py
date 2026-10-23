@@ -221,6 +221,86 @@ class PlanAllowHeuristicPreviewWiringTests(unittest.TestCase):
         self.assertTrue(captured["allow_heuristic_preview"])
 
 
+class EscalationFlagWiringTests(unittest.TestCase):
+    def test_shared_engine_surfaces_preserve_escalation_tristate(self):
+        parser = cli.build_parser()
+        commands = {
+            "apply": ["apply", "--file", "x.py"],
+            "plan": ["plan", "--goal", "g"],
+            "continue": ["continue", "--state", "state.json"],
+            "dogfood": [
+                "dogfood", "--file", "x.py", "--instruction", "fix",
+                "--verify", "check",
+            ],
+        }
+        for command, args in commands.items():
+            with self.subTest(command=command, mode="inherited"):
+                self.assertIsNone(parser.parse_args(args).allow_escalation)
+            with self.subTest(command=command, mode="enabled"):
+                enabled = parser.parse_args(args + ["--allow-escalation"])
+                self.assertIs(enabled.allow_escalation, True)
+            with self.subTest(command=command, mode="disabled"):
+                disabled = parser.parse_args(args + ["--no-escalation"])
+                self.assertIs(disabled.allow_escalation, False)
+
+    def test_escalation_flags_are_mutually_exclusive(self):
+        parser = cli.build_parser()
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                parser.parse_args([
+                    "apply", "--file", "x.py", "--allow-escalation",
+                    "--no-escalation",
+                ])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_apply_parser_opt_out_reaches_batch_request(self):
+        parsed = cli.build_parser().parse_args([
+            "apply", "--file", "x.py", "--no-escalation",
+        ])
+        captured = {}
+
+        class FakeEngine:
+            governor = object()
+
+            def apply_batch(self, files, *, task_id, options, keep_going):
+                captured.update(files=files, options=options)
+                return {"status": "ok"}
+
+        with mock.patch.object(cli, "_session", return_value=FakeEngine()), \
+             mock.patch.object(cli, "_run_meta", return_value={}), \
+             mock.patch.object(cli, "_emit_by_status"):
+            cli._cmd_apply(parsed, object())
+        self.assertIs(captured["options"].allow_escalation, False)
+
+    def test_plan_opt_out_reaches_consumer_without_changing_omission(self):
+        from types import SimpleNamespace
+
+        settings = SimpleNamespace(use_free=False, allow_escalation=True)
+        observed = []
+
+        def fake_compose_plan(**kwargs):
+            observed.append(kwargs["allow_escalation"])
+            return {}
+
+        parser = cli.build_parser()
+        explicit = parser.parse_args([
+            "plan", "--goal", "g", "--no-escalation",
+        ])
+        inherited = parser.parse_args(["plan", "--goal", "g"])
+        with mock.patch.object(cli, "_compose_plan",
+                               side_effect=fake_compose_plan):
+            for opts in (explicit, inherited):
+                cli._plan_compose(
+                    settings, opts, None, None, None,
+                    candidate_files=None, frontier_model=None,
+                    execute=False, confirm=False, decompose_llm=False,
+                    plan_consensus=False,
+                    hourglass={"confirm": False, "decompose": False})
+        # Preserve the plan lane's existing omitted-flag behavior in this
+        # narrow surface change. Config inheritance is a separate residual.
+        self.assertEqual(observed, [False, False])
+
+
 class PlanCompositionWiringTests(unittest.TestCase):
     """HV-4/HV-3-use: the CLI lane must REACH the composed path.
 
