@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.97,
+        "confidence": 0.94,
         "evaluated": true
       }
     },
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 4305 tests in 262.458s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 4308 tests in 240.344s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 451/451 = 100% (bar 95%) vs baseline 8f57406ab7)"
+        "evidence": "no executable harness changes since the coverage baseline 1a26833775"
       }
     ]
   }
