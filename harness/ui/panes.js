@@ -1134,7 +1134,7 @@ async function renderDriver(root) {
       } else {
         pixelGuidance = "This driver does not report its vision flags. Check the service environment for DRIVER_JEV_IMAGES=1; frame history and Box questions use separate opt-ins.";
       }
-      const startBtn = $("button", { class: "pane-fetch", type: "button", style: "margin-left: 0.5rem;" }, "Start / Check");
+      const startBtn = $("button", { class: "pane-fetch", type: "button", style: "margin-left: 0.5rem;" }, "Check Driver");
       startBtn.onclick = async () => {
         startBtn.disabled = true;
         try {
