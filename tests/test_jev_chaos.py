@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from harness.jev import (ACTIVE_GUARD, ACTIVE_RESERVER, ACTIVE_SITE, JevCache,
                          JevEvaluator, jev_cost)
-from harness.jev_policy import policy_for
+from harness.jev_policy import JEV_MAX_INPUT_TOKENS, policy_for
 from tests import test_jev_core_hardening as T
 from tests.test_jev_issue_sort import sample_pack as issue_pack
 from tests.test_jev_log_judgment import sample_log_pack
@@ -73,7 +73,7 @@ def run_chaos(seed, n_tasks=240, workers=6, ceiling_mult=60):
     rnd = random.Random(seed)
     case = _Case()
     case.setUp()
-    gov = case.governor(max_cost=jev_cost(1024) * ceiling_mult)
+    gov = case.governor(max_cost=jev_cost(JEV_MAX_INPUT_TOKENS) * ceiling_mult)
     lock = threading.Lock()
     unreserved, leaks = [], []
     zero_overruns = [0]

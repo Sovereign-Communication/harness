@@ -114,6 +114,30 @@ def build_parser():
                              help="optional shared chat-history session id")
     _add_output_flags(psite_check)
 
+    pscript = sub.add_parser(
+        "script",
+        help="Run one Python script in the selected workspace (consent-gated)")
+    psrc = pscript.add_mutually_exclusive_group(required=True)
+    psrc.add_argument("--file", default=None, help="script file to run")
+    psrc.add_argument("--stdin", action="store_true",
+                      help="read the script from stdin")
+    pscript.add_argument("--goal", default="",
+                         help="what the script is for (scored by Jev with --score)")
+    pscript.add_argument("--root", required=True,
+                         help="explicit workspace root the script runs in")
+    pscript.add_argument("--allow-exec", action="store_true", dest="allow_exec",
+                         help="explicit consent to run this script")
+    pscript.add_argument("--consent-sha", default=None, dest="consent_sha",
+                         help="sha256 of the approved source (binds consent to bytes)")
+    pscript.add_argument("--timeout", type=int, default=None,
+                         help="wall-clock seconds (default 30, cap 120)")
+    pscript.add_argument("--allow-network", action="store_true",
+                         dest="allow_network",
+                         help="record that the script may use the network")
+    pscript.add_argument("--score", action="store_true",
+                         help="ask Jev to score the script against --goal")
+    _add_output_flags(pscript)
+
     pask = sub.add_parser(
         "ask", help="Answer one ordinary conversational request through the shared lifecycle")
     pask.add_argument("prompt", nargs="+", help="ordinary question or short request")

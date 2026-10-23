@@ -31,6 +31,7 @@ from . import jev_calibration as _jcal
 from . import provision as _pv
 from . import refine as _refine
 from . import repo_cards as _rc
+from . import script as _script
 from .agent import AutonomousAgent
 from .request_intent import is_site_check_prompt
 from .consent import probe_consent
@@ -773,6 +774,37 @@ def _cmd_site_check(opts, settings):
     code = terminal_exit_code(result.get("status"))
     if code:
         sys.exit(code)
+
+
+def _cmd_script(opts, settings):
+    """Thin CLI face over the one governed script runner (`harness/script.py`).
+
+    The runner owns policy, consent, the sandbox-shaped execution and the
+    receipt; this function only reads the source and renders the envelope.
+    """
+    if getattr(opts, "file", None):
+        source = Path(opts.file).expanduser().read_text(encoding="utf-8")
+    else:
+        source = sys.stdin.read()
+    policy = _script.resolve_script_policy(settings)
+    if getattr(opts, "allow_network", False):
+        policy = _script.ScriptPolicy(
+            enabled=policy.enabled, timeout_s=policy.timeout_s,
+            max_output_bytes=policy.max_output_bytes, allow_network=True)
+    jev = None
+    if getattr(opts, "score", False):
+        _api_key, governor = _governor(settings)
+        jev = policy_for(settings, governor=governor,
+                         ledger=_ledger(settings, caller="agent"))
+    receipt = _script.run_script(
+        source, root=opts.root, goal=opts.goal or "",
+        allow_exec=bool(getattr(opts, "allow_exec", False)),
+        consent_sha=getattr(opts, "consent_sha", None),
+        timeout_s=getattr(opts, "timeout", None), policy=policy,
+        jev_policy=jev, task_id="cli/script")
+    _emit(receipt, getattr(opts, "out", None))
+    if receipt["exit_code"] != 0:
+        sys.exit(1)
 
 
 def _cmd_ask(opts, settings):
@@ -1921,6 +1953,7 @@ def _cmd_fireworks_verify(opts, settings):
 # silently mis-binding arguments.
 _DISPATCH = {
     "ask": _cmd_ask,
+    "script": _cmd_script,
     "site-check": _cmd_site_check,
     "verify": _cmd_verify,
     "lint-claims": _cmd_lint_claims,

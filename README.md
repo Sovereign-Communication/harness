@@ -277,6 +277,13 @@ harness apply --file core/src/store/outbox.rs \
 harness apply --backend morph --verify-only --file src/parser.py \
   --instruction "Harden parse_header()" --edit-snippet "return parse_header(data)"
 
+# Governed scripting: one Python script for the current request, in one workspace,
+# with consent bound to the exact bytes. Off unless HARNESS_SCRIPT_ENABLED=1.
+#   --score asks Jev whether the script actually does what --goal says.
+HARNESS_SCRIPT_ENABLED=1 harness script --file scrape.py --root . \
+  --allow-exec --consent-sha "$(sha256sum scrape.py | cut -d' ' -f1)" \
+  --goal "fetch and summarize the pricing table" --score
+
 # Ask a model for consent on a work item (the "checkbox")
 harness offer --task "Refactor the routing engine's backpressure path"
 

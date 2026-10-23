@@ -34,6 +34,48 @@ def _noul(value):
     return {"type": "noul", "noul": value}
 
 
+class AnswerInputBudgetTests(unittest.TestCase):
+    """The judge must see the whole candidate it is asked to judge.
+
+    Regression (2026-10-23): the answer field was clipped to 1,800 chars
+    independently of the input budget, so a complete 4,000-char site audit
+    was judged as a document that stops mid-sentence (answer_sufficient
+    0.30 -> needs_iteration) while the same answer read whole is sufficient.
+    """
+
+    def _policy(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        transport = _AnswerTransport({
+            "answer_sufficient": _noul(0.9),
+            "iteration_required": _noul(0.1),
+            "plan_required": _noul(0.1),
+        })
+        policy = policy_for(
+            load_settings({"jev_api_key": "jev-key"}), transport=transport,
+            governor=SpendGovernor(FakeTransport(), "sk-test", max_cost=0.50),
+            ledger=AutonomyLedger(os.path.join(td.name, "ledger.jsonl")))
+        return policy, transport
+
+    def test_a_long_answer_reaches_the_judge_intact(self):
+        policy, transport = self._policy()
+        tail = "TAIL-MARKER-END"
+        answer = ("body line. " * 500) + tail  # ~5,500 chars: a real audit
+        policy.evaluate_answer("q", answer, "ctx", task_id="long-answer")
+        sent = transport.calls[0]["state"]
+        self.assertIn(tail, sent["candidate_answer"])
+        self.assertGreater(len(sent["candidate_answer"]), 5000)
+
+    def test_the_answer_field_has_the_largest_share_of_the_budget(self):
+        from harness import jev_policy as jp
+        self.assertGreater(jp.JEV_ANSWER_MAX_CHARS, jp.JEV_CONTEXT_MAX_CHARS)
+        self.assertGreater(jp.JEV_ANSWER_MAX_CHARS, jp.JEV_REQUEST_MAX_CHARS)
+        # The caps must not exceed the one input budget they share.
+        approx_tokens = ((jp.JEV_ANSWER_MAX_CHARS + jp.JEV_CONTEXT_MAX_CHARS
+                          + jp.JEV_REQUEST_MAX_CHARS) / 3.5)
+        self.assertLessEqual(approx_tokens, jp.JEV_MAX_INPUT_TOKENS)
+
+
 class AnswerPolicyTests(unittest.TestCase):
     def test_keyed_answer_policy_exposes_native_signals_and_one_ledger_event(self):
         td = tempfile.TemporaryDirectory()
