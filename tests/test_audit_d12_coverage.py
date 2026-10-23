@@ -103,6 +103,18 @@ class D12BaselinePinTests(unittest.TestCase):
             self.assertIn(marker, buf.getvalue(),
                           f"no {marker} warning emitted (in_ci={in_ci})")
 
+    def test_a_fail_open_skip_is_never_rendered_as_pass(self):
+        # #331: a fail-open D12 returns 1.0 plus "SKIP (fail-open): ...", and
+        # the table marked it "pass" because the mark was score-only. Readers
+        # of the table alone could not see that the check measured nothing.
+        score, evidence = self.audit.d12_unreachable("f" * 40, in_ci=False)
+        self.assertEqual(self.audit._mark(score, evidence), "skip")
+        # The other marks keep their meaning.
+        self.assertEqual(self.audit._mark(1.0, "changed-line coverage 4/4 = 100%"),
+                         "pass")
+        self.assertEqual(self.audit._mark(0.5, "partial"), "part")
+        self.assertEqual(self.audit._mark(0.0, "FAIL: something"), "FAIL")
+
     def test_in_ci_flag_is_derived_from_the_environment_variable(self):
         # The module recomputes this at import; assert the derivation itself
         # so a refactor cannot quietly hardcode it.

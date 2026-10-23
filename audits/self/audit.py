@@ -152,6 +152,20 @@ def _pass(cond, ok_ev, fail_ev):
     return (1.0, ok_ev) if cond else (0.0, fail_ev)
 
 
+def _mark(score, evidence):
+    """Table mark for one check.
+
+    A fail-open SKIP scores 1.0 on purpose (D12 locally), so a score-only
+    label printed "pass" for a check that measured nothing (#331). The
+    evidence already says SKIP; the table must say it too.
+    """
+    if str(evidence).startswith("SKIP"):
+        return "skip"
+    if score >= 1:
+        return "pass"
+    return "part" if score > 0 else "FAIL"
+
+
 # ============== A — SECURITY ==============
 
 def a_no_tools_guard():
@@ -1515,9 +1529,9 @@ def main():
         print(f"[{bar}] {dim} — {DIM_NAMES[dim]}: {mean * 10:.2f}/10 "
               f"({sum(r['score'] >= 1 for r in rows)}/{len(rows)} checks fully satisfied)")
         for r in rows:
-            mark = "pass" if r["score"] >= 1 else ("part" if r["score"] > 0 else "FAIL")
+            mark = _mark(r["score"], r["evidence"])
             print(f"    {r['id']:>3} {mark:<4} {r['label']}")
-            if r["score"] < 1:
+            if mark != "pass":
                 print(f"         -> {r['evidence'][:600]}")
         print()
 
