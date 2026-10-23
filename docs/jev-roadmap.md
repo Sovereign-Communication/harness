@@ -15,6 +15,379 @@ Related design context (not the tracker): [system-one-integration.md](system-one
 
 ---
 
+<!-- BEGIN ISSUE295_IMPLEMENTATION_PLAN -->
+## Implementation preparation - 2026-10-22 (#295)
+
+**State: proposed plan; no product issue is declared complete here.** This is
+the current plan for the 61 open issues (60 work items plus tracker #295) in
+the 2026-10-22 snapshot. Older STATUS, next-slice lists and CI/test receipts
+below are historical evidence. They do not reopen shipped/deferred work or
+certify the present tree. #295 carries execution receipts; this file owns order.
+
+### Scope and evidence truth
+
+The #342-#347 findings concern the audited dirty worktree based on 208c455,
+not an independently reproduced remote-main failure. Preserve that worktree;
+port only separately reviewed changes into fresh phase worktrees. The prior
+allowance is exhausted at 10/10: nine behavioral attempts, including the failed
+CLI fixture, plus one integrity/source probe. Paid model/Jev spend was $0.
+
+Controlled MCP preview/schema/cleanup and CLI answer-route zero retrieval are
+limited passes. They do not prove a shared ResearchPlan, GUI parity or installed
+MCP synchronization. Mixed Microsoft evidence reached the calculator answer;
+changed/declined checkpoints retained old evidence; concurrent caps and planning
+allowances produced false refusals. Live calculator fetch returned HTTP403,
+not a usability audit. Early case1-3 process exit statuses are unavailable.
+
+After permissions were restored, the local Jev key became resolvable and
+configured MCP discovery worked again (initialize/list/ping). A 2026-10-22
+recheck resolves the earlier "stale installed schema" suspicion and retires it:
+the installed runtime's `Lib/site-packages/harness/mcp_schemas.py` is
+byte-identical to committed `208c455` (sha256 `9a0e274a...05c7ab6`), and the
+served `plan_and_execute` schema therefore correctly advertises `max_cost`
+maximum0.25 with no `allow_heuristic_preview`. Both additions exist only in the
+uncommitted audit worktree, so the implementable task is to land or re-derive
+that change in a phase PR; refreshing a stale client is not the task. Record
+served identity/commit for future parity claims. Do not restart unidentified
+servers or rewrite host policy.
+
+The GUI access fact also stays explicit: the native `pywebview` shell is absent
+from the installed local environment, so #282's "identify the actual runtime"
+step currently resolves to the loopback browser path only. That is an access
+limit, not a passing GUI journey.
+
+### One next slice: #347
+
+Fix config-loader disabling/credential-override precedence in the existing
+config and public CLI test owners. Preserve JevEvaluator's correct explicit
+disable enforcement. Explicit disabling must not restore ambient credentials
+or dispatch a provider call; distinguish omitted from deliberately cleared
+credentials. Heuristic previews stay degraded, cannot be Jev-confirmed and
+cannot authorize execution. No research rewrite, refactor or UI feature belongs
+in this slice.
+
+This preparation precedes old Wave0 measurement because the recorded offline
+fixture attempted ambient-key dispatch. #327/#278 then make invocation
+trustworthy; #276/#331 remain prerequisites for authoritative #277 evidence.
+
+### Dependency and acceptance register
+
+Each row is a bounded packet, not permission for unbounded work. Dependencies
+are actual interface/merge prerequisites. The chosen #347-first order is a
+verification preparation rule, not an artificial dependency of unrelated
+features; independent packets may be prepared without waiting for config code.
+Only one phase PR is active for landing and
+one merge occurs at a time. Every row inherits G0-G4 below.
+
+| Issue | Owner | Prerequisites | Acceptance / exit |
+| --- | --- | --- | --- |
+| [#347](https://github.com/Sovereign-Communication/harness/issues/347) | Config | none | Explicit disabling/clearing precedence, zero ambient dispatch, existing evaluator disabling preserved. |
+| [#327](https://github.com/Sovereign-Communication/harness/issues/327) | Gate runner | none | Repo-root resolution or explicit refusal; outside-CWD cannot pass having checked zero files. |
+| [#278](https://github.com/Sovereign-Communication/harness/issues/278) | Tool resolution | #327 | One interpreter/ruff resolver across apply/verify/dogfood/audit; python3-only works; missing tools refuse before billing. |
+| [#276](https://github.com/Sovereign-Communication/harness/issues/276) | Audit measurement | #278 | Merge-base D12 >=95%, no manual baseline gaming; moving main does not stale measurement; explicit S5 disposition. |
+| [#331](https://github.com/Sovereign-Communication/harness/issues/331) | Audit reporting | #276 | D12 SKIP remains SKIP in text/JSON and receives no passed-measurement credit. |
+| [#324](https://github.com/Sovereign-Communication/harness/issues/324) | Decision policy | none | Low advances_goal investigates, evidence clears or escalates actual risk; preserve destructive/ambiguity rules; max2 revisions. |
+| [#326](https://github.com/Sovereign-Communication/harness/issues/326) | Decision boundary | #324 | Exact0.20 lead satisfies the margin; below-margin control escalates. |
+| [#325](https://github.com/Sovereign-Communication/harness/issues/325) | Assessment procedure | #324 | Declare five rubric bands and investigation actor before automation; retain raw distributions; preserve absolute audit/phase hard bars. |
+| [#345](https://github.com/Sovereign-Communication/harness/issues/345) | Spend governor | none | Independent request actual/outstanding/unknown liability plus shared session cap; nested scopes/cancellation/cleanup remain correct. |
+| [#346](https://github.com/Sovereign-Communication/harness/issues/346) | Planning allowance | #345 | Paid/reserved/unknown calls counted once; compare remaining work with remaining funds; genuinely unfunded execution refuses. |
+| [#299](https://github.com/Sovereign-Communication/harness/issues/299) | GUI HTTP | none | Over-cap POST returns413 before body read; normal chat/driver/apply unchanged. |
+| [#300](https://github.com/Sovereign-Communication/harness/issues/300) | Driver contract | none | Minimal documented-rule correction plus focused cases; stronger enforcement requires a separately reviewed real-caller need. |
+| [#302](https://github.com/Sovereign-Communication/harness/issues/302) | Apply intake | none | Refusal/non-code rotates before candidacy; code-shaped missing-marker behavior preserved; truthful health and billing. |
+| [#303](https://github.com/Sovereign-Communication/harness/issues/303) | Site extraction | none | Explicit scheme refusal/disclosed normalization in prose; direct HTTPS and SSRF admission preserved. |
+| [#333](https://github.com/Sovereign-Communication/harness/issues/333) | Task/ledger boundary | none | Never-offered task defer refuses without phantom row; valid defer preserves real partial work. |
+| [#334](https://github.com/Sovereign-Communication/harness/issues/334) | Judgment envelope | none | Zero live judgments cannot be unqualified native success; fallback coverage/provenance retained. |
+| [#332](https://github.com/Sovereign-Communication/harness/issues/332) | Fallback identity | none | Consistent actual backend labeling; configured model distinct from observed fallback. |
+| [#330](https://github.com/Sovereign-Communication/harness/issues/330) | Dogfood verifier | none | Supported cancellation arguments at real caller; once-only terminal state and usage settlement. |
+| [#342](https://github.com/Sovereign-Communication/harness/issues/342) | Shared research | #345,#346,#324 | Typed model proposal, bounded native review before retrieval, one lifecycle owner and real GUI/CLI/MCP callers; decline means zero retrieval. |
+| [#343](https://github.com/Sovereign-Communication/harness/issues/343) | Research evidence | #342 | Every candidate/final URL meets accepted domain/subject/freshness/evidence requirements; mixed Microsoft hit excluded before answer. |
+| [#344](https://github.com/Sovereign-Communication/harness/issues/344) | Checkpoints | #342 | Request/plan-receipt/freshness binding; changed/declined routes drop incompatible evidence; valid resume avoids replay. |
+| [#277](https://github.com/Sovereign-Communication/harness/issues/277) | Surface receipts | #276,#331,#327,#330 | Filed CLI/GUI/MCP/site matrix with runtime, outputs, exits, calls, timing and costs; fix/file each failure;403/unverified never pass. |
+| [#282](https://github.com/Sovereign-Communication/harness/issues/282) | GUI journeys | none | Identify actual runtime; five single-worker critical journeys; broken-journey negative control; hermetic CI. |
+| [#283](https://github.com/Sovereign-Communication/harness/issues/283) | GUI handlers | #282 | Test actual IPC or HTTP handlers after runtime finding; record rescope; errors/cancel/state synchronization covered. |
+| [#284](https://github.com/Sovereign-Communication/harness/issues/284) | MCP descriptions | none | Every tool has When/Input/Output; audit negative control; no execution behavior change. |
+| [#285](https://github.com/Sovereign-Communication/harness/issues/285) | MCP evaluation | #284,#335,#333,#334 | Declared tasks/tool chains and pass-rate threshold; per-case results, wrong-chain control, explicitly costed live mode. |
+| [#286](https://github.com/Sovereign-Communication/harness/issues/286) | MCP observability | none | Secret-scanned file logs, zero stdout contamination, additive-only schemas and truthful outcomes. |
+| [#335](https://github.com/Sovereign-Communication/harness/issues/335) | MCP annotations | none | Classify actual read/mutation/destructive effects, including ledger/config effects; descriptions and annotations agree. |
+| [#279](https://github.com/Sovereign-Communication/harness/issues/279) | Doctor | #278,#347 | Tool/key-presence/DNS/driver/GUI states with remediation, no secrets; distinguish local from separately budgeted live checks. |
+| [#290](https://github.com/Sovereign-Communication/harness/issues/290) | Triage runbook | #347,#278,#276 | Effective-settings, environment failures, unknown usage and real-defect distinctions linked from contributor/audit docs. |
+| [#328](https://github.com/Sovereign-Communication/harness/issues/328) | CLI version | none | Standard version surface returns package version successfully; bad usage remains nonzero. |
+| [#329](https://github.com/Sovereign-Communication/harness/issues/329) | CLI help/flags | none | Correct desktop usage and actual out/quiet/events/no-color behavior; no parsed-but-inert flags. |
+| [#293](https://github.com/Sovereign-Communication/harness/issues/293) | Edge coverage | #276 | Map six historic lines to current source; execute or disposition with traced evidence; no shipped lifecycle replay. |
+| [#301](https://github.com/Sovereign-Communication/harness/issues/301) | Lint scope | #278 | driver_core included in common lint/CI; remove F401 and prove scope sees violations. |
+| [#308](https://github.com/Sovereign-Communication/harness/issues/308) | Planning structure | #346,#342 | Separate decomposition/review/evidence/budget concerns; preserve one policy owner and public envelopes. |
+| [#309](https://github.com/Sovereign-Communication/harness/issues/309) | Jev structure | #324,#342 | Domain evaluators separate from one dispatch/spend/ledger owner; preserve sites, fallback, cancellation and dedupe. |
+| [#310](https://github.com/Sovereign-Communication/harness/issues/310) | Provision structure | #276 | Separate admission/approval/recipes/execution with one authority and durable no-replay; injected runners only in tests. |
+| [#311](https://github.com/Sovereign-Communication/harness/issues/311) | Optional local-fit CI | #276 | Extra job trains/exports/reloads/scores temporary deterministic artifacts; no provider calls or heavy default runtime. |
+| [#288](https://github.com/Sovereign-Communication/harness/issues/288) | Changed-code typing | #276 | Document checker/baseline; grandfather untouched errors, fail deliberate new error on changed code. |
+| [#289](https://github.com/Sovereign-Communication/harness/issues/289) | Dependency workflow | #278,#276 | uv/lock works with identical test/skip accounting; keep requirements until green; exact rollback. |
+| [#287](https://github.com/Sovereign-Communication/harness/issues/287) | CI scheduling | #276,#327 | Cancel stale runs; docs light path retains audit; code retains every required check; workflow negative controls. |
+| [#292](https://github.com/Sovereign-Communication/harness/issues/292) | Vendored driver | #301 | Reconcile actual revisions, sync intended delta, record diff and documented drift check; no blind old-version replay. |
+| [#270](https://github.com/Sovereign-Communication/harness/issues/270) | Declared app launch | #292,#300 | Default-off flag, allowlisted OS adapters, bounded startup; no arbitrary string-built shell execution. |
+| [#271](https://github.com/Sovereign-Communication/harness/issues/271) | NL proposal | #270,#324 |10s bounded planner validates declared actions/params and empty/malformed output; proposal grants no execution authority. |
+| [#272](https://github.com/Sovereign-Communication/harness/issues/272) | Visual verification | #270 | Optional2s/5s screenshot checks and bounded Jev latency; truthful timeout, no replacement of consent, flag-off preserved. |
+| [#273](https://github.com/Sovereign-Communication/harness/issues/273) | GUI action consent | #271,#272,#299 | Resolve wording with explicit boolean: false previews, true executes bound approved plan, absent/malformed400; token/Run/events/cancel/default-off404. |
+| [#340](https://github.com/Sovereign-Communication/harness/issues/340) | Measured economics | #345 | Measured/provider usage separate from estimates; cost-per-success uses measured provenance; unexplained drift retained. |
+| [#304](https://github.com/Sovereign-Communication/harness/issues/304) | Cross-provider routing | #340 | Actual pool selection consumes fresh enabled-provider whole-endpoint price/capability evidence; explicit stale policy and shared budget. |
+| [#306](https://github.com/Sovereign-Communication/harness/issues/306) | EV-8 evidence | none | Respect prior marker/receipt, never delete to rerun; only genuinely unrun <=$0.01 one-shot with new case allocation; confirmations stand, key private. |
+| [#280](https://github.com/Sovereign-Communication/harness/issues/280) | First-rung calibration | #302,#340 | Task-family calibration and early structured-failure rotation with visible reasons; no-history fallback and completion rate preserved. |
+| [#318](https://github.com/Sovereign-Communication/harness/issues/318) | Selection feedback | #340,#280,#333 | Outcome/probation/trigger schema first; measured costs, bounded self-audits, held-out gates; missing telemetry preserves ordering. |
+| [#319](https://github.com/Sovereign-Communication/harness/issues/319) | Model intake | #318 | Existing session/15min/weekly cadence, bounded filters/native screens, logged insertion/holds, explicit stale policy; no manual per-model pipeline. |
+| [#313](https://github.com/Sovereign-Communication/harness/issues/313) | Mercury evidence | #340 | Independent evidence packet can precede the intake build: routable slug, dynamic price and structured/capability evidence; native viability>=90; #319 consumes it without a parallel manual insertion path. |
+| [#281](https://github.com/Sovereign-Communication/harness/issues/281) | Benchmark export | #340,#277 | Manifest-hashed reproducible bundle through existing export gates; labeled requested free benchmark plus budgeted cheap-paid integration; publication separately authorized. |
+| [#336](https://github.com/Sovereign-Communication/harness/issues/336) | Ledger compaction | #333,#345 | Anchors preserve chain; spend/trust/gate-cited rows never pruned; labeled bounded canaries excluded from reliability; no unbudgeted scheduled calls. |
+| [#337](https://github.com/Sovereign-Communication/harness/issues/337) | Ledger criteria | #336,#318,#340 | Full26-criterion target; first3 data-quality/reliability/measured-cost fixtures; capstone provisional until all dependencies validate; stale fixtures demote. |
+| [#275](https://github.com/Sovereign-Communication/harness/issues/275) | Mission deltas | #342,#344,#273 | New L1-L7 trace/decision/grade/time/authority/retry/receipt deltas, preserve shipped L8-L9, enforce L10 length, L11 driver classes and L12 metering allocation. |
+| [#291](https://github.com/Sovereign-Communication/harness/issues/291) | Refine pilot | #276,#325,#340 | Reconcile existing cycles and finish remaining original20 TIER2 cycles with rubric/held-out receipts and graduation disposition; zero auto-merge. |
+| [#314](https://github.com/Sovereign-Communication/harness/issues/314) | Optional offline judges | #325,#309 | Stage seam/provisioning/Laya/Kev/engine-gated Needle with calibrated provenance; no default change or offline substitute for native-required approval. |
+| [#294](https://github.com/Sovereign-Communication/harness/issues/294) | Onboarding evidence | #282,#277,#340 | Reconcile existing branch; pane journey,50 budgeted validations, live sweep and>=0.90 feature gate; operator retains router flag. |
+| [#295](https://github.com/Sovereign-Communication/harness/issues/295) | Tracker | all child dispositions | Evidence-backed closure/disposition, one phase PR/merge, green merge-result CI; roadmap owns plan, tracker owns execution receipts. |
+
+### Shared research contract (#342 -> #343/#344)
+
+One owner receives effective request plus bounded typed model proposal:
+needed/reason, queries/URLs, domains, freshness, evidence requirements/min_sources/
+page-content, and query/result/fetch/cost/time/character budgets. Existing simple,
+conversation and hourglass adapters delegate; GUI/CLI/MCP do not own retrieval.
+Order: propose without retrieval -> deterministic validation -> native Jev
+accept/revise/decline -> max2 revisions -> accepted bounded execution -> each-hit
+domain/final-URL/freshness/relevance -> sufficiency -> answer with provenance.
+needed=false or explicit decline means zero retrieval; malformed/fallback
+approval cannot authorize research. Safe no-research answers remain available
+with honest outage provenance. Bind receipts to request/plan hashes, remaining
+budget and age. Preserve once-only usage and cancellation; changed/declined
+requests cannot inherit incompatible evidence or approval. Preview is degraded,
+advisory and never an execution permit. Static fetch/snippets cannot prove
+visual UX or interaction; declare and separately exercise browser capability.
+Jev approval never bypasses consent, capability admission, SSRF or spend policy.
+
+### G0-G4 gates (requirements, not results)
+
+- **G0 plan:** author reviews scope/dependencies/acceptance; native Harness/Jev
+  independently audits the settled PLAN using [v1](JEV_GATE_POLICY_V1.md).
+  Missing/malformed/fallback, destructive>=0.5, escalate or lead<0.20 stop.
+  advances_goal<0.95 investigates actual risk; max2 revisions. Assess the five
+  PLAN aspects: completeness, confidence, correctness, no-regression, evidence
+  quality. Irrelevant aspects need reasons. Below85 blocks; four>=90 plus one
+  85-89 investigates and passes only with a risk-clearing note; a configuration
+  with three>=90 and two85-89 is not covered by that auto-pass and is handled by
+  the core rule instead: investigate both, correct any real defect found, and
+  record the clearing evidence. Three stalled rounds stop honestly. Because
+  #324 is still open, today's production composer escalates any advances_goal
+  below0.95; the lane must publish both the composer output and the v1
+  disposition, and must never present an investigate-cleared v1 disposition as
+  a production-composer `proceed`. Declared native Choice rubric-band judgments retain
+  distributions; they do not silently convert Score probabilities or claim
+  #325's production integration exists. Existing audit/phase hard bars stand.
+- **G1 local:** after fresh case authorization, named positive/negative cases
+  through real owners; obtain platform argv from `python -m harness.cli gates`.
+  Correct root/interpreter, lint including driver_core, package/installed-worker
+  checks, genuine traced merge-base changed-line coverage>=95%, raw output and
+  process/application exits. No hand-updated coverage baseline or ceremonial
+  whole-board run to manufacture a pass.
+- **G2 completion:** independent scoped diff/evidence review then the relevant
+  registered phase gate through the existing owner. Register missing mappings
+  in the phase PR first; invented phase IDs or local heuristics are not native
+  Jev approval and never close issues.
+- **G3 CI:** actual required PR-tip and merge-result checks green, supported
+  OS/Python and installed-wheel matrix. Only implemented docs-light policy
+  applies; future #287 cannot excuse skipped checks now. Reviewed branch only,
+  never direct main. Plan approval does not authorize code delivery.
+- **G4 surfaces:** CLI actual command/stdout/stderr/exit; MCP actual initialize,
+  list/call/ping, installed identity/schema, decline zero retrieval, mixed-hit
+  rejection, advisory preview, async cleanup and cap release; GUI actual runtime
+  first, five single-worker journeys plus continuation/cancel/error/responsive
+  state and console/network evidence. Fixtures, live network, native providers
+  and installed clients are labeled separately. A stdio fixture is not host parity.
+
+Receipts bind request/plan/diff/manifest hash, runtime commit/import path,
+capability, reviewer/backend/native-versus-fallback, provider/model/price age,
+all attempts/retries, tokens, conservative bounds and actual/estimated/unknown
+spend, timings, output/exits and gaps. Private credentials/raw ledgers stay out
+of git. The independent plan receipt binds the exact marked section hash and
+certifies a plan only, not implemented product readiness.
+
+### Execution holds and preservation
+
+The separately authorized native PLAN audit is bounded per review at <=$0.02
+with preflight input limits and settled usage; unknown post-dispatch liability is
+retained and never retried automatically. Three reviews ran first (rounds 1-3,
+$0.001344 total accounted). Round 4 is a separately declared confirmation of the
+materially revised text after the author's correctness fix, not an extra vote on
+an unchanged document; it keeps the same per-review ceiling and the total stays
+far below the $0.06 envelope. Review count is disclosed here because extending
+it is a scope decision, not a silent retry. This does not renew the exhausted
+functional-test allowance.
+Allocate a fresh counted tranche before G1/G4; separately bound provider/visual
+calls, retries, time and cost. Failed fixtures count; unused dollars do not
+renew cases. Permissions now allow preparation/delivery, not unbounded testing.
+
+#325's explicit rubric procedure is reviewed in its phase without weakening
+release truth. Record #273's confirmation decision on its issue before code.
+Respect #306 one-shot state and existing confirmations; #294's50 validations,
+#291's remaining original20 cycles, catalog screens and canaries each need their
+own allocation. Never expose keys. Flag flips, publication and held branches
+remain owner decisions. Closed #207/#297, shipped HV/HUL/DRV/EV and all other
+complete rows stay complete; #344 is a residual, not a restart. Deferred jury,
+OC external-instance work and CIVICSCOPE retain their rulings. #308/#309 do not
+block targeted fixes. Preserve all dirty/parked worktrees.
+
+Every open issue has an owner, dependency and exit. Start only #347 after plan
+review and a new execution tranche. Refresh issue/canon state after each merge;
+deduplicate new findings rather than silently expand the current slice.
+### Planning decisions clarified after independent review
+
+For #347 the proposed override contract is exact: an omitted key override uses
+normal configured resolution; an explicitly supplied None clears the key for
+that Settings instance; jev_disabled=True always yields no key and no native
+dispatch. Explicit False permits normal resolution unless the key was cleared.
+This changes no persisted credential file or process-wide environment and does
+not change JevEvaluator's existing enforcement. Focused acceptance names:
+config override omitted/None/disabled/False with ambient file+env controls;
+CLI heuristic preview under explicit disabling; transport-count assertion zero.
+
+For #313, model capability evidence can be prepared before #319 exists; it
+depends on accurate cost provenance, not completion of the entire intake
+feature. #319 consumes approved evidence through its one intake owner.
+
+The action submitted for approval is publication of this docs-only plan and its
+native-review evidence to a review branch/PR. It is not approval to execute all
+61 issues or a declaration of product completion. Every issue is planned; only
+#347 is selected next. Implementation, functional verification and owner-held
+flags/publication remain under the explicit gates above. Current branch scope
+is this roadmap and sanitized plan-review receipts; no runtime code, settings,
+credentials, historical status dispositions or dirty implementation files move.
+
+Feature dependencies in the table are genuine contract prerequisites; the
+chosen order and global safe-verification prerequisites do not require adding
+spurious #347 edges to unrelated feature changes. A dependency-free packet can
+be prepared independently, then use the shared verified environment at G1.
+The #318 outcome/probation contract precedes #319 automatic intake; #336 consumes
+existing ledger outcomes and does not create a dependency cycle with #318.
+
+The #337 catalog retains all26 criteria from its issue: six model-quality,
+five economics, four routing, two latency, three safety, three ledger-health,
+and three comparison/change/debut criteria. The first three validation packets
+are data quality, task-family reliability and measured cost-per-success.
+Remaining criteria roll out in those declared families; the debut aggregator
+is provisional until every criterion it consumes is validated. No three-prompt
+pilot is described as completion of the26-criterion target.
+
+The lane's plan assessment uses declared Choice dispositions (meets90-100,
+investigate85-89, below85, irrelevant), preserving the entire native distribution.
+This avoids an invented conversion from a Score distribution. It is a proposed
+lane assessment procedure, not a change to production audit/phase hard bars or
+a claim that #324-#326 have been fixed. The author investigates low aspects;
+Jev independently supplies judgments. No native signal means no plan approval.
+
+<!-- END ISSUE295_IMPLEMENTATION_PLAN -->
+
+### Native plan review evidence - 2026-10-22
+
+Independent native Harness/Jev reviews of the marked plan block, run locally
+(local date 2026-10-22; ledger rows carry 2026-10-23 UTC). Each round was one
+POST, no automatic retry, preflight input bound 60,000 bytes, worst-case bound
+$0.00252, endpoint restricted to the priced TypeSafe host, `is_fallback=false`
+with observed usage in every round, and a linked private ledger chain (4 rows).
+
+| Round | Plan sha256 (short) | Disposition | Lead | Destructive | advances_goal | Aspects (>=90 / 85-89) | Cost |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `e58d085d` | proceed 0.44 | 0.09 | 0.04 | 0.74 | 4 / 1 (correctness) | $0.000429 |
+| 2 | `b72ae804` | proceed 0.44 | 0.14 | 0.04 | 0.78 | 4 / 1 (correctness) | $0.000450 |
+| 3 | `cba8f444` | proceed 0.69 | 0.46 | 0.04 | 0.75 | 3 / 2 (confidence, correctness) | $0.000464 |
+| 4 | `a7282ad0` | proceed 0.81 | 0.68 | 0.04 | 0.81 | 3 / 2 (confidence, correctness) | $0.000492 |
+
+Total native review spend **$0.001836** across four single-POST calls. Round 4 is
+the declared confirmation of the revised text; the published plan block is
+exactly hash `a7282ad0b516cabe83dea9b6d5bed638a3f397be1d45c939c1f9883b6df69c97`.
+Round 4's remaining diagnostic `plan_gap` answer was `none` 0.41 with `policy`
+0.31 as the runner-up; that ambiguity is addressed below rather than ignored.
+
+**Decision gate.** The unpatched production composer (`compose_decision_verdict`)
+returns `escalate` for all four rounds: rounds 1-2 on disposition lead below the
+the 0.20 margin (genuine ambiguity, correctly stopped), rounds 3-4 solely on
+`advances_goal` below the hard-coded 0.95 threshold. Under ratified
+[JEV_GATE_POLICY_V1](JEV_GATE_POLICY_V1.md) that same signal is rule 6:
+*investigate*, not escalate. Snapshot for round 4: destructive 0.04 (pass),
+disposition `proceed` with a 0.68 lead (pass), `advances_goal` 0.81 (investigate).
+
+**Author investigation (rounds 3-4 signals).**
+
+1. *Correctness - one real defect found and fixed.* The earlier text called the
+   served MCP plan schema stale. It is not: the installed runtime's
+   `mcp_schemas.py` is byte-identical to committed `208c455`, so the missing
+   `allow_heuristic_preview` and 0.25 `max_cost` cap are the committed state, and
+   the field exists only in the uncommitted audit worktree. The plan now states
+   the real task and records served identity, instead of sending an implementer
+   after a non-existent stale install.
+2. *Registry completeness.* Live GitHub at review time: 61 open issues, 61 plan
+   rows, no row for a closed issue, no open issue without a row. Parsed graph:
+   74 dependency edges, zero cycles, zero dangling prerequisite IDs, every issue
+   with a concrete acceptance exit and owner.
+3. *Next-slice feasibility.* The #347 contract was checked against the shipped
+   loader: `config.py` derives `jev_disabled` from the environment only and
+   resolves `get("jev_api_key", None) or resolve_jev_key()`, so an explicit
+   `None` override is rediscovered and an explicit disable override is ignored.
+   Both halves of the stated defect are real and both acceptance cases are
+   reachable through the public entry points.
+4. *Confidence.* Budgets and access are stated as facts, not hopes: functional
+   allowance exhausted at 10/10, native review spend $0.001836 of a $0.06
+   envelope, Jev key resolvable locally, MCP discovery working, Python `pywebview`
+   absent so GUI work starts from the browser runtime. No runtime behaviour is
+   promised.
+5. *Policy-gap signal.* Ratified policy outranks the unpatched composer; #324 is
+   the filed fix for that divergence. Applying v1 here waives no hard bar:
+   destructive actions still escalate at any confidence, fallback/malformed
+   signals still fail closed, and consent, SSRF admission, spend caps, the
+   one-phase-PR rule, CI truth and registered phase gates are untouched.
+
+**Recorded disposition.** Plan-level, publication-scoped: **PROCEED** under
+ratified v1 after investigation, with the assessment gate read as three aspects
+>=90 plus two at 85-89 - a configuration the flexibility rule does not
+auto-pass, so both were investigated under the core rule, one produced a real
+correctness fix, and neither fell below 85. **This is not a
+production-composer `proceed`:** today's composer still emits `escalate` on
+`advances_goal`, and #324 must land before any mechanical green exists. It is
+not implementation approval, not a functional-test result and not a closure of
+any issue. Every G1-G4 requirement above still has to run on fresh allocations.
+
+**Not claimed.** No GUI journey, CLI/MCP surface parity, installed-client
+synchronization, live fetch, native plan execution or audit-score result is
+asserted by this review; those remain acceptance requirements for the phase PRs.
+
+### Post-review finding: the D12 audit gate is broken repo-wide - 2026-10-22
+
+Recorded here, after the plan review, because it blocks *landing* rather than
+planning; the reviewed block above is unchanged (hash still `a7282ad0`).
+
+PR #348 is green on every check except `audit`, which fails closed at D12 with
+`baseline commit 661d476474e2 is not reachable in this checkout`. The cause is
+not this branch's content, which touches only this file:
+
+- `audits/self/coverage_baseline.json` pins `661d476474e2`.
+- That commit is the head of PR #341's branch `fix/web-search-subject-relevance`,
+  which was **squash-merged** as `c3cff45` and then deleted on origin, so the SHA
+  is reachable only through GitHub's hidden `refs/pull/341/head`.
+- The `pull_request` checkout fetches only the merge ref for the PR under test,
+  so `git diff <baseline> -- harness/` cannot resolve it and D12 fails closed
+  before evaluating any changed line. `main`'s recent green depended on a wider
+  fetch in that job's log (`fix/d12-baseline-repoint` and other branch refs), not
+  on the pin being sound.
+
+The consequence is that **any** new PR fails `audit` today, independent of its
+content, and the next `main` push loses its accidental borrow of that object.
+This is the exact failure mode #276 exists to fix: the baseline must be measured
+against a merge-base that is reachable from `main` at CI time, never a
+PR-branch SHA.
+
+No baseline edit is made in this branch: rule 5 forbids hand-tuning
+`coverage_baseline.json`, and a legitimate re-point requires the refresh script
+(under `audits/self/`) to execute the traced battery for real. That is its own
+reviewed PR, and it should land before any phase PR, this one included.
+Closing this blocker is a prerequisite for G3 on every row in the register.
+
+---
+
 ## Canonical current status — final burndown 2026-10-18
 
 Verified remote `main`: post-PR #240 (`a7daf425209b199b765c1368c2483a4ba3780c44`) and PR #241 (`feat/ev-burndown-unification`). All 12 core CI checks pass across the matrix (`audit`, `package`, 5 OS/Python hermetic suite legs, 3 installed-wheel legs, `handoff-scope`, `checkout-hygiene`). This section is the operational canon incorporating all operator rulings and completed burndown tracks.
