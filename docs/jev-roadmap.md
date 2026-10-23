@@ -381,9 +381,9 @@ against a merge-base that is reachable from `main` at CI time, never a
 PR-branch SHA.
 
 No baseline edit is made in this branch: rule 5 forbids hand-tuning
-`coverage_baseline.json`, and a legitimate re-point requires
-`refresh_coverage_baseline.py` to execute the traced battery for real. That is
-its own reviewed PR, and it should land before any phase PR, this one included.
+`coverage_baseline.json`, and a legitimate re-point requires the refresh script
+(under `audits/self/`) to execute the traced battery for real. That is its own
+reviewed PR, and it should land before any phase PR, this one included.
 Closing this blocker is a prerequisite for G3 on every row in the register.
 
 ---
