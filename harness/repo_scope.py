@@ -12,6 +12,18 @@ from typing import List, Optional, Sequence
 
 from .osal import python_exe
 
+CODE_FILE_RE = re.compile(
+    r"\b[a-zA-Z0-9_\-./]+\.(?:py|rs|go|ts|js|md|json|toml|yaml|yml|c|cpp|h)\b")
+
+
+def mentions_code_file(prompt) -> bool:
+    """True when a prompt names a code file (edit-lane signal).
+
+    Single owner for the pattern every intent predicate shares: a change
+    here retunes classify, site-check, weather, and time lanes together.
+    """
+    return bool(CODE_FILE_RE.search(prompt or ""))
+
 
 def _gate_python() -> str:
     """The interpreter token for code-owned verification gate commands.

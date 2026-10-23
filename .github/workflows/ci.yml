@@ -12,6 +12,21 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Runner routing (Blacksmith): every Ubuntu job resolves its runner through
+# the BLACKSMITH_UBUNTU_RUNNER variable (repo or org Configuration variable)
+# with a Blacksmith default. To use it, set BLACKSMITH_UBUNTU_RUNNER to a
+# label Blacksmith provisioned for this org (e.g. blacksmith-4vcpu-ubuntu-2204)
+# AND install the Blacksmith GitHub App on this repository -- Blacksmith
+# registers runners at org level, so a matching job in a repo without the app
+# fails rather than queues. Windows/macOS legs stay GitHub-hosted: the
+# three-OS matrix claim is about GitHub's images, and Blacksmith macOS is
+# billed per-minute at a premium.
+# Fallback (Blacksmith unavailable): set BLACKSMITH_UBUNTU_RUNNER to
+# `ubuntu-latest` and every Ubuntu job routes back to GitHub-hosted runners
+# with no file change. Unsetting the variable restores the Blacksmith default.
+# `vars.X || default` treats an explicitly-emptied variable as unset, so
+# "empty" is not a fallback -- the value must name a real label.
+
 jobs:
   # PLAT-parity-tests: line-ending hygiene is a property of the CHECKOUT, so
   # it is checked on a fresh one, before anything else runs. A .gitattributes
@@ -20,7 +35,7 @@ jobs:
   # node's diff (the 2026-09-27 matrix run found exactly that).
   checkout-hygiene:
     name: Checkout hygiene
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BLACKSMITH_UBUNTU_RUNNER || 'blacksmith-4vcpu-ubuntu-2204' }}
     steps:
       - uses: actions/checkout@v4
       - name: A fresh checkout must be clean
@@ -45,7 +60,10 @@ jobs:
   # code paths (8.3 short names, case-insensitive roots, the UI bind).
   test:
     name: hermetic suite (${{ matrix.os }}, py${{ matrix.python-version }})
-    runs-on: ${{ matrix.os }}
+    # Ubuntu legs ride Blacksmith; Windows/macOS legs keep their matrix label.
+    # `matrix` context is available in runs-on; a set-but-wrong variable still
+    # wins, so the ubuntu-latest fallback documented above is the recovery.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.BLACKSMITH_UBUNTU_RUNNER || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -76,7 +94,7 @@ jobs:
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
 
   audit:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BLACKSMITH_UBUNTU_RUNNER || 'blacksmith-4vcpu-ubuntu-2204' }}
     env:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     steps:
@@ -101,7 +119,7 @@ jobs:
         run: python -m harness.cli capabilities --check-shipped
 
   package:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BLACKSMITH_UBUNTU_RUNNER || 'blacksmith-4vcpu-ubuntu-2204' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -233,7 +251,8 @@ jobs:
   package-installed:
     name: installed package (${{ matrix.os }})
     needs: package
-    runs-on: ${{ matrix.os }}
+    # Same Ubuntu-only routing as the test matrix above.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.BLACKSMITH_UBUNTU_RUNNER || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -285,7 +304,7 @@ jobs:
   # deliberate decision once the register has proved itself.
   handoff-scope:
     name: handoff scope (advisory)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BLACKSMITH_UBUNTU_RUNNER || 'blacksmith-4vcpu-ubuntu-2204' }}
     steps:
       - uses: actions/checkout@v4
         with:

@@ -56,13 +56,23 @@ class WorkflowTest(unittest.TestCase):
     def setUpClass(cls):
         cls.text = _read(WORKFLOW)
 
+    # Runner routing (Blacksmith): Ubuntu legs ride the BLACKSMITH_UBUNTU_RUNNER
+    # variable-switch with a GitHub-hosted fallback, so runs-on lines name the
+    # switch rather than a bare label. These assertions pin the switch contract:
+    # the variable is referenced, the ubuntu-latest fallback is present, and
+    # non-Ubuntu legs still resolve through their matrix label.
     def test_the_hermetic_suite_runs_on_all_three_platforms(self):
         block = _job_block(self.text, "test")
-        self.assertIn("runs-on: ${{ matrix.os }}", block)
+        self.assertIn("matrix.os", block)
         for platform in PLATFORMS:
             self.assertIn(platform, block, f"{platform} is not in the test matrix")
         self.assertIn("-W error::ResourceWarning -m unittest discover -s tests", block)
         self.assertIn("compileall", block)
+
+    def test_ubuntu_legs_route_through_the_blacksmith_switch(self):
+        block = _job_block(self.text, "test")
+        self.assertIn("vars.BLACKSMITH_UBUNTU_RUNNER", block)
+        self.assertIn("ubuntu-latest", block)
 
     def test_python_version_sweep_is_kept(self):
         block = _job_block(self.text, "test")
@@ -83,14 +93,19 @@ class WorkflowTest(unittest.TestCase):
 
     def test_audit_and_jev_bar_stay_on_ubuntu(self):
         block = _job_block(self.text, "audit")
-        self.assertIn("runs-on: ubuntu-latest", block)
+        # Via the variable switch. The GitHub-hosted fallback is procedural
+        # (set the variable to `ubuntu-latest`), so what the file must pin
+        # is the switch in the block and the documented fallback value.
+        self.assertIn("vars.BLACKSMITH_UBUNTU_RUNNER", block)
+        self.assertIn("`ubuntu-latest`", self.text)
         self.assertIn("audits/self/audit.py", block)
         self.assertIn("jev-phase" in self.text or "capabilities --check-shipped",
                       self.text)
 
     def test_installed_package_is_smoke_tested_on_all_three(self):
         block = _job_block(self.text, "package-installed")
-        self.assertIn("runs-on: ${{ matrix.os }}", block)
+        self.assertIn("matrix.os", block)
+        self.assertIn("vars.BLACKSMITH_UBUNTU_RUNNER", block)
         for platform in PLATFORMS:
             self.assertIn(platform, block)
         self.assertIn("pip install dist/*.whl", block)
@@ -166,7 +181,8 @@ class WorkflowTest(unittest.TestCase):
 
     def test_the_serve_and_mcp_smoke_survives_in_the_ubuntu_package_job(self):
         block = _job_block(self.text, "package")
-        self.assertIn("runs-on: ubuntu-latest", block)
+        self.assertIn("vars.BLACKSMITH_UBUNTU_RUNNER", block)
+        self.assertIn("`ubuntu-latest`", self.text)
         self.assertIn("serve --port 0", block)
         self.assertIn("McpServer", block)
 

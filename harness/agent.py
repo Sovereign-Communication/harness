@@ -29,6 +29,7 @@ from .repo_scope import (
     discover_target_files,
     discover_verification_gate,
     enumerate_repo_files,
+    mentions_code_file,
 )
 from .results import SUCCESS_STATUSES, _http_error, model_envelope
 from .session import apply_session, attest_model_for, governor_for, jev_for, ledger_for
@@ -51,6 +52,12 @@ from .waist import (
     resolve_scout_ladder,
 )
 from .web import DEFAULT_FETCH_HOSTS, gather_web_context
+from .time_lookup import is_clock_question, is_timezone_question
+from .time_lookup import lookup_time as _lookup_time
+from .time_lookup import lookup_timezone as _lookup_tz
+from .weather import extract_place as _weather_extract_place
+from .weather import format_facts as _weather_format_facts
+from .weather import lookup_weather as _weather_lookup
 
 # Consumers import history/repo_scope/web helpers from their owners
 # (harness.history, harness.repo_scope, harness.web), not from this module.
@@ -199,7 +206,7 @@ def is_site_check_prompt(prompt: str) -> bool:
         return False
     if _extract_target(prompt) is None:
         return False
-    if re.search(r"\b[a-zA-Z0-9_\-./]+\.(?:py|rs|go|ts|js|md|json|toml|yaml|yml|c|cpp|h)\b", prompt):
+    if mentions_code_file(prompt):
         return False
     words = re.findall(r"\b[a-z_0-9-]+\b", cleaned)
     if any(w in MUTATION_KEYWORDS for w in words):
@@ -274,6 +281,29 @@ def is_research_question(prompt: str) -> bool:
     return cleaned.startswith(_QUESTION_OPENERS)
 
 
+# A weather question names a place the keyless Open-Meteo lane can ground:
+# answering "weather next week in Pahoa" from model memory is fabrication
+# the lookup lane exists to prevent. A place is required ("will it rain?"
+# has no groundable target), and code-file mentions keep the edit lane.
+_WEATHER_WORDS = ("weather", "forecast", "temperature", "rain", "snow",
+                  "storm", "humidity", "wind chill", "heat wave",
+                  "heatwave", "drizzle", "thunderstorm", "hurricane",
+                  "tornado", "degrees outside")
+def is_weather_question(prompt: str) -> bool:
+    """True when a prompt asks for weather at a groundable place."""
+    cleaned = (prompt or "").strip().lower()
+    if not cleaned:
+        return False
+    if not any(word in cleaned for word in _WEATHER_WORDS):
+        return False
+    if mentions_code_file(prompt or ""):
+        return False
+    try:
+        return _weather_extract_place(prompt) is not None
+    except Exception:
+        return False
+
+
 def classify_prompt_intent(prompt: str) -> str:
     # Classify a natural language prompt into conversation, edit, or audit
     cleaned = prompt.strip().lower()
@@ -294,7 +324,7 @@ def classify_prompt_intent(prompt: str) -> str:
         return "edit"
 
     # Check for explicit file extension occurrences
-    has_file_ext = bool(re.search(r"\b[a-zA-Z0-9_\-./]+\.(?:py|rs|go|ts|js|md|json|toml|yaml|yml|c|cpp|h)\b", prompt))
+    has_file_ext = mentions_code_file(prompt)
 
     # Request-lifecycle #200: an action verb plus a URL/host target is a
     # site-availability check, even in question form. Ordinary questions
@@ -417,6 +447,55 @@ class AutonomousAgent:
     def _live_jev_available(self) -> bool:
         return bool(getattr(self.settings, "jev_api_key", None)
                     and not getattr(self.settings, "jev_disabled", False))
+
+    def run_time_lookup(self, prompt: str, session_id: Optional[str] = None,
+                        cancel_check=None) -> Dict[str, Any]:
+        """Answer one clock question deterministically: no model, no spend.
+
+        Bounded keyless fetch through the time_lookup seam; a failed
+        lookup is an honest deferral, never an invented time -- the same
+        contract as the simple-action lane.
+        """
+        sid = session_id or "default"
+        emit("time_lookup_start", prompt=prompt, session_id=sid)
+        if cancel_check and cancel_check():
+            raise ToolCancelled("Prompt execution was cancelled by user")
+        try:
+            if is_timezone_question(prompt):
+                facts = _lookup_tz(prompt)
+            else:
+                facts = _lookup_time(prompt)
+        except HarnessError as exc:
+            reason = str(exc)
+            result = {
+                "status": "deferred", "intent": "conversation",
+                "workflow_tier": "lookup", "prompt": prompt,
+                "response": f"I couldn't get the time: {reason}",
+                "model": None, "cost": 0.0,
+                "defer_reason": reason,
+                "next_step": "name a place, e.g. 'what time is it in Pahoa?'",
+            }
+            save_chat_turn(sid, result, self.history_dir)
+            emit("time_lookup_complete", status="deferred", reason=reason)
+            return result
+        try:
+            ledger_for(self.settings, caller="agent").append(
+                "time_lookup", task_id=sid, event_note="clock",
+                status="ok", place=facts["place"],
+                timezone=facts["timezone"], cost=0.0)
+        except Exception:
+            pass
+        result = {
+            "status": "ok", "intent": "conversation",
+            "workflow_tier": "lookup", "prompt": prompt,
+            "response": facts["summary"], "model": None, "cost": 0.0,
+            "place": facts["place"], "timezone": facts["timezone"],
+            "local_time": facts.get("local_time"),
+            "utc_offset": facts.get("utc_offset"),
+        }
+        save_chat_turn(sid, result, self.history_dir)
+        emit("time_lookup_complete", status="ok", place=facts["place"])
+        return result
 
     def run_simple_action(self, prompt: str, session_id: Optional[str] = None,
                           cancel_check=None, probe_fn=None,
@@ -583,9 +662,41 @@ class AutonomousAgent:
                     body = str(source.get("text") or "")[:_MAX_WEB_CONTEXT_CHARS]
                     context += "\n\nWEB EVIDENCE:\n" + body
             context = context[:_MAX_HOURGLASS_CONTEXT_CHARS]
+        weather_snippet = self._gather_weather_context(prompt)
+        if weather_snippet:
+            context += "\n\n" + weather_snippet
+            context = context[:_MAX_HOURGLASS_CONTEXT_CHARS]
         emit("context_condensed", estimated_tokens=brief.estimated_tokens,
              files=list(files), web_sources=len(web_sources))
         return context, files, brief, web_sources
+
+    def _gather_weather_context(self, prompt: str) -> Optional[str]:
+        """Keyless Open-Meteo facts for a weather question; None otherwise.
+
+        In-process urllib through the weather module's injectable fetch
+        seam -- no child process, no key, no spend. Never raises: a failed
+        lookup returns an honest failure note so the model discloses the
+        miss instead of inventing conditions.
+        """
+        if not is_weather_question(prompt):
+            return None
+        try:
+            facts = _weather_lookup(prompt)
+        except HarnessError as exc:
+            return (f"WEATHER LOOKUP FAILED: {exc} -- say the lookup "
+                    "failed; do not invent conditions.")
+        except Exception as exc:  # a transport bug must not kill the lane
+            return (f"WEATHER LOOKUP FAILED: unexpected "
+                    f"{type(exc).__name__} -- say the lookup failed; "
+                    "do not invent conditions.")
+        # Field rendering is owned by harness.weather (format_facts); the
+        # lane only adds the citation instruction around that body.
+        body = _weather_format_facts(facts.get("facts", []))
+        if not body:
+            return ("WEATHER LOOKUP FAILED: forecast has no days -- say the "
+                    "lookup failed; do not invent conditions.")
+        return (f"WEATHER FACTS for {facts.get('place')} (keyless Open-Meteo "
+                "lookup; cite these, never invent):\n" + body)
 
     def _hourglass_answer_once(self, prompt: str, context: str,
                                prior: Optional[Dict[str, Any]] = None,
@@ -791,6 +902,13 @@ class AutonomousAgent:
             })
             return result
 
+        # A clock question never reaches the model ladder: the answer is
+        # deterministic, keyless, and free -- memory plus rounds would only
+        # add spend to a fabrication risk. One funnel predicate; the
+        # time/zone split is ordered inside run_time_lookup (zone first).
+        if is_clock_question(prompt):
+            return self.run_time_lookup(prompt, session_id=sid,
+                                        cancel_check=cancel_check)
         # A research question earns the web lane whether or not the caller
         # asked: answering "what is the latest news on X" from model memory is
         # how a run iterates six times on a question it had no evidence for.
@@ -1062,6 +1180,9 @@ class AutonomousAgent:
         token_budget: Optional[Any] = None,
     ) -> Dict[str, Any]:
         # Handle informational or technical questions with conversational routing
+        if is_clock_question(prompt):
+            return self.run_time_lookup(prompt, session_id=session_id,
+                                        cancel_check=cancel_check)
         api_key, gov = governor_for(self.settings)
         target_tokens, lane_effort = effective_lane_policy(
             "chat", max_tokens=max_tokens, reasoning_effort=reasoning_effort)
@@ -1088,6 +1209,13 @@ class AutonomousAgent:
                 system_prompt += "\n\n[Web tool results for this turn -- cite only these; do not invent others]\n" + "\n\n".join(context_lines)
         else:
             system_prompt += "\n\n" + _NO_WEB_DISCLOSURE
+
+        # The unkeyed lane answers from memory too -- ground it the same way.
+        weather_snippet = self._gather_weather_context(prompt)
+        if weather_snippet:
+            system_prompt += ("\n\n[Weather tool result for this turn -- cite "
+                              "only this; do not invent others]\n"
+                              + weather_snippet)
 
         messages = [{"role": "system", "content": system_prompt}]
         past_turns = load_chat_history(session_id, self.history_dir)

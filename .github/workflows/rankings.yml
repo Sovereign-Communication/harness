@@ -33,7 +33,10 @@ permissions:
 
 jobs:
   report:
-    runs-on: ubuntu-latest
+    # Blacksmith routing with GitHub-hosted fallback: set
+    # BLACKSMITH_UBUNTU_RUNNER to `ubuntu-latest` to route back. See the
+    # "Runner routing (Blacksmith)" comment in ci.yml for the full contract.
+    runs-on: ${{ vars.BLACKSMITH_UBUNTU_RUNNER || 'blacksmith-4vcpu-ubuntu-2204' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
