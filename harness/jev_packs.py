@@ -2302,6 +2302,13 @@ DECISION_VERDICTS = ("proceed", "revise", "escalate")
 # three-way question. A decisive recommendation is expressed as a decisive
 # LEAD, which is what this measures.
 DECISION_DISPOSITION_MARGIN = 0.20
+# A lead is a difference of two probabilities, and subtraction is not exact at
+# a decimal boundary in binary: 0.60 - 0.40 evaluates to 0.19999999999999996.
+# The rule is `lead < margin`, so a lead that *equals* the margin must not
+# escalate (#326) -- otherwise the gate escalates while its own reason says
+# "leads the runner-up by only 0.20 < margin 0.20", which is false on its
+# face. Compare with a tolerance far below the policy's own resolution.
+DECISION_LEAD_EPSILON = 1e-9
 # A "revise" verdict tells the CALLER to fix the action and re-gate; the
 # caller owns the retry loop because only it can produce a revised action.
 # The bound lives here so every caller shares it.
@@ -2530,7 +2537,7 @@ def compose_decision_verdict(result: Any, *,
              "escalate, at any confidence".format(destructive)])
     if disposition == "escalate":
         return verdict_of("escalate", ["Jev disposition is escalate"])
-    if lead < margin:
+    if lead + DECISION_LEAD_EPSILON < margin:
         return verdict_of(
             "escalate",
             ["disposition {} leads the runner-up by only {:.2f} < margin "
