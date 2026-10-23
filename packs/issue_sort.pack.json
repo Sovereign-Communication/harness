@@ -1,0 +1,29 @@
+{
+  "id": "operator-issue-sort-v1",
+  "buckets": {
+    "triage_needed": {
+      "label": "Triage Needed: ambiguous requirements, reproduction missing, or unverified bug",
+      "kind": "trouble_area",
+      "path_id": "triage",
+      "keywords": ["triage", "reproduce", "investigate", "clarify", "unknown", "unclear"],
+      "suggested_next_action": "gather_evidence",
+      "attention": "normal"
+    },
+    "alternate_path_blocked": {
+      "label": "Alternate Path Blocked: external dependency, upstream rate limit, or architecture constraint",
+      "kind": "alternate_path",
+      "path_id": "alternate_path",
+      "keywords": ["blocked", "rate-limit", "quota", "upstream", "dependency", "vendor"],
+      "suggested_next_action": "reroute_or_escalate",
+      "attention": "high"
+    },
+    "driver_action_required": {
+      "label": "Driver Action Required: synthetic input, browser action, or OS interaction needed",
+      "kind": "orchestration_driver",
+      "path_id": "driver_action",
+      "keywords": ["driver", "ui", "click", "input", "dom", "browser", "screen"],
+      "suggested_next_action": "dispatch_driver",
+      "attention": "normal"
+    }
+  }
+}

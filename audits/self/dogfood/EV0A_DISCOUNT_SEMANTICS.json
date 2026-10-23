@@ -1,0 +1,71 @@
+{
+  "endpoints": [
+    {
+      "completion_per_token": 6.3e-08,
+      "context_length": 262144,
+      "discount": 0.65,
+      "input_cache_read": 4.2e-09,
+      "latency_30m": null,
+      "mandatory_reasoning": false,
+      "max_completion_tokens": 32768,
+      "name": "Novita|novita",
+      "overrides": [],
+      "prompt_per_token": 2.1e-08,
+      "provider": "Novita",
+      "tag": "novita",
+      "uptime_1d": 100.0,
+      "uptime_30m": 100.0
+    },
+    {
+      "completion_per_token": 1.8e-07,
+      "context_length": 131072,
+      "discount": 0.0,
+      "input_cache_read": 1.2e-08,
+      "latency_30m": null,
+      "mandatory_reasoning": false,
+      "max_completion_tokens": 32768,
+      "name": "DeepInfra|deepinfra/bf16",
+      "overrides": [],
+      "prompt_per_token": 6e-08,
+      "provider": "DeepInfra",
+      "tag": "deepinfra/bf16",
+      "uptime_1d": 98.66291344123856,
+      "uptime_30m": 80.0
+    }
+  ],
+  "fingerprint": {
+    "max_discount": 0.65,
+    "model": "inclusionai/ling-3.0-flash"
+  },
+  "max_discount": 0.65,
+  "measured": {
+    "actual_cost_usd": 1.55925e-06,
+    "completion_tokens": 16,
+    "cost_basis": "provider_reported_usage.cost",
+    "predictions": {
+      "discount_is_multiplier": {
+        "matched": [],
+        "per_endpoint": {
+          "DeepInfra|deepinfra/bf16": 4.5e-06,
+          "Novita|novita": 5.512499999999999e-07
+        }
+      },
+      "listed_is_effective": {
+        "matched": [
+          "Novita|novita"
+        ],
+        "per_endpoint": {
+          "DeepInfra|deepinfra/bf16": 4.5e-06,
+          "Novita|novita": 1.575e-06
+        }
+      }
+    },
+    "prompt_tokens": 27
+  },
+  "model": "inclusionai/ling-3.0-flash",
+  "observed_at": 1792308497.7077434,
+  "reason": "measured charge matches the listed rate, so the promotion is already applied",
+  "schema": 1,
+  "semantics": "listed_is_effective",
+  "tolerance": 0.05
+}

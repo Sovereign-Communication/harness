@@ -1,0 +1,45 @@
+{
+  "id": "operator-model-route-v1",
+  "rungs": [
+    {
+      "rung_id": "r0_scout",
+      "tier": "T0",
+      "model": "scout-fast",
+      "cost_class": "free",
+      "observed_success": 0.95,
+      "samples": 100,
+      "guidance": ["typo", "rename", "format", "docstring", "style"],
+      "notes": "Fastest mechanical edits and documentation formatting"
+    },
+    {
+      "rung_id": "r1_distiller",
+      "tier": "T1",
+      "model": "distiller-standard",
+      "cost_class": "cheap",
+      "observed_success": 0.92,
+      "samples": 100,
+      "guidance": ["implement", "fix", "test", "refactor", "parse", "validate"],
+      "notes": "Standard unit implementation, parsing, and targeted bug fixes"
+    },
+    {
+      "rung_id": "r2_specialist",
+      "tier": "T2",
+      "model": "specialist-reasoner",
+      "cost_class": "moderate",
+      "observed_success": 0.88,
+      "samples": 80,
+      "guidance": ["concurrency", "race", "deadlock", "mutex", "thread", "invariant", "protocol", "performance", "migration"],
+      "notes": "Hard local reasoning, concurrency invariants, and protocol boundaries"
+    },
+    {
+      "rung_id": "r3_frontier",
+      "tier": "T3",
+      "model": "frontier-planner",
+      "cost_class": "expensive",
+      "observed_success": 0.85,
+      "samples": 50,
+      "guidance": ["architecture", "cross-module-protocol", "security-review", "novel-proof"],
+      "notes": "Frontier-class multi-stage planning, security architecture, and novel proofs"
+    }
+  ]
+}

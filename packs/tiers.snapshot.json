@@ -1,0 +1,103 @@
+{
+  "captured_at": "2026-10-18T00:00:00Z",
+  "max_age_days": 14,
+  "price_table": {
+    "deepseek/deepseek-v4-flash": {
+      "completion_per_token": 2.8e-07,
+      "prompt_per_token": 1.4e-07,
+      "tier": "T1"
+    },
+    "deepseek/deepseek-v4-pro": {
+      "completion_per_token": 2.19e-06,
+      "prompt_per_token": 5.5e-07,
+      "tier": "T2"
+    },
+    "deepseek/deepseek-v4.1-flash": {
+      "completion_per_token": 4e-07,
+      "prompt_per_token": 2e-08,
+      "tier": "T1"
+    },
+    "google/gemini-3.8-flash": {
+      "completion_per_token": 2.5e-06,
+      "prompt_per_token": 3e-07,
+      "tier": "T2"
+    },
+    "inclusionai/ling-3.0-flash": {
+      "completion_per_token": 2.8e-07,
+      "prompt_per_token": 7e-08,
+      "tier": "T1"
+    },
+    "openai/gpt-4.1": {
+      "completion_per_token": 8e-06,
+      "prompt_per_token": 2e-06,
+      "tier": "T3"
+    },
+    "openai/gpt-4o-mini": {
+      "completion_per_token": 6e-07,
+      "prompt_per_token": 1.5e-07,
+      "tier": "T1"
+    },
+    "openai/gpt-5-mini": {
+      "completion_per_token": 2e-06,
+      "prompt_per_token": 2.5e-07,
+      "tier": "T2"
+    },
+    "openai/gpt-5.6-luna": {
+      "completion_per_token": 2.4e-06,
+      "prompt_per_token": 4e-07,
+      "tier": "T2"
+    },
+    "openai/gpt-5.6-sol": {
+      "completion_per_token": 1e-05,
+      "prompt_per_token": 2.5e-06,
+      "tier": "T3"
+    },
+    "qwen/qwen3.8-max-0902": {
+      "completion_per_token": 6.4e-06,
+      "prompt_per_token": 1.6e-06,
+      "tier": "T3"
+    },
+    "z-ai/glm-5.3-flash": {
+      "completion_per_token": 4e-07,
+      "prompt_per_token": 1e-07,
+      "tier": "T2"
+    }
+  },
+  "schema": 1,
+  "task_classes": {
+    "cheap-capable": "T1",
+    "fast": "T1",
+    "frontier": "T3",
+    "implement": "T1",
+    "judge": "T2",
+    "plan": "T2",
+    "specialist": "T2",
+    "vote": "T1"
+  },
+  "tiers": {
+    "T0": [
+      "google/gemma-4-31b-it:free",
+      "google/gemma-4-26b-a4b-it:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
+      "cohere/north-mini-code:free"
+    ],
+    "T1": [
+      "deepseek/deepseek-v4.1-flash",
+      "deepseek/deepseek-v4-flash",
+      "inclusionai/ling-3.0-flash",
+      "openai/gpt-4o-mini"
+    ],
+    "T2": [
+      "z-ai/glm-5.3-flash",
+      "openai/gpt-5-mini",
+      "openai/gpt-5.6-luna",
+      "google/gemini-3.8-flash",
+      "deepseek/deepseek-v4-pro"
+    ],
+    "T3": [
+      "qwen/qwen3.8-max-0902",
+      "openai/gpt-4.1",
+      "openai/gpt-5.6-sol"
+    ]
+  }
+}
