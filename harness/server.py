@@ -778,12 +778,18 @@ class UiState:
 
     CACHE_TTL = 15.0  # seconds: dashboard polls beat on /api/spend et al.
 
-    def __init__(self, auth_token=None):
+    def __init__(self, auth_token=None, mission_roots=None):
         self.lock = threading.Lock()
         self.runs = {}
         self.events = deque(maxlen=MAX_EVENT_BUFFER)
         self.last_seq = 0
         self.auth_token = auth_token or None
+        roots = ("missions",) if mission_roots is None else mission_roots
+        if isinstance(roots, (str, bytes)) or not roots:
+            raise HarnessError("mission_roots must be a non-empty sequence of paths")
+        if any(not isinstance(root, (str, Path)) or not str(root).strip() for root in roots):
+            raise HarnessError("mission_roots must contain non-empty paths")
+        self.mission_roots = tuple(osal.norm_path(root) for root in roots)
         self.started_at = time.time()
         self._event_sink_installed = False
         self._api_cache = {}
@@ -933,17 +939,17 @@ def _api_jev_phase_payload(repo_root, phase, min_score=85.0):
                          min_score=min_score)
 
 
-def _missions_root_param(q):
-    """Validate the ``?root=`` query param for the missions endpoints.
-
-    Delegates to :func:`harness.mission_record.resolve_missions_root`: the
-    resolved root must stay inside the server's missions base directory
-    (``./missions``). Raises HarnessError, which the API dispatch maps to
-    HTTP 400.
-    """
+def _missions_root_param(q, allowed_roots):
+    """Use the shared resolver with this server's pinned read-root policy."""
     from . import mission_record as mr
-    raw = (q.get("root") or ["missions"])[0] or "missions"
-    return mr.resolve_missions_root(raw)
+    raw = (q.get("root") or [None])[0]
+    return mr.resolve_missions_root(raw, allowed_roots=allowed_roots)
+
+
+def _check_mission_pack_paths(root, mission_id):
+    """Thin face over the shared remote-facing mission read boundary."""
+    from . import mission_record as mr
+    return mr.check_mission_pack_paths(root, mission_id)
 
 
 def _list_missions(root, *, limit=25, offset=0):
@@ -958,14 +964,19 @@ def _list_missions(root, *, limit=25, offset=0):
         names = sorted(os.listdir(root))
     except OSError:
         names = []
-    candidates = [
-        name for name in names
-        if os.path.isfile(os.path.join(root, name, "mission.yaml"))
-    ]
+    candidates = []
+    for name in names:
+        try:
+            pack = _check_mission_pack_paths(root, name)
+            if pack.mission_yaml.is_file():
+                candidates.append(name)
+        except HarnessError:
+            continue  # invalid/escaping pack is not part of an authorized page
     total = len(candidates)
     out = []
     for name in candidates[offset:offset + limit]:
         try:
+            _check_mission_pack_paths(root, name)
             pack = mr.load_mission_pack(root, name)
             out.append(mr.pack_list_summary(pack))
         except HarnessError:
@@ -1525,7 +1536,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
 
     def _api_missions_list(self, q):
         """GET /api/missions: compact summaries with bounded pagination."""
-        root = _missions_root_param(q)
+        root = _missions_root_param(q, self.ui.mission_roots)
         limit_raw = (q.get("limit") or ["25"])[0] or "25"
         offset_raw = (q.get("offset") or ["0"])[0] or "0"
         limit = _opt_int({"limit": limit_raw}, "limit", 1, 100, 25)
@@ -1541,7 +1552,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         mission_status commands retain their established refresh behavior.
         """
         from . import mission_record as mr
-        root = _missions_root_param(q)
+        root = _missions_root_param(q, self.ui.mission_roots)
+        _check_mission_pack_paths(root, mission_id)
         pack = mr.load_mission_pack(root, mission_id)
         return self._send_json(mr.pack_summary(pack))
 
@@ -1657,9 +1669,9 @@ class UiServer(ThreadingHTTPServer):
         flush_all_fallbacks()
 
 
-def make_server(host="127.0.0.1", port=8765, auth_token=None):
+def make_server(host="127.0.0.1", port=8765, auth_token=None, mission_roots=None):
     """Build the UI server with its UiState attached."""
-    ui = UiState(auth_token=auth_token)
+    ui = UiState(auth_token=auth_token, mission_roots=mission_roots)
     httpd = UiServer((host, port), UiRequestHandler)
     httpd.daemon_threads = True
     httpd.ui = ui
@@ -1677,6 +1689,8 @@ def main(argv=None):
     ap.add_argument("--auth-token", default=os.environ.get("HARNESS_UI_AUTH_TOKEN"),
                     help="require X-Harness-Auth: <token> on /api routes "
                          "(default: HARNESS_UI_AUTH_TOKEN or none)")
+    ap.add_argument("--mission-root", action="append", dest="mission_roots",
+                    help="allowed mission-pack root (repeatable; default: ./missions)")
     ap.add_argument("--open", action="store_true",
                     help="open the UI in the default browser")
     opts = ap.parse_args(argv)
@@ -1684,7 +1698,8 @@ def main(argv=None):
         print("[FATAL] the UI server binds loopback only; pass 127.0.0.1, "
               "localhost, or ::1", file=sys.stderr)
         sys.exit(1)
-    httpd = make_server(opts.host, opts.port, auth_token=opts.auth_token)
+    httpd = make_server(opts.host, opts.port, auth_token=opts.auth_token,
+                        mission_roots=opts.mission_roots)
     host, port = httpd.server_address[:2]
     url = f"http://{host}:{port}/"
     print(f"[OK] harness UI serving at {url} (Ctrl-C to stop)", file=sys.stderr)

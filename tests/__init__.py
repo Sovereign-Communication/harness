@@ -112,11 +112,7 @@ if os.environ.get("HARNESS_TEST_ALLOW_NETWORK") != "1":
 
     def _guarded_getaddrinfo(host, *args, **kwargs):
         if not _is_loopback_host(host):
-            try:
-                import ipaddress
-                ipaddress.ip_address(str(host).strip("[]"))
-            except ValueError:
-                _refuse("resolve", host)
+            _refuse("resolve", host)
         return _real_getaddrinfo(host, *args, **kwargs)
 
     def _guarded_gethostbyname(host):

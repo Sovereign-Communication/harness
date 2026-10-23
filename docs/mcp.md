@@ -37,6 +37,17 @@ Example configuration:
 Use explicit per-request confirmation when possible. Restrict the root to a
 specific disposable checkout rather than a home directory.
 
+## Mission status filesystem boundary
+
+`mission_status` summarizes the existing HUL pack and refreshes its generated
+STATUS/INDEX projections; it never changes budget, receipts, or resume state.
+The server pins `./missions` at construction. An optional `root` argument must
+resolve to that root or a descendant, and the exact checked path is consumed.
+Pack directories, summary files, projection paths and artifact-directory
+enumeration cannot escape through symlinks. Generic `mcp_allowed_roots` does not
+widen this separate mission-status policy. CLI mission commands remain local
+operator-authority tools. See [security](security.md) for check/open race limits.
+
 ## Registering the server (all platforms)
 
 The interpreter path in a venv is platform-shaped: `Scripts/python.exe` on

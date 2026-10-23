@@ -167,6 +167,9 @@ class McpServer:
         self.allow_verify = bool(allow_verify)
         self.allow_write = bool(allow_write)
         self.allowed_roots = osal.normalize_roots(allowed_roots or [])
+        # Mission status has its own narrow root, pinned before requests can
+        # change cwd or replace a symlink. Generic write roots do not widen it.
+        self.missions_root = osal.norm_path("missions")
 
     # ---------------- deadlines + cancellation ----------------
     def _note_start(self, request_id):
@@ -849,7 +852,9 @@ class McpServer:
             mission_id = validate_text(args.get("mission_id"), "mission_id", 256,
                                        required=True)
             root = mr.resolve_missions_root(
-                validate_text(args.get("root"), "root", 4096) or "missions")
+                validate_text(args.get("root"), "root", 4096),
+                allowed_roots=(self.missions_root,))
+            mr.check_mission_pack_paths(root, mission_id, refresh=True)
             pack = mr.load_mission_pack(root, mission_id)
             mr.write_status(pack)
             mr.write_index(pack)
