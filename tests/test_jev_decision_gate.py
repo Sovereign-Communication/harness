@@ -139,6 +139,29 @@ class ComposeDecisionVerdictTests(unittest.TestCase):
                            "needs_improvement": 0.05})
         self.assertEqual(verdict["verdict"], "escalate")
 
+    def test_lead_exactly_at_the_margin_does_not_escalate(self):
+        """#326: the rule is `lead < margin`, so equality must proceed.
+
+        (0.60, 0.40) is a lead of exactly the 0.20 margin, but IEEE
+        subtraction yields 0.19999999999999996, so the gate escalated and
+        printed "leads ... by only 0.20 < margin 0.20" -- a sentence that
+        contradicts itself.
+        """
+        verdict = self._verdict(
+            disposition="proceed", confidence=0.60, advances=0.96,
+            probabilities={"proceed": 0.60, "escalate": 0.40,
+                           "needs_improvement": 0.0})
+        self.assertAlmostEqual(verdict["disposition_lead"], 0.20, places=12)
+        self.assertEqual(verdict["verdict"], "proceed", verdict["reasons"])
+
+    def test_lead_just_below_the_margin_still_escalates(self):
+        """The boundary fix must not swallow a real shortfall."""
+        verdict = self._verdict(
+            disposition="proceed", confidence=0.59, advances=0.96,
+            probabilities={"proceed": 0.59, "escalate": 0.40,
+                           "needs_improvement": 0.01})
+        self.assertEqual(verdict["verdict"], "escalate")
+
     def test_decisive_lead_without_unanimity_proceeds(self):
         """A clear recommendation is actionable; residual uncertainty is not danger."""
         verdict = self._verdict(
