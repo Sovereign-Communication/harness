@@ -51,9 +51,21 @@ from .waist import (
     resolve_scout_ladder,
 )
 from .web import DEFAULT_FETCH_HOSTS, gather_web_context
+from .intent import (
+    CONVERSATION_STARTERS,
+    EXECUTION_PHRASES,
+    MUTATION_KEYWORDS,
+    classify_prompt_intent,
+    is_current_info_request,
+    is_research_question,
+    is_simple_answer_request,
+    is_site_check_prompt,
+)
 
-# Consumers import history/repo_scope/web helpers from their owners
-# (harness.history, harness.repo_scope, harness.web), not from this module.
+# Consumers import history/repo_scope/web/intent helpers from their owners
+# (harness.history, harness.repo_scope, harness.web, harness.intent), not
+# from this module. The intent names stay importable here only for backward
+# compatibility (see __all__).
 __all__ = [
     "AutonomousAgent",
     "CONVERSATION_STARTERS",
@@ -61,6 +73,10 @@ __all__ = [
     "EXECUTION_PHRASES",
     "MUTATION_KEYWORDS",
     "classify_prompt_intent",
+    "is_current_info_request",
+    "is_research_question",
+    "is_simple_answer_request",
+    "is_site_check_prompt",
     "discover_target_files",
     "discover_verification_gate",
     "enumerate_repo_files",
@@ -168,68 +184,8 @@ _MAX_HOURGLASS_CONTEXT_CHARS = 6000
 _DEFAULT_HOURGLASS_CONFIDENCE = 0.99
 _MAX_HOURGLASS_ANSWER_ROUNDS = 3
 
-MUTATION_KEYWORDS = frozenset({
-    "fix", "implement", "add", "refactor", "update", "change", "write",
-    "modify", "create", "delete", "remove", "clean", "patch", "repair",
-    "correct", "optimize", "rewrite", "replace", "build", "execute", "apply",
-})
-
-# Request-lifecycle #200: action verbs and uptime phrasings that mark a
-# site-availability check. Question form alone must not outrank an explicit
-# action verb plus a URL/host target.
-_SITE_CHECK_VERBS = ("check", "verify", "test", "confirm", "look up",
-                      "lookup", "see")
-_SITE_UP_PHRASES = ("is up", "is down", "up right now", "still up",
-                     "loads", "loading", "reachable", "resolves",
-                     "online", "responding")
-
-
-def is_site_check_prompt(prompt: str) -> bool:
-    """True when a prompt asks whether a site/host is up (issue #200).
-
-    Requires a URL/host target plus an action verb or an uptime phrasing.
-    Genuine questions ("what is...?", "explain...") without a target, and
-    repo-centered directives (code extensions, mutation verbs on code,
-    plan-execution phrases, audit/driver keywords) never match."""
-    from .web import extract_site_target as _extract_target
-    cleaned = (prompt or "").strip().lower()
-    if not cleaned:
-        return False
-    if any(p in cleaned for p in EXECUTION_PHRASES):
-        return False
-    if _extract_target(prompt) is None:
-        return False
-    if re.search(r"\b[a-zA-Z0-9_\-./]+\.(?:py|rs|go|ts|js|md|json|toml|yaml|yml|c|cpp|h)\b", prompt):
-        return False
-    words = re.findall(r"\b[a-z_0-9-]+\b", cleaned)
-    if any(w in MUTATION_KEYWORDS for w in words):
-        return False
-    if any(v in cleaned for v in _SITE_CHECK_VERBS):
-        return True
-    if any(p in cleaned for p in _SITE_UP_PHRASES):
-        return True
-    # Question form with the verb and the state split around the host:
-    # "is X up?", "is X down right now?", "does X resolve?".
-    return bool(re.search(
-        r"\b(is|are|does|did|has)\b.*\b(up|down|loading|loads|reachable|resolves|online|responding|working)\b",
-        cleaned))
-
-EXECUTION_PHRASES = frozenset({
-    "execute the plan", "execute plan", "run the plan", "run plan",
-    "apply the plan", "apply plan", "test the plan", "test plan",
-    "see if it works", "test if it works", "check if it works",
-    "run the test", "run the tests", "run tests", "run test",
-    "execute tests", "execute test", "execute it", "run it", "apply it",
-    "proceed with plan", "proceed with the plan", "execute this", "run this",
-    "test this", "verify the plan", "test the implementation",
-    "execute implementation", "run the implementation",
-    "execute the code", "run the code", "test the code",
-})
-
-CONVERSATION_STARTERS = frozenset({
-    "what", "how", "why", "explain", "describe", "tell", "can", "is", "are",
-    "does", "who", "when", "where", "list", "show", "help",
-})
+# Request-kind predicates and keyword sets live in harness.intent; the
+# public names are re-exported above for backward compatibility.
 
 
 # A run that asks a model to think, judge and re-answer must be bounded in
@@ -238,81 +194,26 @@ CONVERSATION_STARTERS = frozenset({
 # nothing stopped the sequence. This is the ceiling that ends it.
 DEFAULT_RUN_WALL_SECONDS = 120.0
 
-# Asking what the world currently says is a research question, not an edit.
-# The dogfood prompt ("can you find news about ...") was routed to the
-# conversation lane but never gathered sources, so the run iterated on a
-# question it had no evidence for.
-_RESEARCH_SUBJECTS = ("news", "research", "recent", "latest", "today",
-                      "papers", "paper", "article", "articles", "study",
-                      "studies", "release", "releases", "update", "updates")
-_RESEARCH_VERBS = ("find", "search", "look up", "lookup", "google",
-                   "what's new", "whats new", "tell me about", "catch me up",
-                   "summary of", "summarize", "summarise")
-_QUESTION_OPENERS = ("what", "who", "when", "where", "which", "why", "how",
-                     "is ", "are ", "does ", "do ", "did ", "can you",
-                     "could you", "any news", "has there")
+# Lookup-predicate keyword sets live in harness.intent.
 
 
-def is_research_question(prompt: str) -> bool:
-    """True when a prompt is asking what is currently true in the world.
+def _is_transport_setup_failure(exc: BaseException) -> bool:
+    """True when an error means the HTTP transport itself is broken.
 
-    A research *subject* is required, and that is what keeps edits out:
-    "find the bug in auth.py" has a verb but no subject, so it stays an edit.
-    On top of that the prompt must read as a lookup -- an explicit research
-    verb, or an interrogative opening -- so "update the README" mentions a
-    subject but asks for nothing.
+    A missing/broken `_http_worker` child (the stale-bundle GUI failure)
+    means no model call can succeed on this machine: the key was never
+    checked, so the lane must degrade honestly with zero model calls rather
+    than report a key-limit abort. Auth/budget failures are NOT setup
+    failures and keep their fail-closed propagation.
     """
-    cleaned = (prompt or "").strip().lower()
-    if not cleaned:
-        return False
-    if not any(subj in cleaned for subj in _RESEARCH_SUBJECTS):
-        return False
-    if any(v in cleaned for v in _RESEARCH_VERBS):
-        return True
-    if cleaned.endswith("?"):
-        return True
-    return cleaned.startswith(_QUESTION_OPENERS)
+    detail = str(exc or "")
+    lowered = detail.lower()
+    return ("_http_worker" in detail or "http child" in lowered
+            or "http transport unavailable" in lowered)
 
 
-def classify_prompt_intent(prompt: str) -> str:
-    # Classify a natural language prompt into conversation, edit, or audit
-    cleaned = prompt.strip().lower()
-    words = re.findall(r"\b[a-z_0-9-]+\b", cleaned)
-    first_word = words[0] if words else ""
-
-    if any(w in cleaned for w in ("verify chain", "audit ledger", "ledger status", "check ledger")):
-        return "audit"
-
-    if any(w in cleaned for w in ("driver task", "drive request", "run driver", "machine drive", "perceive dom", "perceive cli", "driver perception", "perception step")):
-        return "driver"
-
-    # Execution directives: commands to execute/test a plan, code, or tests on local hardware
-    if any(p in cleaned for p in EXECUTION_PHRASES) or any(
-        re.search(rf"\b{action}\b.*?\b(?:plan|code|test|tests|implementation|script)\b", cleaned)
-        for action in ("execute", "run", "apply")
-    ):
-        return "edit"
-
-    # Check for explicit file extension occurrences
-    has_file_ext = bool(re.search(r"\b[a-zA-Z0-9_\-./]+\.(?:py|rs|go|ts|js|md|json|toml|yaml|yml|c|cpp|h)\b", prompt))
-
-    # Request-lifecycle #200: an action verb plus a URL/host target is a
-    # site-availability check, even in question form. Ordinary questions
-    # without a target keep the conversation lane below.
-    if is_site_check_prompt(prompt):
-        return "simple-action"
-
-    # Prompts asking conversational questions (or ending with ?) take precedence unless explicit files/paths are given
-    if first_word in CONVERSATION_STARTERS or cleaned.endswith("?"):
-        if not has_file_ext and not any(w in cleaned for w in ("refactor ", "implement ", "fix bug ", "add test", "execute ", "run ")):
-            return "conversation"
-
-    has_mutation_verb = any(w in MUTATION_KEYWORDS for w in words)
-
-    if has_mutation_verb or has_file_ext:
-        return "edit"
-
-    return "conversation"
+# Intent classification (classify_prompt_intent, is_simple_answer_request
+# and the lookup predicates) lives in harness.intent.
 
 
 
@@ -503,6 +404,61 @@ class AutonomousAgent:
         emit("simple_action_complete", status=status, verdict=verdict)
         return result
 
+    def _transport_unavailable_result(self, prompt: str, sid: str,
+                                      hourglass_policy, files, brief,
+                                      web_sources, exc: BaseException) -> Dict[str, Any]:
+        """Honest terminal envelope when the model transport is broken.
+
+        Zero model calls, zero spend, one ledger event: the run states what
+        failed and the remediation (restart Harness from the repo root so
+        the HTTP worker exists) instead of surfacing a key-limit abort for
+        a key that was never checked.
+        """
+        reason = str(exc)
+        try:
+            ledger_for(self.settings, caller="agent").append(
+                "answer", task_id=sid, event_note="transport_unavailable",
+                status="deferred", reason=reason[:200], cost=0.0)
+        except Exception:
+            pass
+        slim_sources = [
+            {k: s[k] for k in ("kind", "ok", "url") if k in s}
+            for s in web_sources]
+        result = {
+            "status": "deferred", "intent": "conversation",
+            "workflow_tier": "answer", "prompt": prompt,
+            "response": (
+                "I can't reach the model right now: the HTTP transport is "
+                "unavailable, so no model was called and nothing was spent. "
+                "Restart Harness from the repository root (so that "
+                "harness/_http_worker.py exists) and try again. The API key "
+                "was not checked."),
+            "model": None, "cost": 0.0,
+            "defer_reason": "model transport unavailable",
+            "next_step": ("restart Harness from the repository root, then "
+                           "resend the request"),
+            "web_used": bool(web_sources and any(s.get("ok") for s in web_sources)),
+            "web_sources": slim_sources,
+            "confidence": {"threshold": _DEFAULT_HOURGLASS_CONFIDENCE,
+                            "observed": None, "passed": False,
+                            "source": "transport_unavailable"},
+            "hourglass": {
+                "stages": ["context_intake"],
+                "skipped": ["answer", "jev_review", "planning_waist",
+                              "execution"],
+                "settings": hourglass_policy,
+                "transport": "unavailable",
+                "context_files": list(files),
+                "context_tokens": brief.estimated_tokens,
+                "rounds": [],
+                "web_sources": slim_sources,
+            },
+        }
+        save_chat_turn(sid, result, self.history_dir)
+        emit("hourglass_complete", status="deferred",
+             reason="transport_unavailable")
+        return result
+
     def _gather_web_context(self, prompt: str) -> List[Dict[str, Any]]:
         # Web owns the network seams; pass those module functions through so
         # policy and hermetic test patches remain at the single owner.
@@ -549,28 +505,44 @@ class AutonomousAgent:
         overlap, then no context.  It never feeds an unbounded repository to a
         model.  Web evidence is added only when the caller explicitly enables
         the existing bounded web lane.
+
+        Agnostic simple-request fast path: ordinary no-tool answers and
+        current-info lookups bypass repository enumeration/AST packing
+        entirely (zero repo calls) -- the sandwich question must not pay for
+        a repo scan it never uses, and neither must a Pahoa forecast. Web
+        evidence is still gathered below when the caller enabled the web
+        lane; only the repo work is skipped.
         """
-        candidates = discover_target_files(prompt, self.root_dir)
-        if not candidates:
-            candidates = keyword_fallback(
-                prompt, enumerate_repo_files(self.root_dir),
-                max_files=_MAX_HOURGLASS_CONTEXT_FILES)
-        files = {}
-        for rel in candidates[:_MAX_HOURGLASS_CONTEXT_FILES]:
-            path = self.root_dir / rel
-            try:
-                if path.is_file():
-                    files[rel] = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-        brief = distill_context(
-            files=files, summary=prompt, max_tokens=1800)
-        # HV-2 evidence: the condensation is a ledger event, not a private
-        # step -- site=hourglass, schema-v2 pack attached to the MicroBrief.
-        ledger_for(self.settings, caller="agent").append(
-            "brief_built", site="hourglass", schema=2,
-            **brief.ledger_fields())
-        context = brief.to_prompt_context()[:_MAX_HOURGLASS_CONTEXT_CHARS]
+        simple_path = bool(is_simple_answer_request(prompt))
+        current_info = bool(is_current_info_request(prompt))
+        skip_repo = simple_path or current_info
+        if skip_repo:
+            files = {}
+            from .condenser import MicroBrief as _MicroBrief
+            brief = _MicroBrief(summary=prompt, estimated_tokens=0)
+            context = ""
+        else:
+            candidates = discover_target_files(prompt, self.root_dir)
+            if not candidates:
+                candidates = keyword_fallback(
+                    prompt, enumerate_repo_files(self.root_dir),
+                    max_files=_MAX_HOURGLASS_CONTEXT_FILES)
+            files = {}
+            for rel in candidates[:_MAX_HOURGLASS_CONTEXT_FILES]:
+                path = self.root_dir / rel
+                try:
+                    if path.is_file():
+                        files[rel] = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+            brief = distill_context(
+                files=files, summary=prompt, max_tokens=1800)
+            # HV-2 evidence: the condensation is a ledger event, not a private
+            # step -- site=hourglass, schema-v2 pack attached to the MicroBrief.
+            ledger_for(self.settings, caller="agent").append(
+                "brief_built", site="hourglass", schema=2,
+                **brief.ledger_fields())
+            context = brief.to_prompt_context()[:_MAX_HOURGLASS_CONTEXT_CHARS]
         web_sources = []
         if web:
             try:
@@ -584,7 +556,9 @@ class AutonomousAgent:
                     context += "\n\nWEB EVIDENCE:\n" + body
             context = context[:_MAX_HOURGLASS_CONTEXT_CHARS]
         emit("context_condensed", estimated_tokens=brief.estimated_tokens,
-             files=list(files), web_sources=len(web_sources))
+             files=list(files), web_sources=len(web_sources),
+             simple_path=simple_path,
+             current_info=current_info)
         return context, files, brief, web_sources
 
     def _hourglass_answer_once(self, prompt: str, context: str,
@@ -791,17 +765,37 @@ class AutonomousAgent:
             })
             return result
 
-        # A research question earns the web lane whether or not the caller
-        # asked: answering "what is the latest news on X" from model memory is
-        # how a run iterates six times on a question it had no evidence for.
-        web = bool(web) or is_research_question(prompt)
+        # A research or current-info question earns the web lane whether or
+        # not the caller asked: answering "what is the latest news on X" or
+        # "what's the weather next week in Pahoa?" from model memory is how
+        # a run iterates on a question it has no evidence for. The detector
+        # is topic-agnostic (time window + lookup shape, never a subject
+        # keyword), so no per-topic routing and no weather-specific module.
+        research_request = bool(is_research_question(prompt))
+        current_info = bool(is_current_info_request(prompt))
+        web = bool(web) or research_request or current_info
+        # Computed once so result envelopes can report the fast path for
+        # regression assertions (repo/AST/web/answer/Jev/judge call counts).
+        simple_path = bool(is_simple_answer_request(prompt)) and not web
         wall_budget = (DEFAULT_RUN_WALL_SECONDS if max_wall_seconds is None
                        else float(max_wall_seconds))
         deadline = time.monotonic() + max(0.0, wall_budget)
         context, files, brief, web_sources = self._hourglass_request_context(
             prompt, web=web)
         past_turns = load_chat_history(sid, self.history_dir)[-10:]
-        api_key, gov = governor_for(self.settings)
+        try:
+            api_key, gov = governor_for(self.settings)
+        except HarnessError as exc:
+            # A broken HTTP transport (e.g. the stale-bundle missing
+            # `_http_worker` child) means no model call can succeed: the key
+            # was never checked, so degrade honestly with zero model calls
+            # instead of aborting on a key-limit error. Auth/budget
+            # failures are not setup failures and keep fail-closed.
+            if _is_transport_setup_failure(exc):
+                return self._transport_unavailable_result(
+                    prompt, sid, hourglass_policy, files, brief,
+                    web_sources, exc)
+            raise
         policy = policy_for(
             self.settings, transport=self.transport, governor=gov,
             ledger=ledger_for(self.settings, caller="agent"))
@@ -816,6 +810,7 @@ class AutonomousAgent:
         best_envelope = None
         stop_reason = None
         status = "needs_iteration"
+        plan_advisory_set_aside = False
         attempt = {}
         for round_no in range(1, rounds + 1):
             if cancel_check and cancel_check():
@@ -867,11 +862,25 @@ class AutonomousAgent:
                  confidence=envelope["confidence"]["observed"],
                  iteration_required=bool(jev_structural.get("iteration_required")))
             if jev_structural.get("plan_required"):
-                # A direct-answer request must not turn an advisory Jev signal
-                # into a write.  The edit lane owns plan/execute; callers can
-                # explicitly resubmit this request as an edit when appropriate.
-                status = "plan_required"
-                break
+                if current_info or research_request:
+                    # Lookup-class requests (Pahoa-style forecasts, news
+                    # lookups) have no write content, so a planning advisory
+                    # is inapplicable: set it aside -- disclosed in the
+                    # envelope below -- and let the answer loop judge the
+                    # response on its merits instead of terminating with a
+                    # resubmit-as-edit note for a question.
+                    plan_advisory_set_aside = True
+                else:
+                    # A direct-answer request must not turn an advisory Jev signal
+                    # into a write.  The edit lane owns plan/execute; callers can
+                    # explicitly resubmit this request as an edit when appropriate.
+                    status = "plan_required"
+                    break
+            # Simple-path note: Jev sufficiency alone never completes -- the
+            # independent judge stays authoritative (pinned by
+            # test_high_jev_score_does_not_finish_when_independent_judge_says_incomplete).
+            # The simple-path saving is zero repo/AST/web work before the
+            # answer, not a skipped verification after it.
             should_check_completion = (
                 envelope["confidence"]["passed"]
                 or (
@@ -982,6 +991,9 @@ class AutonomousAgent:
                 "stages": ["context_intake", "answer", "jev_review"],
                 "skipped": ["planning_waist", "execution"],
                 "settings": hourglass_policy,
+                "simple_path": simple_path,
+                **({"plan_advisory_set_aside": True}
+                   if plan_advisory_set_aside else {}),
                 "context_files": list(files),
                 "context_tokens": brief.estimated_tokens,
                 "rounds": history,
@@ -991,7 +1003,7 @@ class AutonomousAgent:
             },
         }
         marker_defer = CAPABILITY_MARKER in answer
-        if self._escalation_authorized(prompt, marker_defer, status):
+        if self._escalation_authorized(prompt, marker_defer):
             defer_reason = None
             if marker_defer:
                 head, _, tail = answer.partition(CAPABILITY_MARKER)
@@ -1019,6 +1031,14 @@ class AutonomousAgent:
         if status == "needs_iteration":
             result["remaining_scope"] = (
                 "Jev and the independent completion judge did not establish fulfillment")
+        elif status == "plan_required":
+            # The answer above stands on its own; the advisory planning
+            # signal is disclosed, not acted on. The operator resubmits
+            # as an edit request when execution is actually wanted.
+            result["remaining_scope"] = (
+                "Jev suggested planning/execution, but this request was "
+                "answered directly with no file changes; resubmit it as an "
+                "edit request to run plan & execute")
         elif stop_reason:
             result["remaining_scope"] = stop_reason
         save_chat_turn(sid, result, self.history_dir)
@@ -1026,19 +1046,23 @@ class AutonomousAgent:
              confidence=result["confidence"].get("observed"))
         return result
 
-    def _escalation_authorized(self, prompt: str, marker_defer: bool,
-                               status: Optional[str]) -> bool:
+    def _escalation_authorized(self, prompt: str,
+                               marker_defer: bool) -> bool:
         """Whether the hourglass answer lane may escalate to plan (issue #201).
 
         An explicit execution directive may constrain the route, but
         ``auto_apply=True`` alone never authorizes escalation -- the old
         gate was vacuous because auto_apply defaults to true. Each clause
         is independently testable; capability, scope, consent, and policy
-        checks still apply on the plan lane itself."""
+        checks still apply on the plan lane itself.
+
+        A Jev plan_required advisory never authorizes escalation -- live
+        runs showed advisory-scored answers dragged through plan/execute
+        only to end refused. Escalation fires only on the model's own
+        deferral marker or an explicit execution directive."""
         lowered = (prompt or "").lower()
         explicit_directive = any(p in lowered for p in EXECUTION_PHRASES)
-        trigger = bool(marker_defer or status == "plan_required"
-                       or explicit_directive)
+        trigger = bool(marker_defer or explicit_directive)
         return bool(trigger and (self._auto_escalation_armed()
                                  or explicit_directive))
 

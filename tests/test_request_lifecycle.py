@@ -277,26 +277,26 @@ class EscalationGateTests(unittest.TestCase):
     def test_auto_apply_alone_never_authorizes_escalation(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(tmp)
-            # plan_required signal, default auto_apply context, paid key NOT
-            # armed, no explicit execution phrase in the prompt.
+            # No marker, no explicit execution phrase in the prompt,
+            # default auto_apply context, paid key NOT armed.
             self.assertFalse(agent._escalation_authorized(
-                "check if example.com is up", False, "plan_required"))
+                "check if example.com is up", False))
 
     def test_explicit_directive_or_armed_key_authorizes(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(tmp)
             self.assertTrue(agent._escalation_authorized(
-                "execute the plan now", False, "needs_iteration"))
+                "execute the plan now", False))
             with patch.object(AutonomousAgent, "_auto_escalation_armed",
                               return_value=True):
                 self.assertTrue(agent._escalation_authorized(
-                    "something deferred", True, "needs_iteration"))
+                    "something deferred", True))
 
     def test_quiet_prompt_with_ok_status_never_escalates(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(tmp)
             self.assertFalse(agent._escalation_authorized(
-                "what is the capital of France?", False, "ok"))
+                "what is the capital of France?", False))
 
 
 class SiteCheckPromptEdgeTests(unittest.TestCase):

@@ -23,8 +23,12 @@ def get_default_history_dir() -> Path:
     return history_dir
 
 
-def save_chat_turn(session_id: str, turn: Dict[str, Any], history_dir: Optional[Path] = None) -> Path:
-    # Append a chat turn to the persisted JSONL history file
+def save_chat_turn(session_id: str, turn: Dict[str, Any], history_dir: Optional[Path] = None) -> Optional[Path]:
+    # Append a chat turn to the persisted JSONL history file. A refused
+    # run persists nothing (stale refusal text was replayed as context),
+    # so this returns None for refusals and the file path otherwise.
+    if isinstance(turn, dict) and turn.get("status") == "refused":
+        return None
     hdir = history_dir or get_default_history_dir()
     file_path = hdir / f"{session_id}.jsonl"
     with open(file_path, "a", encoding="utf-8") as f:

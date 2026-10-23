@@ -195,15 +195,38 @@ _IRRELEVANT_PATTERNS = (
 )
 
 
-def filter_search_relevance(query, results):
-    """Filter out non-informational spam or navigational clutter."""
-    if not results:
-        return results
-    filtered = [
+def _drop_spam_titles(results):
+    """Remove non-informational spam and navigational clutter."""
+    return [
         r for r in results
         if not any(pat.search(r.get("title", "")) for pat in _IRRELEVANT_PATTERNS)
     ]
-    return filtered
+
+
+def _agree_on_location(query, results):
+    """Keep only results that mention a ZIP code named by the query.
+
+    Search providers localize weather-style queries to the egress IP --
+    a Pahoa HI 96778 lookup came back all-Seattle -- and answering from
+    a confident wrong-place result is fabrication. Dropping them routes
+    the lane to its honest zero-hit statement instead. Queries without
+    a ZIP pass through untouched.
+    """
+    zips = set(re.findall(r"\b\d{5}\b", query or ""))
+    if not zips:
+        return results
+    return [
+        r for r in results
+        if any(z in " ".join((r.get("title", ""), r.get("url", ""),
+                                r.get("snippet", ""))) for z in zips)
+    ]
+
+
+def filter_search_relevance(query, results):
+    """Filter search results: spam out, then location agreement."""
+    if not results:
+        return results
+    return _agree_on_location(query, _drop_spam_titles(results))
 
 
 def _parse_results(page_html, max_results):

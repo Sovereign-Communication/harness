@@ -146,6 +146,40 @@ class SearchWebTests(unittest.TestCase):
         self.assertEqual([r["url"] for r in kept], ["https://c/"])
         self.assertEqual(web.filter_search_relevance("zeta", []), [])
 
+    def test_zip_query_drops_wrong_place_results(self):
+        # Live failure: a Pahoa HI 96778 lookup came back all-Seattle
+        # (provider localized to the egress IP). None mention the ZIP,
+        # so all drop and the lane reports zero hits honestly.
+        results = [
+            {"title": "10-Day Weather Forecast for Seattle, Washington",
+             "url": "https://weather.com/us/washington/city/seattle/tenday",
+             "snippet": "Seattle weather"},
+            {"title": "National Weather Service",
+             "url": "https://forecast.weather.gov/zipcity.php?inputstring=Seattle%2CWA",
+             "snippet": "Seattle"},
+        ]
+        self.assertEqual(
+            web.filter_search_relevance("weather next week pahoa hi 96778",
+                                        results), [])
+
+    def test_zip_query_keeps_agreeing_results(self):
+        results = [
+            {"title": "Pahoa HI 96778 forecast",
+             "url": "https://example.com/pahoa",
+             "snippet": "week ahead"},
+            {"title": "Seattle weather",
+             "url": "https://example.com/seattle",
+             "snippet": "rain"},
+        ]
+        kept = web.filter_search_relevance("weather pahoa 96778", results)
+        self.assertEqual([r["url"] for r in kept],
+                         ["https://example.com/pahoa"])
+
+    def test_query_without_zip_keeps_prior_behavior(self):
+        results = [{"title": "Zero-free region result", "url": "https://c/"}]
+        kept = web.filter_search_relevance("zeta", results)
+        self.assertEqual([r["url"] for r in kept], ["https://c/"])
+
     def test_network_failure_raises_honest_error(self):
         with mock.patch.object(web, "_http_get", side_effect=OSError("conn refused")):
             with self.assertRaises(HarnessError) as ctx:

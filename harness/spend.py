@@ -171,7 +171,24 @@ class SpendGovernor:
         try:
             info = self.transport.get(OPENROUTER_KEY_URL, self.api_key)
         except Exception as e:
-            raise HarnessError(f"could not verify key limit: {e}") from e
+            # A broken HTTP transport leaves the key unchecked: classify
+            # it explicitly with a remediation hint instead of a key error.
+            detail = str(e)
+            lowered = detail.lower()
+            if ("_http_worker" in detail or "http child" in lowered
+                    or "can't open file" in lowered
+                    or "no such file" in lowered):
+                raise HarnessError(
+                    "could not verify key limit: HTTP transport unavailable "
+                    f"({detail}). The key was not checked -- reinstall/restart "
+                    "Harness from the repo root so harness/_http_worker.py "
+                    "exists, then try again.") from e
+            raise HarnessError(
+                "could not verify key limit: "
+                f"{type(e).__name__}: {detail}. Check OPENROUTER_API_KEY "
+                "(~/.config/scmorc/openrouter*.env, ~/.config/harness/"
+                "openrouter.env, or env), network access to openrouter.ai, "
+                "and retry.") from e
         data = info.get("data", {})
         limit = data.get("limit")
         label = data.get("label", "<no label>")
@@ -362,10 +379,23 @@ class SpendGovernor:
             self._pricing_fetched_at = time.time()
         return {m_: self._pricing_cache[m_] for m_ in model_ids}
 
+    def refresh_session_catalog(self):
+        """Force a fresh /models fetch for a new session.
+
+        Live per-token pricing changes without any code change, so a new
+        session must never inherit a stale catalog: this clears the cache
+        timestamps and re-reads /models. Returns the fetched model list."""
+        self._pricing_cache = {}
+        self._pricing_fetched_at = 0.0
+        self._models_fetched_at = 0.0
+        return self.fetch_models(refresh=True)
+
     def fetch_models(self, refresh=False):
         """Live GET /models, cached per governor instance. The cache expires
         after _CATALOG_TTL so a long run picks up pricing/pool changes
-        mid-run instead of trusting a stale snapshot forever (#18)."""
+        mid-run instead of trusting a stale snapshot forever (#18). New
+        sessions call refresh_session_catalog() first so promotions are
+        verified per session, not per TTL window."""
         stale = (self._models is None
                  or time.time() - self._models_fetched_at > self._CATALOG_TTL)
         if refresh or stale:

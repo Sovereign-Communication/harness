@@ -20,6 +20,7 @@ from .saturation import pre_run_warning
 from .spend import SpendGovernor
 from .config import HARD_MAX_COST, resolve_api_key
 from .errors import HarnessError
+from .output import eprint
 from .validation import finite_number
 
 
@@ -43,6 +44,15 @@ def governor_for(settings, max_cost_override=None):
     gov = SpendGovernor(HttpTransport(), api_key, settings.expect_key_label,
                         max_cost)
     gov.verify_key()
+    # Per-session promotion check: verify live /models pricing (e.g.
+    # time-limited provider promos) on every new session rather than
+    # trusting a cached catalog. Fail-soft here keeps a key-verified session
+    # usable when the catalog endpoint hiccups; spend paths still refresh
+    # via fetch_pricing/fetch_models on demand.
+    try:
+        gov.refresh_session_catalog()
+    except Exception as e:
+        eprint(f"[warn] session pricing refresh failed, using on-demand catalog: {e}")
     return api_key, gov
 
 
