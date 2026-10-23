@@ -583,7 +583,13 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         # system prompt directly instead of via run_prompt routing.
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
+            # The prompt names a public host, so the fetch seam is live here;
+            # pin it (hermetic) -- this test is about the system prompt only.
             with patch("harness.web.search_web", return_value=[]), \
+                 patch("harness.web.fetch_url",
+                       return_value={"url": "https://google.com/",
+                                     "title": "Google",
+                                     "text": "search engine"}), \
                  patch("harness.conversation_lifecycle.chat",
                        side_effect=HarnessError("stop at the system prompt")) as mc, \
                  patch("harness.conversation_lifecycle.governor_for",

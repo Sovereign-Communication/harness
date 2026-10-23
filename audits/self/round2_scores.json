@@ -29,7 +29,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 1.0,
+        "confidence": 0.99,
         "evaluated": true
       },
       "SM": {
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 4808 tests in 365.873s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 4845 tests in 308.962s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -324,7 +324,7 @@
         "id": "D7",
         "label": "docs reference only real modules",
         "score": 1.0,
-        "evidence": "all module references across 30 docs resolve to real files"
+        "evidence": "all module references across 31 docs resolve to real files"
       },
       {
         "id": "D8",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "no executable harness changes since the coverage baseline eb3d419c0d"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 87/88 = 99% (bar 95%) vs baseline fcd24b29bf; untested: web.py:487)"
       }
     ]
   }

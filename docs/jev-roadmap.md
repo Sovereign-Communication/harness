@@ -404,6 +404,37 @@ longer blocked by the pin. #276 stays open for the structural fix.
 
 ---
 
+### Web evidence ladder — 2026-10-23 (#355)
+
+Operator repro: `audit www.freeoffgridcalculator.com for user friendliness and
+useability.` returned *"target site not accessible via allowlist"* after an
+HTTP 403 and a junk search. Fixed systemically in `harness/web.py`, the one
+owner of fetch policy, rather than with a site-specific module:
+
+- **The renderer is a capability, not an env flag.** `_browser_enabled()` is ON
+  by default (`HARNESS_FETCH_BROWSER=0` opts out), so the stock GUI/CLI/agent
+  chat lane gets it without any entry point remembering to export a variable.
+  `_browser_available()` is still a pure presence check, so the package imports
+  and installs without Playwright.
+- **Headed real browsers first.** Cloudflare-class protection answers every
+  headless engine with `Just a moment...`; the same URL clears in a real
+  browser. Ladder: Chrome → Edge → bundled Chromium (headed) → headless last.
+- **Poll until the page settles.** A challenge or pre-hydration shell
+  (`Just a moment`, `Attention required`, `Loading`, `Please wait`) is never
+  accepted as the page; the body must stop growing.
+- **Guards unchanged.** https only, no redirect following, and the SSRF
+  public-address proof runs for the requested host *and* for the post-render
+  URL. Policy refusals never reach the renderer.
+- **Packaging + docs.** `render` extra (`playwright>=1.44`), README web-evidence
+  section, `docs/security.md` posture note.
+
+Live receipt (GUI `POST /api/chat`, session `ad4f935cae34`, 2026-10-23):
+`web_fetch start` → `upgrade (web fetch HTTP 403)` → `browser` at 4.7s → the
+answer quotes the page's own copy and CTAs. Hermetic coverage: 13 new tests
+(`BrowserRenderTests`, `NamedTargetHostsTests`, renderer-default switch) plus a
+repointed `coverage_baseline.json` from a traced 4,845-test battery; self-audit
+10/10/10/10, Jev gate PASS.
+
 ## Canonical current status — final burndown 2026-10-18
 
 Verified remote `main`: post-PR #240 (`a7daf425209b199b765c1368c2483a4ba3780c44`) and PR #241 (`feat/ev-burndown-unification`). All 12 core CI checks pass across the matrix (`audit`, `package`, 5 OS/Python hermetic suite legs, 3 installed-wheel legs, `handoff-scope`, `checkout-hygiene`). This section is the operational canon incorporating all operator rulings and completed burndown tracks.
