@@ -110,6 +110,26 @@ class ChatTriggerTests(unittest.TestCase):
     def test_a_non_script_prompt_proposes_nothing(self):
         self.assertIsNone(script.propose_script("hello", root=self.root))
 
+    def test_an_empty_fenced_block_is_refused(self):
+        with self.assertRaises(script.ScriptRefused) as ctx:
+            script.parse_script_request("/script nothing\n```python\n\n```")
+        self.assertEqual(ctx.exception.reason, "empty")
+
+    def test_a_workspace_that_is_a_file_is_refused(self):
+        target = self.root / "file.txt"
+        target.write_text("x", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}):
+            with self.assertRaises(script.ScriptRefused) as ctx:
+                script.propose_script(_prompt(), root=target)
+        self.assertEqual(ctx.exception.reason, "root")
+
+    def test_an_oversized_proposal_is_refused(self):
+        with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}), \
+                mock.patch.object(script, "MAX_SOURCE_CHARS", 4):
+            with self.assertRaises(script.ScriptRefused) as ctx:
+                script.propose_script(_prompt(source="print(1)"), root=self.root)
+        self.assertEqual(ctx.exception.reason, "too_large")
+
     def test_evidence_row_uses_the_shared_kind_vocabulary(self):
         row = script.script_evidence({
             "status": "ok", "exit_code": 0, "duration_s": 0.5,
@@ -241,6 +261,40 @@ class McpScriptToolTests(unittest.TestCase):
             self._call(source="   ")
         self.assertIn("source", str(ctx.exception))
 
+    def test_an_oversized_source_and_a_timeout_are_bounded(self):
+        with mock.patch.object(script, "MAX_SOURCE_CHARS", 4):
+            with self.assertRaises(HarnessError) as ctx:
+                self._call()
+        self.assertIn("larger than", str(ctx.exception))
+        result = self._call(timeout_s=5)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["timeout_s"], 5)
+
+    def test_no_allowed_roots_is_a_typed_refusal(self):
+        self.server.allowed_roots = []
+        with self.assertRaises(script.ScriptRefused) as ctx:
+            self._call()
+        self.assertEqual(ctx.exception.reason, "root")
+
+    def test_scoring_resolves_the_shared_policy_owner(self):
+        canned = {"status": "ok", "exit_code": 0, "duration_s": 0.1,
+                  "stdout": "x", "stderr": "", "truncated": False,
+                  "script_path": "/tmp/x.py", "script_sha256": self.sha,
+                  "goal": ""}
+        with mock.patch("harness.mcp.policy_for", return_value=object()) as pol, \
+                mock.patch.object(script, "run_script", return_value=canned):
+            result = self._call(score=True)
+        self.assertEqual(result["status"], "ok")
+        pol.assert_called_once()
+
+    def test_a_ledger_failure_never_hides_the_refusal(self):
+        broken = mock.Mock()
+        broken.append.side_effect = RuntimeError("ledger down")
+        self.server.ledger = broken
+        with self.assertRaises(script.ScriptRefused) as ctx:
+            self._call(consent_sha="0" * 64)
+        self.assertEqual(ctx.exception.reason, "sha_mismatch")
+
 
 class ServerScriptTests(unittest.TestCase):
     def setUp(self):
@@ -266,6 +320,24 @@ class ServerScriptTests(unittest.TestCase):
         self.assertEqual(args["goal"], "print something")
         self.assertIsNone(args["timeout_s"])
 
+    def test_a_non_string_source_is_refused(self):
+        with self.assertRaises(HarnessError) as ctx:
+            server_mod.validate_dispatch("script", self._args(source=123))
+        self.assertIn("source", str(ctx.exception))
+
+    def test_the_receipt_text_reports_alignment_and_truncation(self):
+        receipt = {"status": "ok", "exit_code": 0, "duration_s": 0.2,
+                   "script_sha256": self.sha, "script_path": "/tmp/x.py",
+                   "goal": "print", "stdout": "hello", "stderr": "",
+                   "truncated": True,
+                   "alignment": {"available": True, "sufficient": 0.82,
+                                 "verdict": "aligned"}}
+        text = server_mod._script_receipt_text(receipt)
+        self.assertIn("Jev alignment: aligned (82%)", text)
+        self.assertIn("truncated at the configured cap", text)
+        self.assertIn("goal: print", text)
+        self.assertIn("stdout:", text)
+
     def test_dispatch_refuses_missing_root_sha_and_consent(self):
         bad = [
             {"source": self.source, "consent_sha": self.sha, "allow_exec": True},
@@ -290,6 +362,53 @@ class ServerScriptTests(unittest.TestCase):
         self.assertEqual(result["script_evidence"][0]["kind"], "script")
         self.assertEqual(result["cost"], 0.0)
         self.assertIn("Script ok", result["response"])
+
+    def _temp_history(self):
+        hd = _workspace(self)
+        patcher = mock.patch.object(
+            server_mod, "get_default_history_dir", return_value=hd)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return hd
+
+    def test_a_scored_run_uses_the_shared_jev_owner(self):
+        canned = {"status": "ok", "exit_code": 0, "duration_s": 0.1,
+                  "stdout": "ok", "stderr": "", "truncated": False,
+                  "script_path": "/tmp/x.py", "script_sha256": self.sha,
+                  "goal": "print something", "timeout_s": 30}
+        args = server_mod.validate_dispatch("script", self._args(score=True))
+        with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}), \
+                mock.patch.object(server_mod, "governor_for",
+                                  return_value=(None, object())), \
+                mock.patch.object(server_mod, "ledger_for", return_value=object()), \
+                mock.patch("harness.jev_policy.policy_for",
+                           return_value=object()) as policy, \
+                mock.patch.object(script, "run_script",
+                                  return_value=canned) as run:
+            result = server_mod.run_script_task("ui/test", args, lambda: False)
+        policy.assert_called_once()
+        self.assertEqual(run.call_args.kwargs["jev_policy"], policy.return_value)
+        self.assertEqual(result["kind"], "script")
+
+    def test_a_proposal_and_a_run_are_saved_with_their_state(self):
+        history = self._temp_history()
+        with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}):
+            server_mod.run_chat_task(
+                "ui/test", {"prompt": _prompt("save", self.source),
+                            "root_dir": str(self.root), "session_id": "s1"},
+                lambda: False)
+            args = server_mod.validate_dispatch("script", self._args())
+            args["session_id"] = "s1"
+            server_mod.run_script_task("ui/test", args, lambda: False)
+        files = list(history.rglob("*.jsonl"))
+        self.assertTrue(files, "history was not persisted")
+        turns = [json.loads(line) for line in
+                 files[0].read_text(encoding="utf-8").splitlines() if line.strip()]
+        states = sorted(t.get("script_state") for t in turns)
+        self.assertEqual(states, ["proposed", "ran"])
+        ran = next(t for t in turns if t["script_state"] == "ran")
+        self.assertEqual(ran["prompt"], "")
+        self.assertEqual(ran["script_evidence"][0]["kind"], "script")
 
     def test_a_wrong_sha_propagates_as_script_refused(self):
         args = server_mod.validate_dispatch(
