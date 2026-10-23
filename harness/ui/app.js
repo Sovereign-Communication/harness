@@ -1033,11 +1033,16 @@ function handleLiveEvent(ev, agentMsg) {
     agentMsg.stepperTitleText.textContent = "Running the approved script...";
     activateModularAspect(agentMsg, "script", "Script running", "⚙️");
   } else if (ev.type === "script_end") {
+    const refused = ev.status === "refused";
     const secs = Number(ev.duration_s || 0).toFixed(2);
     const aligned = ev.aligned === true ? " — Jev aligned" : "";
-    label = `Script ${ev.status} (exit ${ev.exit_code}) in ${secs}s${aligned}`;
+    // A refusal is terminal evidence too: it has no exit code because no
+    // process started, so never render one as null.
+    label = refused
+      ? `Script refused (${ev.reason || "refused"}) — nothing ran`
+      : `Script ${ev.status} (exit ${ev.exit_code}) in ${secs}s${aligned}`;
     icon = ev.status === "ok" ? "✓" : ev.status === "cancelled" ? "⏹" : "▲";
-    agentMsg.stepperTitleText.textContent = "Script finished";
+    agentMsg.stepperTitleText.textContent = refused ? "Script refused" : "Script finished";
     activateModularAspect(agentMsg, "script", `Script ${ev.status}`, icon);
   } else if (ev.type === "intent_classified") {
     label = `Classified intent: ${ev.intent || "general"}`;
@@ -1180,7 +1185,8 @@ function renderFinalResult(runRecord, agentMsg) {
   hideConsentBanner();
   agentMsg.spinner.hidden = true;
   agentMsg.stepperTitleText.textContent = runRecord.status === "error"
-    ? "Execution stopped" : "Execution complete";
+    ? "Execution stopped"
+    : runRecord.status === "refused" ? "Script refused" : "Execution complete";
 
   if (runRecord.status === "cancelled") {
     const notice = runRecord.error || "Execution cancelled by user.";
@@ -1362,6 +1368,7 @@ function renderScriptReceipt(agentMsg, receipt) {
   const card = document.createElement("div");
   card.className = "script-card";
   const status = String(receipt.status || "failed");
+  const refused = status === "refused";
   const statusClass = status === "ok" ? "ok" : status === "failed" ? "bad" : "warn";
   const align = receipt.alignment || {};
   const pct = typeof align.sufficient === "number"
@@ -1371,22 +1378,27 @@ function renderScriptReceipt(agentMsg, receipt) {
     : (align.reason ? `Jev unavailable: ${esc(align.reason)}` : "");
   const stdout = String(receipt.stdout || "");
   const stderr = String(receipt.stderr || "");
+  const runLine = refused
+    ? `not run · timeout ${Number(receipt.timeout_s || 0)}s`
+    : `exit ${Number(receipt.exit_code)} · ${Number(receipt.duration_s || 0).toFixed(2)}s · timeout ${Number(receipt.timeout_s || 0)}s`;
   card.innerHTML = `
     <div class="script-head">
       <span class="script-state ${statusClass}">${esc(status)}</span>
-      <strong>Script receipt</strong>
+      <strong>${refused ? "Script refused" : "Script receipt"}</strong>
       ${receipt.truncated ? `<span class="script-state warn">truncated</span>` : ""}
       ${receipt.cancelled ? `<span class="script-state warn">cancelled</span>` : ""}
     </div>
     <div class="script-meta">
-      <div>sha256 <code>${esc(String(receipt.script_sha256 || ""))}</code></div>
-      <div>exit ${Number(receipt.exit_code)} · ${Number(receipt.duration_s || 0).toFixed(2)}s · timeout ${Number(receipt.timeout_s || 0)}s</div>
-      <div>root <code>${esc(String(receipt.root || ""))}</code></div>
+      ${receipt.script_sha256 ? `<div>sha256 <code>${esc(String(receipt.script_sha256))}</code></div>` : ""}
+      <div>${runLine}</div>
+      ${receipt.root ? `<div>root <code>${esc(String(receipt.root))}</code></div>` : ""}
+      ${refused ? `<div>reason <code>${esc(String(receipt.reason || ""))}</code></div>` : ""}
+      ${refused && receipt.error ? `<div>${esc(String(receipt.error))}</div>` : ""}
       ${alignText ? `<div>${alignText}</div>` : ""}
     </div>
     ${stdout.trim() ? `<pre class="script-output">${esc(stdout)}</pre>` : ""}
     ${stderr.trim() ? `<pre class="script-output err">${esc(stderr)}</pre>` : ""}
-    ${!stdout.trim() && !stderr.trim() ? `<div class="script-meta">(no output)</div>` : ""}`;
+    ${!refused && !stdout.trim() && !stderr.trim() ? `<div class="script-meta">(no output)</div>` : ""}`;
   agentMsg.body.appendChild(card);
 }
 
@@ -1514,7 +1526,9 @@ async function loadHistory() {
         if (turn.prompt) appendUserMessage(turn.prompt);
         const card = createAgentMessageCard();
         card.stepper.hidden = true;
-        if (turn.kind === "script" && turn.script_state === "ran" && turn.script) {
+        if (turn.kind === "script"
+            && (turn.script_state === "ran" || turn.script_state === "refused")
+            && turn.script) {
           renderScriptReceipt(card, turn.script);
         } else {
           card.body.innerHTML = renderSimpleMarkdown(turn.response || "");

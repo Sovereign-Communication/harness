@@ -80,8 +80,11 @@ sha is a hostile trust-gate refusal (`script_refused`, reason `sha_mismatch`),
 and disabled/absent-consent calls are soft refusals. Scripting is off unless
 the server starts with `HARNESS_SCRIPT_ENABLED=1`. The receipt is the same
 shape the CLI and the GUI show: status, exit code, stdout/stderr, sha, duration
-and optional Jev alignment. The process tree is killed on timeout or
-cancellation (exit code 125).
+and optional Jev alignment. Every refusal returns `isError: true` with the typed
+reason and emits the same terminal `script_end` frame: `status="refused"`, the
+reason, and a receipt with the success shape minus an exit code (nothing ran),
+so a refusal never leaves a script step open. The process tree is killed on
+timeout or cancellation (exit code 125).
 Response frames correlate by request id, never by position: lanes run
 concurrently, so a later request may answer first.
 

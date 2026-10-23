@@ -253,8 +253,9 @@ def validate_dispatch(kind, args):
         if args.get("max_cost") is not None:
             args["max_cost"] = _finite_float(args["max_cost"], "max_cost", 0.0, HARD_MAX_COST)
     elif kind == "script":
-        # The boundary that every face crosses: no root, no consent or no
-        # sha means no run thread at all. The runner re-checks all of it.
+        # Structural checks only. Consent and the sha re-check belong to the
+        # run so a refusal can leave the same terminal script_end frame a
+        # successful run does instead of disappearing into a 400.
         _dispatch_workspace(args, required=True)
         source = args.get("source")
         if not isinstance(source, str) or not source.strip():
@@ -265,13 +266,10 @@ def validate_dispatch(kind, args):
         args["source"] = source
         args["goal"] = str(args.get("goal") or "").strip()[:2000]
         sha = str(args.get("consent_sha") or "").strip().lower()
-        if not re.match(r"^[0-9a-f]{64}$", sha):
-            raise HarnessError(
-                "script requires 'consent_sha' (the sha256 of the approved source)")
-        args["consent_sha"] = sha
-        if args.get("allow_exec") is not True:
-            raise HarnessError("script requires allow_exec=true (explicit consent)")
-        args["allow_exec"] = True
+        if sha and not re.match(r"^[0-9a-f]{64}$", sha):
+            raise HarnessError("consent_sha must be a sha256 digest")
+        args["consent_sha"] = sha or None
+        args["allow_exec"] = args.get("allow_exec") is True
         args["timeout_s"] = _opt_int(args, "timeout_s", 1, _script.MAX_TIMEOUT_S)
         args["score"] = _opt_bool(args, "score") if "score" in args else True
         args["session_id"] = _opt_str(args, "session_id")
@@ -474,8 +472,17 @@ def run_chat_task(task_id, args, cancel_check):
     # A /script message is a consent request, not a model turn: the card it
     # returns is the only way the source can run, and the run still has to
     # present the sha the card showed.
-    proposal = _script.propose_script(
-        prompt, root=root_dir, policy=_script.resolve_script_policy(settings))
+    try:
+        proposal = _script.propose_script(
+            prompt, root=root_dir, policy=_script.resolve_script_policy(settings),
+            task_id=task_id)
+    except _script.ScriptRefused as exc:
+        result = _script_refusal_result(
+            exc, {"goal": "", "root_dir": str(root_dir) if root_dir else None})
+        result["prompt"] = prompt
+        if args.get("session_id"):
+            _save_chat_turn(args["session_id"], result)
+        return result
     if proposal is not None:
         info = proposal["script"]
         _events.emit("script_proposed", task_id=task_id,
@@ -508,6 +515,48 @@ def run_chat_task(task_id, args, cancel_check):
         max_tokens=args.get("max_tokens"),
         reasoning_effort=args.get("reasoning_effort"),
     )
+
+
+def _script_refusal_text(receipt):
+    """The human-readable body a refusal owes the transcript."""
+    reason = receipt.get("reason") or "refused"
+    lines = [f"Script refused ({reason}): {receipt.get('error') or reason}"]
+    if receipt.get("goal"):
+        lines.append(f"goal: {receipt['goal']}")
+    if receipt.get("script_sha256"):
+        lines.append(f"sha256 `{receipt['script_sha256']}` · not run")
+    else:
+        lines.append("Nothing ran.")
+    return "\n".join(lines)
+
+
+def _script_refusal_result(exc, args):
+    """The terminal turn a refused script owes its transcript.
+
+    Same envelope as a completed run with ``status=refused`` and the receipt
+    attached, so the transcript renders one card shape and the run finishes
+    cleanly instead of dying as an unhandled error.
+    """
+    receipt = getattr(exc, "receipt", None) or _script.refusal_receipt(
+        getattr(exc, "reason", "refused"), str(exc),
+        source=str(args.get("source") or ""), goal=args.get("goal") or "",
+        root=args.get("root_dir"), timeout_s=args.get("timeout_s"))
+    result = {
+        "status": "refused",
+        "intent": "script",
+        "kind": "script",
+        "script_state": "refused",
+        # The approval is its own action, as with a completed run: the user
+        # message already exists, so history must not invent a second one.
+        "prompt": "",
+        "goal": args.get("goal") or "",
+        "response": _script_refusal_text(receipt),
+        "model": "script-runner",
+        "cost": 0.0,
+        "script": receipt,
+        "script_evidence": [_script.script_evidence(receipt)],
+    }
+    return result
 
 
 def _script_receipt_text(receipt):
@@ -546,16 +595,38 @@ def run_script_task(task_id, args, cancel_check):
     settings = load_settings()
     root = require_workspace(args.get("root_dir"))
     policy = _script.resolve_script_policy(settings)
+    # The chat lane's consent is the card's sha: a run that cannot present one
+    # has no approved bytes to execute. This is a refusal like any other, so it
+    # leaves the terminal frame before the runner is called.
+    if not args.get("consent_sha"):
+        exc = _script.ScriptRefused(
+            "sha_missing",
+            "the approved script's sha256 (consent_sha) is required to run")
+        _script.record_refusal(
+            exc, task_id=task_id, source=str(args.get("source") or ""),
+            goal=args.get("goal") or "", root=root, policy=policy,
+            timeout_s=args.get("timeout_s"))
+        result = _script_refusal_result(exc, args)
+        if args.get("session_id"):
+            _save_chat_turn(args["session_id"], result)
+        return result
     jev = None
     if args.get("score", True):
         _api_key, governor = governor_for(settings)
         jev = policy_for(settings, governor=governor,
                          ledger=ledger_for(settings, caller="agent"))
-    receipt = _script.run_script(
-        args["source"], root=root, goal=args.get("goal") or "",
-        allow_exec=True, consent_sha=args.get("consent_sha"),
-        timeout_s=args.get("timeout_s"), policy=policy,
-        cancel_check=cancel_check, jev_policy=jev, task_id=task_id)
+    try:
+        receipt = _script.run_script(
+            args["source"], root=root, goal=args.get("goal") or "",
+            allow_exec=bool(args.get("allow_exec")),
+            consent_sha=args.get("consent_sha"),
+            timeout_s=args.get("timeout_s"), policy=policy,
+            cancel_check=cancel_check, jev_policy=jev, task_id=task_id)
+    except _script.ScriptRefused as exc:
+        result = _script_refusal_result(exc, args)
+        if args.get("session_id"):
+            _save_chat_turn(args["session_id"], result)
+        return result
     result = {
         "status": receipt["status"],
         "intent": "script",

@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import harness.server as server_mod
-from harness import script
+from harness import events, script
 from harness.errors import HarnessError
 from harness.ledger import AutonomyLedger
 from harness.mcp import McpServer
@@ -50,6 +50,28 @@ def _serve(server, feed):
 
 def _prompt(goal="print one", source="print(1)"):
     return f"/script {goal}\n```python\n{source}\n```"
+
+
+class _Frames:
+    """Capture the event stream exactly as the UI sink does."""
+
+    def __init__(self):
+        self.items = []
+
+    def __call__(self, event):
+        self.items.append(event)
+
+    def of(self, kind):
+        return [e for e in self.items if e.get("type") == kind]
+
+
+class FrameCaptureTestCase(unittest.TestCase):
+    """One event sink per test, removed even when the test fails."""
+
+    def setUp(self):
+        self.frames = _Frames()
+        events.add_sink(self.frames)
+        self.addCleanup(events.remove_sink, self.frames)
 
 
 class ChatTriggerTests(unittest.TestCase):
@@ -296,8 +318,9 @@ class McpScriptToolTests(unittest.TestCase):
         self.assertEqual(ctx.exception.reason, "sha_mismatch")
 
 
-class ServerScriptTests(unittest.TestCase):
+class ServerScriptTests(FrameCaptureTestCase):
     def setUp(self):
+        super().setUp()
         self.root = _workspace(self)
         self.source = "print('server ok')"
         self.sha = hashlib.sha256(self.source.encode()).hexdigest()
@@ -338,19 +361,26 @@ class ServerScriptTests(unittest.TestCase):
         self.assertIn("goal: print", text)
         self.assertIn("stdout:", text)
 
-    def test_dispatch_refuses_missing_root_sha_and_consent(self):
+    def test_dispatch_keeps_structural_refusals(self):
         bad = [
             {"source": self.source, "consent_sha": self.sha, "allow_exec": True},
-            self._args(consent_sha="xyz"),
-            self._args(consent_sha=None),
-            self._args(allow_exec=False),
-            self._args(allow_exec="yes"),
+            self._args(consent_sha="not-a-sha"),
             self._args(source="x" * (script.MAX_SOURCE_CHARS + 1)),
         ]
         for args in bad:
             with self.subTest(args=list(args)):
                 with self.assertRaises(HarnessError):
                     server_mod.validate_dispatch("script", args)
+
+    def test_dispatch_lets_consent_refusals_reach_the_run(self):
+        # A refusal owes the transcript a terminal frame, and only a run has
+        # one; the boundary therefore normalises instead of rejecting.
+        no_sha = server_mod.validate_dispatch("script", self._args(consent_sha=None))
+        self.assertIsNone(no_sha["consent_sha"])
+        no_exec = server_mod.validate_dispatch("script", self._args(allow_exec=False))
+        self.assertFalse(no_exec["allow_exec"])
+        loose = server_mod.validate_dispatch("script", self._args(allow_exec="yes"))
+        self.assertFalse(loose["allow_exec"])
 
     def test_run_script_task_returns_the_receipt_envelope(self):
         args = server_mod.validate_dispatch("script", self._args())
@@ -410,13 +440,41 @@ class ServerScriptTests(unittest.TestCase):
         self.assertEqual(ran["prompt"], "")
         self.assertEqual(ran["script_evidence"][0]["kind"], "script")
 
-    def test_a_wrong_sha_propagates_as_script_refused(self):
+    def test_a_wrong_sha_finishes_as_a_refused_turn_with_a_frame(self):
         args = server_mod.validate_dispatch(
             "script", self._args(consent_sha="0" * 64))
         with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}):
-            with self.assertRaises(script.ScriptRefused) as ctx:
-                server_mod.run_script_task("ui/test", args, lambda: False)
-        self.assertEqual(ctx.exception.kind, "script_refused")
+            result = server_mod.run_script_task("ui/test", args, lambda: False)
+        self.assertEqual(result["status"], "refused")
+        self.assertEqual(result["script_state"], "refused")
+        self.assertEqual(result["script"]["reason"], "sha_mismatch")
+        self.assertFalse(result["script_evidence"][0]["ok"])
+        end = [e for e in self.frames.of("script_end")
+               if e.get("reason") == "sha_mismatch"]
+        self.assertEqual(len(end), 1)
+        self.assertEqual(end[0]["status"], "refused")
+        self.assertFalse(self.frames.of("script_start"))
+        self.assertFalse((self.root / ".harness").exists())
+
+    def test_a_missing_sha_is_a_refusal_not_a_run(self):
+        args = server_mod.validate_dispatch("script", self._args(consent_sha=None))
+        with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}):
+            result = server_mod.run_script_task("ui/test", args, lambda: False)
+        self.assertEqual(result["status"], "refused")
+        self.assertEqual(result["script"]["reason"], "sha_missing")
+        self.assertEqual([e.get("reason") for e in self.frames.of("script_end")],
+                         ["sha_missing"])
+        self.assertFalse(self.frames.of("script_start"))
+        self.assertFalse((self.root / ".harness").exists())
+
+    def test_a_missing_consent_is_a_refusal_with_a_frame(self):
+        args = server_mod.validate_dispatch("script", self._args(allow_exec=False))
+        with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}):
+            result = server_mod.run_script_task("ui/test", args, lambda: False)
+        self.assertEqual(result["status"], "refused")
+        self.assertEqual(result["script"]["reason"], "no_consent")
+        self.assertEqual([e.get("reason") for e in self.frames.of("script_end")],
+                         ["no_consent"])
 
     def test_a_script_prompt_returns_a_card_without_calling_a_model(self):
         with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}), \
@@ -432,21 +490,142 @@ class ServerScriptTests(unittest.TestCase):
     def test_a_script_prompt_without_a_workspace_is_refused(self):
         with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}), \
                 mock.patch.object(server_mod, "AutonomousAgent") as agent_cls:
-            with self.assertRaises(script.ScriptRefused) as ctx:
-                server_mod.run_chat_task(
-                    "ui/test", {"prompt": _prompt()}, lambda: False)
+            result = server_mod.run_chat_task(
+                "ui/test", {"prompt": _prompt()}, lambda: False)
         agent_cls.assert_not_called()
-        self.assertEqual(ctx.exception.reason, "root")
+        self.assertEqual(result["status"], "refused")
+        self.assertEqual(result["script"]["reason"], "root")
+        self.assertEqual([e.get("reason") for e in self.frames.of("script_end")],
+                         ["root"])
 
-    def test_a_disabled_script_prompt_is_refused(self):
+    def test_a_disabled_script_prompt_finishes_refused_with_a_frame(self):
         with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "0"}), \
                 mock.patch.object(server_mod, "AutonomousAgent") as agent_cls:
-            with self.assertRaises(script.ScriptRefused) as ctx:
-                server_mod.run_chat_task(
-                    "ui/test", {"prompt": _prompt(), "root_dir": str(self.root)},
-                    lambda: False)
+            result = server_mod.run_chat_task(
+                "ui/test", {"prompt": _prompt(), "root_dir": str(self.root)},
+                lambda: False)
         agent_cls.assert_not_called()
-        self.assertEqual(ctx.exception.reason, "disabled")
+        self.assertEqual(result["status"], "refused")
+        self.assertEqual(result["script_state"], "refused")
+        self.assertEqual(result["script"]["reason"], "disabled")
+        end = self.frames.of("script_end")
+        self.assertEqual(len(end), 1)
+        self.assertEqual(end[0]["status"], "refused")
+        self.assertIsNone(end[0]["exit_code"])
+        self.assertFalse(self.frames.of("script_start"))
+        self.assertIn("disabled", result["response"])
+
+
+class RefusalEvidenceTests(FrameCaptureTestCase):
+    """Every refusal closes with exactly one terminal script_end frame."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = _workspace(self)
+        self.source = "print('refusal evidence')"
+        self.sha = hashlib.sha256(self.source.encode()).hexdigest()
+
+    def _run(self, **over):
+        kwargs = {"root": self.root, "allow_exec": True,
+                  "consent_sha": self.sha, "policy": script.ScriptPolicy(enabled=True),
+                  "task_id": "ui/refusal"}
+        source = over.pop("source", self.source)
+        kwargs.update(over)
+        return script.run_script(source, **kwargs)
+
+    def _assert_refused(self, reason):
+        end = self.frames.of("script_end")
+        self.assertEqual(len(end), 1, self.frames.items)
+        self.assertEqual(end[0]["status"], "refused")
+        self.assertEqual(end[0]["reason"], reason)
+        self.assertIsNone(end[0]["exit_code"])
+        self.assertFalse(self.frames.of("script_start"))
+
+    def test_each_engine_refusal_emits_one_terminal_frame(self):
+        cases = [
+            ("disabled", {"policy": script.ScriptPolicy(enabled=False)}),
+            ("no_consent", {"allow_exec": False}),
+            ("sha_invalid", {"consent_sha": "xyz"}),
+            ("sha_mismatch", {"consent_sha": "0" * 64}),
+            ("syntax", {"source": "def broken(",
+                        "consent_sha": hashlib.sha256(b"def broken(").hexdigest()}),
+            ("empty", {"source": "   "}),
+            ("too_large", {"source": "x" * (script.MAX_SOURCE_CHARS + 1)}),
+            ("root", {"root": str(self.root / "missing")}),
+        ]
+        for reason, over in cases:
+            with self.subTest(reason):
+                self.frames.items.clear()
+                with self.assertRaises(script.ScriptRefused) as ctx:
+                    self._run(**over)
+                self.assertEqual(ctx.exception.reason, reason)
+                self._assert_refused(reason)
+                self.assertEqual(ctx.exception.receipt["reason"], reason)
+                if over.get("source", self.source).strip():
+                    self.assertEqual(ctx.exception.receipt["script_sha256"],
+                                     hashlib.sha256(
+                                         over.get("source", self.source)
+                                         .encode()).hexdigest())
+
+    def test_a_refused_receipt_has_the_success_shape(self):
+        with self.assertRaises(script.ScriptRefused) as ctx:
+            self._run(allow_exec=False)
+        receipt = ctx.exception.receipt
+        success = {"kind", "status", "exit_code", "killed", "cancelled",
+                   "stdout", "stderr", "truncated", "duration_s",
+                   "script_path", "script_sha256", "goal", "root",
+                   "timeout_s", "policy"}
+        self.assertTrue(success.issubset(receipt))
+        self.assertEqual(receipt["duration_s"], 0.0)
+        self.assertIsNone(receipt["script_path"])
+        self.assertEqual(receipt["error"],
+                         "explicit consent is required (approve the script to run it)")
+
+    def test_a_successful_run_emits_exactly_one_start_and_one_end(self):
+        self._run()
+        self.assertEqual(len(self.frames.of("script_start")), 1)
+        end = self.frames.of("script_end")
+        self.assertEqual(len(end), 1)
+        self.assertEqual(end[0]["status"], "ok")
+        self.assertNotIn("reason", end[0])
+
+    def test_a_cancelled_before_start_is_a_refusal_frame(self):
+        with self.assertRaises(script.ScriptRefused) as ctx:
+            self._run(cancel_check=lambda: True)
+        self.assertEqual(ctx.exception.reason, "cancel")
+        self._assert_refused("cancel")
+
+
+class McpRefusalEvidenceTests(FrameCaptureTestCase):
+    """The MCP pre-checks use the same emitter, not a second shape."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = _workspace(self)
+        self.source = "print('mcp refusal')"
+        self.sha = hashlib.sha256(self.source.encode()).hexdigest()
+
+    def test_each_mcp_precheck_emits_one_frame_and_raises(self):
+        cases = [
+            ("disabled", False, {}, "disabled"),
+            ("no_consent", True, {"allow_exec": False}, "no_consent"),
+            ("sha_missing", True, {"consent_sha": None}, "sha_missing"),
+        ]
+        for label, enabled, over, reason in cases:
+            with self.subTest(label):
+                self.frames.items.clear()
+                server = _server(self, self.root, enabled=enabled)
+                args = {"source": self.source, "root": str(self.root),
+                        "allow_exec": True, "consent_sha": self.sha,
+                        "score": False}
+                args.update(over)
+                with self.assertRaises(script.ScriptRefused) as ctx:
+                    server._invoke("script_run", args)
+                self.assertEqual(ctx.exception.reason, reason)
+                end = self.frames.of("script_end")
+                self.assertEqual(len(end), 1, self.frames.items)
+                self.assertEqual(end[0]["reason"], reason)
+                self.assertEqual(end[0]["sha256"], self.sha)
 
 
 if __name__ == "__main__":
