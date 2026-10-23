@@ -170,6 +170,15 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(g.transport.calls[0][0], FIREWORKS_CHAT_URL)
 
+    def test_settings_carries_caps_not_fireworks_key(self):
+        with mock.patch("harness.config.resolve_api_key", return_value=None), \
+                mock.patch("harness.config.resolve_jev_key", return_value=None):
+            settings = load_settings(overrides={"fireworks_enabled": True,
+                                               "fireworks_budget_usd": 0.01})
+        self.assertTrue(settings.fireworks_enabled)
+        self.assertEqual(settings.fireworks_budget_usd, 0.01)
+        self.assertNotIn("fireworks_key", settings.to_dict())
+
     def test_concurrent_budget_checks_include_outstanding(self):
         g = gov(cap=0.001)
         tokens = []
@@ -190,14 +199,121 @@ class DispatchTests(unittest.TestCase):
         g.reconcile(tokens[0], 0.0005)
         self.assertAlmostEqual(g.spent, 0.0005)
 
-    def test_settings_carries_caps_not_fireworks_key(self):
-        with mock.patch("harness.config.resolve_api_key", return_value=None), \
-                mock.patch("harness.config.resolve_jev_key", return_value=None):
-            settings = load_settings(overrides={"fireworks_enabled": True,
-                                               "fireworks_budget_usd": 0.01})
-        self.assertTrue(settings.fireworks_enabled)
-        self.assertEqual(settings.fireworks_budget_usd, 0.01)
-        self.assertNotIn("fireworks_key", settings.to_dict())
+class RedundancyTests(unittest.TestCase):
+    """Second-lane redundancy: either provider's outage leaves the other
+    reachable, failover stays bounded, and every attempt leaves a
+    per-provider spend receipt. All hermetic."""
+
+    def setUp(self):
+        from datetime import date
+        clock = mock.patch("harness.endpoint_pricing.date", wraps=date)
+        clock.start().today.return_value = date(2026, 10, 10)
+        self.addCleanup(clock.stop)
+
+    def _ok(self, prompt=5, completion=2):
+        return (200, {"choices": [{"message": {"content": "OK"},
+                                     "finish_reason": "stop"}],
+                      "usage": {"prompt_tokens": prompt,
+                                "completion_tokens": completion}})
+
+    def test_mapped_model_survives_openrouter_outage(self):
+        # OpenRouter disabled with no key: a mapped (non-explicit) model
+        # must still dispatch to Fireworks without touching OpenRouter.
+        wire = Wire(responses=[self._ok()])
+        g = gov(wire)
+        g.openrouter_enabled = False
+        g.api_key = None
+        with mock.patch.object(wire, "get",
+                               side_effect=AssertionError("OR touched")):
+            status, response = chat(wire, None, MODEL, MESSAGES, 8,
+                                    governor=g)
+        self.assertEqual(status, 200)
+        self.assertEqual(wire.calls[0][0], FIREWORKS_CHAT_URL)
+        self.assertNotIn(OPENROUTER_CHAT_URL, [c[0] for c in wire.calls])
+        self.assertEqual(response["provider_route"]["provider"], "fireworks")
+        self.assertGreater(g.spent, 0)
+        self.assertEqual(g.outstanding, 0)
+
+    def test_fireworks_outage_fails_over_to_openrouter_once(self):
+        wire = Wire(responses=[(503, {"error": {"message": "down"}}),
+                               self._ok()])
+        g = gov(wire)
+        with mock.patch.object(g, "is_free", return_value=False), \
+                mock.patch.object(g, "fetch_pricing",
+                                  return_value={MODEL: wire.rates}):
+            status, response = chat(wire, "or-key", MODEL, MESSAGES, 8,
+                                    governor=g)
+        self.assertEqual(status, 200)
+        self.assertEqual([c[0] for c in wire.calls],
+                         [FIREWORKS_CHAT_URL, OPENROUTER_CHAT_URL])
+        attempts = g.route_comparisons[-1]["attempts"]
+        self.assertEqual([a["provider"] for a in attempts],
+                         ["fireworks", "openrouter"])
+        self.assertEqual(response["provider_route"]["provider"], "openrouter")
+        self.assertEqual(g.outstanding, 0)
+
+    def test_billed_429_does_not_fail_over(self):
+        # A rate-limit that still billed usage is settled, not retried
+        # elsewhere: exactly one wire call, status returned as-is.
+        billed = (429, {"error": {"message": "limited"},
+                        "usage": {"prompt_tokens": 5, "completion_tokens": 2,
+                                  "cost": 0.000004}})
+        wire = Wire(responses=[billed])
+        g = gov(wire)
+        with mock.patch.object(g, "is_free", return_value=False), \
+                mock.patch.object(g, "fetch_pricing",
+                                  return_value={MODEL: wire.rates}):
+            status, response = chat(wire, "or-key", MODEL, MESSAGES, 8,
+                                    governor=g)
+        self.assertEqual(status, 429)
+        self.assertEqual(len(wire.calls), 1)
+        self.assertEqual(g.outstanding, 0)
+        self.assertGreater(g.spent, 0)
+
+    def test_double_outage_stops_after_both_providers(self):
+        wire = Wire(responses=[(503, {"error": {"message": "fw down"}}),
+                               (503, {"error": {"message": "or down"}})])
+        g = gov(wire)
+        with mock.patch.object(g, "is_free", return_value=False), \
+                mock.patch.object(g, "fetch_pricing",
+                                  return_value={MODEL: wire.rates}):
+            status, _ = chat(wire, "or-key", MODEL, MESSAGES, 8,
+                             governor=g)
+        self.assertEqual(status, 503)
+        self.assertEqual(len(wire.calls), 2)
+        self.assertEqual(g.outstanding, 0)
+
+    def test_every_attempt_leaves_a_provider_receipt(self):
+        wire = Wire(responses=[(429, {"error": {"message": "limited"}}),
+                               self._ok()])
+        g = gov(wire)
+        with mock.patch.object(g, "is_free", return_value=False), \
+                mock.patch.object(g, "fetch_pricing",
+                                  return_value={MODEL: wire.rates}):
+            status, response = chat(wire, "or-key", MODEL, MESSAGES, 8,
+                                    governor=g)
+        self.assertEqual(status, 200)
+        comparison = g.route_comparisons[-1]
+        self.assertEqual(len(comparison["offers"]), 2)
+        providers = {o["provider"] for o in comparison["offers"]}
+        self.assertEqual(providers, {"fireworks", "openrouter"})
+        attempts = comparison["attempts"]
+        self.assertEqual(len(attempts), 2)
+        for attempt in attempts:
+            for key in ("provider", "wire_model", "cost",
+                        "elapsed_s", "http_status"):
+                self.assertIn(key, attempt)
+        route = response["provider_route"]
+        self.assertEqual(route["provider"], "openrouter")
+        self.assertEqual(route["http_status"], 200)
+        self.assertIn("cost", route)
+
+    def test_standalone_catalog_lists_routable_models_without_keys(self):
+        from harness.fireworks import comparable_model, resolve_offer
+        self.assertTrue(comparable_model(MODEL))
+        offer = resolve_offer("accounts/fireworks/models/glm-5p3-flash")
+        self.assertTrue(offer.routable)
+        self.assertEqual(offer.canonical_model, MODEL)
 
 
 if __name__ == "__main__":
