@@ -442,9 +442,11 @@ class ServerScriptTests(FrameCaptureTestCase):
 
     def test_a_wrong_sha_finishes_as_a_refused_turn_with_a_frame(self):
         args = server_mod.validate_dispatch(
-            "script", self._args(consent_sha="0" * 64))
-        with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}):
+            "script", self._args(consent_sha="0" * 64, session_id="s1"))
+        with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}), \
+                mock.patch.object(server_mod, "_save_chat_turn") as save:
             result = server_mod.run_script_task("ui/test", args, lambda: False)
+        save.assert_called_once()
         self.assertEqual(result["status"], "refused")
         self.assertEqual(result["script_state"], "refused")
         self.assertEqual(result["script"]["reason"], "sha_mismatch")
@@ -457,9 +459,12 @@ class ServerScriptTests(FrameCaptureTestCase):
         self.assertFalse((self.root / ".harness").exists())
 
     def test_a_missing_sha_is_a_refusal_not_a_run(self):
-        args = server_mod.validate_dispatch("script", self._args(consent_sha=None))
-        with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}):
+        args = server_mod.validate_dispatch(
+            "script", self._args(consent_sha=None, session_id="s1"))
+        with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}), \
+                mock.patch.object(server_mod, "_save_chat_turn") as save:
             result = server_mod.run_script_task("ui/test", args, lambda: False)
+        save.assert_called_once()
         self.assertEqual(result["status"], "refused")
         self.assertEqual(result["script"]["reason"], "sha_missing")
         self.assertEqual([e.get("reason") for e in self.frames.of("script_end")],
@@ -500,10 +505,13 @@ class ServerScriptTests(FrameCaptureTestCase):
 
     def test_a_disabled_script_prompt_finishes_refused_with_a_frame(self):
         with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "0"}), \
-                mock.patch.object(server_mod, "AutonomousAgent") as agent_cls:
+                mock.patch.object(server_mod, "AutonomousAgent") as agent_cls, \
+                mock.patch.object(server_mod, "_save_chat_turn") as save:
             result = server_mod.run_chat_task(
-                "ui/test", {"prompt": _prompt(), "root_dir": str(self.root)},
+                "ui/test", {"prompt": _prompt(), "root_dir": str(self.root),
+                            "session_id": "s1"},
                 lambda: False)
+        save.assert_called_once()
         agent_cls.assert_not_called()
         self.assertEqual(result["status"], "refused")
         self.assertEqual(result["script_state"], "refused")
@@ -514,6 +522,21 @@ class ServerScriptTests(FrameCaptureTestCase):
         self.assertIsNone(end[0]["exit_code"])
         self.assertFalse(self.frames.of("script_start"))
         self.assertIn("disabled", result["response"])
+
+    def test_a_parse_refusal_has_no_sha_and_says_nothing_ran(self):
+        two_blocks = (_prompt("two blocks", "print(1)")
+                      + "\n```python\nprint(2)\n```")
+        with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}), \
+                mock.patch.object(server_mod, "AutonomousAgent") as agent_cls:
+            result = server_mod.run_chat_task(
+                "ui/test", {"prompt": two_blocks, "root_dir": str(self.root)},
+                lambda: False)
+        agent_cls.assert_not_called()
+        self.assertEqual(result["status"], "refused")
+        self.assertEqual(result["script"]["reason"], "empty")
+        self.assertIsNone(result["script"]["script_sha256"])
+        self.assertIn("Nothing ran.", result["response"])
+        self.assertEqual(len(self.frames.of("script_end")), 1)
 
 
 class RefusalEvidenceTests(FrameCaptureTestCase):
