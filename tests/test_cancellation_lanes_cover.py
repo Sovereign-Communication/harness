@@ -293,9 +293,9 @@ class TestAgentCover(unittest.TestCase):
         patches = [
             mock.patch.object(agent, "_hourglass_request_context",
                               return_value=("ctx", {}, brief, [])),
-            mock.patch("harness.agent.governor_for",
+            mock.patch("harness.chat_lifecycle.governor_for",
                        return_value=("k", gov)),
-            mock.patch("harness.agent.policy_for", return_value=policy),
+            mock.patch("harness.chat_lifecycle.policy_for", return_value=policy),
             mock.patch.object(agent, "_hourglass_answer_once",
                               return_value={"answer": "Paris", "model": "m",
                                             "cost": 0.0}),
@@ -316,7 +316,7 @@ class TestAgentCover(unittest.TestCase):
             for patcher in patches:
                 patcher.start()
                 self.addCleanup(patcher.stop)
-            with mock.patch("harness.agent.policy_for") as policy_for:
+            with mock.patch("harness.chat_lifecycle.policy_for") as policy_for:
                 policy = policy_for.return_value
                 policy.evaluate_answer.side_effect = ToolCancelled("stop")
                 with self.assertRaises(ToolCancelled):

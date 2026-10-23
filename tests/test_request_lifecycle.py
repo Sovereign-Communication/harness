@@ -144,7 +144,7 @@ class LiteralGreetingFastPathTests(unittest.TestCase):
                  patch.object(
                     agent, "_handle_conversation",
                     side_effect=AssertionError("no chat model call")), \
-                 patch("harness.agent.chat",
+                 patch("harness.chat_lifecycle.chat",
                        side_effect=AssertionError("no OpenRouter call")), \
                  patch("harness.agent.emit") as emitted:
                 result = agent.run_prompt(
@@ -264,7 +264,7 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "reason": "'example.com' is up (HTTPS 200)",
                                      "latency_s": 0.4, "host": "example.com",
                                      "url": "https://example.com"}) as probe, \
-                 patch("harness.agent.chat",
+                 patch("harness.chat_lifecycle.chat",
                        side_effect=AssertionError("no model calls")), \
                  patch("harness.agent.jev_for",
                        return_value=_site_jev(0.99, calls=jev_calls)) as jev, \
@@ -344,7 +344,7 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "url": "https://example.com"}), \
                  patch("harness.agent.jev_for",
                        return_value=_site_jev(0.73)), \
-                 patch("harness.agent.chat",
+                 patch("harness.chat_lifecycle.chat",
                        side_effect=AssertionError("no OpenRouter escalation")), \
                  patch.object(AutonomousAgent, "_handle_edit",
                               side_effect=AssertionError("no plan escalation")), \
@@ -457,7 +457,7 @@ class SimpleActionLaneTests(unittest.TestCase):
             with patch("harness.web.probe_public_site",
                        side_effect=HarnessError(
                            "site probe refused: only https:// URLs are probed")), \
-                 patch("harness.agent.chat",
+                 patch("harness.chat_lifecycle.chat",
                        side_effect=AssertionError("no model calls")), \
                  patch("harness.agent.jev_for",
                        side_effect=AssertionError("refused target must not call Jev")), \
@@ -482,7 +482,7 @@ class SimpleActionLaneTests(unittest.TestCase):
                                      "reason": "'example.com' is up (HTTPS 200)",
                                      "latency_s": 0.3, "host": "example.com",
                                      "url": "https://example.com"}), \
-                 patch("harness.agent.chat",
+                 patch("harness.chat_lifecycle.chat",
                        side_effect=AssertionError("no model calls")), \
                  patch("harness.agent.jev_for",
                        return_value=_site_jev(0.999)), \
@@ -521,7 +521,7 @@ class SimpleActionLaneTests(unittest.TestCase):
                  patch("harness.agent.jev_for", return_value=policy) as jev, \
                  patch("harness.agent.jev_face_governor",
                        return_value=MagicMock()), \
-                 patch("harness.agent.chat",
+                 patch("harness.chat_lifecycle.chat",
                        side_effect=AssertionError("no OpenRouter calls")), \
                  patch.object(AutonomousAgent, "_handle_edit",
                               side_effect=AssertionError("no plan lane")), \
@@ -866,7 +866,7 @@ class NonForceSimpleActionTests(unittest.TestCase):
                                      "reason": "'example.com' is up (HTTPS 200)",
                                      "latency_s": 0.2, "host": "example.com",
                                      "url": "https://example.com"}), \
-                 patch("harness.agent.chat",
+                 patch("harness.chat_lifecycle.chat",
                        side_effect=AssertionError("no model calls")), \
                  patch("harness.agent.jev_for",
                        return_value=_site_jev(0.999)), \
@@ -1123,7 +1123,7 @@ evidence-based result.
                        side_effect=fake_preflight), \
                  patch("harness.web.probe_public_site",
                        side_effect=fake_probe), \
-                 patch("harness.agent.chat",
+                 patch("harness.chat_lifecycle.chat",
                        side_effect=AssertionError("no OpenRouter calls")), \
                  patch("harness.agent.jev_for", return_value=jev_policy), \
                  patch("harness.agent.jev_face_governor",

@@ -13,7 +13,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
 from .errors import HarnessError
 from .osal import atomic_write_text
@@ -23,6 +23,47 @@ CHAT_CHECKPOINT_SCHEMA = "harness-chat-checkpoint-v1"
 MAX_CHAT_CHECKPOINT_BYTES = 96_000
 _CHAT_SESSION_ID_MAX_CHARS = 512
 _CHAT_SAFE_SESSION_ID_RE = re.compile(r"\A[A-Za-z0-9_.-]{1,128}\Z")
+
+
+class ChatCheckpoint(TypedDict, total=False):
+    """Persisted state for one resumable conversational request.
+
+    This is the storage contract, not a second source of workflow policy.
+    Stage transitions live in the chat lifecycle; history owns JSON encoding,
+    validation, and durable storage.
+    """
+
+    schema: str
+    session_id: str
+    updated_at: float
+    route: str
+    status: str
+    stage: str
+    prompt: str
+    intent: str
+    web_requested: bool
+    workspace_root: str
+    workspace_context_used: bool
+    known_cost: float
+    unknown_liability: float
+    usage_unknown: bool
+    next_round: int
+    rounds: List[Dict[str, Any]]
+    route_preflight: Dict[str, Any]
+    context: str
+    context_files: List[str]
+    context_tokens: int
+    context_scope: str
+    context_updated_at: float
+    history_turns: List[Dict[str, Any]]
+    answer: Optional[str]
+    answer_model: Optional[str]
+    answer_cost: float
+    generation_calls: int
+    pre: Dict[str, Any]
+    prior: Any
+    last_jev: Dict[str, Any]
+    truncated: bool
 
 
 def _chat_history_path(session_id: str,
@@ -107,7 +148,7 @@ def _chat_checkpoint_path(session_id: str,
     return checkpoint_dir / f"{session_key}.json"
 
 
-def save_chat_checkpoint(session_id: str, checkpoint: Dict[str, Any],
+def save_chat_checkpoint(session_id: str, checkpoint: ChatCheckpoint,
                          history_dir: Optional[Path] = None) -> Path:
     """Atomically persist bounded state for a resumable conversational run.
 
@@ -135,7 +176,7 @@ def save_chat_checkpoint(session_id: str, checkpoint: Dict[str, Any],
 
 
 def load_chat_checkpoint(session_id: str,
-                         history_dir: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+                         history_dir: Optional[Path] = None) -> Optional[ChatCheckpoint]:
     """Load the pending checkpoint for one session, if it is valid and active."""
     path = _chat_checkpoint_path(session_id, history_dir)
     if path.is_symlink():

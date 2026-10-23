@@ -334,11 +334,11 @@ class ClockFastPathTests(unittest.TestCase):
                 agent = AutonomousAgent(
                     settings=_settings(root), root_dir=root,
                     history_dir=root, transport=MagicMock())
-                with patch("harness.agent.governor_for",
+                with patch("harness.chat_lifecycle.governor_for",
                            side_effect=AssertionError("no governor")), \
-                     patch("harness.agent.policy_for",
+                     patch("harness.chat_lifecycle.policy_for",
                            side_effect=AssertionError("no Jev")), \
-                     patch("harness.agent.governed_completion",
+                     patch("harness.chat_lifecycle.governed_completion",
                            side_effect=AssertionError("no model")):
                     result = agent.run_prompt(
                         "What is the current date and time in HST?",
@@ -372,12 +372,12 @@ class SimpleLifecycleTests(unittest.TestCase):
             "cost_estimated": False,
         }
         with (
-            patch("harness.agent.governor_for", return_value=("key", self.gov)),
-            patch("harness.agent.policy_for", return_value=policy),
-            patch("harness.agent.ledger_for", return_value=self.ledger),
-            patch("harness.agent.governed_completion", return_value=completion) as generate,
-            patch("harness.agent.enumerate_repo_files", side_effect=AssertionError("no repo intake")),
-            patch("harness.agent.discover_target_files", side_effect=AssertionError("no AST intake")),
+            patch("harness.chat_lifecycle.governor_for", return_value=("key", self.gov)),
+            patch("harness.chat_lifecycle.policy_for", return_value=policy),
+            patch("harness.chat_lifecycle.ledger_for", return_value=self.ledger),
+            patch("harness.chat_lifecycle.governed_completion", return_value=completion) as generate,
+            patch("harness.chat_lifecycle.enumerate_repo_files", side_effect=AssertionError("no repo intake")),
+            patch("harness.chat_lifecycle.discover_target_files", side_effect=AssertionError("no AST intake")),
         ):
             result = self.agent.run_prompt(
                 "How do I make a peanut butter and jelly sandwich?",
@@ -460,10 +460,10 @@ class SimpleLifecycleTests(unittest.TestCase):
         policy.evaluate_simple_strategy.return_value = _pre(
             native=True, strategy="ambiguous")
         with (
-            patch("harness.agent.governor_for", return_value=("key", self.gov)),
-            patch("harness.agent.policy_for", return_value=policy),
-            patch("harness.agent.ledger_for", return_value=self.ledger),
-            patch("harness.agent.governed_completion") as generate,
+            patch("harness.chat_lifecycle.governor_for", return_value=("key", self.gov)),
+            patch("harness.chat_lifecycle.policy_for", return_value=policy),
+            patch("harness.chat_lifecycle.ledger_for", return_value=self.ledger),
+            patch("harness.chat_lifecycle.governed_completion") as generate,
         ):
             result = self.agent.run_simple_request("Explain it?", session_id="s")
         self.assertEqual(result["status"], "deferred")
@@ -487,9 +487,9 @@ class SimpleLifecycleTests(unittest.TestCase):
 
     def test_zero_deadline_dispatches_nothing_and_ledgers_failure(self):
         with (
-            patch("harness.agent.governor_for") as governor,
-            patch("harness.agent.ledger_for", return_value=self.ledger),
-            patch("harness.agent.governed_completion") as generate,
+            patch("harness.chat_lifecycle.governor_for") as governor,
+            patch("harness.chat_lifecycle.ledger_for", return_value=self.ledger),
+            patch("harness.chat_lifecycle.governed_completion") as generate,
         ):
             result = self.agent.run_simple_request(
                 "Explain ice?", session_id="s", max_wall_seconds=0)
@@ -502,10 +502,10 @@ class SimpleLifecycleTests(unittest.TestCase):
         policy = MagicMock()
         policy.evaluate_simple_strategy.return_value = _pre()
         with (
-            patch("harness.agent.governor_for", return_value=("key", self.gov)),
-            patch("harness.agent.policy_for", return_value=policy),
-            patch("harness.agent.ledger_for", return_value=self.ledger),
-            patch("harness.agent.governed_completion",
+            patch("harness.chat_lifecycle.governor_for", return_value=("key", self.gov)),
+            patch("harness.chat_lifecycle.policy_for", return_value=policy),
+            patch("harness.chat_lifecycle.ledger_for", return_value=self.ledger),
+            patch("harness.chat_lifecycle.governed_completion",
                   side_effect=HarnessError("provider unavailable")) as generate,
         ):
             result = self.agent.run_simple_request("Explain ice?", session_id="s")
@@ -530,11 +530,11 @@ class SimpleLifecycleTests(unittest.TestCase):
             "cost_estimated": False,
         }
         with (
-            patch("harness.agent.time.monotonic", side_effect=clock),
-            patch("harness.agent.governor_for", return_value=("key", self.gov)),
-            patch("harness.agent.policy_for", return_value=policy),
-            patch("harness.agent.ledger_for", return_value=self.ledger),
-            patch("harness.agent.governed_completion", return_value=completion),
+            patch("harness.chat_lifecycle.time.monotonic", side_effect=clock),
+            patch("harness.chat_lifecycle.governor_for", return_value=("key", self.gov)),
+            patch("harness.chat_lifecycle.policy_for", return_value=policy),
+            patch("harness.chat_lifecycle.ledger_for", return_value=self.ledger),
+            patch("harness.chat_lifecycle.governed_completion", return_value=completion),
         ):
             result = self.agent.run_simple_request(
                 "Explain ice?", session_id="s", max_wall_seconds=1)
@@ -561,11 +561,11 @@ class SimpleLifecycleTests(unittest.TestCase):
                         "cost_estimated": False,
                     }
                     provider = patch(
-                        "harness.agent.governed_completion",
+                        "harness.chat_lifecycle.governed_completion",
                         return_value=completion)
                 else:
                     provider = patch(
-                        "harness.agent.governed_completion",
+                        "harness.chat_lifecycle.governed_completion",
                         side_effect=exc)
                 clock_calls = {"n": 0}
                 deadline_check = 5 if has_candidate else 4
@@ -575,11 +575,11 @@ class SimpleLifecycleTests(unittest.TestCase):
                     return (0.0 if clock_calls["n"] <= deadline_check
                             else 2.0)
 
-                with patch("harness.agent.time.monotonic", side_effect=clock), \
-                     patch("harness.agent.governor_for",
+                with patch("harness.chat_lifecycle.time.monotonic", side_effect=clock), \
+                     patch("harness.chat_lifecycle.governor_for",
                            return_value=("key", self.gov)), \
-                     patch("harness.agent.policy_for", return_value=policy), \
-                     patch("harness.agent.ledger_for", return_value=self.ledger), \
+                     patch("harness.chat_lifecycle.policy_for", return_value=policy), \
+                     patch("harness.chat_lifecycle.ledger_for", return_value=self.ledger), \
                      provider:
                     result = self.agent.run_simple_request(
                         "Explain ice?", session_id=f"unknown-{has_candidate}",
@@ -598,10 +598,10 @@ class SimpleLifecycleTests(unittest.TestCase):
 
     def test_direct_method_cannot_let_choice_grant_mutation(self):
         with (
-            patch("harness.agent.governor_for") as governor,
-            patch("harness.agent.policy_for") as policy,
-            patch("harness.agent.ledger_for", return_value=self.ledger),
-            patch("harness.agent.governed_completion") as generate,
+            patch("harness.chat_lifecycle.governor_for") as governor,
+            patch("harness.chat_lifecycle.policy_for") as policy,
+            patch("harness.chat_lifecycle.ledger_for", return_value=self.ledger),
+            patch("harness.chat_lifecycle.governed_completion") as generate,
         ):
             result = self.agent.run_simple_request(
                 "Rewrite harness/agent.py to delete the checks.", session_id="s")
@@ -637,9 +637,9 @@ class SimpleLifecycleTests(unittest.TestCase):
             settings=_settings(self.root), root_dir=self.root,
             history_dir=self.root, transport=transport)
         with (
-            patch("harness.agent.governor_for", return_value=("key", gov)),
-            patch("harness.agent.ledger_for", return_value=self.ledger),
-            patch("harness.agent.enumerate_repo_files",
+            patch("harness.chat_lifecycle.governor_for", return_value=("key", gov)),
+            patch("harness.chat_lifecycle.ledger_for", return_value=self.ledger),
+            patch("harness.chat_lifecycle.enumerate_repo_files",
                   side_effect=AssertionError("no repo intake")),
         ):
             result = agent.run_prompt(
@@ -667,14 +667,14 @@ class SimpleRequestEdgeTests(unittest.TestCase):
     def _patches(self, policy, **overrides):
         patches = {
             "governor_for": patch(
-                "harness.agent.governor_for",
+                "harness.chat_lifecycle.governor_for",
                 return_value=("key", self.gov)),
             "policy_for": patch(
-                "harness.agent.policy_for", return_value=policy),
+                "harness.chat_lifecycle.policy_for", return_value=policy),
             "ledger_for": patch(
-                "harness.agent.ledger_for", return_value=self.ledger),
+                "harness.chat_lifecycle.ledger_for", return_value=self.ledger),
             "intake": patch(
-                "harness.agent.enumerate_repo_files",
+                "harness.chat_lifecycle.enumerate_repo_files",
                 side_effect=AssertionError("no repo intake")),
         }
         patches.update(overrides)
@@ -706,10 +706,10 @@ class SimpleRequestEdgeTests(unittest.TestCase):
             return 0.0 if calls["n"] <= 4 else 2.0
 
         patches = self._patches(policy)
-        with patch("harness.agent.time.monotonic", side_effect=clock), \
+        with patch("harness.chat_lifecycle.time.monotonic", side_effect=clock), \
              patches["governor_for"], patches["policy_for"], \
              patches["ledger_for"], patches["intake"], \
-             patch("harness.agent.governed_completion",
+             patch("harness.chat_lifecycle.governed_completion",
                    side_effect=ToolCancelled("provider stopped")):
             result = self.agent.run_simple_request(
                 "Explain ice?", session_id="s", max_wall_seconds=1)
@@ -735,7 +735,7 @@ class SimpleRequestEdgeTests(unittest.TestCase):
         patches = self._patches(policy)
         with patches["governor_for"], patches["policy_for"], \
              patches["ledger_for"], patches["intake"], \
-             patch("harness.agent._resolve_lane_max_tokens", return_value=0):
+             patch("harness.chat_lifecycle._resolve_lane_max_tokens", return_value=0):
             result = self.agent.run_simple_request(
                 "Explain ice?", session_id="s")
         self.assertEqual(result["status"], "deferred")
@@ -755,10 +755,10 @@ class SimpleRequestEdgeTests(unittest.TestCase):
             "cost_estimated": False,
         }
         patches = self._patches(policy)
-        with patch("harness.agent.time.monotonic", side_effect=clock), \
+        with patch("harness.chat_lifecycle.time.monotonic", side_effect=clock), \
              patches["governor_for"], patches["policy_for"], \
              patches["ledger_for"], patches["intake"], \
-             patch("harness.agent.governed_completion",
+             patch("harness.chat_lifecycle.governed_completion",
                    return_value=completion):
             result = self.agent.run_simple_request(
                 "Explain ice?", session_id="s", max_wall_seconds=1)
@@ -776,8 +776,8 @@ class SimpleRequestEdgeTests(unittest.TestCase):
         policy.evaluate_simple_strategy.return_value = _pre(
             native=True, strategy="needs_tool")
         with (
-            patch("harness.agent.governor_for", return_value=("key", self.gov)),
-            patch("harness.agent.policy_for", return_value=policy),
+            patch("harness.chat_lifecycle.governor_for", return_value=("key", self.gov)),
+            patch("harness.chat_lifecycle.policy_for", return_value=policy),
             patch.object(self.agent, "_live_jev_available", return_value=True),
             patch.object(self.agent, "run_hourglass_request",
                          return_value={"status": "ok", "response": "world records fact",
@@ -796,8 +796,8 @@ class SimpleRequestEdgeTests(unittest.TestCase):
         policy.evaluate_simple_strategy.return_value = _pre(
             native=True, strategy="needs_tool")
         with (
-            patch("harness.agent.governor_for", return_value=("key", self.gov)),
-            patch("harness.agent.policy_for", return_value=policy),
+            patch("harness.chat_lifecycle.governor_for", return_value=("key", self.gov)),
+            patch("harness.chat_lifecycle.policy_for", return_value=policy),
             patch.object(self.agent, "_live_jev_available", return_value=False),
             patch.object(self.agent, "_handle_conversation",
                          return_value={"status": "ok", "response": "direct convo fact"}) as convo,

@@ -45,10 +45,11 @@ class _GovernedRun(unittest.TestCase):
     """
 
     def setUp(self):
-        patcher = patch("harness.agent.governor_for",
-                        return_value=(None, _TEST_GOVERNOR))
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for target in ("harness.agent.governor_for",
+                       "harness.chat_lifecycle.governor_for"):
+            patcher = patch(target, return_value=(None, _TEST_GOVERNOR))
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
 
 def _settings(**overrides):

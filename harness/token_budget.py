@@ -31,9 +31,10 @@ counted in ``over_input_tokens`` instead of being clamped away or raised
 after the tokens are already spent.
 """
 import threading
-from typing import Dict, NamedTuple, Optional
+from typing import Any, Dict, NamedTuple, Optional
 
 from .errors import HarnessError
+from .tokens import estimate_prompt_tokens
 
 USAGE_ACTUAL = "actual"
 USAGE_ESTIMATED = "estimated"
@@ -44,6 +45,38 @@ _USAGE_SOURCES = frozenset((USAGE_ACTUAL, USAGE_ESTIMATED, USAGE_UNAVAILABLE))
 # is refused. The point of the cap is a bounded run, not a tight budget.
 DEFAULT_RUN_INPUT_TOKENS = 200000
 DEFAULT_RUN_OUTPUT_TOKENS = 64000
+
+
+def resolve_lane_max_tokens(
+    gov: Optional[Any],
+    model: str,
+    prompt_text: str,
+    target_tokens: int,
+    *,
+    token_budget: Optional[Any] = None,
+) -> int:
+    """Narrow a lane's output allowance to its remaining token and dollar budgets."""
+    allocated = int(target_tokens)
+    if token_budget is not None and callable(getattr(token_budget, "remaining_output", None)):
+        rem_out = token_budget.remaining_output()
+        if isinstance(rem_out, (int, float)):
+            allocated = min(allocated, int(rem_out))
+    if gov is not None and callable(getattr(gov, "fetch_pricing", None)):
+        try:
+            pricing = gov.fetch_pricing([model])
+            if isinstance(pricing, dict) and model in pricing:
+                pp, cp = pricing[model]
+                if isinstance(cp, (int, float)) and cp > 0.0 and callable(getattr(gov, "remaining", None)):
+                    rem_dollars = gov.remaining()
+                    if isinstance(rem_dollars, (int, float)):
+                        prompt_tok = estimate_prompt_tokens(prompt_text)
+                        pp_val = float(pp) if isinstance(pp, (int, float)) else 0.0
+                        avail_dollar = max(0.0, float(rem_dollars) - prompt_tok * pp_val)
+                        dollar_tokens = int(avail_dollar / float(cp))
+                        allocated = min(allocated, dollar_tokens)
+        except Exception:
+            pass
+    return max(0, allocated)
 
 
 def _tokens(value, name):

@@ -332,11 +332,11 @@ class AgentDefaultsTests(unittest.TestCase):
             (root / "sample.txt").write_text("safe", encoding="utf-8")
             agent = AutonomousAgent(settings=object(), root_dir=root)
             ledger = SimpleNamespace(append=lambda *args, **kwargs: None)
-            with (patch("harness.agent.discover_target_files",
+            with (patch("harness.chat_lifecycle.discover_target_files",
                         return_value=["sample.txt"]),
-                  patch("harness.agent.resolve_workspace_path",
+                  patch("harness.chat_lifecycle.resolve_workspace_path",
                         side_effect=HarnessError("blocked")),
-                  patch("harness.agent.ledger_for", return_value=ledger)):
+                  patch("harness.chat_lifecycle.ledger_for", return_value=ledger)):
                 context, files, _brief, _web = agent._hourglass_request_context(
                     "summarize sample")
             self.assertEqual(files, {})
