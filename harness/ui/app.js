@@ -948,16 +948,7 @@ function renderFinalResult(runRecord, agentMsg) {
   agentMsg.body.innerHTML = renderSimpleMarkdown(responseText);
   // An honest deferral is an outcome, not an error: show the reason and the
   // resume path the lane owes the operator.
-  if (res.status === "deferred") {
-    const deferNote = document.createElement("div");
-    deferNote.className = "deferred-note";
-    deferNote.innerHTML = `
-      <p style="color:var(--yellow); margin:8px 0 0;">
-        <strong>Deferred</strong>${res.defer_reason ? ` — ${esc(res.defer_reason)}` : ""}<br>
-        <span style="color:var(--fg); opacity:0.8;">${esc(res.next_step || "resume via the plan lane")}</span>
-      </p>`;
-    agentMsg.body.appendChild(deferNote);
-  }
+  appendDeferredNote(agentMsg.body, res);
 
   // Render Diff if present
   if (res.diff && res.diff.trim()) {
@@ -979,8 +970,10 @@ function renderFinalResult(runRecord, agentMsg) {
     ? `<span title="Evidence-bound paid rung used">Escalated: ${esc(res.escalated_model)}`
       + `${res.escalation_family ? ` (${esc(res.escalation_family)})` : ""}</span>`
     : "";
+  const modelLabel = res.model || (res.status === "deferred"
+    ? "Not called" : "Sliding-Scale Multi-Tier");
   agentMsg.footer.innerHTML = `
-    <span>Model: ${esc(res.model || "Sliding-Scale Multi-Tier")}</span>
+    <span>Model: ${esc(modelLabel)}</span>
     ${paidProvenance}
     ${res.web_used ? `<span title="Live web evidence was retrieved for this answer">🌐 web</span>` : ``}
     <span>Spend: ${fmtCost(cost)}</span>
@@ -1115,6 +1108,29 @@ function scrollToBottom() {
   c.scrollTop = c.scrollHeight;
 }
 
+function appendDeferredNote(container, result) {
+  if (result.status !== "deferred") return;
+  const note = document.createElement("div");
+  note.className = "deferred-note";
+  const paragraph = document.createElement("p");
+  paragraph.style.color = "var(--yellow)";
+  paragraph.style.margin = "8px 0 0";
+  const heading = document.createElement("strong");
+  heading.textContent = "Deferred";
+  paragraph.appendChild(heading);
+  if (result.defer_reason) {
+    paragraph.appendChild(document.createTextNode(` — ${result.defer_reason}`));
+  }
+  paragraph.appendChild(document.createElement("br"));
+  const nextStep = document.createElement("span");
+  nextStep.style.color = "var(--fg)";
+  nextStep.style.opacity = "0.8";
+  nextStep.textContent = result.next_step || "resume via the plan lane";
+  paragraph.appendChild(nextStep);
+  note.appendChild(paragraph);
+  container.appendChild(note);
+}
+
 // Load Persisted History
 async function loadHistory() {
   try {
@@ -1126,6 +1142,7 @@ async function loadHistory() {
         const card = createAgentMessageCard();
         card.stepper.hidden = true;
         card.body.innerHTML = renderSimpleMarkdown(turn.response || "");
+        appendDeferredNote(card.body, turn);
         if (turn.diff) {
           const diffContainer = document.createElement("div");
           diffContainer.className = "diff-container";
@@ -1137,7 +1154,9 @@ async function loadHistory() {
           `;
           card.card.appendChild(diffContainer);
         }
-        card.footer.innerHTML = `<span>Spend: ${fmtCost(turn.cost || 0)}</span>`;
+        const modelLabel = turn.model || (turn.status === "deferred"
+          ? "Not called" : "Sliding-Scale Multi-Tier");
+        card.footer.innerHTML = `<span>Model: ${esc(modelLabel)}</span><span>Spend: ${fmtCost(turn.cost || 0)}</span>`;
         card.footer.hidden = false;
         $("#chat-feed").appendChild(card.card);
       }

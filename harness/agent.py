@@ -244,7 +244,8 @@ DEFAULT_RUN_WALL_SECONDS = 120.0
 # question it had no evidence for.
 _RESEARCH_SUBJECTS = ("news", "research", "recent", "latest", "today",
                       "papers", "paper", "article", "articles", "study",
-                      "studies", "release", "releases", "update", "updates")
+                      "studies", "release", "releases", "update", "updates",
+                      "weather", "forecast", "forecasts", "alert", "alerts")
 _RESEARCH_VERBS = ("find", "search", "look up", "lookup", "google",
                    "what's new", "whats new", "tell me about", "catch me up",
                    "summary of", "summarize", "summarise")
@@ -272,6 +273,19 @@ def is_research_question(prompt: str) -> bool:
     if cleaned.endswith("?"):
         return True
     return cleaned.startswith(_QUESTION_OPENERS)
+
+
+def is_weather_research_question(prompt: str) -> bool:
+    """True for weather or forecast lookups that need current evidence."""
+    cleaned = (prompt or "").strip().lower()
+    return (is_research_question(cleaned)
+            and bool(re.search(r"\b(?:weather|forecasts?|alerts?)\b", cleaned)))
+
+
+def _has_usable_weather_evidence(web_sources: List[Dict[str, Any]]) -> bool:
+    return any(source.get("ok")
+               and bool(str(source.get("text") or "").strip())
+               for source in (web_sources or []))
 
 
 def classify_prompt_intent(prompt: str) -> str:
@@ -802,6 +816,19 @@ class AutonomousAgent:
         deadline = time.monotonic() + max(0.0, wall_budget)
         context, files, brief, web_sources = self._hourglass_request_context(
             prompt, web=web)
+        if (is_weather_research_question(prompt)
+                and not _has_usable_weather_evidence(web_sources)):
+            return self._defer_weather_without_evidence(
+                prompt, sid, web_sources,
+                hourglass={
+                    "stages": ["context_intake", "web_retrieval"],
+                    "skipped": ["answer", "jev_review", "planning_waist",
+                                "execution"],
+                    "settings": hourglass_policy,
+                    "context_files": list(files),
+                    "context_tokens": brief.estimated_tokens,
+                    "rounds": [],
+                })
         past_turns = load_chat_history(sid, self.history_dir)[-10:]
         api_key, gov = governor_for(self.settings)
         policy = policy_for(
@@ -1068,9 +1095,7 @@ class AutonomousAgent:
         token_budget: Optional[Any] = None,
     ) -> Dict[str, Any]:
         # Handle informational or technical questions with conversational routing
-        api_key, gov = governor_for(self.settings)
-        target_tokens, lane_effort = effective_lane_policy(
-            "chat", max_tokens=max_tokens, reasoning_effort=reasoning_effort)
+        web = bool(web) or is_research_question(prompt)
 
         system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
         web_sources: List[Dict[str, Any]] = []
@@ -1094,9 +1119,16 @@ class AutonomousAgent:
                     context_lines.append(f"SOURCE ({s['kind']}) FAILED: {s.get('url') or ''} {s.get('note')}")
             if context_lines:
                 system_prompt += "\n\n[Web tool results for this turn -- cite only these; do not invent others]\n" + "\n\n".join(context_lines)
+            if (is_weather_research_question(prompt)
+                    and not _has_usable_weather_evidence(web_sources)):
+                return self._defer_weather_without_evidence(
+                    prompt, session_id, web_sources)
         else:
             system_prompt += "\n\n" + _NO_WEB_DISCLOSURE
 
+        api_key, gov = governor_for(self.settings)
+        target_tokens, lane_effort = effective_lane_policy(
+            "chat", max_tokens=max_tokens, reasoning_effort=reasoning_effort)
         messages = [{"role": "system", "content": system_prompt}]
         past_turns = load_chat_history(session_id, self.history_dir)
         for turn in past_turns[-10:]:
@@ -1271,6 +1303,49 @@ class AutonomousAgent:
 
         save_chat_turn(session_id, result, self.history_dir)
         emit("chat_response", intent="conversation", cost=cost, model=model)
+        return result
+
+    def _defer_weather_without_evidence(
+        self, prompt: str, session_id: str,
+        web_sources: List[Dict[str, Any]], *, hourglass: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Return a deterministic weather deferral when retrieval has no evidence."""
+        response = (
+            "I couldn't retrieve usable forecast or weather-alert information "
+            "for the requested location, so I don't have enough evidence to "
+            "determine whether significant events are expected. Please check "
+            "an official local forecast or retry when web retrieval is available."
+        )
+        sources = []
+        for source in (web_sources or []):
+            summary = {k: source[k] for k in ("kind", "ok", "url")
+                       if k in source}
+            summary["usable"] = bool(
+                source.get("ok")
+                and str(source.get("text") or "").strip())
+            if source.get("note"):
+                summary["note"] = str(source["note"])[:200]
+            sources.append(summary)
+        result = {
+            "status": "deferred",
+            "intent": "conversation",
+            "prompt": prompt,
+            "response": response,
+            "model": None,
+            "cost": 0.0,
+            "defer_reason": "Weather retrieval produced no usable forecast evidence.",
+            "next_step": "Check an official local forecast or retry when web retrieval is available.",
+            "web_used": False,
+            "web_sources": sources,
+        }
+        if hourglass is not None:
+            result["hourglass"] = dict(hourglass)
+            result["hourglass"]["web_sources"] = sources
+        save_chat_turn(session_id, result, self.history_dir)
+        if hourglass is not None:
+            emit("hourglass_complete", status="deferred", confidence=None)
+        else:
+            emit("chat_response", intent="conversation", cost=0.0, model=None)
         return result
 
     def _handle_audit(

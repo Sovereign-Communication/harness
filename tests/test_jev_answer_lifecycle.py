@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness.agent import AutonomousAgent
+from harness.agent import AutonomousAgent, is_research_question
 from harness.config import load_settings
 from harness.errors import HarnessError
 from harness.jev import JevEvaluationResult
@@ -401,6 +401,83 @@ class HourglassRequestContextTests(unittest.TestCase):
 
 
 class AgentAnswerLoopTests(unittest.TestCase):
+    def test_219_weather_prompt_without_jev_retrieves_and_defers_on_failure(self):
+        prompt = "search for the weather near 96778 and see if there's any upcoming significant events in the forecast?"
+        self.assertTrue(is_research_question(prompt))
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = load_settings()
+            settings.jev_api_key = None
+            settings.jev_disabled = True
+            agent = AutonomousAgent(settings=settings, root_dir=Path(tmp),
+                                    history_dir=Path(tmp))
+            with patch.object(agent, "_gather_web_context", return_value=[{
+                    "kind": "search", "ok": False,
+                    "note": "search service unavailable"}]) as retrieve, \
+                 patch("harness.agent.chat") as model, \
+                 patch("harness.agent.governor_for") as governor, \
+                 patch("harness.agent.save_chat_turn") as save_turn, \
+                 patch("harness.agent.emit") as events:
+                result = agent.run_prompt(prompt, session_id="weather-no-jev",
+                                          web=False)
+
+        self.assertFalse(agent._live_jev_available())
+        retrieve.assert_called_once_with(prompt)
+        governor.assert_not_called()
+        model.assert_not_called()
+        self.assertEqual(result["status"], "deferred")
+        self.assertIn("don't have enough evidence", result["response"])
+        self.assertNotIn("no significant events", result["response"].lower())
+        self.assertEqual(result["cost"], 0.0)
+        self.assertFalse(result["web_used"])
+        self.assertFalse(result["web_sources"][0]["usable"])
+        self.assertEqual(result["web_sources"][0]["note"],
+                         "search service unavailable")
+        save_turn.assert_called_once_with(
+            "weather-no-jev", result, Path(tmp))
+        events.assert_any_call(
+            "chat_response", intent="conversation", cost=0.0, model=None)
+
+    def test_219_weather_prompt_with_jev_retrieval_empty_skips_answer_and_review(self):
+        prompt = "search for the weather near 96778 and see if there's any upcoming significant events in the forecast?"
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = _ladder_settings(jev_api_key="jev-test")
+            settings.jev_disabled = False
+            agent = AutonomousAgent(settings=settings, root_dir=Path(tmp),
+                                    history_dir=Path(tmp))
+            context_result = (
+                "", {}, MagicMock(estimated_tokens=0),
+                [{"kind": "search", "ok": True,
+                  "url": "https://weather.example.test", "text": "  \n"}],
+            )
+            with patch.object(agent, "_live_jev_available",
+                              return_value=True) as live_jev, \
+                 patch.object(agent, "_hourglass_request_context",
+                              return_value=context_result) as retrieve, \
+                 patch("harness.agent.governor_for") as governor, \
+                 patch("harness.agent.policy_for") as policy, \
+                 patch.object(agent, "_hourglass_answer_once") as answer, \
+                 patch("harness.agent.assess_completion") as completion, \
+                 patch("harness.agent.save_chat_turn") as save_turn, \
+                 patch("harness.agent.emit") as events:
+                result = agent.run_prompt(prompt, session_id="weather-jev",
+                                          web=False)
+
+        live_jev.assert_called_once_with()
+        retrieve.assert_called_once_with(prompt, web=True)
+        governor.assert_not_called()
+        policy.assert_not_called()
+        answer.assert_not_called()
+        completion.assert_not_called()
+        self.assertEqual(result["status"], "deferred")
+        self.assertIn("don't have enough evidence", result["response"])
+        self.assertEqual(result["cost"], 0.0)
+        self.assertFalse(result["web_used"])
+        self.assertFalse(result["hourglass"]["web_sources"][0]["usable"])
+        self.assertIn("jev_review", result["hourglass"]["skipped"])
+        save_turn.assert_called_once_with("weather-jev", result, Path(tmp))
+        events.assert_any_call(
+            "hourglass_complete", status="deferred", confidence=None)
+
     def test_loop_reiterates_until_native_threshold(self):
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)
