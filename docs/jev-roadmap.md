@@ -355,14 +355,20 @@ any issue. Every G1-G4 requirement above still has to run on fresh allocations.
 synchronization, live fetch, native plan execution or audit-score result is
 asserted by this review; those remain acceptance requirements for the phase PRs.
 
-### Post-review finding: the D12 audit gate is broken repo-wide - 2026-10-22
+### Post-review finding: the D12 audit gate was broken repo-wide - 2026-10-22
 
-Recorded here, after the plan review, because it blocks *landing* rather than
+Recorded here, after the plan review, because it blocked *landing* rather than
 planning; the reviewed block above is unchanged (hash still `a7282ad0`).
 
-PR #348 is green on every check except `audit`, which fails closed at D12 with
-`baseline commit 661d476474e2 is not reachable in this checkout`. The cause is
-not this branch's content, which touches only this file:
+**Resolved 2026-10-23.** The outage was diagnosed on the predecessor plan PR
+(#348, superseded by #350 after its stacked base was deleted on merge) and
+fixed by the re-point PR #349 (`f3cac6c`), which refreshed the baseline from a
+`main`-reachable head. Both are merged; `main`'s `audit` is green on `c11c995`.
+The durable fix remains #276.
+
+That PR was green on every check except `audit`, which failed closed at D12 with
+`baseline commit 661d476474e2 is not reachable in this checkout`. The cause was
+not the branch's content, which touches only this file:
 
 - `audits/self/coverage_baseline.json` pins `661d476474e2`.
 - That commit is the head of PR #341's branch `fix/web-search-subject-relevance`,
@@ -374,17 +380,17 @@ not this branch's content, which touches only this file:
   fetch in that job's log (`fix/d12-baseline-repoint` and other branch refs), not
   on the pin being sound.
 
-The consequence is that **any** new PR fails `audit` today, independent of its
-content, and the next `main` push loses its accidental borrow of that object.
-This is the exact failure mode #276 exists to fix: the baseline must be measured
-against a merge-base that is reachable from `main` at CI time, never a
-PR-branch SHA.
+The consequence was that **any** new PR failed `audit` at that time,
+independent of its content. This is the exact failure mode #276 exists to fix:
+the baseline must be measured against a merge-base that is reachable from
+`main` at CI time, never a PR-branch SHA.
 
-No baseline edit is made in this branch: rule 5 forbids hand-tuning
-`coverage_baseline.json`, and a legitimate re-point requires the refresh script
-(under `audits/self/`) to execute the traced battery for real. That is its own
-reviewed PR, and it should land before any phase PR, this one included.
-Closing this blocker is a prerequisite for G3 on every row in the register.
+No hand edit of `coverage_baseline.json` was made: rule 5 forbids it, and a
+legitimate re-point requires the refresh script (under `audits/self/`) to
+execute the traced battery for real. That run happened in #349 — 4815 tests,
+`OK (skipped=73)`, baseline re-pointed at the then-current `main` head
+`208c455` — so the interim blocker is closed and G3 on the register rows is no
+longer blocked by the pin. #276 stays open for the structural fix.
 
 ---
 
