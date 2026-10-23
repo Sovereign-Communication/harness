@@ -236,6 +236,31 @@ the 1500s full-suite timeout, failing audit (D12 473/561 = 84%), and
 OpenRouter-outage independence for Fireworks remain open. Do not merge while
 red.
 
+### Full-suite timeout diagnosis — 2026-10-11 (read-mostly)
+
+No hang reproduced: a bounded instrumented run completed **4164 tests in
+233.9s** (exit 1, `tmp/burndown/fullsuite-v.log`). The 1500s timeout is
+attributed to loaded-machine variance, not a stuck suite — all sleeps in
+`tests/` are small or hard-bounded, and the network guard fails fast.
+Three failures, all classified without touching product code:
+
+- `test_cli.EngineKeyWiringTests.test_bench_engine_key_reaches_apply_loop`
+  ERROR was branch-induced: the Fireworks lane in `chat()` needs real
+governor seams (`_spend_lock`, `_endpoint_cache`, priced-endpoints
+transport) a bare `Mock` cannot supply. Fixed test-side only in
+`tests/test_cli.py` (real lock/cache/registry, endpoints-shaped stub,
+pinned pack date against 7-day rot). Product behavior unchanged.
+- `test_judge.ShippedModelFreshnessTests.test_shipped_ids_resolve_in_live_catalog`
+  ERROR + `test_zz_network_guard` FAIL are environment-caused: this
+machine resolves a live OpenRouter key from home-config files, so the
+by-design live check runs and the hermetic guard correctly refuses it.
+Under scrubbed CI-like conditions (empty home, no key) the live check
+skips and the guard passes. Do not weaken either test.
+
+Scrubbed full-suite rerun confirmed green: **4164 tests OK (68 skipped) in
+219.2s** (`tmp/burndown/fullsuite-scrubbed.log`, exit 0), including the
+`test_cli` fix. Audit/D12 and live receipts stay open regardless.
+
 ---
 
 ## Historical comprehensive sweep 2026-10-05 (superseded)

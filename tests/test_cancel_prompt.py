@@ -112,6 +112,43 @@ class HttpCancelTests(unittest.TestCase):
                                     cancel_check=lambda: True)
         opener.assert_not_called()
 
+    def test_get_retry_backoff_trips_cancel_mid_wait(self):
+        # First attempt fails transiently; the backoff must abort as soon
+        # as the flag trips instead of sleeping the full delay.
+        from harness._http import HttpTransport
+        polls = {"n": 0}
+
+        def _check():
+            polls["n"] += 1
+            return polls["n"] > 2
+
+        t0 = time.monotonic()
+        with mock.patch("urllib.request.urlopen",
+                         side_effect=OSError("blip")):
+            with self.assertRaises(ToolCancelled):
+                HttpTransport().get("https://x.example/", "k",
+                                    cancel_check=_check)
+        self.assertLess(time.monotonic() - t0, 1.0)
+
+    def test_post_retry_backoff_trips_cancel_mid_wait(self):
+        import io
+        import urllib.error
+        from harness._http import HttpTransport
+        polls = {"n": 0}
+
+        def _check():
+            polls["n"] += 1
+            return polls["n"] > 2
+
+        err = urllib.error.HTTPError(
+            "https://x.example/", 503, "busy", {}, io.BytesIO(b"busy"))
+        t0 = time.monotonic()
+        with mock.patch("urllib.request.urlopen", side_effect=err):
+            with self.assertRaises(ToolCancelled):
+                HttpTransport().post("https://x.example/", "k", {"m": 1},
+                                     cancel_check=_check)
+        self.assertLess(time.monotonic() - t0, 1.0)
+
 
 class WebCancelTests(unittest.TestCase):
     def test_fetch_with_set_flag_never_hits_network(self):
@@ -123,6 +160,56 @@ class WebCancelTests(unittest.TestCase):
                               allowed_hosts=["forecast.weather.gov"],
                               cancel_check=lambda: True)
         getter.assert_not_called()
+
+    def test_fetch_retry_backoff_trips_cancel_mid_wait(self):
+        from harness import web
+        polls = {"n": 0}
+
+        def _check():
+            polls["n"] += 1
+            return polls["n"] > 3
+
+        url = "https://forecast.weather.gov/x"
+        t0 = time.monotonic()
+        with mock.patch.object(web, "_http_get",
+                               side_effect=OSError("blip")):
+            with self.assertRaises(ToolCancelled):
+                web.fetch_url(url, allowed_hosts=["forecast.weather.gov"],
+                              cancel_check=_check)
+        # Full 1.5s retry sleep must not run out after cancel trips.
+        self.assertLess(time.monotonic() - t0, 1.0)
+
+    def test_gather_cancel_stops_before_fetch(self):
+        from harness import web
+        with self.assertRaises(ToolCancelled):
+            web.gather_web_context(
+                "see https://www.anthropic.com/r for news",
+                allowed_hosts=frozenset({"www.anthropic.com"}),
+                fetch_url_fn=mock.MagicMock(),
+                search_web_fn=mock.MagicMock(),
+                find_urls_fn=lambda p: ["https://www.anthropic.com/r"],
+                extract_query_fn=lambda p: "news",
+                cancel_check=lambda: True)
+
+    def test_gather_supports_legacy_fetch_seam_without_cancel_kwarg(self):
+        # Hermetic stubs written against the old (url, allowed_hosts)
+        # shape keep working through the TypeError fallback.
+        from harness import web
+
+        def _old_fetch(url, allowed_hosts=None):
+            return {"url": url, "title": "t", "text": "forecast 96778"}
+
+        out = web.gather_web_context(
+            "weather near 96778",
+            allowed_hosts=frozenset({"forecast.weather.gov"}),
+            fetch_url_fn=_old_fetch,
+            search_web_fn=lambda q: [{
+                "title": "96778 forecast",
+                "url": "https://forecast.weather.gov/x?zip=96778",
+                "snippet": "Pahala HI 96778 highs"}],
+            find_urls_fn=lambda p: [],
+            extract_query_fn=lambda p: "96778 weather")
+        self.assertTrue(any(s.get("ok") for s in out))
 
     def test_gather_drops_seattle_for_96778_and_checks_cancel(self):
         from harness import web
