@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from ._http import HttpTransport
-from .chat import assess_output, chat, extract_content_and_cost, governed_text, looks_truncated
+from .chat import (assess_output, chat, extract_content_and_cost,
+                   governed_completion, governed_text, looks_truncated)
 from .condenser import distill_context, condense_error_log
 from .config import (
     Settings, effective_lane_policy, load_settings, resolve_api_key,
@@ -19,12 +20,19 @@ from .tokens import estimate_prompt_tokens
 from .dag import TaskDAG, DAGNode, node_apply_kwargs
 from .prompts import MAX_FILE_LINES
 from .errors import HarnessError, ToolCancelled
-from .events import emit
+from .events import cancellation_context, emit
 from .orchestrator import assess_completion, drive, keyword_fallback, triage_files
 from .prompts import CAPABILITY_MARKER
 from .escalation import escalation_evidence, escalation_evidence_fields
 from .executor import PlanExecutor
 from .history import load_chat_history, save_chat_turn
+from .simple_request import (
+    answer_prompt as simple_answer_prompt,
+    is_current_information_request,
+    is_simple_answer_request,
+    is_supplied_text_rewrite,
+    relevant_history as simple_relevant_history,
+)
 from .repo_scope import (
     discover_target_files,
     discover_verification_gate,
@@ -307,6 +315,11 @@ def classify_prompt_intent(prompt: str) -> str:
         if not has_file_ext and not any(w in cleaned for w in ("refactor ", "implement ", "fix bug ", "add test", "execute ", "run ")):
             return "conversation"
 
+    # Transforming prose supplied in the prompt is conversational work.  A
+    # named source file (or a second repo mutation verb) remains an edit.
+    if is_supplied_text_rewrite(prompt):
+        return "conversation"
+
     has_mutation_verb = any(w in MUTATION_KEYWORDS for w in words)
 
     if has_mutation_verb or has_file_ext:
@@ -376,6 +389,11 @@ class AutonomousAgent:
                      target="plan_lane")
                 return self._handle_edit(prompt, sid, auto_apply, cancel_check,
                                          use_jev_completion=self._live_jev_available())
+            if is_simple_answer_request(prompt, intent=intent):
+                return self.run_simple_request(
+                    prompt, session_id=sid, cancel_check=cancel_check,
+                    max_tokens=max_tokens, reasoning_effort=reasoning_effort,
+                    token_budget=token_budget)
             if intent == "conversation" and self._live_jev_available():
                 return self.run_hourglass_request(
                     prompt, session_id=sid, cancel_check=cancel_check, web=web,
@@ -398,6 +416,11 @@ class AutonomousAgent:
             return self.run_simple_action(prompt, session_id=sid,
                                           cancel_check=cancel_check)
         elif intent == "conversation":
+            if is_simple_answer_request(prompt, intent=intent):
+                return self.run_simple_request(
+                    prompt, session_id=sid, cancel_check=cancel_check,
+                    max_tokens=max_tokens, reasoning_effort=reasoning_effort,
+                    token_budget=token_budget)
             if self._live_jev_available():
                 return self.run_hourglass_request(
                     prompt, session_id=sid, cancel_check=cancel_check, web=web,
@@ -417,6 +440,251 @@ class AutonomousAgent:
     def _live_jev_available(self) -> bool:
         return bool(getattr(self.settings, "jev_api_key", None)
                     and not getattr(self.settings, "jev_disabled", False))
+
+    def run_simple_request(
+            self, prompt: str, *, session_id: Optional[str] = None,
+            cancel_check=None, max_tokens: Optional[int] = None,
+            reasoning_effort: Optional[str] = None,
+            token_budget: Optional[Any] = None,
+            max_wall_seconds: float = 60.0) -> Dict[str, Any]:
+        """Answer one stable no-tool request with one governed completion.
+
+        Deterministic request-kind checks own the boundary.  Jev supplies one
+        pre-answer Choice and one post-answer sufficiency assessment when
+        available; either Jev outage degrades honestly without adding a model
+        judge or turning the request into repo work.
+        """
+        sid = session_id or "default"
+        started = time.monotonic()
+        deadline = started + max(0.0, float(max_wall_seconds))
+        ledger = ledger_for(self.settings, caller="agent")
+        generation_attempts = 0
+        pre_cost = 0.0
+        generation_cost = 0.0
+        answer = None
+        model = None
+        completion = None
+
+        def combined_cancel():
+            return bool((cancel_check and cancel_check())
+                        or time.monotonic() >= deadline)
+
+        def cancelled_or_late(stage: str):
+            if cancel_check and cancel_check():
+                raise ToolCancelled("Prompt execution was cancelled by user")
+            if time.monotonic() >= deadline:
+                raise HarnessError(
+                    f"simple request deadline exhausted before {stage}")
+
+        def receipt(status: str, **fields):
+            return ledger.append(
+                "simple_request_result", task_id=sid, status=status,
+                workflow_tier="simple-answer", elapsed_ms=round(
+                    (time.monotonic() - started) * 1000), **fields)
+
+        emit("simple_request_start", prompt=prompt, session_id=sid)
+        try:
+            # Public callers cannot bypass the deterministic boundary by
+            # invoking this method directly.  Jev Choice is advisory routing
+            # evidence; it never grants file, tool, execution, or write scope.
+            intent = classify_prompt_intent(prompt)
+            if not is_simple_answer_request(prompt, intent=intent):
+                reason = "request is outside the stable no-tool answer lane"
+                result = {
+                    "status": "deferred", "intent": intent,
+                    "workflow_tier": "simple-answer", "prompt": prompt,
+                    "response": reason.capitalize() + ".",
+                    "model": None, "cost": 0.0,
+                    "defer_reason": reason,
+                    "next_step": "use the existing specialized or clarification lane",
+                    "simple_request": {"generation_calls": 0},
+                }
+                receipt("deferred", reason=reason, generation_calls=0,
+                        input_tokens=0, output_tokens=0)
+                save_chat_turn(sid, result, self.history_dir)
+                return result
+            cancelled_or_late("governor setup")
+            with cancellation_context(combined_cancel):
+                api_key, gov = governor_for(self.settings)
+            policy = policy_for(
+                self.settings, transport=self.transport, governor=gov,
+                ledger=ledger)
+            turns = simple_relevant_history(
+                prompt, load_chat_history(sid, self.history_dir))
+            context_text = "\n".join(
+                f"User: {turn['prompt']}\nAssistant: {turn['response']}"
+                for turn in turns)
+
+            cancelled_or_late("Jev strategy")
+            with cancellation_context(combined_cancel):
+                _pre_result, pre = policy.evaluate_simple_strategy(
+                    prompt, context_text, task_id=sid)
+            pre_cost = float(pre.get("cost") or 0.0)
+            strategy = pre.get("strategy") or "direct_answer"
+            if bool(pre.get("native")) and strategy != "direct_answer":
+                reason = ("request needs a tool-backed lane" if strategy == "needs_tool"
+                          else "request needs clarification")
+                result = {
+                    "status": "deferred", "intent": "conversation",
+                    "workflow_tier": "simple-answer", "prompt": prompt,
+                    "response": reason.capitalize() + ".",
+                    "model": None, "cost": round(pre_cost, 6),
+                    "defer_reason": reason,
+                    "next_step": "clarify the request or use the appropriate tool lane",
+                    "simple_request": {"pre": pre, "post": None,
+                                       "generation_calls": 0},
+                }
+                receipt("deferred", reason=reason, cost=round(pre_cost, 6),
+                        generation_calls=0, input_tokens=0, output_tokens=0)
+                save_chat_turn(sid, result, self.history_dir)
+                return result
+
+            cancelled_or_late("answer generation")
+            ladder = list(getattr(self.settings, "panel_pool", ()) or [])
+            if not ladder:
+                ladder = self._chat_ladder(self.settings)
+            if not ladder:
+                raise HarnessError("simple answer model pool is empty")
+            model = ladder[0]
+            target_tokens, lane_effort = effective_lane_policy(
+                "answer", max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort)
+            generation_prompt = simple_answer_prompt(prompt, turns)
+            allocated = _resolve_lane_max_tokens(
+                gov, model, generation_prompt, target_tokens,
+                token_budget=token_budget)
+            if allocated < 1:
+                raise HarnessError("shared budget leaves no answer tokens")
+            generation_attempts = 1
+            with cancellation_context(combined_cancel):
+                completion = governed_completion(
+                    self.transport, api_key, gov, model, generation_prompt,
+                    allocated, label="simple-answer",
+                    reasoning_effort=lane_effort)
+            answer = str(completion["content"]).strip()
+            generation_cost = float(completion.get("cost") or 0.0)
+
+            post = None
+            post_cost = 0.0
+            post_skipped = None
+            if time.monotonic() < deadline:
+                with cancellation_context(combined_cancel):
+                    _post_result, post = policy.evaluate_answer(
+                        prompt, answer, context_text,
+                        site="simple-answer-post", task_id=sid)
+                post_cost = float(post.get("cost") or 0.0)
+            else:
+                post_skipped = "deadline exhausted after answer generation"
+
+            refusal = self._refusal_reason(answer)
+            status = "deferred" if refusal else "ok"
+            total_cost = pre_cost + generation_cost + post_cost
+            review_available = bool(post and post.get("native"))
+            review_passed = bool(
+                review_available
+                and isinstance(post.get("answer_sufficient"), (int, float))
+                and float(post["answer_sufficient"]) >= float(
+                    getattr(self.settings, "min_confidence", 0.70))
+                and not bool(post.get("iteration_required")))
+            result = {
+                "status": status, "intent": "conversation",
+                "workflow_tier": "simple-answer", "prompt": prompt,
+                "response": answer, "model": model,
+                "cost": round(total_cost, 6),
+                "simple_request": {
+                    "pre": pre, "post": post,
+                    "post_skipped": post_skipped,
+                    "post_review_available": review_available,
+                    "post_review_passed": review_passed,
+                    "generation_calls": 1,
+                    "history_turns": len(turns),
+                    "deadline_seconds": float(max_wall_seconds),
+                },
+                **({"defer_reason": refusal,
+                    "next_step": "review the refusal or clarify the request"}
+                   if refusal else {}),
+            }
+            receipt(
+                status, model=model, cost=round(total_cost, 6),
+                generation_cost=round(generation_cost, 6),
+                generation_calls=1,
+                input_tokens=completion.get("input_tokens"),
+                output_tokens=completion.get("output_tokens"),
+                usage_source=("estimated" if completion.get("cost_estimated")
+                              else "provider"),
+                jev_pre_native=bool(pre.get("native")),
+                jev_post_native=review_available,
+                jev_post_passed=review_passed,
+                refusal=bool(refusal), deadline_exhausted=bool(post_skipped))
+            save_chat_turn(sid, result, self.history_dir)
+            emit("simple_request_complete", status=status, model=model,
+                 cost=total_cost)
+            return result
+        except ToolCancelled as exc:
+            if time.monotonic() < deadline:
+                receipt("cancelled", generation_calls=generation_attempts)
+                raise
+            reason = "simple request deadline exhausted during provider call"
+            known_cost = float(getattr(exc, "known_cost", 0.0) or 0.0)
+            if answer:
+                total_cost = pre_cost + generation_cost + known_cost
+                receipt(
+                    "ok", reason=reason, model=model,
+                    generation_calls=generation_attempts,
+                    cost=round(total_cost, 6),
+                    input_tokens=(completion or {}).get("input_tokens"),
+                    output_tokens=(completion or {}).get("output_tokens"),
+                    deadline_exhausted=True, jev_post_native=False)
+                result = {
+                    "status": "ok", "intent": "conversation",
+                    "workflow_tier": "simple-answer", "prompt": prompt,
+                    "response": answer, "model": model,
+                    "cost": round(total_cost, 6),
+                    "simple_request": {
+                        "generation_calls": generation_attempts,
+                        "post": None, "post_review_available": False,
+                        "post_skipped": reason,
+                    },
+                }
+                save_chat_turn(sid, result, self.history_dir)
+                return result
+            receipt("deferred", reason=reason,
+                    generation_calls=generation_attempts,
+                    known_cost=known_cost)
+            result = {
+                "status": "deferred", "intent": "conversation",
+                "workflow_tier": "simple-answer", "prompt": prompt,
+                "response": ("The bounded answer deadline expired. No "
+                             "repository or write action was attempted."),
+                "model": None,
+                "cost": round(known_cost, 6),
+                "defer_reason": reason,
+                "next_step": "retry the ordinary answer",
+                "simple_request": {"generation_calls": generation_attempts},
+            }
+            save_chat_turn(sid, result, self.history_dir)
+            return result
+        except HarnessError as exc:
+            reason = str(exc)
+            known_cost = float(getattr(exc, "known_cost", 0.0) or 0.0)
+            receipt(
+                "deferred", reason=reason,
+                generation_calls=generation_attempts,
+                known_cost=known_cost,
+                reserved_cost=float(getattr(exc, "reserved_cost", 0.0) or 0.0),
+                usage_unknown=bool(getattr(exc, "usage_unknown", False)))
+            result = {
+                "status": "deferred", "intent": "conversation",
+                "workflow_tier": "simple-answer", "prompt": prompt,
+                "response": ("I could not complete the bounded answer call. "
+                             "No repository or write action was attempted."),
+                "model": None, "cost": round(known_cost, 6),
+                "defer_reason": reason,
+                "next_step": "retry the ordinary answer when the model service is available",
+                "simple_request": {"generation_calls": generation_attempts},
+            }
+            save_chat_turn(sid, result, self.history_dir)
+            return result
 
     def run_simple_action(self, prompt: str, session_id: Optional[str] = None,
                           cancel_check=None, probe_fn=None,
@@ -796,7 +1064,8 @@ class AutonomousAgent:
         # A research question earns the web lane whether or not the caller
         # asked: answering "what is the latest news on X" from model memory is
         # how a run iterates six times on a question it had no evidence for.
-        web = bool(web) or is_research_question(prompt)
+        web = (bool(web) or is_research_question(prompt)
+               or is_current_information_request(prompt))
         wall_budget = (DEFAULT_RUN_WALL_SECONDS if max_wall_seconds is None
                        else float(max_wall_seconds))
         deadline = time.monotonic() + max(0.0, wall_budget)

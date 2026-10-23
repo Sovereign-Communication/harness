@@ -602,6 +602,39 @@ def completion_question_pack() -> Dict[str, Dict[str, Any]]:
 # action nouls are advisory signals that code turns into a bounded transition.
 ANSWER_PACK_VERSION = "answer-sufficiency-v1"
 
+# A Choice reports which strategy best fits and how concentrated its
+# distribution is.  Its confidence is not calibrated correctness or
+# permission; callers inspect the selected vocabulary value only.
+SIMPLE_STRATEGY_PACK_VERSION = "simple-answer-strategy-v1"
+
+
+def simple_strategy_question_pack() -> Dict[str, Dict[str, Any]]:
+    """Choose the disposition for one stable, no-tool answer candidate."""
+    return {
+        "strategy": {
+            "type": "choice",
+            "instructions": (
+                "Choose the strategy that best fits this request. The request "
+                "has already passed deterministic no-file and no-current-data "
+                "checks; do not infer permission to use tools or write files."
+            ),
+            "criteria": {
+                "direct_answer": (
+                    "Answer once from stable general knowledge or transform "
+                    "the supplied prose without tools or side effects."
+                ),
+                "needs_tool": (
+                    "A trustworthy answer requires current retrieval, local "
+                    "files, execution, calculation evidence, or another tool."
+                ),
+                "ambiguous": (
+                    "The request lacks enough information to answer directly; "
+                    "ask for clarification or defer."
+                ),
+            },
+        }
+    }
+
 
 def answer_question_pack() -> Dict[str, Dict[str, Any]]:
     """Typed Jev signals for the bounded answer/reiterate loop.

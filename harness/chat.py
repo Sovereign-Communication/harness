@@ -563,19 +563,14 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
     return _account(status, resp, build(want_reasoning))
 
 
-def governed_text(transport, api_key, governor, model, prompt, max_tokens,
-                  label="ask", reasoning_effort="auto",
-                  reasoning_token_budget=0.4):
-    """Single-shot governed text call: preflight -> chat -> bill -> extract.
+def governed_completion(transport, api_key, governor, model, prompt, max_tokens,
+                        label="ask", reasoning_effort="auto",
+                        reasoning_token_budget=0.4):
+    """Single-shot governed call with provider-reported usage metadata.
 
-    ONE owner of the request-lane mechanics the panel/judge paths inline
-    for their own shapes; plan-lane calls (LLM decomposition, waist
-    confirmation) share this instead of re-deriving preflight/billing.
-    Returns ``(content, cost)``; content is the raw body (a reasoning-only
-    trace still returns, prefixed with REASONING_FALLBACK_PREFIX -- the
-    CALLER decides whether a trace satisfies its contract). Raises
-    HarnessError on HTTP failure, BYOK routing (recorded, spend invisible),
-    or an empty body.
+    This is the sole preflight/chat/billing owner for direct text helpers.
+    The returned usage is evidence copied after :func:`chat` has completed
+    its cost normalization; callers do not estimate or bill it again.
     """
     if governor is None:
         from .errors import HarnessError
@@ -591,7 +586,7 @@ def governed_text(transport, api_key, governor, model, prompt, max_tokens,
     if status != 200:
         from .results import _http_error
         raise HarnessError(_http_error(status, resp))
-    content, _, cost, is_byok = extract_content_and_cost(resp)
+    content, finish_reason, cost, is_byok = extract_content_and_cost(resp)
     if is_byok:
         governor.record_byok(model)
         raise HarnessError(
@@ -601,7 +596,28 @@ def governed_text(transport, api_key, governor, model, prompt, max_tokens,
         governor.record_actual(cost, model)
     if not content or not content.strip():
         raise HarnessError(f"empty response body from {model}")
-    return content, cost
+    usage = resp.get("usage") if isinstance(resp, dict) else None
+    usage = usage if isinstance(usage, dict) else {}
+    return {
+        "content": content,
+        "cost": float(cost or 0.0),
+        "model": model,
+        "finish_reason": finish_reason,
+        "input_tokens": usage.get("prompt_tokens", usage.get("input_tokens")),
+        "output_tokens": usage.get("completion_tokens", usage.get("output_tokens")),
+        "cost_estimated": bool(usage.get("cost_estimated", False)),
+    }
+
+
+def governed_text(transport, api_key, governor, model, prompt, max_tokens,
+                  label="ask", reasoning_effort="auto",
+                  reasoning_token_budget=0.4):
+    """Backward-compatible ``(content, cost)`` view of governed completion."""
+    completion = governed_completion(
+        transport, api_key, governor, model, prompt, max_tokens,
+        label=label, reasoning_effort=reasoning_effort,
+        reasoning_token_budget=reasoning_token_budget)
+    return completion["content"], completion["cost"]
 
 def chat_ladder(settings) -> list:
     """Single-owner chat lane ladder: tier-1 head + free panel + paid escalation when allowed.
